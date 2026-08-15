@@ -179,6 +179,11 @@ different from chrome:
     ``SETTINGS.raytracing.samples_per_pixel`` above 1 to switch to the Monte Carlo
     path tracer.
 
+    That switch is not free on this page's subject matter: the path tracer supports
+    neither refraction nor environment maps, so a glass scene or an
+    environment-lit metal scene will raise rather than render. See
+    :ref:`renderer-capabilities` before reaching for it.
+
 Environment Maps
 ================
 
@@ -186,16 +191,19 @@ For any serious metal or glass work, an environment map is the highest-value cha
 you can make. It gives every reflective surface something to reflect and every
 refractive one something to bend, and it lights the whole scene:
 
-.. code-block:: python
+.. algan:: ReflectionsEnvironmentMap
 
     from algan import *
 
-    set_environment_map("studio_panorama.jpg", intensity=1.0, ambient=True)
+    set_environment_map("world_map.png", intensity=1.0, ambient=True)
 
     Sphere().set_material(
         MeshStandardMaterial(metalness=1.0, roughness=0.05)).spawn()
 
     Scene.save_video()
+
+Any equirectangular image works; a real studio panorama gives a far better result
+than the world map used here.
 
 See :doc:`lighting_and_shadows` for the details.
 
@@ -207,8 +215,10 @@ each bounce is another full ray traversal:
 
 * A **refractive** object splits each ray into a reflected *and* a refracted ray, so
   glass costs more than metal.
-* Scenes containing refraction are routed automatically to the general wavefront
-  tracer, which supports it.
+* Refraction is implemented only by the deterministic wavefront renderer, which is
+  where every ``samples_per_pixel == 1`` render already goes. Raising
+  ``samples_per_pixel`` selects the Monte Carlo path tracer, which cannot honor
+  refraction or environment maps -- see :ref:`renderer-capabilities`.
 * ``max_bounces`` multiplies the cost of everything reflective in the scene.
 
 While you are iterating on a shot, lower ``max_bounces`` and leave the resolution at

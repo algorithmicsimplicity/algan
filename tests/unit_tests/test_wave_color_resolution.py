@@ -235,13 +235,11 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
     def positions_and_peak_times(part):
         positions = part.location[0, :, 0]
         color_distance = (
-            part.color[..., :3] - PURE_BLUE.rgb.view(1, 1, 3)
-        ).square().sum(-1)
+            (part.color[..., :3] - PURE_BLUE.rgb.view(1, 1, 3)).square().sum(-1)
+        )
         return positions, times[color_distance.argmin(0)]
 
-    panel_positions, panel_peak_times = positions_and_peak_times(
-        panel.texture_points
-    )
+    panel_positions, panel_peak_times = positions_and_peak_times(panel.texture_points)
     glyph_positions, glyph_peak_times = zip(
         *(positions_and_peak_times(glyph.texture_points) for glyph in glyphs)
     )
@@ -253,8 +251,7 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
     # carried its spatial offset, approximately halving the text-wave speed.
     centered_positions = panel_positions - panel_positions.mean()
     panel_speed = (
-        centered_positions
-        * (panel_peak_times - panel_peak_times.mean())
+        centered_positions * (panel_peak_times - panel_peak_times.mean())
     ).sum() / centered_positions.square().sum()
     predicted_glyph_times = panel_peak_times.mean() + panel_speed * (
         glyph_positions - panel_positions.mean()

@@ -247,6 +247,22 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "algan/rendering/shaders/fragment_stage_library.py" = ["I002"]
 "algan/utils/taichi_utils.py" = ["I002"]
 
+# Modules outside the `*_taichi.py` naming convention that still define a
+# kernel or a `@ti.func`. Listed defensively, on the same reasoning as
+# `benchmarks/*` above: the cost of the entry is nothing, and the cost of
+# noticing too late is a kernel that stops compiling.
+#
+# The hazard is specific -- it bites a kernel whose signature is evaluated at
+# runtime (`ti.template()`, `ti.types.ndarray()`, `: ti.f32`), which
+# `from __future__ import annotations` would turn into a string. render_loop,
+# raytracing/settings and scene already carry that import and compile fine,
+# because their kernels take no such annotations; the entry is here so that
+# adding one later does not silently break them.
+"algan/render_loop.py" = ["I002"]
+"algan/rendering/raytracing/settings.py" = ["I002"]
+"algan/scene.py" = ["I002"]
+"algan/utils/profiling_utils.py" = ["I002"]
+
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
 

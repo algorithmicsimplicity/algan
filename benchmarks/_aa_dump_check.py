@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+import algan.rendering.raytracing.raster_pipeline as rp  # noqa: E402
 from algan import (  # noqa: E402
     BLUE,
     GREEN,
@@ -43,12 +44,11 @@ from algan import (  # noqa: E402
     Square,
     VideoSettings,
 )
-from algan.settings import SETTINGS  # noqa: E402
 from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
-import algan.rendering.raytracing.raster_pipeline as rp  # noqa: E402
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_NUM_SAMPLES,
 )
+from algan.settings import SETTINGS  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_aa_iter_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -222,9 +222,10 @@ def main():
         qx, qy = find_silhouette(img2, lo, hi)
         render(build_two, path2, probe=(qx, qy))
         rows = rp.LAST_AA_DUMP.get("resolve")
-        assert rows is not None and len(rows)
+        assert rows is not None
+        assert len(rows)
         frag = rows[(rows[:, 0] >= 0) & (rows[:, 1] < 1.5)]
-        ids = set(int(v) for v in frag[:, 4])
+        ids = {int(v) for v in frag[:, 4]}
         check(len(ids) == 1, f"pixel ({qx},{qy}) fragments share one sid {ids}")
         sids.append(ids)
     check(

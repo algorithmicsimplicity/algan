@@ -391,9 +391,7 @@ def get_render_primitives_batched(surfaces):
     ``ignore_normals`` False, and has identical grid dimensions and
     ``grid.location`` shape.
     """
-    grids = torch.stack(
-        [s._reshape_grid_for_render(s.grid.location) for s in surfaces]
-    )
+    grids = torch.stack([s._reshape_grid_for_render(s.grid.location) for s in surfaces])
     vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids))
     corners = grid_to_triangle_vertices(grids)
     return [
@@ -449,19 +447,20 @@ class Surface(Mob):
         Deprecated compatibility argument. Logical PN topology is fixed at
         construction and is never resized during animation.
     color_texture
-        Optional color texture map ``[W, H, 5]`` (or ``[T, W, H, 5]`` for an
-        animated map), sampled bilinearly in-kernel by the ray tracer.
+        Optional color texture map ``[W, H, 5]`` -- one image, sampled
+        bilinearly in-kernel by the ray tracer. It is an ordinary animatable
+        attribute: assign a new map of the same shape to animate it.
     reflectivity_texture, roughness_texture, refractive_index_texture
         Optional per-texel material property maps, each ``[W, H, 1]`` (or
-        ``[W, H]``, or ``[T, W, H, 1]``). Like ``color_texture`` they are
+        ``[W, H]``). Like ``color_texture`` they are
         sampled bilinearly per fragment inside the ray tracing kernel (only
         the general wavefront tracer implements this; batches containing such
         maps are routed to it automatically, for both flat and curved PN
         triangles). Properties without a map keep the per-vertex system. Maps
         of different resolutions are resampled to a common resolution.
     normal_texture
-        Optional tangent-space normal map ``[W, H, 3]`` (or ``[T, W, H, 3]``),
-        with components in ``[-1, 1]``: x along increasing ``u``, y along
+        Optional tangent-space normal map ``[W, H, 3]``, with components in
+        ``[-1, 1]``: x along increasing ``u``, y along
         increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
         unperturbed). Perturbs the shading normal per fragment in-kernel.
         Note: under the default vertex-shaded pipeline lighting is baked at
@@ -472,7 +471,7 @@ class Surface(Mob):
         Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
         These are consumed per-vertex by the glow accumulator, so they are
         baked to the surface grid resolution (raise ``grid_width``/
-        ``grid_height`` for more detail). Static only (no time dimension).
+        ``grid_height`` for more detail).
     *args, **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob`
 
@@ -791,13 +790,43 @@ class Surface(Mob):
         per-vertex colours instead. Assigning a texture whose resolution differs from
         the current one detaches history, since the two cannot be interpolated.
 
-        A time dimension is allowed (``[T, W, H, 5]``) for a texture that changes
-        during the animation.
+        Animation
+        ---------
+        An ordinary animatable attribute: assigning a new image is recorded as an
+        animation, interpolating texel by texel from the old texture to the new one
+        over the current context's duration (1 second by default). Assign inside
+        ``Off()`` to swap it instantly. The new image must match the current
+        resolution to interpolate -- see the note above about detaching history.
         """
         attr = getattr(self, "_color_texture_attr", None)
         if attr is None:
             return None
         return self.get_animated_attribute(attr)
+
+    @property
+    def _has_color_texture(self):
+        """Whether a colour texture is set, without reading it.
+
+        ``color_texture is not None`` answers the same question by materializing
+        the whole image out of the timeline and cloning it. The render loop and
+        the primitive build ask it several times per frame batch, where the
+        texture is the widest attribute in the engine, so presence tests go
+        through this instead.
+        """
+        return getattr(self, "_color_texture_attr", None) is not None
+
+    def _color_texture_uncopied(self):
+        """The colour texture as a read-only view, or None.
+
+        Same value as :attr:`color_texture` but without the defensive clone the
+        public property makes. Only for callers that feed the result straight
+        into out-of-place arithmetic -- mutating it corrupts the timeline's
+        materialized state.
+        """
+        attr = getattr(self, "_color_texture_attr", None)
+        if attr is None:
+            return None
+        return self.get_animated_attribute(attr, copy=False)
 
     @color_texture.setter
     def color_texture(self, texture):
@@ -809,8 +838,21 @@ class Surface(Mob):
             return self
 
         texture = torch.as_tensor(texture)
-        if texture.dim() not in (3, 4) or texture.shape[-1] != 5:
-            raise ValueError("color_texture must have shape [W, H, 5] or [T, W, H, 5]")
+        if texture.dim() == 4:
+            # A texture is an ordinary animatable attribute: animate it by
+            # assigning a new image, not by handing over a sequence of them.
+            # This used to be accepted here and then fail deep in
+            # materialization with an unrelated tensor-size error.
+            raise ValueError(
+                "color_texture must be a single image [W, H, 5], not a sequence "
+                f"of them; got {tuple(texture.shape)}. To animate it, assign a "
+                "new [W, H, 5] image of the same resolution and Algan will "
+                "interpolate to it."
+            )
+        if texture.dim() != 3 or texture.shape[-1] != 5:
+            raise ValueError(
+                f"color_texture must have shape [W, H, 5], got {tuple(texture.shape)}"
+            )
         texture_height, texture_width = texture.shape[-3:-1]
         attr = f"color_texture_{texture_height * texture_width}"
 
@@ -1959,9 +2001,7 @@ class Surface(Mob):
             event.recorded_edits = migrated_edits
             # Through the timeline, not by assignment: the caller index has to
             # follow the move (see FunctionTimeline.retarget_caller).
-            timeline.function_timeline.retarget_caller(
-                event, captured_event["caller"]
-            )
+            timeline.function_timeline.retarget_caller(event, captured_event["caller"])
             event.replay_end = None
 
     def _change_resolution(self, grid_width, grid_height, surface_function=None):
@@ -2073,7 +2113,7 @@ class Surface(Mob):
             or self.grid.data_sub_inds is not None
         ):
             return None
-        if self.color_texture is not None:
+        if self._has_color_texture:
             # Textured surfaces shade from the texture map rather than from
             # vertex colours, so a finer grid would buy geometry and no pixels.
             return None
@@ -2350,8 +2390,14 @@ class Surface(Mob):
         n_grid = self.grid.location.shape[-2]
         packed_grid_count = self._packed_grid_count()
         rendered_grid_count = 1 if packed_grid_count is None else packed_grid_count
+        # Computed before the cache test, and compared as part of the key: a
+        # texture can be assigned (or its resolution changed) after this surface
+        # was first priced, and a key that does not carry it would keep serving
+        # the texture-free estimate forever.
+        texture_bytes = self._color_texture_bytes_per_timestep()
+        key = (n_grid, rendered_grid_count, names, texture_bytes)
         cache = getattr(self, "_memory_per_timestep_cache", None)
-        if cache is not None and cache[0] == (n_grid, rendered_grid_count, names):
+        if cache is not None and cache[0] == key:
             return cache[1]
         n_tri = (
             rendered_grid_count
@@ -2374,12 +2420,42 @@ class Surface(Mob):
         shader_bytes = 0
         for _ in self.get_shader_params().values():
             shader_bytes += n_v * _.shape[-1] * 4
-        result = int(animation_and_intermediates + primitive_bytes + shader_bytes)
-        self._memory_per_timestep_cache = (
-            (n_grid, rendered_grid_count, names),
-            result,
+        result = int(
+            animation_and_intermediates + primitive_bytes + shader_bytes + texture_bytes
         )
+        self._memory_per_timestep_cache = (key, result)
         return result
+
+    def _color_texture_bytes_per_timestep(self) -> int:
+        """This surface's colour-texture cost for one frame, in bytes.
+
+        ``color_texture`` is an ordinary animated attribute whose channel width
+        is the whole flattened image (``H * W * 5``), so the timeline
+        materializes a full copy of it for every frame of a batch, and
+        :meth:`get_render_primitives` keeps one more copy of the same width
+        after premultiplying opacity. Every other term in
+        :meth:`_get_memory_used_per_timestep` is per grid point or per triangle,
+        and a textured Surface has almost none of either -- so without this the
+        batch sizer prices a 1774x887 image at a few kilobytes per frame and
+        puts an entire video in a single batch.
+
+        Rows orphaned by :meth:`~algan.animatable_base.mob.Mob.detach_history`
+        are materialized too but belong to no live Mob, so they are not
+        attributed here; the animation memory fraction absorbs them.
+
+        Returns
+        -------
+        int
+            Estimated bytes needed per frame, or 0 when untextured.
+        """
+        attr = getattr(self, "_color_texture_attr", None)
+        if attr is None:
+            return 0
+        timeline = self.scene.timeline_manager.attr_to_timeline.get(attr)
+        inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
+        rows = 1 if inds is None else int(inds.numel())
+        texels = int(self.texture_height) * int(self.texture_width) * 5
+        return rows * texels * 4 * 2
 
     def _packed_grid_count(self):
         """Number of independent grids concatenated into ``self.grid``.
@@ -2465,9 +2541,7 @@ class Surface(Mob):
             if x.shape[-2] == 1:
                 x = x.expand(*x.shape[:-2], self.grid.location.shape[-2], -1)
             x = self._reshape_grid_for_render(x)
-            return self._flatten_packed_triangle_vertices(
-                grid_to_triangle_vertices(x)
-            )
+            return self._flatten_packed_triangle_vertices(grid_to_triangle_vertices(x))
 
         def compute_grid_color():
             # Plain tensor, not the Color subclass the public property returns:
@@ -2484,8 +2558,9 @@ class Surface(Mob):
         material_texture_map = getattr(self, "material_texture", None)
         material_texture_flags = getattr(self, "material_texture_flags", 0)
         normal_texture_map = getattr(self, "normal_texture", None)
+        has_color_texture = self._has_color_texture
         if (
-            self.color_texture is not None
+            has_color_texture
             or material_texture_map is not None
             or normal_texture_map is not None
         ):
@@ -2494,17 +2569,16 @@ class Surface(Mob):
             uvs = grid_to_triangle_vertices(base_grid)
             packed_grid_count = self._packed_grid_count()
             if packed_grid_count is not None:
-                uvs = (
-                    uvs.unsqueeze(0)
-                    .expand(packed_grid_count, -1, -1)
-                    .flatten(0, 1)
-                )
+                uvs = uvs.unsqueeze(0).expand(packed_grid_count, -1, -1).flatten(0, 1)
             uvs = uvs.unsqueeze(0)  # [1, num_triangles * 3, 2]
-        if self.color_texture is not None:
+        if has_color_texture:
+            # Read the texels once, uncopied: this is the widest attribute in
+            # the engine, and mult_opacity is out-of-place (Color.prep_set
+            # clones), so the materialized state is never written through.
+            texels = self._color_texture_uncopied()
             texture_map = (
-                (self.color_texture)
-                .view(
-                    self.color_texture.shape[0],
+                texels.view(
+                    texels.shape[0],
                     self.texture_height,
                     self.texture_width,
                     5,

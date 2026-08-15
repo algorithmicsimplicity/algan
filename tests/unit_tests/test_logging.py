@@ -58,9 +58,9 @@ def test_perf_level_name_round_trips():
 @pytest.mark.parametrize(
     ("setting", "perf_visible", "info_visible", "debug_visible"),
     [
-        ("INFO", False, True, False),      # the default: PERF is hidden
-        ("PERF", True, True, False),       # opt in without the rest of DEBUG
-        ("DEBUG", True, True, True),       # DEBUG is below PERF, so it includes it
+        ("INFO", False, True, False),  # the default: PERF is hidden
+        ("PERF", True, True, False),  # opt in without the rest of DEBUG
+        ("DEBUG", True, True, True),  # DEBUG is below PERF, so it includes it
         ("WARNING", False, False, False),  # quieting the console quiets PERF too
     ],
 )

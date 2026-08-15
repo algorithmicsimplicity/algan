@@ -6,6 +6,8 @@ Importing 3-D Models
 materials, node hierarchy and rigid animation -- and gives you an ordinary Algan
 :class:`~algan.animatable_base.mob.Mob`.
 
+.. algan-doc-check: skip -- needs dragon.glb, which does not ship with the docs
+
 .. code-block:: python
 
     from algan import *

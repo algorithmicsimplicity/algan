@@ -50,6 +50,9 @@ Once it has been spawned, it will begin to appear on screen, and from then on an
 will be animated over a 1 second period. Changes are animated in sequence, in the order that changes are made in code.
 In order to override this default behaviour you can make use of AnimationContexts.
 AnimationContexts control how all changes made within its contexts should be animated.
+Use the concrete subclasses -- :class:`~.Seq`, :class:`~.Sync`, :class:`~.Lag`,
+:class:`~.Off` -- rather than ``AnimationContext`` itself; each one is the base class
+with one timing parameter already chosen for you.
 
 .. algan:: MQSAnimationContexts
 
@@ -58,14 +61,14 @@ AnimationContexts control how all changes made within its contexts should be ani
     square = Square().spawn()
     circle = Circle().move(OUT*0.01).spawn() # Slight offset towards IN so they don't intersect
 
-    with AnimationContext(run_time_unit=2.5):
-        # Each modifications within this context will be animated over 2.5 seconds,
+    with Seq(run_time_unit=2.5):
+        # Each modification within this context will be animated over 2.5 seconds,
         # instead of the default 1 second.
         square.move(RIGHT)
         circle.move(LEFT)
         # This context is animated over a total of 5 seconds.
 
-    with AnimationContext(run_time=1):
+    with Seq(run_time=1):
         # The total run time of all animations in this context will be 1 second,
         # i.e. each modification is animated over a period of 1/n seconds where n is the number of
         # modifications made.
@@ -87,7 +90,7 @@ AnimationContexts control how all changes made within its contexts should be ani
         # Modifications within this context are animated sequentially but instead of waiting
         # for one animation to finish completely before starting the next, the next animation
         # is started when the current animation of 60% of the way done.
-        # Note that Synchronized() is equivalent to Lagged(0) and Sequenced() is equivalent to Lagged(1).
+        # Note that Sync() is equivalent to Lag(0) and Seq() is equivalent to Lag(1).
         square.move(LEFT)
         circle.move(RIGHT)
 
@@ -118,13 +121,15 @@ is treated as a single animation for rules of the parent context.
 
     with Sync(run_time=3):
         # In this context there are 2 modifications, the square (modified over 1 second),
-        # and the circle (modified over 2 seconds). Since this context has run_time=3,
-        # each of these 2 animations will be scaled to 3 seconds. i.e. the square
-        # animation will be slowed down by a factor of 3, and the circle will be
-        # slowed by a factor of 3/2.
+        # and the circle (modified over 2 seconds). The context's natural duration is
+        # therefore 2 seconds, so run_time=3 slows everything by the same factor of 3/2:
+        # the square's move takes 1.5 seconds and then it sits still, while the circle's
+        # two moves take 1.5 seconds each and fill the whole 3 seconds.
+        # Use Sync(run_time=3, same_run_time=True) to stretch every child to the full 3
+        # seconds instead.
         square.move(RIGHT)
         with Seq():
-            # This Sequenced context is treated as one single modification, which first moves
+            # This Seq context is treated as one single modification, which first moves
             # the circle left over 1 second, then up over 1 second.
             circle.move(LEFT)
             circle.move(UP)

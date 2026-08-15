@@ -437,10 +437,9 @@ class BezierCircuitCubic(Mob):
         self.num_texture_points = size * size
 
         location = self.location
-        offsets = (
-            torch.linspace(-1, 1, size, device=location.device, dtype=location.dtype)
-            * (1 + 1e-5)
-        )
+        offsets = torch.linspace(
+            -1, 1, size, device=location.device, dtype=location.dtype
+        ) * (1 + 1e-5)
         first = self.basis[..., :3].unsqueeze(-2).unsqueeze(-2)
         second = self.basis[..., 3:6].unsqueeze(-2).unsqueeze(-2)
         points = (
@@ -511,9 +510,7 @@ class BezierCircuitCubic(Mob):
         # Primitive output: control points, fill texture, border texture, and
         # per-circuit normals/border data.
         primitive_bytes = (
-            n_segments * 4 * 3 * 4
-            + (n_tex + n_border_tex) * 5 * 4
-            + n_loc * 12
+            n_segments * 4 * 3 * 4 + (n_tex + n_border_tex) * 5 * 4 + n_loc * 12
         )
         # Sampled edges, metadata and the content-dependent STBVH are charged
         # exactly by the final scene upload instead of guessed here (the old
@@ -666,9 +663,7 @@ class BezierCircuitCubic(Mob):
             if texture_point_count > c.shape[-2]:
                 c = c.expand([-1, -1, texture_point_count, -1])
             if texture_point_count > border_c.shape[-2]:
-                border_c = border_c.expand(
-                    [-1, -1, texture_point_count, -1]
-                )
+                border_c = border_c.expand([-1, -1, texture_point_count, -1])
         else:
             texture_point_count = max(self.num_texture_points, 1)
             c = unsquish(tpc, -2, texture_point_count)

@@ -168,7 +168,9 @@ Sub-Mobs
 
 Indexing a Mob that has internal structure gives you a view onto part of it.
 :ref:`character_mobs <reference-text-character-mobs>` is the most useful case (see :doc:`text_and_math`),
-and multi-part :class:`~.Tex` exposes its pieces as ``children``.
+and a multi-part :class:`~.Tex` exposes each of the strings it was built from via
+:meth:`~algan.mobs.text.Tex.get_segment` -- not as ``children``, which hold the
+single packed glyph batch.
 
 .. note::
 

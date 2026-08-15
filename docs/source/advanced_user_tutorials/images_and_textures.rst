@@ -41,10 +41,19 @@ textured surface:
 Image paths are resolved against the working directory and then against the
 directory holding your script, so an image sitting beside your ``.py`` file loads
 regardless of where you launch Python from. The same resolution applies to
-:meth:`~algan.scene.Scene.set_background_color` and every texture argument below.
+:meth:`~algan.scene.Scene.set_background_color`,
+:meth:`~algan.scene.Scene.set_environment_map` and
+:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`.
 
 Instead of a path you can pass a ``[H, W, 4]`` or ``[H, W, 5]`` tensor, which is how
 you texture something with data you computed rather than loaded.
+
+.. important::
+
+    The per-material texture arguments on :class:`~algan.mobs.surfaces.surface.Surface`
+    -- ``color_texture``, ``roughness_texture``, ``normal_texture`` and the rest --
+    take **tensors only**. Handing one a file path raises ``TypeError``. Load the
+    image yourself first, with :func:`~algan.utils.file_utils.get_image`.
 
 Reshaping a textured surface
 ============================
@@ -136,8 +145,22 @@ inside the ray tracing kernel**, for both flat and curved (PN) triangles. A prop
 without a map keeps the ordinary per-vertex value, and maps of different resolutions
 are resampled to a common one.
 
-Each map also accepts a leading time dimension (``[T, W, H, ...]``) for an animated
-texture.
+Animating a texture
+-------------------
+
+A texture map is an ordinary animatable attribute, so you animate it the way you
+animate a colour or a location: **assign a new one**. Algan interpolates the old
+texture to the new one per texel over the current context's duration.
+
+.. code-block:: python
+
+    surface = Sphere(color_texture=day).spawn()
+    with Seq(run_time=3):
+        surface.color_texture = night     # cross-fades, texel by texel
+
+The replacement must have the same shape as the texture it replaces. Pass a single
+image when you construct the Mob -- one map, not a sequence of them; there is no
+time axis on a texture argument.
 
 Normal maps
 -----------
@@ -160,7 +183,6 @@ Glow maps
 ``glow_texture`` is the exception to the per-fragment rule: glow is consumed by the
 glow accumulator per *vertex*, so the map is baked down to the surface grid
 resolution. Raise ``grid_width`` / ``grid_height`` if you need more detail from it.
-It is also static only -- no time dimension.
 
 Choosing a resolution
 =====================

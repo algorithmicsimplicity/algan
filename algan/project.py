@@ -37,7 +37,9 @@ class _StopSceneEarly(BaseException):
     """
 
 
-def _frame_pattern_matches(pattern, frame_id: int, local_name: str, full_name: str) -> bool:
+def _frame_pattern_matches(
+    pattern, frame_id: int, local_name: str, full_name: str
+) -> bool:
     """Does one frame-selection pattern pick out this save-frame call?
 
     An all-digit pattern is the frame's index within its scene -- the ``3`` in
@@ -99,7 +101,9 @@ class _ProjectSceneRun:
 
     def prepare_frame_path(self, file_path) -> Path:
         scene_id = self.scene.id
-        frame_id = self.next_frame_index#self.project.frame_id(self.scene.id, self.next_frame_index)
+        frame_id = (
+            self.next_frame_index
+        )  # self.project.frame_id(self.scene.id, self.next_frame_index)
         self.next_frame_index += 1
 
         if file_path is None:
@@ -524,7 +528,9 @@ class Project:
         # render_screenshots/render_video with a narrower signature still works.
         shared = {}
         if arguments.video_settings is not None:
-            shared["video_settings"] = _video_settings_for_name(arguments.video_settings)
+            shared["video_settings"] = _video_settings_for_name(
+                arguments.video_settings
+            )
 
         if arguments.render_screenshots is not None:
             options = dict(shared)
@@ -694,7 +700,9 @@ class Project:
         return results
 
     @staticmethod
-    def _warn_partial_scene(project_scene: _ProjectScene, run: _ProjectSceneRun) -> None:
+    def _warn_partial_scene(
+        project_scene: _ProjectScene, run: _ProjectSceneRun
+    ) -> None:
         """Say plainly that a stop_early scene is not a render of that scene."""
         logger.warning(
             f"PARTIAL RENDER: scene {project_scene.stem} was abandoned after frame "

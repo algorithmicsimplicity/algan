@@ -62,42 +62,62 @@ def rgb(*v):
 # fitted to the median radial profile of that layer's spheres in the reference.
 LAYERS = [
     dict(  # input layer
-        x=91.0, r=15.0, ys=[58.0, 97.0, 136.0, 175.0],
+        x=91.0,
+        r=15.0,
+        ys=[58.0, 97.0, 136.0, 175.0],
         body=rgb(3.6, 17.8, 35.1),
         rim1=rgb(-3.0, 42.6, 97.8),
         rim2=rgb(96.3, 76.3, 30.5),
-        ring=rgb(47.9, 37.7, 32.3), ring_f0=0.640, ring_fw=0.110,
+        ring=rgb(47.9, 37.7, 32.3),
+        ring_f0=0.640,
+        ring_fw=0.110,
     ),
     dict(  # first hidden layer
-        x=267.5, r=18.0, ys=[19.0, 59.0, 99.0, 140.0, 181.0],
+        x=267.5,
+        r=18.0,
+        ys=[19.0, 59.0, 99.0, 140.0, 181.0],
         body=rgb(-0.2, 22.7, 53.4),
         rim1=rgb(27.1, 108.9, 171.6),
         rim2=rgb(75.1, -6.1, -77.8),
-        ring=rgb(19.1, 18.6, 18.0), ring_f0=0.660, ring_fw=0.060,
+        ring=rgb(19.1, 18.6, 18.0),
+        ring_f0=0.660,
+        ring_fw=0.060,
     ),
     dict(  # second hidden layer
-        x=449.5, r=18.0, ys=[19.0, 59.0, 99.0, 140.0, 181.0],
+        x=449.5,
+        r=18.0,
+        ys=[19.0, 59.0, 99.0, 140.0, 181.0],
         body=rgb(-0.2, 22.7, 53.4),
         rim1=rgb(27.1, 108.9, 171.6),
         rim2=rgb(75.1, -6.1, -77.8),
-        ring=rgb(19.1, 18.6, 18.0), ring_f0=0.660, ring_fw=0.060,
+        ring=rgb(19.1, 18.6, 18.0),
+        ring_f0=0.660,
+        ring_fw=0.060,
     ),
     dict(  # teal layer
-        x=594.0, r=14.5, ys=[66.0, 111.0, 156.0],
+        x=594.0,
+        r=14.5,
+        ys=[66.0, 111.0, 156.0],
         body=rgb(2.0, 49.2, 71.2),
         rim1=rgb(16.9, 90.1, 104.5),
         rim2=rgb(222.0, 212.0, 158.0),
-        ring=rgb(-24.4, 22.5, 24.7), ring_f0=0.450, ring_fw=0.210,
+        ring=rgb(-24.4, 22.5, 24.7),
+        ring_f0=0.450,
+        ring_fw=0.210,
     ),
     # The output balls are only 21 px across and their measured profile is
     # non-monotone near the edge, which drives an unstable negative ring. They
     # borrow the input layer's (well-conditioned) edge shape instead.
     dict(  # output layer
-        x=675.0, r=10.4, ys=[94.5, 129.0],
+        x=675.0,
+        r=10.4,
+        ys=[94.5, 129.0],
         body=rgb(4.0, 19.0, 40.0),
         rim1=rgb(0.0, 58.0, 118.0),
         rim2=rgb(96.3, 76.3, 30.5),
-        ring=rgb(55.0, 50.0, 45.0), ring_f0=0.550, ring_fw=0.180,
+        ring=rgb(55.0, 50.0, 45.0),
+        ring_f0=0.550,
+        ring_fw=0.180,
     ),
 ]
 
@@ -236,9 +256,7 @@ def build():
                 sphere.ring_width = layer["ring_fw"]
                 sphere.anisotropy = ANISOTROPY
                 sphere.key_angle = KEY_ANGLE
-                column.append(
-                    (sphere, wx(layer["x"]), wy(y_px), wr(layer["r"]))
-                )
+                column.append((sphere, wx(layer["x"]), wy(y_px), wr(layer["r"])))
             nodes.append(column)
 
         lines = []

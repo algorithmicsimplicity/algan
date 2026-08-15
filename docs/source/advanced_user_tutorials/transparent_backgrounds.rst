@@ -38,16 +38,32 @@ than over nothing:
 Containers
 ==========
 
-Use a ``.mov`` or ``.webm`` path. If the path has no extension at all,
-``save_video`` chooses ``.mov`` automatically when the background is transparent.
-An explicit ``.mp4`` path is **rejected**, because MP4 does not support Algan's
-alpha-channel output -- you get an error rather than a silently opaque video.
+Use a ``.mov`` path. If the path has no extension at all, ``save_video`` chooses
+``.mov`` automatically when the background is transparent. An explicit ``.mp4``
+path is **rejected**, because MP4 does not support Algan's alpha-channel output --
+you get an error rather than a silently opaque video.
 
 .. code-block:: python
 
     scene.save_video("out.mov", background_color=TRANSPARENT)   # explicit
     scene.save_video("out", background_color=TRANSPARENT)       # -> out.mov
     scene.save_video("out.mp4", background_color=TRANSPARENT)   # error
+
+.. warning::
+
+    Do not pass a bare ``.webm`` path. Algan's default codec for transparent
+    output is ``png``, which ffmpeg cannot put in a WebM container: the render
+    reports success and writes a file that will not play. WebM needs its codec
+    stated explicitly.
+
+.. code-block:: python
+
+    scene.save_video(
+        "out.webm",
+        background_color=TRANSPARENT,
+        codec="libvpx-vp9",
+        ffmpeg_params=["-pix_fmt", "yuva420p"],
+    )
 
 Codec and encoder options can be overridden through ``save_video``'s ``codec``,
 ``audio_codec`` and ``ffmpeg_params`` arguments if your compositing tool wants

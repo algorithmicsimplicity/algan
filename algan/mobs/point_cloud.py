@@ -156,7 +156,8 @@ class PMobject(Group):
 
     def _get_memory_used_per_timestep(self):
         return sum(
-            child._get_memory_used_per_timestep() for child in self._primitive_children()
+            child._get_memory_used_per_timestep()
+            for child in self._primitive_children()
         )
 
     def get_render_primitives(self):

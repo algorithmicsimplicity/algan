@@ -110,8 +110,9 @@ def test_presets_are_immutable_and_set_returns_a_copy():
     assert derived is not HD
     assert derived.frames_per_second == 60
     assert HD.frames_per_second == 30
-    with pytest.raises(AlganConfigurationError, match="preset"), HD.override(
-        frames_per_second=60
+    with (
+        pytest.raises(AlganConfigurationError, match="preset"),
+        HD.override(frames_per_second=60),
     ):
         pass
 

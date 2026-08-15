@@ -245,9 +245,7 @@ def test_save_frame_writes_a_png_at_the_requested_resolution(render_scene, tmp_p
     from PIL import Image
 
     scene = render_scene()
-    result = scene.save_frame(
-        tmp_path / "still", SMOKE_TEST, at=0.0, overwrite=True
-    )
+    result = scene.save_frame(tmp_path / "still", SMOKE_TEST, at=0.0, overwrite=True)
     assert result.rendered
     with Image.open(result.output_path) as still:
         assert still.size == SMOKE_TEST.resolution

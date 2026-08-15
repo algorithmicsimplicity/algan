@@ -69,10 +69,15 @@ has to change.
 
 .. important::
 
-    **Only out-of-place assignment is animated.** ``circle.location += UP`` and
-    ``circle.location[0] = 1`` mutate the underlying tensor in place, which Algan
-    cannot see and cannot record. Always write
-    ``circle.location = circle.location + UP``.
+    **Reading an animatable attribute gives you a copy.** ``circle.location``
+    hands back a copy of the value on the timeline, so editing that copy in place
+    -- ``circle.location[0] = 1`` -- changes nothing and records nothing. The
+    write goes into the copy and is thrown away silently.
+
+    Assignment is what Algan records, so both ``circle.location = circle.location
+    + UP`` and ``circle.location += UP`` work: Python routes the augmented form
+    back through the same setter. Prefer the explicit form, which is what the
+    rest of these tutorials use.
 
     In practice you will reach for :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move` instead, which does the
     arithmetic for you.

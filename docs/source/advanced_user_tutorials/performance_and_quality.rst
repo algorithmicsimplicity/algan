@@ -123,6 +123,55 @@ This is the biggest single decision, because it selects the renderer:
 Only reach for path tracing when you specifically need full light transport. It is
 also a separate GPU kernel with its own cold compile of several minutes on first use.
 
+.. _renderer-capabilities:
+
+What each renderer supports
+---------------------------
+
+Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer, and
+several features are implemented only in the deterministic one. Algan checks this
+before it allocates anything and refuses rather than silently dropping them.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 31 31
+
+   * - Feature
+     - Deterministic (``spp == 1``)
+     - Monte Carlo (``spp > 1``)
+   * - Environment maps
+     - Yes
+     - **Not supported**
+   * - Refractive materials (glass)
+     - Yes
+     - **Not supported**
+   * - Custom fragment-shader pipelines
+     - Yes
+     - **Not supported**
+   * - Extended lights
+     - Yes
+     - **Not supported**
+   * - Global illumination, caustics
+     - No
+     - Yes
+
+"Extended lights" means any light carrying parameters beyond a position and a
+colour -- a cone angle, a ground colour, an emitter radius, a distance falloff.
+A plain :class:`~.PointLight` is not extended; the other light classes in
+:doc:`lighting_and_shadows` generally are.
+
+If a scene requests an unsupported feature, Algan raises
+:class:`~algan.errors.UnsupportedFeatureError` naming the features it cannot
+honor. Either set ``samples_per_pixel`` back to ``1``, remove the feature, or opt
+into the older behaviour explicitly:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(unsupported_feature_policy="warn")    # or "ignore"
+
+The default is ``"error"``. ``RenderResult.render_plan`` records which backend ran
+and which features were requested, if you want to check programmatically.
+
 shadows
 -------
 
