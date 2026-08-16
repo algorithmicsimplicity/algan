@@ -79,9 +79,36 @@ Use :class:`~algan.animation_timeline.animation_contexts.Sync` for one Manim
         square.move(RIGHT)
         square.rotate(90, OUT)
 
-Use ``Seq``, ``Lag``, and ``Off`` for sequential, overlapping, and instantaneous
-changes. ``run_time`` controls a context's total duration; ``run_time_unit``
-controls the default duration of each child animation.
+There are four contexts, and between them they cover what ``self.play`` did:
+
+=========================  ====================================================
+Context                    What it does to the changes inside it
+=========================  ====================================================
+``Seq()``                  One after another. This is the default outside any
+                           context.
+``Sync()``                 All at once -- one Manim ``self.play`` with several
+                           animations in it.
+``Lag(ratio)``             Overlapping: each change starts when the previous one
+                           is ``ratio`` of the way through. ``Lag(0)`` is
+                           ``Sync``, ``Lag(1)`` is ``Seq``.
+``Off()``                  Instantly, in a single frame, recording no animation.
+=========================  ====================================================
+
+``run_time`` sets a context's total duration; ``run_time_unit`` sets the default
+duration of each child animation inside it. Contexts nest, and a nested context
+counts as one animation to its parent, which is what makes a complex multi-Mob
+sequence readable:
+
+.. code-block:: python
+
+    with Sync():                 # the square and the circle move together
+        with Seq():              # ... but the square's two moves are ordered
+            square.move(LEFT)
+            square.move(DOWN)
+        circle.move(RIGHT)
+
+:doc:`../new_user_tutorials/controlling_animations` covers all of this properly,
+including rate functions and the timing recipes.
 
 Angles are in degrees
 =====================
@@ -128,7 +155,9 @@ A few Manim-parity surfaces keep Manim's radians on purpose. These take
 * ``Wiggle(rotation_angle=...)``.
 * The ``u_range`` / ``v_range`` parametric domains of :class:`~algan.mobs.shapes_3d.Sphere`,
   ``Cone``, ``Cylinder`` and ``Torus`` -- these are parameter intervals rather
-  than rotations.
+  than rotations. Note that only ``Cone``'s ``v_range`` and ``Torus``'s two
+  ranges actually restrict the geometry; ``Sphere`` and ``Cylinder`` accept
+  theirs for compatibility but always build the whole shape.
 
 Everything else -- including ``rotate``, ``orbit``, ``move(path_arc_angle=...)``,
 camera field of view and Euler angles, and light cone angles -- is in degrees.
@@ -254,3 +283,28 @@ A reliable migration sequence is:
 Validate migrated scenes visually. Algan uses a different renderer and material
 model, so even equivalent geometry and timing are not expected to be pixel
 identical to Manim output.
+
+Manim names that still work
+===========================
+
+Algan otherwise gives each thing exactly one name, but the compatibility layer
+is a deliberate exception: a handful of Manim spellings are exported so a ported
+script keeps reading the way its author wrote it. ``Mobject`` is
+:class:`~algan.animatable_base.mob.Mob`, ``GenericGraph`` is
+:class:`~algan.mobs.manim_compat.Graph`, and Manim's OpenGL-renderer class names
+(``OpenGLVMobject``, ``OpenGLGroup``, ...) resolve to their renderer-independent
+Algan equivalents. They are the same objects, not wrappers -- ``Mob is Mobject``
+is ``True`` -- so there is no conversion step and no behavioural difference.
+
+Prefer the Algan name in new code; there is nothing to fix in old code.
+
+Where to next
+=============
+
+* :doc:`../new_user_tutorials/importing_from_manim` -- the compatibility layer in
+  detail, and the route for anything it does not expose.
+* :doc:`../new_user_tutorials/controlling_animations` -- animation contexts,
+  timing and rate functions in full.
+* :doc:`../new_user_tutorials/index` -- the tutorial series, if you would rather
+  learn Algan on its own terms than by translation.
+* :doc:`../reference` -- the full API reference.

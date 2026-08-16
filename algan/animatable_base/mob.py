@@ -1,3 +1,25 @@
+"""The :class:`Mob` -- anything that can appear on screen.
+
+A Mob is an :class:`~algan.animatable_base.animatable.Animatable` with a place in
+3-D space: a ``location``, a ``basis`` (its orientation and scale as three
+vectors), a ``color``, an ``opacity`` and a ``glow``. Assigning to any of them
+records an animation.
+
+The class is assembled from mixins, each in its own ``mob_*.py`` module:
+movement and rotation, screen-relative layout, the parent/child hierarchy,
+morphing between shapes (``become``), and the shader and material API. This
+module holds the core -- construction, Scene registration, batching, and the
+attribute definitions the mixins operate on.
+
+Two rules are worth stating up front. Changes to a parent propagate to its
+children. And the material API (``set_shader``, ``set_fragment_shader``,
+``set_material``) must be called **before** the Mob is spawned.
+
+A Mob is not renderable by itself: a concrete subclass defines
+``get_render_primitives()``, returning flat triangles, curved PN triangles, or
+cubic bezier circuits.
+"""
+
 from __future__ import annotations
 
 import difflib

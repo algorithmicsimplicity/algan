@@ -1,3 +1,24 @@
+"""Cubic bezier circuits -- the geometry behind every 2-D shape.
+
+:class:`BezierCircuitCubic` is a closed loop of cubic bezier curves, stored as
+control points. It is what :class:`~algan.mobs.shapes_2d.Circle`,
+:class:`~algan.mobs.shapes_2d.Square`, :class:`~algan.mobs.text.Text` and
+:class:`~algan.mobs.text.Tex` are made of, which is why a circle is a true circle
+at any zoom rather than a many-sided polygon, and why any of them can morph into
+any other.
+
+The class owns the fill/border model as well as the geometry: on a filled shape
+the border is drawn *inside* the outline, so raising ``border_width`` eats into
+the fill instead of growing the silhouette -- which keeps bordered text legible
+and stops neighbouring glyphs fusing. An unfilled circuit has no interior to eat
+into, so its stroke stays centred on the path.
+
+``build_render_primitives_batched`` packs many circuits into one
+:class:`~algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive`
+for the renderer, which evaluates the curves analytically rather than
+tessellating them.
+"""
+
 from __future__ import annotations
 
 import math

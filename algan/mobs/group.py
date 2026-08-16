@@ -1,3 +1,21 @@
+"""Collecting Mobs so they can be treated as one.
+
+:class:`Group` creates an invisible Mob at the centre of a collection and adds
+everything to it as children, so every parent/child propagation rule applies:
+move, rotate, scale or colour the Group and the whole collection follows. Its
+``mobs`` attribute is an alias for ``children``.
+
+On top of that it adds layout: :meth:`Group.arrange_in_line` spreads members
+along a direction and :meth:`Group.arrange_in_grid` lays them out in rows and
+columns, both as ordinary animations, so members slide into place. Both use a
+uniform cell size taken from the largest member.
+
+Groups are indexable and iterable, and slicing returns a view rather than
+registering new actors with the Scene.
+
+See :doc:`/new_user_tutorials/child_mobs`.
+"""
+
 from __future__ import annotations
 
 import math

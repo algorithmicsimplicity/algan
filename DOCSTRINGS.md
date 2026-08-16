@@ -467,10 +467,16 @@ no docstring at all**, and nearly all of those are nested helper closures (`wrap
 is documented. Of the docstrings that exist, the most common remaining defect is an unstated
 default, followed by missing units and missing `Animation` semantics.
 
-Steps 1 and 2 below are therefore done. The outstanding work is step 3: the shape constructors
-still carry summary-only docstrings with no `Parameters` section — `Cube` is 25 characters, and
-`Sphere` / `Cylinder` / `Cone` / `Torus` document none of their arguments, including the
-`u_range` / `v_range` domains that §4.3 specifically calls out.
+Steps 1 and 2 below are done, and step 3's **shape** half is now done too: every 2-D and 3-D shape
+class in the gallery carries a `Parameters` section with defaults, units and an example, including
+the `u_range` / `v_range` domains §4.3 calls out. Documenting those turned up an API defect worth
+knowing about — `Sphere`'s `u_range`/`v_range` and `Cylinder`'s `v_range` are accepted and stored
+but never read by their `coord_function`, so a partial range silently builds a whole shape. The
+docstrings say so; the code is unchanged, because making them functional moves rendered output.
+
+The outstanding work in step 3 is the **text** constructors: `Tex`, `MathTex` and `Title` still
+put their constructor prose in `__init__` rather than the class docstring (§10) and none of the
+three has a `Parameters` section.
 
 Fix in this order, since it tracks what users hit first:
 

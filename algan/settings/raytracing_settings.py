@@ -1,3 +1,23 @@
+"""Renderer settings: what a render produces, and the experimental switches.
+
+``SETTINGS.raytracing`` is deliberately small. It holds the settings that change
+what the image *looks like* -- ``samples_per_pixel``, ``max_bounces``,
+``shadows``, lighting and tonemapping -- and those are the ones documented and
+supported.
+
+The renderer also carries roughly fifty kernel and performance switches. Those
+live on ``SETTINGS.raytracing.experimental``, and setting one on the parent
+raises with a pointer to the experimental section rather than silently accepting
+it. The split is about the promise made, not the mechanism: engine code still
+reads every field off ``SETTINGS.raytracing`` directly, and only writes are gated.
+
+:class:`RayTracingPreset` captures a configuration for reuse. Like the video
+presets it is immutable, so ``set()`` on one returns a copy.
+
+Read these live (``rt_settings.X`` at call time) rather than importing them by
+value at module import, which would freeze them before user code runs.
+"""
+
 from __future__ import annotations
 
 import difflib

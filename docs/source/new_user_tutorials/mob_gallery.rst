@@ -9,6 +9,16 @@ spawn them, move them, colour them, morph them into each other.
 The complete list, with every constructor argument, is in the
 :doc:`mobs reference <../reference_index/mobs>`.
 
+.. note::
+
+    Two things show up in the examples below before they are taught. ``Group([...])``
+    collects Mobs so you can lay them out and move them as one --
+    :doc:`child_mobs` covers it. ``with Seq():`` / ``with Sync():`` / ``with
+    Off():`` control whether the changes inside them happen one after another, at
+    the same time, or instantly with no animation --
+    :doc:`controlling_animations` covers those. You can read the examples without
+    either; they are here so the pictures show more than one shape at a time.
+
 2-D Shapes
 ==========
 
@@ -56,11 +66,9 @@ which means they stay perfectly smooth however far you zoom in -- a
      - A single point; mostly useful as an invisible anchor.
    * - :class:`~.SurroundingRectangle`
      - A box drawn around another Mob, sized to fit it.
-   * - :class:`~.Arc`, :class:`~.Annulus`, :class:`~.Ellipse`, :class:`~.Star`, :class:`~.Arrow`
-     - Extra outline shapes.
 
-Every 2-D shape takes ``color``, plus ``border_width`` and ``border_color``
-for its outline:
+All of them take ``color``, plus ``border_width`` and ``border_color`` for
+their outline:
 
 .. code-block:: python
 
@@ -72,11 +80,48 @@ bordered text stays legible and neighbouring glyphs never fuse. An unfilled
 shape (``filled=False``, and :class:`~.Line`) has no interior to eat into, so
 its stroke stays centred on the path.
 
+More 2-D shapes from the compatibility layer
+--------------------------------------------
+
+A second family of outline shapes comes from Algan's Manim compatibility layer
+(see :doc:`importing_from_manim`). They spawn, move and animate like any other
+Mob, but they are constructed with Manim's arguments:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Class
+     - Notes
+   * - :class:`~.Arc`
+     - ``radius``, ``start_angle``, ``angle``.
+   * - :class:`~.Annulus`
+     - ``inner_radius``, ``outer_radius`` -- a ring.
+   * - :class:`~.Ellipse`
+     - ``width``, ``height``.
+   * - :class:`~.Star`
+     - ``n`` points, ``outer_radius``, ``inner_radius``.
+   * - :class:`~.Arrow`
+     - From a start point to an end point, with a head.
+
+``color`` works on these too, but the outline is ``stroke_width`` and
+``stroke_color`` -- Manim's names -- and ``border_width`` / ``border_color``
+raise :class:`TypeError`:
+
+.. code-block:: python
+
+    Star(n=6, color=BLUE, stroke_color=WHITE, stroke_width=4)
+
 3-D Shapes
 ==========
 
-3-D shapes are triangle meshes. Algan tessellates them to the resolution the
-current render needs, so they stay smooth as you move the camera in.
+3-D shapes are triangle meshes, and they come in two families that differ in
+how Algan turns them into triangles.
+
+*Curved* shapes -- everything built on :class:`~.Surface` -- are tessellated to
+the resolution the current render needs, so they stay smooth as you move the
+camera in. *Faceted* shapes are genuinely flat-sided, so their faces are their
+triangles and there is nothing to refine.
 
 .. algan:: GalleryShapes3D
 
@@ -93,6 +138,8 @@ current render needs, so they stay smooth as you move the camera in.
 
     Scene.save_video()
 
+Curved shapes, tessellated from a :class:`~.Surface`:
+
 .. list-table::
    :header-rows: 1
    :widths: 30 70
@@ -101,22 +148,34 @@ current render needs, so they stay smooth as you move the camera in.
      - Notes
    * - :class:`~.Sphere`
      - ``radius``.
-   * - :class:`~.Cube`
-     - ``side_length``. A :class:`~.Prism` with equal sides.
-   * - :class:`~.Prism`
-     - ``dimensions`` -- a box. Handy as a floor or a wall.
    * - :class:`~.Cylinder`
      - ``radius``, ``height``, ``direction``.
    * - :class:`~.Cone`
      - ``base_radius``, ``height``, ``direction``.
    * - :class:`~.Torus`
      - ``major_radius``, ``minor_radius``.
+   * - :class:`~.Dot3D`, :class:`~.Line3D`
+     - A small :class:`~.Sphere` and a thin :class:`~.Cylinder`, for marking
+       points and edges in 3-D scenes.
+   * - :class:`~.Arrow3D`
+     - A :class:`~.Cylinder` shaft and a :class:`~.Cone` tip, grouped.
+
+Faceted shapes, built from explicit flat faces:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Class
+     - Notes
+   * - :class:`~.Cube`
+     - ``side_length``. A :class:`~.Prism` with equal sides.
+   * - :class:`~.Prism`
+     - ``dimensions`` -- a box. Handy as a floor or a wall.
    * - :class:`~.Tetrahedron`, :class:`~.Octahedron`, :class:`~.Icosahedron`, :class:`~.Dodecahedron`
      - Platonic solids, sized by ``edge_length``.
    * - :class:`~.Polyhedron`, :class:`~.ConvexHull3D`
      - Build a solid from your own vertices and faces, or from a point cloud.
-   * - :class:`~.Dot3D`, :class:`~.Line3D`, :class:`~.Arrow3D`
-     - 3-D equivalents of the 2-D markers, for annotating 3-D scenes.
 
 .. note::
 
@@ -133,28 +192,29 @@ Arbitrary Surfaces
 ==================
 
 :class:`~.Surface` builds a curved surface from a function mapping 2-D
-parameters ``(u, v)`` -- both in ``[0, 1]`` -- to points in space. Every 3-D
-shape above is a :class:`~.Surface` underneath.
+parameters ``(u, v)`` -- both in ``[0, 1]`` -- to points in space. It is what
+the curved shapes above are made of, so anything :class:`~.Surface` can do --
+per-point colouring, texture maps, deforming the sheet over time -- they can do
+too.
 
 .. algan:: GallerySurface
+    :save_last_frame:
 
     from algan import *
     import torch
 
-    def saddle(uv):
+    def ripple(uv):
         x = uv[..., :1] * 4 - 2
         y = uv[..., 1:] * 4 - 2
-        return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
+        return torch.cat((x, y, torch.cos(torch.sqrt(x ** 2 + y ** 2) * 3) * 0.4), -1)
 
-    surface = Surface(saddle, checkered_color=BLUE).spawn()
-    with Seq(run_time=3):
-        surface.rotate(60, RIGHT)
-        surface.rotate(360, OUT)
+    Surface(ripple, checkered_color=BLUE).rotate(60, RIGHT).spawn()
 
     Scene.save_video()
 
 The function receives a batched tensor of ``(u, v)`` pairs and must return the
 matching points, so write it with torch operations rather than a Python loop.
+:doc:`three_d_basics` works through a surface properly, and
 :class:`~.Surface` also accepts texture maps -- see
 :doc:`../advanced_user_tutorials/images_and_textures`.
 
@@ -166,15 +226,17 @@ Text and Mathematics
 and morph like any other 2-D shape.
 
 .. algan:: GalleryText
+    :save_last_frame:
 
     from algan import *
 
-    title = Text("Euler's identity", font_size=64).move(UP * 1.5).spawn()
-    formula = Tex(r"e^{i\pi} + 1 = 0", font_size=80).spawn()
+    with Off():
+        Text("Text renders a font", font_size=48).move(UP * 0.9).spawn()
+        Tex(r"e^{i\pi} + 1 = 0", font_size=56).spawn()
+        MathTex(r"\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}",
+                font_size=56, color=YELLOW).move(DOWN * 1.0).spawn()
 
-    with Seq(run_time=3):
-        formula.color = YELLOW
-        title.move(UP * 0.5)
+    Scene.wait(1)
 
     Scene.save_video()
 
@@ -201,13 +263,11 @@ Images and Imported Models
      - A large set of points, drawn efficiently.
 
 .. algan:: GalleryImageMob
+    :save_last_frame:
 
     from algan import *
 
-    photo = ImageMob('world_map.png').scale(2).spawn()
-    with Seq(run_time=2):
-        photo.rotate(30, UP)
-        photo.rotate(-30, UP)
+    ImageMob('world_map.png').scale(2).rotate(25, UP).spawn()
 
     Scene.save_video()
 
@@ -267,8 +327,20 @@ between values:
 
     from algan import *
 
-    counter = NumericDisplay(0.0, num_decimal_places=2).scale(2).spawn()
-    with Seq(run_time=3):
-        counter.value = 100.0
+    counter = NumericDisplay(0.0, num_decimal_places=1,
+                             num_integer_places=3).scale(2).spawn()
+    counter.value = 99.9
 
     Scene.save_video()
+
+:doc:`text_and_math` shows it counting over a longer run and covers the
+formatting options.
+
+Where to next
+=============
+
+* :doc:`positioning_and_layout` -- getting these shapes where you want them.
+* :doc:`text_and_math` -- labels, formulae and animated numbers in full.
+* :doc:`three_d_basics` -- lighting, cameras and surfaces for the 3-D shapes.
+* :doc:`importing_from_manim` -- axes, plots and the rest of the compatibility
+  layer.

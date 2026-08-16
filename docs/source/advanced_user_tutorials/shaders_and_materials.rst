@@ -251,6 +251,47 @@ A custom stage is a Taichi ``@ti.func`` plus its parameter specs -- see
 ``cosine_color`` in ``algan/rendering/shaders/fragment_shaders.py`` for the
 template.
 
+The Built-in Lighting Stages
+----------------------------
+
+The lighting models themselves are stages too. Passing a vertex-shader function
+such as ``phong_shader`` to
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
+resolves it to the matching in-kernel stage, so you rarely name these directly --
+but they are exported by ``from algan import *``, and you need them when a stage
+has to sit in the *middle* of a pipeline rather than at the start:
+
+=====================  ========================================================
+Stage                  Lighting model
+=====================  ========================================================
+``STAGE_DEFAULT``      Algan's built-in shading -- what a Mob uses when you set
+                       no material. Resolved from ``default_shader``.
+``STAGE_UNLIT``        No lighting: the fragment keeps its own colour. Resolved
+                       from ``null_shader`` and ``basic_material_shader``, and
+                       what :class:`~.MeshBasicMaterial` maps to.
+``STAGE_LAMBERT``      Diffuse only. Resolved from ``lambert_shader``.
+``STAGE_PHONG``        Blinn-Phong diffuse plus specular. Resolved from
+                       ``phong_shader``.
+``STAGE_STANDARD``     Metallic/roughness PBR. Resolved from
+                       ``standard_shader``.
+``STAGE_PHYSICAL``     PBR plus clearcoat, sheen and transmission. Resolved
+                       from ``physical_shader``; it declares a wider parameter
+                       block than the other five.
+=====================  ========================================================
+
+So these two lines mean the same thing:
+
+.. code-block:: python
+
+    mob.set_fragment_shader(phong_shader)
+    mob.set_fragment_shader(STAGE_PHONG)
+
+and naming the stage is what lets you put a recolouring stage before the light:
+
+.. code-block:: python
+
+    mob.set_fragment_shader([cosine_color, STAGE_STANDARD, fresnel_rim])
+
 Shipped Stage Looks
 -------------------
 

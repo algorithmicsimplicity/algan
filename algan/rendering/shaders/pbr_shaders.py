@@ -1,3 +1,24 @@
+"""Algan's built-in vertex shaders.
+
+A shader here is a plain torch function: it receives per-vertex geometry, normals
+and material parameters along with the Scene's lights, and returns per-vertex
+colour. It runs before upload, once per vertex, which is cheap -- the trade-off
+is that highlights are interpolated across a triangle rather than evaluated at
+each pixel.
+
+:func:`default_shader` is what a Mob uses when no material is set.
+:func:`null_shader` skips lighting entirely, leaving a Mob its own flat colour.
+:func:`basic_pbr_shader` is the metallic/roughness model the
+:class:`~algan.rendering.shaders.materials.MeshStandardMaterial` family builds on.
+
+Each has an in-kernel counterpart in
+:mod:`algan.rendering.shaders.fragment_shaders`; passing one of these functions
+to :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
+resolves it to the matching per-fragment stage.
+
+See :doc:`/advanced_user_tutorials/shaders_and_materials`.
+"""
+
 from __future__ import annotations
 
 import torch

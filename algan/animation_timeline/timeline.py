@@ -1,3 +1,27 @@
+"""The per-Scene timeline: where every recorded animation is stored.
+
+Mobs hold no animation storage of their own. Each Scene's ``TimelineManager``
+owns one :class:`AttributeTimeline` per animatable attribute (location, basis,
+color, opacity, ...), and each of those is a shared ``[1, N, W]`` buffer of every
+Mob's current values -- each Mob owning rows keyed by its id -- plus a log of
+timestamped :class:`EditRecord` entries describing how those rows changed.
+
+``set_state_to_times(times)`` materializes the whole Scene at the requested frame
+times in one batched pass per attribute: a flat ``searchsorted`` selects each
+row's state, recorded function applications are re-executed with per-frame
+interpolated arguments, and updaters run last.
+
+Edits of the same rows may overlap in time, so replay windows are resolved rather
+than assumed: an edit's effective end is extended over the windows of
+earlier-executed edits that overlap it, transitively, and functions replay through
+that extended window held at their final parameters. That is what makes
+overlapping and same-end edits rematerialize in execution order.
+
+:class:`Lifespan` is a Mob's ``[spawn, despawn)`` interval; opacity is zeroed
+outside it during materialization. Sub-Mobs obtained by indexing share their
+source's id, and therefore its rows and its lifespan; a clone gets a new id.
+"""
+
 from __future__ import annotations
 
 import contextlib

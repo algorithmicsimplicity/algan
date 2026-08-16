@@ -1,3 +1,19 @@
+"""Batched 3-D geometry primitives shared by the animation and render paths.
+
+Every function here is vectorized over leading batch dimensions and operates on
+torch tensors, because it is called once per frame batch on whole arrays of
+points rather than per point.
+
+The module covers rotations (building a rotation from an axis and angle, or
+between two vectors or two bases), projection and intersection (point onto line,
+segment or plane; line against plane), basis changes between a Mob's local frame
+and world space, and closed-form polynomial root finding up to cubics -- which is
+what the ray tracer uses for analytic curve and surface intersection.
+
+These are internal building blocks: user-facing spatial operations live on
+:class:`~algan.animatable_base.mob.Mob`.
+"""
+
 from __future__ import annotations
 
 import math

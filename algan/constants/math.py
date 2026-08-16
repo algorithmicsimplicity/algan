@@ -1,3 +1,18 @@
+"""Numeric constants: angles, unit conversion and byte sizes.
+
+``PI`` and ``TAU`` are the usual circle constants, provided so a script need not
+import :mod:`math` alongside Algan.
+
+``DEGREES_TO_RADIANS`` and ``RADIANS_TO_DEGREES`` are the conversion factors
+behind the ``DEGREES`` / ``RADIANS`` suffixes. Because Algan's native angular
+unit is already degrees, ``rotate(90 * DEGREES)`` and ``rotate(90)`` are the same
+call -- the reverse of Manim, where ``DEGREES`` converts *into* the native
+radians. See :doc:`/manim_user_quickstart/migrating_from_manim`.
+
+``KILOBYTES``, ``MEGABYTES`` and ``GIGABYTES`` are byte multipliers, used to write
+memory budgets in :data:`algan.SETTINGS` readably.
+"""
+
 from __future__ import annotations
 
 import math

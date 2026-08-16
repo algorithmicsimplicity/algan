@@ -96,21 +96,28 @@ Groups
 creates an empty Mob at the centre of the collection and adds everything as its
 children, so all of the propagation rules above apply.
 
+Every propagation rule above therefore applies to the whole collection at once:
+rotating the Group turns each member about the Group's centre, and setting the
+Group's colour sets every member's.
+
 .. algan:: ChildMobsGroup
 
     from algan import *
 
-    mobs = [Square() for _ in range(9)]
-    group = Group(mobs)
-    group.scale(1 / 3).spawn()
-    group.arrange_in_line(RIGHT)
-    group.wait()
-    with Sync():
-        group.scale(2)
-        group.arrange_in_grid(3)
-    group.wait()
+    group = Group([Square().scale(0.35).move(RIGHT * x) for x in (-1, 0, 1)])
+    group.spawn()
+
+    with Seq():
+        group.rotate(180, OUT)   # the whole row turns about its centre
+        group.color = BLUE       # every member changes
+        group.move(UP * 0.5)
 
     Scene.save_video()
+
+Layout is the other reason to reach for a Group;
+:doc:`positioning_and_layout` covers
+:meth:`~algan.mobs.group.Group.arrange_in_line` and
+:meth:`~algan.mobs.group.Group.arrange_in_grid`.
 
 Groups are indexable and iterable, so you can reach individual members without
 keeping a separate list:
@@ -177,3 +184,11 @@ single packed glyph batch.
     A sub-Mob obtained by indexing shares its source's identity, and therefore
     its lifespan: it is spawned and despawned with the whole. A
     :meth:`~algan.animatable_base.animatable.Animatable.clone` is independent.
+
+Where to next
+=============
+
+* :doc:`three_d_basics` -- moving into three dimensions.
+* :doc:`positioning_and_layout` -- the layout methods Groups build on.
+* :doc:`../advanced_user_tutorials/multi_scene_projects` -- organising a long
+  video into Scenes.

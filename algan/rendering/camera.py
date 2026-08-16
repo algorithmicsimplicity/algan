@@ -1,3 +1,23 @@
+"""The Scene's camera.
+
+:class:`Camera` is a :class:`~algan.animatable_base.mob.Mob`, so it is moved,
+rotated and animated with exactly the methods every other Mob uses, inside the
+same animation contexts -- there is no separate camera-animation API. Camera
+moves usually want ``rate_func=rate_funcs.identity``, since easing in and out of a
+pan reads as a wobble.
+
+It carries the projection: perspective or orthographic, field of view in degrees,
+and near/far planes. :meth:`Camera.move_to_make_mob_center_of_view` frames a
+given Mob, and :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
+aims at a point.
+
+Each Scene owns its own camera. The renderer consumes an immutable camera and
+light snapshot per frame batch, which is what lets batch preparation for the next
+batch run on a worker thread while the current one renders.
+
+See :doc:`/advanced_user_tutorials/cameras`.
+"""
+
 from __future__ import annotations
 
 import math

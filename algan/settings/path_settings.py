@@ -1,3 +1,19 @@
+"""Where Algan reads assets from and writes output to.
+
+Output resolves as ``output_root / output_directory / name``. A bare filename
+lands in the output directory; anything containing a directory separator is used
+as given.
+
+The defaults are chosen so that a script just works from wherever you launch it:
+``output_root`` is the directory holding the main script (the working directory
+when there is no script, as in a REPL or notebook), and ``output_filename`` is
+that script's stem -- so ``Scene.save_video()`` with no arguments writes
+``<script>.mp4`` beside it.
+
+``cache_directory`` is where content-addressed caches live: Tex and SVG geometry,
+triangulated outlines, Taichi's offline kernel cache.
+"""
+
 from __future__ import annotations
 
 import os

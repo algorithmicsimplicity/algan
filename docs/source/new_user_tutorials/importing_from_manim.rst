@@ -98,6 +98,42 @@ Wrapping the finished ``VGroup`` gives you one Algan Mob whose parts are its
 children, so you can animate the whole diagram together or reach into
 ``plot.children`` for an individual piece.
 
+Importing an SVG
+================
+
+An ``.svg`` file drawn in Inkscape, Illustrator or Figma comes in through the
+same door. :class:`~.SVGMobject` parses the file into cubic Bezier outlines,
+which is exactly what Algan's 2-D shapes are made of, so the result is a
+first-class Mob -- it scales without pixelating, takes Algan colours, and morphs
+into other shapes:
+
+.. algan-doc-check: skip -- needs logo.svg, which does not ship with the docs
+
+.. code-block:: python
+
+    from algan import *
+
+    logo = SVGMobject("logo.svg").scale(2).spawn()
+    logo.color = BLUE
+    logo.rotate(360, UP)
+
+    Scene.save_video()
+
+Each path in the file becomes its own Mob inside the result, reachable through
+:ref:`children <reference-mob-children>` (the top-level Mob holds a
+:class:`~.Group`, whose children are the paths), so you can animate an individual
+piece without disturbing the rest. Unlike a :class:`~.Group`, an
+:class:`~.SVGMobject` is not itself indexable -- ``logo[0]`` raises.
+
+The path is resolved by Manim, which looks for it relative to the working
+directory rather than to your script -- so unlike :class:`~.ImageMob`, launching
+Python from a different directory can lose an SVG that sits beside your ``.py``
+file. Pass an absolute path if that matters.
+
+Only path geometry is imported. Embedded raster images, filters, gradients and
+text-as-text do not survive the conversion -- convert text to outlines in your
+editor before exporting.
+
 Colours and coordinates
 =======================
 
@@ -138,3 +174,14 @@ arguments (``x_length``, ``y_length``).
 
 If you are coming to Algan from Manim, :doc:`../manim_user_quickstart/index` maps
 the concepts across.
+
+Where to next
+=============
+
+* :doc:`../manim_user_quickstart/index` -- the full concept-by-concept mapping,
+  if you are porting a Manim project.
+* :doc:`../advanced_user_tutorials/three_d_models` -- importing ``.glb`` /
+  ``.fbx`` models rather than Manim geometry.
+* :doc:`../advanced_user_tutorials/index` -- materials, lighting, cameras,
+  audio and performance.
+* :doc:`../reference` -- the full API reference.

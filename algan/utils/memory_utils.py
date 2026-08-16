@@ -1,3 +1,22 @@
+"""GPU memory arena and accounting for the render loop.
+
+:class:`ManualMemory` is a bump-allocator arena for render-time tensors. Callers
+snapshot the allocation pointer, allocate freely, and restore it to free
+everything since the snapshot -- deterministic and far cheaper than relying on
+the caching allocator across a frame batch.
+
+The rest of the module is the accounting that keeps a render inside its budget:
+available-byte queries, ``ensure_render_headroom``, CUDA peak-tracking scopes,
+and :class:`InsufficientMemoryException` / ``is_cuda_oom`` for the retry path that
+shrinks the frame window when a batch does not fit.
+
+:class:`AllocationRecorder` and ``ManualMemory.scope()`` are **diagnostics
+only** -- they attribute arena usage per stage when you are investigating, and do
+not participate in batch sizing. That is
+:mod:`algan.rendering.memory_model`'s job, which measures the arena's actual
+high-water mark rather than modelling it.
+"""
+
 from __future__ import annotations
 
 import gc

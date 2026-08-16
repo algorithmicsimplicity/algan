@@ -89,18 +89,78 @@ def _cache_dir() -> Path:
     return Path(SETTINGS.paths.cache_directory) / "manim_svg"
 
 
+def _manim_generated_svg_basename_is_content_addressed(path: Path) -> bool:
+    """True when ``path`` is one of manim's own generated SVGs.
+
+    Manim names both kinds after a hash of what produced them --
+    ``tex_hash(source) + .svg`` in ``tex_dir``, ``_text2hash(settings) + .svg``
+    in ``text_dir`` -- so for these the basename already encodes the LaTeX
+    source, template, environment and preamble, or the string, font and colour.
+    Everything else -- a user's own ``logo.svg`` -- has a basename that says
+    nothing about its contents.
+    """
+    try:
+        from manim import config
+
+        parent = path.parent.resolve()
+        return any(
+            parent == Path(config.get_dir(name)).resolve()
+            for name in ("tex_dir", "text_dir")
+        )
+    except Exception:  # noqa: BLE001 - a key that falls back to hashing is safe
+        return False
+
+
+def _svg_content_id(file_name) -> str:
+    """The cache identity of an SVG source file.
+
+    For manim's own generated SVGs -- Tex and Pango text -- the basename is
+    already a content hash, and hashing the SVG bytes instead would key on
+    dvisvgm's exact version and output ordering, breaking the cross-machine
+    sharing this cache is built for. So those keep the basename.
+
+    Every other SVG -- one the user drew -- is keyed on its **contents**.
+    Keying a user file on its basename meant that editing ``logo.svg`` and
+    re-running silently replayed the previous drawing, forever and across
+    processes, and that two unrelated ``logo.svg`` files collided. It also meant
+    a *deleted* file kept resolving: this cache is consulted before manim ever
+    looks the path up, so the stale entry answered instead of manim raising.
+    """
+    if file_name is None:
+        return "None"
+    path = Path(file_name)
+    if _manim_generated_svg_basename_is_content_addressed(path):
+        return path.name
+
+    # ``file_name`` is whatever the caller passed; manim only resolves it later,
+    # in ``generate_mobject``. Resolve it the same way manim will, so the key
+    # describes the bytes that will actually be parsed.
+    try:
+        from manim.utils.images import get_full_vector_image_path
+
+        path = Path(get_full_vector_image_path(path))
+    except Exception:  # noqa: BLE001 - fall through to the miss below
+        pass
+
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        # No readable file. Miss deliberately rather than replaying a stale
+        # entry, and let manim's own lookup raise the real error.
+        return f"{path.name}:<unresolved>"
+    return f"{path.name}:{digest}"
+
+
 def _stable_key(svg_mob) -> str:
     """A cross-process content hash for an SVG mobject's parse result.
 
     Manim's own ``hash_seed`` is fine for an in-process dict but relies on
     ``hash()`` of strings, which is salted per process. We hash a canonical
-    string instead. The SVG file *basename* already encodes the full LaTeX
-    source, template, environment and preamble (it is ``tex_hash(...) + .svg``),
-    so keying on the basename (not the absolute path) is both stable and
-    content-addressed across machines / working directories.
+    string instead, identifying the source file by
+    :func:`_svg_content_id` so the key is stable and content-addressed across
+    machines and working directories.
     """
-    file_name = svg_mob.file_name
-    file_id = Path(file_name).name if file_name is not None else "None"
+    file_id = _svg_content_id(svg_mob.file_name)
 
     def canon(d):
         return "{" + ",".join(f"{k}={d[k]}" for k in sorted(d)) + "}"
@@ -362,7 +422,7 @@ def _redirect_manim_dirs() -> None:
     from manim import config
     from manim.utils import tex_file_writing
 
-    _configure_manim_dirs(config)
+    _configure_manim_dirs(config, create=False)
 
     # Manim's Text path creates ``text_dir`` with mkdir(parents=True), but its
     # Tex path (``generate_tex_file``) uses a *single-level* mkdir, which
@@ -397,12 +457,17 @@ def _redirect_manim_dirs() -> None:
         module.generate_tex_file = generate_tex_file_with_dir
 
 
-def _configure_manim_dirs(config) -> tuple[Path, Path]:
+def _configure_manim_dirs(config, *, create: bool = True) -> tuple[Path, Path]:
     """Keep Manim's Text/Tex scratch files inside Algan's cache tree.
 
     This is also called by :func:`algan.mobs.text.make_manim_dir`, because the
     runtime-adjustable content-cache setting may have moved since Manim was
     first imported.
+
+    ``create`` is false on the import-time redirect: importing Algan must not
+    write to disk. The directories are then made on first use instead -- Manim
+    creates ``text_dir`` itself with ``parents=True``, and the
+    ``generate_tex_file`` wrapper installed below does the same for ``tex_dir``.
     """
     manim_dir = Path(SETTINGS.paths.cache_directory) / "manim"
     config.tex_dir = os.fspath(manim_dir / "Tex")
@@ -410,8 +475,9 @@ def _configure_manim_dirs(config) -> tuple[Path, Path]:
 
     tex_dir = Path(config.get_dir("tex_dir"))
     text_dir = Path(config.get_dir("text_dir"))
-    tex_dir.mkdir(parents=True, exist_ok=True)
-    text_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        tex_dir.mkdir(parents=True, exist_ok=True)
+        text_dir.mkdir(parents=True, exist_ok=True)
     return tex_dir, text_dir
 
 

@@ -1,3 +1,20 @@
+"""Broadcasting, reshaping and interpolation helpers for batched tensors.
+
+Algan's animation state is uniformly shaped ``[time, mob, ...]``, and almost
+every operation has to line up operands that disagree about how many batch
+dimensions they carry. This module is the vocabulary for doing that:
+``broadcast*`` for aligning operands, ``unsqueeze_*`` / ``add_dummy_dims_*`` for
+inserting axes on either side, ``squish`` / ``unsquish`` for flattening and
+restoring axis pairs, and ``cast_to_tensor`` for accepting the Python lists,
+floats and tuples a user naturally writes.
+
+``interpolate`` is the blend used when materializing an animated attribute
+between two recorded states.
+
+These are internal helpers and deliberately excluded from
+``from algan import *``, whose names are chosen not to collide with a user's own.
+"""
+
 from __future__ import annotations
 
 import functools

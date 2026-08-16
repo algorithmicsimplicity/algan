@@ -78,8 +78,17 @@ Persistence: the container is ephemeral and nothing outside git survives it. Com
 
 ## Public API
 
-Algan is in private beta and carries **no compatibility aliases**. There is one
-name for each thing; if you find a second, it is a bug.
+Algan is in private beta and carries **no compatibility aliases for its own
+API**. There is one Algan name for each Algan thing; if you find a second, it is
+a bug.
+
+The Manim compatibility layer is the one deliberate exception, and it is a
+separate surface rather than a second spelling of Algan's: `Mobject = Mob`,
+`GenericGraph = Graph`, `install_opengl_aliases()`, and the `manim_compat` /
+`manim_parity` / `point_cloud` wrapper classes exist so a Manim script keeps
+working with the names its author already wrote. Those names are exported and
+supported. Do not add an Algan-side alias for an Algan name, and do not delete a
+Manim-side name because it duplicates one.
 
 ```python
 from algan import *

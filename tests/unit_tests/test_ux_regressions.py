@@ -171,6 +171,55 @@ def test_text_creates_manim_directories_inside_algan_cache(monkeypatch, tmp_path
     assert Path(config.text_dir).is_dir()
 
 
+@pytest.mark.slow
+def test_importing_algan_redirects_manim_tex_dirs_without_touching_disk(tmp_path):
+    # ``make_manim_dir`` used to be reached only from ``Tex.__init__``, via the
+    # ``LazyModule`` extras that pull in the svg cache.  ``manim_compat``
+    # imports manim eagerly and bypassed them, so every Manim-backed mob that
+    # reaches LaTeX without a ``Tex`` being built first -- ``MathTex``,
+    # ``Title``, ``ManimMob(manim.MathTex(...))`` -- ran against manim's
+    # default ``media/Tex`` and died with ``FileNotFoundError`` on a clean
+    # directory.  Docs builds masked it by exec'ing every example in one
+    # process, where an earlier ``Tex`` had already installed the redirect.
+    #
+    # Checked in a subprocess with a pristine cwd because it is a property of
+    # import order, and the in-process suite has long since built a ``Tex``.
+    import os
+    import subprocess
+
+    environ = dict(os.environ)
+    environ["ALGAN_HOME"] = os.fspath(tmp_path / "algan_home")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, algan, manim;"
+            "print('TEX_DIR', manim.config.tex_dir);"
+            "print('PATCHED', getattr("
+            "manim.utils.tex_file_writing.generate_tex_file,"
+            " '_algan_ensures_tex_dir', False));"
+            "print('MEDIA', pathlib.Path('media').exists())",
+        ],
+        capture_output=True,
+        check=False,
+        cwd=os.fspath(tmp_path),
+        env=environ,
+        text=True,
+        timeout=300,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "TEX_DIR " + os.fspath(tmp_path / "algan_home") in completed.stdout
+    # The single-level ``tex_dir.mkdir()`` in manim's ``generate_tex_file`` is
+    # what actually raised; the wrapper has to be in place before first use.
+    assert "PATCHED True" in completed.stdout
+    # Importing Algan must still not write anything: the redirect no longer
+    # creates the directories, they are made on first use.
+    assert "MEDIA False" in completed.stdout
+    assert not (tmp_path / "media").exists()
+
+
 def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
     monkeypatch, tmp_path
 ):
@@ -1004,3 +1053,65 @@ def test_internal_helpers_are_importable_but_not_star_exported():
         "get_rotation_between_bases",
     ):
         assert name not in algan.__all__
+
+
+@pytest.mark.parametrize(
+    ("feature", "expected"),
+    [
+        ("environment_map", "environment maps"),
+        ("refraction", "refractive materials"),
+        ("fragment_pipeline", "custom fragment-shader pipelines"),
+        ("extended_light", "extended lights"),
+    ],
+)
+def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
+    feature, expected, tmp_path
+):
+    """The preflight is only worth having if real authoring actually trips it.
+
+    ``_validate_render_capabilities`` is unit-tested above against hand-built
+    ``merged`` dicts, which proves the message but not the wiring: that
+    ``set_material(MeshPhysicalMaterial(transmission=...))` really sets
+    ``has_refractive``, that ``set_environment_map`` reaches the check at all,
+    and so on. Authoring each feature the way a user would and asserting the
+    render refuses is what closes that gap -- and it needs no GPU, because the
+    check runs on host metadata before any arena reservation or kernel
+    compilation.
+    """
+    from algan.constants.color import BLUE, WHITE
+    from algan.constants.spatial import OUT, UP
+    from algan.mobs.shapes_3d import Sphere
+    from algan.rendering.shaders.fragment_shaders import STAGE_STANDARD, cosine_color
+    from algan.rendering.shaders.materials import MeshPhysicalMaterial
+    from algan.settings.video_settings import SMOKE_TEST
+
+    rt_settings.set_unsupported_feature_policy("error")
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(SMOKE_TEST)
+
+    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
+        if feature == "environment_map":
+            scene.set_environment_map(torch.rand((4, 8, 3)))
+            Sphere(radius=0.6, color=BLUE).spawn()
+        elif feature == "refraction":
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_material(
+                MeshPhysicalMaterial(transmission=1.0, ior=1.5, thickness=0.5)
+            )
+            sphere.spawn()
+        elif feature == "fragment_pipeline":
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_fragment_shader([cosine_color, STAGE_STANDARD])
+            sphere.spawn()
+        elif feature == "extended_light":
+            with algan.Off():
+                scene.clear_light_sources()
+                RectAreaLight(
+                    location=UP * 3 + OUT * 3, color=WHITE, intensity=3
+                ).spawn()
+            Sphere(radius=0.6, color=BLUE).spawn()
+
+        scene.wait(0.2)
+
+        with pytest.raises(UnsupportedFeatureError, match=expected):
+            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)

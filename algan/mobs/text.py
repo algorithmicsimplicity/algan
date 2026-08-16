@@ -1,3 +1,28 @@
+"""Text and LaTeX, rendered as packed batches of bezier glyphs.
+
+:class:`Tex` compiles LaTeX through Algan's bundled Manim, converts the resulting
+glyph outlines to cubic bezier circuits, and packs every glyph of the string into
+a single batched Mob. :class:`Text` is the same machinery with Pango font
+rendering instead of LaTeX, and :class:`MarkupText` accepts Pango markup.
+
+Because the glyphs are outlines rather than bitmaps, text scales without
+softening and morphs into other shapes like any 2-D Mob.
+
+``character_mobs`` gives lazy indexed views onto individual glyphs in the packed
+batch, which is what per-character animation works on. A multi-part :class:`Tex`
+also exposes each of its source strings through
+:meth:`Tex.get_segment` -- these are views, not ``children``, which hold the
+single packed batch. :meth:`Tex.write` draws the string as though by hand.
+
+The ``Triangulated`` variants build filled triangle meshes instead of bezier
+circuits, for cases where a fragment-shaded interior is wanted.
+
+:func:`make_manim_dir` prepares Manim's Tex/text scratch directories inside
+Algan's cache so nothing is written beside the user's script.
+
+See :doc:`/new_user_tutorials/text_and_math`.
+"""
+
 from __future__ import annotations
 
 import pathlib
