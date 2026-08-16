@@ -49,15 +49,16 @@ Persistence: the container is ephemeral and nothing outside git survives it. Com
 
 ### Testing
 ```
-<venv-python> -m pytest -q --fast    # THE development loop: 112-147s
+<venv-python> -m pytest -q --fast    # THE development loop: 191 curated tests
 <venv-python> -m pytest -q           # everything, ~12 min, before pushing
 ```
-- **`--fast` is the suite to run after every change.** It is everything not marked `slow`, held to a two-and-a-half-minute budget, and it prints where it landed (`fast suite: 134s of its 150s budget (89%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
-- **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never mark a test `slow` off run 1 or 2.
-- It covers the whole behavioural suite (`tests/unit_tests/`) plus **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is half the budget.
-- Run the **full** suite after touching the renderer, and before pushing. `tests/README.md` has the table of what `--fast` leaves out and where each item is covered instead.
-- `slow` means **outside the fast suite** — a budget decision, not a description. When the fast suite reports itself over budget, mark the *newly added* expensive test, not an old one.
-- **Taichi cost is per kernel variant, not per test**, charged to whichever test hits that variant first. Marking one test `slow` can just move its seconds to the next test that needs the same kernel (this happened with `test_raytracing_unit.py`, hence its module-level mark). A group sharing a kernel leaves together or not at all. Adding PN geometry (`Sphere`/`Cylinder`/`Cone`/`Torus`/`Surface`) to `tests/fast/scene.py` costs ~20s on its own — use a `Polyhedron` subclass there.
+- **`--fast` is the suite to run after every change.** It is **opt-in**: only tests marked `fast` run, everything else is deselected. It prints where it landed against a 75s budget (`fast suite: 21s of its 75s budget (28%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
+- **A test you add is outside it unless you mark it.** Mark `fast` only when a change *elsewhere* in the codebase is liable to break the test — the timeline, the Mob base, the Scene, anything that records or materializes state. A test that only fails when its own module changes is a feature test: leave it unmarked. Being cheap is not a reason. `tests/README.md` lists what is in and why.
+- There is **no `slow` marker** any more — it meant "outside the fast suite", which is now every unmarked test.
+- What is in: the timeline (recording/replay/state query/materialization), lifespans, rate functions, Mob transforms + hierarchy + layout, Scene containment, `SETTINGS`, the public authoring surface (`test_ux_regressions.py`), and **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is most of the budget.
+- **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never un-mark a test off run 1 or 2.
+- Run the **full** suite after touching the renderer, and before pushing. It is also what CI runs: CI names `tests/unit_tests tests/fast` as paths and does *not* pass `--fast`, so everything portable runs there.
+- **Taichi cost is per kernel variant, not per test**, charged to whichever test hits that variant first. Admitting one test of a group into the fast suite can pull in the whole variant's compile cost (this is why `test_raytracing_unit.py` is discussed as a whole). Adding PN geometry (`Sphere`/`Cylinder`/`Cone`/`Torus`/`Surface`) to `tests/fast/scene.py` costs ~20s on its own — use a `Polyhedron` subclass there.
 - Renders are compared **pixel-wise** against `expected_outputs_cuda/` (or `expected_outputs_cpu/`) in each render suite's own directory. Any channel deviation > 2 fails; diff videos land in that suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.
@@ -202,6 +203,6 @@ Core: torch, torchvision, taichi, numpy, opencv-python, moviepy, scipy, svgeleme
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration
 - `algan/utils/` — tensor helpers, memory arena, profiling, doc-build tooling
 - `algan/external_libraries/` — vendored manim/ground/sect (do not modify)
-- `tests/unit_tests/` — behavioural tests; `tests/fast/` — the fast suite's one pixel-compared render; `tests/full_renders/` — five dense pixel-compared scenes (see `tests/README.md`)
+- `tests/unit_tests/` — behavioural tests; `tests/fast/` — the fast suite's one pixel-compared render; `tests/full_renders/` — six dense pixel-compared scenes (see `tests/README.md`)
 - `benchmarks/` — ad-hoc A/B, parity-check and profiling scripts
 - `docs/` — Sphinx docs with rendered examples

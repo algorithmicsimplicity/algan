@@ -8,6 +8,7 @@ against the Taichi kernels this replaced is checked by
 without needing a GPU.
 """
 
+import pytest
 import torch
 
 from algan.animation_timeline.timeline import (
@@ -15,6 +16,10 @@ from algan.animation_timeline.timeline import (
     _query_row_states,
     generate_array_states,
 )
+
+# In the fast suite: the query every materialized frame of every render is
+# answered by. Nothing an animation does reaches the screen without it.
+pytestmark = pytest.mark.fast
 
 
 def _make_edits(n_rows, n_edits, channels, *, seed=0):

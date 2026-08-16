@@ -17,6 +17,11 @@ import torch
 from algan import DEFAULT_RATE_FUNC, Off, Scene, Square, Sync, rate_funcs
 from algan.constants.spatial import RIGHT
 
+# In the fast suite: every animation in the engine is evaluated through one of
+# these curves, and a curve that stops hitting its endpoints moves where every
+# animation lands without raising.
+pytestmark = pytest.mark.fast
+
 SAMPLES = torch.linspace(0.0, 1.0, 65)
 
 # Every callable the module exports that maps progress to progress. ``inversed``

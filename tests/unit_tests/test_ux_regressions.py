@@ -29,6 +29,13 @@ from algan.scene_manager import SceneManager
 from algan.settings.video_settings import PREVIEW, VideoSettings
 from algan.utils import algan_utils
 
+# In the fast suite, as a module: this is the front door -- ``save_video`` /
+# ``save_frame`` and what they leave the Scene in, the animation contexts, the
+# ``Group`` hierarchy, what ``from algan import *`` exports, and the errors a
+# user hits when they get one of those wrong. Every one of them is reachable
+# from any user script, so any change to the authoring path can break one.
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture(autouse=True)
 def reset_global_authoring_state():

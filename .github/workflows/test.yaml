@@ -75,8 +75,11 @@ jobs:
       # 29-204 channel values against a tolerance of 2, while tests/fast and
       # shapes_and_timeline matched exactly. See tests/README.md.
       #
-      # Named as paths rather than run with --fast on purpose: --fast would also
-      # drop test_raytracing_unit.py, which is portable and passes here.
+      # Named as paths rather than run with --fast on purpose, and the reason is
+      # stronger since the fast suite became opt-in: --fast now runs only the
+      # 191 hand-picked tests marked 'fast', while everything under these two
+      # paths is portable and passes here. CI can afford the whole thing; the
+      # fast suite is a development loop, not a CI scope.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 

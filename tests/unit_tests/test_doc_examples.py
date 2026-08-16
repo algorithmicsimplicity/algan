@@ -24,7 +24,7 @@ what each block can actually support, in three tiers:
     *authoring* a scene: wrong constructor arguments, a value of the wrong
     width, a method that no longer exists.
 
-``test_doc_example_renders`` (``slow``, opt-in)
+``test_doc_example_renders`` (opt-in)
     Actually renders those scripts at ``SMOKE_TEST``. This is the only tier that
     sees a render-time failure -- an updater that raises when it is evaluated
     over a batch of frames, say.
@@ -35,12 +35,12 @@ what each block can actually support, in three tiers:
     OOM-killed on a 16 GB machine. With that fixed it costs 2.3 GB and about two
     minutes for 77 examples, so the gate is now about *time*, not headroom.
 
-    Still opt-in, via ``ALGAN_RUN_DOC_RENDERS=1``, because two minutes is most of
-    the fast suite's whole budget and CI would pay it on every run -- and the
-    measurement above is on a warm Taichi cache, which a fresh runner is not.
-    ``slow`` alone would not hold it back: that only excludes a test from
-    ``--fast``, and CI names its paths explicitly rather than passing that flag,
-    which is exactly how this tier took a runner down once already.
+    Still opt-in, via ``ALGAN_RUN_DOC_RENDERS=1``, because two minutes is more
+    than the fast suite's whole budget and CI would pay it on every run -- and
+    the measurement above is on a warm Taichi cache, which a fresh runner is
+    not. Leaving it out of the ``fast`` suite would not hold it back: CI names
+    its paths explicitly rather than passing ``--fast``, and runs everything
+    under them, which is exactly how this tier took a runner down once already.
 
 A block that is deliberately not runnable (an anti-example showing what raises,
 a Manim-side snippet in a migration comparison) opts out with a
@@ -75,9 +75,9 @@ SKIP_MARKER = "algan-doc-check: skip"
 # How far above a directive to look for the marker.
 _MARKER_LOOKBACK = 4
 
-# The render tier is opt-in. See the module docstring: it is not merely slow, it
-# exhausts memory, and `slow` does not keep it out of CI because CI names its
-# paths instead of passing --fast.
+# The render tier is opt-in. See the module docstring: it is not merely
+# expensive, it exhausts memory, and staying out of the fast suite does not keep
+# it out of CI because CI names its paths instead of passing --fast.
 RUN_DOC_RENDERS = os.getenv("ALGAN_RUN_DOC_RENDERS") == "1"
 SKIP_RENDERS_REASON = (
     "rendering every documented example costs ~2 minutes and 2.3 GB, most of "
@@ -425,7 +425,6 @@ def test_doc_example_authors_without_error(example: DocExample):
     _run_example(example, render=False)
 
 
-@pytest.mark.slow
 @pytest.mark.skipif(not RUN_DOC_RENDERS, reason=SKIP_RENDERS_REASON)
 @pytest.mark.parametrize("example", COMPLETE, ids=_ids(COMPLETE))
 def test_doc_example_renders(example: DocExample):

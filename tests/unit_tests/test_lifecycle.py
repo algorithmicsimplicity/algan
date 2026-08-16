@@ -3,6 +3,10 @@ import torch
 
 from algan import RIGHT, Group, Scene, Seq, Square, Sync
 
+# In the fast suite: the spawn/despawn lifespan decides whether a Mob exists at
+# a given frame at all, and containers inherit it from their children.
+pytestmark = pytest.mark.fast
+
 
 def test_unspawned_group_despawn_preserves_spawned_child_history():
     with Scene() as scene:

@@ -195,7 +195,6 @@ def test_a_direct_move_keeps_the_backing_mobject_in_step(name):
     torch.testing.assert_close(_center(mob), _backing_center(mob), atol=2e-5, rtol=0)
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
 def test_a_parent_group_move_keeps_the_backing_mobject_in_step(name):
     from algan import Group
@@ -205,7 +204,6 @@ def test_a_parent_group_move_keeps_the_backing_mobject_in_step(name):
     torch.testing.assert_close(_center(mob), _backing_center(mob), atol=2e-5, rtol=0)
 
 
-@pytest.mark.slow
 def test_rotating_after_a_parent_move_does_not_teleport_the_mob():
     from algan import Group
 

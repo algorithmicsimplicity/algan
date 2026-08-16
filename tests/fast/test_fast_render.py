@@ -45,6 +45,10 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
 UPDATE_BASELINE = os.getenv("ALGAN_UPDATE_FAST_BASELINE") == "1"
 
+# The one render in the fast suite, and the most expensive thing in it by a
+# wide margin. It stays because nothing else in the loop can see the renderer.
+pytestmark = pytest.mark.fast
+
 # Free VRAM is what the render loop sizes its frame windows from, and it is not
 # reproducible: it shrinks as the Torch and Taichi allocators warm up, so the
 # same scene splits differently depending on what ran before it in the process.

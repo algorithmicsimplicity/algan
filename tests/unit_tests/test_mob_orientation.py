@@ -7,6 +7,10 @@ import torch
 
 from algan import ORIGIN, OUT, Mob, Scene, SceneManager
 
+# In the fast suite: rotation is where location and basis have to stay
+# consistent with each other, and every 3-D transform composes through it.
+pytestmark = pytest.mark.fast
+
 
 def _empty_scene(scene):
     scene.camera = None

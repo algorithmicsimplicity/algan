@@ -5,6 +5,10 @@ import torch
 
 from algan import Mob, Scene, SceneManager
 
+# In the fast suite: moving a Mob is the most-used recorded operation there is,
+# and these check the path it traces rather than only where it ends up.
+pytestmark = pytest.mark.fast
+
 
 def _empty_scene(scene):
     scene.camera = None

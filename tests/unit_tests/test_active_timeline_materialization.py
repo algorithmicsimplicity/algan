@@ -1,5 +1,6 @@
 import math
 
+import pytest
 import torch
 
 from algan import Mob, Scene
@@ -8,6 +9,10 @@ from algan.animation_timeline.timeline import AttributeTimeline, Lifespan, Timel
 from algan.constants import rate_funcs
 from algan.constants.spatial import OUT, RIGHT
 from algan.scene_manager import SceneManager
+
+# In the fast suite: materializing actor state at a set of frame times is the
+# step between "the user recorded something" and "the renderer sees geometry".
+pytestmark = pytest.mark.fast
 
 
 def test_selected_materialization_matches_full_state_for_active_mob():

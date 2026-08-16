@@ -157,7 +157,6 @@ def test_there_is_at_least_one_full_render_scene():
     assert SCENE_FILES, f"no full-render scenes found in {SCENES_DIR}"
 
 
-@pytest.mark.slow
 @pytest.mark.skipif(IN_CI and not FORCE_FULL_RENDERS, reason=SKIP_IN_CI_REASON)
 @pytest.mark.parametrize("scene_path", SCENE_FILES, ids=lambda path: path.stem)
 def test_full_render_scene(

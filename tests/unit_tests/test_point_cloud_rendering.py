@@ -5,9 +5,10 @@ points and register as actors. They delegate rendering to a hidden batched
 ``Dot3D`` collection, retaining the point-array API without requiring a separate
 point-sprite path in the renderer.
 
-The whole module is marked ``slow`` and so sits outside the fast suite. It
-constructs several dense packed sphere collections, which is not worth paying
-for on every unrelated change; the full suite still runs it.
+This is a per-family regression, so it sits outside the fast suite: it only
+breaks when the point-cloud family or the batched-sphere path it delegates to is
+worked on, and it constructs several dense packed sphere collections to do it.
+The full suite still runs it.
 """
 
 from __future__ import annotations
@@ -28,8 +29,6 @@ from algan import (
     TrueDot,
 )
 from algan.mobs.surfaces.surface import get_render_primitives_batched
-
-pytestmark = pytest.mark.slow
 
 BUILDERS = {
     "DotCloud": lambda **kwargs: DotCloud(
