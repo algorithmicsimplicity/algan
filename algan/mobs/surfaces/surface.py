@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.animation_timeline.animation_contexts import Sync
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
 from algan.constants.spatial import OUT
@@ -2807,41 +2807,6 @@ class Surface(Mob):
         self.grid.location = new_loc
         return self
 
-    def set_normal_by_function(self, function):
-        """Set the surface's shading normals from a function of ``(u, v)``.
-
-        Overrides the normals computed from the geometry, which lets a flat surface
-        light as though it were curved, or a faceted one look smooth. The geometry
-        itself is unchanged.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default), so the shading shifts smoothly rather than snapping.
-
-        Parameters
-        ----------
-        function
-            Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
-            normals of shape ``[..., 3]``. Must be vectorized over the whole grid.
-
-        Returns
-        -------
-        :class:`~algan.mobs.surfaces.surface.Surface`
-            This surface, so calls can be chained.
-        """
-        new_normals = grid_to_triangle_vertices(function(self.get_base_grid()))
-        new_triangles = TriangleTriangulated(
-            unsquish(self.triangles.corners.location, -2, 3),
-            scene=self.scene,
-            normals=new_normals,
-            add_to_scene=False,
-        )
-        with Sync(animation_manager=self.animation_manager):
-            self.triangles.basis = new_triangles.basis
-            self.triangles.corners.basis = new_triangles.corners.basis
-        return self
-
     def get_default_color(self):
         """Get the colour a Surface uses when none was given.
 
@@ -2878,35 +2843,27 @@ class Surface(Mob):
 
         See Also
         --------
-        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_texture`
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`
             Paint an image on instead.
         """
-        new_color = grid_to_triangle_vertices(function(self.get_base_grid()))
-        new_triangles = TriangleTriangulated(
-            unsquish(self.triangles.corners.location, -2, 3),
-            scene=self.scene,
-            color=new_color,
-            normals=None,
-            add_to_scene=False,
-        )
-        with Sync(animation_manager=self.animation_manager):
-            self.triangles.color = new_triangles.color
-            self.triangles.corners.color = new_triangles.corners.color
+        new_color = function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
+        self.grid.color = new_color
         return self
 
-    def set_color_by_texture(self, rgba_array_or_file_path):
+    def set_color_by_image(self, rgba_array_or_file_path):
         """Paint an image across the surface.
 
-        The image is resampled to the surface's grid resolution and baked into its
-        per-vertex colours, so detail finer than the grid is lost -- raise the
-        surface's resolution, or use
-        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`, if you need the
-        image sharp.
+        The image is mapped over the surface's ``(u, v)`` domain at its own
+        resolution and sampled per fragment by the renderer, so it stays sharp
+        however coarse the surface's grid is, and it follows the surface as it
+        deforms. This sets
+        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`, which you can
+        assign directly when you already hold the image as a tensor.
 
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second by
-        default): the colours cross-fade to the image.
+        default): the surface cross-fades, texel by texel, to the image.
 
         Parameters
         ----------
@@ -2919,20 +2876,88 @@ class Surface(Mob):
         -------
         :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
+
+        See Also
+        --------
+        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`
+            The attribute this writes, for images already loaded as tensors.
         """
         texture_image = get_image(rgba_array_or_file_path)
-        texture_image = (
+        # A colour texture is indexed by the surface's own axes, (u, v); a
+        # loaded image is [row, column] with rows running down the picture.
+        # Same transposition ImageMob applies to the array it is built from.
+        surface_texture = texture_image.transpose(-3, -2).flip(-2).contiguous()
+
+        texture_shape = tuple(surface_texture.shape[-3:-1])
+        if self.is_spawned() and (
+            not self._has_color_texture
+            or (self.texture_height, self.texture_width) != texture_shape
+        ):
+            # A texture attribute that does not exist yet -- or one whose
+            # resolution is about to change, which detaches history -- has no
+            # earlier value to interpolate from, so the assignment below would
+            # pop. Seeding it with what the surface looks like now makes the
+            # assignment the cross-fade this method documents.
+            with Off(animation_manager=self.animation_manager):
+                self.color_texture = self._current_appearance_as_texture(texture_shape)
+
+        # The texture and the per-vertex bake are one visual change, so they
+        # have to be recorded as simultaneous edits: written plainly, an
+        # enclosing ``Seq`` would play them one after the other, each over half
+        # its window. The bake keeps the vertex colours in step with the
+        # texture -- shading reads the texture, but the glow accumulator
+        # interpolates triangle corners, and this is the same bake
+        # ``Surface(color_texture=...)`` does at construction.
+        with Sync(animation_manager=self.animation_manager):
+            self.color_texture = surface_texture
+            self.grid.color = squish(
+                F.interpolate(
+                    texture_image.permute(2, 0, 1).unsqueeze(0),
+                    (self.grid_height, self.grid_width),
+                    mode="bilinear",
+                    antialias=True,
+                )
+                .squeeze(0)
+                .permute(2, 1, 0)
+                .flip(-2),
+                -3,
+                -2,
+            ).unsqueeze(0)
+        return self
+
+    def _current_appearance_as_texture(self, texture_shape):
+        """This surface's current colours as a ``[W, H, 5]`` image of the given
+        resolution: its colour texture if it has one, its per-vertex grid colours
+        otherwise. Used as the value a freshly created colour texture
+        interpolates *from*.
+        """
+        if self._has_color_texture:
+            current = (
+                self._color_texture_uncopied()
+                .as_subclass(torch.Tensor)
+                .view(-1, self.texture_height, self.texture_width, 5)[-1]
+            )
+        else:
+            current = self.grid.get_animated_attribute("color").as_subclass(
+                torch.Tensor
+            )
+            if current.shape[-2] == 1:
+                current = current.expand(
+                    *current.shape[:-2], self.grid_width * self.grid_height, -1
+                )
+            current = current.reshape(
+                -1, self.grid_width, self.grid_height, current.shape[-1]
+            )[-1]
+        if tuple(current.shape[-3:-1]) == tuple(texture_shape):
+            return current.contiguous()
+        return (
             F.interpolate(
-                texture_image.permute(2, 0, 1).unsqueeze(0),
-                (self.grid_height, self.grid_width),
+                current.permute(2, 0, 1).unsqueeze(0),
+                size=tuple(texture_shape),
                 mode="bilinear",
-                antialias=True,
+                align_corners=True,
             )
             .squeeze(0)
-            .permute(2, 1, 0)
-            .flip(-2)
+            .permute(1, 2, 0)
+            .contiguous()
         )
-        self.triangles.corners.color = squish(
-            grid_to_triangle_vertices(texture_image), -3, -2
-        )
-        return self
