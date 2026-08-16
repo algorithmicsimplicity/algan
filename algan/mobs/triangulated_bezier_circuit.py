@@ -822,6 +822,32 @@ def project_onto_line(params, point, invert=False):
     )
 
 
+#: Bumped whenever a change makes stored tessellations disagree with what a
+#: fresh one would produce. Entries written by an older Algan then miss rather
+#: than replay at a different origin, and are re-tessellated (and re-saved) on
+#: first use; the orphans age out with the rest of the cache directory.
+_TESSELLATION_CACHE_VERSION = "tessellation-v2-origin"
+
+
+def _tile_origin(offset):
+    """The point tile coordinates are stored relative to.
+
+    Cached tiles are position-independent -- the cache key is the glyph's
+    outline normalised to its own origin, so one entry serves that glyph
+    wherever it is placed -- which means they are stored as an offset from
+    something. That something has to be the *same* quantity on both sides of
+    the round trip: normalising by the tessellation's own minimum and adding
+    back the outline's minimum translates the glyph by whatever separates
+    them.
+    """
+    return offset.float()[:2]
+
+
+def _denormalize_tiles(tiles, offset):
+    """Put stored (origin-relative) tile coordinates back where they belong."""
+    return tiles + _tile_origin(offset)
+
+
 class TriangulatedBezierCircuit(Mob):
     def __init__(
         self,
@@ -878,6 +904,7 @@ class TriangulatedBezierCircuit(Mob):
                 hash_bytes = "".join([str(_.item()) for _ in hash_bytes.cpu()])
 
                 hasher = hashlib.sha256()
+                hasher.update(_TESSELLATION_CACHE_VERSION.encode())
                 hasher.update(hash_bytes.encode())
                 hash_bytes = hasher.hexdigest()[:32]
                 file_path = os.path.join(
@@ -889,7 +916,7 @@ class TriangulatedBezierCircuit(Mob):
                     tiles, tile_counts = torch.load(
                         file_path, map_location=_ANIMATION_DEVICE
                     )
-                    tiles = tiles + offset.float()[:2]
+                    tiles = _denormalize_tiles(tiles, offset)
                     found_hash = True
 
             points = []
@@ -924,10 +951,12 @@ class TriangulatedBezierCircuit(Mob):
                     continue
                 if hash_key is not None:
                     Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-                    torch.save(
-                        (tiles - tiles.amin((0, 1), keepdim=True), tile_counts),
-                        file_path,
-                    )
+                    normalized = tiles - _tile_origin(offset)
+                    torch.save((normalized, tile_counts), file_path)
+                    # Replay the round-trip every later run gets off the cache,
+                    # so a freshly tessellated glyph and a cached one are the
+                    # same bits rather than the same to within float32 rounding.
+                    tiles = _denormalize_tiles(normalized, offset)
 
             tile_sizes, tile_grid_id, grid_width, grid_height = tile_counts
 
