@@ -105,9 +105,8 @@ WAVEFRONT_TILE_RAYS = env_int("ALGAN_WAVEFRONT_TILE", 1 << 21)
 # buy nothing (the profiler's per-kernel syncs made launches look expensive).
 # Opt in for memory-constrained renders, where shrinking tiles beats the
 # window-halving OOM retry.
-WAVEFRONT_TILE_AUTO = (
-    env_flag("ALGAN_WAVEFRONT_TILE_AUTO", True)
-    and not env_is_set("ALGAN_WAVEFRONT_TILE")
+WAVEFRONT_TILE_AUTO = env_flag("ALGAN_WAVEFRONT_TILE_AUTO", True) and not env_is_set(
+    "ALGAN_WAVEFRONT_TILE"
 )
 # Fraction of the pool's free bytes the per-tile ray state may claim.  Every
 # built-in per-slot/fixed allocation and ManualMemory's initial alignment are
@@ -897,7 +896,9 @@ ANALYTIC_AA_SECONDARY_SAMPLES = env_int("ALGAN_ANALYTIC_AA_SECONDARY", 4)
 # pixel for a lobe contributing 4% of its colour, and measures both slower and
 # slightly worse than plain supersampling. The whole value of coverage is that
 # the expensive fallbacks fire only on the pixels that need them.
-ANALYTIC_AA_SECONDARY_MIN_ENERGY = env_float("ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", 0.12)
+ANALYTIC_AA_SECONDARY_MIN_ENERGY = env_float(
+    "ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", 0.12
+)
 
 # Roughness-driven GLOSSY REFLECTION for the deterministic tracer: a rough
 # reflector's continuation rays spread over a GGX lobe instead of all taking the

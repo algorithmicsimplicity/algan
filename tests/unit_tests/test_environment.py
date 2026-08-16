@@ -47,7 +47,9 @@ def _is_environ_access(node):
 
 
 def _is_environ_subscript_write(statement):
-    targets = getattr(statement, "targets", None) or [getattr(statement, "target", None)]
+    targets = getattr(statement, "targets", None) or [
+        getattr(statement, "target", None)
+    ]
     return any(
         isinstance(target, ast.Subscript) and _is_environ_access(target.value)
         for target in targets
