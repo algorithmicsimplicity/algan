@@ -1255,6 +1255,29 @@ def render_batch_raytraced(
     # per-frame cost and planning the same over-large chunk again.
     launched_frames = []
 
+    def rewind_to(pointers):
+        """Rewind the arena to ``pointers`` without reclaiming the batch-wide
+        raster tables.
+
+        ``_build_raster_tables`` allocates them at the arena's persistent
+        (reverse) end from inside the *first* chunk, caches them on ``merged``
+        -- which lives for the whole batch -- and publishes the reverse pointer
+        it reached. Every later chunk reads that cache instead of rebuilding.
+        Restoring the reverse pointer to this chunk's entry value would hand
+        their range back to the allocator while the cache still points into it,
+        so the next chunk's forward allocations grow straight over the tables
+        and ``_window_pairs`` reads garbage bounds (a negative bbox width
+        surfaced as ``repeats can not be negative``). Only the split retry and
+        the recursive halves could hit that: between the per-chunk rewind and
+        the render loop's own ``set_pointers`` nothing else allocates.
+        """
+        forward, reverse = pointers
+        if merged is not None and merged.get("_raster_tables") is not None:
+            retained = merged.get("_raster_tables_reverse_pointer")
+            if retained is not None:
+                reverse = min(reverse, retained)
+        memory.set_pointers((forward, reverse))
+
     def render_chunk(start, end):
         # The Monte Carlo kernels launch one thread per (frame, pixel,
         # sample) path; keep the flattened index within int32 range. (The
@@ -1441,7 +1464,7 @@ def render_batch_raytraced(
                 post_processes=list(post_processes),
                 apply_fxaa=scene.video_settings.fxaa,
             )
-            memory.set_pointers(entry_pointers)
+            rewind_to(entry_pointers)
             launched_frames.append(end - start)
             return [frames]
         except (InsufficientMemoryException, RuntimeError) as exc:
@@ -1454,7 +1477,7 @@ def render_batch_raytraced(
             ):
                 raise
             logger.log(PERF, f"Reducing the frame batch to fit memory: {start}:{end}")
-            memory.set_pointers(entry_pointers)
+            rewind_to(entry_pointers)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)

@@ -77,6 +77,7 @@ import torch
 # and pulls in the mob / scene classes the pipeline hooks below wrap.
 import algan  # noqa: F401
 import algan.mobs.bezier_circuit as bzc
+import algan.mobs.surfaces.surface as surf
 import algan.rendering.raytracing.primitives as rtp
 import algan.rendering.raytracing.raster_pipeline as rpl
 import algan.rendering.raytracing.stbvh as stbvh_mod
@@ -452,6 +453,15 @@ def install_pipeline_hooks():
         AnimationTimeline, "set_state_to_times", "AnimationTimeline.set_state_to_times"
     )
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
+    # The *batched* surface build had no hook, so its whole cost was charged to
+    # Scene.get_batch_of_primitives' exclusive column -- and on a scene whose
+    # surfaces are all batchable (the reference scene: every batch reports
+    # num_pn=0 and Surface.get_render_primitives never appears) that made the
+    # single largest item in the profile unattributable. Its bezier counterpart
+    # build_render_primitives_batched has been hooked all along.
+    _try_wrap(
+        surf, "get_render_primitives_batched", "surfaces: get_render_primitives_batched"
+    )
     _try_wrap(
         BezierCircuitCubic,
         "get_render_primitives",

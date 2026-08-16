@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.animation_timeline.animation_contexts import Sync
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
 from algan.constants.spatial import OUT
@@ -250,6 +250,18 @@ def grid_to_triangle_vertices(grid):
     return flat_grid[..., indices, :]
 
 
+def _grid_normals_paired():
+    """Whether to build the per-triangle sides pairwise (see below).
+
+    Gated through the same ``ALGAN_OPT_DISABLE`` bisect switch as the other
+    byte-identical prep optimizations, under the name ``gridnormals``, so the
+    A/B script can run both arms in one process.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return not _opt_disabled("gridnormals")
+
+
 def compute_grid_vertex_normals(grid):
     """Area-weighted vertex normals for a surface grid ``[..., W, H, 3]``,
     with closed-seam and pole merging. All computations broadcast over any
@@ -260,32 +272,71 @@ def compute_grid_vertex_normals(grid):
     grid_x_minus_1 = grid.roll(1, -3)
     grid_y_plus_1 = grid.roll(-1, -2)
     grid_y_minus_1 = grid.roll(1, -2)
-    triangle_sides = unsquish(
-        torch.stack(
-            (
-                grid_x_minus_1,
-                grid_y_minus_1,
-                grid_y_minus_1,
-                grid_x_plus_1,
-                grid_x_plus_1,
-                grid_y_plus_1,
-                grid_y_plus_1,
-                grid_x_minus_1,
-            ),
-            -2,
+    if _grid_normals_paired():
+        # The four triangles around a vertex use each neighbour twice, as the
+        # second side of one and the first side of the next. The stacked form
+        # below made that literal: eight copies of the grid in one
+        # [..., W, H, 8, 3] tensor, the grid subtracted from every one of them,
+        # then two stride-2 views sliced back out to cross, and finally a
+        # [..., W, H, 4, 3] tensor reduced over its triangle axis. Differencing
+        # each neighbour once, crossing the four pairs directly and adding them
+        # evaluates exactly the same products and the same sum from the same
+        # values: every operation is elementwise, and a length-4 reduction over
+        # a contiguous axis is the sequential order these adds take, so the
+        # result is bit-identical (asserted, including NaN payloads and signed
+        # zeros, by benchmarks/_grid_normals_ab.py). It moves roughly half the
+        # bytes, which matters because this function is ~60% of
+        # get_render_primitives_batched -- the largest single item in a render
+        # (see DESIGN_optimization_targets.md).
+        side_x_minus = grid_x_minus_1 - grid
+        side_y_minus = grid_y_minus_1 - grid
+        side_x_plus = grid_x_plus_1 - grid
+        side_y_plus = grid_y_plus_1 - grid
+        normals_xm_ym = broadcast_cross_product(side_x_minus, side_y_minus)
+        normals_ym_xp = broadcast_cross_product(side_y_minus, side_x_plus)
+        normals_xp_yp = broadcast_cross_product(side_x_plus, side_y_plus)
+        normals_yp_xm = broadcast_cross_product(side_y_plus, side_x_minus)
+        # The same four boundary masks as below, addressed per triangle instead
+        # of through a fancy index on the stacked axis. Corners are written by
+        # two of these; both write zero, so the order does not matter.
+        normals_xm_ym[..., 0, :, :] = 0
+        normals_yp_xm[..., 0, :, :] = 0
+        normals_ym_xp[..., -1, :, :] = 0
+        normals_xp_yp[..., -1, :, :] = 0
+        normals_xm_ym[..., :, 0, :] = 0
+        normals_ym_xp[..., :, 0, :] = 0
+        normals_xp_yp[..., :, -1, :] = 0
+        normals_yp_xm[..., :, -1, :] = 0
+        unnormalized_normals = (
+            normals_xm_ym + normals_ym_xp + normals_xp_yp + normals_yp_xm
         )
-        - grid.unsqueeze(-2),
-        -2,
-        2,
-    )
-    triangle_normals = broadcast_cross_product(
-        triangle_sides[..., 0, :], triangle_sides[..., 1, :]
-    )
-    triangle_normals[..., 0, :, [0, 3], :] = 0
-    triangle_normals[..., -1, :, [1, 2], :] = 0
-    triangle_normals[..., :, 0, [0, 1], :] = 0
-    triangle_normals[..., :, -1, [2, 3], :] = 0
-    unnormalized_normals = triangle_normals.sum(-2)
+    else:
+        triangle_sides = unsquish(
+            torch.stack(
+                (
+                    grid_x_minus_1,
+                    grid_y_minus_1,
+                    grid_y_minus_1,
+                    grid_x_plus_1,
+                    grid_x_plus_1,
+                    grid_y_plus_1,
+                    grid_y_plus_1,
+                    grid_x_minus_1,
+                ),
+                -2,
+            )
+            - grid.unsqueeze(-2),
+            -2,
+            2,
+        )
+        triangle_normals = broadcast_cross_product(
+            triangle_sides[..., 0, :], triangle_sides[..., 1, :]
+        )
+        triangle_normals[..., 0, :, [0, 3], :] = 0
+        triangle_normals[..., -1, :, [1, 2], :] = 0
+        triangle_normals[..., :, 0, [0, 1], :] = 0
+        triangle_normals[..., :, -1, [2, 3], :] = 0
+        unnormalized_normals = triangle_normals.sum(-2)
 
     # Merge unnormalized normals along closed seams using vectorized masking to avoid CPU-GPU synchronization.
     is_closed_x = torch.all(
@@ -2756,41 +2807,6 @@ class Surface(Mob):
         self.grid.location = new_loc
         return self
 
-    def set_normal_by_function(self, function):
-        """Set the surface's shading normals from a function of ``(u, v)``.
-
-        Overrides the normals computed from the geometry, which lets a flat surface
-        light as though it were curved, or a faceted one look smooth. The geometry
-        itself is unchanged.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default), so the shading shifts smoothly rather than snapping.
-
-        Parameters
-        ----------
-        function
-            Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
-            normals of shape ``[..., 3]``. Must be vectorized over the whole grid.
-
-        Returns
-        -------
-        :class:`~algan.mobs.surfaces.surface.Surface`
-            This surface, so calls can be chained.
-        """
-        new_normals = grid_to_triangle_vertices(function(self.get_base_grid()))
-        new_triangles = TriangleTriangulated(
-            unsquish(self.triangles.corners.location, -2, 3),
-            scene=self.scene,
-            normals=new_normals,
-            add_to_scene=False,
-        )
-        with Sync(animation_manager=self.animation_manager):
-            self.triangles.basis = new_triangles.basis
-            self.triangles.corners.basis = new_triangles.corners.basis
-        return self
-
     def get_default_color(self):
         """Get the colour a Surface uses when none was given.
 
@@ -2827,35 +2843,27 @@ class Surface(Mob):
 
         See Also
         --------
-        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_texture`
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`
             Paint an image on instead.
         """
-        new_color = grid_to_triangle_vertices(function(self.get_base_grid()))
-        new_triangles = TriangleTriangulated(
-            unsquish(self.triangles.corners.location, -2, 3),
-            scene=self.scene,
-            color=new_color,
-            normals=None,
-            add_to_scene=False,
-        )
-        with Sync(animation_manager=self.animation_manager):
-            self.triangles.color = new_triangles.color
-            self.triangles.corners.color = new_triangles.corners.color
+        new_color = function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
+        self.grid.color = new_color
         return self
 
-    def set_color_by_texture(self, rgba_array_or_file_path):
+    def set_color_by_image(self, rgba_array_or_file_path):
         """Paint an image across the surface.
 
-        The image is resampled to the surface's grid resolution and baked into its
-        per-vertex colours, so detail finer than the grid is lost -- raise the
-        surface's resolution, or use
-        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`, if you need the
-        image sharp.
+        The image is mapped over the surface's ``(u, v)`` domain at its own
+        resolution and sampled per fragment by the renderer, so it stays sharp
+        however coarse the surface's grid is, and it follows the surface as it
+        deforms. This sets
+        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`, which you can
+        assign directly when you already hold the image as a tensor.
 
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second by
-        default): the colours cross-fade to the image.
+        default): the surface cross-fades, texel by texel, to the image.
 
         Parameters
         ----------
@@ -2868,20 +2876,88 @@ class Surface(Mob):
         -------
         :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
+
+        See Also
+        --------
+        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`
+            The attribute this writes, for images already loaded as tensors.
         """
         texture_image = get_image(rgba_array_or_file_path)
-        texture_image = (
+        # A colour texture is indexed by the surface's own axes, (u, v); a
+        # loaded image is [row, column] with rows running down the picture.
+        # Same transposition ImageMob applies to the array it is built from.
+        surface_texture = texture_image.transpose(-3, -2).flip(-2).contiguous()
+
+        texture_shape = tuple(surface_texture.shape[-3:-1])
+        if self.is_spawned() and (
+            not self._has_color_texture
+            or (self.texture_height, self.texture_width) != texture_shape
+        ):
+            # A texture attribute that does not exist yet -- or one whose
+            # resolution is about to change, which detaches history -- has no
+            # earlier value to interpolate from, so the assignment below would
+            # pop. Seeding it with what the surface looks like now makes the
+            # assignment the cross-fade this method documents.
+            with Off(animation_manager=self.animation_manager):
+                self.color_texture = self._current_appearance_as_texture(texture_shape)
+
+        # The texture and the per-vertex bake are one visual change, so they
+        # have to be recorded as simultaneous edits: written plainly, an
+        # enclosing ``Seq`` would play them one after the other, each over half
+        # its window. The bake keeps the vertex colours in step with the
+        # texture -- shading reads the texture, but the glow accumulator
+        # interpolates triangle corners, and this is the same bake
+        # ``Surface(color_texture=...)`` does at construction.
+        with Sync(animation_manager=self.animation_manager):
+            self.color_texture = surface_texture
+            self.grid.color = squish(
+                F.interpolate(
+                    texture_image.permute(2, 0, 1).unsqueeze(0),
+                    (self.grid_height, self.grid_width),
+                    mode="bilinear",
+                    antialias=True,
+                )
+                .squeeze(0)
+                .permute(2, 1, 0)
+                .flip(-2),
+                -3,
+                -2,
+            ).unsqueeze(0)
+        return self
+
+    def _current_appearance_as_texture(self, texture_shape):
+        """This surface's current colours as a ``[W, H, 5]`` image of the given
+        resolution: its colour texture if it has one, its per-vertex grid colours
+        otherwise. Used as the value a freshly created colour texture
+        interpolates *from*.
+        """
+        if self._has_color_texture:
+            current = (
+                self._color_texture_uncopied()
+                .as_subclass(torch.Tensor)
+                .view(-1, self.texture_height, self.texture_width, 5)[-1]
+            )
+        else:
+            current = self.grid.get_animated_attribute("color").as_subclass(
+                torch.Tensor
+            )
+            if current.shape[-2] == 1:
+                current = current.expand(
+                    *current.shape[:-2], self.grid_width * self.grid_height, -1
+                )
+            current = current.reshape(
+                -1, self.grid_width, self.grid_height, current.shape[-1]
+            )[-1]
+        if tuple(current.shape[-3:-1]) == tuple(texture_shape):
+            return current.contiguous()
+        return (
             F.interpolate(
-                texture_image.permute(2, 0, 1).unsqueeze(0),
-                (self.grid_height, self.grid_width),
+                current.permute(2, 0, 1).unsqueeze(0),
+                size=tuple(texture_shape),
                 mode="bilinear",
-                antialias=True,
+                align_corners=True,
             )
             .squeeze(0)
-            .permute(2, 1, 0)
-            .flip(-2)
+            .permute(1, 2, 0)
+            .contiguous()
         )
-        self.triangles.corners.color = squish(
-            grid_to_triangle_vertices(texture_image), -3, -2
-        )
-        return self

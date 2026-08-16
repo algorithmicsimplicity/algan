@@ -33,7 +33,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
 from algan.errors import _user_stacklevel
-from algan.logging.logger import PERF, get_logger
+from algan.logging.logger import PERF, get_logger, resolve_progress_style
 from algan.rendering.memory_model import (
     AffineFrameCost,
     ChunkMemoryModel,
@@ -61,11 +61,8 @@ from algan.utils.memory_utils import (
 
 logger = get_logger("scene")
 
-# Resolved once: stderr is not swapped mid-render, and isatty() on a redirected
-# handle is not free.
-_PROGRESS_IS_TTY = bool(getattr(sys.stderr, "isatty", lambda: False)())
-
-# Below this many frames, a non-interactive run reports no progress at all.
+# Below this many frames, the "log" style reports no progress at all. A bar is
+# free to be short-lived; ten log lines about a two-second render are not.
 _PROGRESS_MIN_LOGGED_FRAMES = 60
 
 #: Sentinel "class" marking an entry of grouped_primitives that already holds
@@ -88,23 +85,28 @@ def _render_progress(total):
 
     Yields a callable to invoke once per frame written.
 
-    On a terminal this is a tqdm bar, which buys the estimate the old in-place
-    percentage line never gave: renders run for minutes, and "22.9%" does not
-    tell you whether to wait. Everywhere else -- pytest, CI, the render daemon
-    -- it stays a periodic log line rather than tqdm's own non-TTY fallback,
-    which emits a line per update and buries a captured run in carriage
-    returns. This degrades to at most ten lines, and to silence for renders too
-    short for a progress report to tell anyone anything.
+    Where it can be drawn, this is a tqdm bar, which buys the estimate the old
+    in-place percentage line never gave: renders run for minutes, and "22.9%"
+    does not tell you whether to wait. Where stderr is being captured into a
+    stored log -- pytest, CI -- it degrades to at most ten log lines, because
+    there a bar's carriage returns are kept rather than acted on and it becomes
+    hundreds of lines. ``logging.logger.resolve_progress_style`` decides which;
+    ``ALGAN_PROGRESS`` / ``set_progress_style`` override it.
 
     Whether to report at all is settled once, on entry, rather than per frame:
-    a bar is an object with a lifetime, so a level change mid-render can no
-    longer conjure or retire one.
+    a bar is an object with a lifetime, so a level or style change mid-render
+    can no longer conjure or retire one.
     """
     if not logger.isEnabledFor(logging.INFO):
         yield lambda: None
         return
 
-    if not _PROGRESS_IS_TTY:
+    style = resolve_progress_style()
+    if style == "none":
+        yield lambda: None
+        return
+
+    if style == "log":
         done = 0
         step = max(1, total // 10)
 

@@ -4,11 +4,16 @@ Ranked candidates for further speeding up Algan, measured against the project's
 reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 3883 frames), profiled with `algan.utils.profiling_utils`.
 
-> **Read the percentages, not the seconds.** Both profile runs quoted here
+> **Read the percentages, not the seconds.** Every profile run quoted here
 > landed on a thermally throttled machine (`nvidia-smi` reported `SwThermal`
 > throughout each). Shares of the run are stable; absolute seconds are not
-> comparable between the two columns of any table below. Where a claim is an
+> comparable between the columns of any table below. Where a claim is an
 > estimate rather than a measurement it says so.
+>
+> **And check what the profiler does not hook before reading an exclusive
+> column.** An unhooked callee is not reported as a missing stage -- its time
+> lands in its caller's *own* time, where it reads as irreducible overhead. That
+> hid the largest item in this document for three rounds (P10).
 
 ---
 
@@ -27,8 +32,31 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P6** endpoint row dedup in `_query_row_states` | **shipped, minor** -- byte-identical, but only **1.051x on the query**: the old item-1 premise predated P1; see P6 |
 | **P7** updater-trace clone memo + batched `get_orthonormal_vector` | **shipped** -- 1.042x on the whole replay stage and 1.23x on the updater section; **and it re-scoped item 1 again**: the replay loop's cost is the *updater bodies*, not the per-event machinery. See P7 |
 | **P8** collating the per-descendant fan-out | **shipped** -- 99.5% of s05's 25 582 recorded events were per-descendant fan-out of a few hundred subtree-wide operations. Spawn/despawn now record **one** animation for the whole set: s05 25 582 -> 12 659 events, **1.64x on `set_state_to_times`**, 1.25x on prep. **Not byte-identical** -- it restores `Text`/`Tex` wave exits an ancestor's fade used to overwrite; two full-render baselines move. See P8 |
+| **P8b** the `dim_mobs` family, collated in the video project | **shipped** -- `map_animated_attribute` replaced the per-descendant loops. With P8 this took `save_video` 396.7 s -> **348.75 s** and `set_state_to_times` own time 92.5 s -> **56.4 s (1.64x)**, reproducing the harness prediction end to end. See the 2026-08-16 re-profile |
+| **P10** the batched surface build | **measured -- the top item.** `get_batch_of_primitives`' own time was never orchestration: **85.35 s (21.9%)** is `get_render_primitives_batched`, which **had no profiler hook**. With the hook added the stage's own time drops 23.8% -> **4.5%**. Inside it, 59.8% is `compute_grid_vertex_normals` and only 24.2% is the per-surface tail. See P10 |
+| **P11** pairwise triangle sides in `compute_grid_vertex_normals` | **shipped and confirmed end to end** -- **2.0-2.2x** on the function, **1.51x on the whole stage** (85.35 s / 21.9% -> 56.62 s / 15.8%), **bit-identical** (asserted on bit patterns, incl. NaN payloads and signed zeros). Removes an 8-copy stack, an 8-wide subtract, two stride-2 gathers and a length-4 reduction. See P11 |
+| **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
 | **T5** sparse-coverage host chain | the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
+
+**Read this before picking anything up.** The 2026-08-16 round moved the
+ranking's centre of gravity three times over.
+
+* The re-profile after P8 showed that **everything that shrank was on the
+  timeline/replay side, and everything on the geometry-build and render-thread
+  side was flat in absolute seconds.** `set_state_to_times`, the stage two
+  rounds had attacked, fell below `get_batch_of_primitives`' own time.
+* Measuring that own time (P10) found it was **not orchestration at all**:
+  essentially all of it was one unhooked function, the batched surface geometry
+  build, at 85.35 s (21.9%). Hooking it dropped the stage's own time to 4.5%.
+  Hence the rule at the top: **an unhooked callee shows up as its caller's own
+  time, and "own time" reads like irreducible overhead.**
+* Splitting *that* (P10) put 59.8% of it in `compute_grid_vertex_normals`, and
+  P11 cut that 2x, taking the whole stage to 56.62 s (15.8%).
+
+What is left on top is **`AttributeTimeline.get`** at 72.58 s (20.3%) -- which
+has never been targeted and has risen to first place by attrition. See "What is
+left, in order".
 
 The re-profile this document demanded has been done (2026-08-14, warm run 2,
 `save_video` = 382.3 s) and it moved three things:
@@ -89,6 +117,25 @@ All three set `SETTINGS.skip_save_frame`: the scene sprinkles ~22
 that would land in the profiler's stage timers, because `TIMERS.reset()` happens
 *before* `scene_func()`. Skipping them keeps the stage table a measurement of
 `save_video` alone.
+
+**The 2026-08-16 re-profile crashed the first time, and the bug was real.** Two
+thirds through run 1 a bloom FFT buffer exhausted the arena -- the ordinary,
+designed backstop -- and the split retry then died with `RuntimeError: repeats
+can not be negative` inside `_class_pairs_flat`. Cause:
+`_build_raster_tables` allocates the batch-wide projection / screen-bounds
+tables at the arena's **persistent (reverse)** end from inside the first chunk
+and caches them on `merged` for the whole batch, and `render_chunk`'s rewind
+restored the reverse pointer unconditionally -- handing that range back to the
+allocator while the cache still pointed into it. Ordinarily invisible, because
+the render loop re-protects the range the instant `render_batch_raytraced`
+returns; but the OOM retry rewinds and then **re-enters** `render_chunk` on each
+half, and those halves allocate forward straight over the tables, so
+`_window_pairs` reads garbage bounds and a negative bbox width reaches
+`repeat_interleave`. Fixed by `rewind_to()` (`tracer.py`), which clamps the
+rewind to the published `_raster_tables_reverse_pointer`; guarded by
+`benchmarks/_raster_tables_retry_check.py`, whose `--mutate` arm reproduces the
+crash message exactly. **Any scene dense enough to OOM a chunk could hit this,
+so it is not specific to the reference workload.**
 
 `profile_scene` writes `algan_profile_report[_tag].txt` beside the caller. Run 1
 is cold (Taichi JIT, cold clocks); **read run 2**. The knobs are documented in
@@ -189,13 +236,29 @@ already been wrapping correctly all along (it just predated the helper), and
   (the prep optimizations, CPU, `ALGAN_OPT_DISABLE`-gated),
   `benchmarks/_event_index_parity.py` (the interval index, CPU),
   `benchmarks/_resolve_rollback_check.py` (the replay checkpoint survives a
-  render unchanged -- read its note on how it avoids being vacuous).
+  render unchanged -- read its note on how it avoids being vacuous),
+  `benchmarks/_raster_tables_retry_check.py` (the out-of-memory split retry
+  keeps the cached raster tables; asserts the *invariant* as well as the frames,
+  because whether the corruption manifests depends on how much arena headroom
+  the machine has).
 * **Real-render** probes, which are the only ones that can see recording,
   resolve and cache behaviour honestly (see "The measurement trap" above):
   `benchmarks/_replay_records_check.py` (replay re-records; quantifies it),
   `benchmarks/_render_time_growth_check.py` (a real multi-batch render records
   nothing and resolves once), `videos/rl2/animations/_real_render_scans_s05.py`
   (the per-batch scans timed inside a genuine `save_video`).
+* **Where the geometry-build time goes**, all in `videos/rl2/animations/`, all
+  prep-only on the CPU: `_gbop_section_probe_s05.py` splits
+  `get_batch_of_primitives`' own time into its untracked sections (P10),
+  `_surface_build_probe_s05.py` splits `get_render_primitives_batched` into its
+  shared prefix and per-surface tail (P10), and `_bezier_batchability_s05.py`
+  attributes every circuit to batched / group-reverted / gate-rejected, naming
+  the clause that rejected it (P9). **All three wrap shared helpers, so they
+  scope their timers to the function under test** -- an unscoped wrapper times
+  the whole prep pass and produced one wrong reading already (see P10).
+* `benchmarks/_grid_normals_ab.py` (P11: bit-pattern equality of the vertex
+  normals across 13 grid topologies plus timing; read its `REAL` rows, the small
+  cases are dispatch-bound).
 * **Where the recorded events come from** (P8), both in
   `videos/rl2/animations/`: `_authored_funcs_s05.py` attributes every recorded
   `FunctionApplicationEvent` to its authoring site, the algan-internal chain
@@ -223,10 +286,10 @@ already been wrapping correctly all along (it just predated the helper), and
 The render is a two-thread pipeline, and **prep is now the larger pole by a
 clear margin**:
 
-| pole | stage | original | 2026-08-14 | 2026-08-15 |
-| --- | --- | --- | --- | --- |
-| batch-prep worker | `Scene.get_batch_of_primitives` | 519 s (64.8%) | 299.4 s (78.3%) | 310.2 s (**78.2%**) |
-| render thread | `ray traced render total` | ~543 s (67.7%) | 196.1 s (51.3%) | 190.3 s (48.0%) |
+| pole | stage | original | 2026-08-14 | 2026-08-15 | 08-16 (P8) | 08-16 (P11) |
+| --- | --- | --- | --- | --- | --- | --- |
+| batch-prep worker | `Scene.get_batch_of_primitives` | 519 s (64.8%) | 299.4 s (78.3%) | 310.2 s (78.2%) | 257.2 s (73.7%) | 263.6 s (**73.6%**) |
+| render thread | `ray traced render total` | ~543 s (67.7%) | 196.1 s (51.3%) | 190.3 s (48.0%) | 189.6 s (54.4%) | 203.0 s (56.7%) |
 
 They still overlap, so neither number is the wall clock. But the old advice --
 "cutting only one pole buys almost nothing, work the two lists together" -- was
@@ -234,12 +297,93 @@ written when the poles were level. They are not any more: T1 and T2 took ~84 s
 off the render thread and nothing off prep, and prep is what the total now
 tracks. **Prefer a prep item over a render item of the same size.**
 
+P8 then took 53 s off prep and **nothing** off the render thread (189.6 s
+against 190.3 s -- the same number twice), which is why the gap narrowed from
+78.2/48.0 to 73.7/54.4 without the advice changing. P11 narrowed it again.
+**The render thread's share has risen at every re-profile without its work
+changing at all**, purely because prep keeps shrinking; the two poles are close
+to level, so the next round or two should re-check that advice rather than
+inherit it.
+
 A second consequence, unchanged: this scene is *not* GPU-limited. Average GPU
 utilisation was 44% on the re-profile. The Taichi candidates below are worth
 doing because they are on the render thread's critical path, not because the
 device is saturated.
 
-### The re-profile, warm run 2 (`save_video` = 396.7 s, 2026-08-15, post P1-P6)
+### The re-profile, warm run 2 (`save_video` = 348.75 s, 2026-08-16, post P8 + P8b)
+
+The scene's authoring changed under this measurement: the video project's
+`dim_mobs` / `restore_mobs` now call `Mob.map_animated_attribute` instead of
+looping `set_non_recursive` over `get_descendants()`, which is the half of P8
+that lives outside the engine. That plus P8 itself is everything between this
+column and the last one.
+
+**This is the pre-hook, pre-P11 column; the current one is below it.** It
+predates the `surfaces: get_render_primitives_batched` hook, so that function's
+cost is inside `get_batch_of_primitives`' own time here. The row is left as
+measured so the profiles stay comparable.
+
+| item | measured | was (08-15) | |
+| --- | --- | --- | --- |
+| **`get_batch_of_primitives` own** | **82.98 s (23.8%)** | 84.6 s (21.3%) | flat -- **~85% of it is the batched surface build**; see P10 |
+| `AttributeTimeline.get` (542 052 calls) | 57.14 s (16.4%) | 84.9 s (21.4%) | 1.49x, 105 000 fewer calls |
+| **P8** `set_state_to_times` own | **56.38 s (16.2%)** | 92.5 s (23.3%) | **1.64x** |
+| `bloom fft conv` | 44.12 s (12.7%) | 42.6 s (10.7%) | flat |
+| `rematerialize_state_at_times` | 39.74 s (11.4%) | 38.4 s (9.7%) | flat |
+| **T5** sparse-discovery *host* chain | ~36.66 s (10.5%) of 91.44 s incl | ~39.9 s (10.1%) | flat |
+| `BezierCircuitCubic.get_render_primitives` own | 36.22 s (10.4%) | 39.8 s (10.0%) | ~flat, 11 607 calls |
+| `memory reclaim (gc + cuda cache)` | 31.35 s (9.0%) | 39.9 s (10.1%) | |
+| **T3** `_build_circuit_geometry` | 19.26 s (5.5%) | 19.2 s (4.8%) | flat |
+| **T4** `_dice_logical_pn` own | 10.04 s (2.9%) | 9.5 s (2.4%) | flat |
+| **T6** precompute tables | 5.55 s (1.6%) | 5.7 s (1.4%) | flat |
+| **T1+T2** criterion kernels | 1.38 s (0.4%) | 2.6 s (0.7%) | |
+
+Read the "was" column as a *ratio* check, not a subtraction: both runs were
+thermally throttled (`SwThermal` throughout, avg GPU utilisation 45%).
+
+**What this says, and it is the whole point of the re-profile:** P8 delivered
+what its harness predicted -- 1.64x on the replay stage, against the 1.64x
+`_fanout_collate_ab_s05.py` measured -- and the two-pole extrapolation of
+"~1.23-1.33x on the render" was **too optimistic**: the real figure is
+**1.14x** (396.7 s -> 348.75 s). The saving landed entirely on the pole that was
+already overlapped, so a third of it disappeared into the render thread's
+shadow. Treat future two-pole extrapolations the same way: they bound the win,
+they do not predict it.
+
+The other half of the finding is negative and more useful. Nine of the twelve
+rows above are **flat in absolute seconds**. Everything the last three rounds
+moved was reached through the timeline; nothing that builds geometry or renders
+has been touched since T1/T2. That is where the remaining time is.
+
+### The current profile, warm run 2 (`save_video` = 358.05 s, 2026-08-16, post P11)
+
+Hooked and post-P11, so this is the column to rank against.
+
+| item | measured | share |
+| --- | --- | --- |
+| **`AttributeTimeline.get`** (542 052 calls) | **72.58 s** | **20.3%** |
+| **`set_state_to_times` own** | **64.21 s** | **17.9%** |
+| **`surfaces: get_render_primitives_batched`** | **56.62 s** | **15.8%** |
+| `bloom fft conv` | 45.62 s | 12.7% |
+| `BezierCircuitCubic.get_render_primitives` own | 40.97 s | 11.4% |
+| **T5** sparse-discovery *host* chain | ~41.3 s of 99.99 s incl | ~11.5% |
+| `rematerialize_state_at_times` | 34.97 s | 9.8% |
+| `memory reclaim (gc + cuda cache)` | 31.26 s | 8.7% |
+| **T3** `_build_circuit_geometry` | 19.96 s | 5.6% |
+| `get_batch_of_primitives` own | 18.44 s | 5.2% |
+| `AttributeTimeline.modify` (68 020 calls) | 11.46 s | 3.2% |
+| **T6** precompute tables | 6.20 s | 1.7% |
+
+Poles: prep 263.60 s (73.6%), render thread 203.04 s (56.7%).
+
+**`AttributeTimeline.get` is now the largest single item**, at 542 052 calls of
+~134 us each. P8 cut the replay-side calls and did not touch the geometry-side
+ones, and P11 removed work *around* them rather than any of the calls
+themselves, so this row has risen to the top by attrition. It is the same
+"fewer calls, not faster ones" family as P9 and the per-surface tail of P10 --
+and both of those *are* ways of removing these calls.
+
+### The previous re-profile, warm run 2 (`save_video` = 396.7 s, 2026-08-15, post P1-P6)
 
 | item | measured | was (08-14) |
 | --- | --- | --- |
@@ -514,7 +658,7 @@ for the current shares; the notes below are what is known about each.
 | `set_state_to_times` own time | the function-replay loop; the first batch replays 1403 recorded functions. **P2 shipped against this** |
 | `AttributeTimeline.get` | 660k calls, ~85 us/call of Python + torch dispatch. 37% of them are made *while a function is replaying* -- **P2 shipped against those**; the rest is fewer calls, not faster ones |
 | `get_batch_of_primitives` own time | geometry-build orchestration |
-| `BezierCircuitCubic.get_render_primitives` | per-actor build; `build_render_primitives_batched` already covers the batchable case |
+| `BezierCircuitCubic.get_render_primitives` | per-actor build. `build_render_primitives_batched` covers the batchable case **and reaches only 18.4% of the scene's circuits** -- see P9 |
 | `memory reclaim` | see "a gate that never closes" above -- small-VRAM-specific, not a general win |
 
 ### P2 -- contiguous replay time-selector (shipped)
@@ -962,6 +1106,29 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > now be one `map_animated_attribute('opacity', lambda o: o * f)` call. That is
 > the difference between this and the 3.20x the prototype measured.
 >
+> ### CONFIRMED END TO END (2026-08-16), with the `dim_mobs` half shipped
+>
+> `dim_mobs` / `restore_mobs` in the video project now call
+> `map_animated_attribute`, so both halves are in. Re-profiled on the reference
+> scene:
+>
+> | | 2026-08-15 | 2026-08-16 | |
+> | --- | --- | --- | --- |
+> | `set_state_to_times` own | 92.5 s (23.3%) | **56.4 s (16.2%)** | **1.64x** |
+> | `AttributeTimeline.get` | 84.9 s / 647 399 calls | 57.1 s / 542 052 calls | 1.49x |
+> | `rematerialize_state_at_times` | 38.4 s | 39.7 s | flat |
+> | prep pole | 310.2 s (78.2%) | 257.2 s (73.7%) | 53 s |
+> | render thread | 190.3 s (48.0%) | 189.6 s (54.4%) | unchanged |
+> | **`save_video`** | **396.7 s** | **348.75 s** | **1.14x** |
+>
+> **The stage prediction held exactly; the render prediction did not.** 1.64x on
+> the stage is what the harness said. But "~1.23-1.33x on the render" assumed
+> the poles keep overlapping as they did before, and they do not: the saving
+> came off the *larger, already-overlapped* pole, so a third of it vanished into
+> the render thread's shadow. 1.14x is the honest figure. **The rule this earns:
+> a two-pole extrapolation is an upper bound, not a prediction** -- quote it as
+> "at most", or measure the render.
+>
 > **It is not byte-identical, and the reason is a behaviour fix.** An ancestor's
 > `Mob.on_destroy` is a *recursive* opacity write, so despawning a group faded a
 > `Tex`'s glyphs uniformly on top of the diagonal wave its own `on_destroy`
@@ -1116,6 +1283,203 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 >   and quietly measure a cheaper *scene*. The row-coverage row in the table
 >   above (1.15x, not 26x) is what rules that out.
 
+### P10 -- `get_batch_of_primitives`' "own time" is the batched surface build (measured, not started)
+
+> **The largest single item in the profile was an artifact of the hook list.**
+> Every revision of this document has called `get_batch_of_primitives`' own time
+> "geometry-build orchestration" and left it unmeasured. Split into sections
+> (`videos/rl2/animations/_gbop_section_probe_s05.py`, six windows across the
+> scene, prep only, CPU), a 7.48 s pass is:
+>
+> | section | s/pass | share | tracked by the profiler? |
+> | --- | --- | --- | --- |
+> | `set_state_to_times` | 2.636 | 35.3% | yes |
+> | per-actor bezier build | 2.002 | 26.8% | yes |
+> | **deferred surface build** | **1.762** | **23.6%** | **no** |
+> | collection construction | 0.442 | 5.9% | no |
+> | unattributed orchestration | 0.460 | 6.2% | no |
+> | deferred bezier build | 0.091 | 1.2% | yes |
+> | dispatch predicates (5052 calls) | 0.064 | 0.9% | no |
+> | `actor_query` | 0.015 | 0.2% | no |
+> | `_materialize_render_state` | 0.005 | 0.1% | yes |
+>
+> The untracked rows sum to **36.8%** of the pass against the profiler's
+> **32.3%** own-time share of the stage (82.98 s of 257.18 s) -- consistent, so
+> the attribution holds, and it points at `get_render_primitives_batched` in
+> `mobs/surfaces/surface.py`.
+>
+> Why it was invisible: its bezier counterpart `build_render_primitives_batched`
+> has been hooked all along, but the surface one never was, and on this scene
+> *every* surface is batchable -- every batch reports `num_pn=0` and
+> `Surface.get_render_primitives` does not appear in the report at all. So the
+> whole cost fell into the stage's exclusive column with no row of its own.
+>
+> #### Confirmed by hooking it (re-profile, warm run 2, `save_video` = 390.47 s)
+>
+> | | measured | was |
+> | --- | --- | --- |
+> | **`surfaces: get_render_primitives_batched`** (172 calls) | **85.35 s excl (21.9%)**, 89.45 s incl | no row at all |
+> | `get_batch_of_primitives` own | **17.66 s (4.5%)** | 82.98 s (23.8%) |
+>
+> **The stage's own time collapses to 4.5%.** Essentially all of it was this one
+> function, and the harness split above *understated* it: ~53 s inferred against
+> ~85 s measured, which is now the **largest single item in the whole render**.
+> (This run is thermally slower than the 348.75 s one -- 390.47 s end to end, the
+> usual `SwThermal` -- so compare its shares, not its seconds, against the table
+> above.)
+>
+> #### Inside it: 60% is `compute_grid_vertex_normals`
+>
+> `videos/rl2/animations/_surface_build_probe_s05.py` splits the function by
+> nesting, so a callee reached from the per-surface tail is charged separately
+> from the same callee run on the whole stack. Per pass (12 calls, 223 surfaces,
+> 18.6 per call), the function costs 1.396 s -- **22.7% of the prep pass against
+> the profiler's 21.9% of the render, so the attribution transfers**:
+>
+> | section | s/pass | % of fn |
+> | --- | --- | --- |
+> | **`compute_grid_vertex_normals`** | **0.836** | **59.8%** |
+> | `grid_to_triangle_vertices` (whole stack) | 0.191 | 13.7% |
+> | per-surface primitive construction | 0.125 | 8.9% |
+> | per-surface `grid_to_triangle_vertices` | 0.114 | 8.1% |
+> | per-surface residual + timeline reads | 0.094 | 6.7% |
+> | everything else | 0.036 | 2.8% |
+> | **shared prefix / per-surface tail** | | **74.8% / 24.2%** |
+>
+> The obvious hypothesis going in -- that the "batched" build is only batched for
+> grids, normals and corners while colours, shader parameters and construction
+> stay per-surface -- **is true but second order**: the whole per-surface tail is
+> 24.2%. The shared prefix is three quarters of it, and one function is 60%.
+>
+> **This measurement was wrong the first time, in an instructive way.** The probe
+> wraps module-level helpers, and the first version timed them *everywhere in
+> prep*, not just inside the target: `get_animated_attribute` duly reported
+> 16 670 calls against 223 surfaces and came out as the largest row. The guard
+> that fixes it is one flag set by the outer wrapper. **A wrapper on a shared
+> helper measures the whole program unless it is scoped.**
+>
+> Three things follow. First, **item 1 is a real target, not bookkeeping**, and
+> P11 below is the first cut into it. Second, the general lesson, which has now
+> cost two rounds: **an unhooked callee does not show up as a missing stage, it
+> shows up as its caller's own time** -- and "own time" reads like irreducible
+> overhead, which is exactly the wrong conclusion. When an exclusive column is
+> large and unexplained, check the hook list before designing. Third, the
+> per-surface tail (24.2%) is a smaller, separate item: batching the colour and
+> shader-parameter gathers the way the grids already are.
+>
+> `actor_query` deserves a footnote from the section probe: **0.015 s per pass
+> there against the 38.95 ms/batch this document measured inside a real
+> render.** That gap is the prefetch-worker effect (see the end of this
+> document), not a change in the code, and it is the sharpest illustration of it
+> yet -- a CPU harness cannot see that item at all.
+
+### P11 -- pairwise triangle sides in `compute_grid_vertex_normals` (shipped)
+
+> **Shipped**, bit-identical, gated by `ALGAN_OPT_DISABLE=gridnormals`.
+> **2.0-2.2x on the shapes the batched build actually passes.**
+>
+> The four triangles around a grid vertex use each rolled neighbour twice --
+> once as the second side of one triangle, once as the first side of the next --
+> and the code made that literal. It stacked eight copies of the grid into
+> `[..., W, H, 8, 3]`, subtracted the grid from all eight, sliced two **stride-2**
+> views back out to cross, and then reduced a `[..., W, H, 4, 3]` tensor over its
+> triangle axis. Now each neighbour is differenced once, the four pairs are
+> crossed directly, and the four results are added.
+>
+> | case | before | after | |
+> | --- | --- | --- | --- |
+> | `[19, 50, 24, 12, 3]` (the real shape) | 110.5 ms | 50.3 ms | **2.20x** |
+> | `[19, 50, 40, 20, 3]` | 297.5 ms | 146.0 ms | **2.04x** |
+> | small grids (a few thousand points) | | | 1.0-1.6x |
+>
+> **Bit-identical, and that is asserted on bit patterns rather than `==`** so a
+> signed-zero flip or a changed NaN payload cannot pass
+> (`benchmarks/_grid_normals_ab.py`, 13 cases: open / x-closed / pole grids,
+> single-column and two-row degenerates, collapsed columns, float64, NaN, inf,
+> signed zeros, and the batched stack). Every operation is elementwise on the
+> same values in the same order; the one step that needed checking is dropping
+> `stack(...).sum(-2)` in favour of `n0 + n1 + n2 + n3`, since float addition is
+> not associative -- verified that a length-4 reduction over a contiguous axis
+> *is* that sequential order, bitwise, before relying on it.
+>
+> **Two traps.** First, **the first A/B said 0.93x on the batched case and it was
+> noise**: ten un-alternated iterations of a sub-millisecond op on this machine.
+> Alternating the arms per round and taking medians turned the same code into
+> 1.46x. This document has warned about wall-clock A/Bs before; it applies at the
+> microbenchmark scale too. Second, **the small-grid rows are dispatch-bound and
+> say nothing about the win** -- the paired form runs *more* torch calls, so it
+> only pays once the tensors are large enough for bandwidth to dominate. Read the
+> `REAL` rows.
+>
+> #### Confirmed end to end (re-profile, warm run 2, `save_video` = 358.05 s)
+>
+> | | before P11 | after P11 | |
+> | --- | --- | --- | --- |
+> | `surfaces: get_render_primitives_batched` excl | 85.35 s (21.9%) | **56.62 s (15.8%)** | **1.51x** |
+> | prep pole | 302.24 s (77.4%) | 263.60 s (73.6%) | |
+> | `save_video` | 390.47 s | 358.05 s | 1.09x |
+>
+> **The stage prediction was right this time**: the microbenchmark said 2.0-2.2x
+> on 59.8% of the stage, which predicts `0.402 + 0.598/2.1 = 0.69` -> 1.45x, and
+> the measured figure is 1.51x. Both runs carry the hook, so they are directly
+> comparable in structure.
+>
+> Read the 1.09x on the total with more caution than the stage: these runs sit
+> 390.5 s and 358.0 s apart on a thermally throttled machine, so some of that
+> gap is not P11. The stage's *share* -- 21.9% -> 15.8% of its own run -- is the
+> number that does not depend on thermal state.
+
+### P9 -- the batched bezier build reaches 18.4% of the circuits (measured, not started)
+
+> **Measured first** (`videos/rl2/animations/_bezier_batchability_s05.py`, six
+> windows spread across the scene, prep only, no render). The vectorized
+> `build_render_primitives_batched` -- which reads each attribute from the
+> timeline **once for a whole group** instead of per actor -- is reached by
+> under a fifth of s05's circuits:
+>
+> | outcome | circuits | share |
+> | --- | --- | --- |
+> | batched | 308 | **18.4%** |
+> | **reverted by the group clash** | **863** | **51.5%** |
+> | rejected by `_is_batchable_bezier` | 504 | 30.1% |
+> | *of which* `empty` (returns `None` immediately, ~free) | 306 | 18.3% |
+> | *of which* `batched-control-points` (real work) | 198 | 11.8% |
+>
+> **The dominant cause is not the per-actor gate; it is the all-or-nothing
+> group revert**, and that is a surprise worth stating plainly. The code says so
+> itself:
+>
+> ```python
+> # A non-batchable primitive sharing a group's batch identifier
+> # would have been concatenated into the same collection,
+> # interleaved by actor order; fall back to the per-actor build
+> # for such (rare) groups so the collection layout is unchanged.
+> ```
+>
+> They are **not rare**: 198 circuits with batched control points poison 863
+> otherwise-batchable peers, because one raw primitive sharing a group's batch
+> identifier reverts the entire group. One window (1600) batches *nothing at
+> all*.
+>
+> Scale, from the same profile: `build_render_primitives_batched` is 2.02 s
+> inclusive for its 18.4% share, against 46.80 s inclusive for the per-actor
+> path's remainder -- so **batched is ~5x cheaper per circuit**. Moving the 51.5%
+> that revert is worth roughly 19 s of the prep pole; after the overlap discount
+> P8 just demonstrated, expect **~1.04x on the render**, not more. Real, ranked
+> first among geometry-build items, but not a headline -- and the estimate should
+> be checked against P8's lesson before anyone budgets on it.
+>
+> **What makes it non-trivial**, and why this is a design note rather than a
+> patch: the revert exists to keep the merged collection's layout identical, and
+> the final grouping loop cannot express a mixed key. `grouped_primitives[key]`
+> carries one class marker, and the downstream loop branches on it --
+> `_PREBUILT_COLLECTION` appends collections directly while
+> `BezierCircuitPrimitive` re-batches raw primitives under a size cap -- so a key
+> holding both would be misread. The layout-preserving shape is to split each key
+> into **maximal runs of consecutive batchable actors** in actor order, merge each
+> run, and teach that final loop to walk a heterogeneous list. Byte-identity is
+> the standard here, and the merged collection layout is exactly what decides it.
+
 ## Part 3 -- Authoring (90-110 s, outside `save_video`)
 
 Diffuse: no single site above ~4%. The top costs are `AttributeTimeline.get`
@@ -1131,63 +1495,97 @@ which every clone then deep-copies.
 
 ## What is left, in order
 
-Prep is 78.2% and the render thread 48.0% (2026-08-15 re-profile, post P1-P6),
-so prep items still come first at equal size. Step 0 (re-profile) and the old
-item 1 (`_query_row_states`, resolved as P6 -- the premise was stale) are done.
+Prep is 73.6% and the render thread 56.7% (2026-08-16 re-profile, post P11), so
+prep items still come first at equal size -- but only just; see item 5. Done and
+off this list: the re-profile itself, `_query_row_states` (P6 -- the premise was
+stale), the per-descendant fan-out (P8, **confirmed at 1.64x on the stage, 1.14x
+on the render**) with its `dim_mobs` half in the video project, and the vertex
+normals (P11, **confirmed at 1.51x on the surface-build stage**).
 
-1. **Collate the per-descendant fan-out (P8)** -- measured at **1.99x on
-   `set_state_to_times`** and ~1.23-1.33x on the render, by far the largest
-   thing on this list, and the first item here whose lever is *upstream* of
-   the replay loop: it removes events rather than making them cheaper. It
-   needs a design (subclass `on_create` / `on_destroy` overrides, partially
-   spawned subtrees, and rendered-output parity are the open questions) and a
-   recursive scale-opacity API for the `dim_mobs` half. Read P8 before
-   starting.
-2. **`set_state_to_times` own time** -- 92.5 s (**23.3%**), the largest single
-   *profiled* item, and what P8 attacks from above. **Measured section by
-   section** (P7), which killed the plan an earlier revision put here (a
-   batched `[F, T]` window-test and interpolant pass): that machinery is
-   **~11% of the stage**, worth at most ~2.5% of `save_video` even if
-   perfectly eliminated. What is left inside the stage, in order:
+**The list is reordered, and the reorder is the point.** Three rounds of work
+landed on the timeline, so the replay stage fell below the geometry build; P10
+then found the geometry build's largest piece had been hiding in an unhooked
+callee, and P11 cut it in half. What has risen to the top through all of it is
+`AttributeTimeline.get` -- not because it grew, but because it is the one thing
+every round has left alone.
 
-   * **the updater section, 31.2%** -- the bodies themselves, now that P7 has
-     taken the trace-registry walk and the orthonormal loop out of them. The
-     remaining cost is per-Mob Python in the body: on this scene one updater
+1. **`AttributeTimeline.get`** -- **72.58 s (20.3%)**, 542 052 calls at ~134 us
+   each: the largest single item after P11, reached the top by attrition rather
+   than by growing. P8 cut the replay-side calls; the geometry-side ones have
+   never been touched and are now the majority. The lever is **fewer calls**,
+   and items 2 and 3 are both concrete ways of removing them, so measure the
+   three together rather than attacking this row directly. Re-measure the
+   `get/full` vs `get/replay` split first (`_prep_timeslice_ab_s05.py` reports
+   it): the old "two thirds in the geometry build" figure predates P8, which
+   changed the denominator.
+2. **P9 -- widen the batched bezier build** -- measured: it reaches **18.4%** of
+   s05's circuits, and **51.5% are reverted by the all-or-nothing group clash**
+   that the code calls "rare". Batched is ~5x cheaper per circuit. The per-actor
+   build is 40.97 s (11.4%) of own time and every one of those builds makes its
+   own accessor round trips, so this cuts item 1 as well. Read P9 for the layout
+   constraint that makes it non-trivial.
+3. **The rest of the batched surface build (P10)** -- **56.62 s (15.8%)** after
+   P11 took 1.51x off it. What is left, in the proportions measured *before*
+   P11 (so re-split it before choosing):
+
+   * **the per-surface tail, 24.2%** -- colours, shader parameters and
+     primitive construction are still done one surface at a time, each with its
+     own timeline reads and its own gather of the same shape as the corners that
+     were just batched. The lever is to stack them exactly as the grids already
+     are, and it is the part that also cuts item 1. Smaller than it looks, which
+     is itself the finding: the obvious hypothesis was that this *was* the cost.
+   * **the rest of `compute_grid_vertex_normals`** -- P11 took the side
+     construction; the seam merge, the two pole fans and the final
+     `F.normalize` are untouched.
+   * **`grid_to_triangle_vertices` on the whole stack, 13.7%** -- an
+     advanced-index gather expanding `[..., W*H, C]` to `[..., 3*T, C]`, run
+     twice per call (corners and normals) on the same index tensor: the same
+     "two gathers sharing one permutation" shape as T5.
+4. **`set_state_to_times` own time** -- 64.21 s (17.9%), down from 92.5 s.
+   **Measured section by section** (P7), which killed the plan an earlier
+   revision put here (a batched `[F, T]` window-test and interpolant pass):
+   that machinery is ~11% of the stage. Those shares predate P8, which removed
+   half the events, so they need re-measuring too. What was left inside:
+
+   * **the updater section, 31.2%** (pre-P8) -- the bodies themselves, now that
+     P7 has taken the trace-registry walk and the orthonormal loop out of them.
+     The remaining cost is per-Mob Python in the body: on this scene one updater
      drives ~120 neurons and their synapses, and each `move_to` /
-     `set_start_point` / `move_between_points` is a separate animated call
-     with its own accessor round trip. The lever is **batching across the
-     mobs an updater touches** (one `[T, M, 3]` write instead of M writes),
-     which is a `Mob`-API change, not a timeline one, and needs its own
-     design. Note the general form: this is the same "fewer calls, not faster
-     ones" family as items 1 and 3.
+     `set_start_point` / `move_between_points` is a separate animated call with
+     its own accessor round trip. The lever is **batching across the mobs an
+     updater touches** (one `[T, M, 3]` write instead of M writes), a `Mob`-API
+     change rather than a timeline one. Note the general form: the same "fewer
+     calls, not faster ones" family as items 2 and 3.
    * **rate functions, 6.7%** -- 2844 calls a pass, each on a small `[T,1,1]`
      tensor. Groupable by shared function object *only* for the elementwise
      ones; `torch.lerp` of the grouped result is not obviously byte-identical
      across a regrouping, so this needs a bitwise A/B before it is worth
      anything.
-   * the ~11% of per-event machinery, which is now a *small* item rather than
-     the headline -- and if it is ever done, the caching rule still holds:
-     key on length + explicit invalidation, **not** `TIMING_VERSION` (P4).
-3. **`AttributeTimeline.get` outside replay** -- 84.9 s (21.4%), 647k calls of
-   ~130 us of Python + dispatch each. About two thirds of calls happen during
-   the geometry build, not replay (harness: `get/full` 12 030 vs `get/replay`
-   6 527 per 6-window pass). The lever is **fewer calls** -- batching per-actor
-   reads in the primitive builders -- not faster ones. Note P8 does not touch
-   these: its 2706 saved `get` calls are all on the replay side, and the
-   geometry side is identical in both arms.
-4. **`get_batch_of_primitives` own time** -- 84.6 s (21.3%), geometry-build
-   orchestration; overlaps item 3, measure them together.
-5. **T5** -- the sparse-discovery host chain, ~39.9 s (~10.1%): the six
-   `index_select` gathers that share one permutation are one kernel. The
-   largest render-thread item left.
-6. **T3** (4.8%), then **T4's remaining half** (the `allocate()` zero-fills --
+   * the ~11% of per-event machinery -- and if it is ever done, the caching rule
+     still holds: key on length + explicit invalidation, **not**
+     `TIMING_VERSION` (P4).
+5. **T5** -- the sparse-discovery host chain, ~41.3 s (~11.5%): the six
+   `index_select` gathers that share one permutation are one kernel. The largest
+   render-thread item left, and the render thread is now **56.7%** -- its share
+   has risen across three re-profiles purely because prep keeps shrinking, so
+   the two poles are nearly level again and the "prefer prep at equal size"
+   advice is close to expiring.
+6. **T3** (5.6%), then **T4's remaining half** (the `allocate()` zero-fills --
    small, its estimate unproven, and P3 suggests the same lazily-zeroed trick
-   may apply; fold it in whenever the dice is open anyway), then **T6** (1.4%).
+   may apply; fold it in whenever the dice is open anyway), then **T6** (1.7%).
 
 Ruled out this round: further search-count work in `_query_row_states` (P6:
 write-bound now), bloom as a Taichi kernel (measured far slower), and the
-`memory reclaim` gate (10.1% but small-VRAM-specific -- measure on a card with
+`memory reclaim` gate (9.0% but small-VRAM-specific -- measure on a card with
 headroom before spending anything).
+
+**And one method note the 2026-08-16 round earned.** P8's stage measurement was
+right to three significant figures and its *render* estimate was ~15% high,
+because it extrapolated across two overlapping poles. The pattern to expect: a
+saving on the larger, already-overlapped pole is discounted by roughly the
+overlap. Quote such extrapolations as upper bounds and re-profile to get the
+number -- which is also why every entry above now carries a measured share
+rather than a modelled one.
 
 **On scaling:** P4 removed the per-batch whole-scene event and actor scans, and
 P1 the O(N)-per-attribute-per-batch buffer commit. P5's target turned out not to

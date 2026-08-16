@@ -53,7 +53,9 @@ you texture something with data you computed rather than loaded.
     The per-material texture arguments on :class:`~algan.mobs.surfaces.surface.Surface`
     -- ``color_texture``, ``roughness_texture``, ``normal_texture`` and the rest --
     take **tensors only**. Handing one a file path raises ``TypeError``. Load the
-    image yourself first, with :func:`~algan.utils.file_utils.get_image`.
+    image yourself first, with :func:`~algan.utils.file_utils.get_image`, or use
+    :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`, which takes a
+    path and orients the image onto the surface's ``(u, v)`` axes for you.
 
 Reshaping a textured surface
 ============================
