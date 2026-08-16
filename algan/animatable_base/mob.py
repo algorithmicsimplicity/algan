@@ -747,7 +747,9 @@ class Mob(
         return self
 
     @animated_function(animated_args={"interpolation": 0.0})
-    def _apply_change(self, attr, change, recursive=True, interpolation=1.0, scope=None):
+    def _apply_change(
+        self, attr, change, recursive=True, interpolation=1.0, scope=None
+    ):
         # ``scope`` (a RowRanges) addresses an explicit set of rows instead of
         # this Mob's own / its whole subtree, which is what lets one recorded
         # event carry a per-row change over many Mobs. It is an ordinary
