@@ -11,51 +11,76 @@ works on either.
 <venv-python> -m pytest -q --fast
 ```
 
-**This is the suite to run after every change.** It is everything *not* marked
-`slow`, and it holds itself to two and a half minutes so it stays inside a
-development loop (measured 112–147 s on CUDA over consecutive warm runs, median
-~135 s, of which the render is about 50 s). It prints where it landed against
-that budget when it finishes:
+**This is the suite to run after every change.** It is a hand-picked set of
+tests marked `fast`, and **nothing else runs** — a test with no marker is
+outside it, including one added five minutes ago. It prints where it landed
+against its budget when it finishes:
 
 ```
-fast suite: 134s of its 150s budget (89%)
+fast suite: 21s of its 75s budget (28%)
 ```
 
 That figure moves by a good fraction between runs, because most of the render's
 cost is Taichi specialising a kernel and that is sensitive to what the process
 did beforehand. It is reported rather than enforced for exactly that reason: a
-timing assertion here would be a flake.
+timing assertion here would be a flake. The 21 s above is measured, on a warm
+cache on a 4-vCPU CPU-only container; the budget leaves room for the render to
+pay a kernel compile, which is where most of the time goes when it does.
+
+Before curation this suite was *everything not marked `slow`*: 910 of the
+suite's 1038 collected tests, 112–147 s on CUDA, and every new test anywhere
+joined it automatically. It is now **191**, listed below.
 
 **Wait for the third consecutive run before believing the number.** Taichi's
 cost is per kernel variant, charged to whichever test reaches it first, so any
 change that touches a kernel makes the next run pay a cold compile that has
 nothing to do with the suite's size. A measured sequence immediately after
 adding two small kernels ran 194 s → 160 s → 112 s, and only the last is the
-suite. Marking a test `slow` off run 1 evicts coverage to pay for a compile that
-would not have happened again.
-
-The budget itself was 120 s until the behavioural suite grew from 419 to 466
-unit tests and every run started reporting itself over. Raising it is a
-deliberate trade of loop time for coverage, not a formality: if the number stops
-meaning anything, the suite creeps.
+suite. Taking a marker off a test on the strength of run 1 evicts coverage to
+pay for a compile that would not have happened again.
 
 Give it no path, so it uses the `testpaths` from `pyproject.toml`.
 
-What it covers: the whole behavioural suite — the timeline and its replay, the
-transform hierarchy, layout, actor registration, settings, batch sizing and the
-arena, materials, the animations, the public API surface — plus **one real
-render, compared pixel-wise** (`tests/fast/`), which is the only thing in the
-loop that can see a renderer regression.
+### What is in it
 
-What it gives up, and where that is covered instead:
+The suite answers one question: **is Algan still working?** Not *is every
+feature intact* — that is the full suite's job. So it holds the mechanisms that
+every animation, every Mob and every render route through, and one end-to-end
+render:
+
+| Marked `fast` | Why it is in |
+| --- | --- |
+| `test_timeline_overlap.py`, `test_timeline_state_query.py`, `test_active_timeline_materialization.py` | Recording, the per-row state query and materialization at frame times. Nothing reaches the screen except through these. |
+| `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
+| `test_rate_functions.py` | Every animation is evaluated through one of these curves. |
+| `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
+| `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
+| `test_settings_api.py` | `SETTINGS` is read live by every subsystem. |
+| `test_ux_regressions.py` (per test, not the whole module) | The front door: `save_video`/`save_frame` and what they leave behind, contexts, `Group`, the star exports, and the errors users hit. It is a catch-all file, so its tests are marked one by one — see below. |
+| `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
+
+### What is not in it, and where that is covered instead
+
+Everything else — which is most of the suite, on purpose. The general shape:
+a test that only breaks when *its own* subsystem is worked on does not belong
+here, because whoever works on that subsystem runs its file (or the full suite)
+anyway.
 
 | Left out | Why | Covered by |
 | --- | --- | --- |
-| The other four render scenes | ~2 minutes each | `tests/full_renders/` |
+| Per-feature behaviour: the indication animations, `become`, `wave_color`, `NumericDisplay`, materials, fragment shaders, neural nets, the Manim compatibility layer, glTF/FBX import | Breaks when that feature is worked on, not when anything else is | Its own file, plus `tests/full_renders/` for pixels |
+| Renderer internals: PN tessellation, surface autotune, bezier sampling, BVH refit, wavefront compaction, the frag-pid gate | Same, one subsystem each | Its own file |
+| Batch sizing, the arena, texture memory, post-processing memory | Cheap, but they only move when their own module does; the fast render exercises the real path | `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py`, … |
+| Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the full suite and CI catch before a push | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
+| The other six render scenes | ~2 minutes each | `tests/full_renders/` |
 | Brute-force tracer references | Taichi specialises a megakernel per test's geometry; tens of seconds each | `tests/unit_tests/test_raytracing_unit.py` |
 | PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
 | Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
-| Point clouds, the `import algan` subprocess check | Re-confirm a known defect / a second interpreter | The full suite |
+
+**CI is not the fast suite.** It names `tests/unit_tests tests/fast` as paths
+and runs everything under them, `fast`-marked or not (see the comment in
+`.github/workflows/test.yaml`). The fast suite is a development loop; CI can
+afford twelve minutes and should keep spending them.
 
 ## The full suite
 
@@ -69,28 +94,53 @@ you changed lives here.
 
 | Directory | What it protects | Cost |
 | --- | --- | --- |
-| `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~60 s (~90 s including the `slow` ones) |
+| `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~90 s |
 | `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | ~50 s |
 | `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against checked-in baselines. | ~12 minutes on CUDA |
 
-## What `slow` means
+## Adding a test: does it belong in the fast suite?
 
-`slow` marks a test as **outside the fast suite** — it is a budget decision, not
-a description. Renders, pixel comparisons and anything that costs more than
-about a second earn it.
+Default to **no**, and leave it unmarked. That is not a demotion — the full
+suite runs it, CI runs it, and whoever touches the code it covers runs it.
 
-Mark a new test `slow` when the fast suite reports itself over budget. Prefer
-marking the *newly added* expensive test over an old one: the budget is a
-first-come constraint, and silently evicting existing coverage to fit a new
-test is how a fast suite stops being worth running.
+Mark it `fast` only if **a change somewhere else in the codebase is liable to
+break it**. Ask which file someone would have to edit for this test to start
+failing: if the honest answer is "the one it tests", it is a feature test and
+it stays out. If the answer is "the timeline, or the Mob base, or the Scene, or
+anything that records or materializes state" — the machinery every animation
+runs through — then it is a canary worth paying for on every change.
 
-One trap when choosing what to mark: with Taichi, **the cost is per kernel
-variant, not per test**, and it is charged to whichever test reaches that
-variant first. Excluding the slowest Monte Carlo test in
-`test_raytracing_unit.py` did not save its seven seconds — it moved them to the
-next test that needed the same kernel. A group that shares a kernel has to
-leave together or not at all, which is why that module is marked at module
-level.
+Two supporting rules:
+
+- **Cheap is not a reason.** A test that costs 5 ms and never fires except when
+  its own module changes still costs a reader's attention and a maintainer's
+  judgement; hundreds of those are exactly what this suite was curated out of.
+- **The budget is a first-come constraint.** If the suite reports itself over,
+  the fix is to take the marker off whatever went in most recently, not to
+  raise the number. Raising it is a deliberate trade of loop time for coverage.
+
+One trap when weighing cost: with Taichi, **the cost is per kernel variant, not
+per test**, and it is charged to whichever test reaches that variant first.
+Excluding the slowest Monte Carlo test in `test_raytracing_unit.py` did not save
+its seven seconds — it moved them to the next test that needed the same kernel.
+A group that shares a kernel joins or stays out together, which is why that
+module is discussed as a whole in its docstring.
+
+Marking is per module (`pytestmark = pytest.mark.fast`, with a comment saying
+why the module is in) or per test, whichever matches how coherent the file is.
+A module-level mark means the *whole file* is core, new tests included, so use
+it only where that is true. It is true of the timeline and transform files —
+each is about one mechanism, so a new test in them is the same kind of test.
+It is not true of `test_ux_regressions.py`, which is a catch-all: within an hour
+of this suite being curated, a merge added two tests to it, one of them a
+six-second subprocess its author had deliberately kept out of the loop, and a
+module-level mark would have enrolled both. That file is marked per test.
+
+There is no `slow` marker any more: it meant "outside the fast suite", which is
+now what every unmarked test already is. `--strict-markers` is on, so a stale
+`@pytest.mark.slow` fails collection rather than sitting there doing nothing,
+and `test_fast_suite_curation.py` fails if a `fast` marker appears that the
+table above does not explain.
 
 ## The full-render suite
 
@@ -243,6 +293,19 @@ ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest tests/fast -q
 Both variables are read by the harnesses rather than by the package, so
 `import algan` warns that it does not recognise them. That is expected.
 
+**Never baseline the first render on a fresh machine — render twice and keep
+the second.** The first run of a scene containing `Tex`/`MathTex` populates the
+persistent Manim SVG geometry cache (`algan_cache/`), and its glyph
+antialiasing is not what every subsequent run produces. Measured while
+re-baselining `text_and_media` on a fresh container: the cold run differed from
+the two warm runs after it by up to **18 channel values** across 100 of 182
+frames — nine times the tolerance — confined to `MathTex` glyph edges, while
+runs two and three were byte-identical to each other and the warm output sat
+closer to the CUDA baseline than the cold one did. Baseline the cold render and
+the suite fails on the very next run, on the same machine, for no reason anyone
+would think to look for. The other five scenes were bit-stable cold-to-warm, so
+this is specifically a Tex-geometry-cache effect.
+
 Frames are compared channel-wise with a tolerance of 2 by the
 `assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
 suites share so they cannot drift apart on tolerance. That tolerance is not
@@ -269,26 +332,33 @@ run orphans children that keep the output mp4s locked.
 
 ## The unit suite
 
-Organised by subsystem. The files worth knowing about:
+Organised by subsystem. The files worth knowing about (★ = in the fast suite):
 
-- `test_timeline_*`, `test_active_timeline_materialization.py`, `test_lifecycle.py` —
+- ★ `test_timeline_*`, `test_active_timeline_materialization.py`, `test_lifecycle.py` —
   the recording/replay engine: overlapping edits, replay windows, the state
   query, spawn lifetimes.
-- `test_mob_*`, `test_parent_child_basis.py`, `test_scene_*` — transforms,
-  layout, hierarchy, and the actor registration that decides whether geometry
-  reaches the renderer at all.
-- `test_settings_api.py`, `test_environment.py` — the `SETTINGS` root, its
-  validation, the experimental-switch gate, and the environment: how `ALGAN_`
-  variables parse, and the rule that the package reaches them only through
-  `algan/environment.py`'s accessors (which is what keeps its registry of
-  declared names honest).
-- `test_materials.py`, `test_fragment_shaders.py`, `test_indication_animations.py`,
-  `test_rate_functions.py` — the authoring surface users touch most.
+- ★ `test_mob_movement.py`, `test_mob_orientation.py`, `test_mob_layout.py`,
+  `test_parent_child_basis.py`, `test_scene_containment.py` — transforms,
+  layout, hierarchy, Scene ownership.
+- `test_scene_actor_registration.py` — the actor registration that decides
+  whether a *particular* composite's geometry reaches the renderer at all. One
+  test per composite that once got it wrong, so it stays out of the fast suite.
+- ★ `test_settings_api.py` — the `SETTINGS` root, its validation and the
+  experimental-switch gate. `test_environment.py` covers the environment — how
+  `ALGAN_` variables parse, and the rule that the package reaches them only
+  through `algan/environment.py`'s accessors, which is what keeps its registry
+  of declared names honest — and is an audit, so it is not in the fast suite.
+- ★ `test_ux_regressions.py`, `test_rate_functions.py` — the authoring surface
+  users touch most. `test_materials.py`, `test_fragment_shaders.py` and
+  `test_indication_animations.py` are per-feature and stay out.
 - `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py` —
-  batch sizing and the arena. These are cheap and guard a component that
-  silently degrades rather than failing.
-- `test_raytracing_unit.py` — brute-force references for the tracer. Slow.
+  batch sizing and the arena. Cheap, and they guard a component that silently
+  degrades rather than failing — but they only move when their own module does,
+  and the fast suite's render exercises the real path.
+- `test_raytracing_unit.py` — brute-force references for the tracer. Expensive.
 - `test_render_coverage_audit.py` — keeps the render suite honest (above).
+- `test_fast_suite_curation.py` — keeps the `fast` markers and the membership
+  table above in step, so the suite cannot grow without someone saying why.
 - `test_doc_examples.py` — keeps `docs/` honest against `algan/` (below).
 
 ### The documentation examples
@@ -296,11 +366,15 @@ Organised by subsystem. The files worth knowing about:
 `test_doc_examples.py` extracts every Python block in `docs/source` and checks it
 in three tiers, because the blocks do not all support the same checking:
 
-| Tier | Covers | Catches | In `--fast` |
+| Tier | Covers | Catches | Runs |
 | --- | --- | --- | --- |
-| `test_doc_example_uses_public_api` | every block, statically | a name or setting the docs still use after it was renamed or removed | yes, ~1 s |
-| `test_doc_example_authors_without_error` | blocks that are complete scripts, with rendering stubbed | anything that raises while *authoring*: wrong constructor arguments, a value of the wrong width, a method that is gone | yes, ~14 s |
-| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | no — opt in with `ALGAN_RUN_DOC_RENDERS=1` |
+| `test_doc_example_uses_public_api` | every block, statically | a name or setting the docs still use after it was renamed or removed | with the suite, ~1 s |
+| `test_doc_example_authors_without_error` | blocks that are complete scripts, with rendering stubbed | anything that raises while *authoring*: wrong constructor arguments, a value of the wrong width, a method that is gone | with the suite, ~35 s |
+| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | opt in with `ALGAN_RUN_DOC_RENDERS=1` |
+
+None of the three is in the fast suite. They are an audit of `docs/` against
+`algan/`: they fail when public API is renamed or removed, which is a thing you
+find out about before pushing rather than on every save.
 
 Most documented code is a *fragment* — a few lines operating on an undefined
 `mob` — which can never be a runnable scene without inventing scaffolding around
@@ -323,43 +397,41 @@ not carry. For a block broken by a bug that is already being worked on, add it t
 `KNOWN_BROKEN` in that module with a reason instead, so it is skipped loudly
 rather than quietly deleted.
 
-The render tier is gated on an environment variable rather than on `slow` alone,
-and the distinction matters: `slow` only drops a test from `--fast`, and CI names
-its paths explicitly instead of passing that flag (see the comment in
-`.github/workflows/test.yaml`). That gap is how this tier took a runner down
-once: before the texture-timeline fix it peaked at **14.7 GB** and was
-OOM-killed part way through.
+The render tier is gated on an environment variable, not merely left out of the
+fast suite, and the distinction matters: being outside `--fast` does nothing for
+CI, which names its paths explicitly instead of passing that flag (see the
+comment in `.github/workflows/test.yaml`). That gap is how this tier took a
+runner down once: before the texture-timeline fix it peaked at **14.7 GB** and
+was OOM-killed part way through.
 
 With that fixed it renders 77 examples in about **two minutes at 2.3 GB**, so the
-gate is now a time budget rather than a memory cliff — two minutes is most of the
-fast suite's allowance, and CI would pay it on every run. Worth revisiting if the
-render-time coverage is wanted in CI; measure a cold Taichi cache first, since
-the number above is from a warm one. Run it locally with:
+gate is now a time budget rather than a memory cliff — two minutes is more than
+the fast suite's whole allowance, and CI would pay it on every run. Worth
+revisiting if the render-time coverage is wanted in CI; measure a cold Taichi
+cache first, since the number above is from a warm one. Run it locally with:
 
 ```bash
 ALGAN_RUN_DOC_RENDERS=1 <venv-python> -m pytest -q tests/unit_tests/test_doc_examples.py -k renders
 ```
 
-### Known defects pinned as `xfail`
+### Recording a known defect
 
-Three real bugs are recorded as strict `xfail`s rather than deleted tests, so
-they stay visible and the suite tells you when they are fixed:
+Three bugs were once pinned here as strict `xfail`s — a parent `Group.move()`
+desynchronizing a compatibility Mob's backing Manim object, `Indicate`'s scale
+pulse writing a `scale_coefficient` row instead of a basis, and the point-cloud
+family having no `get_render_primitives` at all. All three are fixed, and the
+tests that recorded them now assert the working behaviour: see
+`test_a_parent_group_move_keeps_the_backing_mobject_in_step`,
+`test_indicate_grows_the_mob_in_the_middle`, and
+`test_point_cloud_mob_produces_render_primitives`. The point clouds have left
+the coverage audit's `EXEMPT` list and appear in `shapes_and_timeline`.
 
-- `test_manim_compat_movement.py` — a parent `Group.move()` leaves a
-  compatibility Mob's backing Manim object behind, so the next delegated call
-  (`rotate`, `scale`, `set`, …) teleports the Mob back to where the parent
-  found it.
-- `test_indication_animations.py` — `Indicate`'s scale pulse writes a
-  `scale_coefficient` timeline row directly instead of going through the
-  property setter that turns a scale into a basis, so only its colour flash is
-  visible.
-- `test_point_cloud_rendering.py` — the whole point-cloud family (`DotCloud`,
-  `PointCloudDot`, `TrueDot`, `PGroup`) is exported and constructs its points,
-  but defines no `get_render_primitives`, so it can never draw anything.
-
-A strict `xfail` fails the suite if it starts passing. That is deliberate: when
-one of these is fixed, the test tells you to remove the marker (and, for the
-point clouds, to move them out of the audit's `EXEMPT` list and into a scene).
+There are no `xfail`s in the suite today. If you need to record a new defect
+rather than fix it, a strict `xfail` is still the way — it keeps the bug visible
+and fails the suite when it starts passing, which is what tells you to turn the
+test around and drop the marker. It is a built-in marker, so `--strict-markers`
+has nothing to say about it; only project-specific markers need the entry in
+`pyproject.toml`.
 
 ## Legacy
 

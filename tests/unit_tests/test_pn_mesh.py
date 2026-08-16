@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 import torch
 from PIL import Image
 
@@ -13,7 +12,6 @@ from algan.mobs.pn_mesh import PNMesh
 from algan.scene_manager import SceneManager
 
 
-@pytest.mark.slow
 def test_surface_conversion_reproduces_its_logical_pn_primitive():
     with Scene() as scene:
         sphere = Sphere(radius=0.6, scene=scene, add_to_scene=False)
@@ -58,7 +56,6 @@ def test_triangulated_circuit_conversion_is_planar_and_fills_the_circle():
         assert centroids[:, 0].amin().item() < -0.75
 
 
-@pytest.mark.slow
 def test_surface_and_pn_conversion_render_pixel_identically(tmp_path):
     settings = SMOKE_TEST.set(resolution=(96, 54))
 

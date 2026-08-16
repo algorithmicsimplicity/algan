@@ -12,6 +12,10 @@ from algan.geometry.geometry import (
 )
 from algan.scene_manager import SceneManager
 
+# In the fast suite: attribute propagation from a parent to its children is the
+# rule the whole mob hierarchy is built on, and every composite Mob relies on it.
+pytestmark = pytest.mark.fast
+
 
 def _empty_scene(scene):
     scene.camera = None

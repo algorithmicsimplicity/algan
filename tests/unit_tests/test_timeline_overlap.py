@@ -27,6 +27,10 @@ from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants import rate_funcs
 from algan.scene_manager import SceneManager
 
+# In the fast suite: replay of overlapping edits is the hardest part of the
+# recording engine and the part every authored animation depends on.
+pytestmark = pytest.mark.fast
+
 R = torch.tensor([1.0, 0.0, 0.0])
 U = torch.tensor([0.0, 1.0, 0.0])
 OUT = torch.tensor([0.0, 0.0, 1.0])

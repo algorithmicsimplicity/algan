@@ -33,11 +33,12 @@ regression reads as a diff in one column:
 ``Surface`` tessellate to logical PN triangles, and adding any one of them to
 this scene costs about 20 seconds of extra kernel specialisation — measured:
 24.6 s for this scene, 44.8 s with a single ``Sphere`` in it.  That is a sixth
-of the fast suite's whole budget for one geometry family.  It buys least here
-of anything that could fill it, because the PN family is the one already
-covered behaviourally in the fast suite, by ``test_logical_pn_tessellation.py``
-and ``test_surface_autotune.py``; what the render would add is its pixels, and
-``tests/full_renders/solids_and_camera`` has those.  Use a ``Polyhedron``
+of the fast suite's whole budget for one geometry family, and the budget exists
+to keep the loop under a minute.  The PN family is covered behaviourally by
+``test_logical_pn_tessellation.py`` and ``test_surface_autotune.py``, and in
+pixels by ``tests/full_renders/solids_and_camera`` — both outside the fast
+suite, so a tessellation change is one of the few things this loop cannot see
+(``CLAUDE.md`` says so under performance discipline).  Use a ``Polyhedron``
 subclass when adding a solid here, never a ``Surface`` one.
 
 Deliberately *not* here for the same reason: shadows, refraction, glow, Monte

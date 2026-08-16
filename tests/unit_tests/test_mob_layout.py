@@ -5,6 +5,10 @@ from algan import LEFT, ORIGIN, RIGHT, UP, Cube, Group, Mob, Off, SceneManager, 
 from algan.errors import AlganConfigurationError
 from algan.utils.tensor_utils import unsquish
 
+# In the fast suite: screen-relative placement composes the bounding box, the
+# basis and the camera projection, so it is the cheapest canary for all three.
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture(autouse=True)
 def fresh_scene():

@@ -122,7 +122,17 @@ exclude = [
 ]
 
 [tool.pytest.ini_options]
-markers = "slow: Exclude from the fast suite (renders, pixel comparisons, expensive references). Skipped by --fast."
+# The fast suite is opt-in: --fast runs the tests marked 'fast' and nothing
+# else, so an unmarked test is automatically outside it. See tests/README.md
+# for what earns the marker.
+markers = [
+  "fast: Part of the hand-curated fast suite. Selected by --fast; see tests/README.md.",
+]
+# A marker that is not in the list above is now an error rather than a silent
+# no-op. That matters here: 'slow' used to select the fast suite by exclusion
+# and no longer exists, so a stale @pytest.mark.slow (or a typo'd 'fastt') would
+# otherwise sit in a file doing nothing and looking like it worked.
+addopts = "--strict-markers"
 testpaths = ["tests/unit_tests", "tests/fast", "tests/full_renders"]
 
 [tool.isort]

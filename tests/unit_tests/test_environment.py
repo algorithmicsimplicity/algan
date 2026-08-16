@@ -233,7 +233,6 @@ def test_harness_variables_are_accepted():
     )
 
 
-@pytest.mark.slow
 def test_import_algan_warns_for_an_unknown_environment_variable(tmp_path):
     environ = {
         name: value

@@ -113,16 +113,19 @@ Testing
 
 .. code-block:: bash
 
-   <venv-python> -m pytest -q --fast   # the development loop, ~2 minutes
+   <venv-python> -m pytest -q --fast   # the development loop, ~1 minute
    <venv-python> -m pytest -q          # everything, ~12 minutes
 
 Run ``--fast`` after every change and the full suite before opening a pull
-request. ``--fast`` is everything not marked ``slow``, held to a
-two-and-a-half-minute budget, and it reports where it landed. Pass no path: it
-uses ``testpaths`` from ``pyproject.toml``.
+request. ``--fast`` runs a hand-curated set of about 190 tests -- those marked
+``fast``, and nothing else -- covering the machinery every animation and render
+goes through, plus one pixel-compared render. It reports where it landed
+against its budget. Pass no path: it uses ``testpaths`` from ``pyproject.toml``.
 
-``tests/README.md`` documents what ``--fast`` leaves out and where each
-omission is covered instead.
+A test you add is outside that set unless you mark it, which is deliberate:
+mark ``fast`` only when a change elsewhere in the codebase is liable to break
+it. ``tests/README.md`` documents what is in the fast suite, what is left out,
+and where each omission is covered instead.
 
 .. note::
 
@@ -170,10 +173,10 @@ Documented code is tested
 
 ``tests/unit_tests/test_doc_examples.py`` extracts every Python block in
 ``docs/source`` and checks it, so a renamed API cannot quietly leave the
-tutorials behind. Two of its three tiers run in the fast suite: a static pass
-over every block, and an execution pass over the blocks that are complete
+tutorials behind. Two of its three tiers run whenever the suite does: a static
+pass over every block, and an execution pass over the blocks that are complete
 scripts with rendering stubbed out. The third tier actually renders them and is
-marked ``slow``.
+opt-in behind ``ALGAN_RUN_DOC_RENDERS=1``.
 
 Prefer ``.. algan::`` over ``.. code-block:: python`` when an example is a
 complete script *and* its rendered result teaches the reader something -- the

@@ -2,10 +2,10 @@
 
 Four things live here because they are cross-cutting:
 
-* the ``slow`` marker and ``--fast`` / ``--skip-slow``, which together define
-  the fast suite: everything *not* marked ``slow``. See ``tests/README.md``;
-* a wall-clock report against the fast suite's two-minute budget, so the suite
-  cannot creep past it unnoticed;
+* the ``fast`` marker and ``--fast``, which together define the fast suite:
+  the tests marked ``fast`` and nothing else. See ``tests/README.md``;
+* a wall-clock report against the fast suite's budget, so the suite cannot
+  creep past it unnoticed;
 * the frame-by-frame video comparison, shared by ``tests/fast/`` and
   ``tests/full_renders/`` so the two cannot drift apart on tolerance;
 * per-test isolation of the two pieces of process-global state Algan owns --
@@ -54,17 +54,22 @@ def _register_test_fonts():
 
 _register_test_fonts()
 
-# The fast suite is meant to stay inside a two-and-a-half-minute development
-# loop. This is reported, not enforced: the number moves with machine load and
-# thermal state, and a timing-based failure would be a flake. A run that exceeds
-# it is a prompt to mark the newest expensive test ``slow``.
+# The fast suite is meant to stay inside a development loop. This is reported,
+# not enforced: the number moves with machine load and thermal state, and a
+# timing-based failure would be a flake. A run that exceeds it means the
+# curation has drifted -- take a marker off something, rather than raising the
+# number reflexively.
 #
-# Raised from 120 s once the behavioural suite had grown past it (419 -> 466
-# unit tests), at which point every run reported itself over budget and the
-# warning stopped carrying information. Raise it again only after deciding the
-# coverage is worth the loop time -- the point of the number is that growth has
-# to be a decision.
-FAST_SUITE_BUDGET_SECONDS = 150.0
+# The history is worth knowing. The budget was 120 s, then 150 s, while the fast
+# suite was *everything not marked slow* and grew with every test anyone added.
+# Curating it by hand (only ``fast``-marked tests run) took it from 910 of the
+# 1038 collected tests to 191, of which 190 are behavioural and one is the
+# render.
+# The render is now most of the cost -- it was measured at ~50 s of the old
+# 112-147 s suite on CUDA -- so the budget is set to leave it room to pay a
+# kernel compile. Raising it again is a deliberate trade of loop time for
+# coverage; the point of the number is that growth has to be a decision.
+FAST_SUITE_BUDGET_SECONDS = 75.0
 
 # Small per-pixel drift is expected and tolerated: torch CPU rate-function
 # evaluation rounds differently depending on the materialization window, so
@@ -75,25 +80,34 @@ MAX_CHANNEL_DIFFERENCE = 2
 def pytest_addoption(parser):
     parser.addoption(
         "--fast",
-        "--skip-slow",
-        "--skip_slow",
         action="store_true",
         default=False,
         dest="fast",
         help=(
-            "Run only the fast suite: everything not marked 'slow'. Targets "
-            "under two minutes; see tests/README.md."
+            "Run only the fast suite: the tests marked 'fast', which are a "
+            "hand-picked set covering the mechanisms every change routes "
+            "through. Everything else is deselected. See tests/README.md."
         ),
     )
 
 
 def pytest_collection_modifyitems(config, items):
+    """Reduce the run to the ``fast`` marker when ``--fast`` is passed.
+
+    Deselected rather than skipped, deliberately: the fast suite excludes most
+    of the suite by design, and hundreds of ``s`` characters would bury the
+    handful of skips that actually mean something (a missing baseline, an
+    absent optional dependency).
+    """
     if not config.getoption("fast"):
         return
-    skip = pytest.mark.skip(reason="--fast was passed")
+    selected, deselected = [], []
     for item in items:
-        if "slow" in item.keywords:
-            item.add_marker(skip)
+        target = selected if item.get_closest_marker("fast") else deselected
+        target.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
 
 
 @pytest.hookimpl(trylast=True)
@@ -116,7 +130,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     )
     if elapsed > FAST_SUITE_BUDGET_SECONDS:
         terminalreporter.write_line(
-            line + " -- over budget; mark the newest expensive test 'slow'",
+            line + " -- over budget; take 'fast' off the newest test in it",
             yellow=True,
         )
     else:

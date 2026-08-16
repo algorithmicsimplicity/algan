@@ -210,8 +210,11 @@ already been wrapping correctly all along (it just predated the helper), and
 
 ### Verifying a change to any of this
 
-* `pytest -q --fast` (~112-147 s) is the loop, **but it cannot see a PN level
-  flip**: `tests/fast/scene.py` deliberately contains no `Surface`/PN geometry.
+* `pytest -q --fast` is the loop, **but it cannot see a PN level flip**:
+  `tests/fast/scene.py` deliberately contains no `Surface`/PN geometry, and
+  since the fast suite became a curated set the PN behavioural tests
+  (`test_logical_pn_tessellation.py`, `test_surface_autotune.py`) are outside it
+  too. Run those two files directly for a tessellation change.
 * `pytest -q tests/full_renders` (~10 min) is the one that can. Run it for
   anything touching tessellation, projection or the criteria.
 * Prep changes are seen by neither on their own -- but both suites do exercise

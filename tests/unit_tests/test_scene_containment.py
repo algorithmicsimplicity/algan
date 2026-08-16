@@ -13,6 +13,11 @@ from algan import (
     TimelineManager,
 )
 
+# In the fast suite: which Scene a Mob belongs to, and which managers that Scene
+# owns, decides where every recorded event lands. Getting it wrong makes tests
+# depend on each other rather than raising.
+pytestmark = pytest.mark.fast
+
 
 def _empty_scene(scene):
     scene.camera = None

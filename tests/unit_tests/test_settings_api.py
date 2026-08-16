@@ -20,6 +20,11 @@ from algan import (
     VideoSettings,
 )
 
+# In the fast suite: engine modules read ``SETTINGS`` live off section objects
+# they captured at import, so a change to how a section is written or restored
+# reaches every subsystem at once.
+pytestmark = pytest.mark.fast
+
 
 @pytest.fixture(autouse=True)
 def restore_settings():

@@ -7,7 +7,8 @@ measures the arena's high-water mark instead -- so the only way to know the
 plumbing still works is to run one.
 
 These render a 32x32 scene, which is cheap once the kernels are cached, but
-they are GPU work: they carry the ``slow`` marker.
+they are GPU work and they cover one extension point rather than the engine's
+core, so they sit outside the fast suite.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ import torch
 
 from algan import SETTINGS, SMOKE_TEST, Off, Scene, Square
 from algan.constants.color import BLUE
-
-pytestmark = pytest.mark.slow
 
 
 @pytest.fixture

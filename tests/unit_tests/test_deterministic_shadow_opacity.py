@@ -22,7 +22,6 @@ from algan import (
 )
 from algan.scene_manager import SceneManager
 
-pytestmark = pytest.mark.slow
 SHADOW_TEST_SETTINGS = SMOKE_TEST.set(resolution=(64, 64))
 
 

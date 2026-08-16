@@ -169,7 +169,6 @@ def test_minimize_movement_keeps_parts_closer_to_where_they_started(scene):
     assert total_travel(minimize=True) <= total_travel(minimize=False)
 
 
-@pytest.mark.slow
 def test_become_crosses_primitive_types_and_returns_the_real_target(scene):
     with Off():
         square = Square().spawn()

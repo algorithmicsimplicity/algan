@@ -439,9 +439,9 @@ expected.
 * One unit test that a source edit invalidates (`K` changes), one that a
   template-value change picks a different trace, one that a captured-global
   change falls back.
-* The fast suite renders once with the cache cold and once warm; both must match
-  the existing baseline. Mark the cold one `slow` if it costs more than a few
-  seconds.
+* The suite renders once with the cache cold and once warm; both must match the
+  existing baseline. Only the warm one belongs in the fast suite, and only if it
+  costs a few seconds; leave the cold one unmarked.
 
 ### 8.4 Kill switch and blast radius
 `ALGAN_TAICHI_FRONTEND_TRACE=0` disables record and replay. The patch is applied
