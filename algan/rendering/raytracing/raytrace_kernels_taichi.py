@@ -439,6 +439,31 @@ def _generate_ray(f, px, py, jitter_x, jitter_y, half_screen_w, half_screen_h,
 
 
 @ti.func
+def _axis_cos(f, ro, rd, screen_point: ti.template()):
+    """Cosine between a primary ray and the camera's optical axis.
+
+    ``pixel_world_scale`` is world-per-pixel PER UNIT OF PERPENDICULAR DEPTH,
+    calibrated on the optical axis from the screen plane's own distance. The
+    camera is a pinhole with a FLAT image plane, so the Jacobian of
+    world-to-screen on a surface facing the camera depends on that
+    perpendicular depth alone and is constant across the frame -- but
+    ``_generate_ray`` returns a NORMALISED direction, so a ray parameter ``t``
+    is the SLANT RANGE, which is ``depth / cos(theta)``.
+
+    Multiplying by this cosine converts one into the other. Without it every
+    width derived from ``pixel_size`` (a circuit's stroke, its border band, the
+    anti-crack outline dilation) is drawn ``1 / cos(theta)`` too wide, which at
+    the default 53-degree fov reaches +35% at the left and right edges
+    of a 16:9 frame: a horizontal ``Line`` whose geometry is identical in every
+    column is drawn 9.09 px wide at the centre of a 720p frame and 12.18 px at
+    its edges. ``benchmarks/_stroke_width_check.py`` is the regression check.
+    """
+    fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                        screen_point[f, 2]) - ro).normalized()
+    return rd.dot(fwd)
+
+
+@ti.func
 def _random_unit_vector():
     """Uniformly distributed point on the unit sphere."""
     z = 2.0 * ti.random(ti.f32) - 1.0
@@ -3748,6 +3773,10 @@ def path_trace_scene_stbvh(
                                pixel_basis_x, pixel_basis_y)
         inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                               _safe_inverse(rd[2]))
+        # Distances fed to pixel_size_per_t are slant ranges; fold in the
+        # primary ray's cosine so the first (and dominant) segment converts
+        # from perpendicular depth (see _axis_cos).
+        pixel_size_per_t *= _axis_cos(f, ro, rd, screen_point)
         throughput = ti.math.vec4(1.0, 1.0, 1.0, 1.0)
         t_prev = 0.0
         layer_prev = 1e30
@@ -4099,6 +4128,8 @@ def path_trace_physical_stbvh(
                                pixel_basis_x, pixel_basis_y)
         inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                               _safe_inverse(rd[2]))
+        # See the matching note in path_trace_scene_stbvh.
+        pixel_size_per_t *= _axis_cos(f, ro, rd, screen_point)
         throughput = ti.math.vec3(1.0, 1.0, 1.0)
         t_prev = 0.0
         layer_prev = 1e30

@@ -2194,13 +2194,16 @@ def raytrace_render_wavefront(
     # tables below so the latter's per-(frame, primitive) coefficient is not
     # fitted through a route-dependent constant.
     with memory.scope("batch_metadata"):
-        if gen_fused or use_raster:
-            gen_meta = _arena_values(
-                memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
-            )
-        else:
-            gen_meta = memory.get_tensor((1,), f32)
-            gen_meta.zero_()
+        # Always the real four values, even where primary generation is not
+        # fused into traverse: the traverse kernel rebuilds each pixel's
+        # PRIMARY ray from gen_meta[2:] to convert its slant ranges to
+        # perpendicular depth (see _axis_cos), and a zeroed placeholder there
+        # yields a degenerate ray and a collapsed pixel_size. The jitter pair
+        # is unused on that path (a sub-pixel offset does not move the
+        # cosine), so the same four values serve both.
+        gen_meta = _arena_values(
+            memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
+        )
     if gen_fused or use_raster or env_meta is not None or far_clip > 0.0:
         # Extras packed behind the two layer offsets (the shade kernel is at
         # the 64-arg ceiling): env map placement in the shared texel buffer +
@@ -3049,10 +3052,13 @@ def _raytrace_render_wavefront_textured(
 
     pool_ratio = rt_settings.refract_initial_pool_ratio if refraction_flag else 1
     primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // pool_ratio)
-    # Placeholder for the fused-generation traverse args (classic generate
-    # kernel is kept on this path; the gen block compiles out).
-    gen_meta = memory.get_tensor((1,), f32)
-    gen_meta.zero_()
+    # The gen block compiles out on this path (the classic generate kernel is
+    # kept), but traverse still reads gen_meta[2:] to rebuild each pixel's
+    # primary ray for the perpendicular-depth conversion (see _axis_cos), so
+    # these carry the real screen half-extents rather than zeros.
+    gen_meta = _arena_values(
+        memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
+    )
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):
         (
@@ -3414,10 +3420,13 @@ def _raytrace_render_wavefront_sorted(
     # The sorted path carries ~1.5x the classic per-ray state (the event
     # record + keys), so tiles hold fewer rays for the same memory envelope.
     primary_per_tile = max(1, (rt_settings.WAVEFRONT_TILE_RAYS * 2) // (3 * pool_ratio))
-    # Placeholder for the fused-generation traverse args (classic generate
-    # kernel is kept on this path; the gen block compiles out).
-    gen_meta = memory.get_tensor((1,), f32)
-    gen_meta.zero_()
+    # The gen block compiles out on this path (the classic generate kernel is
+    # kept), but traverse still reads gen_meta[2:] to rebuild each pixel's
+    # primary ray for the perpendicular-depth conversion (see _axis_cos), so
+    # these carry the real screen half-extents rather than zeros.
+    gen_meta = _arena_values(
+        memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
+    )
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):
         (

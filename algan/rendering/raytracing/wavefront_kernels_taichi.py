@@ -41,6 +41,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_TRANSMISSION,
     _PN_META,
     _PN_UV,
+    _axis_cos,
     _bezier_normal,
     _collect_hits,
     _comes_after,
@@ -1583,6 +1584,8 @@ def wavefront_traverse(
         layer_prev = 1e30
         base_dist = 0.0
         f = 0
+        px = 0
+        py = 0
         if ti.static(gen_first != 0):
             g = ray_offset + r
             f_rel = g // pixels_per_frame
@@ -1606,11 +1609,27 @@ def wavefront_traverse(
             t_prev = rs_sca[r, 1]
             layer_prev = rs_sca[r, 2]
             base_dist = rs_sca[r, 4]
-            f = time_start + (ray_offset + rs_pix[r]) // pixels_per_frame
+            g = ray_offset + rs_pix[r]
+            f_rel = g // pixels_per_frame
+            p = g - f_rel * pixels_per_frame
+            f = time_start + f_rel
+            py = p // width
+            px = p - py * width
         inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                               _safe_inverse(rd[2]))
         ff = ti.cast(f, ti.f32)
-        pixel_size_per_t = pixel_world_scale[f]
+        # Distances handed to pixel_size_per_t are slant ranges along THIS
+        # pixel's primary ray, but pixel_world_scale is per unit perpendicular
+        # depth (see _axis_cos). The cosine is a property of the pixel, not of
+        # the current ray, so it is rebuilt from the pixel: a continuation ray
+        # carries a bounce direction for which the camera axis means nothing,
+        # yet the primary segment already folded into its base_dist still
+        # needs converting.
+        pro, prd = _generate_ray(f, px, py, 0.5, 0.5, gen_meta[2], gen_meta[3],
+                                 cam_origin, screen_point,
+                                 pixel_basis_x, pixel_basis_y)
+        pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, pro, prd,
+                                                            screen_point)
 
         kb_t = ti.Vector([0.0] * KBUF)
         kb_layer = ti.Vector([0.0] * KBUF)
@@ -1754,6 +1773,8 @@ def wavefront_traverse_events(
         layer_prev = 1e30
         base_dist = 0.0
         f = 0
+        px = 0
+        py = 0
         if ti.static(gen_first != 0):
             g = ray_offset + r
             f_rel = g // pixels_per_frame
@@ -1777,11 +1798,27 @@ def wavefront_traverse_events(
             t_prev = rs_sca[r, 1]
             layer_prev = rs_sca[r, 2]
             base_dist = rs_sca[r, 4]
-            f = time_start + (ray_offset + rs_pix[r]) // pixels_per_frame
+            g = ray_offset + rs_pix[r]
+            f_rel = g // pixels_per_frame
+            p = g - f_rel * pixels_per_frame
+            f = time_start + f_rel
+            py = p // width
+            px = p - py * width
         inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                               _safe_inverse(rd[2]))
         ff = ti.cast(f, ti.f32)
-        pixel_size_per_t = pixel_world_scale[f]
+        # Distances handed to pixel_size_per_t are slant ranges along THIS
+        # pixel's primary ray, but pixel_world_scale is per unit perpendicular
+        # depth (see _axis_cos). The cosine is a property of the pixel, not of
+        # the current ray, so it is rebuilt from the pixel: a continuation ray
+        # carries a bounce direction for which the camera axis means nothing,
+        # yet the primary segment already folded into its base_dist still
+        # needs converting.
+        pro, prd = _generate_ray(f, px, py, 0.5, 0.5, gen_meta[2], gen_meta[3],
+                                 cam_origin, screen_point,
+                                 pixel_basis_x, pixel_basis_y)
+        pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, pro, prd,
+                                                            screen_point)
 
         kb_t = ti.Vector([0.0] * KBUF)
         kb_layer = ti.Vector([0.0] * KBUF)
