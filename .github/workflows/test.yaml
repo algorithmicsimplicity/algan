@@ -8,9 +8,9 @@ on:
   #
   # 'developer/**' is kept while the old development branch still exists.
   push:
-    branches: [master, stable, 'developer/**']
+    branches: [master, stable]
   pull_request:
-    branches: [master, stable, 'developer/**']
+    branches: [master, stable]
   # Lets a run be started by hand from the Actions tab. Only takes effect once
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.

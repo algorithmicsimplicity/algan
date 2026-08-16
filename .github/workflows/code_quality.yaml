@@ -1,9 +1,9 @@
 name: Code Quality
 on:
   push:
-    branches: [master]
+    branches: [master, stable]
   pull_request:
-    branches: [master]
+    branches: [master, stable]
 jobs:
   lock_file:
     runs-on: ubuntu-latest
