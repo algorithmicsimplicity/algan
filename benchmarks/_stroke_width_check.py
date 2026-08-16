@@ -2,9 +2,10 @@
 
 A horizontal line has identical geometry in every column of the frame, so
 every column must carry identical ink. It does not: at MD a default ``Line``
-across the frame is drawn 9.16 px wide at the centre and 12.28 px wide at the
-left and right edges, 34% fatter, and the growth follows ``1 / cos(theta)``
-exactly, where theta is the pixel's angle off the camera's optical axis.
+across the frame is drawn 9.09 px wide at the centre -- exactly its authored
+width -- and 12.18 px at the left and right edges, 34.7% fatter. The growth
+tracks ``1 / cos(theta)``, theta being the pixel's angle off the camera's
+optical axis, which on its own predicts 33.8%.
 
 WHY. A circuit is drawn from a signed distance field evaluated in the plane, in
 WORLD units, and ``pixel_size`` converts the authored stroke width (which is in
@@ -51,9 +52,12 @@ treatment, and their ``base_dist + t`` accumulation raises a separate question
 about what the intended footprint is on a SECONDARY ray, where growth with path
 length is a reasonable ray-differential heuristic rather than a bug.
 
-The inflation is ANGULAR, so it is resolution-independent: the relative spread
-is the same at LD, MD and HD, because a pixel at the frame edge sits at the
-same angle off the optical axis whatever the pixel count.
+The inflation is ANGULAR, so it is essentially resolution-independent -- 34.7%
+at MD, 35.4% at LD -- because a pixel at the frame edge sits at the same angle
+off the optical axis whatever the pixel count. Both sit ~1 point above the
+33.8% that pure ``1 / cos(theta)`` predicts, by the same margin at both
+resolutions, so ``1 / cos`` accounts for about 96% of the effect and something
+smaller rides along with it; that residual has not been chased.
 
 Run:  <venv-python> benchmarks/_stroke_width_check.py [--res ld|md|hd]
 """
@@ -77,19 +81,17 @@ if str(REPO_ROOT) not in sys.path:
 TOLERANCE_PX = 0.05
 
 
-def _profile(scene, video_settings, path):
-    """Ink per column of a frame containing one horizontal bar."""
-    import cv2
+def _profile(scene, video_settings, path, lut):
+    """Ink per column of a frame containing one horizontal bar.
 
-    from algan.constants.color import BLACK
+    Coverage is recovered through the measured transfer LUT rather than by
+    dividing by the full-coverage value: the curve has a shoulder near white,
+    and assuming linearity biases the width by ~1% -- enough to move the
+    centre width off the authored one and muddy the comparison.
+    """
+    from benchmarks._aa_line_check import render, to_coverage
 
-    scene.save_frame(str(path), video_settings, background_color=BLACK)
-    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[..., :3].astype(np.float64)
-    # Full coverage reads 222 and the transfer curve is very nearly linear
-    # below it; for a width PROFILE that suffices, since the same two edge
-    # pixels per column are the only ones in the curved region and they are
-    # the same at every column. _aa_line_check.py does the exact inversion.
-    return image.mean(-1).sum(0) / 222.0
+    return to_coverage(render(scene, path, video_settings), *lut).sum(0)
 
 
 def _report(label, width, focal_px, scaling_px):
@@ -105,11 +107,12 @@ def _report(label, width, focal_px, scaling_px):
     """
     half_frame = width.size / 2
     spread = float(np.ptp(width))
+    centre = float(width[width.size // 2])
     growth = math.sqrt(1.0 + (half_frame / focal_px) ** 2) - 1.0
     print(
-        f"{label:<34} centre {float(width[width.size // 2]):6.3f}px  "
+        f"{label:<34} centre {centre:6.3f}px  "
         f"edge {float(width[5]):6.3f}px  "
-        f"spread {spread:5.3f}px ({100 * spread / width.mean():5.2f}%)"
+        f"spread {spread:5.3f}px ({100 * spread / centre:5.2f}% of centre)"
     )
     print(
         f"{'':<34} predicted spread {scaling_px * growth:5.3f}px "
@@ -137,6 +140,8 @@ def main(argv=None):
     height = video_settings.resolution[1]
     print(f"resolution {video_settings.resolution}")
 
+    from benchmarks._aa_line_check import build_lut
+
     scene = Scene(video_settings=video_settings)
     focal_px = height / 2 / math.tan(math.radians(scene.camera.fov) / 2)
     print(f"camera fov {scene.camera.fov:.2f} deg -> f = {focal_px:.0f} px")
@@ -144,11 +149,15 @@ def main(argv=None):
         "a horizontal line has identical geometry in every column, so every "
         "column must carry identical ink\n"
     )
+    levels, curve, _ = build_lut(out_dir, video_settings)
+    lut = (levels, curve)
+    authored = 5 * height / 396  # Line's default border_width, in render pixels
+    print(f"authored Line width: 5 * {height}/396 = {authored:.3f} px\n")
 
     from algan.rendering.raytracing import settings as rt_settings
 
     Line(LEFT * 40, RIGHT * 40, color=WHITE, scene=scene).spawn()
-    stroke = _profile(scene, video_settings, out_dir / "stroke_unfilled.png")
+    stroke = _profile(scene, video_settings, out_dir / "stroke_unfilled.png", lut)
     # The whole band is border_w / 2 either side of the path, so all of it
     # scales.
     spread = _report(
@@ -162,7 +171,7 @@ def main(argv=None):
     Rectangle(
         width=80, height=0.09, color=WHITE, scene=scene, border_width=0
     ).spawn()
-    filled = _profile(scene, video_settings, out_dir / "stroke_filled.png")
+    filled = _profile(scene, video_settings, out_dir / "stroke_filled.png", lut)
     # A fill's boundary is d > -min_half_width, so only that dilation scales,
     # once on each side.
     _report(
@@ -178,7 +187,7 @@ def main(argv=None):
     )
     bar.set_material(MeshBasicMaterial(color=WHITE))
     bar.spawn()
-    tri = _profile(scene, video_settings, out_dir / "stroke_triangles.png")
+    tri = _profile(scene, video_settings, out_dir / "stroke_triangles.png", lut)
     # Triangle coverage never consults pixel_size, so nothing scales.
     _report("Cylinder (triangles, the control)", tri, focal_px, 0.0)
 
