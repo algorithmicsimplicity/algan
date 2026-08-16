@@ -193,7 +193,7 @@ def test_a_missing_svg_raises_rather_than_replaying_a_stale_entry(
         mn.SVGMobject("logo.svg")
 
 
-def test_tex_svgs_stay_keyed_on_their_content_addressed_basename():
+def test_manim_generated_svgs_stay_keyed_on_their_content_addressed_basename():
     """Tex output must not be keyed on the SVG bytes.
 
     dvisvgm's output carries its version and emits in its own order, so hashing
@@ -209,6 +209,17 @@ def test_tex_svgs_stay_keyed_on_their_content_addressed_basename():
         assert svg_cache._svg_content_id(tex_svg) == "0123456789abcdef.svg"
     finally:
         tex_svg.unlink()
+
+    # Pango text output is named by ``_text2hash`` and lives in ``text_dir``,
+    # so it takes the same fast path.
+    text_dir = pathlib.Path(mn.config.get_dir("text_dir"))
+    text_dir.mkdir(parents=True, exist_ok=True)
+    text_svg = text_dir / "fedcba9876543210.svg"
+    text_svg.write_text(_SQUARE_SVG)
+    try:
+        assert svg_cache._svg_content_id(text_svg) == "fedcba9876543210.svg"
+    finally:
+        text_svg.unlink()
 
     user_svg = tex_dir.parent / "logo.svg"
     user_svg.write_text(_SQUARE_SVG)
