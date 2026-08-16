@@ -89,15 +89,18 @@ import traceback
 # and neither must the scripts it executes. Set before algan is imported,
 # because the handoff hook fires during that import -- without this, launching
 # a second daemon while one is live would make the second serve itself to the
-# first.
+# first. Written through os directly for the same reason: importing
+# algan.environment to reach its accessors would import algan, which is the
+# very import this has to precede.
 os.environ["ALGAN_DAEMON_CHILD"] = "1"
 
 import algan  # noqa: E402, F401  (the whole point: pay the import once, up front)
 from algan import SceneManager
 from algan import daemon_client as _dc
+from algan.environment import env_int
 from algan.settings import SETTINGS
 
-DEFAULT_PORT = int(os.environ.get("ALGAN_DAEMON_PORT", "46711"))
+DEFAULT_PORT = env_int("ALGAN_DAEMON_PORT", 46711)
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
 
 # The daemon's own console, captured before any run can redirect sys.stdout to

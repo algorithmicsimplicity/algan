@@ -1,3 +1,18 @@
+"""Attention animations: drawing the viewer's eye to something.
+
+These are the "look here" effects. :func:`Indicate` swells a Mob and flashes its
+colour; :func:`Wiggle` shakes it; :func:`Blink` flickers it; :func:`FocusOn`
+dims everything else and closes a spotlight onto a point; the passing-flash
+family runs a highlight along an outline.
+
+Each is an animated function returning a Mob, so it composes with the animation
+contexts like any other change -- put several in a :class:`~.Sync` to indicate
+things together, or a :class:`~.Lag` to sweep across them.
+
+:func:`there_and_back` and :func:`wiggle` are the rate functions behind them, and
+are useful on their own as ``rate_func`` arguments.
+"""
+
 from __future__ import annotations
 
 import math

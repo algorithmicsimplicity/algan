@@ -28,6 +28,17 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
+
+# Every other manim entry point in Algan goes through a ``LazyModule`` whose
+# ``extras`` pull in the svg cache, which is what redirects manim's Tex/text
+# scratch directories out of the CWD and repairs its single-level
+# ``tex_dir.mkdir()``. This module imports manim eagerly, so without this the
+# compatibility wrappers -- ``MathTex``, ``Title``, anything reaching LaTeX
+# without a ``Tex`` being built first -- construct their manim source object
+# against manim's unpatched default ``media/Tex`` and die on a clean directory.
+# Importing the cache writes nothing to disk; the directories are made on first
+# use.
+from algan.utils import manim_svg_cache as _manim_svg_cache  # noqa: F401
 from algan.utils.tensor_utils import cast_to_tensor
 
 # Public compatibility classes are registered by Manim class name so methods

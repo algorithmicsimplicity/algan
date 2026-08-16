@@ -1,3 +1,25 @@
+"""The base of every animatable object, and the ``@animated_function`` decorator.
+
+:class:`Animatable` is what makes an object part of a Scene's timeline. It owns
+the object's Scene, its id (which keys its rows in the timeline's shared
+buffers), its :class:`~algan.animation_timeline.timeline.Lifespan`, and the
+attribute machinery that turns ``mob.color = BLUE`` into a recorded edit rather
+than an immediate write. ``spawn``, ``despawn``, ``clone`` and ``add_updater``
+live here.
+
+``@animated_function`` is how a plain function becomes an animation. The wrapper
+enters a child animation context, records a ``FunctionApplicationEvent`` against
+it, and lets the timeline re-execute the function per frame with interpolated
+arguments -- so the function itself is written once, for a single moment, and
+Algan produces the motion. Arguments named in ``animated_args`` are the ones
+interpolated; the rest are held fixed.
+
+Note the constraint that follows from the recording model: events must be
+recorded against a context that is *entered and exited*, because only ``__exit__``
+applies the context's time rescaling. Anything recording events by hand has to
+wrap itself in a context of its own.
+"""
+
 from __future__ import annotations
 
 import copy

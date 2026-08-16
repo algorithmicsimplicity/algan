@@ -56,7 +56,7 @@ render:
 | `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
 | `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
 | `test_settings_api.py` | `SETTINGS` is read live by every subsystem. |
-| `test_ux_regressions.py` | The front door: `save_video`/`save_frame` and what they leave behind, contexts, `Group`, the star exports, and the errors users hit. |
+| `test_ux_regressions.py` (per test, not the whole module) | The front door: `save_video`/`save_frame` and what they leave behind, contexts, `Group`, the star exports, and the errors users hit. It is a catch-all file, so its tests are marked one by one — see below. |
 | `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
 
 ### What is not in it, and where that is covered instead
@@ -129,7 +129,12 @@ module is discussed as a whole in its docstring.
 Marking is per module (`pytestmark = pytest.mark.fast`, with a comment saying
 why the module is in) or per test, whichever matches how coherent the file is.
 A module-level mark means the *whole file* is core, new tests included, so use
-it only where that is true.
+it only where that is true. It is true of the timeline and transform files —
+each is about one mechanism, so a new test in them is the same kind of test.
+It is not true of `test_ux_regressions.py`, which is a catch-all: within an hour
+of this suite being curated, a merge added two tests to it, one of them a
+six-second subprocess its author had deliberately kept out of the loop, and a
+module-level mark would have enrolled both. That file is marked per test.
 
 There is no `slow` marker any more: it meant "outside the fast suite", which is
 now what every unmarked test already is. `--strict-markers` is on, so a stale
@@ -339,8 +344,10 @@ Organised by subsystem. The files worth knowing about (★ = in the fast suite):
   whether a *particular* composite's geometry reaches the renderer at all. One
   test per composite that once got it wrong, so it stays out of the fast suite.
 - ★ `test_settings_api.py` — the `SETTINGS` root, its validation and the
-  experimental-switch gate. `test_environment.py` covers the startup-only
-  environment and is an audit, so it is not in the fast suite.
+  experimental-switch gate. `test_environment.py` covers the environment — how
+  `ALGAN_` variables parse, and the rule that the package reaches them only
+  through `algan/environment.py`'s accessors, which is what keeps its registry
+  of declared names honest — and is an audit, so it is not in the fast suite.
 - ★ `test_ux_regressions.py`, `test_rate_functions.py` — the authoring surface
   users touch most. `test_materials.py`, `test_fragment_shaders.py` and
   `test_indication_animations.py` are per-feature and stay out.

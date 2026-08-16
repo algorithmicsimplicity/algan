@@ -1,3 +1,18 @@
+"""Top-level authoring helpers and render results.
+
+:class:`RenderResult` is the value returned by
+:meth:`~algan.scene.Scene.save_video` and
+:meth:`~algan.scene.Scene.save_frame`: its ``status``, ``output_path``,
+``duration_seconds`` and ``render_plan`` describe what was written and how it was
+rendered.
+
+The rest is scene-level tooling: ``scene_function`` for declaring a renderable
+scene, ``combine_scenes`` and ``concatenate_videos`` for assembling a long video
+out of separately authored parts (see
+:doc:`/advanced_user_tutorials/multi_scene_projects`), and ``profile_func`` for
+timing a render.
+"""
+
 from __future__ import annotations
 
 import cProfile

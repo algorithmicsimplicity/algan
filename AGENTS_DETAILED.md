@@ -3,7 +3,9 @@
 This file gives coding agents the detailed repository-specific context needed to work safely and effectively on Algan.
 Treat the source code as authoritative.
 
-Algan is in private beta and deliberately carries **no compatibility aliases**: there is exactly one public name for each thing. If you find a second spelling of an API, that is a bug to remove, not a surface to preserve.
+Algan is in private beta and deliberately carries **no compatibility aliases for its own API**: there is exactly one Algan name for each Algan thing. If you find a second spelling of an Algan API, that is a bug to remove, not a surface to preserve.
+
+The Manim compatibility layer is the one deliberate exception, and it is a separate surface rather than a second spelling of Algan's. `Mobject = Mob`, `GenericGraph = Graph`, `install_opengl_aliases()` and the wrapper classes in `algan/mobs/manim_compat.py`, `manim_parity.py`, `opengl_compat.py` and `point_cloud.py` exist so a Manim script keeps working under the names its author already wrote; they are exported and supported. The rule to apply: never add an Algan-side alias for an Algan name, and never delete a Manim-side name merely because it duplicates one.
 
 ## Project overview
 

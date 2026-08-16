@@ -1,3 +1,14 @@
+"""A number on screen that animates between values.
+
+:class:`NumericDisplay` renders a number as text and makes its ``value`` an
+animatable attribute, so ``counter.value = 100`` counts smoothly from wherever it
+was over the surrounding context's duration -- re-rendering the glyphs each frame
+rather than interpolating their outlines.
+
+``num_decimal_places`` and ``num_integer_places`` fix the format so the display
+does not jitter in width as digits come and go.
+"""
+
 from __future__ import annotations
 
 import math

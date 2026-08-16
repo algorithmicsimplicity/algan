@@ -157,8 +157,11 @@ before it allocates anything and refuses rather than silently dropping them.
 
 "Extended lights" means any light carrying parameters beyond a position and a
 colour -- a cone angle, a ground colour, an emitter radius, a distance falloff.
-A plain :class:`~.PointLight` is not extended; the other light classes in
-:doc:`lighting_and_shadows` generally are.
+:class:`~.PointLight` is the only one that is not: :class:`~.SpotLight`,
+:class:`~.DirectionalLight`, :class:`~.AmbientLight` and
+:class:`~.RectAreaLight` are all extended, so a scene using any of them cannot
+be path traced. Note that a Scene starts with a point light, so clearing the
+lights and adding your own is often what first trips this.
 
 If a scene requests an unsupported feature, Algan raises
 :class:`~algan.errors.UnsupportedFeatureError` naming the features it cannot

@@ -1,3 +1,15 @@
+"""Runtime compute and memory settings.
+
+``SETTINGS.computing`` holds the knobs that decide how much of the machine a
+render may use and how much work is done eagerly -- memory budgets, batch-prep
+behaviour, and authoring-time controls.
+
+Device selection is deliberately **not** settable here. The render and animation
+devices are read while Torch and Taichi initialize, so
+``SETTINGS.computing.set(render_device=...)`` raises with a message pointing at
+``ALGAN_RENDER_DEVICE`` rather than silently doing nothing.
+"""
+
 from __future__ import annotations
 
 import math

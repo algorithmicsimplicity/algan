@@ -84,6 +84,7 @@ import algan.rendering.raytracing.stbvh as stbvh_mod
 import algan.rendering.raytracing.tracer as rtr
 from algan import KERNEL_REGISTRY
 from algan.animatable_base.animatable import Animatable
+from algan.environment import env_flag, env_int, env_overrides
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.surfaces.surface import Surface
 from algan.scene import Scene
@@ -948,7 +949,7 @@ def nvprof_command_hint(script_argv):
 
 def under_nvprof():
     """True when running as the child of an nvprof launch (see profile_scene)."""
-    return os.environ.get("ALGAN_UNDER_NVPROF") == "1"
+    return env_flag("ALGAN_UNDER_NVPROF", False)
 
 
 def _parse_nvprof_csv(text):
@@ -1008,7 +1009,7 @@ def run_nvprof_metrics(script_argv, timeout=1200):
     """
     if not _which("nvprof") or under_nvprof() or not script_argv:
         return None
-    env = dict(os.environ, ALGAN_UNDER_NVPROF="1")
+    env = dict(os.environ, **env_overrides(ALGAN_UNDER_NVPROF="1"))
     py = sys.executable
     merged = {}
     for extra in (
@@ -1053,7 +1054,7 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
     sampler = GpuTelemetrySampler().start() if telemetry else None
     # cProfile is opt-in (ALGAN_PROFILE_CPROFILE=1): its per-call overhead
     # inflates the python-side numbers, so the default report is wall-clean.
-    use_cprofile = os.environ.get("ALGAN_PROFILE_CPROFILE", "0") == "1"
+    use_cprofile = env_flag("ALGAN_PROFILE_CPROFILE", False)
     profiler = cProfile.Profile() if use_cprofile else None
     _sync_devices()
     t0 = time.perf_counter()
@@ -1356,13 +1357,13 @@ def profile_scene(
         return
 
     if runs is None:
-        runs = int(os.environ.get("ALGAN_PROFILE_RUNS", "2"))
+        runs = env_int("ALGAN_PROFILE_RUNS", 2)
     if kernel_profiler is None:
-        kernel_profiler = os.environ.get("ALGAN_TI_KERNEL_PROFILER", "1") == "1"
+        kernel_profiler = env_flag("ALGAN_TI_KERNEL_PROFILER", True)
     if telemetry is None:
-        telemetry = os.environ.get("ALGAN_PROFILE_TELEMETRY", "1") == "1"
+        telemetry = env_flag("ALGAN_PROFILE_TELEMETRY", True)
     if nvprof is None:
-        nvprof = os.environ.get("ALGAN_PROFILE_NVPROF", "0") == "1"
+        nvprof = env_flag("ALGAN_PROFILE_NVPROF", False)
 
     if kernel_profiler:
         enable_taichi_kernel_profiler()

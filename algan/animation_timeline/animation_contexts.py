@@ -1,3 +1,34 @@
+"""Animation contexts -- the ``with`` blocks that decide *when* things happen.
+
+Recording an animation says what changes; the surrounding context says how the
+changes are laid out in time. There are four:
+
+:class:`Seq`
+    One after another. The default outside any context.
+:class:`Sync`
+    All at once.
+:class:`Lag`
+    Overlapping -- each change starts when the previous is ``ratio`` of the way
+    through. ``Lag(0)`` is :class:`Sync`, ``Lag(1)`` is :class:`Seq`.
+:class:`Off`
+    Instantly, in a single frame, recording no animation.
+
+Contexts nest, and a nested context counts as a single animation to its parent,
+which is what makes complex multi-Mob choreography readable. Unset parameters are
+inherited from the enclosing context. ``run_time`` sets a context's total
+duration and is applied **retroactively** on ``__exit__``, by rescaling every
+child timestamp -- which is why an event recorded outside any entered-and-exited
+context evaluates to time zero.
+
+:class:`~algan.animation_timeline.animation_contexts.Audio` and
+:class:`~algan.animation_timeline.animation_contexts.Speech` are the same
+mechanism with their duration taken from a sound clip instead of a number.
+
+:class:`AnimationManager` is the per-Scene owner of the context stack.
+
+See :doc:`/new_user_tutorials/controlling_animations`.
+"""
+
 from __future__ import annotations
 
 import copy

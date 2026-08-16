@@ -39,9 +39,9 @@ the wavefront and Monte Carlo kernels alike).
 
 from __future__ import annotations
 
-import os
-
 import torch
+
+from algan.environment import env_flag, env_float, env_int, env_str
 
 # Bounds used to mark an empty/invisible AABB. Unions and costs are computed
 # with clamping so that empty boxes behave as the identity element. The
@@ -61,7 +61,7 @@ _QUANT_BITS = 15  # 4 * 15 = 60 bits used, keeping codes positive in int64.
 # then mostly rejected by their frame intervals. Default to one instance per
 # leaf; the env knob remains for experiments. Read once at import (the
 # traversal kernels specialize on it).
-LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
+LEAF_SIZE = max(1, env_int("ALGAN_STBVH_LEAF_SIZE", 1))
 
 # Branching factor of the implicit tree. A wider tree is shallower -- depth
 # divides by log2(BVH_ARITY) -- which shortens the serial chain of dependent
@@ -72,14 +72,14 @@ LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
 # level outweigh the further depth cut). 2 reproduces the original binary
 # layout. Read once at import; the traversal kernels specialize on it. Must
 # be >= 2.
-BVH_ARITY = max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
+BVH_ARITY = max(2, env_int("ALGAN_BVH_ARITY", 4))
 
 # Relative weight of the (normalized) time axis in the median-split builder's
 # widest-axis choice. > 1 makes time splits happen higher in the tree, so
 # subtrees become frame-pure sooner and the traversal's frame gate rejects
 # them wholesale for rays in other frames. Purely a build-quality knob: the
 # traversal is arrangement-invariant, so renders are byte-identical.
-SPLIT_TIME_WEIGHT = float(os.environ.get("ALGAN_SPLIT_TIME_WEIGHT", "1"))
+SPLIT_TIME_WEIGHT = env_float("ALGAN_SPLIT_TIME_WEIGHT", 1.0)
 
 # Store the sibling-block child bounds as conservatively rounded float16
 # (64-byte blocks) instead of exact float32 (128-byte blocks). Lower bounds
@@ -93,7 +93,7 @@ SPLIT_TIME_WEIGHT = float(os.environ.get("ALGAN_SPLIT_TIME_WEIGHT", "1"))
 # ALGAN_BVH_BLOCK_F16=0 opts out (exact f32 blocks). Read once at import by
 # both this module (build) and the traversal kernels (block decode + ndarray
 # element type).
-BLOCK_F16 = os.environ.get("ALGAN_BVH_BLOCK_F16", "1") == "1"
+BLOCK_F16 = env_flag("ALGAN_BVH_BLOCK_F16", True)
 
 # Smallest normal float16. Conservative rounding pushes would-be-subnormal
 # magnitudes outward to 0 or +-this, so a flush-to-zero f16->f32 conversion
@@ -306,7 +306,7 @@ def _quantize(c, lo, hi):
 # the epsilon level there -- faster, but kept off to preserve baselines).
 # Setting ALGAN_BVH_BUILD forces one builder for every type (A/B escape
 # hatch).
-_BVH_BUILD = os.environ.get("ALGAN_BVH_BUILD")
+_BVH_BUILD = env_str("ALGAN_BVH_BUILD", None)
 
 
 def _median_split_slots(centers, P):

@@ -32,6 +32,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
+from algan.environment import env_flag
 from algan.errors import _user_stacklevel
 from algan.logging.logger import PERF, get_logger, resolve_progress_style
 from algan.rendering.memory_model import (
@@ -522,7 +523,7 @@ class RenderLoopMixin:
         correct, and re-fetching costs a full rematerialization per batch.
         Set ``ALGAN_SLICE_ACROSS_SPAWNS=0`` to rematerialize instead.
         """
-        return os.environ.get("ALGAN_SLICE_ACROSS_SPAWNS", "1") != "0"
+        return env_flag("ALGAN_SLICE_ACROSS_SPAWNS", True)
 
     def _fetched_window_has_stable_actor_set(self, actors, start_ind, end_ind):
         """Whether no renderable actor spawns inside a fetched frame window.
@@ -553,7 +554,7 @@ class RenderLoopMixin:
         keeps the candidate's shader/projection mutations isolated from the
         original CPU batch, which is retained for later probes.
         """
-        if os.environ.get("ALGAN_REUSE_FETCHED_BATCH", "1") == "0":
+        if not env_flag("ALGAN_REUSE_FETCHED_BATCH", True):
             return False
         if total_frames <= 1 or not primitive_batch:
             return False
@@ -1494,7 +1495,7 @@ class RenderLoopMixin:
         # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
         # default super-sampled buffer averaged down in post-processing;
         # ALGAN_INPLACE_AA keeps the buffer at output resolution.
-        inplace_aa = os.getenv("ALGAN_INPLACE_AA", "0") != "0"
+        inplace_aa = env_flag("ALGAN_INPLACE_AA", False)
         if inplace_aa:
             width = self.num_pixels_screen_width
             height = self.num_pixels_screen_height
@@ -1595,7 +1596,7 @@ class RenderLoopMixin:
         vertex-color path, and computed normals. Set ALGAN_BATCH_SURFACE_PREP=0
         to disable batching (A/B against the per-surface path).
         """
-        if os.environ.get("ALGAN_BATCH_SURFACE_PREP", "1") == "0":
+        if not env_flag("ALGAN_BATCH_SURFACE_PREP", True):
             return False
         from algan.mobs.surfaces.surface import Surface
 
@@ -1625,7 +1626,7 @@ class RenderLoopMixin:
         Set ALGAN_BATCH_BEZIER_PREP=0 to disable (A/B against the per-actor
         path).
         """
-        if os.environ.get("ALGAN_BATCH_BEZIER_PREP", "1") == "0":
+        if not env_flag("ALGAN_BATCH_BEZIER_PREP", True):
             return False
         from algan.mobs.bezier_circuit import BezierCircuitCubic
 
@@ -2298,7 +2299,7 @@ class RenderLoopMixin:
             # share no mutable state. All Taichi work stays on this thread.
             # Set ALGAN_PREFETCH_BATCHES=0 to fall back to serial (also
             # reduces peak memory by one batch's tensors).
-            prefetch_enabled = os.environ.get("ALGAN_PREFETCH_BATCHES", "1") != "0"
+            prefetch_enabled = env_flag("ALGAN_PREFETCH_BATCHES", True)
             # inference_mode is thread-local; mirror the caller's mode in the
             # worker so prep-created tensors can be mutated in-place later by
             # the render thread (inference tensors may only be modified while
@@ -2328,7 +2329,7 @@ class RenderLoopMixin:
 
                     if (
                         batch[0]
-                        and os.environ.get("ALGAN_PREFETCH_MERGE", "1") != "0"
+                        and env_flag("ALGAN_PREFETCH_MERGE", True)
                         and not rt_settings.project_on_gpu_active()
                     ):
                         try:

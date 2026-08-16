@@ -1,3 +1,19 @@
+"""Images as flat textured surfaces.
+
+:class:`ImageMob` puts a picture on screen: a file path or an RGBA array becomes
+a quad carrying the image as a texture map, sampled per fragment by the renderer,
+so it stays sharp independently of the mesh's resolution.
+
+It is a :class:`~algan.mobs.surfaces.surface.Surface`, so it moves, rotates and
+lights like any other 3-D Mob, and can be deformed.
+
+Paths resolve against the working directory and then against the directory
+holding the main script, so an image sitting beside your ``.py`` file loads
+wherever you launch Python from.
+
+See :doc:`/advanced_user_tutorials/images_and_textures`.
+"""
+
 from __future__ import annotations
 
 import torch

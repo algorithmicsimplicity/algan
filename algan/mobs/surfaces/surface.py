@@ -1,3 +1,26 @@
+"""Parametric surfaces -- the curved 3-D geometry primitive.
+
+A :class:`Surface` samples a uniform grid of ``(u, v)`` points from the unit
+square, maps each through a coordinate function into 3-D space, and tiles the
+result with triangles. Every curved shape in Algan is one of these: a sphere is a
+:class:`Surface` whose coordinate function is a sphere.
+
+The grid resolution is chosen for you. ``geometry_tolerance`` bounds how far the
+PN-triangle approximation may stray from the analytic surface, and the search for
+a grid meeting it is cached per subclass and geometry configuration.
+``render_tolerance`` then bounds the on-screen error when each PN triangle is
+diced into flat render triangles -- per triangle, per frame, so detail is spent
+only where the surface is near the camera.
+
+Surfaces carry the texture-map API: ``color_texture`` plus per-texel
+reflectivity, roughness, refractive-index, normal and glow maps, all sampled in
+the ray-tracing kernel. :meth:`Surface.set_color_by_function` colours by ``(u, v)``,
+:meth:`Surface.set_color_by_image` paints an image across the domain, and
+:meth:`Surface.set_shape_to` morphs one surface into another.
+
+See :doc:`/advanced_user_tutorials/images_and_textures`.
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -2833,7 +2856,9 @@ class Surface(Mob):
         ----------
         function
             Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
-            colours of shape ``[..., 4]`` or ``[..., 5]`` (RGBA, optionally with glow).
+            colours of shape ``[..., 3]`` (RGB), ``[..., 4]`` (RGBA) or ``[..., 5]``
+            (RGB, glow, alpha -- Algan's internal channel order). Channels are in
+            ``[0, 1]``; a missing alpha defaults to 1 and a missing glow to 0.
             Must be vectorized over the whole grid.
 
         Returns
@@ -2847,7 +2872,9 @@ class Surface(Mob):
             Paint an image on instead.
         """
         new_color = function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
-        self.grid.color = new_color
+        # Colours are stored five-channel (RGB + glow + alpha). Accept the
+        # three- and four-channel forms a caller naturally writes.
+        self.grid.color = Color.add_defaults(new_color)
         return self
 
     def set_color_by_image(self, rgba_array_or_file_path):

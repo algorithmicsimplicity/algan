@@ -27,9 +27,11 @@ locally could duplicate them. That case reports an error and exits non-zero.
 ``ALGAN_DAEMON_CHILD=1`` is set by the daemon around its own execution of a
 script, and is what stops the handoff from recursing.
 
-Only the standard library is imported here, and the module must stay that way:
-it runs before ``algan/__init__.py`` has imported torch, and its whole value is
-that a client process never pays for what it does not use.
+Nothing heavier than the standard library and :mod:`algan.environment` (which
+is itself stdlib-only, and already imported by the time this module loads) may
+be imported here, and the module must stay that way: it runs before
+``algan/__init__.py`` has imported torch, and its whole value is that a client
+process never pays for what it does not use.
 """
 
 from __future__ import annotations
@@ -41,13 +43,20 @@ import socket
 import struct
 import sys
 
+from algan.environment import (
+    env_flag,
+    env_float,
+    env_str,
+    startup_environment_variables,
+)
+
 #: Bumped when the wire format changes. A client and daemon that disagree
 #: refuse each other rather than misparse, and the client falls back.
 PROTOCOL_VERSION = 1
 
 #: Seconds to wait for the daemon's TCP accept. Short on purpose: a daemon
 #: that cannot answer promptly is not worth blocking a cold run for.
-CONNECT_TIMEOUT = float(os.environ.get("ALGAN_DAEMON_TIMEOUT", "2.0"))
+CONNECT_TIMEOUT = env_float("ALGAN_DAEMON_TIMEOUT", 2.0)
 
 # Frame kinds on the daemon -> client stream. Each frame is one kind byte, a
 # 4-byte big-endian length, then that many payload bytes.
@@ -61,21 +70,10 @@ FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 #: Environment variables consumed while Torch and Taichi initialise. The daemon
 #: baked its values at launch and cannot change them, so a client whose values
 #: differ is refused and runs cold rather than silently rendering on the wrong
-#: device or against the wrong cache. Keep in step with
-#: ``algan/settings/_startup.py`` and the "Initialization-only settings"
-#: section of ``CLAUDE.md``.
-STARTUP_ENV = (
-    "ALGAN_ANIMATION_DEVICE",
-    "ALGAN_RENDER_DEVICE",
-    "ALGAN_HOME",
-    "ALGAN_CACHE_DIR",
-    "TI_OFFLINE_CACHE_FILE_PATH",
-    "ALGAN_SOFT_SHADOW_SAMPLES",
-    "ALGAN_HDR_BUFFER_F16",
-    "ALGAN_TI_DEBUG",
-    "ALGAN_TAICHI_WARMSTART",
-    "ALGAN_TAICHI_FAST_LAUNCH",
-)
+#: device or against the wrong cache. Declared in :mod:`algan.environment`
+#: alongside every other variable Algan honors; see also the
+#: "Initialization-only settings" section of ``CLAUDE.md``.
+STARTUP_ENV = startup_environment_variables()
 
 
 class DaemonUnavailable(Exception):
@@ -96,9 +94,7 @@ def algan_home():
     Duplicated from :mod:`algan.settings._startup` rather than imported: that
     module imports torch, which is exactly what a client is avoiding.
     """
-    home = os.environ.get("ALGAN_HOME") or os.path.join(
-        os.path.expanduser("~"), ".algan"
-    )
+    home = env_str("ALGAN_HOME") or os.path.join(os.path.expanduser("~"), ".algan")
     return os.path.expanduser(home)
 
 
@@ -109,7 +105,7 @@ def state_path():
 
 def startup_env():
     """The subset of the environment that the daemon bakes in at launch."""
-    return {name: os.environ.get(name, "") for name in STARTUP_ENV}
+    return {name: env_str(name, "") for name in STARTUP_ENV}
 
 
 def describe_env_mismatch(client_env, daemon_env):
@@ -194,9 +190,9 @@ def should_try(main_module=None):
     silently reroute an unrelated process into a shared daemon, which is much
     worse than a false negative costing one cold start.
     """
-    if os.environ.get("ALGAN_DAEMON_CHILD") == "1":
+    if env_flag("ALGAN_DAEMON_CHILD", False):
         return False
-    if os.environ.get("ALGAN_USE_DAEMON", "1") == "0":
+    if not env_flag("ALGAN_USE_DAEMON", True):
         return False
     if sys.flags.interactive:
         return False

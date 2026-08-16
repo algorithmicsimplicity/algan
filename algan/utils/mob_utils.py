@@ -1,3 +1,17 @@
+"""Batched views over collections of Mobs.
+
+Algan packs many like Mobs into a single tensor batch -- every glyph of a
+:class:`~algan.mobs.text.Text`, every member of a large
+:class:`~algan.mobs.group.Group` -- so that one render primitive covers all of
+them.
+
+``batch_mobs`` performs that packing, and
+:class:`BatchedMobViewSequence` presents the result as an ordinary indexable
+sequence: ``text.character_mobs[3]`` returns a lazily-constructed view onto row 3
+of the batch, which behaves like a Mob but owns no storage of its own. A view
+shares its source's id, and therefore its timeline rows and its lifespan.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

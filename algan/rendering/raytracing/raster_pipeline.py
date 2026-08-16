@@ -16,10 +16,9 @@ write directly into an arena view.
 
 from __future__ import annotations
 
-import os
-
 import torch
 
+from algan.environment import env_str
 from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
@@ -61,7 +60,7 @@ LAST_AA_DUMP = {}
 
 def _aa_dump_request():
     """The requested (px, py, frame) from ``ALGAN_AA_DUMP``, or ``None``."""
-    spec = os.environ.get("ALGAN_AA_DUMP", "")
+    spec = env_str("ALGAN_AA_DUMP", "")
     if not spec:
         return None
     try:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import warnings
 from typing import NamedTuple
 
@@ -8,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.constants.color import Color
+from algan.environment import env_float
 from algan.rendering.logical_pn import (
     evaluate_cubic_curve,
     evaluate_logical_pn,
@@ -181,7 +181,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "shader_param_values",
     )
 
-    stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
+    stbvh_tightness = env_float("ALGAN_STBVH_TIGHTNESS", 1.0)
 
     # Renderer-internal transport channels, shared with
     # ``RayTracedBezierCircuitPrimitive``. ``reflectivity`` stores material
@@ -1896,7 +1896,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                     ]
                 setattr(self, name, value)
 
-    stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
+    stbvh_tightness = env_float("ALGAN_STBVH_TIGHTNESS", 1.0)
     max_samples_per_segment = 512
     _rt_projection_aa = 1.0
 

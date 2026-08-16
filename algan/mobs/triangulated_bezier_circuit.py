@@ -1,3 +1,17 @@
+"""Turning bezier outlines into filled triangle meshes.
+
+Most 2-D shapes are rendered as bezier circuits, evaluated analytically. A
+:class:`TriangulatedBezierCircuit` is the alternative: the outline is triangulated
+into a real mesh, which is what a shape needs when its interior has to carry
+per-fragment shading, a texture, or 3-D lighting.
+
+The module implements the tiling and triangulation -- polygon triangulation,
+region tiling, and curve subdivision fine enough that the mesh boundary follows
+the bezier outline. The result is cached on disk under
+``SETTINGS.paths.cache_directory``, keyed by content, because triangulating a
+dense glyph batch is expensive and perfectly reproducible.
+"""
+
 from __future__ import annotations
 
 import hashlib

@@ -29,12 +29,14 @@ from algan.scene_manager import SceneManager
 from algan.settings.video_settings import PREVIEW, VideoSettings
 from algan.utils import algan_utils
 
-# In the fast suite, as a module: this is the front door -- ``save_video`` /
-# ``save_frame`` and what they leave the Scene in, the animation contexts, the
-# ``Group`` hierarchy, what ``from algan import *`` exports, and the errors a
-# user hits when they get one of those wrong. Every one of them is reachable
-# from any user script, so any change to the authoring path can break one.
-pytestmark = pytest.mark.fast
+# Marked per test rather than for the module, unlike the other fast-suite
+# files. Those are each about one mechanism, so a new test in them is the same
+# kind of test. This one is a catch-all for whatever last bit the authoring
+# surface -- ``save_video`` / ``save_frame`` and what they leave the Scene in,
+# the animation contexts, ``Group``, the star exports, the errors users hit --
+# and the kinds of test that land here differ enough that a module-level mark
+# would enrol new ones by accident. That is the thing this suite exists to
+# stop, so each test says for itself whether a change elsewhere can break it.
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +52,7 @@ def reset_global_authoring_state():
     SceneManager.reset()
 
 
+@pytest.mark.fast
 def test_context_is_restored_after_user_exception():
     scene = SceneManager.instance().current_scene
     root = scene.animation_manager.context
@@ -62,16 +65,19 @@ def test_context_is_restored_after_user_exception():
     assert failed not in root.child_contexts
 
 
+@pytest.mark.fast
 def test_kernel_compile_notice_ignores_offline_cache_hits():
     assert _loaded_from_offline_cache(b"Create kernel 'wavefront_shade' from cache")
     assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
+@pytest.mark.fast
 def test_same_run_time_tolerates_zero_duration_children():
     with Sync(same_run_time=True), algan.Off():
         pass
 
 
+@pytest.mark.fast
 def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
     scene = SceneManager.instance().current_scene
     scene.set_video_settings(PREVIEW)
@@ -127,6 +133,7 @@ def _stub_out_frame_writing(monkeypatch, scene, on_render=None):
     monkeypatch.setattr(scene, "get_frames", fake_frames)
 
 
+@pytest.mark.fast
 def test_save_frame_resolves_negative_at_from_current_context_time(
     monkeypatch, tmp_path
 ):
@@ -146,6 +153,7 @@ def test_save_frame_resolves_negative_at_from_current_context_time(
     assert requested_windows == [(25, 26)]
 
 
+@pytest.mark.fast
 def test_save_frame_rejects_negative_at_before_scene_start(monkeypatch, tmp_path):
     scene = SceneManager.instance().current_scene
     scene.animation_manager.context.timespan.current_time = 0.25
@@ -155,6 +163,7 @@ def test_save_frame_rejects_negative_at_before_scene_start(monkeypatch, tmp_path
         scene.save_frame(tmp_path / "before_start", at=-0.5)
 
 
+@pytest.mark.fast
 def test_text_creates_manim_directories_inside_algan_cache(monkeypatch, tmp_path):
     from algan.mobs import text as text_module
 
@@ -178,6 +187,55 @@ def test_text_creates_manim_directories_inside_algan_cache(monkeypatch, tmp_path
     assert Path(config.text_dir).is_dir()
 
 
+def test_importing_algan_redirects_manim_tex_dirs_without_touching_disk(tmp_path):
+    # ``make_manim_dir`` used to be reached only from ``Tex.__init__``, via the
+    # ``LazyModule`` extras that pull in the svg cache.  ``manim_compat``
+    # imports manim eagerly and bypassed them, so every Manim-backed mob that
+    # reaches LaTeX without a ``Tex`` being built first -- ``MathTex``,
+    # ``Title``, ``ManimMob(manim.MathTex(...))`` -- ran against manim's
+    # default ``media/Tex`` and died with ``FileNotFoundError`` on a clean
+    # directory.  Docs builds masked it by exec'ing every example in one
+    # process, where an earlier ``Tex`` had already installed the redirect.
+    #
+    # Checked in a subprocess with a pristine cwd because it is a property of
+    # import order, and the in-process suite has long since built a ``Tex``.
+    import os
+    import subprocess
+
+    environ = dict(os.environ)
+    environ["ALGAN_HOME"] = os.fspath(tmp_path / "algan_home")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, algan, manim;"
+            "print('TEX_DIR', manim.config.tex_dir);"
+            "print('PATCHED', getattr("
+            "manim.utils.tex_file_writing.generate_tex_file,"
+            " '_algan_ensures_tex_dir', False));"
+            "print('MEDIA', pathlib.Path('media').exists())",
+        ],
+        capture_output=True,
+        check=False,
+        cwd=os.fspath(tmp_path),
+        env=environ,
+        text=True,
+        timeout=300,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "TEX_DIR " + os.fspath(tmp_path / "algan_home") in completed.stdout
+    # The single-level ``tex_dir.mkdir()`` in manim's ``generate_tex_file`` is
+    # what actually raised; the wrapper has to be in place before first use.
+    assert "PATCHED True" in completed.stdout
+    # Importing Algan must still not write anything: the redirect no longer
+    # creates the directories, they are made on first use.
+    assert "MEDIA False" in completed.stdout
+    assert not (tmp_path / "media").exists()
+
+
+@pytest.mark.fast
 def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
     monkeypatch, tmp_path
 ):
@@ -234,6 +292,7 @@ def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
         )
 
 
+@pytest.mark.fast
 def test_save_frame_leaves_a_finished_scene_s_replay_windows_alone(
     monkeypatch, tmp_path
 ):
@@ -295,6 +354,7 @@ def _render_to_video(scene, tmp_path, name="clip"):
     )
 
 
+@pytest.mark.fast
 def test_render_window_covers_the_whole_open_context_chain(monkeypatch, tmp_path):
     # Mid-block the active context is the innermost open one, and its window
     # covers only its own block. An enclosing Sync can already hold animations
@@ -318,6 +378,7 @@ def test_render_window_covers_the_whole_open_context_chain(monkeypatch, tmp_path
     assert windows == [(0, round(6.0 * scene.frames_per_second))]
 
 
+@pytest.mark.fast
 def test_save_video_reset_false_rolls_back_derived_state_mid_block(
     monkeypatch, tmp_path
 ):
@@ -350,6 +411,7 @@ def test_save_video_reset_false_rolls_back_derived_state_mid_block(
         assert edit.replay_end == pytest.approx(float(edit.time.end))
 
 
+@pytest.mark.fast
 def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path):
     scene = SceneManager.instance().current_scene
     Square(add_to_scene=True)
@@ -369,6 +431,7 @@ def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path
     assert SceneManager.instance().current_scene is scene
 
 
+@pytest.mark.fast
 def test_transparent_mp4_fails_before_render_and_preserves_scene(tmp_path):
     scene = SceneManager.instance().current_scene
     before_settings = scene.video_settings
@@ -384,6 +447,7 @@ def test_transparent_mp4_fails_before_render_and_preserves_scene(tmp_path):
     assert scene.background_frame is before_background
 
 
+@pytest.mark.fast
 def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     scene = SceneManager.instance().current_scene
     old_managers = (
@@ -416,6 +480,7 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     assert replacement_scene.camera.location.is_inference()
 
 
+@pytest.mark.fast
 def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
     """save_video defaults to reset=False: mobs stay valid and spawned."""
     scene = SceneManager.instance().current_scene
@@ -451,6 +516,7 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
     assert not scene.camera.is_despawned()
 
 
+@pytest.mark.fast
 def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
     scene = SceneManager.instance().current_scene
     managers = (
@@ -480,6 +546,7 @@ def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
     assert scene.audio_manager is not managers[2]
 
 
+@pytest.mark.fast
 def test_group_uses_one_member_store_and_repairs_parent_links():
     first = Square(add_to_scene=False)
     second = Square(add_to_scene=False)
@@ -494,6 +561,7 @@ def test_group_uses_one_member_store_and_repairs_parent_links():
     assert group in replacement.parents
 
 
+@pytest.mark.fast
 def test_group_slicing_is_pure_and_empty_slices_remain_groups():
     scene = SceneManager.instance().current_scene
     first = Square(add_to_scene=False)
@@ -513,6 +581,7 @@ def test_group_slicing_is_pure_and_empty_slices_remain_groups():
     assert second.parents == parents_before[1]
 
 
+@pytest.mark.fast
 def test_group_layouts_are_safe_for_empty_and_ragged_groups():
     empty = Group(add_to_scene=False)
     assert empty.arrange_in_line() is empty
@@ -528,6 +597,7 @@ def test_group_layouts_are_safe_for_empty_and_ragged_groups():
         ragged.arrange_in_grid(num_rows=0)
 
 
+@pytest.mark.fast
 def test_hierarchy_rejects_cycles_and_duplicates():
     child = Square(add_to_scene=False)
     group = Group(child, add_to_scene=False)
@@ -537,6 +607,7 @@ def test_hierarchy_rejects_cycles_and_duplicates():
         group.replace_children([child, child])
 
 
+@pytest.mark.fast
 def test_video_settings_are_immutable_validated_and_typo_safe():
     with pytest.raises(AlganConfigurationError, match="Did you mean 'resolution'"):
         PREVIEW.set(resoluton=(1, 1))
@@ -550,6 +621,7 @@ def test_video_settings_are_immutable_validated_and_typo_safe():
     assert PREVIEW.frames_per_second != 12
 
 
+@pytest.mark.fast
 def test_spawned_light_registers_once_and_add_light_is_chainable():
     scene = SceneManager.instance().current_scene
     initial = len(scene.light_sources)
@@ -565,6 +637,7 @@ def test_spawned_light_registers_once_and_add_light_is_chainable():
     assert all(item is not light for item in scene.light_sources)
 
 
+@pytest.mark.fast
 def test_light_parameters_are_validated_instead_of_silently_clamped():
     with pytest.raises(AlganConfigurationError, match="intensity"):
         PointLight(intensity=-1)
@@ -574,6 +647,7 @@ def test_light_parameters_are_validated_instead_of_silently_clamped():
         RectAreaLight(samples=0)
 
 
+@pytest.mark.fast
 def test_monte_carlo_unsupported_features_fail_preflight():
     rt_settings.set_unsupported_feature_policy("error")
     merged = {"has_refractive": True, "has_user_pipeline": True}
@@ -593,6 +667,7 @@ def test_monte_carlo_unsupported_features_fail_preflight():
     assert "extended lights" in message
 
 
+@pytest.mark.fast
 def test_render_plan_describes_supported_deterministic_route():
     plan = _validate_render_capabilities(
         1,
@@ -608,6 +683,7 @@ def test_render_plan_describes_supported_deterministic_route():
     assert plan.as_dict()["unsupported_features"] == []
 
 
+@pytest.mark.fast
 def test_known_broken_renderer_switches_are_hard_disabled():
     with pytest.raises(UnsupportedFeatureError):
         rt_settings.set_textured_wavefront(True)
@@ -617,6 +693,7 @@ def test_known_broken_renderer_switches_are_hard_disabled():
         rt_settings.set_material_sorting(True)
 
 
+@pytest.mark.fast
 def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
     import types
 
@@ -643,6 +720,7 @@ def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
     assert results == []
 
 
+@pytest.mark.fast
 def test_root_star_exports_exclude_dependency_modules_and_typing_helpers():
     namespace = {}
     exec("from algan import *", namespace)
@@ -652,6 +730,7 @@ def test_root_star_exports_exclude_dependency_modules_and_typing_helpers():
         assert expected in namespace
 
 
+@pytest.mark.fast
 def test_root_star_exports_exclude_internal_helpers():
     """Generic tensor/plumbing helpers must not shadow user or stdlib names."""
     namespace = {}
@@ -683,6 +762,7 @@ def test_root_star_exports_exclude_internal_helpers():
     from algan.utils.tensor_utils import mean  # noqa: F401
 
 
+@pytest.mark.fast
 def test_camera_validates_projection_and_clip_parameters():
     with pytest.raises(AlganConfigurationError, match="fov"):
         Camera(fov=180, add_to_scene=False)
@@ -708,6 +788,7 @@ def test_camera_validates_projection_and_clip_parameters():
     assert camera.pixel_height == pytest.approx(0.1)
 
 
+@pytest.mark.fast
 def test_camera_clip_properties_survive_generic_material_parameter_names():
     algan.Cone(add_to_scene=False).set_material(algan.MeshDepthMaterial(near=2, far=12))
 
@@ -717,6 +798,7 @@ def test_camera_clip_properties_survive_generic_material_parameter_names():
     assert camera.far == pytest.approx(20)
 
 
+@pytest.mark.fast
 def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_path):
     scene = SceneManager.instance().current_scene
     with algan.Off():
@@ -747,6 +829,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
     assert result.status == "rendered"
 
 
+@pytest.mark.fast
 def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     """Border-textured Mobs still animate when supplied through any iterable."""
     from algan.animations.manim_animations import draw_border_then_fill
@@ -761,6 +844,7 @@ def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     assert draw_border_then_fill(mob for mob in squares) == squares
 
 
+@pytest.mark.fast
 def test_draw_border_then_fill_restores_the_original_style():
     """The temporary outline must not become the Mob's permanent style."""
     from algan.animations.manim_animations import draw_border_then_fill
@@ -785,6 +869,7 @@ def test_draw_border_then_fill_restores_the_original_style():
     )
 
 
+@pytest.mark.fast
 def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
     from algan.animations.manim_animations import draw_border_then_fill
 
@@ -802,6 +887,7 @@ def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
     assert drawn == list(reversed(squares))
 
 
+@pytest.mark.fast
 def test_text_write_materializes_manim_outline_and_fill_styles():
     """Colored Pango text traces white, then restores its stroke-free style."""
     text = algan.Text("A", color=algan.YELLOW, add_to_scene=True).spawn(False)
@@ -830,12 +916,14 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
     )
 
 
+@pytest.mark.fast
 def test_draw_border_then_fill_tolerates_an_empty_iterable():
     from algan.animations.manim_animations import draw_border_then_fill
 
     assert draw_border_then_fill([]) == []
 
 
+@pytest.mark.fast
 def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
     import algan.animations.manim_animations as manim_animations
 
@@ -877,6 +965,7 @@ def _stub_render(monkeypatch, scene):
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
 
+@pytest.mark.fast
 def test_context_kwargs_on_a_method_point_at_the_context():
     """``mob.move(RIGHT, run_time=2)`` is the Manim reflex; say what to write."""
     square = Square().spawn()
@@ -889,6 +978,7 @@ def test_context_kwargs_on_a_method_point_at_the_context():
         square.set(lag_ratio=0.3)
 
 
+@pytest.mark.fast
 def test_a_genuine_keyword_typo_still_raises():
     """The context-kwarg catch must not swallow real mistakes."""
     square = Square().spawn()
@@ -896,6 +986,7 @@ def test_a_genuine_keyword_typo_still_raises():
         square.move(algan.RIGHT, path_arc=90)
 
 
+@pytest.mark.fast
 def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
     from algan.mobs.shapes_2d import Circle
 
@@ -908,11 +999,13 @@ def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
     circle.set(border_color=algan.PINK)
 
 
+@pytest.mark.fast
 def test_unknown_setting_lists_the_valid_names():
     with pytest.raises(AlganConfigurationError, match="frames_per_second"):
         VideoSettings((8, 8), 4).set(fps=60)
 
 
+@pytest.mark.fast
 def test_vector_arguments_reject_scalars():
     """A scalar broadcasts to the (1, 1, 1) diagonal instead of raising."""
     square = Square().spawn()
@@ -931,11 +1024,13 @@ def test_vector_arguments_reject_scalars():
     square.rotate(90, algan.OUT)
 
 
+@pytest.mark.fast
 def test_empty_output_path_is_rejected():
     with pytest.raises(AlganConfigurationError, match="empty string"):
         algan_utils._resolve_output_destination("", ".mp4")
 
 
+@pytest.mark.fast
 def test_never_spawned_mob_warns(monkeypatch, tmp_path):
     from algan.errors import NeverSpawnedMobWarning
     from algan.mobs.shapes_2d import Circle
@@ -951,6 +1046,7 @@ def test_never_spawned_mob_warns(monkeypatch, tmp_path):
         )
 
 
+@pytest.mark.fast
 def test_add_to_scene_false_is_the_only_way_to_mark_reference_geometry(
     monkeypatch, tmp_path, recwarn
 ):
@@ -975,6 +1071,7 @@ def test_add_to_scene_false_is_the_only_way_to_mark_reference_geometry(
     assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
 
 
+@pytest.mark.fast
 def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
     """Without the flag it is just an unspawned Mob, and says so."""
     from algan.errors import NeverSpawnedMobWarning
@@ -990,6 +1087,7 @@ def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
         )
 
 
+@pytest.mark.fast
 def test_angle_unit_constants_are_exported_with_algan_convention():
     """Algan's DEGREES is 1, the reciprocal of Manim's -- guard the value."""
     assert {"DEGREES", "RADIANS"} <= set(algan.__all__)
@@ -997,6 +1095,7 @@ def test_angle_unit_constants_are_exported_with_algan_convention():
     assert pytest.approx(180.0) == algan.PI * algan.RADIANS
 
 
+@pytest.mark.fast
 def test_internal_helpers_are_importable_but_not_star_exported():
     """Trimmed from `from algan import *`, still public at their real path."""
     from algan.geometry.geometry import project_onto_basis  # noqa: F401
@@ -1011,3 +1110,66 @@ def test_internal_helpers_are_importable_but_not_star_exported():
         "get_rotation_between_bases",
     ):
         assert name not in algan.__all__
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    ("feature", "expected"),
+    [
+        ("environment_map", "environment maps"),
+        ("refraction", "refractive materials"),
+        ("fragment_pipeline", "custom fragment-shader pipelines"),
+        ("extended_light", "extended lights"),
+    ],
+)
+def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
+    feature, expected, tmp_path
+):
+    """The preflight is only worth having if real authoring actually trips it.
+
+    ``_validate_render_capabilities`` is unit-tested above against hand-built
+    ``merged`` dicts, which proves the message but not the wiring: that
+    ``set_material(MeshPhysicalMaterial(transmission=...))` really sets
+    ``has_refractive``, that ``set_environment_map`` reaches the check at all,
+    and so on. Authoring each feature the way a user would and asserting the
+    render refuses is what closes that gap -- and it needs no GPU, because the
+    check runs on host metadata before any arena reservation or kernel
+    compilation.
+    """
+    from algan.constants.color import BLUE, WHITE
+    from algan.constants.spatial import OUT, UP
+    from algan.mobs.shapes_3d import Sphere
+    from algan.rendering.shaders.fragment_shaders import STAGE_STANDARD, cosine_color
+    from algan.rendering.shaders.materials import MeshPhysicalMaterial
+    from algan.settings.video_settings import SMOKE_TEST
+
+    rt_settings.set_unsupported_feature_policy("error")
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(SMOKE_TEST)
+
+    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
+        if feature == "environment_map":
+            scene.set_environment_map(torch.rand((4, 8, 3)))
+            Sphere(radius=0.6, color=BLUE).spawn()
+        elif feature == "refraction":
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_material(
+                MeshPhysicalMaterial(transmission=1.0, ior=1.5, thickness=0.5)
+            )
+            sphere.spawn()
+        elif feature == "fragment_pipeline":
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_fragment_shader([cosine_color, STAGE_STANDARD])
+            sphere.spawn()
+        elif feature == "extended_light":
+            with algan.Off():
+                scene.clear_light_sources()
+                RectAreaLight(
+                    location=UP * 3 + OUT * 3, color=WHITE, intensity=3
+                ).spawn()
+            Sphere(radius=0.6, color=BLUE).spawn()
+
+        scene.wait(0.2)
+
+        with pytest.raises(UnsupportedFeatureError, match=expected):
+            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)

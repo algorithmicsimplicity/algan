@@ -144,6 +144,48 @@ Algan creates its default Scene as soon as you build your first Mob, so a
 that is already running. Either set it at the top of your script, or pass the
 settings to ``save_video``.
 
+Style defaults
+==============
+
+``SETTINGS.style`` holds the defaults a Scene picks up when you do not say
+otherwise. Unlike the other sections it is mostly about *authoring*, so its
+fields are the ones you set once at the top of a script:
+
+``background_color``
+    The colour behind everything, as an Algan
+    :class:`~algan.constants.color.Color`. Defaults to ``BLACK``. This is the
+    process-wide default; ``Scene.set_background_color(...)`` changes one Scene
+    and the ``background_color=`` argument to
+    :meth:`~algan.scene.Scene.save_video` changes one render, each overriding
+    the one before it. It also accepts an image path or ``TRANSPARENT`` -- see
+    :doc:`backgrounds_and_post_processing` and
+    :doc:`transparent_backgrounds`.
+
+``frame``
+    Colour of the letterbox area outside the rendered frame, when the output
+    aspect ratio does not fill the canvas. Defaults to ``BLACK``.
+
+``text_color``
+    Default colour for :class:`~algan.mobs.text.Text` and
+    :class:`~algan.mobs.text.Tex`. Defaults to ``WHITE``.
+
+``buffer``
+    Default gap, in world units, left by the layout methods
+    (``move_next_to``, ``arrange_in_line``, ``arrange_in_grid``). Defaults to
+    ``0.6``. Must be finite and non-negative.
+
+``fade_out_on_scene_end``
+    Whether a render fades everything out at the end. Defaults to ``False``.
+    ``save_video(animate_fade_out=...)`` overrides it per render.
+
+``default_shader``
+    Vertex shader applied to Mobs that do not set their own. Defaults to
+    ``None`` (Algan's built-in shading) -- see :doc:`shaders_and_materials`.
+
+.. code-block:: python
+
+    SETTINGS.style.set(background_color=Color([0.05, 0.05, 0.15]), buffer=0.3)
+
 Initialization-only configuration
 =================================
 

@@ -1,3 +1,19 @@
+"""Default colours and layout style.
+
+``SETTINGS.style`` holds the defaults a Scene picks up when you do not say
+otherwise: ``background_color`` (``BLACK``), ``frame`` for the letterbox area
+outside the rendered frame, ``text_color`` (``WHITE``), the layout ``buffer``
+that ``move_next_to`` and the ``arrange_*`` methods leave between Mobs
+(``0.6`` world units), ``fade_out_on_scene_end``, and a ``default_shader`` for
+Mobs that set no material of their own.
+
+These are process-wide defaults, and each is overridable closer to the render:
+``Scene.set_background_color(...)`` changes one Scene, and
+``save_video(background_color=...)`` changes one render.
+
+See :doc:`/advanced_user_tutorials/settings`.
+"""
+
 from __future__ import annotations
 
 import math

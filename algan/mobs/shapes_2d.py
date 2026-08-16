@@ -1,3 +1,23 @@
+"""The 2-D shapes.
+
+:class:`Circle`, :class:`Square`, :class:`Rectangle`, :class:`RegularPolygon`,
+:class:`Polygon`, :class:`Quad`, :class:`Line`, :class:`Point`,
+:class:`Dot` and :class:`SurroundingRectangle` are all cubic bezier circuits
+(:class:`~algan.mobs.bezier_circuit.BezierCircuitCubic`), so they stay exactly
+smooth at any zoom and morph into one another. They take ``color``,
+``border_color`` and ``border_width``.
+
+A second family -- :class:`~.Arc`, :class:`~.Annulus`, :class:`~.Ellipse`,
+:class:`~.Star`, :class:`~.Arrow` -- comes from the Manim compatibility layer and
+is constructed with Manim's arguments, including ``stroke_width`` and
+``stroke_color`` in place of the border ones.
+
+The ``Triangulated`` classes here build filled triangle meshes instead, for
+interiors that need per-fragment shading.
+
+See :doc:`/new_user_tutorials/mob_gallery`.
+"""
+
 from __future__ import annotations
 
 import math
@@ -104,7 +124,44 @@ def _translate_vector_style_kwargs(kwargs, *, default_color=None, line=False):
 
 
 class Line(BezierCircuitCubic):
-    """A straight or circular-arc line segment with Manim-compatible arguments."""
+    """A straight or circular-arc line segment, drawn as a cubic bezier circuit.
+
+    A :class:`Line` has no interior, so its stroke stays centred on the path
+    rather than being drawn inside an outline the way a filled shape's border is.
+
+    Parameters
+    ----------
+    start, end
+        The endpoints, shape ``(*, 3)`` in world units, or a :class:`~.Mob` to
+        attach to. Given a Mob, the line stops at its boundary in the direction
+        of travel rather than at its center, so it never disappears underneath it.
+        Default to ``LEFT`` and ``RIGHT``.
+    buff
+        Gap left at each end, in world units, so a line between two labelled
+        points does not touch them. Defaults to ``0`` (no gap).
+    path_arc
+        Angle of the circular arc bulging the line away from straight, **in
+        radians** -- a Manim-parity argument, which is why it contradicts Algan's
+        usual degrees. Positive and negative values bulge opposite ways. Defaults
+        to ``0`` (a straight segment).
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``color`` and
+        ``border_width``.
+
+    Examples
+    --------
+    A straight line and an arc between the same two points:
+
+    .. algan:: Example1Line
+        :save_last_frame:
+
+        from algan import *
+
+        Line(LEFT, RIGHT, color=BLUE).spawn()
+        Line(LEFT, RIGHT, path_arc=1.0, color=YELLOW).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(self, start=LEFT, end=RIGHT, buff=0, path_arc=0, *args, **kwargs):
         start_center = (
@@ -170,6 +227,24 @@ class Line(BezierCircuitCubic):
 
 
 class Point(BezierCircuitCubic):
+    """A single point, mostly useful as an invisible anchor.
+
+    It is a degenerate bezier circuit -- four control points stacked on the same
+    location -- so it occupies no area and renders as nothing at the default
+    black. Reach for it to give a :class:`~.Group` a reference position, or as a
+    :meth:`~algan.animatable_base.mob.Mob.become` target that collapses a shape
+    to a dot. Use :class:`Dot` when you want something visible.
+
+    Parameters
+    ----------
+    location
+        Where the point sits, shape ``(*, 3)`` in world units. Defaults to
+        ``ORIGIN``.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`. ``color`` defaults to ``BLACK``
+        here rather than the usual shape default.
+    """
+
     def __init__(self, location=ORIGIN, *args, **kwargs):
         location = cast_to_tensor(location)
         kwargs = _translate_vector_style_kwargs(kwargs, default_color=BLACK)
@@ -717,7 +792,41 @@ class Circle(BezierCircuitCubic):
 
 
 class Dot(Circle):
-    """A small filled circle with Manim-compatible constructor arguments."""
+    """A small filled :class:`Circle`, for marking a point.
+
+    Parameters
+    ----------
+    point
+        Where to put it, shape ``(*, 3)`` in world units. Defaults to ``ORIGIN``.
+    radius
+        Radius in world units. Defaults to ``0.08`` -- small enough to read as a
+        marker beside shapes of unit size.
+    stroke_width
+        Width of the outline, in world units. Defaults to ``0``: a dot is solid
+        fill with no border.
+    fill_opacity
+        Opacity of the fill, from ``0`` (invisible) to ``1`` (opaque). Defaults to
+        ``1.0``.
+    color
+        An Algan :class:`~algan.constants.color.Color`, a named constant such as
+        ``BLUE``, or anything ``Color()`` accepts. Defaults to ``WHITE``.
+    **kwargs
+        Passed to :class:`Circle` and on to :class:`~.BezierCircuitCubic`.
+
+    Examples
+    --------
+    Three dots marking the corners of a triangle:
+
+    .. algan:: Example1Dot
+        :save_last_frame:
+
+        from algan import *
+
+        for position in (UP, LEFT + DOWN, RIGHT + DOWN):
+            Dot(point=position, radius=0.15, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,

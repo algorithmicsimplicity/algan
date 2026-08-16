@@ -1,3 +1,20 @@
+"""Batched triangle geometry for the renderer.
+
+:class:`TrianglePrimitive` is what a mesh Mob hands the renderer: a batch of
+triangles as corner positions, normals and per-vertex colours, along with the
+material parameters the shading kernel reads.
+
+Primitives from many Mobs are grouped by
+:meth:`~algan.rendering.primitives.primitive.RenderPrimitive.get_batch_identifier`
+and rebuilt into one merged primitive per group, so a Scene full of like objects
+costs one kernel launch rather than many. ``project_to_screen`` then shades and
+packs a batch once per frame window.
+
+This is the flat-triangle case; curved geometry arrives as PN triangles carrying
+corner normals, and bezier outlines as
+:class:`~algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive`.
+"""
+
 from __future__ import annotations
 
 import torch
