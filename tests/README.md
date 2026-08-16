@@ -278,7 +278,10 @@ Organised by subsystem. The files worth knowing about:
   layout, hierarchy, and the actor registration that decides whether geometry
   reaches the renderer at all.
 - `test_settings_api.py`, `test_environment.py` — the `SETTINGS` root, its
-  validation, the experimental-switch gate, and the startup-only environment.
+  validation, the experimental-switch gate, and the environment: how `ALGAN_`
+  variables parse, and the rule that the package reaches them only through
+  `algan/environment.py`'s accessors (which is what keeps its registry of
+  declared names honest).
 - `test_materials.py`, `test_fragment_shaders.py`, `test_indication_animations.py`,
   `test_rate_functions.py` — the authoring surface users touch most.
 - `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py` —

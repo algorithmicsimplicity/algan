@@ -62,10 +62,10 @@ separate from cold data (what only confirmed hits touch):
 Coplanar-surface layer order is bezier circuits < triangles < PN patches,
 with each type's primitive index breaking ties within the type.
 """
-import os
 
 import taichi as ti
 
+from algan.environment import env_flag, env_int
 from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
 from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_ACCEL_HEADER_SIZE,
@@ -94,7 +94,7 @@ init_taichi()
 # is identical -- the OBB conservatively bounds the patch -- and it removes the
 # ~98% of solver invocations whose ray pierces a patch's loose axis-aligned leaf
 # box but misses the (thin, often diagonal) patch itself.
-_PN_OBB_ON = os.environ.get("ALGAN_PN_OBB", "1") == "1"
+_PN_OBB_ON = env_flag("ALGAN_PN_OBB", True)
 
 # Sibling-block traversal stack. The walk descends into one intersected
 # child at a time and pushes the sibling group's *remaining* mask; a complete
@@ -173,7 +173,7 @@ PN_SEAM_DEPTH_EPSILON = 8e-3
 # per-scene tuning: small KBUF closes the traversal's depth window as soon as
 # the buffer fills (tighter pruning for low-depth-complexity scenes), large
 # KBUF re-traverses less on deep translucent stacks.
-KBUF = max(1, int(os.environ.get("ALGAN_KBUF", "4")))
+KBUF = max(1, env_int("ALGAN_KBUF", 4))
 
 # Kernel-argument annotation for STBVH sibling-block arrays (see
 # stbvh._build_blocks): entry [i, lane] holds one attribute of internal node

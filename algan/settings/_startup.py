@@ -20,6 +20,7 @@ os.environ.setdefault("CUDA_CACHE_MAXSIZE", "4294967296")
 
 import torch
 
+from algan.environment import env_flag, env_int, env_str
 from algan.errors import AlganConfigurationError
 
 
@@ -43,7 +44,7 @@ def _auto_render_device() -> torch.device:
 
 
 def _parse_device(env_name: str, default: str | torch.device) -> torch.device:
-    raw = os.environ.get(env_name, str(default)).strip().lower()
+    raw = env_str(env_name, str(default)).strip().lower()
     if raw == "auto":
         return _auto_render_device()
     try:
@@ -68,14 +69,14 @@ def _parse_device(env_name: str, default: str | torch.device) -> torch.device:
 _ANIMATION_DEVICE = _parse_device("ALGAN_ANIMATION_DEVICE", "cpu")
 _RENDER_DEVICE = _parse_device("ALGAN_RENDER_DEVICE", "auto")
 
-_ALGAN_HOME = Path(os.environ.get("ALGAN_HOME", Path.home() / ".algan")).expanduser()
+_ALGAN_HOME = Path(env_str("ALGAN_HOME") or Path.home() / ".algan").expanduser()
 _CACHE_DIRECTORY = Path(
-    os.environ.get("ALGAN_CACHE_DIR", _ALGAN_HOME / "cache")
+    env_str("ALGAN_CACHE_DIR") or _ALGAN_HOME / "cache"
 ).expanduser()
 _TAICHI_CACHE_DIRECTORY = Path(
-    os.environ.get("TI_OFFLINE_CACHE_FILE_PATH", _CACHE_DIRECTORY / "taichi")
+    env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / "taichi"
 ).expanduser()
 
 # These are baked into Taichi kernels or runtime layout at first materialisation.
-_SOFT_SHADOW_SAMPLES = max(2, int(os.environ.get("ALGAN_SOFT_SHADOW_SAMPLES", "8")))
-_HDR_BUFFER_F16 = os.environ.get("ALGAN_HDR_BUFFER_F16", "0") == "1"
+_SOFT_SHADOW_SAMPLES = max(2, env_int("ALGAN_SOFT_SHADOW_SAMPLES", 8))
+_HDR_BUFFER_F16 = env_flag("ALGAN_HDR_BUFFER_F16", False)

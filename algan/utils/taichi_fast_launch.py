@@ -54,7 +54,7 @@ only; silent no-op anywhere else (or when ``ALGAN_TAICHI_FAST_LAUNCH=0``).
 
 from __future__ import annotations
 
-import os
+from algan.environment import env_flag
 
 _APPLIED = False
 
@@ -84,7 +84,7 @@ def apply():
     global _APPLIED
     if _APPLIED:
         return
-    if os.environ.get("ALGAN_TAICHI_FAST_LAUNCH", "1") == "0":
+    if not env_flag("ALGAN_TAICHI_FAST_LAUNCH", True):
         return
     try:
         import numpy as np
@@ -110,7 +110,7 @@ def apply():
 
     _orig_call = kernel_cls.__call__
     _orig_reset = kernel_cls.reset
-    _verify = os.environ.get("ALGAN_TAICHI_FAST_LAUNCH_VERIFY", "0") == "1"
+    _verify = env_flag("ALGAN_TAICHI_FAST_LAUNCH_VERIFY", False)
     _template_t = _ki.template
     _ndarray_t = _ki.ndarray_type.NdarrayType
     _real_ids = _ki.primitive_types.real_type_ids

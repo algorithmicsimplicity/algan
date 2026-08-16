@@ -40,8 +40,9 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import os
 import textwrap
+
+from algan.environment import env_flag
 
 _APPLIED = False
 
@@ -51,7 +52,7 @@ def apply():
     global _APPLIED
     if _APPLIED:
         return
-    if os.environ.get("ALGAN_TAICHI_WARMSTART", "1") == "0":
+    if not env_flag("ALGAN_TAICHI_WARMSTART", True):
         return
 
     try:
@@ -91,7 +92,7 @@ def apply():
     # original implementation and raises on any byte difference (used by
     # benchmarks/_taichi_warmstart_check.py).
     _orig_get_pos_info = ctx_cls.get_pos_info
-    _verify = os.environ.get("ALGAN_TAICHI_WARMSTART_VERIFY", "0") == "1"
+    _verify = env_flag("ALGAN_TAICHI_WARMSTART_VERIFY", False)
 
     def _wrap80(text):
         if len(text) <= 80:
