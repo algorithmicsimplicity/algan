@@ -1,3 +1,26 @@
+"""Wrapping a Manim Mobject as an Algan Mob.
+
+:class:`ManimMob` takes an already-constructed Manim Mobject and converts its
+cubic-Bezier vector geometry into Algan control points, producing a first-class
+Mob: Algan's animation, materials and renderer all apply to it, and Manim's
+renderer is not involved.
+
+One Manim Mobject becomes a whole Algan sub-hierarchy, since Algan collects
+render primitives from the Scene's actor list rather than by walking the
+hierarchy -- so every renderable part is registered in its own right unless the
+conversion is batched, in which case one batched Mob renders in their place.
+
+Image submobjects are converted to :class:`~algan.mobs.image_mob.ImageMob`.
+Geometry that is neither bezier nor image raises ``NotImplementedError``: this is
+a geometry bridge, not an arbitrary bridge to Manim's renderer.
+
+The compatibility *classes* -- ``Axes``, ``Brace`` and the rest, constructed
+without touching ``manim`` yourself -- are in
+:mod:`algan.mobs.manim_compat`.
+
+See :doc:`/new_user_tutorials/importing_from_manim`.
+"""
+
 from __future__ import annotations
 
 import torch

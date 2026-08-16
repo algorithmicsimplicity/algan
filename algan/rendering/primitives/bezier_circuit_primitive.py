@@ -1,3 +1,15 @@
+"""Batched cubic bezier outlines for the renderer.
+
+:class:`BezierCircuitPrimitive` carries 2-D shapes and glyphs to the renderer as
+their control points, not as triangles. Coverage is decided analytically against
+the curves, which is what keeps a circle exactly round and text crisp however far
+the camera zooms in, and what makes the inside-the-outline border model exact.
+
+Like every render primitive, instances from many Mobs are merged into one batch
+before rendering, so a page of text is a single primitive rather than one per
+glyph.
+"""
+
 from __future__ import annotations
 
 import torch

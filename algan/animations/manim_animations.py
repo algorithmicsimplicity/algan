@@ -1,3 +1,13 @@
+"""Manim's signature animations, as Algan animated functions.
+
+:func:`draw_border_then_fill` is the hand-drawing effect: the outline is traced
+as though by a pen, then the fill washes in behind it. It takes any iterable of
+Mobs, so it works on shapes as readily as on text.
+
+:meth:`~algan.mobs.text.Tex.write` and :meth:`~algan.mobs.text.Text.write` are
+the glyph-wise shorthand for the same effect, staggering it across characters.
+"""
+
 from __future__ import annotations
 
 from algan.animation_timeline.animation_contexts import *

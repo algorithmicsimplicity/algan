@@ -1,3 +1,16 @@
+"""Small pure-Python helpers with no torch dependency.
+
+``traverse`` flattens arbitrarily nested iterables into a flat sequence, which is
+what lets Algan's constructors accept ``Group([a, [b, c], d])`` as readily as a
+flat list. ``downsample_nested_list`` thins such a structure while preserving its
+shape, and ``get_factors`` returns integer factor pairs, used when choosing grid
+dimensions.
+
+``arithmetic_operators``, ``binary_operators`` and ``other_operators`` name the
+dunder methods Algan forwards when it makes a wrapper behave like the value it
+wraps.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

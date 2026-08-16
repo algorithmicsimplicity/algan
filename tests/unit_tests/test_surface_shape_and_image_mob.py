@@ -151,3 +151,27 @@ def test_textured_primitive_visible_when_only_its_texture_is_opaque():
 
     assert float(primitive.colors[..., -1].amax()) == 0.0
     assert bool((primitive._rt_frame_hi >= primitive._rt_frame_lo).all())
+
+
+@pytest.mark.parametrize("channels", [3, 4, 5])
+def test_set_color_by_function_accepts_rgb_rgba_and_glow_colours(channels):
+    """The documented three- and four-channel returns must not raise.
+
+    Colours are stored five-channel (RGB + glow + alpha). A caller writing the
+    natural ``torch.cat((r, g, b, a), -1)`` used to hit a bare broadcast error
+    from the timeline buffer -- "size of tensor a (4) must match ... (5)" --
+    even though the docstring advertised RGBA.
+    """
+    surface = Surface(grid_width=3, grid_height=3, add_to_scene=False)
+
+    surface.set_color_by_function(
+        lambda uv: torch.full((*uv.shape[:-1], channels), 0.5)
+    )
+
+    assert surface.grid.color.shape[-1] == 5
+    stored = surface.grid.color
+    assert torch.allclose(stored[..., :3], torch.full_like(stored[..., :3], 0.5))
+    if channels == 3:
+        # alpha defaults to opaque, glow to none.
+        assert torch.allclose(stored[..., 3], torch.zeros_like(stored[..., 3]))
+        assert torch.allclose(stored[..., 4], torch.ones_like(stored[..., 4]))

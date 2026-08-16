@@ -1,3 +1,20 @@
+"""The renderer's feature toggles, as module globals with setter functions.
+
+Every ray-tracing switch lives here as a module-level global with an environment
+variable default and a setter, and :data:`algan.SETTINGS`'s ``raytracing`` section
+is the public face of them. The ones that change what the image looks like are
+exposed directly; the kernel and performance switches are reachable through
+``SETTINGS.raytracing.experimental``.
+
+**Read these live** -- ``rt_settings.X`` at call time, not ``from ... import X``
+at module import. Importing by value freezes a toggle at its import-time state,
+before user code has had a chance to set it. That bug has shipped before.
+
+:func:`set_unsupported_feature_policy` and :func:`report_unsupported_features`
+decide what happens when a Scene asks for something the selected tracer cannot
+do: raise (the default), warn, or ignore.
+"""
+
 from __future__ import annotations
 
 import os

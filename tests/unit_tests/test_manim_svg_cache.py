@@ -10,6 +10,8 @@ succeeded and every later one died on ``KeyError: 'root'``.
 
 from __future__ import annotations
 
+import pathlib
+
 import manim as mn
 import pytest
 import torch
@@ -119,3 +121,98 @@ def test_tex_survives_a_cache_hit(isolated_svg_cache):
     # here means the cache hit reproduced the group map the split relies on.
     assert torch.equal(warm.num_mobs_per_segment, cold.num_mobs_per_segment)
     assert warm.num_mobs_per_segment.sum() > 0
+
+
+_SQUARE_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" '
+    'width="100" height="100">'
+    '<path d="M10 10 L90 10 L90 90 L10 90 Z" fill="#3366cc"/>'
+    "</svg>"
+)
+_THREE_SHAPE_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" '
+    'width="100" height="100">'
+    '<path d="M50 10 L90 90 L10 90 Z" fill="#cc3366"/>'
+    '<path d="M20 20 L40 20 L40 40 L20 40 Z" fill="#33cc66"/>'
+    '<circle cx="70" cy="30" r="15" fill="#cccc33"/>'
+    "</svg>"
+)
+
+
+def test_editing_a_user_svg_is_not_served_from_the_cache(isolated_svg_cache, tmp_path):
+    """A user's own SVG is keyed on its bytes, not its name.
+
+    The key used to be the file *basename*, which is content-addressed for
+    manim's Tex output (``tex_hash(source) + .svg``) but says nothing about a
+    file the user drew. Editing ``logo.svg`` and re-running therefore replayed
+    the previous drawing -- silently, and across processes, because the cache
+    persists to disk.
+    """
+    svg_file = tmp_path / "logo.svg"
+
+    svg_file.write_text(_SQUARE_SVG)
+    before = len(mn.SVGMobject(svg_file).submobjects)
+
+    svg_file.write_text(_THREE_SHAPE_SVG)
+    after = len(mn.SVGMobject(svg_file).submobjects)
+
+    assert before == 1
+    assert after == 3
+
+
+def test_two_different_svgs_sharing_a_basename_do_not_collide(
+    isolated_svg_cache, tmp_path
+):
+    first = tmp_path / "a" / "logo.svg"
+    second = tmp_path / "b" / "logo.svg"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text(_SQUARE_SVG)
+    second.write_text(_THREE_SHAPE_SVG)
+
+    assert len(mn.SVGMobject(first).submobjects) == 1
+    assert len(mn.SVGMobject(second).submobjects) == 3
+
+
+def test_a_missing_svg_raises_rather_than_replaying_a_stale_entry(
+    isolated_svg_cache, tmp_path, monkeypatch
+):
+    """The cache is consulted before manim resolves the path.
+
+    So a basename key let a deleted file keep "loading" from whatever was
+    cached under that name, instead of manim reporting it missing.
+    """
+    svg_file = tmp_path / "logo.svg"
+    svg_file.write_text(_SQUARE_SVG)
+    monkeypatch.chdir(tmp_path)
+    assert len(mn.SVGMobject("logo.svg").submobjects) == 1
+
+    svg_file.unlink()
+
+    with pytest.raises(OSError):
+        mn.SVGMobject("logo.svg")
+
+
+def test_tex_svgs_stay_keyed_on_their_content_addressed_basename():
+    """Tex output must not be keyed on the SVG bytes.
+
+    dvisvgm's output carries its version and emits in its own order, so hashing
+    it would key the cache to the machine that produced it -- exactly the
+    cross-machine sharing this cache exists for. The basename is already
+    ``tex_hash(source)``, so it stays the identity.
+    """
+    tex_dir = pathlib.Path(mn.config.get_dir("tex_dir"))
+    tex_dir.mkdir(parents=True, exist_ok=True)
+    tex_svg = tex_dir / "0123456789abcdef.svg"
+    tex_svg.write_text(_SQUARE_SVG)
+    try:
+        assert svg_cache._svg_content_id(tex_svg) == "0123456789abcdef.svg"
+    finally:
+        tex_svg.unlink()
+
+    user_svg = tex_dir.parent / "logo.svg"
+    user_svg.write_text(_SQUARE_SVG)
+    try:
+        assert svg_cache._svg_content_id(user_svg).startswith("logo.svg:")
+    finally:
+        user_svg.unlink()

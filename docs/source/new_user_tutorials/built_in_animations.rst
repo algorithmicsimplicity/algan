@@ -258,3 +258,13 @@ If none of these fit, an :func:`~.animated_function` gets you the same
 capabilities -- see :ref:`Animated Functions <animated-functions>` in
 :doc:`basic_animations`. For animations that run indefinitely rather than for a
 fixed duration, use :doc:`updaters`.
+
+Where to next
+=============
+
+* :doc:`updaters` -- animations that run indefinitely rather than for a fixed
+  duration.
+* :doc:`child_mobs` -- applying an animation to a whole hierarchy at once.
+* :doc:`controlling_animations` -- the contexts that decide when these run.
+* :doc:`../advanced_user_tutorials/extending_algan` -- writing your own
+  reusable animation.

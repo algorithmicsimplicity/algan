@@ -1,3 +1,16 @@
+"""The settings root object and whole-tree snapshots.
+
+:class:`AlganSettings` is the type of :data:`algan.SETTINGS`. It owns the section
+instances, keeps their identity stable across mutation, and refuses assignment to
+a section attribute -- replacing a section would strand every reference already
+taken to it.
+
+:class:`SettingsSnapshot` captures the whole tree at once.
+``SETTINGS.snapshot()`` and ``SETTINGS.restore(...)`` are the save/restore pair
+for longer-lived flows; ``SETTINGS.override(...)`` is the scoped form for a block
+that spans several sections.
+"""
+
 from __future__ import annotations
 
 from contextlib import contextmanager

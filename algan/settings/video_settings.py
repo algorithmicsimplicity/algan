@@ -1,3 +1,30 @@
+"""Output format settings and the built-in quality presets.
+
+:class:`VideoSettings` carries resolution, frame rate and anti-aliasing level --
+what the encoder is handed, as distinct from what the renderer computes (that is
+``SETTINGS.raytracing``).
+
+The presets, in increasing cost:
+
+``SMOKE_TEST``
+    32x32 -- fast enough to assert a render ran at all.
+``PREVIEW``
+    704x396 at 10 fps, no anti-aliasing. The while-you-work setting.
+``LD`` / ``MD``
+    864x486 at 15 fps; 720p at 30 fps.
+``HD``
+    1080p at 30 fps.
+``PRODUCTION`` / ``UHD``
+    1440p and 2160p at 60 fps.
+``THUMBNAIL``
+    720p, a single frame, heavily anti-aliased -- for
+    :meth:`~algan.scene.Scene.save_frame`.
+
+Presets are immutable, so ``HD.set(frames_per_second=60)`` returns a copy and
+leaves ``HD`` alone. Pass one to
+:meth:`~algan.scene.Scene.save_video` to override quality for a single render.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

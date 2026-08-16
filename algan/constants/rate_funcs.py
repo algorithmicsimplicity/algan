@@ -1,3 +1,20 @@
+"""Rate functions: the easing curves animations are played through.
+
+A rate function maps a normalized time ``t`` in ``[0, 1]`` to a normalized
+progress, also usually in ``[0, 1]``. Every animation context takes one as
+``rate_func``, and it decides the *feel* of a movement without changing its
+duration or its endpoints.
+
+``smooth`` is the default: it eases in and out, so things start and stop gently.
+``identity`` (and its alias ``linear``) is constant speed, which is what camera
+moves and anything mechanical usually want. The ``ease_out_*`` family starts fast
+and settles, ``delay_fade`` and ``pulse_fade`` are shaped for appearance and
+attention effects, and ``inversed`` reverses any function you hand it.
+
+A rate function is just a callable on tensors, so writing your own is a
+one-liner. See :doc:`/new_user_tutorials/controlling_animations`.
+"""
+
 from __future__ import annotations
 
 import torch

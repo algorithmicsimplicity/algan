@@ -1,3 +1,20 @@
+"""The base class every settings section is built from.
+
+:class:`Settings` gives a dataclass of configuration fields three things Algan
+relies on: ``set()``, which mutates in place so a section keeps its identity;
+``override()``, a context manager that restores the previous values on exit --
+including when the body raises; and validation at construction, so a bad value is
+rejected where it is written rather than deep inside a render.
+
+It also supports **immutable presets**. A frozen section (``HD``, ``PREVIEW``)
+answers ``set()`` with a modified copy instead of mutating, which is what lets
+``HD.set(frames_per_second=60)`` be a safe expression.
+
+Sections declare initialization-only fields so that assigning one raises a
+message naming the environment variable to set instead of a generic unknown-key
+error.
+"""
+
 from __future__ import annotations
 
 import dataclasses

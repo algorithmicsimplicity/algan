@@ -1,3 +1,31 @@
+"""The :class:`Scene` -- the unit of authoring and rendering.
+
+A Scene owns everything an animation needs: its actors, its camera and lights,
+**its own** timeline, animation and audio managers, its video settings, and the
+render loop it inherits from :class:`~algan.render_loop.RenderLoopMixin`. Two
+Scenes in one process share nothing, so they can be authored and rendered
+independently.
+
+Authoring is lazy. Running a script records events on the Scene's timeline;
+nothing is computed until :meth:`Scene.save_video` or :meth:`Scene.save_frame`
+materializes that recording in batches of frames, builds render primitives and
+renders them. Both return a
+:class:`~algan.utils.algan_utils.RenderResult`.
+
+``save_video`` leaves the Scene exactly as authored by default (``reset=False``):
+Mobs stay spawned, the timeline keeps its recording, and you can render again --
+including a preview taken from inside a ``with`` block that has not finished yet.
+Pass ``reset=True`` for the destructive behaviour a per-run harness wants.
+
+:class:`active_scene_method` is why ``Scene.save_video(...)`` and
+``scene.save_video(...)`` are the same call: accessed on an instance it binds to
+it, accessed on the class it resolves the active Scene. Class-level access still
+reports the real signature, so ``help()`` and autodoc work.
+
+The active-Scene stack itself lives in
+:class:`~algan.scene_manager.SceneManager`, the one singleton in Algan.
+"""
+
 from __future__ import annotations
 
 import inspect

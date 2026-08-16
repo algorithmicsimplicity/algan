@@ -1,3 +1,24 @@
+"""The 3-D shapes, in two families.
+
+**Curved** shapes -- :class:`Sphere`, :class:`Cylinder`, :class:`Cone`,
+:class:`Torus`, and :class:`Dot3D` / :class:`Line3D` / :class:`Arrow3D` built
+from them -- are :class:`~algan.mobs.surfaces.surface.Surface` subclasses. They
+carry an analytic coordinate function and a normal function, and are tessellated
+per frame to whatever the camera needs, so they stay smooth as you move in.
+
+**Faceted** shapes -- :class:`Polyhedron` and everything built on it:
+:class:`Prism`, :class:`Cube`, the Platonic solids, :class:`ConvexHull3D` -- are
+defined by explicit vertices and flat polygon faces. Their faces are already
+planar, so they are triangulated once at construction and never refined.
+
+Several constructors accept Manim's argument names (``resolution`` counting
+patches rather than vertices, ``checkerboard_colors``, ``u_range`` / ``v_range``
+in radians) so that ported scripts keep working.
+
+Unlike 2-D shapes, these respond to light. See
+:doc:`/new_user_tutorials/three_d_basics`.
+"""
+
 from __future__ import annotations
 
 import math
@@ -68,7 +89,53 @@ def _radial_and_axial_coordinates(points, center, axis):
 
 
 class Sphere(Surface):
-    """A 3-D sphere with Manim-compatible constructor arguments."""
+    """A 3-D sphere, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    Because it is a curved :class:`~algan.mobs.surfaces.surface.Surface` rather
+    than a fixed mesh, its silhouette is refined per frame to whatever the camera
+    needs, so it stays round as you move in.
+
+    Parameters
+    ----------
+    center
+        World-space location of the sphere's center, shape ``(*, 3)`` where ``*``
+        denotes zero or more batch dimensions. Python lists and floats are cast to
+        tensors. Defaults to ``ORIGIN`` (the world origin).
+    radius
+        Radius in world units. Defaults to ``1``.
+    resolution
+        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
+        both. Manim counts patches and Algan counts sampled vertices, so each value
+        is used as ``grid_width``/``grid_height`` plus one. Defaults to ``None``,
+        meaning Algan sizes the grid itself from ``geometry_tolerance``.
+    u_range, v_range
+        Parametric domain, in radians, accepted for Manim compatibility.
+
+        .. note::
+
+            These are stored but do **not** currently change the sphere's geometry:
+            :meth:`coord_function` always sweeps a full longitude/latitude grid, so
+            a partial range still builds a whole sphere. Build a partial sphere with
+            :class:`~algan.mobs.surfaces.surface.Surface` and your own coordinate
+            function instead. Defaults to ``(0, 2 * pi)`` and ``(0, pi)``.
+    *args, **kwargs
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
+        ``color``, ``checkered_color``, ``grid_width``/``grid_height`` and the
+        texture maps.
+
+    Examples
+    --------
+    A blue sphere, sized in world units:
+
+    .. algan:: Example1Sphere
+        :save_last_frame:
+
+        from algan import *
+
+        Sphere(radius=0.8, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -120,7 +187,60 @@ class Sphere(Surface):
 
 
 class Cone(Surface):
-    """A circular cone with Manim-compatible constructor arguments."""
+    """A circular cone, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    The cone is open at its base by default; ``show_base`` caps it with a
+    :class:`~algan.mobs.shapes_2d.Circle` added as a child. The uncapped base
+    circle is always built and available as ``base_circle``.
+
+    Parameters
+    ----------
+    base_radius
+        Radius of the base, in world units. Defaults to ``1``.
+    height
+        Distance from base to tip along ``direction``, in world units. Defaults
+        to ``1``.
+    direction
+        Direction the tip points, shape ``(*, 3)``; it need not be normalized.
+        Defaults to ``OUT`` (the +z axis, out of the screen).
+    show_base
+        Whether to cap the base with a filled circle. Defaults to ``False``: the
+        cone is open, so the camera can see inside it.
+    v_range
+        Angular sweep around the axis, in radians -- a Manim-parity domain, which
+        is why it contradicts Algan's usual degrees. ``(0, pi)`` gives a half
+        cone. Defaults to ``(0, 2 * pi)`` (the full cone).
+    u_min
+        Retained for Manim compatibility; stored on the instance and not used by
+        :meth:`coord_function`. Defaults to ``0``.
+    checkerboard_colors
+        Manim's two-tone surface styling: a sequence of two colours becomes
+        Algan's ``color`` and ``checkered_color``. Defaults to ``False`` (a single
+        colour).
+    radius, closed
+        Algan's older spellings of ``base_radius`` and ``show_base``. When not
+        ``None`` they win over the Manim-named argument. Both default to ``None``.
+    resolution
+        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
+        both; each value becomes ``grid_width``/``grid_height`` plus one, since
+        Manim counts patches and Algan counts vertices. Defaults to ``None``,
+        meaning Algan sizes the grid itself from ``geometry_tolerance``.
+    *args, **kwargs
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    Examples
+    --------
+    A capped cone pointing up the screen:
+
+    .. algan:: Example1Cone
+        :save_last_frame:
+
+        from algan import *
+
+        Cone(base_radius=0.6, height=1.2, direction=UP, show_base=True).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -233,7 +353,55 @@ class Cone(Surface):
 
 
 class Cylinder(Surface):
-    """A cylinder with Manim-compatible constructor arguments."""
+    """A cylinder, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    Only the curved side is built by default; ``show_ends`` adds the two end caps
+    as children (:meth:`add_bases` does the same after construction).
+
+    Parameters
+    ----------
+    radius
+        Radius in world units. Defaults to ``1``.
+    height
+        Length along ``direction``, in world units. Defaults to ``1``.
+    direction
+        Axis the cylinder runs along, shape ``(*, 3)``; it need not be normalized.
+        Defaults to ``UP`` (the +y axis).
+    v_range
+        Parametric domain, in radians, accepted for Manim compatibility.
+
+        .. note::
+
+            Stored but not currently used by :meth:`coord_function`, which always
+            sweeps the full circle, so a partial range still builds a whole
+            cylinder. Defaults to ``(0, 2 * pi)``.
+    show_ends
+        Whether to cap both ends with filled circles. Defaults to ``False``: the
+        tube is open at both ends.
+    resolution
+        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
+        both; each value becomes ``grid_width``/``grid_height`` plus one, since
+        Manim counts patches and Algan counts vertices. Defaults to ``None``,
+        meaning Algan sizes the grid itself from ``geometry_tolerance``.
+    closed
+        Algan's older spelling of ``show_ends``. When not ``None`` it wins.
+        Defaults to ``None``.
+    *args, **kwargs
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    Examples
+    --------
+    A capped cylinder lying along the screen's x axis:
+
+    .. algan:: Example1Cylinder
+        :save_last_frame:
+
+        from algan import *
+
+        Cylinder(radius=0.4, height=1.6, direction=RIGHT, show_ends=True).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -382,7 +550,52 @@ class Cylinder(Surface):
 
 
 class Arrow3D(Mob):
-    """An arrow made from an Algan cylinder and cone."""
+    """An arrow: a :class:`Cylinder` shaft with a :class:`Cone` tip, grouped.
+
+    Both parts are curved surfaces, so the arrow is tessellated per frame like
+    the rest of the curved family.
+
+    Parameters
+    ----------
+    start, end
+        Tail and head of the arrow, shape ``(*, 3)`` in world units. Default to
+        ``LEFT`` and ``RIGHT``.
+    thickness
+        Radius of the shaft, in world units. Defaults to ``0.02``.
+    height
+        Length of the conical tip, in world units, measured back from ``end``.
+        Defaults to ``0.3``.
+    base_radius
+        Radius of the tip's base, in world units. Defaults to ``0.08``.
+    color
+        An Algan :class:`~algan.constants.color.Color`, a named constant such as
+        ``BLUE``, or anything ``Color()`` accepts. Defaults to ``WHITE``.
+    resolution
+        Grid resolution for both parts, as ``(grid_width, grid_height)`` or one
+        int for both. Defaults to ``24``.
+    *args, **kwargs
+        Passed to :class:`~algan.animatable_base.mob.Mob`.
+
+    Raises
+    ------
+    ValueError
+        If the distance from ``start`` to ``end`` is not greater than ``height``,
+        which would leave no room for a shaft.
+
+    Examples
+    --------
+    An arrow pointing up and to the right:
+
+    .. algan:: Example1Arrow3D
+        :save_last_frame:
+
+        from algan import *
+
+        Arrow3D(start=LEFT + DOWN, end=RIGHT + UP, thickness=0.04,
+                color=BLUE).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -462,7 +675,40 @@ class Arrow3D(Mob):
 
 
 class Dot3D(Sphere):
-    """A spherical dot with Manim-compatible constructor arguments."""
+    """A small :class:`Sphere`, for marking a point in a 3-D scene.
+
+    Parameters
+    ----------
+    point
+        Where to put it, shape ``(*, 3)`` in world units. Defaults to the world
+        origin.
+    radius
+        Radius in world units. Defaults to ``0.08`` -- small enough to read as a
+        marker beside shapes of unit size.
+    color
+        An Algan :class:`~algan.constants.color.Color`, a named constant such as
+        ``BLUE``, or anything ``Color()`` accepts. Defaults to ``None``, meaning
+        the :class:`Sphere` default (``GREEN``).
+    resolution
+        Grid resolution as ``(grid_width, grid_height)``, or one int for both.
+        Defaults to ``None``, meaning Algan sizes the grid itself.
+    **kwargs
+        Passed to :class:`Sphere`.
+
+    Examples
+    --------
+    Three markers along a line:
+
+    .. algan:: Example1Dot3D
+        :save_last_frame:
+
+        from algan import *
+
+        for x in (-1, 0, 1):
+            Dot3D(point=RIGHT * x, radius=0.15, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -484,7 +730,43 @@ class Dot3D(Sphere):
 
 
 class Line3D(Cylinder):
-    """A cylindrical line between two points."""
+    """A thin capped :class:`Cylinder` spanning two points.
+
+    Unlike the 2-D :class:`~algan.mobs.shapes_2d.Line`, this has real thickness
+    in world units and responds to light, so it stays visible from any angle.
+
+    Parameters
+    ----------
+    start, end
+        The endpoints, shape ``(*, 3)`` in world units. The line is moved and
+        oriented to span them. Default to ``(-1, 0, 0)`` and ``(1, 0, 0)``.
+    thickness
+        Radius of the tube, in world units. Defaults to ``0.02``.
+    color
+        An Algan :class:`~algan.constants.color.Color`, a named constant such as
+        ``BLUE``, or anything ``Color()`` accepts. Defaults to ``None``, meaning
+        the :class:`Cylinder` default (``GREEN``).
+    resolution
+        One int sets the number of samples around the tube (``grid_width``, at
+        least ``4``) with two samples along its length; a pair is taken as
+        ``(grid_height, grid_width)``. Defaults to ``24``.
+    **kwargs
+        Passed to :class:`Cylinder`.
+
+    Examples
+    --------
+    An edge drawn between two marked points:
+
+    .. algan:: Example1Line3D
+        :save_last_frame:
+
+        from algan import *
+
+        Line3D(start=LEFT + DOWN, end=RIGHT + UP, thickness=0.05,
+               color=BLUE).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -560,7 +842,45 @@ class Line3D(Cylinder):
 
 
 class Torus(Surface):
-    """A torus with Manim-compatible major/minor radius and resolution API."""
+    """A torus, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    Parameters
+    ----------
+    major_radius
+        Distance from the torus's center to the center of its tube, in world
+        units. Defaults to ``3`` -- Manim's default, and wider than the visible
+        frame, so pass an explicit size when laying several shapes out together.
+    minor_radius
+        Radius of the tube itself, in world units. Defaults to ``1``.
+    u_range
+        Sweep around the ring, in radians -- a Manim-parity domain, which is why
+        it contradicts Algan's usual degrees. ``(0, pi)`` gives half a ring.
+        Defaults to ``(0, 2 * pi)``.
+    v_range
+        Sweep around the tube's cross-section, in radians. ``(0, pi)`` opens the
+        tube along its length. Defaults to ``(0, 2 * pi)``.
+    resolution
+        Manim-style grid resolution as ``(u_vertices, v_vertices)``, or one int
+        for both, used directly as ``grid_width``/``grid_height``. Defaults to
+        ``None``, meaning Algan sizes the grid itself from ``geometry_tolerance``.
+    **kwargs
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
+
+    Examples
+    --------
+    A ring sized to fit the frame, and half of one:
+
+    .. algan:: Example1Torus
+        :save_last_frame:
+
+        from algan import *
+
+        Torus(major_radius=1.2, minor_radius=0.35, color=BLUE).spawn()
+        Torus(major_radius=1.2, minor_radius=0.35, u_range=(0, PI),
+              color=YELLOW).move(UP * 0.1).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -669,7 +989,51 @@ class _PolyhedronGraph(Group):
 
 
 class Polyhedron(Mob):
-    """Polyhedron defined by vertex coordinates and indexed polygon faces."""
+    """A solid built from explicit vertices and indexed polygon faces.
+
+    This is the flat-sided family of 3-D shapes. Its faces are already planar, so
+    each is triangulated once at construction and nothing is refined per frame --
+    the opposite of the curved
+    :class:`~algan.mobs.surfaces.surface.Surface`-backed shapes.
+
+    Parameters
+    ----------
+    vertex_coords
+        The vertices, shape ``(N, 3)`` in world units. Any nested sequence is cast
+        to a tensor and reshaped, so a list of ``[x, y, z]`` lists works.
+    faces_list
+        One entry per face, each a sequence of indices into ``vertex_coords``
+        naming that face's corners in order. Faces may have any number of corners;
+        they are triangulated for you.
+    faces_config
+        Style overrides applied to every face, using Manim's names --
+        ``fill_color``, ``fill_opacity``, ``stroke_width``. Defaults to ``None``
+        (no overrides).
+    graph_config
+        Retained for Manim compatibility, where it styles the vertex-and-edge
+        graph drawn over the solid. Defaults to ``None``.
+    **kwargs
+        Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``
+        and ``location``.
+
+    Examples
+    --------
+    A square pyramid from four base corners and an apex:
+
+    .. algan:: Example1Polyhedron
+        :save_last_frame:
+
+        from algan import *
+
+        Polyhedron(
+            [[-0.6, -0.5, -0.6], [0.6, -0.5, -0.6], [0.6, -0.5, 0.6],
+             [-0.6, -0.5, 0.6], [0, 0.7, 0]],
+            [[0, 1, 2, 3], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]],
+            color=BLUE,
+        ).spawn()
+
+        Scene.save_video()
+    """
 
     _morph_family = "mesh"
 
@@ -789,7 +1153,36 @@ class Polyhedron(Mob):
 
 
 class Prism(Polyhedron):
-    """A right rectangular prism with dimensions in ``[x, y, z]`` order."""
+    """A right rectangular prism -- a box -- built from six flat faces.
+
+    Unlike the curved shapes, a :class:`Prism` is a
+    :class:`~algan.mobs.shapes_3d.Polyhedron`: its faces are already flat, so
+    they are their own triangles and nothing is tessellated per frame.
+
+    Parameters
+    ----------
+    dimensions
+        Side lengths in ``[x, y, z]`` order, in world units. The box is centered
+        on the Mob's location, so each side extends half its length either way.
+        Defaults to ``(3, 2, 1)``.
+    **kwargs
+        Passed to :class:`~algan.mobs.shapes_3d.Polyhedron`. ``fill_color``,
+        ``fill_opacity`` and ``stroke_width`` are Manim's face-styling names and
+        are forwarded into ``faces_config`` rather than applied to the Mob.
+
+    Examples
+    --------
+    A wide, flat box, useful as a floor:
+
+    .. algan:: Example1Prism
+        :save_last_frame:
+
+        from algan import *
+
+        Prism(dimensions=(3, 0.2, 2), fill_color=BLUE).spawn()
+
+        Scene.save_video()
+    """
 
     def __init__(self, dimensions=(3, 2, 1), **kwargs):
         from algan.utils.tensor_utils import cast_to_tensor
@@ -826,7 +1219,44 @@ class Prism(Polyhedron):
 
 
 class Cube(Prism):
-    """A three-dimensional cube."""
+    """A cube -- a :class:`Prism` with three equal sides.
+
+    Like every :class:`~algan.mobs.shapes_3d.Polyhedron` its faces are flat, so
+    it is not tessellated per frame the way the curved shapes are.
+
+    Parameters
+    ----------
+    side_length
+        Length of each edge, in world units. Defaults to ``2``.
+    fill_opacity
+        Opacity of the faces, from ``0`` (invisible) to ``1`` (opaque). Defaults
+        to ``0.75``, Manim's value -- a cube is slightly see-through unless you
+        say otherwise.
+    fill_color
+        Colour of the faces: an Algan :class:`~algan.constants.color.Color`, a
+        named constant such as ``BLUE``, or anything ``Color()`` accepts.
+        Defaults to ``None``, meaning ``BLUE``.
+    stroke_width
+        Width of the outline drawn around each face, in world units. Defaults to
+        ``0`` (no outline).
+    **kwargs
+        Passed to :class:`Prism` and on to
+        :class:`~algan.mobs.shapes_3d.Polyhedron`.
+
+    Examples
+    --------
+    An opaque cube, turned so three faces are visible:
+
+    .. algan:: Example1Cube
+        :save_last_frame:
+
+        from algan import *
+
+        cube = Cube(side_length=1.2, fill_color=BLUE, fill_opacity=1).spawn()
+        cube.rotate(35, UP)
+
+        Scene.save_video()
+    """
 
     def __init__(
         self,
@@ -851,6 +1281,27 @@ class Cube(Prism):
 
 
 class Tetrahedron(Polyhedron):
+    """The four-faced Platonic solid, built from flat triangular faces.
+
+    Parameters
+    ----------
+    edge_length
+        Length of every edge, in world units. Defaults to ``1``.
+    **kwargs
+        Passed to :class:`Polyhedron` -- notably ``color`` and ``location``.
+
+    Examples
+    --------
+    .. algan:: Example1Tetrahedron
+        :save_last_frame:
+
+        from algan import *
+
+        Tetrahedron(edge_length=1.5, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
+
     def __init__(self, edge_length=1, **kwargs):
         unit = edge_length * math.sqrt(2) / 4
         super().__init__(
@@ -866,6 +1317,27 @@ class Tetrahedron(Polyhedron):
 
 
 class Octahedron(Polyhedron):
+    """The eight-faced Platonic solid, built from flat triangular faces.
+
+    Parameters
+    ----------
+    edge_length
+        Length of every edge, in world units. Defaults to ``1``.
+    **kwargs
+        Passed to :class:`Polyhedron` -- notably ``color`` and ``location``.
+
+    Examples
+    --------
+    .. algan:: Example1Octahedron
+        :save_last_frame:
+
+        from algan import *
+
+        Octahedron(edge_length=1.2, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
+
     def __init__(self, edge_length=1, **kwargs):
         unit = edge_length * math.sqrt(2) / 2
         super().__init__(
@@ -892,6 +1364,27 @@ class Octahedron(Polyhedron):
 
 
 class Icosahedron(Polyhedron):
+    """The twenty-faced Platonic solid, built from flat triangular faces.
+
+    Parameters
+    ----------
+    edge_length
+        Length of every edge, in world units. Defaults to ``1``.
+    **kwargs
+        Passed to :class:`Polyhedron` -- notably ``color`` and ``location``.
+
+    Examples
+    --------
+    .. algan:: Example1Icosahedron
+        :save_last_frame:
+
+        from algan import *
+
+        Icosahedron(edge_length=0.8, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
+
     def __init__(self, edge_length=1, **kwargs):
         a = edge_length * ((1 + math.sqrt(5)) / 4)
         b = edge_length / 2
@@ -935,6 +1428,27 @@ class Icosahedron(Polyhedron):
 
 
 class Dodecahedron(Polyhedron):
+    """The twelve-faced Platonic solid, built from flat pentagonal faces.
+
+    Parameters
+    ----------
+    edge_length
+        Length of every edge, in world units. Defaults to ``1``.
+    **kwargs
+        Passed to :class:`Polyhedron` -- notably ``color`` and ``location``.
+
+    Examples
+    --------
+    .. algan:: Example1Dodecahedron
+        :save_last_frame:
+
+        from algan import *
+
+        Dodecahedron(edge_length=0.6, color=BLUE).spawn()
+
+        Scene.save_video()
+    """
+
     def __init__(self, edge_length=1, **kwargs):
         a = edge_length * ((1 + math.sqrt(5)) / 4)
         b = edge_length * ((3 + math.sqrt(5)) / 4)
@@ -979,6 +1493,47 @@ class Dodecahedron(Polyhedron):
 
 
 class ConvexHull3D(Polyhedron):
+    """The convex hull of a point cloud, as a flat-faced :class:`Polyhedron`.
+
+    Interior points are discarded: only the vertices on the hull survive into the
+    solid.
+
+    Parameters
+    ----------
+    *points
+        The points to wrap, each a 3-D coordinate in world units, passed as
+        separate arguments. At least four are required, and they must not all be
+        coplanar.
+    tolerance
+        Qhull's joggle magnitude, used to perturb degenerate inputs into a
+        solvable configuration. Raise it if a nearly-coplanar cloud fails to
+        triangulate. Defaults to ``1e-5``.
+    **kwargs
+        Passed to :class:`Polyhedron` -- notably ``color`` and ``location``.
+
+    Raises
+    ------
+    ValueError
+        If fewer than four points are given.
+
+    Examples
+    --------
+    The hull of five scattered points:
+
+    .. algan:: Example1ConvexHull3D
+        :save_last_frame:
+
+        from algan import *
+
+        ConvexHull3D(
+            (-0.7, -0.5, -0.5), (0.7, -0.5, -0.5), (0, -0.5, 0.7),
+            (0, 0.8, 0), (0, -0.9, 0),
+            color=BLUE,
+        ).spawn()
+
+        Scene.save_video()
+    """
+
     def __init__(self, *points, tolerance=1e-5, **kwargs):
         import numpy as np
         from scipy.spatial import ConvexHull

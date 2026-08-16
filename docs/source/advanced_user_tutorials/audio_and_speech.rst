@@ -75,6 +75,25 @@ whose clip is generated from a script segment:
 
         scene.save_video("gradient_descent.mp4")
 
+.. important::
+
+    The default speech generator synthesizes through ``pyttsx3``, which drives a
+    **system** text-to-speech engine rather than shipping one. macOS and Windows
+    have one built in (NSSpeechSynthesizer and SAPI5), so ``Speech`` works out of
+    the box there. On Linux -- including CI containers and most Docker images --
+    ``pyttsx3`` falls back to **eSpeak**, which is not installed by default and
+    is not a Python dependency Algan can pull in for you. Without it, a
+    ``Speech`` context raises at synthesis time:
+
+    .. code-block:: shell
+
+        sudo apt install espeak-ng          # Debian/Ubuntu
+        sudo dnf install espeak-ng          # Fedora
+
+    If you would rather not depend on a system engine at all, supply your own
+    generator (see `A custom speech generator`_) or use recorded narration --
+    neither goes near ``pyttsx3``.
+
 By default, the Scene's AudioManager uses Algan's pyttsx3 speech generator. Each
 ``Speech`` context appends its script to ``scene.audio_manager.video_transcript``.
 When a video contains audio, ``save_video`` writes that transcript beside the

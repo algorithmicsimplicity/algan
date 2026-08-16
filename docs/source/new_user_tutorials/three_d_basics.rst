@@ -115,7 +115,7 @@ with one setting:
     with Off():
         Scene.clear_light_sources()
         DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
-                         color=WHITE, intensity=3, shadow_angle=3).spawn()
+                         color=WHITE, intensity=3).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
@@ -134,8 +134,10 @@ Three things are worth copying from that example:
   lighting is entirely yours. A :class:`~.DirectionalLight` (parallel rays, like
   the sun) plus a dim :class:`~.AmbientLight` fill is a good default rig -- the
   ambient light stops the unlit side going pure black.
-* ``shadow_angle`` gives the sun an angular size, which softens the shadow's
-  edge. Without it shadows are hard-edged.
+* The shadow is hard-edged, because the light has no size. Giving the sun an
+  angular size softens the edge -- see
+  :doc:`../advanced_user_tutorials/lighting_and_shadows` for that and the rest
+  of the lighting model.
 
 Curved Surfaces
 ===============

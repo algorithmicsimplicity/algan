@@ -1,3 +1,14 @@
+"""Helpers for building animations over collections of Mobs.
+
+``map_mob_over_inputs`` applies a function across a sequence of inputs to produce
+one animation per input, and ``animate_lagged_by_location`` staggers a set of
+animations by where each Mob sits in space, so a change sweeps across the screen
+rather than happening everywhere at once.
+
+These compose with the animation contexts rather than replacing them: the lag is
+expressed as timing within the surrounding context.
+"""
+
 # from camera import Sequential, Synchronized, Off
 from __future__ import annotations
 

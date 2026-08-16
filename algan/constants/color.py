@@ -1,3 +1,25 @@
+"""Colour representation and Algan's named colour palette.
+
+Algan stores colour in **five channels** -- red, green, blue, glow, alpha -- so
+that emissive strength travels with a colour the way opacity does. RGB and alpha
+are in ``[0, 1]``; glow is an additive brightness fed to the bloom accumulator.
+
+:class:`Color` accepts the forms you would expect -- a hex string such as
+``"#58C4DD"``, or an ``(r, g, b)`` tuple -- with ``glow`` and ``opacity`` as
+separate arguments. It subclasses :class:`torch.Tensor`, so a colour takes part
+in ordinary tensor arithmetic and can carry batch dimensions.
+:meth:`Color.add_defaults` pads a bare RGB or RGBA tensor out to the five-channel
+layout, which is how the API accepts the shorter forms wherever a colour array is
+expected.
+
+The module then defines the palette exported by ``from algan import *``:
+``BLACK``, ``WHITE``, the greys, and the ``BLUE``/``RED``/``GREEN``/``YELLOW``
+families with their ``_A`` (lightest) through ``_E`` (darkest) shades. Both
+British and American spellings of grey are provided. Two special values are worth
+knowing: ``TRANSPARENT`` (invisible, and the background colour that produces an
+alpha-channel video) and ``GLOW`` (black with full glow).
+"""
+
 from __future__ import annotations
 
 import re
