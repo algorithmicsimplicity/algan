@@ -250,6 +250,18 @@ def grid_to_triangle_vertices(grid):
     return flat_grid[..., indices, :]
 
 
+def _grid_normals_paired():
+    """Whether to build the per-triangle sides pairwise (see below).
+
+    Gated through the same ``ALGAN_OPT_DISABLE`` bisect switch as the other
+    byte-identical prep optimizations, under the name ``gridnormals``, so the
+    A/B script can run both arms in one process.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return not _opt_disabled("gridnormals")
+
+
 def compute_grid_vertex_normals(grid):
     """Area-weighted vertex normals for a surface grid ``[..., W, H, 3]``,
     with closed-seam and pole merging. All computations broadcast over any
@@ -260,32 +272,71 @@ def compute_grid_vertex_normals(grid):
     grid_x_minus_1 = grid.roll(1, -3)
     grid_y_plus_1 = grid.roll(-1, -2)
     grid_y_minus_1 = grid.roll(1, -2)
-    triangle_sides = unsquish(
-        torch.stack(
-            (
-                grid_x_minus_1,
-                grid_y_minus_1,
-                grid_y_minus_1,
-                grid_x_plus_1,
-                grid_x_plus_1,
-                grid_y_plus_1,
-                grid_y_plus_1,
-                grid_x_minus_1,
-            ),
-            -2,
+    if _grid_normals_paired():
+        # The four triangles around a vertex use each neighbour twice, as the
+        # second side of one and the first side of the next. The stacked form
+        # below made that literal: eight copies of the grid in one
+        # [..., W, H, 8, 3] tensor, the grid subtracted from every one of them,
+        # then two stride-2 views sliced back out to cross, and finally a
+        # [..., W, H, 4, 3] tensor reduced over its triangle axis. Differencing
+        # each neighbour once, crossing the four pairs directly and adding them
+        # evaluates exactly the same products and the same sum from the same
+        # values: every operation is elementwise, and a length-4 reduction over
+        # a contiguous axis is the sequential order these adds take, so the
+        # result is bit-identical (asserted, including NaN payloads and signed
+        # zeros, by benchmarks/_grid_normals_ab.py). It moves roughly half the
+        # bytes, which matters because this function is ~60% of
+        # get_render_primitives_batched -- the largest single item in a render
+        # (see DESIGN_optimization_targets.md).
+        side_x_minus = grid_x_minus_1 - grid
+        side_y_minus = grid_y_minus_1 - grid
+        side_x_plus = grid_x_plus_1 - grid
+        side_y_plus = grid_y_plus_1 - grid
+        normals_xm_ym = broadcast_cross_product(side_x_minus, side_y_minus)
+        normals_ym_xp = broadcast_cross_product(side_y_minus, side_x_plus)
+        normals_xp_yp = broadcast_cross_product(side_x_plus, side_y_plus)
+        normals_yp_xm = broadcast_cross_product(side_y_plus, side_x_minus)
+        # The same four boundary masks as below, addressed per triangle instead
+        # of through a fancy index on the stacked axis. Corners are written by
+        # two of these; both write zero, so the order does not matter.
+        normals_xm_ym[..., 0, :, :] = 0
+        normals_yp_xm[..., 0, :, :] = 0
+        normals_ym_xp[..., -1, :, :] = 0
+        normals_xp_yp[..., -1, :, :] = 0
+        normals_xm_ym[..., :, 0, :] = 0
+        normals_ym_xp[..., :, 0, :] = 0
+        normals_xp_yp[..., :, -1, :] = 0
+        normals_yp_xm[..., :, -1, :] = 0
+        unnormalized_normals = (
+            normals_xm_ym + normals_ym_xp + normals_xp_yp + normals_yp_xm
         )
-        - grid.unsqueeze(-2),
-        -2,
-        2,
-    )
-    triangle_normals = broadcast_cross_product(
-        triangle_sides[..., 0, :], triangle_sides[..., 1, :]
-    )
-    triangle_normals[..., 0, :, [0, 3], :] = 0
-    triangle_normals[..., -1, :, [1, 2], :] = 0
-    triangle_normals[..., :, 0, [0, 1], :] = 0
-    triangle_normals[..., :, -1, [2, 3], :] = 0
-    unnormalized_normals = triangle_normals.sum(-2)
+    else:
+        triangle_sides = unsquish(
+            torch.stack(
+                (
+                    grid_x_minus_1,
+                    grid_y_minus_1,
+                    grid_y_minus_1,
+                    grid_x_plus_1,
+                    grid_x_plus_1,
+                    grid_y_plus_1,
+                    grid_y_plus_1,
+                    grid_x_minus_1,
+                ),
+                -2,
+            )
+            - grid.unsqueeze(-2),
+            -2,
+            2,
+        )
+        triangle_normals = broadcast_cross_product(
+            triangle_sides[..., 0, :], triangle_sides[..., 1, :]
+        )
+        triangle_normals[..., 0, :, [0, 3], :] = 0
+        triangle_normals[..., -1, :, [1, 2], :] = 0
+        triangle_normals[..., :, 0, [0, 1], :] = 0
+        triangle_normals[..., :, -1, [2, 3], :] = 0
+        unnormalized_normals = triangle_normals.sum(-2)
 
     # Merge unnormalized normals along closed seams using vectorized masking to avoid CPU-GPU synchronization.
     is_closed_x = torch.all(
