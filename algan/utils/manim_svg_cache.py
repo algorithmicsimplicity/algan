@@ -52,6 +52,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from algan.environment import env_float
 from algan.logging.logger import get_logger
 from algan.settings import SETTINGS
 
@@ -81,11 +82,7 @@ _DEFAULT_CACHE_MB = 1024
 
 
 def _max_cache_bytes() -> int:
-    try:
-        mb = float(os.environ.get("ALGAN_MANIM_SVG_CACHE_MB", _DEFAULT_CACHE_MB))
-    except ValueError:
-        mb = _DEFAULT_CACHE_MB
-    return int(mb * 1024 * 1024)
+    return int(env_float("ALGAN_MANIM_SVG_CACHE_MB", _DEFAULT_CACHE_MB) * 1024 * 1024)
 
 
 def _cache_dir() -> Path:

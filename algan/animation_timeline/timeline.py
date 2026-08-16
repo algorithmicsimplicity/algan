@@ -7,6 +7,7 @@ import math
 import numpy as np
 import torch
 
+from algan.environment import env_str
 from algan.utils.tensor_utils import cast_to_tensor
 
 #: Torch -> numpy dtypes for :func:`_sparsely_written_zeros`. Only the dtypes an
@@ -102,9 +103,7 @@ def _opt_disabled(name):
     """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
-        import os
-
-        _OPT_DISABLED = frozenset(os.environ.get("ALGAN_OPT_DISABLE", "").split(","))
+        _OPT_DISABLED = frozenset(env_str("ALGAN_OPT_DISABLE", "").split(","))
     return name in _OPT_DISABLED
 
 

@@ -37,6 +37,7 @@ import time
 import taichi as ti
 import torch
 
+from algan.environment import env_flag, env_int, env_str
 from algan.settings._startup import _RENDER_DEVICE, _TAICHI_CACHE_DIRECTORY
 
 _COMPILE_LOG_LOCK = threading.Lock()
@@ -46,11 +47,11 @@ _COMPILE_NOTICE_THREAD_ID = None
 
 
 def _compile_logging_enabled():
-    return os.environ.get("ALGAN_LOG_TAICHI_COMPILES", "0") != "0"
+    return env_flag("ALGAN_LOG_TAICHI_COMPILES", False)
 
 
 def _compile_log_path():
-    path = os.environ.get("ALGAN_TAICHI_COMPILE_LOG", "").strip()
+    path = env_str("ALGAN_TAICHI_COMPILE_LOG", "").strip()
     return os.path.abspath(os.path.expanduser(path)) if path else ""
 
 
@@ -388,13 +389,13 @@ def taichi_init_kwargs():
         "fast_math": True,
         # advanced_optimization defaults off (it raised register
         # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
-        "advanced_optimization": os.environ.get("ALGAN_ADV_OPT", "0") == "1",
+        "advanced_optimization": env_flag("ALGAN_ADV_OPT", False),
         # debug=True inserts a bounds-check on *every* ndarray access;
         # the ray-trace megakernels do millions of array reads per ray
         # (BVH nodes, packed geometry), so it ran them ~11x slower with
         # no benefit to released renders. Keep it off (env ALGAN_TI_DEBUG=1
         # re-enables it for kernel development).
-        "debug": os.environ.get("ALGAN_TI_DEBUG", "0") == "1",
+        "debug": env_flag("ALGAN_TI_DEBUG", False),
         "offline_cache": True,
         # The default 100 MB cache LRU-evicts large megakernel
         # artifacts once several variants (general / no-PN / lean /
@@ -411,12 +412,12 @@ def taichi_init_kwargs():
     # the TI_OFFLINE_CACHE_FILE_PATH env var (Taichi warns and ignores the
     # env), so only pass it when the env var is unset to keep that standard
     # escape hatch working.
-    if not os.environ.get("TI_OFFLINE_CACHE_FILE_PATH"):
+    if not env_str("TI_OFFLINE_CACHE_FILE_PATH"):
         kwargs["offline_cache_file_path"] = str(_TAICHI_CACHE_DIRECTORY)
-    max_reg = int(os.environ.get("ALGAN_GPU_MAX_REG", "0"))
+    max_reg = env_int("ALGAN_GPU_MAX_REG", 0)
     if max_reg > 0:
         kwargs["gpu_max_reg"] = max_reg
-    opt_level = int(os.environ.get("ALGAN_OPT_LEVEL", "0"))
+    opt_level = env_int("ALGAN_OPT_LEVEL", 0)
     if opt_level > 0:
         kwargs["opt_level"] = opt_level
     return kwargs

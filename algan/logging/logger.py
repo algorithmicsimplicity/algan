@@ -38,6 +38,8 @@ import logging
 import os
 import sys
 
+from algan.environment import env_str
+
 #: Renderer budget/recovery diagnostics: below ``INFO`` so they stay off by
 #: default, above ``DEBUG`` so turning them on does not also enable every other
 #: debug message in the package.
@@ -76,7 +78,7 @@ if not logger.handlers:
     _handler = _LiveStderrHandler()
     _handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(_handler)
-    logger.setLevel(os.environ.get("ALGAN_LOG_LEVEL", "INFO").upper())
+    logger.setLevel(env_str("ALGAN_LOG_LEVEL", "INFO").upper())
     # Don't double-print through the root logger if the application configured it.
     logger.propagate = False
 
@@ -273,7 +275,7 @@ def set_log_level(level):
 # Unlike ALGAN_LOG_LEVEL this is not read at import for any technical reason --
 # set_progress_style works at any time -- it is read here only so the variable
 # behaves like every other ALGAN_ one.
-_ENV_PROGRESS = os.environ.get("ALGAN_PROGRESS")
+_ENV_PROGRESS = env_str("ALGAN_PROGRESS", None)
 if _ENV_PROGRESS:
     try:
         set_progress_style(_ENV_PROGRESS)

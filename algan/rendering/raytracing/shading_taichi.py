@@ -47,9 +47,10 @@ its multi-light behaviour: each light is applied in sequence with the running
 colour as the albedo (the renderer's vertex path overwrites the colour per
 light), which is identical to a single light -- the common case.
 """
-import os
 
 import taichi as ti
+
+from algan.environment import env_int
 
 # Width of the built-in per-primitive material parameter block (see slot map).
 MAT_W = 26
@@ -84,7 +85,7 @@ AMBIENT_STRENGTH = 0.1
 # shader's base fade-out is power-fraction weighted -- see _stage_default). A
 # truly unbounded (runtime) count would need the per-fragment visibilities in
 # a global scratch buffer instead of a stack vector.
-MAX_SHADOW_LIGHTS = max(1, int(os.environ.get("ALGAN_MAX_SHADOW_LIGHTS", "16")))
+MAX_SHADOW_LIGHTS = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
 
 
 @ti.func

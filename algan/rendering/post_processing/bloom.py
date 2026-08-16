@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
-import os
 
 import torch
 import torch.fft
 import torch.nn.functional as F
+
+from algan.environment import env_flag
 
 # Round the bloom blur's transform length up to a length cuFFT has a native
 # factorization for, instead of transforming at exactly ``L + K - 1``. That
@@ -32,7 +33,7 @@ _SMOOTH_FACTORS = (2, 3, 5, 7)
 
 def _fft_length(exact):
     """Transform length to use for a convolution needing ``exact`` samples."""
-    if os.environ.get("ALGAN_BLOOM_FFT_SMOOTH", "1") == "0":
+    if not env_flag("ALGAN_BLOOM_FFT_SMOOTH", True):
         return exact
 
     def smooth(n):

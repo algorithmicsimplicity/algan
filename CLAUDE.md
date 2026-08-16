@@ -174,8 +174,10 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 - Keep Taichi debug mode off (`ALGAN_TI_DEBUG=1` opts in); debug mode makes the megakernels ~11x slower.
 - In kernels, use `ti.static(bool(x))` rather than `is not None` for template gates.
 
-### Initialization-only settings
-These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_RENDER_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16`. `SETTINGS.computing.set(render_device=...)` raises with that instruction rather than a generic "unknown setting".
+### Environment variables
+Every `ALGAN_` variable the package honors is declared in `algan/environment.py`, and every read goes through that module's `env_flag` / `env_int` / `env_float` / `env_str` / `env_is_set` accessors, which **reject an undeclared name** — that is what lets `import algan` tell a real option from a misspelled one (it warns about `ALGAN_` variables it does not know). Adding a knob is therefore two steps: put the name in the right tuple in `algan/environment.py`, then read it with an accessor at the point of use, where the default lives next to the comment explaining it. Values parse leniently: an unusable one warns and falls back to the caller's default rather than aborting the render. `tests/unit_tests/test_environment.py` enforces the rule that nothing in the package reaches an `ALGAN_` variable through `os` directly.
+
+**Initialization-only settings** are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_RENDER_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16` and the Taichi/warm-start trio — `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it. `SETTINGS.computing.set(render_device=...)` raises with that instruction rather than a generic "unknown setting".
 
 ### Performance discipline
 - **`DESIGN_optimization_targets.md` is the plan of record for render performance.** It opens with a status table, how to reproduce the reference profile, and what to verify. Read it before starting (or resuming) optimization work, and update it when something lands.
