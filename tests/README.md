@@ -288,6 +288,19 @@ ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest tests/fast -q
 Both variables are read by the harnesses rather than by the package, so
 `import algan` warns that it does not recognise them. That is expected.
 
+**Never baseline the first render on a fresh machine — render twice and keep
+the second.** The first run of a scene containing `Tex`/`MathTex` populates the
+persistent Manim SVG geometry cache (`algan_cache/`), and its glyph
+antialiasing is not what every subsequent run produces. Measured while
+re-baselining `text_and_media` on a fresh container: the cold run differed from
+the two warm runs after it by up to **18 channel values** across 100 of 182
+frames — nine times the tolerance — confined to `MathTex` glyph edges, while
+runs two and three were byte-identical to each other and the warm output sat
+closer to the CUDA baseline than the cold one did. Baseline the cold render and
+the suite fails on the very next run, on the same machine, for no reason anyone
+would think to look for. The other five scenes were bit-stable cold-to-warm, so
+this is specifically a Tex-geometry-cache effect.
+
 Frames are compared channel-wise with a tolerance of 2 by the
 `assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
 suites share so they cannot drift apart on tolerance. That tolerance is not
@@ -394,26 +407,24 @@ cache first, since the number above is from a warm one. Run it locally with:
 ALGAN_RUN_DOC_RENDERS=1 <venv-python> -m pytest -q tests/unit_tests/test_doc_examples.py -k renders
 ```
 
-### Known defects pinned as `xfail`
+### Recording a known defect
 
-Three real bugs are recorded as strict `xfail`s rather than deleted tests, so
-they stay visible and the suite tells you when they are fixed:
+Three bugs were once pinned here as strict `xfail`s — a parent `Group.move()`
+desynchronizing a compatibility Mob's backing Manim object, `Indicate`'s scale
+pulse writing a `scale_coefficient` row instead of a basis, and the point-cloud
+family having no `get_render_primitives` at all. All three are fixed, and the
+tests that recorded them now assert the working behaviour: see
+`test_a_parent_group_move_keeps_the_backing_mobject_in_step`,
+`test_indicate_grows_the_mob_in_the_middle`, and
+`test_point_cloud_mob_produces_render_primitives`. The point clouds have left
+the coverage audit's `EXEMPT` list and appear in `shapes_and_timeline`.
 
-- `test_manim_compat_movement.py` — a parent `Group.move()` leaves a
-  compatibility Mob's backing Manim object behind, so the next delegated call
-  (`rotate`, `scale`, `set`, …) teleports the Mob back to where the parent
-  found it.
-- `test_indication_animations.py` — `Indicate`'s scale pulse writes a
-  `scale_coefficient` timeline row directly instead of going through the
-  property setter that turns a scale into a basis, so only its colour flash is
-  visible.
-- `test_point_cloud_rendering.py` — the whole point-cloud family (`DotCloud`,
-  `PointCloudDot`, `TrueDot`, `PGroup`) is exported and constructs its points,
-  but defines no `get_render_primitives`, so it can never draw anything.
-
-A strict `xfail` fails the suite if it starts passing. That is deliberate: when
-one of these is fixed, the test tells you to remove the marker (and, for the
-point clouds, to move them out of the audit's `EXEMPT` list and into a scene).
+There are no `xfail`s in the suite today. If you need to record a new defect
+rather than fix it, a strict `xfail` is still the way — it keeps the bug visible
+and fails the suite when it starts passing, which is what tells you to turn the
+test around and drop the marker. It is a built-in marker, so `--strict-markers`
+has nothing to say about it; only project-specific markers need the entry in
+`pyproject.toml`.
 
 ## Legacy
 

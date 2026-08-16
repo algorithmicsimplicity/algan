@@ -185,7 +185,8 @@ def test_batched_algan_points_are_accepted_where_manim_wants_one_point(name):
 
 
 # ---------------------------------------------------------------------------
-# Known defect: a parent-driven transform desynchronizes the backing Mobject.
+# A parent-driven transform used to desynchronize the backing Mobject, leaving
+# the next delegated call to teleport the Mob back. Fixed; these hold it fixed.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
 def test_a_direct_move_keeps_the_backing_mobject_in_step(name):
