@@ -1,10 +1,10 @@
 """A bezier circuit's stroke gets wider the further it is drawn off-axis.
 
 A horizontal line has identical geometry in every column of the frame, so
-every column must carry identical ink. It does not: a default ``Line`` across
-the frame is drawn 9.16 px wide at the centre and 12.28 px wide at the left and
-right edges, 34% fatter, and the growth follows ``1 / cos(theta)`` exactly,
-where theta is the pixel's angle off the camera's optical axis.
+every column must carry identical ink. It does not: at MD a default ``Line``
+across the frame is drawn 9.16 px wide at the centre and 12.28 px wide at the
+left and right edges, 34% fatter, and the growth follows ``1 / cos(theta)``
+exactly, where theta is the pixel's angle off the camera's optical axis.
 
 WHY. A circuit is drawn from a signed distance field evaluated in the plane, in
 WORLD units, and ``pixel_size`` converts the authored stroke width (which is in
@@ -51,11 +51,16 @@ treatment, and their ``base_dist + t`` accumulation raises a separate question
 about what the intended footprint is on a SECONDARY ray, where growth with path
 length is a reasonable ray-differential heuristic rather than a bug.
 
-Run:  <venv-python> benchmarks/_stroke_width_check.py
+The inflation is ANGULAR, so it is resolution-independent: the relative spread
+is the same at LD, MD and HD, because a pixel at the frame edge sits at the
+same angle off the optical axis whatever the pixel count.
+
+Run:  <venv-python> benchmarks/_stroke_width_check.py [--res ld|md|hd]
 """
 
 from __future__ import annotations
 
+import argparse
 import math
 import sys
 from pathlib import Path
@@ -113,19 +118,24 @@ def _report(label, width, focal_px, scaling_px):
     return spread
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--res", default="md", choices=("ld", "md", "hd"))
+    args = parser.parse_args(argv)
+
     from algan.constants.color import WHITE
     from algan.constants.spatial import LEFT, RIGHT
     from algan.mobs.shapes_2d import Line, Rectangle
     from algan.mobs.shapes_3d import Cylinder
     from algan.rendering.shaders.materials import MeshBasicMaterial
     from algan.scene import Scene
-    from algan.settings.video_settings import MD
+    from algan.settings.video_settings import HD, LD, MD
 
-    out_dir = REPO_ROOT / "algan_outputs" / "aa_check"
+    out_dir = REPO_ROOT / "algan_outputs" / f"aa_check_{args.res}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    video_settings = MD
+    video_settings = {"ld": LD, "md": MD, "hd": HD}[args.res]
     height = video_settings.resolution[1]
+    print(f"resolution {video_settings.resolution}")
 
     scene = Scene(video_settings=video_settings)
     focal_px = height / 2 / math.tan(math.radians(scene.camera.fov) / 2)
