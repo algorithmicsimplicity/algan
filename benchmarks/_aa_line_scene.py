@@ -105,9 +105,7 @@ def magnify(src, dst, box, factor=6):
     image = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
     x, y, w, h = box
     crop = image[y : y + h, x : x + w]
-    big = cv2.resize(
-        crop, (w * factor, h * factor), interpolation=cv2.INTER_NEAREST
-    )
+    big = cv2.resize(crop, (w * factor, h * factor), interpolation=cv2.INTER_NEAREST)
     cv2.imwrite(str(dst), big)
     return big.shape
 

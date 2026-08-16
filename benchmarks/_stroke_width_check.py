@@ -171,9 +171,7 @@ def main(argv=None):
     )
 
     scene = Scene(video_settings=video_settings)
-    Rectangle(
-        width=80, height=0.09, color=WHITE, scene=scene, border_width=0
-    ).spawn()
+    Rectangle(width=80, height=0.09, color=WHITE, scene=scene, border_width=0).spawn()
     filled = _profile(scene, video_settings, out_dir / "stroke_filled.png", lut)
     # A fill's boundary is d > -min_half_width, so only that dilation scales,
     # once on each side.
@@ -185,9 +183,7 @@ def main(argv=None):
     )
 
     scene = Scene(video_settings=video_settings)
-    bar = Cylinder(
-        radius=0.045, height=80, direction=RIGHT, color=WHITE, scene=scene
-    )
+    bar = Cylinder(radius=0.045, height=80, direction=RIGHT, color=WHITE, scene=scene)
     bar.set_material(MeshBasicMaterial(color=WHITE))
     bar.spawn()
     tri = _profile(scene, video_settings, out_dir / "stroke_triangles.png", lut)

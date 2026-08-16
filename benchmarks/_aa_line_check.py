@@ -292,9 +292,7 @@ def render(scene, path, video_settings):
     from algan.constants.color import BLACK
 
     ROUTE.clear()
-    scene.save_frame(
-        str(path), video_settings, background_color=BLACK, overwrite=True
-    )
+    scene.save_frame(str(path), video_settings, background_color=BLACK, overwrite=True)
     image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise RuntimeError(f"could not read back {path}")
@@ -427,8 +425,7 @@ def fit_segment(cov, xs, ys, phi0, along):
     def residual(p):
         phi, ca, cb, ha, hb = p
         return (
-            strip_coverage_varying(phi, ca + cb * along, ha + hb * along, xs, ys)
-            - cov
+            strip_coverage_varying(phi, ca + cb * along, ha + hb * along, xs, ys) - cov
         )
 
     result = least_squares(
@@ -792,11 +789,7 @@ def main(argv=None):
 
     video_settings = _video_settings(args.res)
     kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
-    angles = (
-        tuple(float(a) for a in args.angles.split(","))
-        if args.angles
-        else ANGLES
-    )
+    angles = tuple(float(a) for a in args.angles.split(",")) if args.angles else ANGLES
 
     from algan.rendering.raytracing import settings as rt_settings
 
@@ -843,9 +836,7 @@ def main(argv=None):
             cross = cross_section_ink(cov, angle)
             lev = level_stats(cov)
             ref = (
-                reference_errors(angle, fit["width_px"], cov.shape, rng)
-                if fit
-                else {}
+                reference_errors(angle, fit["width_px"], cov.shape, rng) if fit else {}
             )
             rows.append(
                 {
@@ -895,9 +886,7 @@ def _print_summary(rows, kinds):
         if not got:
             continue
         with_sweep = [
-            r
-            for r in got
-            if r["cross"] and r["angle"] not in DEGENERATE_WOBBLE_ANGLES
+            r for r in got if r["cross"] and r["angle"] not in DEGENERATE_WOBBLE_ANGLES
         ]
         if not with_sweep:
             continue
