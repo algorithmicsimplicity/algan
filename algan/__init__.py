@@ -66,7 +66,7 @@ if _ANIMATION_DEVICE.type != "cpu":
     torch.set_default_device(_ANIMATION_DEVICE)
 torch.set_default_dtype(torch.float32)
 from algan.errors import *
-from algan.logging.logger import get_logger, set_log_level
+from algan.logging.logger import get_logger, set_log_level, set_progress_style
 
 get_logger().info(f"Rendering device set to {_RENDER_DEVICE}")
 

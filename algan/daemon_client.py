@@ -96,7 +96,9 @@ def algan_home():
     Duplicated from :mod:`algan.settings._startup` rather than imported: that
     module imports torch, which is exactly what a client is avoiding.
     """
-    home = os.environ.get("ALGAN_HOME") or os.path.join(os.path.expanduser("~"), ".algan")
+    home = os.environ.get("ALGAN_HOME") or os.path.join(
+        os.path.expanduser("~"), ".algan"
+    )
     return os.path.expanduser(home)
 
 
@@ -235,7 +237,9 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         "isatty_err": _isatty(sys.stderr),
     }
     try:
-        sock = socket.create_connection(("127.0.0.1", int(state["port"])), CONNECT_TIMEOUT)
+        sock = socket.create_connection(
+            ("127.0.0.1", int(state["port"])), CONNECT_TIMEOUT
+        )
     except OSError as exc:
         raise DaemonUnavailable(f"could not reach the daemon ({exc})") from exc
 
