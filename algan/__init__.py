@@ -25,6 +25,17 @@ from algan.environment import (
 
 _warn_for_unknown_algan_environment_variables()
 
+# If a general daemon is running (`python -m algan.daemon`), hand this script
+# to it and exit with its result -- the point of the daemon is that a warm
+# process has already paid the ~7 s import and ~65 s of Taichi kernel
+# preparation below. With no daemon this costs one `isfile` and returns, so
+# scripts run exactly as before; see algan/daemon_client.py for the full set
+# of conditions and fallbacks. It must stay *here*, above the torch and
+# taichi imports, or a client would pay for the thing it is avoiding.
+from algan.daemon_client import maybe_handoff as _maybe_handoff
+
+_maybe_handoff()
+
 # The project vendors the subset of Manim Community used for SVG/Tex and
 # compatibility Mobs.  Expose it under Manim's normal top-level package name
 # before importing any Algan mob modules; those modules intentionally use the
