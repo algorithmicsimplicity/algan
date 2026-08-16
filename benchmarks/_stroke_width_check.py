@@ -1,17 +1,20 @@
 """A bezier circuit's stroke gets wider the further it is drawn off-axis.
 
+FIXED -- this is now a regression check, and passes. It is kept because the
+property it asserts is not obvious and is easy to break again.
+
 A horizontal line has identical geometry in every column of the frame, so
-every column must carry identical ink. It does not: at MD a default ``Line``
-across the frame is drawn 9.09 px wide at the centre -- exactly its authored
-width -- and 12.18 px at the left and right edges, 34.7% fatter. The growth
-tracks ``1 / cos(theta)``, theta being the pixel's angle off the camera's
-optical axis, which on its own predicts 33.8%.
+every column must carry identical ink. Before the fix it did not: at MD a
+default ``Line`` across the frame was drawn 9.09 px wide at the centre --
+exactly its authored width -- and 12.18 px at the left and right edges, 34.7%
+fatter, the growth tracking ``1 / cos(theta)`` with theta the pixel's angle off
+the camera's optical axis (pure ``1 / cos`` predicts 33.8% on its own).
 
 WHY. A circuit is drawn from a signed distance field evaluated in the plane, in
 WORLD units, and ``pixel_size`` converts the authored stroke width (which is in
 output pixels) into those world units. Both the raster path
 (``raster_taichi._bez_pixel_hit``) and the wavefront/path-tracer paths
-(``raytrace_kernels_taichi``, three sites) compute it as
+computed it as
 
     pixel_size = pixel_world_scale[f] * t          # t = ray parameter
 
@@ -36,28 +39,28 @@ circuits it splits by what sets the drawn boundary:
 * a FILL boundary (``Text``, ``Tex``, filled 2-D shapes) only scales its
   sub-pixel anti-crack dilation, so it grows by ~0.2 px edge to edge.
 
-FIX, verified: multiply by the cosine, which is one dot product against a
-camera basis vector already passed to the kernel::
+THE FIX (``_axis_cos`` in ``raytrace_kernels_taichi``): multiply by the cosine
+between the pixel's PRIMARY ray and the optical axis, which converts the slant
+range into perpendicular depth. It is applied on all five paths that set a
+circuit's width from a primary ray -- the hybrid raster path (which also covers
+the supersampled aa=2 fallback), both wavefront traversals and both path
+tracers -- and this script reports 0.000 px spread on every one of them.
 
-    fwd = (vec3(screen_point[f, 0], screen_point[f, 1],
-                screen_point[f, 2]) - ro).normalized()
-    pixel_size = pixel_world_scale[f] * th * rd.dot(fwd)
+``wavefront_shadow`` and ``wavefront_shade`` keep the accumulated-path
+heuristic on purpose: their ``pixel_size_per_t`` reaches only
+``_shadow_occluded``, so it never sets a drawn width, and growth with path
+length is defensible for a secondary ray. In the traversals the cosine is
+rebuilt from the PIXEL rather than from the current ray, because ``gen_first``
+is a compile-time template and the non-fused path makes its primaries in a
+separate pass.
 
-With that in place this script reports a spread of 0.000 px. It is NOT applied:
-it changes every off-centre stroke, so it moves rendered output (the fast
-suite's baseline by up to 116 channel values, against a tolerance of 2) and
-would need both the CPU and the CUDA baselines regenerated -- and the CUDA set
-can only be made on a CUDA machine. The three wavefront sites need the same
-treatment, and their ``base_dist + t`` accumulation raises a separate question
-about what the intended footprint is on a SECONDARY ray, where growth with path
-length is a reasonable ray-differential heuristic rather than a bug.
-
-The inflation is ANGULAR, so it is essentially resolution-independent -- 34.7%
-at MD, 35.4% at LD -- because a pixel at the frame edge sits at the same angle
-off the optical axis whatever the pixel count. Both sit ~1 point above the
-33.8% that pure ``1 / cos(theta)`` predicts, by the same margin at both
-resolutions, so ``1 / cos`` accounts for about 96% of the effect and something
-smaller rides along with it; that residual has not been chased.
+The inflation was ANGULAR, so it was essentially resolution-independent --
+34.7% at MD, 35.4% at LD -- because a pixel at the frame edge sits at the same
+angle off the optical axis whatever the pixel count. Both sat ~1 point above
+the 33.8% that pure ``1 / cos(theta)`` predicts, so ``1 / cos`` accounted for
+about 96% of it; the fix removes the whole effect (0.000 px spread), so the
+residual belonged to the prediction's own second order, not to a second
+mechanism.
 
 Run:  <venv-python> benchmarks/_stroke_width_check.py [--res ld|md|hd]
 """
