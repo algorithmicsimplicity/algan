@@ -68,6 +68,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
     TRIANGLE_EDGE_EPSILON,
     _bezier_normal,
+    _axis_cos,
     _bezier_point_metrics,
     _circuit_point_region,
     _circuit_query_radius,
@@ -1709,7 +1710,10 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                               circuit_meta[tm, circuit, _M_BASIS_V + 2])
             uu = hit.dot(bu)
             vv = hit.dot(bv)
-            pixel_size = pixel_world_scale[f] * th
+            # th is the slant range; pixel_world_scale wants perpendicular
+            # depth (see _axis_cos).
+            pixel_size = (pixel_world_scale[f] * th
+                          * _axis_cos(f, ro, rd, screen_point))
             border_w = ti.abs(
                 circuit_meta[tm, circuit, _M_BORDER_W]) * pixel_size
             outline_w = 0.6 * pixel_size
