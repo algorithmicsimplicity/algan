@@ -10,9 +10,10 @@ the reasoning.
 Reading order. §0 is the state of the branch and what to do next. §1–§2 are the
 problem and what shipped. §3 is the unstarted work with the anchors to do it. §4
 is what needs a CUDA device and the experiment for each claim. §5 is what the
-system enables. §6 is **what has actually been measured about the AA gap**,
-mostly results that closed a door — read it before building anything in this
-area, it will save you a day. §7 is methodology that cost real debugging time.
+system enables. §6 is **what has actually been measured about the AA gap** — the
+result that closed it is §6.6, and everything before it is a door that closed;
+read the whole of §6 before building anything in this area, it will save you a
+day. §7 is methodology that cost real debugging time.
 
 Everything measured here was measured on the **CPU** render device on a machine
 with no GPU, unless it says otherwise. That is why §4 exists.
@@ -24,6 +25,9 @@ with no GPU, unless it says otherwise. That is why §4 exists.
 
 Branch `claude/renderer-mesh-id-rework-n5ezw5`, on top of `efb3a95`:
 
+    4891ffd  Cap the mesh's coverage claim instead of suppressing its far sheet (§6.6)
+    3f1cca2  Add the one-mesh coverage rule (§6.6): a Cylinder now beats the bezier Line
+    4827e35  Bring DESIGN_mesh_identity.md §0 up to date with the whole §3 sweep
     2d1432a  Turn mesh identity and Polyhedron winding on by default (§3.5, §3.7)
     86ff500  Add the watertight ray/triangle test (§3.2), gated off
     d878f76  Weld closed surface seams and collapsed poles (§3.1), gated off
@@ -41,93 +45,106 @@ Branch `claude/renderer-mesh-id-rework-n5ezw5`, on top of `efb3a95`:
     c87c26b  Add _aa_run_gate_check: attribute the diced-mesh AA gap
     b49b01b  Delete the unreachable curved PN-patch renderer
 
-`997 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `ruff check
---no-fix` and `ruff format --check` clean. `tests/fast`'s CPU baseline was
-regenerated for the §3.5/§3.7 flip; every other behaviour change is gated off
-and the other three baseline sets are stale (§3.5 says which and why).
+`997 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `--fast`
+green; `ruff check --no-fix` and `ruff format --check` clean.
 
-**What the last session settled.** §6.3 was the gating question and it is
-answered, in three steps that must be read in order because the third supersedes
-the second's prescription:
+**THE GATES, and what each is worth.** Eight switches now, all declared in
+`algan/environment.py` and surfaced on `SETTINGS.raytracing.experimental`.
 
-* The diced-mesh AA error lands exactly on the **ownership** answer — 91% of a
-  fine `Sphere`'s silhouette pixels on the 1/8 lattice (§6.3).
-* Doubling the sample count behaves like a sampling limit: −30% ink wobble on a
-  `Cylinder`, flat control unmoved (§6.3.1).
-* But it is **not** a sampling limit. The magnitude is available and is being
-  discarded by one gate: v2 §4.2 starts the run lookahead only on a partial
-  mask, which excludes 52% of a `Sphere`'s silhouette pixels. Relaxing that gate
-  to "partial mask, or a full mask whose exact area is not within dust of 1"
-  takes the `Cylinder` from 0.0260 to 0.0030 and makes the flat control exact —
-  no extra samples, no interior cost (§6.3.2).
+    setting                          default  what it buys
+    ---------------------------------------------------------------------------
+    ALGAN_MESH_ID                    ON       per-mesh tri_obj (§2.2, §3.5)
+    ALGAN_POLYHEDRON_WINDING         ON       consistent face winding (§3.7)
+    ALGAN_ANALYTIC_AA_ONE_MESH       off      THE AA RESULT (§6.6), implies ↓
+    ALGAN_ANALYTIC_AA_RUN_FULL       off      relaxed run gate (§6.3.2)
+    ALGAN_WELD_SURFACE_SEAMS         off      shared seam/pole vertices (§3.1)
+    ALGAN_WATERTIGHT_TRI             off      Woop-Benthin-Wald (§3.2)
+    ALGAN_BEZ_BVH_SPLIT              off      median-split bezier BVH (§3.4)
+    ALGAN_ANALYTIC_AA_RUN_RULE       redist.  pre-existing (v2 §4.4)
 
-Building that measurement also produced the arbiter §4.5 had been waiting for.
-`ALGAN_MESH_ID=1` measures **neutral on the scored metric and slightly positive
-reference-free** (§4.5). Pointing the arbiter at the packed-grid `Surface` — the
-one case that was supposed to show a win — found first that the win could not
-happen: `Surface`'s declared `mesh_ids` were resolved at construction and then
-**discarded by the logical-PN dice**, which built its patch→surface map from
-per-member counts alone. That is now fixed (gated behind `MESH_ID`, default path
-untouched, regression test pins it), and with it the packed grid does show the
-predicted gain — small, 18 of 36224 pixels, but in the right direction, with a
-non-overlapping control that moves exactly zero. The flip's case still rests on
-§2.2's correctness argument rather than on a large measured win.
+**THE HEADLINE: the diced-mesh AA gap is closed.** `_aa_line_check` opened this
+whole line of work by measuring a tessellated `Cylinder` at 0.057 px of ink
+wobble against 0.014 for a flat quad and 0.004 for a bezier `Line`. With
+`ALGAN_ANALYTIC_AA_ONE_MESH=1`:
 
-And it turned up a `Polyhedron` winding defect, now fixed behind
-`ALGAN_POLYHEDRON_WINDING`, default off (§3.7, §6.5). Three predictions about it
-were made and measured, and **all three were wrong**: it is not why MESH_ID
-regressed under the old metric, fixing it does not make MESH_ID pay, and it does
-not move the fast-suite render at all with MESH_ID off (byte-identical). What it
-does do is make the sheets of a solid nameable — the arbiter's drop count on an
-`Icosahedron` goes 960 to 4 — and, measured later with the reference-free A/B,
-it accounts for nearly all of MESH_ID's *visible* effect on an `Icosahedron`
-(235 moved pixels down to 11). The two instruments see different populations;
-§4.5 says how to quote them together. Read §6.5 before reusing any of them.
+    kind           shipped     now
+    bezier Line     0.0042   0.0042   (circuits never entered this path)
+    flat quad       0.0138   0.0051   -63%
+    Cylinder        0.0568   0.0039   -93%  — below the bezier Line
+    Cylinder fine   0.0772   0.0411   -47%
 
-**WHERE EVERY SECTION STANDS.** Every item in §3 has now been built, flipped,
-or deliberately not started with the reason recorded.
+A `Cylinder` now anti-aliases better than a bezier `Line`, and `on-lattice` —
+the share of silhouette pixels landing on a multiple of 1/8 — falls from 57–91%
+to 0–2%. The coverage is no longer sample-based. §6.6 is the rule, §6.3 the
+diagnosis it rests on.
 
-    §3.1  weld surface seams/poles     BUILT, gated off  ALGAN_WELD_SURFACE_SEAMS
-    §3.2  watertight tri intersection  BUILT, gated off  ALGAN_WATERTIGHT_TRI
-    §3.3  delete the epsilons          BLOCKED on §3.2's default flip (structural)
-    §3.4  median-split bezier BVH      BUILT, gated off  ALGAN_BEZ_BVH_SPLIT
+**What the rule is.** Where every fragment in a pixel is an opaque triangle of
+ONE surface, the mesh may claim at most `max(front_area, back_area)` in total —
+a per-pixel ceiling the host computes from the exact clipped areas and carries
+per fragment in `frag_cap`. That removes the far-sheet re-claim: a run's
+`corr < 1` scales the occlusion write as well as the claim, so the near sheet
+leaves a residual transmittance standing for area OUTSIDE the mesh, and the
+solid's own far sheet was claiming it as though it were background. **This is
+what §2.2's declared identity was built to enable and what nothing read until
+now** — "these two sheets are one mesh" is not a geometric question and no
+epsilon can answer it.
+
+**FOUR THINGS THIS DOCUMENT PREDICTED THAT TURNED OUT WRONG.** Each is corrected
+where it belongs; none was quietly dropped.
+
+* **§6.3.2's −88% does not exist.** Its premise was false: the emission
+  truncates a pixel's fragment list at the first full-mask fragment, so the run
+  scan can never reach that sheet's area donors. As specified it *notched*
+  interior tilings. It is −63% on flat geometry and inert on a diced mesh —
+  which is what §6.6 then fixed by a different mechanism.
+* **§3.1 neither moves the pixels nor retires its two epsilons.** A
+  Sphere/Cylinder/Torus/Cone scene is byte-identical across the weld; the normal
+  accumulation runs on the grid, not the welded topology, so both fixups stay.
+* **Suppressing the far sheet regresses sub-pixel dicing** (+114% on a
+  0.045-radius rod diced 256×). Two follow-up hypotheses — scrambled facing bits,
+  and the u-seam — were both tested and refuted. §6.6 has the refutations and the
+  cap that replaced suppression.
+* **`tests/full_renders` cannot arbitrate from a cloud container.** All six
+  scenes fail here at shipped defaults with every gate off; those baselines are
+  another machine's. §3.5 lists the debt.
+
+**WHERE EVERY SECTION STANDS.**
+
+    §3.1  weld surface seams/poles     BUILT, gated off
+    §3.2  watertight tri intersection  BUILT, gated off
+    §3.3  delete the epsilons          BLOCKED on §3.2's flip (structural, §3.3)
+    §3.4  median-split bezier BVH      BUILT, gated off
     §3.5  mesh identity                FLIPPED ON, tests/fast CPU re-baselined
     §3.6  two-level BVH                NOT STARTED, scoped in §3.6
     §3.7  Polyhedron winding           FLIPPED ON, same re-baseline
-    §6.3.2 relaxed AA run gate         BUILT, gated off  ALGAN_ANALYTIC_AA_RUN_FULL
+    §6.3.2 relaxed AA run gate         BUILT, gated off
+    §6.6  one-mesh coverage cap        BUILT, gated off — the AA result
 
-Three of those carry a result that contradicts what this document predicted, and
-each is written up where it belongs rather than quietly corrected:
+**WHAT IS LEFT, in priority order.**
 
-* **§6.3.2 does not deliver its −88%.** Its premise was false — the emission
-  truncates a pixel's fragment list at the first full-mask fragment, so the run
-  scan can never reach that sheet's area donors. As specified it puts notches
-  into interior tilings. Mitigated, it is −63% ink wobble on FLAT triangle
-  geometry and nothing at all on a diced mesh, which is what it was built for.
-* **§3.1 does not move the pixels, and does not retire the two epsilons it
-  claimed.** A Sphere/Cylinder/Torus/Cone scene is byte-identical across the
-  gate; the normal accumulation runs on the grid rather than the welded
-  topology, so both fixups stay.
-* **`tests/full_renders` cannot arbitrate anything from a cloud container.** All
-  six scenes fail here at the shipped defaults with every gate off — those
-  baselines are another machine's. §3.5 lists the resulting baseline debt.
-
-**Recommended next step, in priority order.**
-
-1. **On a CUDA machine, pay the baseline debt and run §4.1–§4.4.** Three of the
-   four baseline sets are stale (§3.5 says exactly which and why the full-render
-   CPU set must be regenerated on the machine that owns it, not here).
-2. **Qualify §3.2** — §4.7's watertightness runs plus a perf A/B on its extra
-   branches. That unblocks §3.3, which is otherwise not startable.
-3. **Decide §6.3.2's default.** It is a genuine win on flat geometry and inert
-   on meshes; the one open question is the ~355 interior pixels a crude LUT diff
-   still finds on a quad strip where the exact-area notch counter finds none.
-4. **§3.6 if the perf case justifies it** — scoped in §3.6; it is a multi-day
-   project with a structural blocker, not a switch.
+1. **Qualify and flip §6.6.** It is the largest measured quality win on this
+   branch and the only one still off for want of baselines. Needs: CPU +
+   CUDA baselines for `tests/fast` and `tests/full_renders`, a look at the diff
+   videos, and a perf A/B (it adds a host segment reduction, one per-fragment
+   f32 array, and a running clamp in two resolve kernels — none measured).
+   Two open items are named in §6.6 and neither blocks a decision on its own:
+   the `--verify` gap on two cases, and 234/3508 residual interior notches on
+   the fine rod.
+2. **Pay the baseline debt on a CUDA machine and run §4.1–§4.4.** Three of the
+   four baseline sets are stale, and the full-render CPU set must be regenerated
+   on the machine that owns it, not here (§3.5).
+3. **Qualify §3.2** — §4.7's watertightness runs plus a perf A/B on its extra
+   branches in three traversal kernels. That is the only thing that unblocks
+   §3.3.
+4. **Decide §3.1 and §3.4.** Both are built, both are cheap, both need only
+   baselines. §3.1 additionally wants a check on a textured closed surface (the
+   uv seam is deliberately NOT welded — see §3.1).
+5. **§3.6 if the perf case justifies it** — a multi-day project with a
+   structural blocker, scoped in §3.6, not a switch.
 
 Do **not** start by regrouping the run rule, by consulting `E` only inside the
-existing gate, or by buying more samples. All three were built or measured here
-and none is the lever — §6.
+existing gate, by buying more samples, or by suppressing the far sheet. All four
+were built or measured here and none is the lever — §6.
 
 
 ================================================================================
@@ -387,12 +404,19 @@ What *can* be done ahead of that, and was: §3.2 now routes both arms through on
 `_tri_hit`, so the deletion is a single function body plus the constants, rather
 than eight independently drifting call sites.
 
-3.4 Median-split STBVH for bezier circuits  [needs CUDA to qualify]
+3.4 Median-split STBVH for bezier circuits  [BUILT, gated off]
 --------------------------------------------------------------------
 Once resolution is order-independent, `stbvh.py:302`'s reason for pinning
-bezier to Morton is gone (PN, the other pinned type, no longer exists). Add
-`ALGAN_BEZ_BVH_SPLIT`, default off, flipping the bezier default to `"split"`.
-~20-25% fewer traversal steps.
+bezier to Morton is gone (PN, the other pinned type, no longer exists).
+
+**LANDED**, gated `ALGAN_BEZ_BVH_SPLIT`, default off, flipping the bezier
+default to `"split"` (both the main tree and the opaque one, or the two disagree
+about instance order). ~20-25% fewer traversal steps is the claim inherited from
+the triangle tree; **nothing here measured it**, because a traversal-step count
+needs the kernel profiler and this container has no GPU. Default off because a
+circuit's seam de-dup is discovery-order sensitive, so the reorder moves output
+at the epsilon level — it is a performance change with a pixel cost, and both
+halves need a CUDA machine to judge.
 
 Note there is **no remaining slot-order freeze to undo**: the "every patch keeps
 its slot" constraint was PN-specific and went with the PN merge block in
@@ -1289,3 +1313,39 @@ not merely per-device, because `pn_criterion_kernel` runs under `fast_math`),
 CUDA/CPU divergence, kernel timings, and register pressure. `ALGAN_UPDATE_*`
 writes only `expected_outputs_cpu/` — a change that moves output is not complete
 until the CUDA set is regenerated too.
+
+7.9 Two instruments that disagree are ONE instrument
+------------------------------------------------------
+`_aa_run_gate_check` said §6.3.2's relaxed gate cut the `Cylinder`'s coverage
+error 70%; `_aa_line_check` said its ink wobble did not move. Both were run
+correctly. They were measuring **different geometry** — the coverage harness's
+fat `Cylinder` against the line check's 0.045-radius rod — and the mechanisms
+that dominate the two are different (far-sheet re-claim 79% on the rod, the
+`full` gate 19%).
+
+The fix was to put the line check's own scene into the coverage harness as a
+case (`line-check cyl (33deg)`), so both instruments describe the same pixels.
+That single change explained a contradiction that had survived two sessions, and
+it is why §6.6 exists. **Reconcile the instruments before theorising about the
+renderer.** The cost is one case; the alternative is chasing a mechanism that is
+real but irrelevant to the metric you are being judged on.
+
+A second, sharper version of the same trap: `_aa_run_gate_check` scored
+**silhouette pixels only**, so it was structurally blind to interior notches.
+§6.3.2's first build looked like an 84% win in that harness while putting 531
+notches into a flat quad. The harness now counts interior notches beside the
+win. An instrument that cannot see a regression will report one as a triumph.
+
+7.10 A reference derived from the same formula proves nothing
+--------------------------------------------------------------
+§6.6's cap is `max(front_area, back_area)` over the exact clipped areas.
+`_exact_coverage`'s truth is essentially that same formula over those same
+numbers. So the `|cap-E|` column came back **0.0000 on every case** — which
+looks like a triumph and is very nearly a tautology. It shows the walk *can*
+land on the exact-area answer, not that the exact-area answer is right where the
+question is hard (a grazing boundary, which is exactly where it is not).
+
+The independent evidence for §6.6 is the ink-wobble table, which never consults
+`_exact_coverage`. Before quoting a number from this harness, ask what would
+have to be true for it to come out wrong — and if the answer is "nothing",
+it is measuring itself.
