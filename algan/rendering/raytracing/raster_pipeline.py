@@ -39,6 +39,7 @@ from algan.rendering.raytracing.raster_taichi import (
     AA_FULL_COVERAGE,
     RASTER_CHUNK,
     Z_SENTINEL,
+    _aa_run_full,
     raster_bez_count,
     raster_bez_write,
     raster_bez_z,
@@ -64,9 +65,31 @@ _AA_DUMP_ROWS = 512
 LAST_AA_DUMP = {}
 
 
-#: Below this a facing group is empty rather than a sheet, and above this two
-#: groups' exact areas are not the same sheet seen twice (see the one-mesh rule
-#: in prepare_sparse_raster_coverage).
+def _aa_group(aa_bez, aa_tri):
+    """The resolve's ``aa_grp`` template value for this batch.
+
+    One definition, because three places have to agree about it: the two
+    kernel-launch sites here, and the emission truncation below whose mitigation
+    the relaxed run gate *requires*. It drifted once -- ``ANALYTIC_AA_ONE_MESH``
+    set ``aa_grp = 3``, which ``_aa_run_full`` treats as the relaxed gate, while
+    the truncation still tested ``ANALYTIC_AA_RUN_FULL`` alone and therefore
+    withheld the mitigation. That combination runs the relaxed scan over
+    fragment lists whose area donors were already discarded, which is exactly
+    the interior notch ss6.3.2 documents; measured on CUDA, it cost a flat quad
+    -8% of ink wobble where wiring both gave -63%. Route every reader through
+    this and ``_aa_run_full`` so the question can only be answered once.
+
+    0 no grouping, 1 seam grouping, 2 + the relaxed run-scan gate (ss6.3.2),
+    3 + the one-mesh coverage cap (ss6.6, which implies 2).
+    """
+    aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
+        aa_grp = 2
+    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
+        aa_grp = 3
+    return aa_grp
+
+
 def _aa_dump_request():
     """The requested (px, py, frame) from ``ALGAN_AA_DUMP``, or ``None``."""
     spec = env_str("ALGAN_AA_DUMP", "")
@@ -1211,16 +1234,7 @@ def prepare_sparse_raster_coverage(
             + (2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode())
             + 4 * min(aa_tri - 1, 2)
         )
-    aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
-    # 2 relaxes the run-scan gate onto full-mask silhouette fragments
-    # (DESIGN_mesh_identity.md ss6.3.2). Carried in aa_grp rather than as a
-    # new template argument: every ti.static(aa_grp) test is truthiness.
-    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
-        aa_grp = 2
-    # 3 adds the ONE-MESH rule on top (ss6.6). It implies the relaxed gate: the
-    # near sheet's exact area is only worth reading once the gate lets it be read.
-    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
-        aa_grp = 3
+    aa_grp = _aa_group(aa_bez, aa_tri)
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1404,7 +1418,7 @@ def prepare_sparse_raster_coverage(
             # fragment occludes every sample whatever its exact area says.
             if aa_tri >= 3:
                 full_s = (msk_s & AA_MASK_ALL) == AA_MASK_ALL
-                if rt_settings.ANALYTIC_AA_RUN_FULL:
+                if _aa_run_full(aa_grp):
                     # ss6.3.2 needs the run scan to SEE its sheet's area donors,
                     # and this truncation is what hides them: a full-mask
                     # fragment cuts its pixel's prefix right there, so the
@@ -2080,16 +2094,7 @@ def raster_iteration_zero(
             + (2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode())
             + 4 * min(aa_tri - 1, 2)
         )
-    aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
-    # 2 relaxes the run-scan gate onto full-mask silhouette fragments
-    # (DESIGN_mesh_identity.md ss6.3.2). Carried in aa_grp rather than as a
-    # new template argument: every ti.static(aa_grp) test is truthiness.
-    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
-        aa_grp = 2
-    # 3 adds the ONE-MESH rule on top (ss6.6). It implies the relaxed gate: the
-    # near sheet's exact area is only worth reading once the gate lets it be read.
-    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
-        aa_grp = 3
+    aa_grp = _aa_group(aa_bez, aa_tri)
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
