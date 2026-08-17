@@ -214,7 +214,6 @@ def _projection_anti_alias_level(scene, primitives):
     rt_settings = SETTINGS.raytracing
     from algan.rendering.raytracing.primitives import (
         RayTracedBezierCircuitPrimitive,
-        RayTracedPNTrianglePrimitive,
         RayTracedTrianglePrimitive,
     )
 
@@ -230,16 +229,10 @@ def _projection_anti_alias_level(scene, primitives):
     if not all(isinstance(primitive, ray_types) for primitive in primitives):
         return requested, False
 
-    has_pn = any(isinstance(p, RayTracedPNTrianglePrimitive) for p in primitives)
-    has_tri = any(
-        isinstance(p, RayTracedTrianglePrimitive)
-        and not isinstance(p, RayTracedPNTrianglePrimitive)
-        for p in primitives
-    )
+    has_tri = any(isinstance(p, RayTracedTrianglePrimitive) for p in primitives)
     has_bez = any(isinstance(p, RayTracedBezierCircuitPrimitive) for p in primitives)
     possible = (
-        not has_pn
-        and (has_tri or has_bez)
+        (has_tri or has_bez)
         and (not has_tri or rt_settings.analytic_aa_tri_active())
         and (not has_bez or rt_settings.analytic_aa_bez_active())
     )

@@ -1,9 +1,13 @@
 # Algan — Analytic Anti-Aliasing v2: Exact Uncontended Coverage
 
-Status: DESIGN, nothing built. This is the plan of record for the next round of
-analytic-AA work. It supersedes the ss21 exploration in `DESIGN_analytic_aa.md`
-as a plan, but not as a record: every negative result this document leans on is
-measured there, and section references of the form "ss__" point into that file.
+Status: SHIPPED (both workstreams, defaults flipped on 2026-08-13 -- see
+`ANALYTIC_AA_RUN` and `ANALYTIC_AA_BEZ_WEDGE` in `settings.py`). Retained as the
+design record; the header used to say "nothing built" and was stale. It
+supersedes the ss21 exploration in `DESIGN_analytic_aa.md` as a plan, but not as
+a record: every negative result this document leans on is measured there, and
+section references of the form "ss__" point into that file. For what has since
+been measured ABOUT the shipped rule -- including two fixes that do not work --
+see `DESIGN_mesh_identity.md` §6.
 
 The one-sentence version: keep the shipped 8-sample fill-rule masks as the
 ATOMIC OWNERSHIP substrate for everything contended, and layer EXACT AREAS on

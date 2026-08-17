@@ -12,7 +12,6 @@ from algan.rendering.raytracing.bezier_acceleration import (
 )
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
-    RayTracedPNTrianglePrimitive,
     RayTracedTrianglePrimitive,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import _M_REFLECTIVITY, _M_WIDTH
@@ -102,7 +101,6 @@ def _projected_scene_device(primitives):
     """Device carrying a projected primitive batch's ray-tracing tensors."""
     preferred = (
         "_rt_tri_pos",
-        "_rt_pn_ctrl",
         "_rt_edges",
         "_rt_circuit_meta",
         "_rt_frame_lo",
@@ -709,12 +707,10 @@ def _bvh_deferral_eligible(scene):
         or scene.get("bez_has_reflective")
     ):
         return False
-    if scene["num_pn"] > 0:
-        return False
     return scene["num_triangles"] > 0 or scene["num_circuits"] > 0
 
 
-def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device):
+def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
     """Build each geometry type's STBVHs from the captured merge inputs, or
     record a deferral (placeholder trees + retained build inputs) for batches
     that provably never traverse one (see ``_bvh_deferral_eligible``).
@@ -732,24 +728,6 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
         or SETTINGS.raytracing.WF_OPAQUE_PREPASS
     )
     scene["opaque_bvh_skipped"] = not opq_live
-    if pn_inputs is not None:
-        lo, hi, opaque = pn_inputs
-        scene["pn_bvh"] = _build_accel(
-            lo,
-            hi,
-            num_frames=num_frames,
-            tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
-            opaque=opaque,
-        )
-        if not scene["pn_has_opaque"]:
-            scene["pn_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["pn_has_translucent"] or not opq_live:
-            scene["pn_opaque_bvh"] = scene["pn_bvh"]
-        else:
-            scene["pn_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames, RayTracedPNTrianglePrimitive.stbvh_tightness
-            )
-
     if _bvh_deferral_eligible(scene) and (
         tri_inputs is not None or bez_inputs is not None
     ):
@@ -800,12 +778,18 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
             )
     if bez_inputs is not None:
         lo, hi, opaque = bez_inputs
+        # ss3.4: bezier was the last type still pinned to Morton (PN, the other,
+        # was deleted). Split ordering is a pure reorder, but a circuit's seam
+        # de-dup is discovery-order sensitive, so it moves output at the epsilon
+        # level -- hence the gate rather than a straight flip.
+        bez_builder = "split" if SETTINGS.raytracing.BEZ_BVH_SPLIT else "morton"
         scene["bez_bvh"] = _build_accel(
             lo,
             hi,
             num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
             opaque=opaque,
+            builder=bez_builder,
         )
         if not scene["bez_has_opaque"]:
             scene["bez_opaque_bvh"] = _empty_scene_part(device)
@@ -818,6 +802,7 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
                 opaque,
                 num_frames,
                 RayTracedBezierCircuitPrimitive.stbvh_tightness,
+                builder=bez_builder,
             )
 
 
@@ -1162,7 +1147,7 @@ def _build_textured_scene(scene, num_frames, device):
 
 def _merge_scene(primitives):
     """Merge the batch's collections into one set per geometry type --
-    triangles, PN patches and bezier circuits, each with a single STBVH
+    triangles and bezier circuits, each with a single STBVH
     over all frames -- cached for the batch.
     """
     first = primitives[0]
@@ -1194,19 +1179,9 @@ def _merge_scene(primitives):
         device = _projected_scene_device(primitives)
         if device.type != "cpu":
             empty_cache(force_gc=False)
-    pn_patches = [p for p in primitives if isinstance(p, RayTracedPNTrianglePrimitive)]
-    triangles = [
-        p
-        for p in primitives
-        if isinstance(p, RayTracedTrianglePrimitive)
-        and not isinstance(p, RayTracedPNTrianglePrimitive)
-    ]
+    triangles = [p for p in primitives if isinstance(p, RayTracedTrianglePrimitive)]
     beziers = [p for p in primitives if isinstance(p, RayTracedBezierCircuitPrimitive)]
-    unknown = [
-        p
-        for p in primitives
-        if p not in triangles and p not in pn_patches and p not in beziers
-    ]
+    unknown = [p for p in primitives if p not in triangles and p not in beziers]
     if unknown:
         raise TypeError(
             "The ray traced renderer can only draw ray traced primitives; "
@@ -1214,17 +1189,7 @@ def _merge_scene(primitives):
         )
     num_frames = max(p._rt_num_frames for p in primitives)
 
-    # PN texture maps are sampled only by the deterministic general wavefront
-    # tracer (which every samples-per-pixel == 1 batch renders through); the
-    # Monte Carlo megakernel's PN path has no UVs. When set, real texture
-    # metadata is folded into the widened pn_extra below. Covers PN color maps
-    # too (unlike flat colour maps, which the megakernel can sample).
-    has_pn_textures = any(
-        getattr(p, "_rt_pn_uvs", None) is not None for p in pn_patches
-    )
-
     scene = {}
-    scene["has_pn_textures"] = has_pn_textures
 
     def _texture_alpha_is_opaque(tex):
         """Conservatively prove that a color texture cannot cut a surface."""
@@ -1253,13 +1218,12 @@ def _merge_scene(primitives):
         ) or (uncertain_alpha and has_visible)
         return has_visible, has_opaque, has_translucent
 
-    # Shared flat texel buffer for *all* texture maps, flat-triangle and
-    # PN-patch alike (color / material / normal). Each map is appended once,
-    # padded to 5 channels and flattened to [T, W*H, 5]; its placement is a
-    # (offset, w, h) triplet recorded in the consuming geometry's metadata
-    # (offset -1 = no map). Flat triangles key those triplets by tri_tex_meta;
-    # PN patches fold them into pn_extra (no kernel-arg budget left). Assembled
-    # into scene["textures"] once both geometry blocks below have appended.
+    # Shared flat texel buffer for *all* texture maps (color / material /
+    # normal). Each map is appended once, padded to 5 channels and flattened to
+    # [T, W*H, 5]; its placement is a (offset, w, h) triplet recorded in the
+    # consuming geometry's metadata (offset -1 = no map), keyed by tri_tex_meta.
+    # Assembled into scene["textures"] once the geometry blocks below have
+    # appended.
     _texture_tensors = []
     _texel_offset = [0]
 
@@ -1282,7 +1246,7 @@ def _merge_scene(primitives):
     # Per-geometry BVH build inputs, captured by the merge sections below and
     # consumed at the end by ``_finalize_bvhs`` (which either builds the trees
     # or, for batches that provably never traverse one, defers them).
-    tri_bvh_inputs = pn_bvh_inputs = bez_bvh_inputs = None
+    tri_bvh_inputs = bez_bvh_inputs = None
     if triangles:
         # Constant-property promotion: triangles whose colour + material params
         # are constant across their corners (and frames) are rendered from a
@@ -1606,133 +1570,22 @@ def _merge_scene(primitives):
         scene["tri_has_reflective"] = bool(scene.get("tex_has_reflective"))
         scene["has_strong_reflective"] = bool(scene.get("tex_has_reflective"))
 
-    if pn_patches:
-        scene["pn_ctrl"] = _cat_collections(
-            [p._rt_pn_ctrl for p in pn_patches], 1, "pn merge"
-        )
-        scene["pn_obb"] = _cat_collections(
-            [p._rt_pn_obb for p in pn_patches], 1, "pn merge"
-        )
-        scene["pn_norm"] = _cat_collections(
-            [p._rt_pn_norm for p in pn_patches], 1, "pn merge"
-        )
-        # Fold per-patch UVs + texture metadata into the (cold, hit-only)
-        # pn_extra array: PN has no kernel-arg budget for its own uv/meta/
-        # texture arrays (the general wavefront shade kernel is at Taichi's
-        # 64-arg cap), so it reads them from widened pn_extra. Layout appended
-        # after the existing 15 material cols: cols 15-20 per-corner UV, 21-23
-        # color map (offset, w, h) into the shared ``textures`` buffer, 24-26
-        # material map, 27-29 normal map, 30 material bitmask. A color-map
-        # offset of -1 means fall back to per-vertex pn_colors. The array is
-        # widened unconditionally (even with no maps -> all -1) because the
-        # default wavefront path shades every PN scene through this kernel, so
-        # the texture-sampling code always executes and must find 31 columns.
-        # Every patch keeps its slot (no colored/textured reorder -- the PN
-        # morton BVH seam de-dup is discovery-order sensitive).
-        pn_extra_list = []
-        for p in pn_patches:
-            extra = p._rt_pn_extra  # [Te, Np, 15]
-            Np = extra.shape[1]
-            uvs = getattr(p, "_rt_pn_uvs", None)
-            if uvs is None:
-                uvs = torch.zeros((1, Np, 6), device=device)
-            if has_pn_textures:
-                color_meta = _append_texture(getattr(p, "_rt_texture_map", None))
-                mtex = getattr(p, "_rt_material_texture", None)
-                material_meta = _append_texture(mtex)
-                normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
-                flags = int(getattr(p, "_rt_material_flags", 0) or 0)
-                if (
-                    mtex is not None
-                    and (flags & 8)
-                    and bool((mtex[..., 3] > 1e-6).any())
-                ):
-                    scene["tex_has_refractive"] = True
-                meta_vals = [*color_meta, *material_meta, *normal_meta, flags]
-            else:
-                meta_vals = [-1, 0, 0, -1, 0, 0, -1, 0, 0, 0]
-            T = max(extra.shape[0], uvs.shape[0])
-            # UVs inherit the (CPU) animation device from the per-mob build,
-            # while extra/meta are on the render device -- unify before cat.
-            extra_e = _expand_frames(extra, T).to(device)
-            uvs_e = _expand_frames(uvs, T).to(device)
-            meta_e = (
-                torch.tensor(meta_vals, dtype=torch.float32, device=device)
-                .view(1, 1, 10)
-                .expand(T, Np, 10)
-            )
-            pn_extra_list.append(torch.cat([extra_e, uvs_e, meta_e], -1))
-        scene["pn_extra"] = _cat_collections(pn_extra_list, 1, "pn merge")
-        scene["pn_colors"] = _cat_collections(
-            [p._rt_pn_colors for p in pn_patches], 1, "pn merge"
-        )
-        scene["pn_mat_id"] = _cat_collections(
-            [p._rt_pn_mat_id for p in pn_patches], 1, "pn merge"
-        )
-        scene["pn_mat"] = _cat_mat_blocks(
-            [p._rt_pn_mat for p in pn_patches], "pn merge"
-        )
-        # Same time-band collapse as the triangle tables (consumers all read
-        # ``f % shape[0]``); pn_ctrl/pn_obb stay full-T with the geometry.
-        if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in ("pn_norm", "pn_extra", "pn_colors", "pn_mat_id", "pn_mat"):
-                scene[_k] = _dedup_time(scene[_k])
-        lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1, "pn merge")
-        hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1, "pn merge")
-        opaque = _cat_collections(
-            [p._rt_frame_opaque for p in pn_patches], 1, "pn merge"
-        )
-        pn_uncertain_alpha = any(
-            (
-                getattr(p, "_rt_texture_map", None) is not None
-                and not _texture_alpha_is_opaque(p._rt_texture_map)
-            )
-            for p in pn_patches
-        )
-        _record_visibility("pn", lo, hi, opaque, pn_uncertain_alpha)
-        # PN STBVHs are built in _finalize_bvhs (never deferred -- PN routes
-        # to the classic primary traversal).
-        pn_bvh_inputs = (lo, hi, opaque)
-    else:
-        scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
-        scene["pn_obb"] = torch.zeros((1, 1, 12), device=device)
-        scene["pn_norm"] = torch.zeros((1, 1, 9), device=device)
-        # 31 cols (15 material + 6 UV + 10 tex-meta) to match the real path, so
-        # the wavefront's PN texture reads never run off the stub (see above).
-        scene["pn_extra"] = torch.zeros((1, 1, 31), device=device)
-        scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
-        scene["pn_mat_id"] = torch.zeros((1, 1), dtype=torch.int32, device=device)
-        scene["pn_mat"] = torch.zeros((1, 1, MAT_W), device=device)
-        scene["pn_bvh"] = _empty_scene_part(device)
-        scene["pn_opaque_bvh"] = scene["pn_bvh"]
-        _record_visibility(
-            "pn",
-            torch.empty((0, 0, 3), device=device),
-            torch.empty((0, 0, 3), device=device),
-            torch.empty((0, 0), dtype=torch.bool, device=device),
-        )
-    scene["num_pn"] = scene["pn_ctrl"].shape[1] if pn_patches else 0
-
-    # Assemble the shared texel buffer now that both the flat-triangle and PN
-    # blocks above have appended their maps (offsets recorded in tri_tex_meta /
-    # pn_extra respectively).
+    # Assemble the shared texel buffer now that the flat-triangle block above
+    # has appended its maps (offsets recorded in tri_tex_meta).
     if _texture_tensors:
         scene["textures"] = _cat_collections(_texture_tensors, 1, "texture merge")
     else:
         scene["textures"] = torch.zeros((1, 1, 5), device=device)
-    scene["has_pn_textures"] = has_pn_textures
 
-    # Refraction is active iff some triangle/PN surface transmits (extra
+    # Refraction is active iff some triangle surface transmits (extra
     # columns 9-11, per-corner). Transmission -- not the IOR, which every PBR
     # material carries -- is what says light passes through; it gates the
     # wavefront's refraction template (and with it the split pool).
     def _extra_has_refractive(extra):
         return bool((extra[..., 9:12] > 1e-6).any())
 
-    scene["has_refractive"] = (
-        _extra_has_refractive(scene["tri_extra"])
-        or _extra_has_refractive(scene["pn_extra"])
-        or bool(scene.get("tex_has_refractive"))
+    scene["has_refractive"] = _extra_has_refractive(scene["tri_extra"]) or bool(
+        scene.get("tex_has_refractive")
     )
 
     # A surface that is both PBR-reflective and semi-transparent must trace its
@@ -1767,7 +1620,7 @@ def _merge_scene(primitives):
                 continue
             mtex = getattr(p, "_rt_material_texture", None)
             # Material-map bit 0 drives metalness from channel 0 (see
-            # ``_pn_hit_material`` / ``_tri_hit_material``).
+            # ``_tri_hit_material``).
             if (
                 mtex is not None
                 and (int(getattr(p, "_rt_material_flags", 0) or 0) & 1)
@@ -1782,11 +1635,9 @@ def _merge_scene(primitives):
                 return True
         return False
 
-    scene["has_refl_transparent"] = (
-        _has_refl_transparent(triangles, _pbr_from_extra("_rt_tri_extra"))
-        or _has_refl_transparent(pn_patches, _pbr_from_extra("_rt_pn_extra"))
-        or _has_refl_transparent(beziers, _pbr_from_circuit_meta)
-    )
+    scene["has_refl_transparent"] = _has_refl_transparent(
+        triangles, _pbr_from_extra("_rt_tri_extra")
+    ) or _has_refl_transparent(beziers, _pbr_from_circuit_meta)
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(
@@ -1886,41 +1737,33 @@ def _merge_scene(primitives):
     # Host-side render classification.  The uploaded material-id tensors are
     # kernel data; renderer dispatch/bucketing must not run CUDA reductions or
     # uniqueness passes after the arena has consumed the device allowance.
-    for prefix in ("tri", "pn"):
-        ids = scene[f"{prefix}_mat_id"].detach().cpu()
-        scene[f"{prefix}_material_ids"] = tuple(
-            int(value) for value in torch.unique(ids).tolist()
-        )
+    ids = scene["tri_mat_id"].detach().cpu()
+    scene["tri_material_ids"] = tuple(
+        int(value) for value in torch.unique(ids).tolist()
+    )
     scene["has_user_pipeline"] = any(
-        material_id >= _USER_PIPELINE_BASE
-        for prefix in ("tri", "pn")
-        for material_id in scene[f"{prefix}_material_ids"]
+        material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )
     scene["has_any_visible"] = any(
-        scene[f"{prefix}_has_visible"] for prefix in ("tri", "pn", "bez")
+        scene[f"{prefix}_has_visible"] for prefix in ("tri", "bez")
     )
     scene["has_any_opaque"] = any(
-        scene[f"{prefix}_has_opaque"] for prefix in ("tri", "pn", "bez")
+        scene[f"{prefix}_has_opaque"] for prefix in ("tri", "bez")
     )
     scene["has_any_translucent"] = any(
-        scene[f"{prefix}_has_translucent"] for prefix in ("tri", "pn", "bez")
+        scene[f"{prefix}_has_translucent"] for prefix in ("tri", "bez")
     )
     scene["all_visible_opaque"] = (
         scene["has_any_visible"] and not scene["has_any_translucent"]
     )
 
     # UNSUPPORTED legacy texture-lookup shading (Surface / flat-triangle
-    # scenes only: no PN patches, no bezier circuits; opt-in via WF_TEXTURED,
+    # scenes only: no bezier circuits; opt-in via WF_TEXTURED,
     # kept for reference). Builds the three per-triangle texture banks +
     # indexes the textured wavefront kernel consumes.
     scene["textured_active"] = False
     _rts = SETTINGS.raytracing
-    if (
-        _rts.WF_TEXTURED
-        and scene["num_triangles"] > 0
-        and scene["num_pn"] == 0
-        and scene["num_circuits"] == 0
-    ):
+    if _rts.WF_TEXTURED and scene["num_triangles"] > 0 and scene["num_circuits"] == 0:
         _build_textured_scene(scene, num_frames, device)
         scene["textured_active"] = True
 
@@ -1928,9 +1771,7 @@ def _merge_scene(primitives):
     # traverse one (hybrid-raster primaries, no shadows, no reflective /
     # refractive / scatter materials), defer them entirely; the tracer builds
     # them on demand via ``build_deferred_bvhs`` if anything changes its mind.
-    _finalize_bvhs(
-        scene, tri_bvh_inputs, pn_bvh_inputs, bez_bvh_inputs, num_frames, device
-    )
+    _finalize_bvhs(scene, tri_bvh_inputs, bez_bvh_inputs, num_frames, device)
 
     # The merged tensors replace the per-collection ones; release the
     # originals so peak GPU memory stays close to one copy of the scene.
@@ -1939,14 +1780,6 @@ def _merge_scene(primitives):
         p._rt_tri_extra = p._rt_tri_colors = None
         p._rt_tri_mat_id = p._rt_tri_mat = None
         p._rt_tri_uvs = p._rt_texture_map = None
-        p._rt_material_texture = p._rt_normal_texture = None
-        p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
-    for p in pn_patches:
-        p._rt_pn_ctrl = p._rt_pn_norm = None
-        p._rt_pn_obb = None
-        p._rt_pn_extra = p._rt_pn_colors = None
-        p._rt_pn_mat_id = p._rt_pn_mat = None
-        p._rt_pn_uvs = p._rt_texture_map = None
         p._rt_material_texture = p._rt_normal_texture = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in beziers:

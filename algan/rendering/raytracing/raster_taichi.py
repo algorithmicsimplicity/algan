@@ -24,9 +24,10 @@ Important implementation properties:
   region covers -- a box filter of the outline signed-distance field that
   ``_bezier_point_metrics`` already computes -- and the resolve folds that into
   the fragment's alpha, so circuit silhouettes resolve continuously at
-  ``anti_alias_level = 1`` instead of all-or-nothing.  Flat triangles keep
-  coverage 1.0 (phase 2), so the coverage lane is host-pre-filled and only the
-  circuit kernels write it.
+  ``anti_alias_level = 1`` instead of all-or-nothing.  The coverage lane is
+  host-pre-filled to 1.0 and written by the circuit kernels and -- under
+  ``ANALYTIC_AA_TRI`` -- by ``raster_tri_write`` too, which carries each
+  triangle fragment's exact clipped area for the run rule.
 * :func:`raster_shadow_event_build` performs the same ordered transport/seam
   decisions as final resolve and emits only accepted triangle lighting events.
   :func:`raster_shadow_trace` traces that separate sparse any-hit queue and
@@ -156,6 +157,13 @@ _AA_BACKFACE_BIT = 1 << _AA_FLAG_SHIFT
 # same treatment a circuit's SDF coverage gets). Only reachable when
 # ANALYTIC_AA_SLIVER is not the default ``drop``.
 _AA_SLIVER_BIT = 2 << _AA_FLAG_SHIFT
+
+# Marks every fragment of a pixel whose fragments are ALL opaque triangles of
+# ONE surface (set by prepare_sparse_raster_coverage, which has the CSR to do it
+# as a segment reduction). There the mesh's coverage is its near sheet's exact
+# area and nothing else -- both sheets project to the same silhouette -- so the
+# far sheet must not add coverage on top of it. See _aa_one_mesh.
+_AA_ONE_MESH_BIT = 4 << _AA_FLAG_SHIFT
 
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the
@@ -353,6 +361,58 @@ def _tri_run_mode(aa_tri):
 def _tri_run_rule_b(aa_tri):
     """Whether the run rule redistributes clamped write residue (ss4.4 B)."""
     return int(aa_tri) == 4
+
+
+def _aa_one_mesh(aa_grp):
+    """Whether the resolve applies the ONE-MESH rule (aa_grp 3).
+
+    At a silhouette the run rule's ``corr < 1`` scales the OCCLUSION write as
+    well as the claim, so the samples the near sheet owns keep a residual
+    transmittance standing for the part of the pixel the sheet does not cover.
+    That residue lies OUTSIDE the mesh, but it carries no position, so when the
+    FAR sheet of the same solid arrives owning the same samples it claims the
+    residue as though it were background showing through -- and uncorrected,
+    because ``svis`` is no longer uniform and its own run cannot engage.
+
+    Where every fragment in the pixel is an opaque triangle of one surface, that
+    is unambiguously wrong: the mesh's coverage is its near sheet's exact area.
+    So once a facing has committed ink, the other facing commits none.
+
+    Measured on _aa_line_check's own thin Cylinder at 33 deg, mean coverage
+    error over silhouette pixels: 0.0299 -> 0.0064, which is 79% of the error on
+    the geometry the ink-wobble metric actually reads. Restricted to one-mesh
+    pixels because a facing change across TWO meshes is an ordinary occlusion,
+    and to opaque ones because a translucent solid's far sheet is genuinely
+    visible through its near sheet.
+    """
+    return int(aa_grp) >= 3
+
+
+def _aa_run_full(aa_grp):
+    """Whether the run scan also admits a FULL-mask fragment that covers less
+    than the whole pixel (DESIGN_mesh_identity.md ss6.3.2).
+
+    v2 ss4.2 gates the lookahead on a PARTIAL mask so the interior hot path --
+    one full-mask fragment per pixel -- never pays for a scan. A diced mesh's
+    silhouette also produces full-mask fragments, though: one triangle owning
+    all eight sub-pixel samples while covering a fraction of the pixel's area.
+    Those are painted at 1.0 with their exact area unread, and on a fine Sphere
+    they are 52% of the silhouette pixels. An interior fragment's ``cov`` is
+    within dust of 1, so admitting ``cov < 1 - dust`` picks up exactly the
+    silhouette and leaves the interior alone.
+
+    Carried as ``aa_grp == 2``; every other ``ti.static(aa_grp)`` test in this
+    module is a truthiness test, so the value costs no kernel argument.
+    """
+    return int(aa_grp) == 2 or int(aa_grp) == 3
+
+
+#: How far below 1 a full-mask fragment's exact area must sit before the run
+#: scan treats it as a silhouette rather than an interior tiling. Float dust in
+#: the exact-area arithmetic is far below this; a silhouette pixel's shortfall
+#: is orders of magnitude above it. Also the band inside which a full-union run
+#: keeps ``corr = 1`` exactly, so a genuine interior tiling stays bit-identical.
+_AA_FULL_DUST = 1e-3
 
 
 def _tri_repr(aa):
@@ -1064,33 +1124,33 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                 # regress dense moving meshes despite skipping sample tests.
                 if ti.static(aa):
                     # EXACT fixed-point coverage (DESIGN_analytic_aa.md ss15).
-                #
-                # Snap the projected vertices to a 1/256-pixel integer lattice
-                # and evaluate the edge functions in int64. Two triangles that
-                # share an edge traverse it in opposite directions, and in
-                # exact integer arithmetic their edge functions are then exact
-                # negatives -- because E = D x (Q - V1) and the reversed edge
-                # gives -D x (Q - V2) = -(D x (Q - V1)) once D x D = 0 drops
-                # out. In FLOAT they are merely near-negatives, which is what
-                # made a sample lying on a shared edge belong to whichever
-                # triangle rounding happened to favour, and forced a choice
-                # between a silhouette halo and speckle along every shared edge.
-                #
-                # Exactness lets the classic top-left fill rule settle it: a
-                # sample exactly on an edge counts only for the triangle whose
-                # traversal of that edge runs "down", or runs "left" when
-                # horizontal. The neighbour traverses it the other way, so
-                # exactly one of the pair takes the sample -- the masks
-                # partition the pixel with no epsilon anywhere, and the same
-                # mask can serve both as what a fragment claims and as what it
-                # occludes.
-                #
-                # This relies on adjacent triangles carrying bit-identical
-                # coordinates for a shared vertex. They do: the merged soup
-                # stores each triangle's own copy, but from the same source
-                # vertex, and the projection is one elementwise torch
-                # expression. If that ever stopped holding, the failure is
-                # graceful -- back to the float-era ambiguity on those edges.
+                    #
+                    # Snap the projected vertices to a 1/4096-pixel integer lattice
+                    # and evaluate the edge functions in int64. Two triangles that
+                    # share an edge traverse it in opposite directions, and in
+                    # exact integer arithmetic their edge functions are then exact
+                    # negatives -- because E = D x (Q - V1) and the reversed edge
+                    # gives -D x (Q - V2) = -(D x (Q - V1)) once D x D = 0 drops
+                    # out. In FLOAT they are merely near-negatives, which is what
+                    # made a sample lying on a shared edge belong to whichever
+                    # triangle rounding happened to favour, and forced a choice
+                    # between a silhouette halo and speckle along every shared edge.
+                    #
+                    # Exactness lets the classic top-left fill rule settle it: a
+                    # sample exactly on an edge counts only for the triangle whose
+                    # traversal of that edge runs "down", or runs "left" when
+                    # horizontal. The neighbour traverses it the other way, so
+                    # exactly one of the pair takes the sample -- the masks
+                    # partition the pixel with no epsilon anywhere, and the same
+                    # mask can serve both as what a fragment claims and as what it
+                    # occludes.
+                    #
+                    # This relies on adjacent triangles carrying bit-identical
+                    # coordinates for a shared vertex. They do: the merged soup
+                    # stores each triangle's own copy, but from the same source
+                    # vertex, and the projection is one elementwise torch
+                    # expression. If that ever stopped holding, the failure is
+                    # graceful -- back to the float-era ambiguity on those edges.
                     fx0 = ti.cast(ti.round(sx0 * _AA_FIXED_SCALE), ti.i64)
                     fx1 = ti.cast(ti.round(sx1 * _AA_FIXED_SCALE), ti.i64)
                     fx2 = ti.cast(ti.round(sx2 * _AA_FIXED_SCALE), ti.i64)
@@ -2784,6 +2844,7 @@ def raster_shadow_event_build(
         frag_key: ti.types.ndarray(), frag_ref: ti.types.ndarray(),
         frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
         frag_msk: ti.types.ndarray(),
+        frag_cap: ti.types.ndarray(),
         zbuf: ti.types.ndarray(),
         tri_pos: ti.types.ndarray(), tri_screen: ti.types.ndarray(),
         tri_norm: ti.types.ndarray(), tri_extra: ti.types.ndarray(),
@@ -2881,6 +2942,10 @@ def raster_shadow_event_build(
         run_U = 0
         run_resid = 0.0
         run_pending = 0
+        # ONE-MESH rule: how much coverage this pixel's single mesh has already
+        # claimed. Capped at frag_cap, the larger of its two sheets' exact
+        # areas (_aa_one_mesh). Only meaningful on pixels the host flagged.
+        mesh_ink = 0.0
         bounces_left = max_bounces
         processed = 0
         start = run_offsets[r]
@@ -2992,7 +3057,17 @@ def raster_shadow_event_build(
                                 run_resid = 0.0
                         run_mode = 0
                         run_end = q
-                        if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
+                        run_scan = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                        if ti.static(_aa_run_full(aa_grp)):
+                            # ss6.3.2: a FULL mask over a pixel the sheet does
+                            # not fill is a silhouette, not an interior tiling,
+                            # and it is the largest single source of coverage
+                            # error on a diced mesh. An interior fragment's
+                            # cov is within dust of 1, so the hot path is
+                            # untouched.
+                            if not run_scan:
+                                run_scan = cov < (1.0 - _AA_FULL_DUST)
+                        if run_scan:
                             v0 = svis[0]
                             uni_v = v0 > 0.0
                             for s in ti.static(
@@ -3014,6 +3089,14 @@ def raster_shadow_event_build(
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
                                     run_corr = 1.0
+                                    if ti.static(_aa_run_full(aa_grp)):
+                                        # Q == 1 on this arm, so corr = E/Q is
+                                        # just E -- ss6.2's rule finally
+                                        # reaching the pixels that needed it.
+                                        # The dust band keeps a genuine
+                                        # interior tiling bit-identical.
+                                        if ti.abs(1.0 - rE) > _AA_FULL_DUST:
+                                            run_corr = ti.min(rE, 1.0)
                                 elif rU == 0:
                                     run_mode = 2
                                     run_pscale = (ti.min(rE, 1.0)
@@ -3066,6 +3149,23 @@ def raster_shadow_event_build(
                             for s in ti.static(range(_AA_NUM_SAMPLES)):
                                 slots[s] = 1.0
                             nsm = _AA_NUM_SAMPLES
+                if ti.static(_aa_one_mesh(aa_grp)):
+                    # ONE-MESH rule (see _aa_one_mesh). On a pixel the host
+                    # flagged as a single opaque surface, the mesh may claim at
+                    # most frag_cap in total -- the larger of its two sheets'
+                    # exact areas. Well inside a silhouette that is the near
+                    # sheet's area and the far sheet gets no room, which is what
+                    # removes the re-claim; at the boundary it leaves exactly
+                    # the room the near sheet does not fill.
+                    # run_mode 2 (the pristine all-sliver claim) is excluded:
+                    # it maintains its own run_claimed renormalization against
+                    # the run-start transmittance, and clipping its eff without
+                    # adjusting run_pd desynchronizes that bookkeeping.
+                    if (not is_bez) and (not from_z) and (run_mode != 2) \
+                            and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0):
+                        room = frag_cap[idx] - mesh_ink
+                        if eff > room:
+                            eff = ti.max(room, 0.0)
                 if eff <= MIN_ALPHA:
                     if ti.static(dump):
                         if dmatch:
@@ -3074,6 +3174,11 @@ def raster_shadow_event_build(
                                           _popcount_samples(msk), 1.0, eff,
                                           0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
+                if ti.static(_aa_one_mesh(aa_grp)):
+                    # Accumulated only for a fragment that actually commits ink,
+                    # so a fully occluded one consumes none of the ceiling.
+                    if (not is_bez) and (not from_z):
+                        mesh_ink += eff
 
             alpha = 0.0
             reflectivity = 0.0
@@ -3346,11 +3451,6 @@ def raster_shadow_trace(
         tri_pos: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int,
-        pn_ctrl: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
-        pn_colors: ti.types.ndarray(),
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
@@ -3359,9 +3459,9 @@ def raster_shadow_trace(
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int, pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: ti.f32, layer_offset_pn: ti.f32,
+        layer_offset_triangles: ti.f32,
         refit: ti.template(),
-        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
         event_dp: ti.types.ndarray(), sec_aa: ti.template(),
         shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
@@ -3515,13 +3615,11 @@ def raster_shadow_trace(
                         ldn - 20.0 * MIN_HIT_DISTANCE,
                         pixel_world_scale[
                             f % pixel_world_scale.shape[0]], 0.0,
-                        layer_offset_triangles, layer_offset_pn,
-                        has_tri, has_pn, has_bez,
+                        layer_offset_triangles,
+                        has_tri, has_bez,
                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                         t_first_leaf, tri_pos, tri_colors, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles,
-                        p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                        p_first_leaf, pn_ctrl, pn_obb, pn_colors,
                         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                         b_first_leaf, circuit_meta, circuit_colors,
                         circuit_border_colors, edges_2d, edge_accel)
@@ -3537,6 +3635,7 @@ def raster_first_shade(
         frag_key: ti.types.ndarray(), frag_ref: ti.types.ndarray(),
         frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
         frag_msk: ti.types.ndarray(),
+        frag_cap: ti.types.ndarray(),
         zbuf: ti.types.ndarray(),
         tri_pos: ti.types.ndarray(), tri_screen: ti.types.ndarray(),
         tri_norm: ti.types.ndarray(),
@@ -3685,16 +3784,16 @@ def raster_first_shade(
     unbent-sharp (a separate lobe, and the transmitted branch has no `placed`
     in-slot ray to keep coherent).
 
-    ``layer_offsets`` is the tracer's 8-wide variant: [2..5] environment map
-    placement, [6] far clip (0 = off), [7] max_bounces.
+    ``layer_offsets`` is the tracer's 7-wide variant: [1..4] environment map
+    placement, [5] far clip (0 = off), [6] max_bounces.
     """
     pixels_per_frame = width * height
-    env_off = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-    env_w = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-    env_h = ti.cast(layer_offsets[4] + 0.5, ti.i32)
-    env_intensity = layer_offsets[5]
-    far_clip = layer_offsets[6]
-    max_bounces = ti.cast(layer_offsets[7] + 0.5, ti.i32)
+    env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
+    env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
+    env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
+    env_intensity = layer_offsets[4]
+    far_clip = layer_offsets[5]
+    max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
     loop_n = num_pixels
     if ti.static(covered):
         loop_n = num_covered
@@ -3768,6 +3867,10 @@ def raster_first_shade(
         run_U = 0
         run_resid = 0.0
         run_pending = 0
+        # ONE-MESH rule: how much coverage this pixel's single mesh has already
+        # claimed. Capped at frag_cap, the larger of its two sheets' exact
+        # areas (_aa_one_mesh). Only meaningful on pixels the host flagged.
+        mesh_ink = 0.0
         base_dist = 0.0
         bounces_left = max_bounces
         processed = 0
@@ -3926,7 +4029,17 @@ def raster_first_shade(
                                 run_resid = 0.0
                         run_mode = 0
                         run_end = q
-                        if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
+                        run_scan = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                        if ti.static(_aa_run_full(aa_grp)):
+                            # ss6.3.2: a FULL mask over a pixel the sheet does
+                            # not fill is a silhouette, not an interior tiling,
+                            # and it is the largest single source of coverage
+                            # error on a diced mesh. An interior fragment's
+                            # cov is within dust of 1, so the hot path is
+                            # untouched.
+                            if not run_scan:
+                                run_scan = cov < (1.0 - _AA_FULL_DUST)
+                        if run_scan:
                             v0 = svis[0]
                             uni_v = v0 > 0.0
                             for s in ti.static(
@@ -3948,6 +4061,14 @@ def raster_first_shade(
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
                                     run_corr = 1.0
+                                    if ti.static(_aa_run_full(aa_grp)):
+                                        # Q == 1 on this arm, so corr = E/Q is
+                                        # just E -- ss6.2's rule finally
+                                        # reaching the pixels that needed it.
+                                        # The dust band keeps a genuine
+                                        # interior tiling bit-identical.
+                                        if ti.abs(1.0 - rE) > _AA_FULL_DUST:
+                                            run_corr = ti.min(rE, 1.0)
                                 elif rU == 0:
                                     run_mode = 2
                                     run_pscale = (ti.min(rE, 1.0)
@@ -4005,6 +4126,23 @@ def raster_first_shade(
                             for s in ti.static(range(_AA_NUM_SAMPLES)):
                                 slots[s] = 1.0
                             nsm = _AA_NUM_SAMPLES
+                if ti.static(_aa_one_mesh(aa_grp)):
+                    # ONE-MESH rule (see _aa_one_mesh). On a pixel the host
+                    # flagged as a single opaque surface, the mesh may claim at
+                    # most frag_cap in total -- the larger of its two sheets'
+                    # exact areas. Well inside a silhouette that is the near
+                    # sheet's area and the far sheet gets no room, which is what
+                    # removes the re-claim; at the boundary it leaves exactly
+                    # the room the near sheet does not fill.
+                    # run_mode 2 (the pristine all-sliver claim) is excluded:
+                    # it maintains its own run_claimed renormalization against
+                    # the run-start transmittance, and clipping its eff without
+                    # adjusting run_pd desynchronizes that bookkeeping.
+                    if (not is_bez) and (not from_z) and (run_mode != 2) \
+                            and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0):
+                        room = frag_cap[idx] - mesh_ink
+                        if eff > room:
+                            eff = ti.max(room, 0.0)
                 if eff <= MIN_ALPHA:
                     # Nothing still reaches the samples this fragment covers:
                     # something opaque in front of it already has them.
@@ -4015,6 +4153,11 @@ def raster_first_shade(
                                           _popcount_samples(msk), 1.0, eff,
                                           0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
+                if ti.static(_aa_one_mesh(aa_grp)):
+                    # Accumulated only for a fragment that actually commits ink,
+                    # so a fully occluded one consumes none of the ceiling.
+                    if (not is_bez) and (not from_z):
+                        mesh_ink += eff
 
             color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
             alpha = 0.0

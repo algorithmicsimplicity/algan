@@ -246,6 +246,13 @@ with K limited only by MAX_SURFACES_PER_RAY. There are ~2M pixels/frame, so
 parallelism is not the constraint, and each run is a genuine sequential
 dependence chain anyway.
 
+Of the two reasons above only the second still applies: seam de-duplication is
+compiled out under `ANALYTIC_AA_TRI` (the duplicate it drops is exactly the
+fragment the coverage union needs), and the run rule that replaced it groups
+rather than discards. Path-bending termination and the per-sample transmittance
+chain are what keep the resolve serial, and they are enough — retiring the seam
+rule entirely would not make this a scan.
+
 4.5 Ordering: the classic transitive (depth-bin, descending-layer) relation
 ---------------------------------------------------------------------------
 An earlier prototype ordered fragments by raw f32 depth bits. That is a true
@@ -543,6 +550,13 @@ produced bogus numbers — see §10's measurement caveat).
 
 6.3 PN patches: preserved, classic fallback — NOT flattened
 -----------------------------------------------------------
+RETIRED. The curved PN-patch renderer this section describes has been deleted:
+nothing ever rebound `RENDERER_REGISTRY.triangle_primitive` to it, so `num_pn`
+was always 0 and the gate never fired. Curved surfaces reach the renderer as
+*logical PN* patches already diced to flat triangles
+(`algan/rendering/logical_pn.py`), which the raster front-end handles like any
+other flat mesh. The original policy note follows for the record.
+
 PN-patch rasterization is out of scope (the curved-patch intersection is not
 worth a rasterizer). The policy is: geometry construction must NOT depend on
 whether a later render batch happens to qualify for the raster front-end.

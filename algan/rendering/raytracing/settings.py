@@ -461,6 +461,104 @@ def set_bvh_defer(enabled):
 MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 
 
+# Per-triangle SURFACE identity at the granularity the mob declares, rather than
+# one id per merged COLLECTION MEMBER. The member count is right only when one
+# member is one surface, and it is wrong at both ends: ``Polyhedron`` hands the
+# batcher one member per TRIANGLE (a Cube is twelve members, so the analytic-AA
+# run rule can never span one of its faces), while a packed-grid ``Surface``
+# hands it one member covering EVERY packed sphere at once (so distinct spheres
+# are unioned into one surface). Mobs that know better stamp ``mesh_key`` (merge
+# with the neighbours sharing it) or ``mesh_ids`` (subdivide into per-triangle
+# shells) on the primitive they build, and
+# ``primitives._mesh_ids_from_collection`` resolves those into explicit ids.
+# Off restores the per-member ids exactly, so it is a byte-level A/B switch.
+#
+# DEFAULT ON since 2026-08. The quality question is settled and the correctness
+# argument is the reason. Coarser identity is more correct (a Cube's face diagonal
+# becomes an interior edge rather than a boundary between two "surfaces"), and
+# it was held back because it also makes the v2 4.2
+# ``U == _AA_MASK_ALL -> corr = 1`` short-circuit fire on facet-boundary pixels
+# where the facets fill all eight sub-pixel samples without covering the pixel's
+# area -- on an Icosahedron, 0.61% of covered pixels move into ``union-full``,
+# 125 of them with ``1 - E`` past 0.30.
+#
+# benchmarks/_aa_run_gate_check.py now settles which of those two effects wins,
+# by replaying the resolve's per-sample transmittance and scoring the coverage
+# each pixel actually ends up with against an EXACT analytic reference (the
+# per-fragment error metric it used to report could not: it did not model the
+# transmittance at all). Measured at --res md on CPU, mean coverage error over
+# silhouette pixels: Cube 0.0250 -> 0.0248, Icosahedron 0.0258 -> 0.0256, and
+# every Surface-backed case unmoved because a Surface is already one merged
+# member. Nothing regresses and nothing gains beyond noise, so the coverage
+# evidence is NEUTRAL: what argues for this is the correctness case above, not a
+# measured quality win. _analytic_aa_fillrule_check and _aa_dump_check both pass
+# with it on.
+#
+# The packed-grid Surface -- the end this fixes in the other direction -- is now
+# covered too, by two _aa_run_gate_check cases (a 4x4 pack whose footprints
+# overlap, and a spaced-out control). It needed a defect fixed first: a packed
+# grid is diced logical PN, and _dice_logical_pn built its patch->surface map
+# from per-member counts alone, so the mesh_ids Surface stamps on it were
+# resolved and then discarded. With that fixed, the harness's reference-free A/B
+# (--mesh-ab, which unlike the scored column also sees the overlapping pixels
+# the exact reference has to drop) reports the predicted gain: 18 of 36224
+# pixels move on the overlapping pack and MESH_ID=0 is the side that paints
+# MORE, while the non-overlapping control moves zero. Small, but it is the win
+# this was said to be missing.
+#
+# Flipping also moves the fast-suite render by up to 49 channel values at solid
+# edges, so BOTH device baseline sets have to be regenerated and
+# expected_outputs_cuda/ needs a CUDA machine. DESIGN_mesh_identity.md 3.5, 4.5.
+MESH_ID = env_flag("ALGAN_MESH_ID", True)
+
+
+# Orient a closed ``Polyhedron``'s faces outward at construction
+# (``shapes_3d.orient_faces_outward``). The face index lists Algan ships for the
+# Platonic solids are Manim's and are not consistently oriented: 12 of an
+# Icosahedron's 20 faces wind inward, 2 of 4 on a Tetrahedron, 2 of 8 on an
+# Octahedron, 3 of 12 on a Dodecahedron, 0 of 6 on a Cube. The projected winding
+# sign IS ``_AA_BACKFACE_BIT``, which is what separates a closed mesh's near and
+# far sheets for the analytic-AA run rule, so on those solids the bit names
+# nothing -- measured, 960 of an Icosahedron's 46220 covered pixels have one
+# facing group holding BOTH sheets, against 4 with this on.
+#
+# DEFAULT ON since 2026-08. Measured, the fast-suite render (which draws a Cube,
+# an Icosahedron and an Octahedron) is BYTE-IDENTICAL across this flag while
+# MESH_ID is off --
+# a per-triangle surface id makes every run one fragment, so the facing bit
+# groups nothing. With MESH_ID=1 it does change the render, which is the
+# mechanism: one id per solid leaves facing as the only separator between the
+# near and far sheets. Read at Polyhedron construction, not at render time.
+# IT DOES MOVE A `become` MORPH, which the byte-identical static result above
+# does not cover and which cost a full-render investigation to pin down.
+# Reversing an inward face reverses the vertex order WITHIN it, and `become`
+# pairs primitives corner by corner, so the interpolation path changes: measured,
+# Tetrahedron.become(Cube) differs by up to 227 channel values across this flag
+# while a STATIC Tetrahedron is byte-identical and Tetrahedron.become(Tetrahedron)
+# is too (there the reordering cancels on both sides). The endpoints are the
+# correct solids either way; only the in-between path moves. That is what makes
+# tests/full_renders' complex_hierarchy_become move by 197, entirely from this
+# flag and not at all from MESH_ID.
+# DESIGN_mesh_identity.md 3.7 and 6.5.
+POLYHEDRON_WINDING = env_flag("ALGAN_POLYHEDRON_WINDING", True)
+
+
+def set_polyhedron_winding(enabled):
+    """Toggle outward face orientation for closed polyhedra (see
+    ``POLYHEDRON_WINDING``). Takes effect for the next ``Polyhedron`` built.
+    """
+    global POLYHEDRON_WINDING
+    POLYHEDRON_WINDING = bool(enabled)
+
+
+def set_mesh_id(enabled):
+    """Toggle mob-declared surface identity (see ``MESH_ID``). Takes effect at
+    the next batch's primitive build.
+    """
+    global MESH_ID
+    MESH_ID = bool(enabled)
+
+
 def set_merge_dedup_time(enabled):
     """Toggle the merge-time collapse of temporally-constant tables (see
     ``MERGE_DEDUP_TIME``). Takes effect at the next batch's scene merge.
@@ -887,6 +985,143 @@ ANALYTIC_AA_RUN = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
 ANALYTIC_AA_RUN_RULE = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
+# Let the RUN rule see FULL-MASK fragments that do not cover the whole pixel
+# (DESIGN_mesh_identity.md ss6.3.2). v2 ss4.2 starts the run lookahead only when
+# the first fragment's mask is PARTIAL, because an interior pixel is one
+# full-mask fragment and must not pay for a scan. But a diced mesh's silhouette
+# produces full-mask fragments too -- one triangle owning all eight sub-pixel
+# samples while covering a fraction of the pixel's AREA -- and those never enter
+# the run rule, never compute E, and are painted at 1.0 with their exact area
+# sitting unread in ``frag_cov``. On a fine Sphere that is 52% of the silhouette
+# pixels and the single largest contributor to its coverage error.
+#
+# An interior full-mask fragment has ``cov`` within float dust of 1, so the gate
+# relaxes to "partial mask OR (full mask AND cov < 1 - dust)": the hot path is
+# untouched and exactly the silhouette pixels are admitted. The scan's
+# ``rU == _AA_MASK_ALL`` arm then takes ``corr = E`` (Q == 1 there) instead of
+# short-circuiting to 1, with the same dust band keeping a genuine interior
+# tiling bit-identical.
+#
+# Scoped to the RUN, not the fragment: a full-mask fragment owns every sample,
+# so by the fill rule the rest of its sheet in that pixel owns none -- they are
+# empty-mask area DONORS whose area is real, and only the run's E counts them.
+# Measured both ways on a fine Sphere: fragment scope reaches 0.0255, run scope
+# 0.0060. On the two flat solids (no donors) they coincide.
+#
+# Measured, mean coverage error over silhouette pixels, --res md CPU
+# (benchmarks/_aa_run_gate_check.py's |cF-E| column, replayed before it was
+# built): flat quad 0.0020 -> 0.0000 (EXACT), cylinder 0.0260 -> 0.0030 (-88%),
+# cylinder(256,2) 0.0211 -> 0.0030 (-86%), sphere(192,96) 0.0383 -> 0.0060
+# (-84%). Worth more than doubling the sample count, at no sample cost and no
+# interior work. The two flat solids barely move (cube 0.0250 -> 0.0214) because
+# their error is the far-sheet re-claim, which needs mesh-level identity
+# instead -- the two halves of ss6.3 have different owners.
+#
+# Carried as ``aa_grp = 2`` rather than a new kernel argument: every
+# ``ti.static(aa_grp)`` test in the kernels is a truthiness test. Subordinate to
+# ANALYTIC_AA_SEAM and to the run rule (aa_tri 3 or 4).
+ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
+
+
+# THE ONE-MESH RULE (DESIGN_mesh_identity.md ss6.6). Where every fragment in a
+# pixel is an OPAQUE triangle of ONE surface, the pixel's coverage is that
+# mesh's NEAR SHEET's exact area and nothing else -- both sheets project to the
+# same silhouette, so the far sheet must not add coverage on top of it.
+#
+# What it fixes. The run rule's ``corr < 1`` scales the OCCLUSION write as well
+# as the claim, so the samples the near sheet owns keep a residual transmittance
+# standing for the part of the pixel the sheet does not cover. That residue lies
+# OUTSIDE the mesh, but it carries no position, so when the far sheet of the
+# same solid arrives owning the same samples it claims the residue as though it
+# were background showing through -- uncorrected, because svis is no longer
+# uniform and its own run cannot engage. Measured on one Cylinder pixel: near
+# sheet claims 0.2396 (exact, corr 0.9583), far sheet adds 0.0104, pixel lands
+# on 0.2500 = 2/8 against a true 0.2394.
+#
+# This is what mob-declared identity (MESH_ID) was built to enable and what no
+# consumer read until now: "these two sheets are ONE mesh" is not a geometric
+# question and cannot be answered by an epsilon.
+#
+# Restricted to ONE-MESH pixels because a facing change across TWO meshes is an
+# ordinary occlusion, and to OPAQUE ones because a translucent solid's far sheet
+# is genuinely visible through its near sheet. The host marks the pixels (it has
+# the CSR to do it as a segment reduction) and carries the flag in a spare
+# frag_msk bit, so no kernel argument changes; carried as aa_grp = 3, and every
+# ti.static(aa_grp) test in the kernels is a truthiness test.
+#
+# Measured on benchmarks/_aa_line_check's own thin Cylinder at 33 deg -- the
+# geometry its ink-wobble metric actually reads -- mean coverage error over
+# silhouette pixels 0.0299 -> 0.0064, which is 79% of the error there. Note that
+# is a DIFFERENT mechanism from the one ss6.3.2 chased: on that geometry the
+# relaxed run gate is worth only 19%, which is why it moved ink wobble by
+# nothing. Implies ANALYTIC_AA_RUN_FULL.
+ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", False)
+
+
+# Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
+# triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
+# A space-filling curve is cheap but packs spatially distant instances into the
+# same balanced subtree at its discontinuities, leaving loose internal boxes; a
+# top-down longest-axis median split gives tighter boxes and ~20-25% fewer
+# traversal steps. Both are pure REORDERINGS -- same instances, same opaque
+# flags, same tree shape -- so no traversal code changes and the set of
+# intersections found is unchanged.
+#
+# Bezier was pinned to Morton because a circuit's seam de-duplication is
+# discovery-order sensitive, so the reorder moves output at the epsilon level.
+# That was one of two pinned types; PN was the other and no longer exists
+# (ss2.1), so this is the last one. Default off pending baselines: it is a
+# performance change with an epsilon-level output cost, not a correctness fix.
+# ALGAN_BVH_BUILD still overrides every geometry type at once.
+BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", False)
+
+
+# Weld a closed surface grid's u-seam and its collapsed poles into SHARED
+# vertices instead of coincident duplicates (DESIGN_mesh_identity.md ss3.1).
+#
+# get_grid_to_triangle_indices builds two triangles per grid cell and never
+# bridges column W-1 back to column 0, so a Sphere's wraparound is a genuine
+# two-copy seam -- measured, the two columns differ by up to 1.7e-07 in f32 and
+# are NOT bitwise equal, while every interior shared edge IS a bit-identical
+# duplicate of the same gather. That asymmetry is the point: a watertight
+# intersection test (ss3.2) fixes numerical ambiguity, and at the u-seam it
+# would OPEN a crack rather than close one, because the gap is real geometry.
+# The poles are collapsed degenerate fans, every point of the row mapping to the
+# same position with 4e-08 of jitter.
+#
+# With this on, the wrap cell indexes column 0 and a pole row is one vertex,
+# which also drops the (W-1) degenerate triangles each pole contributes.
+#
+# NOT what ss3.1 claimed. It said this "retires two authoring-side epsilon
+# special-cases (the 1e-4 normal merge and the pole-normal salvage)". It does
+# not: compute_grid_vertex_normals accumulates over the GRID, not over the
+# welded triangle list, so column 0 still misses the wrap-around neighbourhood
+# and a pole row still accumulates from sub-epsilon differences. Both fixups
+# stay necessary and stay in place. Retiring them needs the normal accumulation
+# to run on the welded topology, which this does not do.
+#
+# Default off: geometry moves, so all pixel baselines move on both devices.
+WELD_SURFACE_SEAMS = env_flag("ALGAN_WELD_SURFACE_SEAMS", False)
+
+
+def set_weld_surface_seams(enabled):
+    """Toggle surface seam/pole welding (see ``WELD_SURFACE_SEAMS``).
+
+    Takes effect on the next primitive build.
+    """
+    global WELD_SURFACE_SEAMS
+    WELD_SURFACE_SEAMS = bool(enabled)
+
+
+def set_bez_bvh_split(enabled):
+    """Toggle median-split ordering for the bezier STBVH (see ``BEZ_BVH_SPLIT``).
+
+    Takes effect on the next scene build.
+    """
+    global BEZ_BVH_SPLIT
+    BEZ_BVH_SPLIT = bool(enabled)
+
+
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
 # seen inside a reflection or through refracting glass. Coverage resolves a
 # mirror's own outline exactly, but the reflected scene is sampled by the
@@ -1002,17 +1237,24 @@ def set_analytic_aa(
     exact=None,
     run=None,
     run_rule=None,
+    run_full=None,
+    one_mesh=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
-    global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE
+    global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
+    global ANALYTIC_AA_ONE_MESH
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
         ANALYTIC_AA_EXACT = bool(exact)
     if run is not None:
         ANALYTIC_AA_RUN = bool(run)
+    if run_full is not None:
+        ANALYTIC_AA_RUN_FULL = bool(run_full)
+    if one_mesh is not None:
+        ANALYTIC_AA_ONE_MESH = bool(one_mesh)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")
@@ -1073,7 +1315,7 @@ def analytic_aa_bez_mode():
 
     0 off, 1 the box filter, 2 the exact angle-aware area
     (``ANALYTIC_AA_EXACT``), 3 that plus the two-segment boundary model
-    (``ANALYTIC_AA_BEZ_WEDGE``, default off -- see its comment).
+    (``ANALYTIC_AA_BEZ_WEDGE``, default on since 2026-08-13).
     The distinction rides in the template value so the two forms cannot share an
     offline-cache entry; everything downstream that only asks whether circuit
     coverage is on keeps testing it for truth.
