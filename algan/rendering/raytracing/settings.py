@@ -1014,6 +1014,41 @@ ANALYTIC_AA_RUN_RULE = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 
 
+# THE ONE-MESH RULE (DESIGN_mesh_identity.md ss6.6). Where every fragment in a
+# pixel is an OPAQUE triangle of ONE surface, the pixel's coverage is that
+# mesh's NEAR SHEET's exact area and nothing else -- both sheets project to the
+# same silhouette, so the far sheet must not add coverage on top of it.
+#
+# What it fixes. The run rule's ``corr < 1`` scales the OCCLUSION write as well
+# as the claim, so the samples the near sheet owns keep a residual transmittance
+# standing for the part of the pixel the sheet does not cover. That residue lies
+# OUTSIDE the mesh, but it carries no position, so when the far sheet of the
+# same solid arrives owning the same samples it claims the residue as though it
+# were background showing through -- uncorrected, because svis is no longer
+# uniform and its own run cannot engage. Measured on one Cylinder pixel: near
+# sheet claims 0.2396 (exact, corr 0.9583), far sheet adds 0.0104, pixel lands
+# on 0.2500 = 2/8 against a true 0.2394.
+#
+# This is what mob-declared identity (MESH_ID) was built to enable and what no
+# consumer read until now: "these two sheets are ONE mesh" is not a geometric
+# question and cannot be answered by an epsilon.
+#
+# Restricted to ONE-MESH pixels because a facing change across TWO meshes is an
+# ordinary occlusion, and to OPAQUE ones because a translucent solid's far sheet
+# is genuinely visible through its near sheet. The host marks the pixels (it has
+# the CSR to do it as a segment reduction) and carries the flag in a spare
+# frag_msk bit, so no kernel argument changes; carried as aa_grp = 3, and every
+# ti.static(aa_grp) test in the kernels is a truthiness test.
+#
+# Measured on benchmarks/_aa_line_check's own thin Cylinder at 33 deg -- the
+# geometry its ink-wobble metric actually reads -- mean coverage error over
+# silhouette pixels 0.0299 -> 0.0064, which is 79% of the error there. Note that
+# is a DIFFERENT mechanism from the one ss6.3.2 chased: on that geometry the
+# relaxed run gate is worth only 19%, which is why it moved ink wobble by
+# nothing. Implies ANALYTIC_AA_RUN_FULL.
+ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", False)
+
+
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
 # triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
 # A space-filling curve is cheap but packs spatially distant instances into the
@@ -1194,11 +1229,13 @@ def set_analytic_aa(
     run=None,
     run_rule=None,
     run_full=None,
+    one_mesh=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
     global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
+    global ANALYTIC_AA_ONE_MESH
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
@@ -1207,6 +1244,8 @@ def set_analytic_aa(
         ANALYTIC_AA_RUN = bool(run)
     if run_full is not None:
         ANALYTIC_AA_RUN_FULL = bool(run_full)
+    if one_mesh is not None:
+        ANALYTIC_AA_ONE_MESH = bool(one_mesh)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")

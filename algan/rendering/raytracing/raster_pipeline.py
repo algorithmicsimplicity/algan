@@ -29,6 +29,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _BEZ_BORDER_BITS,
     AA_FULL_COVERAGE,
     RASTER_CHUNK,
@@ -58,6 +61,9 @@ _AA_DUMP_ROWS = 512
 LAST_AA_DUMP = {}
 
 
+#: Below this a facing group is empty rather than a sheet, and above this two
+#: groups' exact areas are not the same sheet seen twice (see the one-mesh rule
+#: in prepare_sparse_raster_coverage).
 def _aa_dump_request():
     """The requested (px, py, frame) from ``ALGAN_AA_DUMP``, or ``None``."""
     spec = env_str("ALGAN_AA_DUMP", "")
@@ -1208,6 +1214,10 @@ def prepare_sparse_raster_coverage(
     # new template argument: every ti.static(aa_grp) test is truthiness.
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
         aa_grp = 2
+    # 3 adds the ONE-MESH rule on top (ss6.6). It implies the relaxed gate: the
+    # near sheet's exact area is only worth reading once the gate lets it be read.
+    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
+        aa_grp = 3
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1378,6 +1388,10 @@ def prepare_sparse_raster_coverage(
         cov_s = frag_cov_u.index_select(0, order)
         msk_s = frag_msk_u.index_select(0, order)
         opaque_s = opaque_u.index_select(0, order)
+        # Kept before the coverage adjustment below overwrites it: this is
+        # MATERIAL opacity, which the one-mesh rule needs, while the adjusted
+        # opaque_s means "occludes every sample".
+        mat_opaque_s = opaque_s
         if aa_bez or aa_tri:
             # A partially covering opaque hit does not hide what is behind it,
             # so it must not terminate its pixel's run: it stays an ordinary
@@ -1447,9 +1461,46 @@ def prepare_sparse_raster_coverage(
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)
                 msk_s = msk_s.index_select(0, keep_idx)
+                mat_opaque_s = mat_opaque_s.index_select(0, keep_idx)
                 pix_s = key_s >> 32
                 covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
                 num_frags = int(key_s.shape[0])
+
+        # -- ONE-MESH PIXELS (DESIGN_mesh_identity.md ss6.6) -----------------
+        # A pixel every one of whose fragments is an OPAQUE triangle of a single
+        # surface. There the mesh's coverage is its near sheet's exact area and
+        # nothing else: both sheets project to the same silhouette, so the far
+        # sheet must not add coverage on top. Marked here rather than in the
+        # kernel because it is a segment reduction over the CSR the host already
+        # has, and it rides in a spare frag_msk flag bit so no kernel argument
+        # changes.
+        if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
+            tri_obj = merged["tri_obj"]
+            ppf = int(width) * int(height)
+            frame_of = (pix_s // ppf) % tri_obj.shape[0]
+            safe_ref = ref_s.clamp_min(0).to(torch.int64)
+            sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+            # A bezier fragment has ref < 0 and no surface id; a pixel holding
+            # one is never single-mesh. Same for a non-opaque fragment, whose
+            # far sheet is legitimately visible THROUGH the near one.
+            usable = (ref_s >= 0) & mat_opaque_s
+            sid = torch.where(usable, sid, torch.full_like(sid, -1))
+            seg = torch.repeat_interleave(
+                torch.arange(covered.numel(), dtype=torch.int64, device=device),
+                counts,
+            )
+            lo = torch.full(
+                (covered.numel(),), 1 << 40, dtype=torch.int64, device=device
+            )
+            hi = torch.full((covered.numel(),), -1, dtype=torch.int64, device=device)
+            lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
+            hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+            one_mesh = (lo == hi) & (lo >= 0)
+            msk_s = msk_s | torch.where(
+                one_mesh.index_select(0, seg),
+                torch.full_like(msk_s, AA_ONE_MESH_BIT),
+                torch.zeros_like(msk_s),
+            )
 
         num_covered = int(covered.numel())
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
@@ -1999,6 +2050,10 @@ def raster_iteration_zero(
     # new template argument: every ti.static(aa_grp) test is truthiness.
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
         aa_grp = 2
+    # 3 adds the ONE-MESH rule on top (ss6.6). It implies the relaxed gate: the
+    # near sheet's exact area is only worth reading once the gate lets it be read.
+    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
+        aa_grp = 3
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)

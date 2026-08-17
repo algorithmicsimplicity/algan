@@ -240,6 +240,7 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_MASK_ALL,
     _AA_MAX_RUN_SCAN,
     _AA_NUM_SAMPLES,
+    _AA_ONE_MESH_BIT,
     _AA_SLIVER_BIT,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
@@ -324,6 +325,47 @@ def _cases():
         ]
         batch_mobs(dots, add_to_scene=True).spawn()
 
+    def line_check_cyl():
+        # THE RECONCILIATION CASE. _aa_line_check's own thin frame-spanning
+        # prism at 33 deg, so its ink-wobble number and this harness's coverage
+        # error describe the SAME pixels. Without it the two instruments were
+        # measuring different geometry -- this harness's fat Cylinder against
+        # the line check's 0.045-radius rod -- and the relaxed run gate came
+        # back -70% here while the line check saw no movement at all. Two
+        # instruments that disagree are one instrument.
+        import sys as _sys
+
+        _sys.path.insert(0, str(REPO / "benchmarks"))
+        import _aa_line_check as _alc
+
+        from algan.scene_manager import SceneManager
+
+        _alc.build_line("cyl", 33.0, SceneManager.instance().current_scene)
+
+    def line_check_cyl_fine():
+        """``resolution=(256, 2)`` on a 0.045-radius rod: facets far below a
+        pixel and nearly edge-on, where the projected-winding facing bit is
+        numerically fragile. This is the case the one-mesh rule regressed."""
+        import sys as _sys
+
+        _sys.path.insert(0, str(REPO / "benchmarks"))
+        import _aa_line_check as _alc
+
+        from algan.scene_manager import SceneManager
+
+        _alc.build_line("cyl_fine", 33.0, SceneManager.instance().current_scene)
+
+    def line_check_quad():
+        """The same, for the flat control the line check uses."""
+        import sys as _sys
+
+        _sys.path.insert(0, str(REPO / "benchmarks"))
+        import _aa_line_check as _alc
+
+        from algan.scene_manager import SceneManager
+
+        _alc.build_line("quad", 33.0, SceneManager.instance().current_scene)
+
     def packed_apart():
         # The CONTROL for the packed pair: same construction, spaced so no two
         # footprints can touch (centres 0.75 apart, radii summing to 0.56). Every
@@ -346,6 +388,9 @@ def _cases():
         "cylinder (default)": cylinder,
         "cylinder (256x2)": cylinder_fine,
         "sphere (192x96)": sphere_fine,
+        "line-check cyl (33deg)": line_check_cyl,
+        "line-check cylfine (33d)": line_check_cyl_fine,
+        "line-check quad (33deg)": line_check_quad,
         "packed 4x4 (apart)": packed_apart,
         "packed 4x4 (overlap)": packed_overlap,
     }
@@ -463,6 +508,7 @@ def _replay(
     consult_e=False,
     one_sheet=False,
     consult_full=False,
+    one_sheet_gated=False,
 ):
     """Walk one pixel's fragment list exactly as the resolve does.
 
@@ -559,7 +605,17 @@ def _replay(
         sliver = (raw & _AA_SLIVER_BIT) != 0
         msk = raw & _AA_MASK_ALL
         cov = covs[q1]
-        if one_sheet and first_face is not None and faces[q1] != first_face:
+        # ``one_sheet_gated`` is the SHIPPABLE form (aa_grp 3): the kernel
+        # applies this only where the host flagged the pixel as a single opaque
+        # surface, so the replay must read the same bit or --verify compares two
+        # different rules. Ungated, it stays the ss6.3 diagnostic that measured
+        # what the rule would be worth.
+        if (
+            one_sheet
+            and first_face is not None
+            and faces[q1] != first_face
+            and ((not one_sheet_gated) or (raw & _AA_ONE_MESH_BIT))
+        ):
             effs.append(0.0)
             continue
 
@@ -863,7 +919,8 @@ def _measure(build, settings, capture=None):
         # replay has to follow the KERNEL, or 'actual' silently keeps reporting
         # the shipped walk while the render does something else -- and --verify
         # would fail for a reason that is the harness's, not the renderer's.
-        run_full = int(coverage["aa_grp"]) == 2
+        run_full = int(coverage["aa_grp"]) >= 2
+        one_mesh = int(coverage["aa_grp"]) == 3
         n_cov = int(coverage["num_covered"])
         if n_cov <= 0:
             return coverage
@@ -912,6 +969,8 @@ def _measure(build, settings, capture=None):
                 rule_b,
                 consult_e=run_full,
                 consult_full=run_full,
+                one_sheet=one_mesh,
+                one_sheet_gated=True,
             )
             ce, _occ_ce, _e = _replay(sids, faces, ms, cs, bz, rule_b, consult_e=True)
             cf, _occ_cf, _e2 = _replay(

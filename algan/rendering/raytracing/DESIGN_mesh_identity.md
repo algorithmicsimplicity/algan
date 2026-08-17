@@ -1013,6 +1013,92 @@ Note also what this does **not** fix: the two flat solids barely move
 `full` gate. That one still wants the mesh-level union rule, and therefore §2.2's
 identity. The two halves of §6.3 have different owners.
 
+6.6 THE ONE-MESH RULE — Line-quality on a Cylinder, and where it breaks
+------------------------------------------------------------------------
+This is what §2.2's identity was built to enable and what no consumer read
+until now. `ALGAN_ANALYTIC_AA_ONE_MESH`, default off, implies §6.3.2's relaxed
+gate.
+
+**The rule.** Where every fragment in a pixel is an OPAQUE triangle of ONE
+surface, the pixel's coverage is that mesh's NEAR SHEET's exact area and nothing
+else. So once a facing has committed ink, the other facing commits none. The
+host marks those pixels (a segment reduction over the CSR it already has) and
+carries the flag in a spare `frag_msk` bit, so no kernel argument changes; it
+rides as `aa_grp = 3`.
+
+**What it fixes.** The run rule's `corr < 1` scales the OCCLUSION write as well
+as the claim, so the samples the near sheet owns keep a residual transmittance
+standing for the part of the pixel the sheet does not cover. That residue lies
+OUTSIDE the mesh, but it carries no position, so the far sheet of the same solid
+claims it as though it were background — uncorrected, because `svis` is no
+longer uniform and its own run cannot engage.
+
+**Measured, `--res md` CPU.** Coverage error against the exact reference goes to
+zero almost everywhere, and `on-lattice` — the share of pixels landing on a
+multiple of 1/8 — collapses with it. That second number is the one that answers
+"is it still sample-based":
+
+    case                 |actual-E| shipped -> one-mesh   on-lattice
+    quad (flat control)      0.0020 -> 0.0000              7.9% -> 0.0%
+    cube                     0.0248 -> 0.0000             51.4% -> 0.1%
+    icosahedron              0.0262 -> 0.0000             57.6% -> 0.0%
+    cylinder                 0.0260 -> 0.0000             72.5% -> 0.0%
+    cylinder (256x2)         0.0211 -> 0.0000             70.6% -> 0.1%
+    sphere (192x96)          0.0383 -> 0.0072             90.8% -> 3.7%
+    line-check cyl (33deg)   0.0299 -> 0.0000             57.6% -> 0.0%
+    packed 4x4 (overlap)     0.0340 -> 0.0017             80.8% -> 1.4%
+
+And on the metric §6 is actually about, mean ink wobble over nine
+non-degenerate angles:
+
+    bezier Line   0.0042 -> 0.0042    (unchanged; circuits never enter this)
+    flat quad     0.0138 -> 0.0051    -63%
+    Cylinder      0.0568 -> 0.0039    -93%   <- below the bezier Line
+    Cylinder fine 0.0772 -> 0.1650   +114%   <- REGRESSION, see below
+
+**A default `Cylinder` now beats the bezier `Line`** on the metric the Line was
+winning by an order of magnitude. That is the goal met.
+
+**Where it breaks, and why.** `cyl_fine` is `resolution=(256, 2)` on a
+0.045-radius rod: 256 facets around a shape ~9 px wide, so the facets are deeply
+sub-pixel and nearly edge-on. There the rule more than doubles the error, the
+signed error flips from +0.0093 to **−0.0344** (under-covering, not over), and
+1676 of 3508 interior pixels notch by up to 0.41.
+
+Two hypotheses were tested and **both refuted**, so nobody spends the effort
+twice:
+
+* *"The facing bit is noise on sub-pixel facets, so the rule suppresses half the
+  near sheet."* The fill rule's own partition test — within one sheet no sample
+  may be claimed twice — was implemented as a host-side gate and fires on
+  **zero** pixels: 100% of both the coarse and the fine rod's pixels still pass
+  it. The bit is not scrambled. The gate was removed rather than left as dead
+  code.
+* *"It is the u-seam."* `ALGAN_WELD_SURFACE_SEAMS=1` changes the sphere's
+  residual by nothing at all — identical to the last digit.
+
+What the numbers point at instead is the **premise**, not the implementation.
+`|1sheet-E|` on the fine rod is 0.0392 against an `|actual-E|` of 0.0192 *at
+shipped settings* — suppressing the far sheet is already worse there before any
+of this code runs. "Both sheets project to the same silhouette, so coverage is
+the near sheet's area" holds for a pixel strictly INSIDE the silhouette. At the
+silhouette boundary the near sheet's projected area shrinks toward zero while
+the mesh's footprint does not, and on a rod that thin diced that finely, nearly
+every pixel is boundary. Its verdict mix says the same thing from the other
+side: `capped` 59.5%, `split` 12.5%.
+
+**The shape of the fix, for whoever takes it.** Do not suppress the far sheet;
+CAP the mesh's total claim at `max(front_area, back_area)`. For a closed solid
+the two are equal well inside the silhouette (so it degenerates to the current
+rule and keeps the −93%), and at the boundary the larger is the right answer
+rather than the near one. That is a per-pixel scalar the host can compute
+exactly from the same segment sums, but it needs the walk to renormalize a
+mesh's total claim rather than gate fragments, which is a bigger change to the
+resolve than this one.
+
+Until then: default off, and **do not enable it on sub-pixel-diced geometry**.
+`benchmarks/_aa_run_gate_check.py --cases cylfine` reproduces the regression.
+
 6.4 This interacts with §4.5
 -----------------------------
 `ALGAN_MESH_ID=1` makes runs coarser, which puts *more* pixels through the
