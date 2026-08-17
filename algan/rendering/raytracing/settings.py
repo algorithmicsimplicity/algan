@@ -975,6 +975,71 @@ ANALYTIC_AA_RUN = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
 ANALYTIC_AA_RUN_RULE = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
+# Let the RUN rule see FULL-MASK fragments that do not cover the whole pixel
+# (DESIGN_mesh_identity.md ss6.3.2). v2 ss4.2 starts the run lookahead only when
+# the first fragment's mask is PARTIAL, because an interior pixel is one
+# full-mask fragment and must not pay for a scan. But a diced mesh's silhouette
+# produces full-mask fragments too -- one triangle owning all eight sub-pixel
+# samples while covering a fraction of the pixel's AREA -- and those never enter
+# the run rule, never compute E, and are painted at 1.0 with their exact area
+# sitting unread in ``frag_cov``. On a fine Sphere that is 52% of the silhouette
+# pixels and the single largest contributor to its coverage error.
+#
+# An interior full-mask fragment has ``cov`` within float dust of 1, so the gate
+# relaxes to "partial mask OR (full mask AND cov < 1 - dust)": the hot path is
+# untouched and exactly the silhouette pixels are admitted. The scan's
+# ``rU == _AA_MASK_ALL`` arm then takes ``corr = E`` (Q == 1 there) instead of
+# short-circuiting to 1, with the same dust band keeping a genuine interior
+# tiling bit-identical.
+#
+# Scoped to the RUN, not the fragment: a full-mask fragment owns every sample,
+# so by the fill rule the rest of its sheet in that pixel owns none -- they are
+# empty-mask area DONORS whose area is real, and only the run's E counts them.
+# Measured both ways on a fine Sphere: fragment scope reaches 0.0255, run scope
+# 0.0060. On the two flat solids (no donors) they coincide.
+#
+# Measured, mean coverage error over silhouette pixels, --res md CPU
+# (benchmarks/_aa_run_gate_check.py's |cF-E| column, replayed before it was
+# built): flat quad 0.0020 -> 0.0000 (EXACT), cylinder 0.0260 -> 0.0030 (-88%),
+# cylinder(256,2) 0.0211 -> 0.0030 (-86%), sphere(192,96) 0.0383 -> 0.0060
+# (-84%). Worth more than doubling the sample count, at no sample cost and no
+# interior work. The two flat solids barely move (cube 0.0250 -> 0.0214) because
+# their error is the far-sheet re-claim, which needs mesh-level identity
+# instead -- the two halves of ss6.3 have different owners.
+#
+# Carried as ``aa_grp = 2`` rather than a new kernel argument: every
+# ``ti.static(aa_grp)`` test in the kernels is a truthiness test. Subordinate to
+# ANALYTIC_AA_SEAM and to the run rule (aa_tri 3 or 4).
+ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
+
+
+# Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
+# triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
+# A space-filling curve is cheap but packs spatially distant instances into the
+# same balanced subtree at its discontinuities, leaving loose internal boxes; a
+# top-down longest-axis median split gives tighter boxes and ~20-25% fewer
+# traversal steps. Both are pure REORDERINGS -- same instances, same opaque
+# flags, same tree shape -- so no traversal code changes and the set of
+# intersections found is unchanged.
+#
+# Bezier was pinned to Morton because a circuit's seam de-duplication is
+# discovery-order sensitive, so the reorder moves output at the epsilon level.
+# That was one of two pinned types; PN was the other and no longer exists
+# (ss2.1), so this is the last one. Default off pending baselines: it is a
+# performance change with an epsilon-level output cost, not a correctness fix.
+# ALGAN_BVH_BUILD still overrides every geometry type at once.
+BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", False)
+
+
+def set_bez_bvh_split(enabled):
+    """Toggle median-split ordering for the bezier STBVH (see ``BEZ_BVH_SPLIT``).
+
+    Takes effect on the next scene build.
+    """
+    global BEZ_BVH_SPLIT
+    BEZ_BVH_SPLIT = bool(enabled)
+
+
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
 # seen inside a reflection or through refracting glass. Coverage resolves a
 # mirror's own outline exactly, but the reflected scene is sampled by the
@@ -1090,17 +1155,20 @@ def set_analytic_aa(
     exact=None,
     run=None,
     run_rule=None,
+    run_full=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
-    global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE
+    global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
         ANALYTIC_AA_EXACT = bool(exact)
     if run is not None:
         ANALYTIC_AA_RUN = bool(run)
+    if run_full is not None:
+        ANALYTIC_AA_RUN_FULL = bool(run_full)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")

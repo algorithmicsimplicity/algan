@@ -658,6 +658,10 @@ def _replay(
 # up to float summation over a handful of areas.
 _SHEET_TOL = 1e-3
 
+#: How far below full a fully-covered pixel must be painted to count as a
+#: notch. Well above the exact-area arithmetic's float dust.
+_NOTCH_TOL = 1e-3
+
 
 def _exact_coverage(faces, msks, covs):
     """The pixel's TRUE coverage by the object's footprint, from exact areas.
@@ -759,6 +763,10 @@ class _Svis:
         self.unreferenced = 0
         self.covered = 0
         self.multi_obj = 0
+        self.interior = 0
+        self.notched = 0
+        self.notch_err = 0.0
+        self.notch_max = 0.0
         self.claim_occ_max = 0.0
         self.by_verdict = Counter()
         self.err_by_verdict = Counter()
@@ -775,7 +783,21 @@ class _Svis:
         if not ok:
             self.unreferenced += 1
             return
-        if not (_SILH_LO < truth < _SILH_HI):
+        if truth >= _SILH_HI:
+            # INTERIOR. Scored separately and never dropped silently, because
+            # this harness reporting only silhouette pixels is how ss6.3.2's
+            # relaxed gate came back an 84% win while _aa_line_check measured it
+            # getting WORSE: every pixel the gate actually moved was an interior
+            # one, darkened by a mean 0.027. A tiling that the resolve paints
+            # below 1 is a NOTCH, and notches are what the whole run rule exists
+            # to avoid -- so they belong in the same table as the win.
+            self.interior += 1
+            if actual < 1.0 - _NOTCH_TOL:
+                self.notched += 1
+                self.notch_err += 1.0 - actual
+                self.notch_max = max(self.notch_max, 1.0 - actual)
+            return
+        if truth <= _SILH_LO:
             return
         # SOUNDNESS, not a result. _exact_coverage sums one sheet's clipped
         # areas, which is the pixel's true coverage only while that sheet
@@ -837,6 +859,11 @@ def _measure(build, settings, capture=None):
         modes.append((aa_tri, int(coverage["aa_grp"])))
         # 4 is the redistribute rule, 3 the clamp rule (see _tri_run_rule_b).
         rule_b = aa_tri == 4
+        # aa_grp 2 is ss6.3.2's relaxed gate (ALGAN_ANALYTIC_AA_RUN_FULL). The
+        # replay has to follow the KERNEL, or 'actual' silently keeps reporting
+        # the shipped walk while the render does something else -- and --verify
+        # would fail for a reason that is the harness's, not the renderer's.
+        run_full = int(coverage["aa_grp"]) == 2
         n_cov = int(coverage["num_covered"])
         if n_cov <= 0:
             return coverage
@@ -876,7 +903,16 @@ def _measure(build, settings, capture=None):
 
             # -- the ss6.3 measurement ---------------------------------------
             truth, ok = _exact_coverage(faces, ms, cs)
-            actual, occ, effs = _replay(sids, faces, ms, cs, bz, rule_b)
+            actual, occ, effs = _replay(
+                sids,
+                faces,
+                ms,
+                cs,
+                bz,
+                rule_b,
+                consult_e=run_full,
+                consult_full=run_full,
+            )
             ce, _occ_ce, _e = _replay(sids, faces, ms, cs, bz, rule_b, consult_e=True)
             cf, _occ_cf, _e2 = _replay(
                 sids, faces, ms, cs, bz, rule_b, consult_e=True, consult_full=True
@@ -1155,6 +1191,13 @@ def main():
             f"{'':22s} scored pixels holding >1 surface id per facing group "
             f"{sv.multi_obj}/{n}"
         )
+        notch = (
+            f"{sv.notched}/{sv.interior}  mean {sv.notch_err / sv.notched:.4f}"
+            f"  worst {sv.notch_max:.4f}"
+            if sv.notched
+            else f"0/{sv.interior}"
+        )
+        print(f"{'':22s} INTERIOR pixels painted below full (notches)  {notch}")
     print(
         "\nE is the EXACT area of (footprint n pixel), summed from one sheet's\n"
         "clipped areas -- no supersampled reference, and the other sheet has to\n"

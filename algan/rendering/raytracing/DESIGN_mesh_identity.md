@@ -81,16 +81,19 @@ it accounts for nearly all of MESH_ID's *visible* effect on an `Icosahedron`
 
 **Recommended next step, in priority order.**
 
-1. **§6.3.2's gate relaxation.** The biggest measured quality win in this area
-   by a wide margin, and the only one that costs nothing. It is a
-   `DESIGN_analytic_aa_v2` change rather than a mesh-identity one, but it is
-   fully specified in §6.3.2 including the implementation shape and the four
-   harnesses that qualify it. Needs a CUDA machine only for the baselines.
+1. ~~§6.3.2's gate relaxation~~ — **BUILT**, `ALGAN_ANALYTIC_AA_RUN_FULL`,
+   default off, and the predicted −88% did NOT materialize. Its premise was
+   false (the emission truncates a pixel's list at the full-mask fragment, so
+   the run scan can never reach that sheet's area donors), and as specified it
+   put notches into interior tilings. With the truncation mitigated it is a
+   −63% win on FLAT triangle geometry and does nothing for a diced mesh, which
+   is what it was built for. §6.3.2 has the numbers and the one open question
+   left. Do not re-derive it from the `|cF-E|` column, which was computed
+   against already-truncated fragment lists.
 2. ~~Point the arbiter at a packed-grid `Surface`~~ — **DONE**, and it found and
    fixed the dice defect on the way (§4.5). Nothing left to decide on CPU.
 3. **On a CUDA machine: §4.1–§4.4**, the deferred verification for the PN
-   deletion — one run each. If 1 and §3.5 are both going in, land them together
-   so it is one re-baseline instead of two.
+   deletion — one run each, plus baselines for whatever gates get flipped.
 4. **§3.1 seam welding.** Self-contained, CPU-verifiable, valuable on its own
    (it retires two authoring-side epsilons), and the prerequisite for §3.2.
    Note §6.3 has downgraded the *AA* case for §3.1/§3.2: neither addresses what
@@ -787,6 +790,61 @@ Replayed in the harness as the `|cF-E|` column:
 
 The flat control becomes **exact**. This is worth far more than doubling the
 sample count and costs no samples and no interior work.
+
+**BUILT, AND THE PREDICTION ABOVE DOES NOT SURVIVE CONTACT.** Implemented as
+specified (`ALGAN_ANALYTIC_AA_RUN_FULL`, default off) and measured on CPU. Read
+this before quoting the `relaxed gate` column: two things were wrong with it.
+
+*The premise is false: the donors are not there to be summed.* The emission
+truncates a pixel's fragment list at its first **full-mask** opaque fragment
+(`raster_pipeline.py`, "a full-mask fragment occludes every sample whatever its
+exact area says"). So the run scan the relaxed gate starts on a full-mask
+fragment can never reach that sheet's empty-mask area donors — they were
+discarded before the resolve ran. `E` comes back as the one fragment's area, and
+the pixel is darkened by `1 - E`. At a silhouette that is the intended fix; in an
+**interior tiling** it is a notch, and the two are indistinguishable after the
+cut. Measured before the mitigation: **531 interior pixels of a flat quad and
+920 of a `Cylinder` darkened by a mean 0.027**, with `_aa_line_check` getting
+uniformly worse (default `Cylinder` 0.0568 → 0.0639 at 33°, flat quad
+0.0060 → 0.0134 at 26.6°).
+
+That makes the shipped `corr = 1` short-circuit **load-bearing rather than
+lazy**: after truncation, a full sample mask is the renderer's only remaining
+evidence that the sheet tiles the pixel. §6.3.2 read it as an approximation to
+improve, and it is a compensation for information the emission already threw
+away.
+
+*The mitigation works but shrinks the win to nothing on the target case.*
+Requiring a fragment to own every sample **and** cover the pixel before it
+truncates (gated behind the same flag) lets the donors survive. Notches drop to
+0 on every `_aa_run_gate_check` case. But with real donors in `E`, the coverage
+win shrinks — `Cylinder` 0.0260 → 0.0080 rather than → 0.0030 — and the metric
+§6 is actually about barely moves. Mean ink wobble over the nine non-degenerate
+angles, `--res md` CPU:
+
+    kind        shipped   relaxed    delta
+    bezier Line  0.0042    0.0042   +0.0000   (circuits never enter the run rule)
+    flat quad    0.0138    0.0051   -63%
+    Cylinder     0.0568    0.0563    -1%
+    Cylinder fine 0.0772   0.0781    +1%
+
+**So it is a real win on FLAT triangle geometry and does nothing for a diced
+mesh** — the opposite of what it was built for. A flat quad has no far sheet and
+loses no donors, so the relaxed gate is clean there; a diced closed mesh is
+dominated by the far-sheet re-claim, which this does not touch. The `|cF-E|`
+column that predicted −88% was computed with the shipped truncation in place,
+i.e. against fragment lists whose donors were already gone, and
+`_aa_run_gate_check` scores **silhouette pixels only**, so it could not see the
+notches either. Both instruments have since been fixed: the harness now counts
+interior notches beside the win, and the replay follows `aa_grp == 2` so
+`--verify` compares like with like (8 cases pass, worst `eff` diff 3e-8).
+
+One open question, deliberately not chased further: with the mitigation on, a
+crude LUT-based image diff still finds ~355 interior pixels of the
+`_aa_line_check` quad strip darkened, while the harness's exact-area notch
+counter finds **zero** on its own cases. The two disagree because they are
+different geometry and different instruments; the quad's wobble improves 63%
+regardless. Resolve that before flipping the default.
 
 Scope it to the **run**, not the fragment. A full-mask fragment owns every
 sample, so by the fill rule the rest of its sheet in that pixel owns none — they

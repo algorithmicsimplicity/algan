@@ -778,12 +778,18 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
             )
     if bez_inputs is not None:
         lo, hi, opaque = bez_inputs
+        # ss3.4: bezier was the last type still pinned to Morton (PN, the other,
+        # was deleted). Split ordering is a pure reorder, but a circuit's seam
+        # de-dup is discovery-order sensitive, so it moves output at the epsilon
+        # level -- hence the gate rather than a straight flip.
+        bez_builder = "split" if SETTINGS.raytracing.BEZ_BVH_SPLIT else "morton"
         scene["bez_bvh"] = _build_accel(
             lo,
             hi,
             num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
             opaque=opaque,
+            builder=bez_builder,
         )
         if not scene["bez_has_opaque"]:
             scene["bez_opaque_bvh"] = _empty_scene_part(device)
@@ -796,6 +802,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
                 opaque,
                 num_frames,
                 RayTracedBezierCircuitPrimitive.stbvh_tightness,
+                builder=bez_builder,
             )
 
 

@@ -1203,6 +1203,11 @@ def prepare_sparse_raster_coverage(
             + 4 * min(aa_tri - 1, 2)
         )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    # 2 relaxes the run-scan gate onto full-mask silhouette fragments
+    # (DESIGN_mesh_identity.md ss6.3.2). Carried in aa_grp rather than as a
+    # new template argument: every ti.static(aa_grp) test is truthiness.
+    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
+        aa_grp = 2
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1382,6 +1387,26 @@ def prepare_sparse_raster_coverage(
             # fragment occludes every sample whatever its exact area says.
             if aa_tri >= 3:
                 full_s = (msk_s & AA_MASK_ALL) == AA_MASK_ALL
+                if rt_settings.ANALYTIC_AA_RUN_FULL:
+                    # ss6.3.2 needs the run scan to SEE its sheet's area donors,
+                    # and this truncation is what hides them: a full-mask
+                    # fragment cuts its pixel's prefix right there, so the
+                    # empty-mask donors that complete its sheet's tiling never
+                    # reach the resolve. The run then sums E over the one
+                    # fragment it can see and darkens the pixel by (1 - E) --
+                    # correct at a silhouette, a NOTCH in an interior tiling,
+                    # and indistinguishable after the cut. Measured before this
+                    # was added: 531 interior pixels of a flat quad and 920 of a
+                    # Cylinder darkened by a mean 0.027, which is why
+                    # _aa_line_check got worse while the coverage harness (which
+                    # scores silhouette pixels only) said it got better.
+                    #
+                    # So under the relaxed gate a fragment must own every sample
+                    # AND cover the pixel to terminate the prefix. This is the
+                    # reason the shipped corr = 1 short-circuit is load-bearing
+                    # rather than lazy: without it, a full mask is the renderer's
+                    # only remaining evidence that the sheet tiles the pixel.
+                    full_s = full_s & (cov_s >= AA_FULL_COVERAGE)
                 opaque_s = opaque_s & torch.where(
                     ref_s >= 0, full_s, cov_s >= AA_FULL_COVERAGE
                 )
@@ -1969,6 +1994,11 @@ def raster_iteration_zero(
             + 4 * min(aa_tri - 1, 2)
         )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    # 2 relaxes the run-scan gate onto full-mask silhouette fragments
+    # (DESIGN_mesh_identity.md ss6.3.2). Carried in aa_grp rather than as a
+    # new template argument: every ti.static(aa_grp) test is truthiness.
+    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
+        aa_grp = 2
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)

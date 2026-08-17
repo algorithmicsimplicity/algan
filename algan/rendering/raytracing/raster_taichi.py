@@ -356,6 +356,33 @@ def _tri_run_rule_b(aa_tri):
     return int(aa_tri) == 4
 
 
+def _aa_run_full(aa_grp):
+    """Whether the run scan also admits a FULL-mask fragment that covers less
+    than the whole pixel (DESIGN_mesh_identity.md ss6.3.2).
+
+    v2 ss4.2 gates the lookahead on a PARTIAL mask so the interior hot path --
+    one full-mask fragment per pixel -- never pays for a scan. A diced mesh's
+    silhouette also produces full-mask fragments, though: one triangle owning
+    all eight sub-pixel samples while covering a fraction of the pixel's area.
+    Those are painted at 1.0 with their exact area unread, and on a fine Sphere
+    they are 52% of the silhouette pixels. An interior fragment's ``cov`` is
+    within dust of 1, so admitting ``cov < 1 - dust`` picks up exactly the
+    silhouette and leaves the interior alone.
+
+    Carried as ``aa_grp == 2``; every other ``ti.static(aa_grp)`` test in this
+    module is a truthiness test, so the value costs no kernel argument.
+    """
+    return int(aa_grp) == 2
+
+
+#: How far below 1 a full-mask fragment's exact area must sit before the run
+#: scan treats it as a silhouette rather than an interior tiling. Float dust in
+#: the exact-area arithmetic is far below this; a silhouette pixel's shortfall
+#: is orders of magnitude above it. Also the band inside which a full-union run
+#: keeps ``corr = 1`` exactly, so a genuine interior tiling stays bit-identical.
+_AA_FULL_DUST = 1e-3
+
+
 def _tri_repr(aa):
     """Triangle representation carried in the geometry kernels' ``aa`` value:
     0 sampled points, 1 retired (the deleted cells emission; the value is not
@@ -2993,7 +3020,17 @@ def raster_shadow_event_build(
                                 run_resid = 0.0
                         run_mode = 0
                         run_end = q
-                        if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
+                        run_scan = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                        if ti.static(_aa_run_full(aa_grp)):
+                            # ss6.3.2: a FULL mask over a pixel the sheet does
+                            # not fill is a silhouette, not an interior tiling,
+                            # and it is the largest single source of coverage
+                            # error on a diced mesh. An interior fragment's
+                            # cov is within dust of 1, so the hot path is
+                            # untouched.
+                            if not run_scan:
+                                run_scan = cov < (1.0 - _AA_FULL_DUST)
+                        if run_scan:
                             v0 = svis[0]
                             uni_v = v0 > 0.0
                             for s in ti.static(
@@ -3015,6 +3052,14 @@ def raster_shadow_event_build(
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
                                     run_corr = 1.0
+                                    if ti.static(_aa_run_full(aa_grp)):
+                                        # Q == 1 on this arm, so corr = E/Q is
+                                        # just E -- ss6.2's rule finally
+                                        # reaching the pixels that needed it.
+                                        # The dust band keeps a genuine
+                                        # interior tiling bit-identical.
+                                        if ti.abs(1.0 - rE) > _AA_FULL_DUST:
+                                            run_corr = ti.min(rE, 1.0)
                                 elif rU == 0:
                                     run_mode = 2
                                     run_pscale = (ti.min(rE, 1.0)
@@ -3920,7 +3965,17 @@ def raster_first_shade(
                                 run_resid = 0.0
                         run_mode = 0
                         run_end = q
-                        if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
+                        run_scan = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                        if ti.static(_aa_run_full(aa_grp)):
+                            # ss6.3.2: a FULL mask over a pixel the sheet does
+                            # not fill is a silhouette, not an interior tiling,
+                            # and it is the largest single source of coverage
+                            # error on a diced mesh. An interior fragment's
+                            # cov is within dust of 1, so the hot path is
+                            # untouched.
+                            if not run_scan:
+                                run_scan = cov < (1.0 - _AA_FULL_DUST)
+                        if run_scan:
                             v0 = svis[0]
                             uni_v = v0 > 0.0
                             for s in ti.static(
@@ -3942,6 +3997,14 @@ def raster_first_shade(
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
                                     run_corr = 1.0
+                                    if ti.static(_aa_run_full(aa_grp)):
+                                        # Q == 1 on this arm, so corr = E/Q is
+                                        # just E -- ss6.2's rule finally
+                                        # reaching the pixels that needed it.
+                                        # The dust band keeps a genuine
+                                        # interior tiling bit-identical.
+                                        if ti.abs(1.0 - rE) > _AA_FULL_DUST:
+                                            run_corr = ti.min(rE, 1.0)
                                 elif rU == 0:
                                     run_mode = 2
                                     run_pscale = (ti.min(rE, 1.0)
