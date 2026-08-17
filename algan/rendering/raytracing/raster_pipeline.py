@@ -23,6 +23,9 @@ from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_DUMP_COLS as AA_DUMP_COLS,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -1474,6 +1477,7 @@ def prepare_sparse_raster_coverage(
         # kernel because it is a segment reduction over the CSR the host already
         # has, and it rides in a spare frag_msk flag bit so no kernel argument
         # changes.
+        one_mesh_cap = None
         if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
             tri_obj = merged["tri_obj"]
             ppf = int(width) * int(height)
@@ -1496,18 +1500,45 @@ def prepare_sparse_raster_coverage(
             lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
             hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
             one_mesh = (lo == hi) & (lo >= 0)
+            # The mesh's coverage CEILING: the larger of the two sheets' exact
+            # areas. Well inside a silhouette a closed solid's sheets tile to
+            # the same area, so this is that area and the far sheet gets no room
+            # -- the suppression rule, recovered. At the BOUNDARY the near
+            # sheet's projected area shrinks toward zero while the footprint
+            # does not, and there the larger sheet is the right answer where
+            # suppression under-covers (measured: a 0.045-radius rod diced to
+            # (256, 2) is nearly all boundary, and suppression flips its signed
+            # error to -0.0344 and notches 1676 of 3508 interior pixels).
+            is_back = (msk_s & AA_BACKFACE_BIT) != 0
+            front = torch.zeros(covered.numel(), dtype=cov_s.dtype, device=device)
+            back = torch.zeros_like(front)
+            zero = torch.zeros((), dtype=cov_s.dtype, device=device)
+            front.scatter_add_(0, seg, torch.where(is_back, zero, cov_s))
+            back.scatter_add_(0, seg, torch.where(is_back, cov_s, zero))
+            cap_pix = torch.maximum(front, back).clamp_max_(1.0)
             msk_s = msk_s | torch.where(
                 one_mesh.index_select(0, seg),
                 torch.full_like(msk_s, AA_ONE_MESH_BIT),
                 torch.zeros_like(msk_s),
             )
+            one_mesh_cap = (one_mesh, seg, cap_pix)
 
         num_covered = int(covered.numel())
+        # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
+        # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
+        cap_s = torch.full_like(cov_s, 2.0)
+        if one_mesh_cap is not None:
+            cap_s = torch.where(
+                one_mesh_cap[0].index_select(0, one_mesh_cap[1]),
+                one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
+                cap_s,
+            )
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
         frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
         frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
         frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+        frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
         covered_idx = _arena_tensor(memory, (num_covered,), torch.int32, persist=True)
         run_offsets = _arena_tensor(
             memory, (num_covered + 1,), torch.int32, 0, persist=True
@@ -1517,6 +1548,7 @@ def prepare_sparse_raster_coverage(
         frag_ab.copy_(ab_s)
         frag_cov.copy_(cov_s)
         frag_msk.copy_(msk_s)
+        frag_cap.copy_(cap_s)
         covered_idx.copy_(covered.to(torch.int32))
         run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
 
@@ -1548,6 +1580,7 @@ def prepare_sparse_raster_coverage(
         "frag_ab": frag_ab,
         "frag_cov": frag_cov,
         "frag_msk": frag_msk,
+        "frag_cap": frag_cap,
         "covered_idx": covered_idx,
         "run_offsets": run_offsets,
         "num_fragments": num_frags,
@@ -1632,6 +1665,7 @@ def shade_sparse_raster_coverage(
     frag_ab = coverage["frag_ab"][event_start:event_end]
     frag_cov = coverage["frag_cov"][event_start:event_end]
     frag_msk = coverage["frag_msk"][event_start:event_end]
+    frag_cap = coverage["frag_cap"][event_start:event_end]
     # Pinned at emission (see prepare_sparse_raster_coverage) so the resolve can
     # never compile for a different mode than the fragments were written in.
     aa_bez = int(coverage.get("aa_bez", 0))
@@ -1688,6 +1722,7 @@ def shade_sparse_raster_coverage(
             frag_ab,
             frag_cov,
             frag_msk,
+            frag_cap,
             zbuf,
             tri_pos,
             tri_screen,
@@ -1804,6 +1839,7 @@ def shade_sparse_raster_coverage(
         frag_ab,
         frag_cov,
         frag_msk,
+        frag_cap,
         zbuf,
         merged["tri_pos"],
         tri_screen,
@@ -2265,6 +2301,9 @@ def raster_iteration_zero(
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32)
         frag_cov = _arena_tensor(memory, (num_frags,), torch.float32)
         frag_msk = _arena_tensor(memory, (num_frags,), torch.int32)
+        # The dense path has no one-mesh analysis, so every fragment carries the
+        # "no ceiling" sentinel and the rule compiles out to nothing there.
+        frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, 2.0)
         frag_key.copy_(frag_key_u.index_select(0, order))
         frag_ref.copy_(frag_ref_u.index_select(0, order))
         frag_ab.copy_(frag_ab_u.index_select(0, order))
@@ -2279,6 +2318,7 @@ def raster_iteration_zero(
         frag_ab = _arena_tensor(memory, (1, 2), torch.float32, 0)
         frag_cov = _arena_tensor(memory, (1,), torch.float32, 1.0)
         frag_msk = _arena_tensor(memory, (1,), torch.int32, AA_MASK_ALL)
+        frag_cap = _arena_tensor(memory, (1,), torch.float32, 2.0)
 
     # Covered-pixel-compacted resolve (RASTER_COVERED_SHADE). A pixel needs
     # shading iff it has a fragment (nrun > 0) or a z-prepass winner -- exactly
@@ -2333,6 +2373,7 @@ def raster_iteration_zero(
             frag_ab,
             frag_cov,
             frag_msk,
+            frag_cap,
             zbuf,
             tri_pos,
             tri_screen,
@@ -2449,6 +2490,7 @@ def raster_iteration_zero(
         frag_ab,
         frag_cov,
         frag_msk,
+        frag_cap,
         zbuf,
         merged["tri_pos"],
         tri_screen,

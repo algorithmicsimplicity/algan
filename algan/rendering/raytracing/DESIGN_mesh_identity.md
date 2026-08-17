@@ -1059,45 +1059,74 @@ non-degenerate angles:
 **A default `Cylinder` now beats the bezier `Line`** on the metric the Line was
 winning by an order of magnitude. That is the goal met.
 
-**Where it breaks, and why.** `cyl_fine` is `resolution=(256, 2)` on a
-0.045-radius rod: 256 facets around a shape ~9 px wide, so the facets are deeply
-sub-pixel and nearly edge-on. There the rule more than doubles the error, the
-signed error flips from +0.0093 to **−0.0344** (under-covering, not over), and
-1676 of 3508 interior pixels notch by up to 0.41.
+**Where SUPPRESSION broke, and what replaced it.** The first form of this rule
+suppressed the far sheet outright, and `cyl_fine` — `resolution=(256, 2)` on a
+0.045-radius rod, 256 facets around a shape ~9 px wide — regressed **+114%**:
+signed error flipped to −0.0344 (under-covering), 1676 of 3508 interior pixels
+notched by up to 0.41.
 
 Two hypotheses were tested and **both refuted**, so nobody spends the effort
 twice:
 
-* *"The facing bit is noise on sub-pixel facets, so the rule suppresses half the
-  near sheet."* The fill rule's own partition test — within one sheet no sample
-  may be claimed twice — was implemented as a host-side gate and fires on
-  **zero** pixels: 100% of both the coarse and the fine rod's pixels still pass
-  it. The bit is not scrambled. The gate was removed rather than left as dead
-  code.
+* *"The facing bit is noise on sub-pixel facets."* The fill rule's partition
+  test — within one sheet no sample may be claimed twice — was implemented as a
+  host gate and fires on **zero** pixels: 100% of both the coarse and the fine
+  rod's pixels pass it. The bit is not scrambled. Removed rather than left as
+  dead code.
 * *"It is the u-seam."* `ALGAN_WELD_SURFACE_SEAMS=1` changes the sphere's
-  residual by nothing at all — identical to the last digit.
+  residual by nothing at all, to the last digit.
 
-What the numbers point at instead is the **premise**, not the implementation.
-`|1sheet-E|` on the fine rod is 0.0392 against an `|actual-E|` of 0.0192 *at
-shipped settings* — suppressing the far sheet is already worse there before any
-of this code runs. "Both sheets project to the same silhouette, so coverage is
-the near sheet's area" holds for a pixel strictly INSIDE the silhouette. At the
-silhouette boundary the near sheet's projected area shrinks toward zero while
-the mesh's footprint does not, and on a rod that thin diced that finely, nearly
-every pixel is boundary. Its verdict mix says the same thing from the other
-side: `capped` 59.5%, `split` 12.5%.
+The **premise** was what failed. `|1sheet-E|` on the fine rod is 0.0392 against
+an `|actual-E|` of 0.0192 *at shipped settings* — suppressing the far sheet is
+already worse there before any of this code runs. "Both sheets project to the
+same silhouette, so coverage is the near sheet's area" holds strictly INSIDE a
+silhouette; at the boundary the near sheet's projected area shrinks toward zero
+while the footprint does not, and on a rod that thin diced that finely nearly
+every pixel is boundary (`capped` 59.5%, `split` 12.5%).
 
-**The shape of the fix, for whoever takes it.** Do not suppress the far sheet;
-CAP the mesh's total claim at `max(front_area, back_area)`. For a closed solid
-the two are equal well inside the silhouette (so it degenerates to the current
-rule and keeps the −93%), and at the boundary the larger is the right answer
-rather than the near one. That is a per-pixel scalar the host can compute
-exactly from the same segment sums, but it needs the walk to renormalize a
-mesh's total claim rather than gate fragments, which is a bigger change to the
-resolve than this one.
+**So the shipped rule CAPS rather than suppresses.** The mesh may claim at most
+`max(front_area, back_area)` in total, a per-pixel ceiling the host computes from
+the same exact areas and carries per fragment in `frag_cap`. Well inside a
+silhouette the two sheets tile to the same area, the near sheet fills the
+ceiling, and the far sheet gets no room — suppression recovered exactly. At the
+boundary the ceiling leaves precisely the room the near sheet does not fill.
+One exclusion, and it is not a fudge: `run_mode == 2` (the pristine all-sliver
+claim) maintains its own `run_claimed` renormalization against the run-start
+transmittance, and clipping its `eff` without adjusting `run_pd` desynchronizes
+that bookkeeping — measured, it was the whole of the sphere's `--verify`
+divergence (6.3e-4 → 2.2e-8).
 
-Until then: default off, and **do not enable it on sub-pixel-diced geometry**.
-`benchmarks/_aa_run_gate_check.py --cases cylfine` reproduces the regression.
+Ink wobble, mean over nine non-degenerate angles, `--res md` CPU:
+
+    kind          shipped   suppress      cap
+    bezier Line    0.0042     0.0042    0.0042   (circuits never enter this)
+    flat quad      0.0138     0.0051    0.0051   -63%
+    Cylinder       0.0568     0.0039    0.0039   -93%, below the bezier Line
+    Cylinder fine  0.0772     0.1650    0.0411   -47%  (was +114%)
+
+The cap keeps every win suppression had and turns its one regression into an
+improvement. Interior notches follow: `cyl_fine` 1676/3508 at mean 0.0978 under
+suppression, **234/3508 at mean 0.0092** under the cap, and zero on six of the
+eleven cases.
+
+**Read the `|cap-E|` column with care — it is partly circular.** The ceiling is
+`max(front, back)` over the exact areas and `_exact_coverage`'s truth is
+essentially the same formula on the same numbers, so a small `|cap-E|` shows the
+walk CAN land on the exact-area answer, not that that answer is right at a
+grazing boundary. The independent evidence is the ink-wobble table above, which
+does not consult `_exact_coverage` at all.
+
+**Open, and not papered over.** `--verify` passes on 9 of 11 cases (worst
+6e-7) and still fails two — `line-check cyl` at 1.1e-4 and `packed 4x4 (apart)`
+at 5.6e-4. Both diverge on a single **sliver** fragment (`msk` empty, the areal
+donor path) whose `eff` is below `MIN_ALPHA`, so neither the kernel nor the
+replay commits it and no rendered pixel differs. The mechanism is unexplained;
+the likely shape is the same bookkeeping mismatch the `run_mode == 2` exclusion
+fixed, since a sliver is the other branch that writes areally rather than by
+sample. It was left failing rather than excluded, because adding exclusions
+until a check passes is how an integrity check stops being one.
+
+Default off pending baselines.
 
 6.4 This interacts with §4.5
 -----------------------------

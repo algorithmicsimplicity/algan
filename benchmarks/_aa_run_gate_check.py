@@ -343,9 +343,12 @@ def _cases():
         _alc.build_line("cyl", 33.0, SceneManager.instance().current_scene)
 
     def line_check_cyl_fine():
-        """``resolution=(256, 2)`` on a 0.045-radius rod: facets far below a
-        pixel and nearly edge-on, where the projected-winding facing bit is
-        numerically fragile. This is the case the one-mesh rule regressed."""
+        """``resolution=(256, 2)`` on a 0.045-radius rod.
+
+        Facets far below a pixel and nearly edge-on, so almost every pixel is
+        silhouette BOUNDARY rather than interior. This is the case the one-mesh
+        rule regresses on, and ss6.6 says why.
+        """
         import sys as _sys
 
         _sys.path.insert(0, str(REPO / "benchmarks"))
@@ -509,6 +512,9 @@ def _replay(
     one_sheet=False,
     consult_full=False,
     one_sheet_gated=False,
+    mesh_cap=False,
+    mesh_cap_gated=False,
+    caps=None,
 ):
     """Walk one pixel's fragment list exactly as the resolve does.
 
@@ -589,6 +595,28 @@ def _replay(
     svis = [1.0] * N
     effs = []
     ink = 0.0
+    # ``mesh_cap`` is ss6.6's proposed successor to ``one_sheet``: instead of
+    # SUPPRESSING the far sheet, cap the mesh's TOTAL claim at the larger of the
+    # two sheets' exact areas. Well inside a silhouette the two are equal, so it
+    # degenerates to suppression and keeps that win; at the boundary -- where
+    # the near sheet's projected area shrinks toward zero while the footprint
+    # does not -- the larger is the right answer and suppression under-covers.
+    cap_target = 2.0
+    mesh_ink = 0.0
+    if mesh_cap:
+        if caps is not None and len(caps):
+            # Read the ceiling the kernel actually reads. Re-deriving it here
+            # in float64 from the same float32 areas lands a few 1e-5 away from
+            # the host's float32 sum, and since the rule CLIPS at that value the
+            # difference shows up whole in the clipped fragment -- measured, it
+            # failed --verify at 6e-4 on the many-fragment cases while passing
+            # everywhere else. A replay models the kernel; the ceiling is one of
+            # the kernel's inputs, not something to reconstruct.
+            cap_target = caps[0]
+        else:
+            front = sum(c for f, c, z in zip(faces, covs, bez) if not z and f == 0)
+            back = sum(c for f, c, z in zip(faces, covs, bez) if not z and f == 1)
+            cap_target = min(max(front, back), 1.0)
     run_end = 0
     run_mode = 0
     run_corr = 1.0
@@ -680,11 +708,26 @@ def _replay(
                 eff = run_pd * run_vstart
                 dens = run_pd / max(1.0 - run_claimed, 1e-6)
                 slots = [1.0] * N
+        # ``mesh_cap_gated`` is the SHIPPABLE form (aa_grp 3): the kernel applies
+        # the ceiling only where the host flagged the pixel, so the replay must
+        # read the same bit or --verify compares two rules. ``mesh_ink`` mirrors
+        # the kernel's own accumulator, which counts triangle fragments only.
+        if (
+            mesh_cap
+            and (not is_bez)
+            and run_mode != 2
+            and ((not mesh_cap_gated) or (raw & _AA_ONE_MESH_BIT))
+        ):
+            room = cap_target - mesh_ink
+            if eff > room:
+                eff = max(room, 0.0)
         if eff <= MIN_ALPHA:
             effs.append(0.0)
             continue
         effs.append(eff)
         ink += eff
+        if not is_bez:
+            mesh_ink += eff
         if first_face is None:
             first_face = faces[q1]
 
@@ -812,6 +855,7 @@ class _Svis:
         self.err_ce = 0.0
         self.err_cf = 0.0
         self.err_1s = 0.0
+        self.err_cap = 0.0
         self.sig_actual = 0.0
         self.sig_own = 0.0
         self.gap_actual_own = 0.0
@@ -832,7 +876,19 @@ class _Svis:
         self.painted = {}
 
     def add(
-        self, verdict, truth, ok, actual, occ, own, ce, cf, one_sheet, sids=(), faces=()
+        self,
+        verdict,
+        truth,
+        ok,
+        actual,
+        occ,
+        own,
+        ce,
+        cf,
+        one_sheet,
+        mesh_cap=0.0,
+        sids=(),
+        faces=(),
     ):
         self.covered += 1
         self.claim_occ_max = max(self.claim_occ_max, abs(actual - occ))
@@ -941,9 +997,11 @@ def _measure(build, settings, capture=None):
         refs = ref.tolist()
         covs = cov.tolist()
         msks = msk.tolist()
+        caps_all = coverage["frag_cap"].detach().cpu().tolist()
         for i in range(n_cov):
             lo, hi = offs[i], offs[i + 1]
             sids, faces, ms, cs, bz = [], [], [], [], []
+            cps = caps_all[lo:hi]
             for j in range(lo, hi):
                 r = refs[j]
                 if r >= 0:
@@ -969,8 +1027,9 @@ def _measure(build, settings, capture=None):
                 rule_b,
                 consult_e=run_full,
                 consult_full=run_full,
-                one_sheet=one_mesh,
-                one_sheet_gated=True,
+                mesh_cap=one_mesh,
+                mesh_cap_gated=True,
+                caps=cps,
             )
             ce, _occ_ce, _e = _replay(sids, faces, ms, cs, bz, rule_b, consult_e=True)
             cf, _occ_cf, _e2 = _replay(
@@ -979,12 +1038,34 @@ def _measure(build, settings, capture=None):
             one_sheet, _occ_1s, _e1 = _replay(
                 sids, faces, ms, cs, bz, rule_b, one_sheet=True
             )
+            mcap, _occ_mc, _e3 = _replay(
+                sids,
+                faces,
+                ms,
+                cs,
+                bz,
+                rule_b,
+                consult_e=True,
+                consult_full=True,
+                mesh_cap=True,
+            )
             union = 0
             for m in ms:
                 union |= m & _AA_MASK_ALL
             own = _popcount(union) / _AA_NUM_SAMPLES
             svis_stats.add(
-                verdict, truth, ok, actual, occ, own, ce, cf, one_sheet, sids, faces
+                verdict,
+                truth,
+                ok,
+                actual,
+                occ,
+                own,
+                ce,
+                cf,
+                one_sheet,
+                mcap,
+                sids,
+                faces,
             )
             p = pix[i] % ppf
             py, px = p // width, p % width
@@ -1053,6 +1134,7 @@ def _verify(build, settings, silhouettes, limit):
     probes = [silhouettes[i * step] for i in range(min(limit, len(silhouettes)))]
     worst = 0.0
     rows_seen = 0
+    where = None
     for px, py, _truth, _actual, _own in probes:
         rp.LAST_AA_DUMP.clear()
         os.environ["ALGAN_AA_DUMP"] = f"{px},{py},0"
@@ -1078,8 +1160,13 @@ def _verify(build, settings, silhouettes, limit):
             if q >= len(effs):
                 continue
             rows_seen += 1
-            worst = max(worst, abs(float(r[10]) - effs[q]))
-    return worst, rows_seen, len(probes)
+            d = abs(float(r[10]) - effs[q])
+            if d > worst:
+                worst = d
+                # Kept so a failure names the fragment instead of a magnitude:
+                # (pixel, fragment index, kernel eff, replay eff, mask, cov).
+                where = (px, py, q, float(r[10]), effs[q], int(r[7]), float(r[8]))
+    return worst, rows_seen, len(probes), where
 
 
 def _mesh_ab(cases, settings):
@@ -1219,6 +1306,7 @@ def main():
     head2 = (
         f"\n{'case':22s} {'silh px':>8s} {'|actual-E|':>11s} {'|own-E|':>9s} "
         f"{'|actual-own|':>13s} {'|cE-E|':>8s} {'|cF-E|':>8s} {'|1sheet-E|':>11s} "
+        f"{'|cap-E|':>9s} "
         f"{'on-lattice':>11s} {'signed':>8s}"
     )
     print(head2)
@@ -1232,6 +1320,7 @@ def main():
             f"{name:22s} {n:8d} {sv.err_actual / n:11.4f} "
             f"{sv.err_own / n:9.4f} {sv.gap_actual_own / n:13.4f} "
             f"{sv.err_ce / n:8.4f} {sv.err_cf / n:8.4f} {sv.err_1s / n:11.4f} "
+            f"{sv.err_cap / n:9.4f} "
             f"{100.0 * sv.on_lattice / n:10.1f}% {sv.sig_actual / n:+8.4f}"
         )
         worst = " ".join(
@@ -1281,12 +1370,19 @@ def main():
             if res is None:
                 print(f"  {name:22s} (no silhouette pixels)")
                 continue
-            worst, rows, probes = res
+            worst, rows, probes, where = res
             tag = "PASS" if worst < 2e-5 else "FAIL"
             print(
                 f"  [{tag}] {name:22s} worst |eff| diff {worst:.2e} over "
                 f"{rows} fragment rows at {probes} pixels"
             )
+            if tag == "FAIL" and where:
+                px, py, q, k_eff, r_eff, wmsk, wcov = where
+                print(
+                    f"{'':9s} worst at pixel ({px},{py}) fragment {q}: "
+                    f"kernel eff {k_eff:.6f} vs replay {r_eff:.6f}  "
+                    f"msk={wmsk:03x} cov={wcov:.5f}"
+                )
 
 
 if __name__ == "__main__":

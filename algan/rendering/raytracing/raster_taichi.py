@@ -2844,6 +2844,7 @@ def raster_shadow_event_build(
         frag_key: ti.types.ndarray(), frag_ref: ti.types.ndarray(),
         frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
         frag_msk: ti.types.ndarray(),
+        frag_cap: ti.types.ndarray(),
         zbuf: ti.types.ndarray(),
         tri_pos: ti.types.ndarray(), tri_screen: ti.types.ndarray(),
         tri_norm: ti.types.ndarray(), tri_extra: ti.types.ndarray(),
@@ -2941,10 +2942,10 @@ def raster_shadow_event_build(
         run_U = 0
         run_resid = 0.0
         run_pending = 0
-        # ONE-MESH rule: the facing that first committed ink in this pixel, or
-        # -1 before any has. Only consulted on pixels the host flagged as a
-        # single opaque surface (_aa_one_mesh).
-        first_face = -1
+        # ONE-MESH rule: how much coverage this pixel's single mesh has already
+        # claimed. Capped at frag_cap, the larger of its two sheets' exact
+        # areas (_aa_one_mesh). Only meaningful on pixels the host flagged.
+        mesh_ink = 0.0
         bounces_left = max_bounces
         processed = 0
         start = run_offsets[r]
@@ -3150,19 +3151,21 @@ def raster_shadow_event_build(
                             nsm = _AA_NUM_SAMPLES
                 if ti.static(_aa_one_mesh(aa_grp)):
                     # ONE-MESH rule (see _aa_one_mesh). On a pixel the host
-                    # flagged as a single opaque surface, once a facing has
-                    # committed ink the other facing commits none: the mesh's
-                    # coverage is its near sheet's exact area, and the residue
-                    # the near sheet's corr < 1 left behind lies OUTSIDE the
-                    # silhouette, so its own far sheet must not claim it.
-                    if (not is_bez) and (not from_z) \
-                            and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0) \
-                            and (first_face >= 0):
-                        fc_now = 0
-                        if (frag_msk[idx] & _AA_BACKFACE_BIT) != 0:
-                            fc_now = 1
-                        if fc_now != first_face:
-                            eff = 0.0
+                    # flagged as a single opaque surface, the mesh may claim at
+                    # most frag_cap in total -- the larger of its two sheets'
+                    # exact areas. Well inside a silhouette that is the near
+                    # sheet's area and the far sheet gets no room, which is what
+                    # removes the re-claim; at the boundary it leaves exactly
+                    # the room the near sheet does not fill.
+                    # run_mode 2 (the pristine all-sliver claim) is excluded:
+                    # it maintains its own run_claimed renormalization against
+                    # the run-start transmittance, and clipping its eff without
+                    # adjusting run_pd desynchronizes that bookkeeping.
+                    if (not is_bez) and (not from_z) and (run_mode != 2) \
+                            and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0):
+                        room = frag_cap[idx] - mesh_ink
+                        if eff > room:
+                            eff = ti.max(room, 0.0)
                 if eff <= MIN_ALPHA:
                     if ti.static(dump):
                         if dmatch:
@@ -3172,12 +3175,10 @@ def raster_shadow_event_build(
                                           0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
                 if ti.static(_aa_one_mesh(aa_grp)):
-                    # Recorded only for a fragment that actually commits ink,
-                    # so a fully occluded one cannot claim the pixel's facing.
-                    if (not is_bez) and (not from_z) and (first_face < 0):
-                        first_face = 0
-                        if (frag_msk[idx] & _AA_BACKFACE_BIT) != 0:
-                            first_face = 1
+                    # Accumulated only for a fragment that actually commits ink,
+                    # so a fully occluded one consumes none of the ceiling.
+                    if (not is_bez) and (not from_z):
+                        mesh_ink += eff
 
             alpha = 0.0
             reflectivity = 0.0
@@ -3634,6 +3635,7 @@ def raster_first_shade(
         frag_key: ti.types.ndarray(), frag_ref: ti.types.ndarray(),
         frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
         frag_msk: ti.types.ndarray(),
+        frag_cap: ti.types.ndarray(),
         zbuf: ti.types.ndarray(),
         tri_pos: ti.types.ndarray(), tri_screen: ti.types.ndarray(),
         tri_norm: ti.types.ndarray(),
@@ -3865,10 +3867,10 @@ def raster_first_shade(
         run_U = 0
         run_resid = 0.0
         run_pending = 0
-        # ONE-MESH rule: the facing that first committed ink in this pixel, or
-        # -1 before any has. Only consulted on pixels the host flagged as a
-        # single opaque surface (_aa_one_mesh).
-        first_face = -1
+        # ONE-MESH rule: how much coverage this pixel's single mesh has already
+        # claimed. Capped at frag_cap, the larger of its two sheets' exact
+        # areas (_aa_one_mesh). Only meaningful on pixels the host flagged.
+        mesh_ink = 0.0
         base_dist = 0.0
         bounces_left = max_bounces
         processed = 0
@@ -4126,19 +4128,21 @@ def raster_first_shade(
                             nsm = _AA_NUM_SAMPLES
                 if ti.static(_aa_one_mesh(aa_grp)):
                     # ONE-MESH rule (see _aa_one_mesh). On a pixel the host
-                    # flagged as a single opaque surface, once a facing has
-                    # committed ink the other facing commits none: the mesh's
-                    # coverage is its near sheet's exact area, and the residue
-                    # the near sheet's corr < 1 left behind lies OUTSIDE the
-                    # silhouette, so its own far sheet must not claim it.
-                    if (not is_bez) and (not from_z) \
-                            and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0) \
-                            and (first_face >= 0):
-                        fc_now = 0
-                        if (frag_msk[idx] & _AA_BACKFACE_BIT) != 0:
-                            fc_now = 1
-                        if fc_now != first_face:
-                            eff = 0.0
+                    # flagged as a single opaque surface, the mesh may claim at
+                    # most frag_cap in total -- the larger of its two sheets'
+                    # exact areas. Well inside a silhouette that is the near
+                    # sheet's area and the far sheet gets no room, which is what
+                    # removes the re-claim; at the boundary it leaves exactly
+                    # the room the near sheet does not fill.
+                    # run_mode 2 (the pristine all-sliver claim) is excluded:
+                    # it maintains its own run_claimed renormalization against
+                    # the run-start transmittance, and clipping its eff without
+                    # adjusting run_pd desynchronizes that bookkeeping.
+                    if (not is_bez) and (not from_z) and (run_mode != 2) \
+                            and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0):
+                        room = frag_cap[idx] - mesh_ink
+                        if eff > room:
+                            eff = ti.max(room, 0.0)
                 if eff <= MIN_ALPHA:
                     # Nothing still reaches the samples this fragment covers:
                     # something opaque in front of it already has them.
@@ -4150,12 +4154,10 @@ def raster_first_shade(
                                           0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
                 if ti.static(_aa_one_mesh(aa_grp)):
-                    # Recorded only for a fragment that actually commits ink,
-                    # so a fully occluded one cannot claim the pixel's facing.
-                    if (not is_bez) and (not from_z) and (first_face < 0):
-                        first_face = 0
-                        if (frag_msk[idx] & _AA_BACKFACE_BIT) != 0:
-                            first_face = 1
+                    # Accumulated only for a fragment that actually commits ink,
+                    # so a fully occluded one consumes none of the ceiling.
+                    if (not is_bez) and (not from_z):
+                        mesh_ink += eff
 
             color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
             alpha = 0.0
