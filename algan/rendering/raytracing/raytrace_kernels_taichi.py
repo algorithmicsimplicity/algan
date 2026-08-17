@@ -1,7 +1,7 @@
 """Shared Taichi ray-tracing library + the Monte Carlo path-tracing kernels.
 
 This module holds the ``@ti.func`` building blocks every renderer uses --
-sibling-block STBVH traversal, triangle / PN-patch / bezier-circuit
+sibling-block STBVH traversal, triangle / bezier-circuit
 intersection and colour/material sampling, batched hit gathering
 (``_collect_hits``), shadow occlusion and tonemapping -- plus the Monte Carlo
 megakernels used when ``samples_per_pixel > 1``: ``path_trace_scene_stbvh``
@@ -119,31 +119,6 @@ BARYCENTRIC_EPSILON = 1e-4
 # second is discarded so the mesh behaves as one cohesive surface (in
 # particular, a partially transparent mesh must not blend twice on seams).
 TRIANGLE_EDGE_EPSILON = 2e-4
-# Slightly larger tolerances for the point-normal (PN) triangle patch
-# numerical intersection solver and edge/seam de-duplication, to cover
-# larger floating-point / solver noise.
-# Two G0-adjacent PN patches share their boundary curve but have different
-# tangent planes there, so near a seam their curved surfaces overlap in a thin
-# band and a ray can pierce *both* a small distance inside their shared edge.
-# A PN hit counts as an edge hit (a seam-merge candidate) when its smallest
-# barycentric coordinate is below this -- wide enough to cover that overlap
-# band, so a translucent seam is blended once rather than twice.
-# A ray grazing or near-edge piercing a patch makes two intersections nearly
-# coincide, and the solver can recover them as several candidate hits at
-# essentially the same surface point (via the two split lines, or the linear
-# fallback landing on a pencil hit); Newton leaves them a few
-# thousandths apart in (u, v) -- and, where the surface is steep, more than
-# DEPTH_TIE_EPSILON apart in depth -- so they survive the depth tie-break and
-# would blend two or three times (a bright seam on a translucent patch). Hits
-# whose patch parameters agree to within this are treated as the same hit.
-# Depth window for merging the duplicate edge hits of a *shared PN-patch seam*
-# (the two curved patches meeting along a boundary curve). Across the overlap
-# band the two near-edge hits sit a few thousandths apart in depth -- past
-# DEPTH_TIE_EPSILON -- so the seam-merge needs a looser window than the
-# flat-triangle case or a translucent seam blends twice. Still far below any
-# visible surface separation (sub-pixel at typical scene scales), and only the
-# extreme silhouette could merge a front/back pair this close, over a band far
-# narrower than a pixel.
 # Hits gathered per BVH traversal by the deterministic renderer. Depth
 # peeling consumes hits strictly front-to-back; collecting a small batch of
 # nearest hits per traversal lets a ray crossing several translucent
@@ -2304,8 +2279,8 @@ def _shadow_anyhit_opaque(refit: ti.template(),
                           edges_2d: ti.template(),
                           edge_accel: ti.template()) -> ti.i32:
     """1 if any interval-opaque primitive of any geometry type blocks the
-    shadow ray before ``max_t``. Trees are tried triangle -> PN -> bezier,
-    each skipped entirely on a hit in an earlier one. ``t_lo`` prunes the
+    shadow ray before ``max_t``. Trees are tried triangle -> bezier, the
+    second skipped entirely on a hit in the first. ``t_lo`` prunes the
     node-visit window only (see :func:`_anyhit_opaque_tri`).
     """
     hit = 0
@@ -2669,7 +2644,6 @@ def path_trace_scene_stbvh(
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        # PN patch STBVH + packed geometry.
         # Bezier STBVH + packed geometry.
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -2687,7 +2661,6 @@ def path_trace_scene_stbvh(
         layer_offset_triangles: float,
         max_bounces: int, transparent: int,
         samples_per_pixel: int, indirect_strength: float,
-        # Per-PN-patch oriented bounding box for the pre-solve cull.
         # Background buffer [time_end - time_start, width * height,
         # channels] (u8), read by paths that escape the scene.
         out: ti.types.ndarray(),
@@ -2781,8 +2754,7 @@ def path_trace_scene_stbvh(
                 break
 
             # Mesh seams: skip the duplicate edge hit of the adjacent
-            # triangle/patch so the surface scatters/transmits exactly once
-            # (PN seams need a looser depth window than flat triangles).
+            # triangle so the surface scatters/transmits exactly once.
             seam_eps = DEPTH_TIE_EPSILON
             if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                 t_prev = t_hit
@@ -2953,8 +2925,7 @@ def _transmittance(refit: ti.template(), ro, rd, f, ff, max_t,
             circuit_meta, edges_2d, edge_accel)
         if (found == 0) or (t_hit >= max_t):
             break
-        # Skip the duplicate edge hit of mesh seams (attenuate once); PN
-        # seams need a looser depth window than flat triangles.
+        # Skip the duplicate edge hit of mesh seams (attenuate once).
         seam_eps = DEPTH_TIE_EPSILON
         if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
             t_prev = t_hit
@@ -2988,7 +2959,6 @@ def path_trace_physical_stbvh(
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        # PN patch STBVH + packed geometry.
         # Bezier STBVH + packed geometry.
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -3009,7 +2979,6 @@ def path_trace_physical_stbvh(
         # Explicit point lights [Tl, L, 3] and lighting controls.
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int, light_intensity: float, ambient: float,
-        # Per-PN-patch oriented bounding box for the pre-solve cull.
         # Background/environment buffer (u8), read by escaping paths.
         out: ti.types.ndarray(),
         # Per-pixel sample accumulator [frames, pixels, 5] (f32,
@@ -3106,8 +3075,7 @@ def path_trace_physical_stbvh(
                 break
 
             # Mesh seams: skip the duplicate edge hit of the adjacent
-            # triangle/patch (one interaction per surface crossing); PN seams
-            # need a looser depth window than flat triangles.
+            # triangle (one interaction per surface crossing).
             seam_eps = DEPTH_TIE_EPSILON
             if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                 t_prev = t_hit
