@@ -768,10 +768,10 @@ and those lists are not consistently oriented. Measured — outward test is
 
 The projected winding sign **is** `_AA_BACKFACE_BIT` (`raster_taichi.py:152`),
 so on those solids the facing bit does not name a sheet. Measured on the
-icosahedron: 858 of 46220 covered pixels have a "front" group holding *both*
-sheets — one such pixel sums its front group to 1.98 while the true sheets tile
-to 1.0000 and 1.0000. The §6.3 harness drops those pixels rather than
-referencing them wrongly, and reports the count.
+icosahedron: 960 of 46220 covered pixels have one facing group holding *both*
+sheets — one such pixel sums that group to 1.98 while the true sheets tile to
+1.0000 and 1.0000. The §6.3 harness drops those pixels rather than referencing
+them wrongly, and reports the count.
 
 Why this matters here rather than in the AA docs: the run rule groups by
 `(sid, facing)`. Today `sid` is per-triangle for a `Polyhedron`, so a run is one
@@ -800,11 +800,15 @@ downstream that wants a mesh's near sheet cannot have it.
 Keep both refutations. The first cost a plausible-sounding paragraph in this
 file; the second nearly cost a second one.
 
-Fixing it moves output — reversing a face's index list changes the vertex order
-handed to `TriangleTriangulated`, whose `location` is a circumcenter computed
-with the first corner as origin, so the last bits move — which is why the
-harness gained an opaque `Cube` case (0 of 6 inward) as the *referenced*
-polyhedron rather than the icosahedron being silently corrected.
+The third prediction, that fixing it would move output, is wrong too: the
+fast-suite render is byte-identical across `ALGAN_POLYHEDRON_WINDING` while
+`ALGAN_MESH_ID` is off (§3.7). It only moves with MESH_ID on — which is the same
+mechanism stated once more, since that is the only configuration where facing
+groups anything.
+
+The harness still gained an opaque `Cube` case (0 of 6 inward) as the
+*referenced* polyhedron, so that the polyhedron family is measurable with the
+gate off as well as on.
 
 
 ================================================================================

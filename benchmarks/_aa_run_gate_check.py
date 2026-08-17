@@ -155,11 +155,10 @@ from a hardcoded index list and those lists are not consistently oriented:
 measured, 12 of an ``Icosahedron``'s 20 faces wind inward, 2 of 4 on a
 ``Tetrahedron``, 2 of 8 on an ``Octahedron``, 3 of 12 on a ``Dodecahedron``, 0
 of 6 on a ``Cube``. The projected winding sign IS ``_AA_BACKFACE_BIT``, so on
-those solids the facing bit does not name a sheet -- 858 of the icosahedron's
-46220 covered pixels have a "front" group holding both sheets, and this harness
-drops them rather than referencing them wrongly -- 960 of them, against 4 with
-``ALGAN_POLYHEDRON_WINDING=1``, which is the measurement that the orientation
-pass works. (The obvious follow-on guess, that the winding is why
+those solids the facing bit does not name a sheet, and this harness drops the
+pixels where that shows: 960 of the icosahedron's 46220 covered pixels have one
+facing group holding BOTH sheets, against 4 with ``ALGAN_POLYHEDRON_WINDING=1``
+-- which is the measurement that the orientation pass works. (The obvious follow-on guess, that the winding is why
 ``ALGAN_MESH_ID=1`` regressed an Icosahedron under the old per-fragment metric,
 is measured above and is WRONG: with the winding fixed, MESH_ID is still
 neutral.)

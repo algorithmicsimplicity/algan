@@ -509,8 +509,8 @@ MESH_ID = env_flag("ALGAN_MESH_ID", False)
 # Octahedron, 3 of 12 on a Dodecahedron, 0 of 6 on a Cube. The projected winding
 # sign IS ``_AA_BACKFACE_BIT``, which is what separates a closed mesh's near and
 # far sheets for the analytic-AA run rule, so on those solids the bit names
-# nothing -- measured, 858 of an Icosahedron's 46220 covered pixels have a
-# "front" group holding BOTH sheets.
+# nothing -- measured, 960 of an Icosahedron's 46220 covered pixels have one
+# facing group holding BOTH sheets, against 4 with this on.
 #
 # DEFAULT OFF pending a full-render check, NOT because it is known to move
 # output: measured, the fast-suite render (which draws a Cube, an Icosahedron
