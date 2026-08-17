@@ -142,11 +142,7 @@ degrees that Algan's API expects:
     a Manim script gives 90 degrees in Algan and 1.57 in Manim -- both correct, for
     different reasons.
 
-A few Manim-parity surfaces keep Manim's radians on purpose. They are all
-*constructor arguments* passed through to Manim, never Algan methods: ``rotate``
-is in degrees on every Mob there is, the Manim-compatibility mobs (``Axes``,
-``NumberPlane``, ``Arc``, ``Brace``, ``VGroup`` and everything else deriving
-from :class:`~algan.mobs.manim_compat.ManimCompatMob`) included. These take
+A few Manim-parity surfaces keep Manim's radians on purpose. These take
 **radians**, not degrees:
 
 * ``RegularPolygon(start_angle=...)`` and ``Line(path_arc=...)``.
@@ -156,6 +152,12 @@ from :class:`~algan.mobs.manim_compat.ManimCompatMob`) included. These take
   than rotations. Note that only ``Cone``'s ``v_range`` and ``Torus``'s two
   ranges actually restrict the geometry; ``Sphere`` and ``Cylinder`` accept
   theirs for compatibility but always build the whole shape.
+
+Every one of those is a *constructor argument* handed straight to Manim. No
+Algan **method** is among them, so there is no Mob anywhere whose ``rotate``
+wants radians -- the Manim-compatibility mobs (``Axes``, ``NumberPlane``,
+``Arc``, ``Brace``, ``VGroup`` and everything else deriving from
+:class:`~algan.mobs.manim_compat.ManimCompatMob`) included.
 
 Everything else -- including ``rotate``, ``orbit``, ``move(path_arc_angle=...)``,
 camera field of view and Euler angles, and light cone angles -- is in degrees.
