@@ -227,7 +227,7 @@ have, and it is what answered §6.3. No engine code changed; output is untouched
 3. WHAT HAS NOT LANDED
 ================================================================================
 
-3.1 Weld the `Sphere` u-seam and the pole fans  [CPU-verifiable]
+3.1 Weld the `Sphere` u-seam and the pole fans  [LANDED, gated off]
 ----------------------------------------------------------------
 `get_grid_to_triangle_indices` (`surface.py:211`) builds two triangles per
 grid cell and **never bridges column `W-1` back to column 0**, so a closed
@@ -253,12 +253,41 @@ duplicate column, and emit a single shared pole vertex instead of a fan. This
 retires two authoring-side epsilon special-cases (the 1e-4 normal merge and the
 pole-normal salvage) and slightly reduces triangle count.
 
-Gate `ALGAN_WELD_SURFACE_SEAMS`, default off. Geometry moves, so **all** pixel
-baselines move on both devices. Validation: extend
-`test_logical_pn_tessellation.py`'s watertightness style (assert wrapped column
-indices resolve to column 0, pole rows contribute no degenerate triangles);
-`benchmarks/_grid_normals_ab.py` already covers 13 cases including pole and
-closed-seam grids.
+**LANDED**, gated `ALGAN_WELD_SURFACE_SEAMS`, default off, surfaced as
+`SETTINGS.raytracing.experimental.set(weld_surface_seams=...)`. Implemented as
+described: `surface_weld_flags(grid)` reads `(wrap_x, pole_lo, pole_hi)` off the
+grid once per primitive build, `get_grid_to_triangle_indices` takes it (and keys
+its cache on it), the wrap cell indexes column 0, a pole row collapses to one
+vertex, and the `W-1` degenerate triangles each pole contributed are dropped.
+`tests/unit_tests/test_surface_welding.py` pins all of it, including that the
+unwelded path is exactly what it always was.
+
+Two things §3.1 asserted above are **wrong**, both measured:
+
+* **"Geometry moves, so all pixel baselines move."** They do not. A scene of a
+  `Sphere(48, 24)`, a `Cylinder`, a `Torus` and a `Cone` renders
+  **byte-identical** across the gate at `--res md`, despite the sphere going
+  from 2304 triangles to 2208. That is the expected result once stated plainly:
+  the welded vertices were coincident to 1.7e-07 and the dropped triangles had
+  zero area, so nothing the rasterizer can see changes. `pytest -q --fast`
+  passes with the gate on. The remaining risk is a texture-mapped or
+  normal-mapped closed surface, which is why it is still default off.
+* **"Retires two authoring-side epsilon special-cases."** It does not.
+  `compute_grid_vertex_normals` accumulates over the **grid**, not over the
+  welded triangle list, so column 0 still misses the wrap-around neighbourhood
+  and a pole row still accumulates from sub-epsilon differences. The 1e-4 normal
+  merge and the pole-normal salvage both stay necessary and stay in place.
+  Retiring them needs the normal accumulation itself to run on welded topology,
+  which is a separate change. The weld also still needs a tolerance of its own
+  to decide whether a parametrization closes -- that is a property of the
+  coordinates and no topology change can remove it.
+
+Note the UV subtlety, which cost a shape mismatch before it was handled: the
+**pole** welds apply to the uv gather (they change the triangle list, so every
+per-vertex attribute must go through the same indices), but the **u-seam** wrap
+deliberately does not. Wrapping it would give the last cell column `u = 0` where
+the texture needs `u = 1`, running the map backwards across that column. The
+duplicate uv column exists precisely to carry that discontinuity.
 
 3.2 Watertight ray/triangle intersection  [needs CUDA to qualify]
 ------------------------------------------------------------------

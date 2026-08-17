@@ -1031,6 +1031,43 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", False)
 
 
+# Weld a closed surface grid's u-seam and its collapsed poles into SHARED
+# vertices instead of coincident duplicates (DESIGN_mesh_identity.md ss3.1).
+#
+# get_grid_to_triangle_indices builds two triangles per grid cell and never
+# bridges column W-1 back to column 0, so a Sphere's wraparound is a genuine
+# two-copy seam -- measured, the two columns differ by up to 1.7e-07 in f32 and
+# are NOT bitwise equal, while every interior shared edge IS a bit-identical
+# duplicate of the same gather. That asymmetry is the point: a watertight
+# intersection test (ss3.2) fixes numerical ambiguity, and at the u-seam it
+# would OPEN a crack rather than close one, because the gap is real geometry.
+# The poles are collapsed degenerate fans, every point of the row mapping to the
+# same position with 4e-08 of jitter.
+#
+# With this on, the wrap cell indexes column 0 and a pole row is one vertex,
+# which also drops the (W-1) degenerate triangles each pole contributes.
+#
+# NOT what ss3.1 claimed. It said this "retires two authoring-side epsilon
+# special-cases (the 1e-4 normal merge and the pole-normal salvage)". It does
+# not: compute_grid_vertex_normals accumulates over the GRID, not over the
+# welded triangle list, so column 0 still misses the wrap-around neighbourhood
+# and a pole row still accumulates from sub-epsilon differences. Both fixups
+# stay necessary and stay in place. Retiring them needs the normal accumulation
+# to run on the welded topology, which this does not do.
+#
+# Default off: geometry moves, so all pixel baselines move on both devices.
+WELD_SURFACE_SEAMS = env_flag("ALGAN_WELD_SURFACE_SEAMS", False)
+
+
+def set_weld_surface_seams(enabled):
+    """Toggle surface seam/pole welding (see ``WELD_SURFACE_SEAMS``).
+
+    Takes effect on the next primitive build.
+    """
+    global WELD_SURFACE_SEAMS
+    WELD_SURFACE_SEAMS = bool(enabled)
+
+
 def set_bez_bvh_split(enabled):
     """Toggle median-split ordering for the bezier STBVH (see ``BEZ_BVH_SPLIT``).
 

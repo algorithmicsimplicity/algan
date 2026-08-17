@@ -208,7 +208,9 @@ def _freeze_resolution_cache_value(value):
 _grid_triangle_indices_cache = {}
 
 
-def get_grid_to_triangle_indices(grid_width: int, grid_height: int, device):
+def get_grid_to_triangle_indices(
+    grid_width: int, grid_height: int, device, weld=(False, False, False)
+):
     """Internal: get the vertex indices that split a grid into triangles.
 
     Each grid cell becomes two triangles. The result is cached per grid shape and
@@ -222,32 +224,103 @@ def get_grid_to_triangle_indices(grid_width: int, grid_height: int, device):
         Number of grid points down.
     device
         Torch device the indices should live on.
+    weld
+        ``(wrap_x, pole_lo, pole_hi)`` from :func:`surface_weld_flags`. Each
+        welds one boundary of a closed grid into shared vertices instead of
+        coincident duplicates (DESIGN_mesh_identity.md ss3.1). Defaults to no
+        welding, which is the shipped topology exactly.
 
     Returns
     -------
     torch.Tensor
         Vertex indices into the flattened grid, shape
-        ``[(W-1) * (H-1) * 2, 3]``.
+        ``[(W-1) * (H-1) * 2, 3]`` -- minus ``W-1`` triangles per welded pole.
     """
-    cache_key = (grid_width, grid_height, device)
+    cache_key = (grid_width, grid_height, device, weld)
     if cache_key not in _grid_triangle_indices_cache:
         W, H = grid_width, grid_height
+        wrap_x, pole_lo, pole_hi = weld
         i_indices = torch.arange(W - 1, device=device).unsqueeze(1).expand(-1, H - 1)
         j_indices = torch.arange(H - 1, device=device).unsqueeze(0).expand(W - 1, -1)
 
-        idx00 = i_indices * H + j_indices
-        idx01 = i_indices * H + (j_indices + 1)
-        idx10 = (i_indices + 1) * H + j_indices
-        idx11 = (i_indices + 1) * H + (j_indices + 1)
+        i_next = i_indices + 1
+        if wrap_x:
+            # The wrap cell indexes column 0 instead of the duplicate column
+            # W-1, so the seam becomes a SHARED edge rather than two copies
+            # 1.7e-7 apart. Column W-1 is then simply never gathered; the
+            # triangle count is unchanged.
+            i_next = torch.where(i_next == W - 1, torch.zeros_like(i_next), i_next)
+
+        def vertex_id(col, row):
+            # A collapsed pole row is one vertex, not W coincident copies.
+            if pole_lo:
+                col = torch.where(row == 0, torch.zeros_like(col), col)
+            if pole_hi:
+                col = torch.where(row == H - 1, torch.zeros_like(col), col)
+            return col * H + row
+
+        j_next = j_indices + 1
+        idx00 = vertex_id(i_indices, j_indices)
+        idx01 = vertex_id(i_indices, j_next)
+        idx10 = vertex_id(i_next, j_indices)
+        idx11 = vertex_id(i_next, j_next)
 
         t1 = torch.stack((idx00, idx01, idx10), dim=-1)
         t2 = torch.stack((idx10, idx01, idx11), dim=-1)
         stacked = torch.stack((t1, t2), dim=-2)
+        if pole_lo or pole_hi:
+            # Collapsing a pole makes exactly one triangle of each adjacent
+            # cell degenerate: at the low pole t1 is (P, ring, P), at the high
+            # pole t2 is (ring, P, P). Dropping them is what turns the fan into
+            # a proper cone of triangles, and it is why welding a pole changes
+            # the triangle COUNT while welding the seam does not.
+            keep = torch.ones((W - 1, H - 1, 2), dtype=torch.bool, device=device)
+            if pole_lo:
+                keep[:, 0, 0] = False
+            if pole_hi:
+                keep[:, H - 2, 1] = False
+            stacked = stacked[keep]
         _grid_triangle_indices_cache[cache_key] = stacked.reshape(-1)
     return _grid_triangle_indices_cache[cache_key]
 
 
-def grid_to_triangle_vertices(grid):
+#: Tolerance for deciding a grid wraps or collapses. The same 1e-4 the normal
+#: merge has always used (``compute_grid_vertex_normals``), and it stays a
+#: tolerance for the same reason: whether a parametrization closes is a property
+#: of the coordinates, not something the topology can be asked.
+_WELD_TOLERANCE = 1e-4
+
+
+def surface_weld_flags(grid):
+    """Which of a grid's boundaries can be welded: ``(wrap_x, pole_lo, pole_hi)``.
+
+    ``wrap_x`` when column ``W-1`` duplicates column 0 (a closed surface of
+    revolution's u-seam), ``pole_lo``/``pole_hi`` when every column of row 0 /
+    row ``H-1`` coincides (a collapsed pole, e.g. a ``Sphere``'s or a ``Cone``'s
+    tip). All three are ``False`` unless ``ALGAN_WELD_SURFACE_SEAMS`` is on.
+
+    Returns Python bools, so this synchronises with the device once per
+    primitive build. That is deliberate: the result selects a cached index
+    tensor, which cannot be a device value.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    if not rt_settings.WELD_SURFACE_SEAMS or grid.dim() < 3:
+        return (False, False, False)
+    tol = _WELD_TOLERANCE
+    wrap_x = bool(
+        (grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item()
+    )
+    pole_lo = bool(
+        (grid[..., :, 0, :] - grid[..., :1, 0, :]).abs().lt(tol).all().item()
+    )
+    pole_hi = bool(
+        (grid[..., :, -1, :] - grid[..., :1, -1, :]).abs().lt(tol).all().item()
+    )
+    return (wrap_x, pole_lo, pole_hi)
+
+
+def grid_to_triangle_vertices(grid, weld=(False, False, False)):
     """Internal: gather a per-grid-point quantity into per-triangle-vertex form.
 
     Turns values laid out on the surface grid into the flat triangle-vertex layout the
@@ -267,7 +340,7 @@ def grid_to_triangle_vertices(grid):
         return grid
     W, H = grid.shape[-3], grid.shape[-2]
     flat_grid = grid.reshape(*grid.shape[:-3], W * H, grid.shape[-1])
-    indices = get_grid_to_triangle_indices(W, H, grid.device)
+    indices = get_grid_to_triangle_indices(W, H, grid.device, weld)
     return flat_grid[..., indices, :]
 
 
@@ -464,11 +537,14 @@ def get_render_primitives_batched(surfaces):
     ``grid.location`` shape.
     """
     grids = torch.stack([s._reshape_grid_for_render(s.grid.location) for s in surfaces])
-    vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids))
-    corners = grid_to_triangle_vertices(grids)
+    weld = surface_weld_flags(grids)
+    vertex_normals = grid_to_triangle_vertices(
+        compute_grid_vertex_normals(grids), weld
+    )
+    corners = grid_to_triangle_vertices(grids, weld)
     return [
         s._build_render_primitive(
-            grids[i], vertex_normals[i], precomputed_corners=corners[i]
+            grids[i], vertex_normals[i], precomputed_corners=corners[i], weld=weld
         )
         for i, s in enumerate(surfaces)
     ]
@@ -2506,15 +2582,18 @@ class Surface(Mob):
             The surface's triangles for every frame of the batch.
         """
         grid = self._reshape_grid_for_render(self.grid.location)
+        weld = surface_weld_flags(grid)
         if not self.ignore_normals:
             vertex_normals = grid_to_triangle_vertices(
-                compute_grid_vertex_normals(grid)
+                compute_grid_vertex_normals(grid), weld
             )
         else:
             vertex_normals = None
-        return self._build_render_primitive(grid, vertex_normals)
+        return self._build_render_primitive(grid, vertex_normals, weld=weld)
 
-    def _build_render_primitive(self, grid, vertex_normals, precomputed_corners=None):
+    def _build_render_primitive(
+        self, grid, vertex_normals, precomputed_corners=None, weld=None
+    ):
         """Assemble the
         :class:`~algan.rendering.primitives.triangle_primitive.TrianglePrimitive`
         for this surface from an already-materialized grid ``[T, W, H, 3]``
@@ -2523,11 +2602,18 @@ class Surface(Mob):
         corners gathered on the whole surface stack at once.
         """
 
+        weld = weld or (False, False, False)
+
         def expand_grid_to_verts(x):
+            # Same weld as the corners: a pole weld drops triangles, so every
+            # per-vertex attribute has to be gathered through the same index
+            # list or the primitive's arrays disagree on length.
             if x.shape[-2] == 1:
                 x = x.expand(*x.shape[:-2], self.grid.location.shape[-2], -1)
             x = self._reshape_grid_for_render(x)
-            return self._flatten_packed_triangle_vertices(grid_to_triangle_vertices(x))
+            return self._flatten_packed_triangle_vertices(
+                grid_to_triangle_vertices(x, weld)
+            )
 
         def compute_grid_color():
             # Plain tensor, not the Color subclass the public property returns:
@@ -2550,9 +2636,16 @@ class Surface(Mob):
             or material_texture_map is not None
             or normal_texture_map is not None
         ):
-            # Generate UV coordinates for the triangle corners from the base grid
+            # Generate UV coordinates for the triangle corners from the base grid.
+            # The POLE welds apply (they change the triangle list, so uvs must
+            # match it), but the u-seam wrap deliberately does NOT: wrapping it
+            # would give the last cell column u = 0 where the texture needs
+            # u = 1, running the map backwards across that column. The duplicate
+            # uv column exists precisely to carry that discontinuity, and it is
+            # the one thing the position weld must not take away.
             base_grid = self.get_base_grid()
-            uvs = grid_to_triangle_vertices(base_grid)
+            uv_weld = (False, weld[1], weld[2])
+            uvs = grid_to_triangle_vertices(base_grid, uv_weld)
             packed_grid_count = self._packed_grid_count()
             if packed_grid_count is not None:
                 uvs = uvs.unsqueeze(0).expand(packed_grid_count, -1, -1).flatten(0, 1)
@@ -2575,7 +2668,7 @@ class Surface(Mob):
 
         colors = expand_grid_to_verts(compute_grid_color())
         corners = self._flatten_packed_triangle_vertices(
-            grid_to_triangle_vertices(grid)
+            grid_to_triangle_vertices(grid, weld)
             if precomputed_corners is None
             else precomputed_corners
         )
