@@ -2,17 +2,20 @@ About Algan
 ===========
 
 Algan (ALGorithmic ANimation) is a Python library for building 2-D and 3-D
-explanatory animations. It is inspired by `Manim
-<https://docs.manim.community/en/stable/>`_, but uses a Scene-contained lazy
-animation system and a GPU-oriented renderer designed for complex moving 3-D
+animations. Algan is inspired by `Manim
+<https://docs.manim.community/en/stable/>`_, and aims to keep the same ease of use,
+while providing full-fledged GPU-oriented raytraced renderer for complex moving 3-D
 scenes and realistic lighting.
 
 Key capabilities include:
 
-* **Lazy animation recording.** Animations can be rescaled, nested, synchronized,
-  or written out of source order before any frame is rendered.
+* **Lazy animation recording.** Algan separates scene authoring
+  from rendering, meaning that a scene can be authored once and rendered many times,
+  and scenes can be authored out of source order.
 * **Composable animation contexts.** ``Seq``, ``Sync``, ``Lag``, and ``Off``
-  provide structured timing without an imperative ``play`` loop.
+  are context wrappers which automatically compose with eachother,
+  meaning animation code can be written without thinking about how it will be
+  used in a video. This promotes writing modular, reusable animation code.
 * **2-D and 3-D geometry.** Native cubic-Bezier shapes, text and TeX, triangle
   surfaces, point clouds, imported 3D asset models, and compatible Manim vector objects
   share one scene model.
@@ -20,7 +23,8 @@ Key capabilities include:
   shadows, reflection/refraction, hybrid rasterization, and ray-tracing paths
   are implemented through Torch and Taichi.
 * **Synchronized audio.** Audio and speech contexts are recorded on the same
-  Scene timeline as visual animation.
+  Scene timeline as visual animation, making it easy to line up animations
+  with voice-over narration.
 
 First steps
 ===========

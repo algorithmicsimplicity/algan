@@ -9,16 +9,6 @@ spawn them, move them, colour them, morph them into each other.
 The complete list, with every constructor argument, is in the
 :doc:`mobs reference <../reference_index/mobs>`.
 
-.. note::
-
-    Two things show up in the examples below before they are taught. ``Group([...])``
-    collects Mobs so you can lay them out and move them as one --
-    :doc:`child_mobs` covers it. ``with Seq():`` / ``with Sync():`` / ``with
-    Off():`` control whether the changes inside them happen one after another, at
-    the same time, or instantly with no animation --
-    :doc:`controlling_animations` covers those. You can read the examples without
-    either; they are here so the pictures show more than one shape at a time.
-
 2-D Shapes
 ==========
 

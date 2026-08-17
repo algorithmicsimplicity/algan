@@ -798,7 +798,11 @@ class Mob(
 
         The by-name equivalent of assigning to the attribute; useful when the
         attribute is chosen at runtime. To set several at once, use
-        :meth:`~.Mob.set`.
+        :meth:`~.Mob.set`. Attributes whose write is more than a row write --
+        derived ones (``scale_coefficient``, ``Circle.radius``,
+        ``border_color``) and ``basis``, which carries the subtree's locations
+        with it -- are handed to their property setter, so every name behaves
+        exactly as the assignment would.
 
         Animation
         ---------
@@ -825,6 +829,21 @@ class Mob(
         if self._prevent_recursive_sets:
             recursive = False
         value = cast_to_tensor(value)
+
+        if self._writes_through_property_setter(attr):
+            # The generic path below writes timeline rows, which for these
+            # attributes is either nothing or half the operation: a derived
+            # attribute has no rows, so it would allocate a buffer nothing
+            # reads, and a hierarchical one would move each frame while leaving
+            # the subtree's locations -- the actual geometry -- behind. The
+            # property setter is what does the whole thing.
+            prs = self._prevent_recursive_sets
+            self._prevent_recursive_sets = not recursive
+            try:
+                setattr(self, attr, value)
+            finally:
+                self._prevent_recursive_sets = prs
+            return self
 
         current_value = self.get_animated_attribute(
             attr, include_descendants=recursive, default=value, copy=False
@@ -868,7 +887,15 @@ class Mob(
         ----------
         attr
             Name of the animatable attribute, e.g. ``"opacity"``, ``"color"``,
-            ``"location"``, ``"glow"``, ``"scale_coefficient"``.
+            ``"location"``, ``"glow"``. It has to be one whose whole meaning is
+            its per-row value, and two kinds are not, so both are rejected
+            rather than silently half-applied. A *derived* property
+            (``scale_coefficient``, the row norms of ``basis``;
+            ``Circle.radius``; ``border_color``) has no rows at all. A
+            *hierarchical* one (``basis``) has rows, but they are only half the
+            operation: a rotation or a scale has to carry the subtree's
+            locations along, which is why :meth:`~.Mob.rotate`,
+            :meth:`~.Mob.scale` and plain assignment are what change those.
         func
             Callable mapping the stacked current values to the stacked target
             values, both of shape ``(1, N, D)``. It is passed a copy, so it may
@@ -885,7 +912,8 @@ class Mob(
             If ``func`` returns a tensor whose shape is not the shape it was
             given.
         AttributeError
-            If ``attr`` is not an animatable attribute of this Mob.
+            If ``attr`` is not an animatable attribute of this Mob, or is a
+            derived or hierarchical one that cannot be mapped row-wise.
 
         See Also
         --------
@@ -904,13 +932,15 @@ class Mob(
             row.spawn()
 
             # Dim everything to a tenth of however visible it already is,
-            # then take each part to a quarter of its current size.
+            # then pull every point halfway in towards the world origin.
             row.map_animated_attribute('opacity', lambda o: o * 0.1)
-            row.map_animated_attribute('scale_coefficient', lambda s: s * 0.25)
+            row.map_animated_attribute('location', lambda p: p * 0.5)
 
             Scene.save_video()
         """
         self.check_properties_are_valid((attr,))
+        if self._writes_through_property_setter(attr):
+            self._raise_not_row_wise_error("map_animated_attribute", attr)
         current = self.get_animated_attribute(attr, include_descendants=True, copy=True)
         target = cast_to_tensor(func(current))
         if target.shape != current.shape:
@@ -1300,6 +1330,78 @@ class Mob(
     # Public properties that ``set`` would technically accept but that are
     # plumbing rather than animatable state.
     _NON_SETTABLE_PUBLIC_PROPERTIES = frozenset({"animation_manager"})
+
+    # Timeline-backed attributes that are nonetheless a hierarchical transform:
+    # a rotation or a scale has to carry the subtree's locations with it, which
+    # is what the property setter does and what a flat per-row write cannot.
+    # Measured: rotating every basis row of a Square by 45 degrees leaves its
+    # corners exactly where they were and moves only its texture frame, because
+    # a bezier circuit's geometry is its control points' locations, not its
+    # frame.
+    _HIERARCHICAL_ATTRIBUTES = frozenset({"basis"})
+
+    # What to reach for instead when one of these is addressed row-wise.
+    _NOT_ROW_WISE_HINTS = {
+        "basis": (
+            "Mob.rotate, Mob.scale and 'mob.basis = ...' all carry the subtree "
+            "with them"
+        ),
+        "scale_coefficient": (
+            "Mob.scale / Mob.set_scale resize a whole subtree, which is what "
+            "changing a scale means"
+        ),
+    }
+
+    def _writes_through_property_setter(self, attr: str) -> bool:
+        """Whether a by-name write to ``attr`` has to go through its property
+        setter instead of straight to its timeline rows.
+
+        Two kinds qualify, and the by-name API gets both wrong if it writes
+        rows directly: a *derived* property has no rows at all, and a
+        *hierarchical* one has rows that are only half the operation.
+        """
+        return attr in self._HIERARCHICAL_ATTRIBUTES or self._is_derived_attribute(attr)
+
+    def _is_derived_attribute(self, attr: str) -> bool:
+        """Whether ``attr`` is computed from other animatable attributes rather
+        than owning timeline rows of its own.
+
+        ``scale_coefficient`` (the row norms of ``basis``), ``Circle.radius``
+        and ``border_color`` are all of this kind: assigning to one works,
+        because the property setter forwards the write to whatever really
+        stores it, but there is no buffer for the by-name attribute API to
+        address. A name that is not a settable property at all is not derived,
+        just wrong, and is left to fail where it always did.
+        """
+        if attr in self.scene.timeline_manager.attr_to_timeline:
+            return False
+        member = getattr(type(self), attr, None)
+        if not isinstance(member, property) or member.fset is None:
+            return False
+        # The property generated for a registered animatable attribute forwards
+        # to set_animated_attribute itself, and its timeline is created by the
+        # first write -- so it looks derived right up until it is not.
+        return not getattr(member.fset, "_forwards_to_set_animated_attribute", False)
+
+    def _raise_not_row_wise_error(self, caller: str, attr: str):
+        if attr in self._HIERARCHICAL_ATTRIBUTES:
+            what = (
+                f"'{attr}' is a hierarchical transform -- writing its rows "
+                f"directly changes each frame without carrying the subtree's "
+                f"locations with it, so the geometry would not actually move"
+            )
+        else:
+            what = (
+                f"'{attr}' is a derived property -- it is computed from other "
+                f"animatable attributes rather than stored per row, so there "
+                f"are no values to map"
+            )
+        hint = self._NOT_ROW_WISE_HINTS.get(
+            attr,
+            f"assigning to it (mob.{attr} = ...) does work, since the property "
+            f"setter forwards the write",
+        )
+        raise AttributeError(f"{caller}({attr!r}, ...): {what}. {hint}.")
 
     def _settable_property_names(self) -> set[str]:
         """Names that :meth:`~.Mob.set` can meaningfully write on this Mob.

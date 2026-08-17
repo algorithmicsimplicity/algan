@@ -2,22 +2,11 @@
 Basic Animations
 ================
 
-In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob` s -- the objects that
-appear on screen -- and then changing them. Every change you make is *recorded*
-as an animation rather than applied instantly, so a script reads like a
-description of what happens, in order, from top to bottom.
-
-There are three ways to change a Mob, in increasing order of how much work they
-ask of you:
-
-1. **Assign to an animatable attribute** (``mob.color = BLUE``). Best for
-   appearance.
-2. **Call a Mob method** (``mob.move(RIGHT)``, ``mob.rotate(90, OUT)``). Best for
-   motion and geometry -- these are the workhorses.
-3. **Write an animated function** (:func:`~.animated_function`). For the rare
-   animation Algan has no method for.
-
-This tutorial covers all three.
+In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob` s
+(objects that
+appear on screen) and then changing them. By default, changes
+you make to a mob are animated over a one second sequence. More complex
+animations will be covered in the later :doc:`combining_animations` tutorial.
 
 Changing Animatable Attributes
 ------------------------------
@@ -49,8 +38,8 @@ Every :class:`~algan.animatable_base.mob.Mob` has these animatable attributes:
      - float
      - ``1`` is solid, ``0`` is invisible.
 
-These attributes are special: **assigning to one records a 1-second animation**
-that interpolates from the old value to the new one. Nothing else in your script
+These attributes are special: **assigning to one performs a 1-second animation**
+that interpolates from the old value to the new value. Nothing else in your script
 has to change.
 
 .. algan:: BasicChangingAttributes
@@ -75,12 +64,7 @@ has to change.
     write goes into the copy and is thrown away silently.
 
     Assignment is what Algan records, so both ``circle.location = circle.location
-    + UP`` and ``circle.location += UP`` work: Python routes the augmented form
-    back through the same setter. Prefer the explicit form, which is what the
-    rest of these tutorials use.
-
-    In practice you will reach for :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move` instead, which does the
-    arithmetic for you.
+    + UP`` and ``circle.location += UP`` work.
 
 A note on colours
 =================
@@ -100,13 +84,13 @@ into the colour you assign:
 A colour with a non-zero glow component emits light into nearby pixels (see
 :doc:`../advanced_user_tutorials/backgrounds_and_post_processing`). Algan ships
 the full Manim colour palette -- ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
-on -- plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
+on, plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
 Mob Methods
 -----------
 
-Most animation is done with methods rather than raw attribute assignment,
-because they say what you mean:
+:class:`~algan.animatable_base.mob.Mob` s also have a bunch of common operations built in to them as methods.
+Most of the time, these are what you will reach for.
 
 .. algan:: BasicMobMethods
 
@@ -128,20 +112,19 @@ The methods used above:
   :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`.
 * :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` turns the Mob about an axis through its own centre.
   Passing ``about_point`` turns it about *that* point instead, which sweeps the
-  Mob around in an arc -- ``mob.rotate(180, OUT, about_point=ORIGIN)`` swings it
+  Mob around in an arc: ``mob.rotate(180, OUT, about_point=ORIGIN)`` swings it
   half way around the origin.
 * :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` morphs the Mob into a different Mob. It returns the
   resulting Mob, so assign it back: ``mob = mob.become(Circle(add_to_scene=False))``.
   Build the target with ``add_to_scene=False``: it is only there to say what shape
-  to become, and is never drawn itself. Without that flag Algan registers it as a
+  to become, and is never itself drawn on screen. Without that flag Algan registers it as a
   Mob you meant to show, and warns that you never spawned it.
 
 Two more you will use constantly:
 
 * :meth:`~algan.animatable_base.mob.Mob.scale` grows or shrinks the Mob: ``mob.scale(2)`` doubles its size.
 * :meth:`~algan.animatable_base.animatable.Animatable.wait` holds the Mob still: ``mob.wait(2)`` leaves two
-  seconds of nothing happening. ``Scene.wait(2)`` does the same for the whole
-  scene.
+  seconds of nothing happening. ``Scene.wait(2)`` also does the same thing.
 
 :doc:`positioning_and_layout` covers the placement and sizing methods in full,
 and the :class:`~algan.animatable_base.mob.Mob` reference lists every method.
@@ -149,7 +132,7 @@ and the :class:`~algan.animatable_base.mob.Mob` reference lists every method.
 Spawning and despawning
 -----------------------
 
-A Mob does not appear -- and cannot be animated -- until it is *spawned*:
+A Mob does not appear, and cannot be animated, until it is *spawned*:
 
 .. code-block:: python
 
@@ -160,26 +143,21 @@ A Mob does not appear -- and cannot be animated -- until it is *spawned*:
 
 :meth:`~algan.animatable_base.animatable.Animatable.spawn` returns the Mob, so it chains:
 ``square = Square().spawn()``. Everything before ``spawn()`` happens instantly
-and costs no time on the timeline, which makes it the right place to do setup:
+and is not animated, which makes it the right place to do setup:
 
 .. code-block:: python
 
     # Position and size it first, then bring it on screen.
     square = Square(color=BLUE).scale(0.5).move(LEFT * 3).spawn()
 
-.. important::
-
-    Before a Mob is spawned, its animations are turned **off** regardless of
-    the surrounding animation context. That is why the chain above takes no time
-    at all.
-
 .. _animated-functions:
 
 Animated Functions
 ------------------
 
-Attribute changes and Mob methods cover the overwhelming majority of what you
-will want. For an animation Algan has no method for, write your own with the
+Attribute changes and Mob methods cover most common use cases.
+If you need an animation which can't be created by them,
+then you can make your own animations using the
 :func:`~.animated_function` decorator.
 
 .. algan:: BasicAnimatedFunction
@@ -216,14 +194,13 @@ over one second.
 .. note::
 
     Inside an :func:`~.animated_function`, attribute assignment is *not*
-    separately animated -- the function body describes a single frame, and the
-    decorator does the animating. Write the body vectorized over torch tensors;
-    it is evaluated once per frame for the whole Mob.
+    separately animated; the function body describes a single frame, and the
+    decorator does the animating.
 
 Where to next
 -------------
 
 * :doc:`mob_gallery` -- what Mobs are available.
 * :doc:`positioning_and_layout` -- putting Mobs exactly where you want them.
-* :doc:`controlling_animations` -- controlling *when* animations happen and how
+* :doc:`combining_animations` -- controlling *when* animations happen and how
   long they take.

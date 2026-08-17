@@ -16,7 +16,7 @@ reach for the highest one that does the job:
 Every method below is a normal animation: it takes one second by default and
 obeys the surrounding animation context. Wrap it in ``with Off():`` to place
 something instantly, or ``with Sync():`` to run several placements at once --
-:doc:`controlling_animations` covers those contexts in full, and
+:doc:`combining_animations` covers those contexts in full, and
 :doc:`child_mobs` covers the :class:`~algan.mobs.group.Group` used at the end of
 this page.
 
@@ -267,7 +267,7 @@ Where to next
 
 * :doc:`text_and_math` -- putting labels and formulae where you just learned to
   put shapes.
-* :doc:`controlling_animations` -- the ``Off()`` and ``Sync()`` contexts used
+* :doc:`combining_animations` -- the ``Off()`` and ``Sync()`` contexts used
   above, in full.
 * :doc:`child_mobs` -- Groups, parent/child propagation, and the rest of the
   layout methods.

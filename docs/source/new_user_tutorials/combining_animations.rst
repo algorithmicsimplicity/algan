@@ -1,12 +1,12 @@
-======================
-Controlling Animations
-======================
+====================
+Combining Animations
+====================
 
 So far every animation has taken exactly one second and happened strictly after
-the one before it. Real animations need more than that: things happening at the
+the one before it. Real videos need more control than that: things happening at the
 same time, overlapping, at different speeds, with different easing.
 
-Algan handles all of it with :class:`.AnimationContext` s -- ``with`` blocks that
+Algan handles all of this with :class:`.AnimationContext` s: ``with`` blocks that
 change *when* the animations inside them happen and *how long* they take. You
 never write a ``play`` call or pass a duration to an individual animation; you
 put the animations in the right block.
@@ -25,8 +25,8 @@ The Four Contexts
 
     Scene.save_video()
 
-Everything inside a :class:`.Sync` block plays *simultaneously*, so the square
-above slides and turns at once. The four basic contexts are:
+Everything inside a :class:`.Sync` block
+plays *simultaneously*, so the square above slides and turns at once. The four basic contexts are:
 
 .. list-table::
    :header-rows: 1
@@ -35,15 +35,15 @@ above slides and turns at once. The four basic contexts are:
    * - Context
      - Behaviour
    * - :class:`.Seq`
-     - Sequential -- each animation starts when the previous one finishes. This
-       is what happens when you are not in any context.
+     - with animations sequenced -- each animation starts when the previous one finishes. This
+       is the default behaviour when not in any context.
    * - :class:`.Sync`
-     - Simultaneous -- everything starts together.
+     - with animations synchronized -- everything starts together at the same time.
    * - :class:`.Lag`
-     - Overlapping -- ``Lag(r)`` starts the next animation when the current one
+     - with animations lagged -- ``Lag(r)`` starts the next animation when the current one
        is a fraction ``r`` of the way through.
    * - :class:`.Off`
-     - Instant -- changes apply in a single frame, taking no time at all.
+     - with animations off -- Instant, changes apply in a single frame, taking no time at all.
 
 .. algan:: ControllingContexts
 
@@ -70,14 +70,18 @@ above slides and turns at once. The four basic contexts are:
 
     Scene.save_video()
 
-:class:`.Lag` interpolates between the other two: ``Lag(0)`` is
-:class:`.Sync` and ``Lag(1)`` is :class:`.Seq`. Anything in between staggers the
-animations, which is what makes a row of shapes ripple instead of moving as a
-block.
-
 :class:`.Off` is how you do setup. Positioning, spawning and configuring things
 inside ``with Off():`` costs no timeline, so your video starts where you want it
 to:
+
+.. important::
+
+    Before a Mob is spawned, its animations are turned **Off** regardless of
+    the surrounding animation context.
+
+.. note::
+
+    Sync is equivalent to Lag(0) and Seq is equivalent to Lag(1).
 
 .. code-block:: python
 
@@ -89,11 +93,6 @@ to:
 
     # Now the video begins.
     diagram.rotate(360, UP)
-
-.. important::
-
-    Before a Mob is spawned its animations are off regardless of the surrounding
-    context -- which is why ``Square().scale(0.5).move(LEFT).spawn()`` is instant.
 
 Timing
 ======
@@ -123,91 +122,23 @@ Two arguments control how long a context takes:
     Scene.save_video()
 
 The first block squeezes four moves into one second total; the second gives each
-of its two animations five seconds. If you set both, ``run_time`` wins.
+of its two animations five seconds. If you set both, ``run_time`` overrides ``run_time_unit``.
 
 To leave a deliberate pause, use :meth:`~.Animatable.wait`:
 
 .. code-block:: python
 
     mob.wait(2)        # two seconds of this mob doing nothing
-    Scene.wait(2)      # two seconds of nothing happening at all
+    Scene.wait(2)      # exactly equivalent to mob.wait(2)
 
-Easing With Rate Functions
-==========================
-
-A ``rate_func`` maps progress through an animation (``0`` to ``1``) to how far
-along the change should be at that moment. It is what makes motion feel like it
-accelerates and settles rather than snapping between states.
-
-Algan's default is ``rate_funcs.smooth`` -- a gentle ease in and out. Pass a
-different one to any context:
-
-.. algan:: ControllingRateFuncs
-
-    from algan import *
-
-    mobs = [Square(color=c).scale(0.4) for c in (BLUE, GREEN, YELLOW)]
-    group = Group(mobs)
-    group.arrange_in_line(DOWN, buffer=0.8).move(LEFT * 3).spawn()
-
-    funcs = (rate_funcs.identity, rate_funcs.smooth, rate_funcs.ease_out_quintic)
-    with Sync(run_time=2):
-        for mob, func in zip(mobs, funcs):
-            with Seq(rate_func=func):
-                mob.move(RIGHT * 6)
-
-    Scene.save_video()
-
-The three squares cover the same distance in the same time but arrive
-differently. The ones you will reach for most:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 32 68
-
-   * - Function
-     - Feel
-   * - ``rate_funcs.smooth``
-     - Ease in and out. The default, and the right choice most of the time.
-   * - ``rate_funcs.identity``
-     - Constant speed. Use it for anything that should look mechanical -- a
-       rotating turntable, a camera orbit, a clock hand.
-   * - ``rate_funcs.ease_out_quintic``
-     - Fast start, long settle. Good for things arriving on screen.
-   * - ``rate_funcs.ease_in_expo`` / ``rate_funcs.ease_out_expo``
-     - Sharp acceleration / deceleration.
-   * - ``rate_funcs.delay_fade``, ``rate_funcs.pulse_fade``
-     - Shaped fades, used by Algan's own spawn animations.
-
-A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
-``[0, 1]``, so you can write your own:
-
-.. code-block:: python
-
-    def bounce_out(t):
-        return 1 - (1 - t) ** 2
-
-    with Seq(rate_func=bounce_out):
-        mob.move(DOWN * 2)
-
-``rate_funcs.inversed(f)`` gives you the time-reversed version of any rate
-function, and passing ``rate_func_compose`` instead of ``rate_func`` composes
-with the parent context's easing rather than replacing it.
-
-.. note::
-
-    A context that uses ``rate_func`` applies it across the *whole block*. If
-    you want a long orbit to run at constant speed, put ``rate_func`` on the
-    context that owns the orbit, not on an enclosing one that also holds other
-    animations.
 
 Nesting Contexts
 ================
 
-Contexts nest, and this is where they get powerful. A nested context is treated
+Contexts nest, and this is where they get really useful. A nested context is treated
 by its parent as a *single* animation, so you can build up a complex piece of
-choreography out of small readable blocks. A nested context also inherits every
-parameter you did not set -- ``run_time_unit``, ``lag_ratio``, ``rate_func`` --
+choreography out of small, readable (and reusable!) blocks. A nested context also inherits every
+parameter you did not set (``run_time_unit``, ``lag_ratio``, ``rate_func``)
 so you can set a house style on the outside and only override the exceptions.
 
 .. algan:: ControllingNesting
@@ -243,10 +174,79 @@ so you can set a house style on the outside and only override the exceptions.
 
     Scene.save_video()
 
-The outer :class:`.Sync` sees two things -- the circle's three-step routine and
-the square's -- and plays them together, even though each is internally a
+The outer :class:`.Sync` sees two things, the circle's three-step routine and
+the square's, and so plays them together, even though each is internally a
 sequence of pairs. Wrapping either routine in a function would let you reuse the
 whole choreography as one animation.
+
+Easing With Rate Functions
+==========================
+
+A ``rate_func`` maps progress through an animation (``0`` to ``1``) to how far
+along the change should be at that moment. It is what makes motion feel like it
+accelerates and settles rather than snapping between states.
+
+Algan's default is ``rate_funcs.smooth``: a gentle ease in and out. Pass a
+different one to any context:
+
+.. algan:: ControllingRateFuncs
+
+    from algan import *
+
+    mobs = [Square(color=c).scale(0.4) for c in (BLUE, GREEN, YELLOW)]
+    group = Group(mobs)
+    group.arrange_in_line(DOWN, buffer=0.8).move(LEFT * 3).spawn()
+
+    funcs = (rate_funcs.identity, rate_funcs.smooth, rate_funcs.ease_out_quintic)
+    with Sync(run_time=2):
+        for mob, func in zip(mobs, funcs):
+            with Seq(rate_func=func):
+                mob.move(RIGHT * 6)
+
+    Scene.save_video()
+
+The three squares cover the same distance in the same time but arrive
+differently. The ones you will reach for most:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 68
+
+   * - Function
+     - Feel
+   * - ``rate_funcs.smooth``
+     - Ease in and out. The default, and the right choice most of the time.
+   * - ``rate_funcs.identity``
+     - Constant speed. Use it for anything that should look mechanical (a
+       rotating turntable, a camera orbit, a clock hand).
+   * - ``rate_funcs.ease_out_quintic``
+     - Fast start, long settle. Good for things arriving on screen.
+   * - ``rate_funcs.ease_in_expo`` / ``rate_funcs.ease_out_expo``
+     - Sharp acceleration / deceleration.
+   * - ``rate_funcs.delay_fade``, ``rate_funcs.pulse_fade``
+     - Shaped fades, used by Algan's own spawn animations.
+
+A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
+``[0, 1]``, so you can write your own:
+
+.. code-block:: python
+
+    def bounce_out(t):
+        return 1 - (1 - t) ** 2
+
+    with Seq(rate_func=bounce_out):
+        mob.move(DOWN * 2)
+
+``rate_funcs.inversed(f)`` gives you the time-reversed version of any rate
+function, and passing ``rate_func_compose`` instead of ``rate_func`` composes
+with the parent context's easing rather than replacing it.
+
+.. note::
+
+    A context that uses ``rate_func`` applies it across the *whole block*. If
+    you want a long orbit to run at constant speed, put ``rate_func`` on the
+    context that owns the orbit, not on an enclosing one that also holds other
+    animations.
 
 Timing recipes
 ==============

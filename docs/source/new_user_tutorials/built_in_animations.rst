@@ -8,7 +8,7 @@ moving along a path, and applying a mathematical transformation to a whole
 diagram.
 
 They are all plain functions that take a Mob and record their animation on the
-timeline, so they compose with :doc:`animation contexts <controlling_animations>`
+timeline, so they compose with :doc:`animation contexts <combining_animations>`
 exactly like anything else:
 
 .. code-block:: python
@@ -265,6 +265,6 @@ Where to next
 * :doc:`updaters` -- animations that run indefinitely rather than for a fixed
   duration.
 * :doc:`child_mobs` -- applying an animation to a whole hierarchy at once.
-* :doc:`controlling_animations` -- the contexts that decide when these run.
+* :doc:`combining_animations` -- the contexts that decide when these run.
 * :doc:`../advanced_user_tutorials/extending_algan` -- writing your own
   reusable animation.

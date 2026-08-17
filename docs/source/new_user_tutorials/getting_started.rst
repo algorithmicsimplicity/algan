@@ -57,8 +57,8 @@ The next line
     text = Text('Hello World!', font_size=100)
 
 
-creates a Text object. In Algan, any object that can be displayed and animated
-on screen is called a **Mob** (short for Moveable Object). Here, we create a :class:`.Text` object,
+creates a Text object. In Algan, any object that can be animated and appears on screen is
+called a **Mob** (short for Moveable Object). Here, we create a :class:`.Text` object,
 which is a type of :class:`.Mob` that displays text. We initialize it with the content "Hello World!"
 and set its font size to 100 to take up most of the screen. This mob is then assigned the name *text* so we can
 refer to it later in the script.
@@ -112,23 +112,20 @@ of that was your animation. Every fresh ``python my_first_algan.py`` re-imports
 the library and re-prepares Algan's GPU kernels before it can draw a single
 pixel. For a one-second Hello World, that fixed cost is most of the wait.
 
-You only have to pay it once. The render daemon keeps a warm process alive and
-re-runs your script on demand:
+To prevent this startup cost on every script, you can run a daemon
+by opening a new terminal and entering this:
 
 .. code-block:: bash
 
-    uv run python -m algan.daemon my_first_algan.py --watch
+    uv run python -m algan.daemon
 
-Leave that running in its own terminal. With ``--watch`` it re-renders every
-time you save the file; you can also press Enter in the daemon's terminal to
-force a re-render, or ``q`` to quit. The first render still pays the startup
-cost, but every one after it costs only the render itself -- around a second
-for a scene this size, against roughly a minute from cold.
+While the daemon is running, any Algan scripts you run will be
+transferred to the daemon, which only needs to start up once.
 
 .. note::
 
     The daemon is entirely optional, and everything in these tutorials works
-    with a plain ``uv run python my_first_algan.py``. It is worth starting as
+    with a plain ``uv run python my_first_algan.py``. The daemon is worth using as
     soon as you are iterating on a scene rather than running it once. See
     :doc:`../advanced_user_tutorials/performance_and_quality` for the rest of
     its options.
@@ -194,14 +191,10 @@ disturbing the original:
 
     HD_60 = HD.set(frames_per_second=60)
 
-There are two more presets for specialised uses: ``THUMBNAIL`` (a single
-1280 x 720 frame) and ``SMOKE_TEST`` (32 x 32, for checking a script runs at all).
-
 See :meth:`~algan.scene.Scene.save_video` for the full list of parameters,
 :class:`~.VideoSettings` for building custom settings from scratch,
 :doc:`../advanced_user_tutorials/settings` for everything else you can
-configure, and :doc:`../advanced_user_tutorials/performance_and_quality` for
-which of those settings is worth changing.
+configure.
 
 Saving Images
 *************
@@ -226,7 +219,8 @@ script. Pass ``at`` to capture a specific moment, or several at once:
 .. code-block:: python
 
     Scene.save_frame("shot.png", at=2.5)             # shot.png at t=2.5s
-    Scene.save_frame("sheet.png", at=[0, 1, 2])      # sheet_0.png, sheet_1.png, ...
+    Scene.save_frame("shot.png", at=-0.5)             # shot.png at t=current_time - 0.5s
+    Scene.save_frame("sheet.png", at=[0.5, 1, 1.5])      # sheet_0.png, sheet_1.png, ...
 
 .. note::
 
@@ -276,7 +270,7 @@ The remaining new-user tutorials build on each other in order:
 * :doc:`mob_gallery` -- everything you can put on screen.
 * :doc:`positioning_and_layout` -- getting Mobs exactly where you want them.
 * :doc:`text_and_math` -- labels, LaTeX and animated numbers.
-* :doc:`controlling_animations` -- controlling *when* things happen and how long
+* :doc:`combining_animations` -- controlling *when* things happen and how long
   they take.
 * :doc:`built_in_animations` -- ready-made animations for drawing attention and
   transforming diagrams.

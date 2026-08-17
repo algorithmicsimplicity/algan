@@ -324,6 +324,12 @@ class Animatable:
         def prop(self, value):
             return self.set_animated_attribute(property_name, value)
 
+        # A generated setter *is* set_animated_attribute, so it must never be
+        # mistaken for a derived property's forwarding setter -- that would
+        # send the by-name write straight back into itself. The tag says so
+        # without depending on whether the timeline has been created yet, which
+        # it has not during the first write of __init__.
+        prop.fset._forwards_to_set_animated_attribute = True
         setattr(class_to_attach_to, property_name, prop)
 
     @property

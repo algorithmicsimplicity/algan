@@ -1000,6 +1000,85 @@ def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
 
 
 @pytest.mark.fast
+def test_by_name_attribute_api_handles_derived_properties():
+    """``scale_coefficient`` is the row norms of ``basis``, not a buffer.
+
+    The by-name API addresses timeline rows, so a derived property has nothing
+    for it to read. Both halves used to get that wrong in opposite directions:
+    ``map_animated_attribute`` raised a bare ``AttributeError`` with no message
+    at all, and ``set_animated_attribute`` allocated a ``scale_coefficient``
+    buffer nothing reads and animated nothing.
+    """
+    from algan.mobs.shapes_2d import Circle
+
+    scene = SceneManager.instance().current_scene
+    row = Group([Square().move(algan.LEFT * 2), Circle()])
+    row.spawn()
+
+    with pytest.raises(AttributeError, match="derived property"):
+        row.map_animated_attribute("scale_coefficient", lambda s: s * 0.25)
+    # The message has to say what to do instead, not just what failed.
+    with pytest.raises(AttributeError, match=r"Mob\.scale"):
+        row.map_animated_attribute("scale_coefficient", lambda s: s * 0.25)
+
+    by_name = Group([Square().move(algan.LEFT * 2), Circle()])
+    by_name.spawn()
+    by_name.set_animated_attribute("scale_coefficient", torch.tensor([0.5, 0.5, 0.5]))
+    assigned = Group([Square().move(algan.LEFT * 2), Circle()])
+    assigned.spawn()
+    assigned.scale_coefficient = torch.tensor([0.5, 0.5, 0.5])
+
+    assert "scale_coefficient" not in scene.timeline_manager.attr_to_timeline
+    for a, b in ((by_name, assigned), (by_name.children[0], assigned.children[0])):
+        assert torch.allclose(a.scale_coefficient, b.scale_coefficient)
+        assert torch.allclose(a.location, b.location)
+    assert float(by_name.scale_coefficient.flatten()[0]) == pytest.approx(0.5)
+
+    # An attribute that really is timeline-backed still goes the normal way.
+    row.map_animated_attribute("opacity", lambda o: o * 0.5)
+    assert float(row.opacity.flatten()[0]) == pytest.approx(0.5, abs=1e-4)
+
+
+@pytest.mark.fast
+def test_by_name_basis_write_carries_the_subtree():
+    """``basis`` has rows, and writing them alone is still half the operation.
+
+    A shape's geometry is its control points' *locations*, so a rotation has to
+    move them too -- which the property setter does and a flat per-row write
+    does not. Measured before the fix: a 45 degree rotation through
+    ``set_animated_attribute`` left a Square's corners byte-identical to an
+    untouched one, while ``mob.basis =`` moved them.
+    """
+    from algan.animation_timeline.animation_contexts import Off
+
+    half = torch.tensor(45.0 * 3.141592653589793 / 180.0)
+    cos, sin = torch.cos(half), torch.sin(half)
+    rotation = torch.tensor(
+        [[cos, sin, 0.0], [-sin, cos, 0.0], [0.0, 0.0, 1.0]]
+    ).reshape(1, 1, 9)
+
+    def corners(mob):
+        return mob.get_render_primitives().corners.reshape(-1, 3)
+
+    untouched = Square().spawn()
+    by_name = Square().spawn()
+    assigned = Square().spawn()
+    with Off():
+        by_name.set_animated_attribute("basis", rotation)
+        assigned.basis = rotation
+
+    assert torch.allclose(corners(by_name), corners(assigned), atol=1e-5)
+    assert not torch.allclose(corners(by_name), corners(untouched), atol=1e-5)
+
+    # Mapping it row-wise cannot be made to mean anything, so it is refused
+    # rather than half-applied to the texture frame alone.
+    with pytest.raises(AttributeError, match="hierarchical transform"):
+        untouched.map_animated_attribute("basis", lambda b: b * 0.25)
+    with pytest.raises(AttributeError, match=r"Mob\.rotate"):
+        untouched.map_animated_attribute("basis", lambda b: b * 0.25)
+
+
+@pytest.mark.fast
 def test_unknown_setting_lists_the_valid_names():
     with pytest.raises(AlganConfigurationError, match="frames_per_second"):
         VideoSettings((8, 8), 4).set(fps=60)

@@ -14,10 +14,10 @@ If you have not installed Algan yet, start with :doc:`../installation`.
 
    getting_started
    basic_animations
+   combining_animations
    mob_gallery
    positioning_and_layout
    text_and_math
-   controlling_animations
    built_in_animations
    updaters
    child_mobs

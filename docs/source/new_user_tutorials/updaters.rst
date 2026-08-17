@@ -158,7 +158,7 @@ Where to next
 -------------
 
 * :doc:`child_mobs` -- rigid parent/child attachment, the simpler alternative.
-* :doc:`controlling_animations` -- fixed-duration animations, which is what you
+* :doc:`combining_animations` -- fixed-duration animations, which is what you
   want for most things.
 * :doc:`../advanced_user_tutorials/animating_out_of_order` -- how the timeline
   works underneath, and how to write to it directly.

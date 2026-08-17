@@ -2248,13 +2248,23 @@ class AnimationTimeline:
     def get_inds(self, attr, mob, value=None):
         if attr not in self.attr_to_timeline:
             if value is None:
-                raise AttributeError
+                # A bare AttributeError here used to surface as an empty
+                # traceback, which reads as an engine crash rather than as
+                # "that attribute is not timeline-backed".
+                raise AttributeError(
+                    f"No mob in this Scene has an animatable attribute named "
+                    f"'{attr}', so there is no value to read. Attributes in "
+                    f"use: {', '.join(sorted(self.attr_to_timeline)) or 'none'}."
+                )
             else:
                 self.attr_to_timeline[attr] = AttributeTimeline(value.shape[-1])
         timeline = self.attr_to_timeline[attr]
         if mob.id not in timeline.mob_id_to_inds:
             if value is None:
-                raise AttributeError
+                raise AttributeError(
+                    f"{type(mob).__name__} owns no rows of the '{attr}' "
+                    f"attribute timeline, so it has no value to read."
+                )
             else:
                 timeline.add(mob, value)
         return self.attr_to_timeline[attr].mob_id_to_inds[mob.id]
