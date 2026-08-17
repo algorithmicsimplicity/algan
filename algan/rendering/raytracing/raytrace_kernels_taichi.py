@@ -119,6 +119,138 @@ BARYCENTRIC_EPSILON = 1e-4
 # second is discarded so the mesh behaves as one cohesive surface (in
 # particular, a partially transparent mesh must not blend twice on seams).
 TRIANGLE_EDGE_EPSILON = 2e-4
+
+# WATERTIGHT ray/triangle intersection (Woop-Benthin-Wald), gated off.
+# DESIGN_mesh_identity.md ss3.2.
+#
+# The two epsilons above are a matched pair and neither means anything alone:
+# BARYCENTRIC_EPSILON dilates every triangle so a ray on a shared edge cannot
+# miss BOTH neighbours and leave a crack, and TRIANGLE_EDGE_EPSILON removes the
+# duplicate hit that the dilation then manufactures.
+#
+# WBW removes the need for both. It transforms the ray into a space where it is
+# the +z axis, so a shared edge's edge function is computed from the SAME two
+# projected vertices in both triangles and comes out as the exact negative --
+# exactly one neighbour accepts, with no dilation and no duplicate to discard.
+# It is the same argument the raster path's exact fixed-point rule already makes
+# (``_ss_pixel`` in raster_taichi.py).
+#
+# Import-time, not a live setting: it changes the compiled kernel body, so a
+# runtime toggle would silently reuse a cached kernel (the _AA_SAMPLES
+# cache-trap rule). Clear the Taichi cache when flipping it.
+WATERTIGHT_TRI = env_flag("ALGAN_WATERTIGHT_TRI", False)
+
+
+@ti.func
+def _edge_is_canonical(px, py, qx, qy) -> bool:
+    """Deterministic owner of an edge a ray passes through EXACTLY.
+
+    A zero edge function means the ray is on the edge, and there the sign test
+    alone accepts in both neighbours -- exact negation makes zero zero either
+    way. Consistently wound neighbours traverse a shared edge in opposite
+    directions, so any strict total order on the projected endpoints picks
+    exactly one of them. This is the analogue of the raster path's top-left
+    fill rule, and it is why that rule PARTITIONS its samples.
+    """
+    return (py < qy) or ((py == qy) and (px < qx))
+
+
+@ti.func
+def _tri_hit(ro, rd, v0, v1, v2):
+    """Ray/triangle intersection: ``(ok, w1, w2, t)``.
+
+    ``w1``/``w2`` are the barycentric weights of ``v1``/``v2`` (so
+    ``w0 = 1 - w1 - w2``) and ``t`` the ray parameter, matching what the three
+    call sites used to compute inline. Under ``WATERTIGHT_TRI`` this is
+    Woop-Benthin-Wald; otherwise it is the shipped dilated Moller-Trumbore,
+    unchanged and bit-for-bit.
+    """
+    ok = 0
+    w1 = 0.0
+    w2 = 0.0
+    t = 0.0
+    if ti.static(WATERTIGHT_TRI):
+        a = v0 - ro
+        b = v1 - ro
+        c = v2 - ro
+        # Permute so the ray's dominant axis becomes z, written as explicit
+        # cases: Taichi indexes a vector by a runtime value only under a global
+        # flag, and codegens it poorly in the hottest loop in the renderer.
+        ax = ti.abs(rd[0])
+        ay = ti.abs(rd[1])
+        az = ti.abs(rd[2])
+        a_x, a_y, a_z = a[0], a[1], a[2]
+        b_x, b_y, b_z = b[0], b[1], b[2]
+        c_x, c_y, c_z = c[0], c[1], c[2]
+        d_x, d_y, d_z = rd[0], rd[1], rd[2]
+        if (ax >= ay) and (ax >= az):
+            a_x, a_y, a_z = a[1], a[2], a[0]
+            b_x, b_y, b_z = b[1], b[2], b[0]
+            c_x, c_y, c_z = c[1], c[2], c[0]
+            d_x, d_y, d_z = rd[1], rd[2], rd[0]
+        elif ay >= az:
+            a_x, a_y, a_z = a[2], a[0], a[1]
+            b_x, b_y, b_z = b[2], b[0], b[1]
+            c_x, c_y, c_z = c[2], c[0], c[1]
+            d_x, d_y, d_z = rd[2], rd[0], rd[1]
+        if d_z < 0.0:
+            # Preserve winding when the dominant component points the other way.
+            a_x, a_y = a_y, a_x
+            b_x, b_y = b_y, b_x
+            c_x, c_y = c_y, c_x
+            d_x, d_y = d_y, d_x
+        if d_z != 0.0:
+            inv_dz = 1.0 / d_z
+            sx = d_x * inv_dz
+            sy = d_y * inv_dz
+            axs = a_x - sx * a_z
+            ays = a_y - sy * a_z
+            bxs = b_x - sx * b_z
+            bys = b_y - sy * b_z
+            cxs = c_x - sx * c_z
+            cys = c_y - sy * c_z
+            # Edge functions, one per opposite vertex.
+            u = cxs * bys - cys * bxs
+            v = axs * cys - ays * cxs
+            w = bxs * ays - bys * axs
+            lo = ti.min(u, ti.min(v, w))
+            hi = ti.max(u, ti.max(v, w))
+            inside = (lo >= 0.0) or (hi <= 0.0)
+            if inside:
+                # An exactly-zero edge function is the shared-edge case; break
+                # the tie so one neighbour owns it.
+                if u == 0.0:
+                    inside = inside and _edge_is_canonical(bxs, bys, cxs, cys)
+                if v == 0.0:
+                    inside = inside and _edge_is_canonical(cxs, cys, axs, ays)
+                if w == 0.0:
+                    inside = inside and _edge_is_canonical(axs, ays, bxs, bys)
+            if inside:
+                det = u + v + w
+                if det != 0.0:
+                    inv_det = 1.0 / det
+                    t = (u * a_z + v * b_z + w * c_z) * inv_dz * inv_det
+                    w1 = v * inv_det
+                    w2 = w * inv_det
+                    ok = 1
+    else:
+        e1 = v1 - v0
+        e2 = v2 - v0
+        pv = rd.cross(e2)
+        det = e1.dot(pv)
+        if ti.abs(det) > 1e-12:
+            inv_det = 1.0 / det
+            tvec = ro - v0
+            w1 = tvec.dot(pv) * inv_det
+            qv = tvec.cross(e1)
+            w2 = rd.dot(qv) * inv_det
+            if ((w1 >= -BARYCENTRIC_EPSILON)
+                    and (w2 >= -BARYCENTRIC_EPSILON)
+                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
+                t = e2.dot(qv) * inv_det
+                ok = 1
+    return ok, w1, w2, t
+
 # Hits gathered per BVH traversal by the deterministic renderer. Depth
 # peeling consumes hits strictly front-to-back; collecting a small batch of
 # nearest hits per traversal lets a ray crossing several translucent
@@ -790,31 +922,19 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                         v2 = ti.math.vec3(tri_pos[tp, prim, 6],
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
-                        e1 = v1 - v0
-                        e2 = v2 - v0
-                        pv = rd.cross(e2)
-                        det = e1.dot(pv)
-                        if ti.abs(det) > 1e-12:
-                            inv_det = 1.0 / det
-                            tvec = ro - v0
-                            w1 = tvec.dot(pv) * inv_det
-                            qv = tvec.cross(e1)
-                            w2 = rd.dot(qv) * inv_det
-                            if ((w1 >= -BARYCENTRIC_EPSILON)
-                                    and (w2 >= -BARYCENTRIC_EPSILON)
-                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                t = e2.dot(qv) * inv_det
-                                layer = layer_offset + ti.cast(prim, ti.f32)
-                                if ((t > MIN_HIT_DISTANCE)
-                                        and _comes_after(t, layer, t_prev,
-                                                         layer_prev)
-                                        and _comes_after(best_t, best_layer,
-                                                         t, layer)):
-                                    best_t = t
-                                    best_layer = layer
-                                    best_prim = prim
-                                    best_w1 = w1
-                                    best_w2 = w2
+                        hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        if hit_ok != 0:
+                            layer = layer_offset + ti.cast(prim, ti.f32)
+                            if ((t > MIN_HIT_DISTANCE)
+                                    and _comes_after(t, layer, t_prev,
+                                                     layer_prev)
+                                    and _comes_after(best_t, best_layer,
+                                                     t, layer)):
+                                best_t = t
+                                best_layer = layer
+                                best_prim = prim
+                                best_w1 = w1
+                                best_w2 = w2
             else:
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
@@ -1794,68 +1914,55 @@ def _collect_hits(refit: ti.template(),
                             v2 = ti.math.vec3(tri_pos[tp, prim, 6],
                                               tri_pos[tp, prim, 7],
                                               tri_pos[tp, prim, 8])
-                            e1 = v1 - v0
-                            e2 = v2 - v0
-                            pv = rd.cross(e2)
-                            det = e1.dot(pv)
-                            if ti.abs(det) > 1e-12:
-                                inv_det = 1.0 / det
-                                tvec = ro - v0
-                                w1 = tvec.dot(pv) * inv_det
-                                qv = tvec.cross(e1)
-                                w2 = rd.dot(qv) * inv_det
-                                if ((w1 >= -BARYCENTRIC_EPSILON)
-                                        and (w2 >= -BARYCENTRIC_EPSILON)
-                                        and (w1 + w2
-                                             <= 1.0 + BARYCENTRIC_EPSILON)):
-                                    t = e2.dot(qv) * inv_det
-                                    layer = (layer_offset_triangles
-                                             + ti.cast(prim, ti.f32))
-                                    accept = ((t > MIN_HIT_DISTANCE)
-                                              and _comes_after(
-                                                  t, layer, t_prev,
-                                                  layer_prev)
-                                              and not _comes_after(
-                                                  t, layer, opq_t,
-                                                  opq_layer))
-                                    if accept and (count == KBUF):
-                                        accept = _comes_after(
-                                            worst_t, worst_layer, t, layer)
-                                    if accept:
-                                        slot = worst_idx
-                                        if count < KBUF:
-                                            slot = count
-                                            count += 1
-                                        hit_t[slot] = t
-                                        hit_layer[slot] = layer
-                                        hit_prim[slot] = prim
-                                        w0 = 1.0 - w1 - w2
-                                        eh = 1 if (ti.min(w0,
-                                                          ti.min(w1, w2))
-                                                   < TRIANGLE_EDGE_EPSILON) \
-                                            else 0
-                                        hit_flags[slot] = 1 | (eh << 2)
-                                        hit_a[slot] = w1
-                                        hit_b[slot] = w2
-                                        if (opq != 0) and _comes_after(
-                                                opq_t, opq_layer, t, layer):
-                                            opq_t = t
-                                            opq_layer = layer
-                                        if count == KBUF:
-                                            worst_idx = 0
-                                            worst_t = hit_t[0]
-                                            worst_layer = hit_layer[0]
-                                            for q in ti.static(
-                                                    range(1, KBUF)):
-                                                if _comes_after(
-                                                        hit_t[q],
-                                                        hit_layer[q],
-                                                        worst_t,
-                                                        worst_layer):
-                                                    worst_idx = q
-                                                    worst_t = hit_t[q]
-                                                    worst_layer = \
-                                                        hit_layer[q]
+                            hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                            if hit_ok != 0:
+                                layer = (layer_offset_triangles
+                                         + ti.cast(prim, ti.f32))
+                                accept = ((t > MIN_HIT_DISTANCE)
+                                          and _comes_after(
+                                              t, layer, t_prev,
+                                              layer_prev)
+                                          and not _comes_after(
+                                              t, layer, opq_t,
+                                              opq_layer))
+                                if accept and (count == KBUF):
+                                    accept = _comes_after(
+                                        worst_t, worst_layer, t, layer)
+                                if accept:
+                                    slot = worst_idx
+                                    if count < KBUF:
+                                        slot = count
+                                        count += 1
+                                    hit_t[slot] = t
+                                    hit_layer[slot] = layer
+                                    hit_prim[slot] = prim
+                                    w0 = 1.0 - w1 - w2
+                                    eh = 1 if (ti.min(w0,
+                                                      ti.min(w1, w2))
+                                               < TRIANGLE_EDGE_EPSILON) \
+                                        else 0
+                                    hit_flags[slot] = 1 | (eh << 2)
+                                    hit_a[slot] = w1
+                                    hit_b[slot] = w2
+                                    if (opq != 0) and _comes_after(
+                                            opq_t, opq_layer, t, layer):
+                                        opq_t = t
+                                        opq_layer = layer
+                                    if count == KBUF:
+                                        worst_idx = 0
+                                        worst_t = hit_t[0]
+                                        worst_layer = hit_layer[0]
+                                        for q in ti.static(
+                                                range(1, KBUF)):
+                                            if _comes_after(
+                                                    hit_t[q],
+                                                    hit_layer[q],
+                                                    worst_t,
+                                                    worst_layer):
+                                                worst_idx = q
+                                                worst_t = hit_t[q]
+                                                worst_layer = \
+                                                    hit_layer[q]
                 else:
                     if g_pend != 0:
                         g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
@@ -2111,22 +2218,10 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                         v2 = ti.math.vec3(tri_pos[tp, prim, 6],
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
-                        e1 = v1 - v0
-                        e2 = v2 - v0
-                        pv = rd.cross(e2)
-                        det = e1.dot(pv)
-                        if ti.abs(det) > 1e-12:
-                            inv_det = 1.0 / det
-                            tvec = ro - v0
-                            w1 = tvec.dot(pv) * inv_det
-                            qv = tvec.cross(e1)
-                            w2 = rd.dot(qv) * inv_det
-                            if ((w1 >= -BARYCENTRIC_EPSILON)
-                                    and (w2 >= -BARYCENTRIC_EPSILON)
-                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                t = e2.dot(qv) * inv_det
-                                if (t > MIN_HIT_DISTANCE) and (t < max_t):
-                                    hit = 1
+                        hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        if hit_ok != 0:
+                            if (t > MIN_HIT_DISTANCE) and (t < max_t):
+                                hit = 1
             else:
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend

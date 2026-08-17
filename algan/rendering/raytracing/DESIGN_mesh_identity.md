@@ -289,7 +289,7 @@ deliberately does not. Wrapping it would give the last cell column `u = 0` where
 the texture needs `u = 1`, running the map backwards across that column. The
 duplicate uv column exists precisely to carry that discontinuity.
 
-3.2 Watertight ray/triangle intersection  [needs CUDA to qualify]
+3.2 Watertight ray/triangle intersection  [LANDED, gated off]
 ------------------------------------------------------------------
 With seams welded and interior edges bit-identical, a watertight test
 (Woop–Benthin–Wald: ray-space transform, consistent edge-function signs, a
@@ -304,8 +304,43 @@ top-left fill rule that *partitions* sub-pixel samples (`_ss_pixel`,
 two triangles' shared-edge functions exact negatives — that argument is what a
 ray-path version has to reproduce.
 
-Gate `ALGAN_WATERTIGHT_TRI`, default off. With it on, `BARYCENTRIC_EPSILON`'s
-dilation goes to zero and all 8 seam-rule sites compile out.
+**LANDED**, gated `ALGAN_WATERTIGHT_TRI`, default off. Implemented as `_tri_hit`
+in `raytrace_kernels_taichi.py`, one `@ti.func` that both arms go through, so the
+three intersection sites (`_nearest_triangle_hit`, `_collect_hits`,
+`_anyhit_opaque_tri`) can no longer drift apart. Read at **import**, not live: it
+changes the compiled kernel body, so a runtime toggle would silently reuse a
+cached kernel (the `_AA_SAMPLES` cache-trap rule). Clear the Taichi cache when
+flipping it.
+
+The permutation is written as three explicit cases rather than dynamic vector
+indexing, which Taichi supports only under a global flag and codegens poorly in
+the hottest loop in the renderer. The exact-zero edge case gets a
+canonical-endpoint tie-break (`_edge_is_canonical`) — consistently wound
+neighbours traverse a shared edge in opposite directions, so a strict total order
+on the projected endpoints picks exactly one owner. That is the ray-side analogue
+of the raster path's top-left fill rule, and it is the part the sign test alone
+does not give you: exact negation makes a zero edge function zero in *both*
+neighbours.
+
+**Verified on CPU**, `tests/unit_tests/test_watertight_triangle.py`, which asserts
+whichever arm the environment selected:
+
+* Watertight arm — a ray exactly on a shared edge hits **exactly one**
+  neighbour, at every one of 37 positions along it.
+* Shipped arm — the same rays hit **both**, which is precisely the duplicate
+  `TRIANGLE_EDGE_EPSILON` exists to discard, and is the clearest statement of
+  why the two epsilons are a matched pair.
+
+End to end, with the hybrid raster disabled so all visibility goes through the
+ray path, a Sphere/Cube/plane scene moves **11 of 419904 pixels by at most 1
+channel value** across the flag — edge-localized and sub-quantization, which is
+the expected signature of removing a 1e-4 barycentric dilation. With the hybrid
+raster on (the default), the same scene is byte-identical, because primary
+visibility never touches this code.
+
+Still needed before the default can flip: §4.7's CUDA runs, and a perf A/B — the
+extra branches sit in the innermost loop of three traversal kernels and nothing
+here measures their cost.
 
 3.3 Delete the epsilon apparatus  [blocked on 3.2 qualifying]
 --------------------------------------------------------------

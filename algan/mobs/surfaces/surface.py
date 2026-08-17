@@ -308,9 +308,7 @@ def surface_weld_flags(grid):
     if not rt_settings.WELD_SURFACE_SEAMS or grid.dim() < 3:
         return (False, False, False)
     tol = _WELD_TOLERANCE
-    wrap_x = bool(
-        (grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item()
-    )
+    wrap_x = bool((grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item())
     pole_lo = bool(
         (grid[..., :, 0, :] - grid[..., :1, 0, :]).abs().lt(tol).all().item()
     )
@@ -538,9 +536,7 @@ def get_render_primitives_batched(surfaces):
     """
     grids = torch.stack([s._reshape_grid_for_render(s.grid.location) for s in surfaces])
     weld = surface_weld_flags(grids)
-    vertex_normals = grid_to_triangle_vertices(
-        compute_grid_vertex_normals(grids), weld
-    )
+    vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids), weld)
     corners = grid_to_triangle_vertices(grids, weld)
     return [
         s._build_render_primitive(
@@ -2601,7 +2597,6 @@ class Surface(Mob):
         vertex normals. ``precomputed_corners`` lets the batched path pass in
         corners gathered on the whole surface stack at once.
         """
-
         weld = weld or (False, False, False)
 
         def expand_grid_to_verts(x):
