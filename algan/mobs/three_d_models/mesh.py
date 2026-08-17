@@ -412,9 +412,7 @@ class TriangleMesh(Mob):
         f = faces.numpy()
         # Undirected edge -> face incidence, keyed by the sorted vertex pair, so
         # two faces are adjacent exactly when they share an edge.
-        pairs = np.concatenate(
-            [f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], axis=0
-        )
+        pairs = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], axis=0)
         pairs = np.sort(pairs, axis=1)
         keys, edge_of = np.unique(pairs, axis=0, return_inverse=True)
         face_of = np.tile(np.arange(n_faces), 3)

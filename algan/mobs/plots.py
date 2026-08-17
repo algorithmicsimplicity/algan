@@ -307,8 +307,6 @@ class FunctionPlotMob(Mob):
         self.despawn_tilewise_recursive()
 
 
-
-
 class Quad(Mob):
     def __init__(self, corner_locations, color=None, *args, **kwargs):
         if kwargs.get("scene") is None:

@@ -1642,8 +1642,6 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return self._pack_projected_flat_geometry(camera)
 
 
-
-
 def _evaluate_cubic_bezier_batch(p, t):
     """p: [..., 4, 3] control points, t: broadcastable parameter in [0, 1)."""
     mt = 1.0 - t

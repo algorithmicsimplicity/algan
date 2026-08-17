@@ -1172,13 +1172,9 @@ def _merge_scene(primitives):
         device = _projected_scene_device(primitives)
         if device.type != "cpu":
             empty_cache(force_gc=False)
-    triangles = [
-        p for p in primitives if isinstance(p, RayTracedTrianglePrimitive)
-    ]
+    triangles = [p for p in primitives if isinstance(p, RayTracedTrianglePrimitive)]
     beziers = [p for p in primitives if isinstance(p, RayTracedBezierCircuitPrimitive)]
-    unknown = [
-        p for p in primitives if p not in triangles and p not in beziers
-    ]
+    unknown = [p for p in primitives if p not in triangles and p not in beziers]
     if unknown:
         raise TypeError(
             "The ray traced renderer can only draw ray traced primitives; "
@@ -1581,9 +1577,8 @@ def _merge_scene(primitives):
     def _extra_has_refractive(extra):
         return bool((extra[..., 9:12] > 1e-6).any())
 
-    scene["has_refractive"] = (
-        _extra_has_refractive(scene["tri_extra"])
-        or bool(scene.get("tex_has_refractive"))
+    scene["has_refractive"] = _extra_has_refractive(scene["tri_extra"]) or bool(
+        scene.get("tex_has_refractive")
     )
 
     # A surface that is both PBR-reflective and semi-transparent must trace its
@@ -1633,10 +1628,9 @@ def _merge_scene(primitives):
                 return True
         return False
 
-    scene["has_refl_transparent"] = (
-        _has_refl_transparent(triangles, _pbr_from_extra("_rt_tri_extra"))
-        or _has_refl_transparent(beziers, _pbr_from_circuit_meta)
-    )
+    scene["has_refl_transparent"] = _has_refl_transparent(
+        triangles, _pbr_from_extra("_rt_tri_extra")
+    ) or _has_refl_transparent(beziers, _pbr_from_circuit_meta)
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(
@@ -1741,8 +1735,7 @@ def _merge_scene(primitives):
         int(value) for value in torch.unique(ids).tolist()
     )
     scene["has_user_pipeline"] = any(
-        material_id >= _USER_PIPELINE_BASE
-        for material_id in scene["tri_material_ids"]
+        material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )
     scene["has_any_visible"] = any(
         scene[f"{prefix}_has_visible"] for prefix in ("tri", "bez")
@@ -1763,11 +1756,7 @@ def _merge_scene(primitives):
     # indexes the textured wavefront kernel consumes.
     scene["textured_active"] = False
     _rts = SETTINGS.raytracing
-    if (
-        _rts.WF_TEXTURED
-        and scene["num_triangles"] > 0
-        and scene["num_circuits"] == 0
-    ):
+    if _rts.WF_TEXTURED and scene["num_triangles"] > 0 and scene["num_circuits"] == 0:
         _build_textured_scene(scene, num_frames, device)
         scene["textured_active"] = True
 
@@ -1775,9 +1764,7 @@ def _merge_scene(primitives):
     # traverse one (hybrid-raster primaries, no shadows, no reflective /
     # refractive / scatter materials), defer them entirely; the tracer builds
     # them on demand via ``build_deferred_bvhs`` if anything changes its mind.
-    _finalize_bvhs(
-        scene, tri_bvh_inputs, bez_bvh_inputs, num_frames, device
-    )
+    _finalize_bvhs(scene, tri_bvh_inputs, bez_bvh_inputs, num_frames, device)
 
     # The merged tensors replace the per-collection ones; release the
     # originals so peak GPU memory stays close to one copy of the scene.

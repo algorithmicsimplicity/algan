@@ -229,9 +229,7 @@ def _projection_anti_alias_level(scene, primitives):
     if not all(isinstance(primitive, ray_types) for primitive in primitives):
         return requested, False
 
-    has_tri = any(
-        isinstance(p, RayTracedTrianglePrimitive) for p in primitives
-    )
+    has_tri = any(isinstance(p, RayTracedTrianglePrimitive) for p in primitives)
     has_bez = any(isinstance(p, RayTracedBezierCircuitPrimitive) for p in primitives)
     possible = (
         (has_tri or has_bez)

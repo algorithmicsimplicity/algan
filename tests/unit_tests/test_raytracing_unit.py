@@ -155,8 +155,6 @@ def _dummy_bezier_parts():
     )
 
 
-
-
 def _split_tri_verts(tri_verts):
     """Split the legacy packed per-corner layout [T, N, 3, 8] (position,
     normal, reflectivity, roughness) into the renderer's hot/cold arrays:
@@ -269,9 +267,7 @@ def _run_kernel(
         finalize_samples(samples_per_pixel, 0, 0, 1.0, accum, out)
     elif samples_per_pixel > 0:
         accum = torch.zeros((T, W * H, 5), device=DEVICE)
-        path_trace_scene_stbvh(
-            0, *shared, samples_per_pixel, indirect, out, accum
-        )
+        path_trace_scene_stbvh(0, *shared, samples_per_pixel, indirect, out, accum)
         finalize_samples(samples_per_pixel, 0, 0, 1.0, accum, out)
     else:
         # Deterministic (samples-per-pixel == 1) rendering used the standalone
@@ -803,5 +799,3 @@ def test_physical_emissive_surface():
     assert near[0] > far[0] + 8, "emissive panel did not light the floor"
     assert near[0] > near[1] + 4, "emissive lighting lost the panel's color"
     print("ok: emissive (glow) surfaces light their surroundings")
-
-

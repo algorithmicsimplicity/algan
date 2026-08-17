@@ -2282,7 +2282,6 @@ class Surface(Mob):
 
         return self._screen_space_error(S_points, P_true)
 
-
     @staticmethod
     def _normalize_texture_shape(tex, channels):
         """Normalize a user-supplied texture to ``[T, W, H, channels]``.
