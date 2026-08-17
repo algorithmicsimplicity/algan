@@ -30,12 +30,9 @@ then re-runs your script on demand:
 
 .. code-block:: bash
 
-    python -m algan.daemon scene.py --watch
+    python -m algan.daemon
 
-With ``--watch`` it re-renders whenever you save the file. A re-render then costs
-only the render itself -- around a second for a simple scene, against roughly twenty
-for a cold start. Press Enter in the daemon terminal to force a re-render, or ``q``
-to quit; it also listens on a localhost socket so you can bind a key in your editor.
+A re-render then costs only the render itself -- around a second for a simple scene, against roughly twenty
 
 .. important::
 

@@ -3,25 +3,26 @@ Updaters
 ========
 
 Every animation so far has had a start and an end: you said what should change
-and Algan worked out the frames in between. Sometimes that is the wrong model --
-you want a rule that holds *continuously*, for as long as it is needed, without
-knowing in advance how long that is.
+and Algan worked out the frames in between. Sometimes you want a rule that holds
+*continuously*, for as long as it is needed, without knowing in advance how long that is.
 
-That is what an updater is: a function Algan runs once per frame, from the moment
+That is what an updater is for: a function Algan runs once per frame, from the moment
 you add it until you take it away.
 
 Reach for an updater when you want:
 
-* something to spin, pulse or drift indefinitely in the background;
-* one Mob to stay attached to another however that other one moves;
+* something to spin, pulse or drift indefinitely in the background.
+* one Mob to stay attached to another however that other one moves.
 * a label to track a value that other animations are changing.
+* an idle animation that plays continuously.
 
 The Basics
 ==========
 
-:meth:`~.Animatable.add_updater` takes a function of two arguments -- the Mob
-itself and the elapsed time in seconds since the updater was added -- and returns
-an id you keep if you want to stop it later.
+:meth:`~.Animatable.add_updater` takes a function of two arguments, the Mob
+itself and the elapsed time in seconds since the updater was added,
+and applies that function on every frame while the updater is active. :meth:`~.Animatable.add_updater`
+returns an id you can use to stop the updater later.
 
 .. algan:: UpdatersRotating
 
@@ -53,7 +54,7 @@ an id you keep if you want to stop it later.
 
 .. important::
 
-    The second parameter must appear in the signature even if you never use it.
+    The second parameter must appear in the updater's signature even if you never use it.
 
 Note that the updaters keep running through the ``square.color = GREEN``
 animation. Updaters and ordinary animations coexist: the timeline drives the
@@ -62,6 +63,8 @@ animations, and the updaters run on top of the result at every frame.
 Stopping an updater
 ===================
 
+Use :meth:`~.Animatable.remove_updater` or :meth:`~.Animatable.remove_all_updaters`
+
 .. code-block:: python
 
     updater_id = mob.add_updater(...)
@@ -69,7 +72,7 @@ Stopping an updater
     mob.remove_updater(updater_id)   # stop this one
     mob.remove_all_updaters()        # stop all of this Mob's updaters
 
-Removing an updater does not undo what it did -- the Mob keeps whatever state it
+Removing an updater does not undo what it did, the Mob keeps whatever state it
 was last left in.
 
 Attaching One Mob to Another
@@ -77,7 +80,7 @@ Attaching One Mob to Another
 
 The most common use is keeping something pinned to something else. Because the
 updater re-reads the target's state every frame, it survives *any* way the target
-moves -- an animation, another updater, a camera change:
+moves (e.g. an animation, another earlier applied updater, a camera change):
 
 .. algan:: UpdatersTracking
 
@@ -101,10 +104,12 @@ and an updater when the relationship has to hold over time.
 .. note::
 
     Adding the same Mob as a child of another (see :doc:`child_mobs`) is a third
-    option, and usually the best one when the two should move together rigidly.
-    An updater is for relationships a parent/child link cannot express -- offsets
-    that depend on the target's orientation, its size, or an arbitrary
-    calculation.
+    option, and usually the best one when two Mobs should move together rigidly,
+    however the parent-child relation can be interefered with when animations
+    directly target a child. A link created with an updater will not break
+    no matter what. Updaters can also express more general relations
+    (like an offset that dependd on the target's orientation) that parent-child
+    relations can not.
 
 Using the Elapsed Time
 ======================
@@ -124,7 +129,7 @@ periodic and open-ended motion easy, and it does not depend on the frame rate:
 
 Note the second one: it sets the *total* rotation as a function of ``t`` rather
 than adding a bit each frame. Write updaters as a function of ``t`` from a fixed
-starting state rather than as incremental steps -- Algan may materialize frames
+starting state rather than as incremental steps, as Algan may materialize frames
 in a different order than they are played, so an updater that accumulates gives
 inconsistent results.
 
@@ -150,7 +155,7 @@ works, which is what you want as soon as the rule needs more than one line:
         angle = t * 60
         self.move_to(ORIGIN + RIGHT * 3)
         self.orbit(angle, UP, about_point=ORIGIN)
-        self.look_at(ORIGIN)
+        self.look_at(Scene.camera)
 
     moon.add_updater(orbit_and_face)
 

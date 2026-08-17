@@ -39,9 +39,9 @@ constants:
    * - ``UP`` / ``DOWN``
      - ``±y``
      - Up and down the screen
-   * - ``OUT`` / ``IN``
-     - ``∓z``
-     - ``OUT`` is towards the viewer, ``IN`` is away
+   * - ``IN`` / ``OUT``
+     - ``±z``
+     - ``OUT`` is towards the viewer (out of the screen), ``IN`` is away (into the screen).
    * - ``ORIGIN``
      - ``(0, 0, 0)``
      - The centre of the world, where new Mobs start
@@ -248,13 +248,14 @@ For collections, put them in a :class:`~algan.mobs.group.Group` and let it do th
     from algan import *
 
     mobs = [Square() for _ in range(9)]
-    group = Group(mobs)
-    group.scale(1 / 3).spawn()
-    group.arrange_in_line(RIGHT)
+    group = Group(mobs).spawn()
+    with Sync():
+        group.arrange_in_line(RIGHT)
+        group.fit_to_screen_rectangle()
     group.wait()
     with Sync():
-        group.scale(2)
         group.arrange_in_grid(3)
+        group.fit_to_screen_rectangle()
     group.wait()
 
     Scene.save_video()

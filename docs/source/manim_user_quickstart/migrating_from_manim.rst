@@ -107,7 +107,7 @@ sequence readable:
             square.move(DOWN)
         circle.move(RIGHT)
 
-:doc:`../new_user_tutorials/controlling_animations` covers all of this properly,
+:doc:`../new_user_tutorials/combining_animations` covers all of this properly,
 including rate functions and the timing recipes.
 
 Angles are in degrees
@@ -303,7 +303,7 @@ Where to next
 
 * :doc:`../new_user_tutorials/importing_from_manim` -- the compatibility layer in
   detail, and the route for anything it does not expose.
-* :doc:`../new_user_tutorials/controlling_animations` -- animation contexts,
+* :doc:`../new_user_tutorials/combining_animations` -- animation contexts,
   timing and rate functions in full.
 * :doc:`../new_user_tutorials/index` -- the tutorial series, if you would rather
   learn Algan on its own terms than by translation.

@@ -214,7 +214,7 @@ Linting
 Repository conventions
 ======================
 
-``AGENTS.md`` records the repository-specific rules a change is expected to
+``CLAUDE.md`` records the repository-specific rules a change is expected to
 follow, and ``AGENTS_DETAILED.md`` is the architecture reference. In
 particular: preserve Scene containment, keep Taichi sources named
 ``*_taichi.py``, and validate rendering changes against a small deterministic

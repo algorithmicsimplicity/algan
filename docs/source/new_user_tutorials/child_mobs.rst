@@ -56,8 +56,7 @@ What "propagate" means depends on the attribute:
      - The child moves by the same displacement.
    * - :attr:`~algan.animatable_base.mob.Mob.basis` (via :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` / :meth:`~algan.animatable_base.mob.Mob.scale`)
      - The child's basis is rotated or scaled the same way, *and* its position
-       relative to the parent is preserved -- expressed in the parent's basis,
-       the child's location does not change.
+       relative to the parent is preserved.
    * - :ref:`color <reference-mob-color>`, :ref:`opacity <reference-mob-opacity>`, :ref:`glow <reference-mob-glow>`
      - The child gets the same change.
    * - :meth:`~algan.animatable_base.animatable.Animatable.spawn` / :meth:`~algan.animatable_base.animatable.Animatable.despawn`
@@ -135,6 +134,8 @@ keeping a separate list:
 
     group[0].move(UP)
 
+    group.arrange_in_grid()
+
     Scene.save_video()
 
 Arranging
@@ -154,13 +155,10 @@ ordinary animations, so members slide into place rather than jumping.
 .. important::
 
     Both arrangements use a uniform cell size, taken from the largest member. If
-    one Mob is much bigger than the rest -- or bigger than the frame -- the whole
+    one Mob is much bigger than the rest the whole
     layout inflates to match it and can end up off-screen. Give your Mobs
     comparable sizes before arranging, or :meth:`~algan.animatable_base.mob.Mob.scale` the group
     afterwards.
-
-    A common trap: :class:`~.Torus` defaults to ``major_radius=3``, which is
-    wider than the visible frame.
 
 ``arrange_in_line`` also takes ``alignment_direction`` to line the members up on
 an edge rather than their centres, and ``equal_displacement`` to space centres
@@ -176,7 +174,7 @@ Sub-Mobs
 Indexing a Mob that has internal structure gives you a view onto part of it.
 :ref:`character_mobs <reference-text-character-mobs>` is the most useful case (see :doc:`text_and_math`),
 and a multi-part :class:`~.Tex` exposes each of the strings it was built from via
-:meth:`~algan.mobs.text.Tex.get_segment` -- not as ``children``, which hold the
+:meth:`~algan.mobs.text.Tex.get_segment`, not as ``children``, which hold the
 single packed glyph batch.
 
 .. note::
@@ -188,7 +186,6 @@ single packed glyph batch.
 Where to next
 =============
 
+* :doc:`mob_gallery` -- gallery of built in Mobs.
 * :doc:`three_d_basics` -- moving into three dimensions.
 * :doc:`positioning_and_layout` -- the layout methods Groups build on.
-* :doc:`../advanced_user_tutorials/multi_scene_projects` -- organising a long
-  video into Scenes.
