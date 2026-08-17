@@ -45,8 +45,40 @@ Branch `claude/renderer-mesh-id-rework-n5ezw5`, on top of `efb3a95`:
     c87c26b  Add _aa_run_gate_check: attribute the diced-mesh AA gap
     b49b01b  Delete the unreachable curved PN-patch renderer
 
-`997 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `--fast`
-green; `ruff check --no-fix` and `ruff format --check` clean.
+Since merged to `master` (`9a23b46`), and the whole of §4 has now been run on
+**CUDA** (GTX 1050, driver 576.52, Taichi 1.7.4, torch 2.7.1+cu128, Taichi cache
+cleared first). Both CUDA baseline sets are regenerated against the shipped
+defaults, and everything portable is green:
+
+    pytest -q tests/unit_tests tests/fast      1046 passed, 89 skipped
+    pytest -q tests/full_renders                  7 passed
+    ruff check --no-fix / ruff format --check   clean
+
+The two **CPU** baseline sets are the one piece of debt left, and it cannot be paid
+from this machine — see §3.5, which measures why.
+
+**Four defects were found by qualifying the gates rather than by using them.**
+The first two are fixed here; the last two are diagnosed and scoped, and each
+keeps its gate off. They are the most useful thing in this round, so they are
+listed before the wins:
+
+1. **`ONE_MESH` did not actually enable the relaxed run gate it "implies"** — the
+   implication was wired on the kernel side and not on the host side, so the
+   relaxed scan ran over fragment lists whose area donors had already been
+   discarded. Worth most of §6.6's win on flat geometry (-8% of ink wobble against
+   -63%). §6.6.1; now one predicate, with an AST audit.
+2. **The cap's per-pixel ceiling was built with a float atomic**, so a render was
+   not reproducible: two consecutive renders of `materials_and_lighting` differed
+   by 28 channel values over 9.6% of a frame, because the ceiling feeds a
+   *threshold*. §6.6.4; now accumulated in float64 and rounded, verified bitwise
+   stable.
+3. **§3.3's scope was wrong** — "delete the epsilons" is two deletions with
+   different owners, because `BARYCENTRIC_EPSILON` has two ungated consumers in
+   the raster front-end that `_tri_hit` never touches. §3.3.
+4. **Only the render path is weld-aware** — with §3.1 on, `convert_to_pn_soup`
+   and `get_render_primitives` disagree about a `Sphere`'s triangulation, so the
+   mesh renders one way and morphs another. Found by flipping the gate and
+   running the whole suite, not by rendering. §3.1; the gate stays off.
 
 **THE GATES, and what each is worth.** Eight switches now, all declared in
 `algan/environment.py` and surfaced on `SETTINGS.raytracing.experimental`.
@@ -55,28 +87,54 @@ green; `ruff check --no-fix` and `ruff format --check` clean.
     ---------------------------------------------------------------------------
     ALGAN_MESH_ID                    ON       per-mesh tri_obj (§2.2, §3.5)
     ALGAN_POLYHEDRON_WINDING         ON       consistent face winding (§3.7)
-    ALGAN_ANALYTIC_AA_ONE_MESH       off      THE AA RESULT (§6.6), implies ↓
-    ALGAN_ANALYTIC_AA_RUN_FULL       off      relaxed run gate (§6.3.2)
+    ALGAN_ANALYTIC_AA_ONE_MESH       ON       THE AA RESULT (§6.6), implies ↓
+    ALGAN_ANALYTIC_AA_RUN_FULL       off      the relaxed run gate ALONE (§6.3.2)
     ALGAN_WELD_SURFACE_SEAMS         off      shared seam/pole vertices (§3.1)
     ALGAN_WATERTIGHT_TRI             off      Woop-Benthin-Wald (§3.2)
     ALGAN_BEZ_BVH_SPLIT              off      median-split bezier BVH (§3.4)
     ALGAN_ANALYTIC_AA_RUN_RULE       redist.  pre-existing (v2 §4.4)
 
-**THE HEADLINE: the diced-mesh AA gap is closed.** `_aa_line_check` opened this
-whole line of work by measuring a tessellated `Cylinder` at 0.057 px of ink
-wobble against 0.014 for a flat quad and 0.004 for a bezier `Line`. With
-`ALGAN_ANALYTIC_AA_ONE_MESH=1`:
+Three of the eight are on, and the four still off are off for stated reasons
+rather than for want of attention:
 
-    kind           shipped     now
-    bezier Line     0.0042   0.0042   (circuits never entered this path)
-    flat quad       0.0138   0.0051   -63%
-    Cylinder        0.0568   0.0039   -93%  — below the bezier Line
-    Cylinder fine   0.0772   0.0411   -47%
+* `ALGAN_ANALYTIC_AA_RUN_FULL` is **subsumed**, not pending: `ONE_MESH` implies it
+  (`aa_grp = 3`, and `_aa_run_full` accepts 2 or 3), so the switch now only selects
+  the relaxed gate *without* the cap — a configuration kept for the harness.
+* `ALGAN_WATERTIGHT_TRI` is correctness-qualified and **cost-unqualified**: its cost
+  cannot be measured on a thermally throttled machine, and because the flag is read
+  at import an in-process alternating A/B is impossible. §3.2 says what would settle
+  it.
+* `ALGAN_BEZ_BVH_SPLIT` is byte-identical and shows **no** measurable speed-up, so
+  there is no evidence either way; §3.4 recommends leaving it off until something
+  counts traversal steps.
+* `ALGAN_WELD_SURFACE_SEAMS` has its *stated* risk closed (byte-identical on a
+  static frame, textures and normal maps included) and picked up two new ones on
+  the way: only the render path is weld-aware, so with it on a `Sphere` morphs
+  from a different triangulation than it renders; and it does move a moving PN
+  scene, so it needs baselines after all. §3.1.
 
-A `Cylinder` now anti-aliases better than a bezier `Line`, and `on-lattice` —
-the share of silhouette pixels landing on a multiple of 1/8 — falls from 57–91%
-to 0–2%. The coverage is no longer sample-based. §6.6 is the rule, §6.3 the
-diagnosis it rests on.
+**THE HEADLINE: the diced-mesh AA gap is largely closed, and one earlier claim
+about it was too strong.** `_aa_line_check` opened this whole line of work by
+measuring a tessellated `Cylinder` at 0.057 px of ink wobble against 0.014 for a
+flat quad and 0.004 for a bezier `Line`. With `ALGAN_ANALYTIC_AA_ONE_MESH=1`,
+measured on **CUDA** (see §6.6.1 for why the CPU column is not the shipping one):
+
+    kind           shipped   CUDA now         earlier CPU claim
+    bezier Line     0.0042    0.0042          0.0042  (never entered this path)
+    flat quad       0.0138    0.0052  -63%    0.0051
+    Cylinder        0.0568    0.0124  -78%    0.0039   <- DOES NOT REPRODUCE
+    Cylinder fine   0.0772    0.0429  -44%    0.0411
+
+`on-lattice` — the share of silhouette pixels landing on a multiple of 1/8 —
+falls from 8–91% to 0–1.6%, and coverage error against an exact reference falls
+70–100% on all eleven harness cases. **The coverage is no longer sample-based**,
+which is the result. §6.6 is the rule, §6.3 the diagnosis it rests on.
+
+**A previous revision of this section said "a `Cylinder` now anti-aliases better
+than a bezier `Line`". It does not.** On CUDA the best available is 0.0124
+against the Line's 0.0042. The win is real and large; the ordering claim was
+wrong. §6.6.1 has the reconciliation, including the gate bug that accounted for
+the rest of the gap and is now fixed.
 
 **What the rule is.** Where every fragment in a pixel is an opaque triangle of
 ONE surface, the mesh may claim at most `max(front_area, back_area)` in total —
@@ -110,41 +168,75 @@ where it belongs; none was quietly dropped.
 
 **WHERE EVERY SECTION STANDS.**
 
-    §3.1  weld surface seams/poles     BUILT, gated off
-    §3.2  watertight tri intersection  BUILT, gated off
-    §3.3  delete the epsilons          BLOCKED on §3.2's flip (structural, §3.3)
-    §3.4  median-split bezier BVH      BUILT, gated off
-    §3.5  mesh identity                FLIPPED ON, tests/fast CPU re-baselined
-    §3.6  two-level BVH                NOT STARTED, scoped in §3.6
+    §3.1  weld surface seams/poles     STAYS OFF — pixel case proved, but only the
+                                       render path is weld-aware (§3.1)
+    §3.2  watertight tri intersection  QUALIFIED on correctness, cost UNMEASURABLE
+                                       here; stays off, and §3.3 stays blocked
+    §3.3  delete the epsilons          BLOCKED, and it is TWO deletions not one —
+                                       the raster path has its own consumers (§3.3)
+    §3.4  median-split bezier BVH      MEASURED: byte-identical, no speed-up;
+                                       recommendation is to leave it off
+    §3.5  mesh identity                FLIPPED ON, both devices re-baselined
+    §3.6  two-level BVH                NOT STARTED, and the perf case is MEASURED
+                                       not to justify starting (§3.6)
     §3.7  Polyhedron winding           FLIPPED ON, same re-baseline
-    §6.3.2 relaxed AA run gate         BUILT, gated off
-    §6.6  one-mesh coverage cap        BUILT, gated off — the AA result
+    §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off
+    §6.6  one-mesh coverage cap        FLIPPED ON — the AA result, plus a gate bug
+                                       found and fixed while qualifying it
 
-**WHAT IS LEFT, in priority order.**
+**WHAT IS LEFT, in priority order.** Every item in the previous revision of this
+list has been run; these are what running them produced.
 
-1. **Qualify and flip §6.6.** It is the largest measured quality win on this
-   branch and the only one still off for want of baselines. Needs: CPU +
-   CUDA baselines for `tests/fast` and `tests/full_renders`, a look at the diff
-   videos, and a perf A/B (it adds a host segment reduction, one per-fragment
-   f32 array, and a running clamp in two resolve kernels — none measured).
-   Two open items are named in §6.6 and neither blocks a decision on its own:
-   the `--verify` gap on two cases, and 234/3508 residual interior notches on
-   the fine rod.
-2. **Pay the baseline debt on a CUDA machine and run §4.1–§4.4.** Three of the
-   four baseline sets are stale, and the full-render CPU set must be regenerated
-   on the machine that owns it, not here (§3.5).
-3. **Qualify §3.2** — §4.7's watertightness runs plus a perf A/B on its extra
-   branches in three traversal kernels. That is the only thing that unblocks
-   §3.3.
-4. **Decide §3.1 and §3.4.** Both are built, both are cheap, both need only
-   baselines. §3.1 additionally wants a check on a textured closed surface (the
-   uv seam is deliberately NOT welded — see §3.1).
-5. **§3.6 if the perf case justifies it** — a multi-day project with a
-   structural blocker, scoped in §3.6, not a switch.
+1. **Finish the cap: scale `dens` with `eff` (§6.6.2).** This is the one known
+   defect inside a shipped default. The cap clips a fragment's CLAIM and leaves
+   its OCCLUSION write on the uncapped `dens`, so a partially capped fragment
+   hides more of the background than it paints — measured as a claim-vs-occlusion
+   gap up to 0.22 where the shipped arm sits at float dust. It is simultaneously
+   the residual interior notches and the two `--verify` failures, so one fix
+   should close three symptoms. §6.6.2 has the change, and the reasoning for why
+   the obvious objection to it does not apply. Needs a gate, both devices'
+   baselines, and a re-run of `_aa_run_gate_check` and `_aa_line_check`.
+2. **Build a traversal-step (or instruction) counter.** The single missing
+   instrument in this whole area, and the reason three separate items are stuck:
+   §3.2's cost, §3.4's inherited "~20-25% fewer traversal steps", and §3.6's
+   entire case all need it and none of them can be settled without it. A day's
+   work against three multi-day questions.
+3. **§3.2's cost, on hardware that is not throttling.** Correctness is done and
+   clean (§3.2/§4.7: zero cracks, no double blend, byte-identical on opaque
+   geometry). Only the cost is open, and this machine cannot resolve it — the
+   controls drift as much as the target kernels, and the flag is read at import so
+   an in-process alternating A/B is impossible. Then §3.3's ray-path half.
+4. **§3.3, as two deletions with different owners.** Not one deletion gated on
+   §3.2: `BARYCENTRIC_EPSILON` also has two ungated consumers in the raster
+   front-end's own candidate acceptance, which `_tri_hit` never touches. §3.3 has
+   the consumer table. Do not promise the per-ray `f32` until both have landed.
+5. **One weld-aware triangle builder, then flip §3.1.** Its stated risk is
+   closed (byte-identical on a static frame, textures included). What blocks it
+   is that `grid_to_triangle_vertices` (the morph path) does not know about the
+   gate `get_grid_to_triangle_indices` (the render path) applies, so a `Sphere`
+   would morph from a different triangulation than it renders. Route both through
+   one builder first; then it needs baselines, because it *does* move a moving PN
+   scene (§3.1) even though a static frame cannot see it.
+6. **A purpose-built scene for §4.6.** All three `SHADOW_ANYHIT` modes are
+   byte-identical on the suite's only shadow scene, so the prediction is untested
+   rather than confirmed. It needs a translucent stack whose edge hits sit within
+   `DEPTH_TIE_EPSILON` of an opaque hit, and a >256-surface stack for the second
+   cause (which is the peel depth and has nothing to do with identity).
+7. **§3.6 only if something changes.** Measured not to justify starting: the BVH
+   build it would amortize is ~1% of a shadowed render, and the instancing win it
+   would unlock needs a workload with thousands of repeated meshes, which no
+   scene in the repo has.
 
 Do **not** start by regrouping the run rule, by consulting `E` only inside the
 existing gate, by buying more samples, or by suppressing the far sheet. All four
 were built or measured here and none is the lever — §6.
+
+And do **not** repeat these four, each of which this document asserted and
+measurement refuted: that a `Cylinder` now beats the bezier `Line` (§6.6.1); that
+`ONE_MESH` alone gives the relaxed gate (§6.6.1 — it did not, and that was a bug);
+that welding moves pixel baselines (§3.1 — byte-identical, textures included); and
+that the PN deletion shrank the compile surface (§4.4 — the deleted variant was
+never compiled).
 
 
 ================================================================================
@@ -208,7 +300,7 @@ net. `num_pn == 0` also disappears as an always-true clause from
 merged scene tensors and derived render flags hashed equal and the batch windows
 unchanged.
 
-2.2 Mob-declared surface identity, gated off (`690009a`)
+2.2 Mob-declared surface identity — now shipped ON (`690009a`, flipped by `2d1432a`)
 --------------------------------------------------------
 `tri_obj` is what the analytic-AA resolve groups fragments by, and its
 granularity was one id per merged **collection member** — right only when one
@@ -238,8 +330,8 @@ separate interpenetrating solids, not one mesh.
 
 Verified: a `Cube` + `Icosahedron` go from 32 surfaces to 2.
 
-`ALGAN_MESH_ID` **defaults off**, so this is byte-identical. Why, and what would
-justify flipping it: §4.5.
+`ALGAN_MESH_ID` **now defaults ON** (§3.5). It was introduced default-off, which is
+why §4.5 reads as a case for flipping it; that case is closed.
 
 2.3 A measurement harness (`c87c26b`)
 -------------------------------------
@@ -268,8 +360,9 @@ have, and it is what answered §6.3. No engine code changed; output is untouched
 3. WHAT HAS NOT LANDED
 ================================================================================
 
-3.1 Weld the `Sphere` u-seam and the pole fans  [LANDED, gated off]
-----------------------------------------------------------------
+3.1 Weld the `Sphere` u-seam and the pole fans  [LANDED, STAYS OFF — the morph
+    path is not weld-aware]
+-------------------------------------------------------------------------------
 `get_grid_to_triangle_indices` (`surface.py:211`) builds two triangles per
 grid cell and **never bridges column `W-1` back to column 0**, so a closed
 surface's wraparound is a genuine two-copy seam. Measured on a `Sphere`, float32:
@@ -294,7 +387,7 @@ duplicate column, and emit a single shared pole vertex instead of a fan. This
 retires two authoring-side epsilon special-cases (the 1e-4 normal merge and the
 pole-normal salvage) and slightly reduces triangle count.
 
-**LANDED**, gated `ALGAN_WELD_SURFACE_SEAMS`, default off, surfaced as
+**LANDED**, gated `ALGAN_WELD_SURFACE_SEAMS`, now default **ON**, surfaced as
 `SETTINGS.raytracing.experimental.set(weld_surface_seams=...)`. Implemented as
 described: `surface_weld_flags(grid)` reads `(wrap_x, pole_lo, pole_hi)` off the
 grid once per primitive build, `get_grid_to_triangle_indices` takes it (and keys
@@ -312,7 +405,11 @@ Two things §3.1 asserted above are **wrong**, both measured:
   the welded vertices were coincident to 1.7e-07 and the dropped triangles had
   zero area, so nothing the rasterizer can see changes. `pytest -q --fast`
   passes with the gate on. The remaining risk is a texture-mapped or
-  normal-mapped closed surface, which is why it is still default off.
+  normal-mapped closed surface. That risk has since been measured and is not
+  real (see the qualification below). Read that qualification before quoting
+  this bullet: "byte-identical" here is a claim about a STATIC frame, and the
+  full renders do move (§7.18). The gate stays off, for a reason that turned out
+  not to be about pixels at all.
 * **"Retires two authoring-side epsilon special-cases."** It does not.
   `compute_grid_vertex_normals` accumulates over the **grid**, not over the
   welded triangle list, so column 0 still misses the wrap-around neighbourhood
@@ -330,7 +427,72 @@ deliberately does not. Wrapping it would give the last cell column `u = 0` where
 the texture needs `u = 1`, running the map backwards across that column. The
 duplicate uv column exists precisely to carry that discontinuity.
 
-3.2 Watertight ray/triangle intersection  [LANDED, gated off]
+**QUALIFIED ON CUDA, AND THE ONE STATED RISK IS CLEARED.** The reason this stayed
+off was "a texture-mapped or normal-mapped closed surface". Measured,
+`benchmarks/_weld_check.py`, `--res md`, CUDA:
+
+    shape                        tris off   tris on   max|d|   px>2
+    plain (Sphere/Cyl/Cone/Torus)    6668      6572        0      0
+    checker (colour texture)         4096      3968        0      0
+    normals (normal map)             4096      3968        0      0
+
+The weld demonstrably engaged — 128 triangles fewer on the sphere, which is
+exactly the two poles' `W-1` degenerate triangles at `W = 64` — and output is
+byte-identical on all three, textured and normal-mapped included. The
+checkerboard is the instrument on purpose: a one-column uv error would mirror or
+shift a hard edge, which a smooth photo would hide. **§3.1's stated risk — a
+textured or normal-mapped closed surface — is closed.**
+
+**But "byte-identical" does not generalize, and this harness is too narrow to have
+shown that.** Running the full suites across the gate contradicts it:
+
+    scene                    max|d|   worst-frame px    frames
+    shapes_and_timeline           0     0 (0.000%)       0/301
+    text_and_media                0     0 (0.000%)       0/182
+    materials_and_lighting       31 28501(10.223%)      92/179
+    solids_and_camera            54 20159 (7.231%)     222/239
+
+The split is exactly the geometry families: the two scenes built from circuits and
+flat meshes do not move, and **both scenes carrying `Surface`/PN geometry do**.
+`_weld_check` renders a *single static frame*; the full renders move a camera over
+adaptively diced PN surfaces, and the dice level is chosen per patch per frame from
+projected size, so a different triangle list can land on a different level. That is
+precisely the class `CLAUDE.md` warns is "invisible to `--fast`".
+
+So the honest statement is: the weld is byte-identical on a static frame, including
+textured and normal-mapped closed surfaces, and it **does** move a moving PN scene.
+It needs baselines after all — which, combined with the morph-path inconsistency
+below, is why it stays off.
+
+**AND IT STILL MUST NOT FLIP YET — flipping it on and running the whole suite
+found the real blocker, which is not about pixels.** Two tests fail, and they are
+not stale expectations:
+
+* `test_pn_mesh.test_surface_conversion_reproduces_its_logical_pn_primitive` —
+  `convert_to_pn_soup(Sphere)` and `Sphere.get_render_primitives()` return
+  *different triangles*.
+* `test_point_cloud_rendering.test_dot_cloud_spheres_have_disconnected_triangle_topology`
+  — 400 triangles against a hard-coded `2*(W-1)*(H-1)` = 480, which is exactly the
+  two pole fans the weld drops.
+
+The first is the one that matters. The weld lives in
+`get_grid_to_triangle_indices`, and **only the render path calls it**. The morph
+path builds its triangles with `grid_to_triangle_vertices`
+(`morph_conversions._grid_to_pn_soup`), which knows nothing about the gate. So with
+the weld on, a `Sphere` renders with one triangulation and morphs from another —
+a mesh that disagrees with itself.
+
+That is the same class of defect as §6.6.1's half-wired gate and §7.11's lesson:
+one question, two answerers. The fix is the same shape as §3.2's `_tri_hit` — put
+every consumer of the grid topology behind one weld-aware builder — and until that
+exists the gate stays off. The pixel evidence above stands and does not need
+redoing; what is missing is topological consistency, not more rendering.
+
+The `DotCloud` test is then a one-line consequence: derive its expected count from
+the same builder instead of restating the unwelded formula.
+
+3.2 Watertight ray/triangle intersection  [LANDED, correctness QUALIFIED,
+    cost UNMEASURABLE here, stays off]
 ------------------------------------------------------------------
 With seams welded and interior edges bit-identical, a watertight test
 (Woop–Benthin–Wald: ray-space transform, consistent edge-function signs, a
@@ -379,9 +541,87 @@ the expected signature of removing a 1e-4 barycentric dilation. With the hybrid
 raster on (the default), the same scene is byte-identical, because primary
 visibility never touches this code.
 
-Still needed before the default can flip: §4.7's CUDA runs, and a perf A/B — the
-extra branches sit in the innermost loop of three traversal kernels and nothing
-here measures their cost.
+**§4.7 IS NOW RUN ON CUDA, AND THE CORRECTNESS HALF PASSES CLEANLY.**
+`benchmarks/_watertight_check.py`, `--res ld`, hybrid raster **off** so all
+primary visibility goes through `_tri_hit`:
+
+    scene / metric                   shipped arm      watertight arm
+    grazing quads   drawn px             18514              18514
+                    CRACKS                   0                  0
+    diced Sphere    drawn px             59272              59272
+    (192x96)        CRACKS                   0                  0
+    translucent     ridges @ a=0.35    114/35736          114/35736
+                    ridges @ a=0.60          0                  0
+                    ridges @ a=0.85          0                  0
+
+* **No cracks in f32, and this is the result that mattered.** Removing the
+  `BARYCENTRIC_EPSILON` dilation is exactly the change that could open a seam, and
+  on the two scenes built to provoke it — quads at 84/87/89 degrees of tilt, and a
+  192x96 sphere filling the frame — the watertight arm leaks **zero** enclosed
+  background pixels. Counted by filling the silhouette's holes, not eyeballed.
+* **No double blend introduced.** The ridge counts are identical, so the
+  watertight arm is not blending a shared edge twice where the epsilon used to
+  clean up after the dilation.
+
+And the two arms differ almost nowhere. Per-scene image diff across the flag:
+
+    grazing         0 pixels of 419904 differ  (byte-identical)
+    diced Sphere    0 pixels of 419904 differ  (byte-identical)
+    translucent     2 pixels differ, max 15 / 25 / 35 at a = 0.35 / 0.60 / 0.85
+
+That distribution is the mechanism stated in pixels: on **opaque** geometry a
+duplicate edge hit is absorbed by the nearer one and the two arms cannot differ,
+so they do not; on **translucent** geometry the duplicate is what would blend
+twice, and that is where the arms disagree — on two pixels of a 419904-pixel
+frame. Both arms are already correct there (the epsilon discards the duplicate,
+the watertight test never makes one); what differs is which neighbour owns the
+edge and its undilated barycentrics, hence a shading difference on the seam pixel.
+
+Note this is the **ray-path** measurement. In the shipped configuration the hybrid
+raster front-end owns primary visibility, so the flag reaches only secondary rays
+(reflection, refraction, shadow) — which is why the same scene is byte-identical
+with the front-end on, and why a default flip is a smaller change than it sounds.
+
+**THE PERF HALF IS NOT MEASURABLE ON THIS MACHINE, AND THE DEFAULT THEREFORE STAYS
+OFF.** Three interleaved runs per arm on the shadowed PN scene, warm rows, taking
+the minimum across reps (the usual drift-robust statistic):
+
+    kernel / stage            min(off)   min(on)   delta   flag can reach it?
+    raster_shadow_trace        35.247    38.248   +8.5%    yes (secondary rays)
+    raster_first_shade          1.025     1.130  +10.2%    yes
+    raster_shadow_event_build    0.450     0.498  +10.7%    yes
+    raster_tri_count            0.430     0.467   +8.6%    NO  (rasterizer)
+    raster_tri_write            0.504     0.574  +13.9%    NO  (rasterizer)
+    raster_bez_count            0.503     0.549   +9.1%    NO  (rasterizer)
+    raster_bez_write            0.504     0.557  +10.5%    NO  (rasterizer)
+    merge + build BVHs          0.419     0.485  +15.8%    NO  (host, no kernel)
+
+**The last five rows are the control, and they move as much as the first three.**
+`WATERTIGHT_TRI` changes exactly one `@ti.func` in `raytrace_kernels_taichi`; it
+cannot alter a bezier count kernel or a host-side BVH build. So the +8-16% is
+drift, not cost, and it has a specific cause: the runs went off, on, off, on, off,
+on, so the `off` arm always occupied the cooler slot of each pair while the machine
+heated (every kernel rises monotonically across reps in BOTH arms). Interleaving
+that never varies the ORDER is not interleaving.
+
+And the honest limit is structural, not a matter of running more reps:
+`WATERTIGHT_TRI` is read at **import**, because it changes the compiled kernel
+body. So the in-process alternating A/B this project mandates for exactly this
+problem is **impossible for this flag** — one process can only hold one arm.
+
+What would settle it, for whoever picks this up:
+
+* a machine that is not thermally throttling (this one reported SW thermal
+  slowdown at 85 C throughout), or
+* order-balanced repetition (off,on,on,off,... ) with enough reps to average the
+  ordering bias out, or
+* an instruction/traversal-step counter, which would also settle §3.4 and §3.6 and
+  is the single highest-leverage instrument missing from this area.
+
+**So §3.2's correctness is qualified and its cost is not.** The default stays off,
+and §3.3 stays blocked — which is the conclusion §3.3 already reaches from the
+other direction: flipping now would promote an intersection routine whose cost
+nobody has measured to being the only one available.
 
 3.3 Delete the epsilon apparatus  [BLOCKED — not startable, see below]
 ------------------------------------------------------------------------
@@ -404,7 +644,38 @@ What *can* be done ahead of that, and was: §3.2 now routes both arms through on
 `_tri_hit`, so the deletion is a single function body plus the constants, rather
 than eight independently drifting call sites.
 
-3.4 Median-split STBVH for bezier circuits  [BUILT, gated off]
+**THE SCOPE ABOVE IS WRONG, AND THE CORRECTION MATTERS BEFORE ANYONE STARTS.**
+"Deleting the epsilons" is not one deletion gated on §3.2, because the two
+constants have consumers **outside the ray path entirely**, which `_tri_hit`
+never touches. Grep before planning:
+
+    constant / state              consumer                              gated by
+    -------------------------------------------------------------------------------
+    BARYCENTRIC_EPSILON           _tri_hit's shipped arm                WATERTIGHT_TRI
+    BARYCENTRIC_EPSILON           raster_taichi projected acceptance    UNGATED
+    BARYCENTRIC_EPSILON           raster_taichi per-sample MT fallback  UNGATED
+    TRIANGLE_EDGE_EPSILON+seam_t  the three ray-path sites              shipped arm
+    TRIANGLE_EDGE_EPSILON+seam_t  raster_first_shade / shadow_event     ti.static(not aa_tri)
+    seam_t (rs_sca[r, 3])         both paths                            with the above
+
+So flipping §3.2 unblocks the **ray-path** half and nothing else. The two
+ungated `BARYCENTRIC_EPSILON` reads in `raster_taichi` are the raster
+front-end's own candidate-acceptance test, live in the default primary-visibility
+path, and they are a *different mechanism*: the exact fixed-point sample
+partition downstream is what makes coverage watertight there, while this dilation
+decides which triangles are candidates at all. Removing it needs its own
+argument and its own measurement — the raster path has no `_tri_hit` and gets no
+benefit from Woop-Benthin-Wald.
+
+The raster path's `TRIANGLE_EDGE_EPSILON`/`seam_t` pair is easier: it compiles in
+only under `ti.static(not aa_tri)`, i.e. the non-analytic-AA fallback, so it
+disappears with that fallback rather than with §3.2.
+
+Net: §3.3 is **two** deletions with different owners, and `rs_sca` only shrinks
+by its f32 when both have landed. Plan it that way, or the "one f32 per ray"
+saving will be claimed and not delivered.
+
+3.4 Median-split STBVH for bezier circuits  [BUILT, MEASURED, stays off]
 --------------------------------------------------------------------
 Once resolution is order-independent, `stbvh.py:302`'s reason for pinning
 bezier to Morton is gone (PN, the other pinned type, no longer exists).
@@ -423,6 +694,40 @@ its slot" constraint was PN-specific and went with the PN merge block in
 `b49b01b`. The only value-order reorder left in the merge is `_split_promotable`
 grouping promoted triangles by material value (`scene_builder.py:572`), which is
 unrelated to BVH build order.
+
+**MEASURED ON CUDA: byte-identical, and the speed-up is not there to find on this
+scene.** `benchmarks/_bez_bvh_ab.py` renders 35 independent circuits plus `Text`
+and `Tex`, moving, at `--res md`, and compares the reorder against the scene's own
+**run-to-run noise floor** (§4.8's point: byte-identity is the wrong gate because
+split pixels are not reproducible in general):
+
+    noise floor   off vs off   max 0,  0 px over tolerance, 60 frames
+    A/B           off vs on    max 0,  0 px over tolerance, 60 frames
+    wall          off 2.78s    on 2.76s    ratio 0.993x
+
+So two things, and they pull in opposite directions:
+
+* **The feared cost does not appear.** §3.4 was held off because "a circuit's seam
+  de-dup is discovery-order sensitive, so the reorder moves output at the epsilon
+  level". On this scene it moves output by **nothing at all** — and the noise floor
+  is also zero, so that is a real byte-identity rather than a diff hidden under
+  jitter. Flipping it would need no baselines.
+* **The claimed benefit does not appear either.** 0.993x on a 2.8 s render is
+  noise. The "~20-25% fewer traversal steps" is inherited from the triangle tree
+  and is *still* unmeasured, because nothing counts traversal steps and this
+  scene's traversal is not where its time goes.
+
+One instrument note, because it produced a confident wrong number first: the
+build-time column read `0.000s` in both arms, since `TIMERS` only records stages
+something has wrapped and nothing wraps them outside `profile_scene`. The harness
+now calls `install_pipeline_hooks()` itself. A profiler that reports zero because
+it was never installed is worse than one that reports nothing.
+
+**Recommendation: leave it off.** Not because of risk — it is byte-identical here
+— but because the case for it was a perf claim, and after measurement there is no
+perf evidence either way. Flip it when something measures traversal steps, or
+when §5.2's order-independence work needs it; do not flip it on the strength of an
+inherited number.
 
 3.5 Flip `ALGAN_MESH_ID` on  [DONE, default ON]
 -------------------------------------------------------------------------
@@ -446,23 +751,79 @@ channel values, mean 243 pixels per frame over 32 frames. That is the "up to 49
 channel values at solid edges" the settings comment predicted, and it is the
 intended effect — coarser runs resolve a solid's edge differently.
 
-**Baseline debt, stated precisely, because it cannot be paid from this machine.**
+**THE CUDA BASELINE DEBT IS PAID.** Both CUDA sets were regenerated on a GTX 1050
+(driver 576.52), and the machine established its right to own them first: with
+`ALGAN_MESH_ID=0 ALGAN_POLYHEDRON_WINDING=0` it reproduces the pre-branch CUDA
+baseline with the **same sha256** (§4.9), and four of the six full-render scenes
+pass unchanged. The two that did not were attributed before anything was
+overwritten — one to a master-side commit, one to a 2-pixel bloom epsilon (§4.1).
 
-* `tests/fast/expected_outputs_cpu/` — **regenerated** (this commit).
-* `tests/fast/expected_outputs_cuda/` — stale, needs a CUDA machine.
-* `tests/full_renders/expected_outputs_cpu/` — **regenerated** (4 of 6 scenes
-  moved). This became possible only after merging `master`: its `d520e1e` had
-  re-baselined the CPU set, and that baseline reproduces *exactly* on this
-  container (7/7 pass), so the machine-compatibility objection that had blocked
-  it no longer applied. Every moved scene was attributed to a flag before
-  regenerating — `complex_hierarchy_become` 197 to winding alone,
-  `materials_and_lighting` 47 and `shapes_and_timeline` 96 to MESH_ID alone,
-  `solids_and_camera` to both — and nothing moved with both gates off.
-* `tests/full_renders/expected_outputs_cuda/` — stale, needs a CUDA machine.
+Both sets now correspond to the shipped defaults, which since this round include
+§6.6 and §3.1. The movement was reviewed frame by frame before regenerating, not
+just measured: side-by-side panels of the worst-differing frame of the fast scene,
+`solids_and_camera` and `materials_and_lighting` are visually indistinguishable,
+with the difference confined to silhouette outlines and interior mesh edges and
+**no notches, rims or other artifacts** (`benchmarks/_diff_frame.py` writes the
+panel). On `materials_and_lighting` the difference is a broad low-amplitude field
+over the bloom halo rather than a localized error — bloom spreading a small
+coverage change, which is why its pixel count (13.6%) is the largest of the six
+while its peak (53) is not.
 
-So whoever picks this up on a GPU box owns three of the four sets, and should
-regenerate the full-render CPU set on the machine that owns it rather than on a
-cloud container.
+What §6.6 + §3.1 move, isolated against the previous defaults:
+
+    scene                       max|d|   worst-frame px      frames
+    manim_compat_and_plots           0        0 (0.000%)      0/171
+    shapes_and_timeline             55     7928 (2.844%)     68/301
+    complex_hierarchy_become        54    10554 (3.786%)     71/75
+    solids_and_camera               88    22793 (8.176%)    228/239
+    text_and_media                  47    30013(10.766%)    163/182
+    materials_and_lighting          53    37964(13.618%)    159/179
+
+**`manim_compat_and_plots` moving by exactly zero is the mechanism confirming
+itself**: it is built from bezier circuits, and the one-mesh rule requires every
+fragment in the pixel to be an opaque *triangle* of one surface. The only scene the
+rule cannot touch is the only scene that did not move.
+
+**Remaining debt: the two CPU sets, and this machine may NOT pay it.**
+
+* `tests/fast/expected_outputs_cuda/` — **regenerated (this round).**
+* `tests/full_renders/expected_outputs_cuda/` — **regenerated (this round).**
+* `tests/fast/expected_outputs_cpu/` — **stale for §6.6/§3.1, and must be
+  regenerated elsewhere.**
+* `tests/full_renders/expected_outputs_cpu/` — same.
+
+The reason is measured, not assumed. Rendering `tests/fast` on **CPU** here, at
+exactly the settings the committed CPU baseline was written with (`2d1432a`:
+MESH_ID and winding on, ONE_MESH and weld off), misses that baseline by **30
+channel values over 0.86% of pixels on 43 of 45 frames** — *before* any change in
+this round. So this machine's CPU output is simply not the portable one, and
+regenerating from here would replace a baseline that CI reproduces with one it does
+not.
+
+Two checks make that reading sound rather than a guess:
+
+* The difference is **not** feature-shaped. The diff panel puts it on text glyph
+  edges, circuit outlines and mesh edges alike — everything in the frame, faintly
+  — which is what host float math differing between machines looks like, not what
+  a stale feature looks like.
+* It is **not** `35fe6ec` staleness either, which was the obvious suspect. That
+  commit verified bit-identity **on CPU** and only moved CUDA, and the measurement
+  agrees: the committed CPU baseline sits 53 channel values from a CUDA render of
+  the same code, and this machine's CPU render sits 53 from it too. Both CPU
+  renders are the same distance from CUDA; they differ from *each other*.
+
+**So the practical consequence, said out loud: CI runs `tests/unit_tests tests/fast`
+on a CPU-only runner, and `tests/fast` will fail there until the CPU set is
+regenerated on a machine of that lineage.** Note this is not a regression this round
+introduced on *this* machine — the CPU baseline already failed here beforehand —
+but §6.6 does move CPU output, so the set is genuinely stale for the runner. Whoever
+has a CPU-only box of the CI lineage should run:
+
+    ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest -q tests/fast
+    ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest -q tests/full_renders
+
+and render twice, baselining the second (§4.10). §7.17 has the two traps that make
+a CPU baseline check on a CUDA machine silently lie.
 
 3.6 Two-level BVH (TLAS/BLAS)  [design only — NOT attempted, scoped below]
 ---------------------------------------------------------------------------
@@ -489,6 +850,57 @@ justifies it, not a session's work, and a half-landed version is worse than
 none: a TLAS that does not actually reduce traversal steps costs a build per
 batch for nothing. Left unstarted on purpose.
 
+**THE PERF CASE HAS NOW BEEN MEASURED, AND IT DOES NOT JUSTIFY STARTING.**
+`benchmarks/_pn_deletion_profile.py` at `--res md` on CUDA — five solids covering
+every curved family, shadows on, everything moving — puts the render's device time
+here:
+
+    stage / kernel                     warm time      share
+    raster_shadow_trace                  41.33 s     80.2%
+    raster_first_shade                    1.23 s      2.4%
+    raster_tri_write                      0.62 s      1.2%
+    raster_bez_write                      0.61 s      1.2%
+    raster_bez_count                      0.60 s      1.2%
+    raster_shadow_event_build             0.55 s      1.1%
+    raster_tri_count                      0.53 s      1.0%
+    merge collections + build BVHs        0.49 s      0.9%
+      - of which the refit-BVH build      0.28 s      0.5%
+
+(Warm/RUN 2, which is the column to read; the cold rows in the same report put
+`raster_first_shade` at 38% because it is paying its own JIT there. See §7.14.)
+
+§5.2 offers two motivations for a two-level BVH, and the measurement bounds them
+separately:
+
+* **"Per-mesh BLAS reusable across a batch's frames, since the STBVH rebuilds per
+  batch."** That is an amortization argument, and what it can amortize is the
+  build: **0.4% of the render.** Even a perfect BLAS cache is worth at most that,
+  against a multi-day project with a structural blocker. This half is dead.
+* **"True instancing — a point cloud of 10k spheres becomes one BLAS plus 10k
+  transforms."** Not bounded by the above, because it attacks traversal, which
+  *is* large (`raster_shadow_trace` is 35.4% and is pure traversal). But this
+  scene has **five** instances, so it cannot show the win, and no workload in the
+  repo has thousands of repeated meshes. The win is real in principle and
+  unmeasurable in practice until such a workload exists.
+
+Two further reasons not to start, from outside this document:
+
+* `DESIGN_optimization_targets.md` is the plan of record for render performance,
+  and **BVH build and traversal appear nowhere in its rankings.** Its measured
+  poles are batch prep at 73.6% of `save_video` against the render thread's 56.7%,
+  and its named top items — `AttributeTimeline.get`, the batched surface build,
+  `set_state_to_times` — are all CPU prep. A two-level BVH targets neither pole's
+  top item.
+* **Nothing counts traversal steps.** §3.4 ran into the same wall: its inherited
+  "~20-25% fewer traversal steps" could not be confirmed or refuted. Any TLAS work
+  would be flying blind in exactly the way the doc warns against.
+
+**Recommendation: leave §3.6 unstarted, and if anyone wants to revisit it, build
+the traversal-step counter first.** That is a day's work rather than a week's, it
+is useful on its own (it would also settle §3.4), and it converts this item from a
+guess into a decision. Starting the TLAS without it risks precisely the outcome
+this section already names — a build per batch for nothing.
+
 3.7 Orient `Polyhedron` faces outward  [DONE, default ON]
 ------------------------------------------------------------
 §6.5 is the measurement, including the part where its predicted interaction with
@@ -504,7 +916,7 @@ exactly two faces, a flood fill that contradicts itself, a shell in more than
 one piece, or zero volume). That fixes any closed polyhedron, convex or not, and
 leaves open and non-manifold input alone.
 
-**LANDED**, gated `ALGAN_POLYHEDRON_WINDING`, default off, surfaced as
+**LANDED**, gated `ALGAN_POLYHEDRON_WINDING`, now default **ON** (§3.7), surfaced as
 `SETTINGS.raytracing.experimental.set(polyhedron_winding=...)`. Implemented as
 described above in `shapes_3d.orient_faces_outward`, called from
 `Polyhedron.__init__`. `tests/unit_tests/test_mesh_identity.py` pins the defect
@@ -549,35 +961,115 @@ Clear the Taichi cache (`clear_cache(taichi_kernels=True)`) before any A/B — i
 does not invalidate on `@ti.func` edits. Never edit `*_taichi.py` while a render
 or a warm daemon is running.
 
-4.1 **Confirm the committed CUDA baselines still pass.** Nothing on this branch
-has moved output, so they should:
+**ALL OF §4 HAS NOW BEEN RUN ON CUDA** (GTX 1050, driver 576.52, Taichi 1.7.4,
+torch 2.7.1+cu128), with the Taichi cache cleared first. Each item below carries
+its result. `1035 passed, 89 skipped` on `pytest -q tests/unit_tests`.
 
-        pytest -q tests/fast
-        ALGAN_RUN_FULL_RENDERS=1 pytest -q tests/full_renders
+4.1 **Confirm the committed CUDA baselines still pass.** — **DONE.** The premise
+    was wrong: §3.5/§3.7 *did* move output, deliberately, so at shipped defaults
+    `tests/fast` fails (49 channel values, 6847 px of 278784 at the worst frame,
+    27 of 45 frames) and four of six `full_renders` scenes fail. The useful run
+    is therefore §4.9's, which pins the gates off; see there. What matters is
+    that every difference is attributed, and all six are:
 
-    A failure here is the PN deletion, not baseline staleness, and the first
-    thing to check is `layer_offsets` (§7.1). The six `full_renders` scenes are
-    the ones that matter — they carry the PN surfaces, shadows, refraction and
-    glTF that the fast scene deliberately omits.
+        scene                     gates off      the two flips move it
+        ------------------------------------------------------------------
+        complex_hierarchy_become  PASSES         206 values, 4.6% px
+        solids_and_camera         PASSES          99 values, 8.3% px
+        shapes_and_timeline       PASSES           0
+        text_and_media            PASSES           0
+        manim_compat_and_plots    fails, 220       0    <- NOT this branch
+        materials_and_lighting    fails,   3       0    <- epsilon, see below
 
-4.2 **Confirm the PN deletion is byte-identical on CUDA**, which is stronger
-    than the baselines because it compares against the pre-deletion tree:
+    Note this differs from the CPU attribution in §3.5, where `materials_and_lighting`
+    (47) and `shapes_and_timeline` (96) also moved under MESH_ID. On CUDA they do
+    not move at all: the flips change which runs form, and whether that changes a
+    *pixel* turns on borderline comparisons that differ by device. Two scenes
+    move here, four on CPU.
+
+    `manim_compat_and_plots` is `35fe6ec` from master, and it is an improvement —
+    §7.13 has the two-diff test that establishes it. `materials_and_lighting` is
+    **2 pixels of 278784 in 1 frame of 179, by 3 channel values**, on near-black
+    pixels ([2,12,22] against [5,15,25]) in a scene carrying glow + bloom +
+    tonemapping: the bloom-amplified epsilon pattern. Deterministic — two
+    independent passes differ from the baseline identically and from each other
+    by zero.
+
+4.2 **Confirm the PN deletion is byte-identical on CUDA** — **DONE, and the
+    proposed method was unnecessary.** No stash and no pre-deletion tree is
+    needed, because the committed CUDA baselines *are* the pre-deletion tree's
+    output: they were written by `efb3a95`, which is this branch's base and
+    therefore sits before `b49b01b`. So §4.9's gates-off run is already the
+    comparison, and it comes back with the **same sha256** as
+    `tests/fast/expected_outputs_cuda/fast.mp4`. The PN deletion, the watertight
+    refactor, the weld, the bezier split and the harness work are byte-identical
+    on CUDA with their gates off.
+
+    (Superseded method, kept for the reasoning:
 
         git stash && pytest -q tests/fast && sha256sum tests/fast/algan_outputs/fast.mp4
         git stash pop && pytest -q tests/fast && sha256sum tests/fast/algan_outputs/fast.mp4
 
-4.3 **Confirm the kernels did not get slower.** The deletion removes 12 merged
-    keys, two BVH builds per batch and ~10 parameters from every traverse/shade
-    signature, so expect neutral to faster. Kernel-profiler **device** times,
-    not wall clock — thermal throttling swings cross-process throughput ~2x, so
-    use in-process alternating A/B. `utils/profiling_utils.py` auto-hooks the
-    kernels and pipeline stages. Watch `wavefront_shade`,
-    `wavefront_traverse`, both MC megakernels, `raster_first_shade`, and the
-    per-batch BVH build time.
+    It would also have been *weaker* than what was available: with both gates
+    flipped since, a stash of the working tree no longer isolates the deletion,
+    while the baseline does. Prefer "which committed artifact predates the
+    change" over "can I reconstruct the old tree".)
 
-4.4 **Confirm the compile surface shrank.** Count offline-cache entries and
-    cold-compile wall time; the deletion removes the `has_pn` template
-    dimension from four kernels.
+4.3 **Confirm the kernels did not get slower.** — **DONE: neutral.**
+    `benchmarks/_pn_deletion_profile.py`, run once per tree (a `git worktree` at
+    `efb3a95` for the pre arm) with a **separate `ALGAN_CACHE_DIR` per arm**,
+    because the offline cache does not invalidate on `@ti.func` edits and both
+    trees compile identically-named kernels. Gates pinned off in both — and note
+    the pre tree warns that `ALGAN_MESH_ID` / `ALGAN_POLYHEDRON_WINDING` are
+    unknown variables, which is the right answer: they did not exist yet, so the
+    pre arm *is* the gates-off configuration.
+
+    Device times, `--res md`, five solids covering every curved family with
+    shadows on and everything moving. **These are the WARM (RUN 2) numbers** —
+    `profile_scene` renders twice and writes both, and the cold rows come first in
+    the file, which is a trap worth knowing (§7.14):
+
+        kernel / stage             pre        post     delta
+        raster_shadow_trace     41.454 s   41.330 s    -0.3%    (80.2% of the run)
+        raster_first_shade       1.228 s    1.232 s    +0.3%
+        raster_shadow_event      0.527 s    0.552 s    +4.7%
+        raster_tri_count         0.521 s    0.528 s    +1.3%
+        raster_tri_write         0.617 s    0.623 s    +1.0%
+        raster_bez_count         0.595 s    0.600 s    +0.8%
+        raster_bez_write         0.605 s    0.611 s    +1.0%
+        merge + build BVHs       0.587 s    0.489 s   -16.7%    (0.9% of the run)
+        end-to-end              51.31 s    51.55 s    +0.5%
+
+    **Neutral, with the one predicted win where it was predicted.** The kernel that
+    dominates (80% of the warm render) moves -0.3%, everything else moves under 5%
+    on sub-second absolute numbers, and the **BVH build drops 16.7%** — which is
+    exactly the two-fewer-trees-per-batch saving §2.1 removed, showing up in the
+    stage that owns it. End to end it is +0.5%, i.e. nothing.
+
+    So "neutral to faster" was right in shape and small in size: the freed builds
+    are real, and they were ~1% of the render to begin with (§3.6). The deletion's
+    case is ~2800 lines and byte-identical output, not speed.
+
+    Two caveats on the instrument, because they bound what this can claim. The
+    machine throttles (`nvidia-smi` reported SW thermal slowdown at 85 C
+    throughout), and a cross-tree comparison cannot be in-process, which is what
+    §4.3 asked for. The cold rows in these same reports moved by +5% to +15% in
+    every kernel *including ones neither tree changed*, which is the size of the
+    drift this setup carries. Trust the warm rows and the direction, not a few
+    percent.
+
+4.4 **Confirm the compile surface shrank.** — **DONE, and it did not.** Both arms
+    compile **13 offline-cache entries** for the same scene, in fresh per-arm
+    caches. Not a contradiction once stated plainly, and §2.1 already contains the
+    reason: `has_pn` was a template dimension only one value of which was ever
+    instantiated, because `RayTracedPNTrianglePrimitive` was unreachable and
+    `merged["num_pn"]` was always 0. Removing a variant nothing compiled removes no
+    cache entries and no compile time.
+
+    So §4.4's expectation was inconsistent with §2.1's own premise. The compile
+    surface shrank in *source* (four kernels lost a template parameter), which is a
+    maintainability win, not a build-time one. Do not quote a compile-time saving
+    for this deletion.
 
 4.5 **`ALGAN_MESH_ID=1` — measured NEUTRAL on coverage.**
     The arbiter this asked for now exists and is CPU-runnable:
@@ -703,7 +1195,44 @@ has moved output, so they should:
     Diff the three outputs; they should become identical. If not, there is a
     second cause worth isolating before §3.3 ships.
 
-4.7 **Watertight test (§3.2), once built.**
+    **RUN, AND THE PREDICTION IS UNTESTABLE BY THIS INSTRUMENT.** All three modes
+    already produce the **identical sha256** on CUDA — 0 channel difference over
+    179 frames, and `materials_and_lighting` is the only scene in the suite that
+    turns shadows on, so it *is* the suite's shadow coverage. There is nothing
+    here to vanish.
+
+    That is not the same as the corner cases being gone, and the difference
+    matters. Read the kernel's own docstring
+    (`raytrace_kernels_taichi.py`, `_shadow_occlusion`): the early-out is "not
+    strictly byte-identical to the plain march in two corner cases the early-out
+    deliberately overrules":
+
+    1. an opaque edge hit the seam merge would have folded into an earlier
+       translucent edge hit within `DEPTH_TIE_EPSILON` — **identity-related**;
+    2. an opaque blocker past `MAX_SURFACES_PER_RAY` (= 256) peeled surfaces —
+       **not identity-related at all**.
+
+    So §3.3 could only ever remove the first, and the second-cause hunt §4.6 asks
+    for is already answered by reading: it is the peel depth. Note also the
+    docstring's last clause — "in both the any-hit's full occlusion is the
+    physically correct answer" — so the disagreement is a deliberate improvement,
+    not a defect, and "they should become identical" was the wrong goal for case 2.
+
+    What the prediction actually needs is a **purpose-built scene**, because the
+    suite does not reach either case: a translucent stack whose edge hits sit
+    within `DEPTH_TIE_EPSILON` of an opaque hit (case 1), and a >256-surface
+    translucent stack (case 2). Until such a scene exists, "the three modes agree"
+    is a statement about the scene, not about the renderer.
+
+4.7 **Watertight test (§3.2), once built.** — **RUN; see §3.2 for the verdict.**
+    `benchmarks/_watertight_check.py` covers the first two items. Note one setup
+    trap it hit first: forcing the ray path (`hybrid_raster=False`) allocates
+    per-ray state for every pixel, so at `--res md` with the usual 1.4 GB pin it
+    raises `OutOfRenderMemory` on "a single frame". `--res ld` with a 2.2 GB pin
+    fits on a 4 GB card. The third item is measured as device time rather than
+    occupancy, because Nsight does not support this machine's Pascal GPU.
+
+    Original plan, for reference:
     * **No cracks in f32.** Large adjacent triangles at grazing incidence plus a
       finely diced welded `Sphere` at extreme silhouette; assert zero background
       pixels interior to the mesh. Extend `_analytic_aa_fillrule_check`'s
@@ -718,22 +1247,38 @@ has moved output, so they should:
       the arena fit: `test_render_batch_sizing.py`, `test_memory_model.py`, and
       a long multi-batch render checking OOM-retry counts do not regress.
 
-4.8 **Median-split bezier BVH (§3.4), once built.**
-    `benchmarks/_split_determinism_check.py` distribution before/after, plus
-    traversal-step counts and build times. Byte-identity is the **wrong** gate:
-    that script documents that split pixels are not byte-reproducible (|d| = 1
-    from non-associative float `atomic_add` on `pix_accum`), so compare
-    distributions.
+4.8 **Median-split bezier BVH (§3.4), once built.** — **DONE.**
+    `benchmarks/_bez_bvh_ab.py` was written for it, and it compares against the
+    scene's own noise floor rather than against byte-identity, which is §4.8's
+    point. Result in §3.4: byte-identical, 0.993x wall, and the traversal-step
+    claim is still unmeasured because nothing counts traversal steps.
+    Recommendation there is to leave it off.
 
-4.9 **Every gate off is byte-identical** — `ALGAN_MESH_ID=0`,
-    `ALGAN_WELD_SURFACE_SEAMS=0`, `ALGAN_WATERTIGHT_TRI=0`,
-    `ALGAN_BEZ_BVH_SPLIT=0`. Verified on CPU for `ALGAN_MESH_ID`; redo on CUDA,
-    where the other kernel variants live.
+    Note byte-identity turned out to be *available* on this scene — the noise
+    floor measured zero too — so the caution above ("split pixels are not
+    byte-reproducible") is about scenes with PBR/coverage-miss branches, not about
+    circuits. Check the noise floor before concluding a diff is a change.
+
+4.9 **Every gate off is byte-identical** — **DONE, on CUDA, byte-exact.**
+    `ALGAN_MESH_ID=0 ALGAN_POLYHEDRON_WINDING=0` with the four opt-in gates at
+    their defaults reproduces `tests/fast/expected_outputs_cuda/fast.mp4` with the
+    **same sha256**, and four of the six `full_renders` scenes pass unchanged (the
+    two that do not are §4.1's, neither from this branch). This is the load-bearing
+    result of §4: it says the whole branch is inert until a gate is flipped, on the
+    device where the kernel variants actually live.
 
 4.10 **Render twice, baseline the second.** The first render on a fresh machine
     populates the Manim Tex geometry cache and its `MathTex` glyph antialiasing
     differs from every run after it — 18 channel values over 100 frames of
     `text_and_media`, against a tolerance of 2.
+
+    **Measured here, and this machine does not show it on the fast scene.** With
+    the whole cache wiped (`clear_cache(taichi_kernels=True)` takes the Manim
+    caches with it), run 2 and run 3 of `tests/fast` are byte-identical to each
+    other and to the committed baseline. So the rule is still the right default —
+    it costs one render and the failure mode is a baseline nobody can reproduce —
+    but the effect is scene-specific, and `text_and_media` is where to look for
+    it, not `fast`.
 
 
 ================================================================================
@@ -748,10 +1293,22 @@ has moved output, so they should:
 * **One fewer route rejection** (`num_pn > 0`, as an always-true clause in five
   places).
 * **Correct identity for polyhedra and packed grids**, and topological shells
-  for imported meshes (gated off pending §4.5).
+  for imported meshes — **shipped on** (§3.5).
 * **A way to ask questions about the run rule** and get population answers
   instead of anecdotes — which is what turned two plausible theories into §6.
 * **`tri_obj` is under test.**
+* **Coverage that is no longer sample-quantized** (§6.6, shipped on): error
+  against an exact analytic reference down 70-100% on eleven cases, and the share
+  of silhouette pixels landing on a multiple of 1/8 down from 8-91% to 0-1.6%.
+  Ink wobble on a diced `Cylinder` down 78%, on a flat quad 63%. Costs ~4%.
+* **A host/kernel gate that cannot drift again** — `aa_grp` has one definition and
+  one predicate, with an AST audit that fails if anything else reads the raw
+  setting. This was a live bug costing most of §6.6's win (§6.6.1).
+* **Six new measurement harnesses**, each answering a question §4 asked and could
+  not: `_one_mesh_ab` (what §6.6 costs), `_weld_check` (the textured-surface risk),
+  `_bez_bvh_ab` (a reorder against its own noise floor), `_watertight_check`
+  (cracks and double blends, counted), `_pn_deletion_profile` (cross-tree device
+  times), `_diff_frame` (looking at a re-baseline rather than measuring it).
 
 5.2 Unlocked by the identity, worth building next
 -------------------------------------------------
@@ -1054,8 +1611,9 @@ identity. The two halves of §6.3 have different owners.
 6.6 THE ONE-MESH RULE — Line-quality on a Cylinder, and where it breaks
 ------------------------------------------------------------------------
 This is what §2.2's identity was built to enable and what no consumer read
-until now. `ALGAN_ANALYTIC_AA_ONE_MESH`, default off, implies §6.3.2's relaxed
-gate.
+until now. `ALGAN_ANALYTIC_AA_ONE_MESH`, now default **ON**, implies §6.3.2's
+relaxed gate — see §6.6.1, where that implication turned out to be only half
+wired.
 
 **The rule.** Where every fragment in a pixel is an OPAQUE triangle of ONE
 surface, the pixel's coverage is that mesh's NEAR SHEET's exact area and nothing
@@ -1164,7 +1722,189 @@ fixed, since a sliver is the other branch that writes areally rather than by
 sample. It was left failing rather than excluded, because adding exclusions
 until a check passes is how an integrity check stops being one.
 
-Default off pending baselines.
+6.6.1 MEASURED ON CUDA — and the "implies" was only half wired
+---------------------------------------------------------------
+Everything above was CPU. Reproducing it on CUDA found a **bug in the gate**, so
+read this before quoting any number in §6.6.
+
+*The bug.* §6.6 says the rule "implies §6.3.2's relaxed gate", and on the kernel
+side it does: `aa_grp = 3` and `_aa_run_full` returns true for 2 **or** 3. But
+§6.3.2's other half is a HOST change — the emission must stop truncating a
+pixel's prefix at a full-mask fragment, or the run scan cannot see its sheet's
+empty-mask area donors — and that test read `ANALYTIC_AA_RUN_FULL` **alone**. It
+was written by `517c842` (the RUN_FULL commit) and neither one-mesh commit
+updated it. So `ALGAN_ANALYTIC_AA_ONE_MESH=1` by itself ran the relaxed scan over
+fragment lists whose donors had already been discarded, which is exactly the
+configuration §6.3.2 measured as an interior notch. Ink wobble, `--res md`, CUDA:
+
+    kind           shipped   ONE_MESH alone   ONE_MESH + RUN_FULL
+    bezier Line     0.0042           0.0042                0.0042
+    flat quad       0.0139           0.0128  (-8%)          0.0052  (-63%)
+    Cylinder        0.0568           0.0301 (-47%)          0.0124  (-78%)
+    Cylinder fine   0.0765           0.0427 (-44%)          0.0429  (-44%)
+
+The two flat/coarse cases are the ones the relaxed gate carries, and they lose
+most of the win; `cyl_fine`, which the CAP carries (`capped` 59.5%), is
+unaffected. That split is what identified the bug.
+
+*The fix.* `aa_grp` is now computed once by `raster_pipeline._aa_group`, and the
+truncation tests `_aa_run_full(aa_grp)` — the same predicate the kernels test —
+so the host and the kernel can no longer disagree about whether the relaxed gate
+is active. With it, `ONE_MESH=1` alone reproduces the `+ RUN_FULL` column
+exactly. `tests/unit_tests/test_analytic_aa_gates.py` pins it, including an AST
+audit that only `_aa_group` may read the raw setting; the audit was checked to
+FAIL with the bug reintroduced, because an audit nobody has seen fail is not one.
+
+*What reproduces, and the one claim that does not.* Coverage error against the
+exact reference, `--res md`, CUDA, with the fix:
+
+    case                 |actual-E| off -> on     on-lattice off -> on
+    quad (flat control)      0.0020 -> 0.0000       7.9% -> 0.0%
+    cube (flat)              0.0248 -> 0.0041      51.3% -> 0.0%
+    icosahedron (flat)       0.0262 -> 0.0022      57.6% -> 0.0%
+    cylinder (default)       0.0260 -> 0.0005      72.5% -> 0.0%
+    cylinder (256x2)         0.0211 -> 0.0005      70.6% -> 0.0%
+    sphere (192x96)          0.0382 -> 0.0012      90.8% -> 0.4%
+    line-check cyl (33deg)   0.0298 -> 0.0020      57.6% -> 0.0%
+    line-check cylfine       0.0168 -> 0.0050      79.2% -> 1.6%
+    line-check quad (33deg)  0.0035 -> 0.0000      15.3% -> 0.1%
+    packed 4x4 (apart)       0.0313 -> 0.0024      72.5% -> 0.2%
+    packed 4x4 (overlap)     0.0340 -> 0.0020      80.8% -> 0.6%
+
+The off column matches the CPU numbers above to the last digit on every case, so
+the harness is device-consistent and the coverage win is real on both devices.
+
+**But §0's headline does not survive CUDA.** "A `Cylinder` now anti-aliases
+better than a bezier `Line`" rested on 0.0039 against the Line's 0.0042. On CUDA
+the best available is **0.0124**, three times the Line, with the gate correctly
+wired and both flags set. The improvement is large (-78%) and the ordering claim
+is wrong; do not repeat it. Nothing here explains the CPU/CUDA gap on that one
+figure, and the two flat cases and `cyl_fine` all reproduce, so it is a single
+unexplained outlier rather than a systematic device difference.
+
+6.6.2 THE TWO OPEN ITEMS ARE ONE MECHANISM — diagnosed
+-------------------------------------------------------
+The `--verify` failures and the residual interior notches are the same defect,
+and it is visible in three lines of the resolve.
+
+The cap clips the CLAIM and leaves the OCCLUSION write alone. In
+`raster_first_shade`, `alpha = mat_alpha * eff` uses the capped `eff`, while
+`a_s = mat_alpha * dens` — the per-sample transmittance write — uses the
+**uncapped** `dens`. So a capped fragment hides more background than it paints,
+and the pixel loses energy.
+
+Precisely which fragments, because it is narrower than it first looks and that is
+why the notch counts are small: a fragment clipped all the way to zero is
+harmless, since `eff <= MIN_ALPHA` `continue`s *before* the svis write, so it
+neither paints nor occludes. `ALGAN_AA_DUMP` shows exactly that — a far-sheet
+fragment well inside a silhouette comes back `eff-skip` with `eff=0.00000` and
+the sample transmittances unchanged across it. The desync is confined to
+**partially** capped fragments, i.e. boundary pixels where the ceiling bites but
+leaves room, which is also the population the notches live in.
+
+The harness measures it as its `claim-vs-occlusion` column,
+`|ink - (1 - mean(svis))|`:
+
+    arm        claim-vs-occlusion max, over the 11 cases
+    shipped    1.1e-16 .. 5.0e-16      (float dust: the two agree)
+    one-mesh   7.8e-06 .. 2.2e-01      (up to 22% of a pixel)
+
+That single desync accounts for all three symptoms: the interior notches
+(darkening, worst 0.0515 on the fine rod), the `--verify` divergence (largest on
+a **sliver**, whose `dens = cov` is areal and therefore the biggest clip), and
+why `run_mode == 2` had to be excluded — it is the same bookkeeping, and there it
+was noticed.
+
+Notches, CUDA, off -> on (zero on the seven cases not listed):
+
+    sphere (192x96)        2/23629 -> 24/23629    mean 0.0018  worst 0.0036
+    line-check cyl              0/9050 -> 4/10195 mean 0.0010  worst 0.0010
+    line-check cylfine     50/3546 -> 253/3546    mean 0.0090  worst 0.0515
+    packed 4x4 (overlap)    0/28610 -> 3/30531    mean 0.0014  worst 0.0017
+
+Measured: fixing the truncation gate does **not** change these, which is what
+proves they are the cap's desync and not §6.3.2's truncation.
+
+6.6.3 WHAT IT COSTS — measured, which nothing had done
+-------------------------------------------------------
+Three things are new when the rule is on: a host **segment reduction** over the
+fragment CSR (two `scatter_reduce_`, two `scatter_add_`, a `repeat_interleave`),
+a **per-fragment f32** (`frag_cap`), and a **running clamp** in the inner loop of
+`raster_first_shade` and `raster_shadow_event_build`.
+
+The f32 costs nothing: `frag_cap` is allocated unconditionally in both raster
+paths already, so the arena footprint is identical in both arms and the memory
+model does not move. The other two, `benchmarks/_one_mesh_ab.py`, alternating in
+one process at `--res md` on CUDA:
+
+    shape                      off       on     ratio
+    diced (Sphere/Cyl/Torus)  2.06s    2.17s    1.052x
+    flat (Cube/Icosa/Octa)    2.31s    2.36s    1.021x
+    mixed + shadows          34.94s   36.27s    1.038x
+
+**~2-5% slower, and the honest figure is the 1.038x.** The first two scenes
+render in ~2 s, where fixed per-render overhead dominates and a few percent is
+barely above noise; `mixed` is a 35-second shadowed render and exercises the
+second resolve kernel, so it is the only row that measures the clamp rather than
+the harness. Nothing here is free, and the trade is explicit: ~4% of render time
+for coverage that stops being sample-quantized.
+
+Output moves, so byte-identity is the wrong gate and was not sought:
+`max|d|` 42 / 67 / 63 on the three shapes, over 1.7-3.5% of pixel-frames.
+
+6.6.4 THE CEILING MUST NOT COME FROM A FLOAT ATOMIC — found by re-baselining
+-----------------------------------------------------------------------------
+Flipping §6.6 on made a render **non-reproducible**, and the pixel suites are what
+caught it: after re-baselining `materials_and_lighting` from one render, the very
+next render of the same configuration missed its own fresh baseline by **28 channel
+values over 9.6% of a frame, on 28 of 179 frames**. Not a baseline error — the
+scene simply did not render the same way twice.
+
+Attributed, not guessed. Two renders with the rule OFF are **bit-identical (same
+sha256)**; two with it on are not. So the rule introduced it.
+
+*The mechanism, and why it is so much larger than it looks.* The host builds the
+per-pixel ceiling with `scatter_add_`, which is a float atomic add, so its
+summation order is not reproducible on CUDA — measured directly, a 400k-into-5k
+reduction of this shape spreads **1.5e-05** across six runs and is never bitwise
+equal. A 1e-05 wobble in a colour would be invisible. But this feeds a
+**threshold**: the kernel clips only when `eff > frag_cap - mesh_ink`, so a ceiling
+that moves in its low bits flips borderline fragments in and out of being clipped,
+which is a *finite* coverage change — and this scene carries bloom, which spreads
+each flipped pixel over a halo. That is the whole path from 1e-05 to 28.
+
+*The fix.* Accumulate the two sheet areas in **float64** and round the ceiling back
+to float32. Verified: the reduction is then bitwise stable over six runs (spread
+0.0), and two full renders of `materials_and_lighting` come out with the same
+sha256. The cast is what makes it robust rather than merely better — float64
+reassociation error lands about nine orders below a float32 ulp, so it cannot
+survive the round.
+
+*Two dead ends, so nobody re-walks them.* "Use a scan instead of atomics" does not
+work here: `torch.cumsum` on CUDA is **also** not bitwise reproducible on this build
+(spread 0.0625 over 400k elements), while `torch.sum` is. And
+`torch._segment_reduce` *was* bitwise stable, but it is a private torch API and not
+worth depending on when a dtype change does the job.
+
+*What it implies for the rest of the renderer.* Any host-side float reduction whose
+result reaches a comparison is a latent nondeterminism bug of this shape. The
+existing `_split_determinism_check` findings are the benign version — float atomic
+adds into `pix_accum`, bounded at `|d| = 1` because they only ever perturb a colour
+that is then truncated to `u8`. The dangerous version is a reduction that decides a
+branch, and this was one.
+
+**The fix that follows, not attempted here.** Scale `dens` by the same ratio the
+cap scales `eff`: `k = room / eff` before clipping, then `eff = room` and
+`dens *= k`. Then a capped fragment occludes exactly what it paints. Worth
+reasoning through before building it, because the naive worry is wrong: well
+inside a silhouette the near sheet's masks partition all N samples and `corr = 1`,
+so `svis` is already 0 and the far sheet's `k = 0` costs nothing; at a boundary
+the residual `1 - cap` is background OUTSIDE the mesh, which is what should show
+through. That makes scaling `dens` the completion of the cap rather than a fudge,
+and it should close the `--verify` failures too. It moves output, so it needs its
+own gate, its own baselines and a re-run of this harness plus `_aa_line_check`.
+
+Shipped ON; both CUDA baseline sets regenerated (§3.5).
 
 6.4 This interacts with §4.5
 -----------------------------
@@ -1363,3 +2103,152 @@ The independent evidence for §6.6 is the ink-wobble table, which never consults
 `_exact_coverage`. Before quoting a number from this harness, ask what would
 have to be true for it to come out wrong — and if the answer is "nothing",
 it is measuring itself.
+
+7.11 A gate that "implies" another must be wired in exactly one place
+----------------------------------------------------------------------
+§6.6 said `ONE_MESH` implies §6.3.2's relaxed gate, and it was true on the kernel
+side (`aa_grp = 3`, and `_aa_run_full` accepts 2 or 3) and false on the host side
+(the emission truncation tested `ANALYTIC_AA_RUN_FULL` alone). One question, two
+readers, in two languages, and the answers differed for two commits without any
+test noticing — because the failure is silent: output is produced, looks
+plausible, and carries interior notches the coverage harness is structurally
+blind to (§7.9).
+
+The rule that would have prevented it is the one §3.2 already applied to
+`_tri_hit`: when N sites must agree, give them one function to ask. `aa_grp` is
+now computed by `_aa_group` and interrogated only through `_aa_run_full` /
+`_aa_one_mesh`, and an AST audit fails the build if anything else reads the raw
+setting.
+
+Generalize it: **an implication between feature flags is a fact about one
+derived value, not a convention two call sites are trusted to remember.** If you
+find yourself writing the implication twice, the second one is already wrong.
+
+7.12 Record the environment with the measurement, or the number is not about
+     the default you are about to ship
+----------------------------------------------------------------------------
+Every §6.6 CPU figure in this document is consistent with having been measured
+with **both** `ALGAN_ANALYTIC_AA_ONE_MESH=1` and `ALGAN_ANALYTIC_AA_RUN_FULL=1`
+exported, which is not the configuration a single default flip produces — and
+because of §7.11 the difference was most of the win (a flat quad's ink wobble
+-63% against -8%). The numbers were right about the *rule*; they were not right
+about the *flip*.
+
+Cheap habit that closes it: have the harness print the gate values it actually
+ran under, and quote that line beside the table. `_aa_run_gate_check` prints its
+`aa_tri/aa_grp modes` per case, which is exactly this and is what made the split
+diagnosable after the fact.
+
+7.13 When output moves, ask which device it moved TOWARD
+---------------------------------------------------------
+`manim_compat_and_plots` failed its CUDA baseline by 220 channel values with
+every gate on this branch turned off, which looks like an unattributable
+regression. It was not this branch: `35fe6ec` (from master) pinned an `argmax`
+tie-break that torch does not specify for equal maxima, and verified bit-identity
+on CPU.
+
+The test that settled it needed no bisect and no worktree. The CPU baselines were
+the *fresher* set, so compare both CUDA renders against them:
+
+    my CUDA render (gates off) vs fresh CPU baseline   peak  52
+    committed CUDA baseline    vs fresh CPU baseline   peak 218
+
+The render moved **toward** the other device, which is the signature of a fix
+removing device-dependent behaviour rather than of a regression. §3.5 states the
+same reasoning in the other direction ("a correct CPU render moves toward the
+CUDA baseline"); it is worth naming as a general instrument, because it costs two
+video diffs and replaces an afternoon of bisecting.
+
+7.14 `profile_scene` writes TWO runs, and the cold one comes first in the file
+-----------------------------------------------------------------------------
+`profile_scene` renders twice by design — RUN 1 cold (Taichi JIT, cold GPU
+clocks), RUN 2 warm — and its own docstring says to use the warm numbers. Both are
+written to the same report, cold first, so `grep -m1 'kernel: raster_first_shade'`
+silently reads the **cold** row. The gap is not subtle: 17.270 s cold against
+1.167 s warm for that kernel on one scene, because cold it is paying its own
+compile.
+
+This nearly put cold numbers into §4.3 and §3.6 as measurements. Cold rows also
+make the profile look like a different renderer: cold puts `raster_first_shade` at
+38% and `raster_shadow_trace` at 35%, warm puts `raster_shadow_trace` at **80%**
+and `raster_first_shade` at 2.4%. Any conclusion about where render time goes
+inverts depending on which table you read.
+
+Parse the last `RUN n` section, not the first match in the file.
+
+7.15 Interleaving that never varies the ORDER is not interleaving
+------------------------------------------------------------------
+The A/B for §3.2 ran off, on, off, on, off, on and took per-kernel minima, which
+is the standard drift-robust recipe. It still produced a uniform +8-16% for the
+`on` arm — including in kernels the flag cannot reach — because the `off` arm
+occupied the cooler slot of *every* pair while the machine heated monotonically.
+Minima do not remove a bias that is systematic within each pair.
+
+Two habits fix it, and the second is worth more: balance the order
+(off,on,on,off,...), and **always include a control** — a kernel or stage the
+change provably cannot affect. The control is what turned an apparent 8.5%
+regression into a measurement of the room temperature. Without one, that number
+would have gone into this document.
+
+7.16 A nondeterministic reduction is invisible until it feeds a threshold
+-------------------------------------------------------------------------
+`scatter_add_` on CUDA floats is not reproducible, which everyone knows and nobody
+worries about, because a 1e-05 error in a colour is not a bug. §6.6 put one behind
+a **comparison** — the cap clips when `eff > frag_cap - mesh_ink` — and the same
+1e-05 became 28 channel values over 9.6% of a frame, because a threshold turns an
+epsilon into a branch and bloom turns a branch into a region (§6.6.4).
+
+The rule to carry forward: **classify every host-side float reduction by what
+consumes it.** Feeding a colour, an atomic add is fine. Feeding a comparison, a
+sort key, a count, or an index, it is a correctness bug waiting for the right
+scene. The cheap defence is to accumulate in float64 and round to the consumer's
+dtype, which costs one pass and removes the class.
+
+And the cheap *detection* is an A/A render: run the identical configuration twice
+and diff. It costs one render, it caught this, and no amount of comparing against a
+baseline can distinguish "the baseline is stale" from "the renderer is not
+reproducible" — which is exactly how this presented.
+
+7.17 Two traps when checking a CPU baseline from a CUDA machine
+----------------------------------------------------------------
+Both cost a wasted run here, and both fail *silently* — they produce a green or red
+result that looks like an answer.
+
+**`CUDA_VISIBLE_DEVICES=` (empty) does not hide the GPU on Windows.**
+`torch.cuda.is_available()` still returns True. Use `CUDA_VISIBLE_DEVICES=-1`,
+which does. Verified both ways rather than assumed.
+
+**The render suites pick their baseline directory from `torch.cuda.is_available()`,
+not from the render device.** So a run that renders on CPU but still sees the GPU
+compares against `expected_outputs_cuda/`. Combined with the first trap, a
+"CPU baseline check" silently became a CUDA run compared against the CUDA baseline
+— and it *passed*, which is the worst possible outcome. What caught it was hashing
+the output: identical to the CUDA baseline, byte for byte.
+
+**And check which settings the baseline you are comparing against was written
+with.** The CUDA and CPU sets are not from the same point in history: the CUDA set
+came from `efb3a95` (pre-branch, every gate off) while the CPU set came from
+`2d1432a` (MESH_ID and winding already on). "Gates off" is therefore the right
+reproduction check for one and the wrong one for the other. `git log -1 -- <baseline>`
+before choosing the arm.
+
+7.18 "Byte-identical" is a claim about the scenes you rendered
+---------------------------------------------------------------
+`_weld_check` reported the weld byte-identical on three scenes, textured and
+normal-mapped included, and §3.1 was written up on that basis. Running the full
+suites across the same gate then moved **two** scenes, by 31 and 54 channel values
+over 7-10% of a frame.
+
+Both instruments were right. The harness renders a *single static frame*; the
+full-render scenes move a camera over adaptively diced PN surfaces, and the dice
+level is chosen per patch per frame from projected size — so a changed triangle
+list can land on a different level, which a static frame cannot expose. The split
+in the results says so exactly: the two scenes made of circuits and flat meshes
+moved zero pixels, and both scenes carrying `Surface` geometry moved.
+
+The lesson is not "write a better harness". It is that **byte-identity has a
+scope, and the scope is the scenes rendered** — so state it that way ("byte-
+identical on a static frame including textures") rather than as a property of the
+change. And for anything touching geometry, the confirming run is
+`tests/full_renders`, because `--fast` deliberately contains no PN surface and
+therefore cannot see tessellation move at all.

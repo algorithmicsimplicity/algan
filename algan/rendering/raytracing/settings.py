@@ -1054,8 +1054,40 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # silhouette pixels 0.0299 -> 0.0064, which is 79% of the error there. Note that
 # is a DIFFERENT mechanism from the one ss6.3.2 chased: on that geometry the
 # relaxed run gate is worth only 19%, which is why it moved ink wobble by
-# nothing. Implies ANALYTIC_AA_RUN_FULL.
-ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", False)
+# nothing.
+#
+# IMPLIES ANALYTIC_AA_RUN_FULL, and that implication is wired in exactly one
+# place: raster_pipeline._aa_group returns aa_grp = 3, and every reader -- both
+# kernel-launch sites AND the host's emission truncation -- asks _aa_run_full(),
+# which accepts 2 or 3. It was once wired only on the kernel side, so the relaxed
+# scan ran over fragment lists whose area donors the truncation had already
+# discarded; that cost a flat quad -8% of ink wobble where correct wiring gives
+# -63%. tests/unit_tests/test_analytic_aa_gates.py pins it.
+#
+# DEFAULT ON. Measured on CUDA (DESIGN_mesh_identity.md ss6.6.1-3): coverage error
+# against an exact analytic reference falls 70-100% on all eleven harness cases,
+# and on-lattice -- the share of silhouette pixels landing on a multiple of 1/8,
+# i.e. whether coverage is still sample-quantized -- collapses from 8-91% to
+# 0-1.6%. Ink wobble: flat quad 0.0139 -> 0.0052, Cylinder 0.0568 -> 0.0124,
+# Cylinder(256,2) 0.0765 -> 0.0429, bezier Line unchanged.
+#
+# What it costs, so the trade is on the record: ~2-5% render time (the honest
+# figure is 1.038x, from a 35 s shadowed scene; the small scenes sit on the
+# fixed-overhead floor), and a claim-vs-occlusion inconsistency on PARTIALLY
+# capped fragments, because the cap clips eff while the occlusion write uses the
+# uncapped dens. That shows up as small interior notches -- zero on seven of
+# eleven cases, 24/23629 on a fine Sphere, worst 253/3546 at mean 0.0090 on a
+# deliberately pathological 0.045-radius rod diced 256x. ss6.6.2 has the fix that
+# follows (scale dens by the same ratio), which is not attempted yet.
+#
+# DETERMINISM IS A REQUIREMENT OF THIS RULE, NOT AN INCIDENTAL PROPERTY. The
+# per-pixel ceiling feeds a threshold in the resolve, so the reduction that builds
+# it must be reproducible or borderline fragments flip between runs. It is
+# accumulated in float64 and rounded to float32 for exactly that reason -- see the
+# comment at the reduction in raster_pipeline.prepare_sparse_raster_coverage and
+# ss6.6.4. If you change how the ceiling is computed, A/A the render (twice, same
+# settings, compare) before trusting any baseline.
+ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 
 
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
@@ -1100,7 +1132,38 @@ BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", False)
 # stay necessary and stay in place. Retiring them needs the normal accumulation
 # to run on the welded topology, which this does not do.
 #
-# Default off: geometry moves, so all pixel baselines move on both devices.
+# DEFAULT OFF -- but NOT for the reason this comment used to give. "Geometry
+# moves, so all pixel baselines move" is measured FALSE: the welded vertices are
+# coincident to 1.7e-07 and the dropped triangles have zero area, so the
+# rasterizer cannot see the difference. benchmarks/_weld_check.py on CUDA,
+# --res md, byte-identical on all three arms while the triangle count
+# demonstrably drops:
+#
+#   plain (Sphere/Cylinder/Cone/Torus)   6668 -> 6572 tris   max|d| 0
+#   Sphere + colour checkerboard         4096 -> 3968 tris   max|d| 0
+#   Sphere + normal map                  4096 -> 3968 tris   max|d| 0
+#
+# The two textured arms are the point: the POLE weld changes the triangle list, so
+# every per-vertex attribute including uv must go through the same indices, while
+# the U-SEAM wrap deliberately does not weld (wrapping it would give the last cell
+# column u = 0 where the texture needs u = 1). A checkerboard is used rather than a
+# photo because a one-column uv error moves a hard edge and hides in a gradient.
+#
+# THE ACTUAL BLOCKER, found by flipping it on and running the full suite: the weld
+# is applied by get_grid_to_triangle_indices, which only the RENDER path calls.
+# The morph path builds its triangles with grid_to_triangle_vertices instead
+# (morph_conversions._grid_to_pn_soup), and that function knows nothing about the
+# gate -- so with the weld on, convert_to_pn_soup(Sphere) and
+# Sphere.get_render_primitives() disagree about the same sphere's triangulation.
+# test_pn_mesh.test_surface_conversion_reproduces_its_logical_pn_primitive asserts
+# they agree and fails; test_point_cloud_rendering also hard-codes the unwelded
+# 2*(W-1)*(H-1) count. So flipping this on ships a mesh that renders one way and
+# morphs another.
+#
+# What flipping it needs, therefore, is not more pixel evidence -- that is done --
+# but making every consumer of the grid topology go through one weld-aware builder,
+# the way ss3.2 routed both intersection arms through _tri_hit. Until then the gate
+# stays off and the measurements above stand.
 WELD_SURFACE_SEAMS = env_flag("ALGAN_WELD_SURFACE_SEAMS", False)
 
 

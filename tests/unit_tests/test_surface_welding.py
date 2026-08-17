@@ -47,7 +47,15 @@ def _degenerate(tris):
 
 
 def test_the_unwelded_topology_is_exactly_what_it_always_was():
-    """The default must stay byte-identical: it is what every baseline holds."""
+    """The unwelded arm must stay exactly the original construction.
+
+    It is the shipped default (``WELD_SURFACE_SEAMS`` is off: the pixel case is
+    proved but only the render path is weld-aware, ``DESIGN_mesh_identity.md``
+    ss3.1), so it is what every baseline holds. It is also the arm
+    ``ALGAN_WELD_SURFACE_SEAMS=0`` selects, and the reference every welded
+    assertion below is stated against — which is why this test is written to
+    survive the gate flipping either way.
+    """
     tris = _tris((False, False, False))
     assert tris.shape == ((W - 1) * (H - 1) * 2, 3)
     # Cell (0, 0) is the two triangles the original construction emitted.
@@ -113,11 +121,17 @@ def test_weld_flags_read_the_geometry_and_respect_the_gate():
             dim=-1,
         )
         flat = torch.cat([flat, torch.zeros_like(flat[..., :1])], dim=-1)
-        assert surface_weld_flags(grid) == (False, False, False), (
-            "the weld must be inert until ALGAN_WELD_SURFACE_SEAMS is on"
-        )
         original = rt_settings.WELD_SURFACE_SEAMS
         try:
+            # Both arms are set explicitly. This used to assert the OFF arm from
+            # the shipped default, which made the test a hostage of that default:
+            # when WELD_SURFACE_SEAMS flipped ON it failed for a reason that had
+            # nothing to do with what it checks, which is that the flags follow
+            # the gate and the geometry.
+            rt_settings.set_weld_surface_seams(False)
+            assert surface_weld_flags(grid) == (False, False, False), (
+                "the weld must be inert while ALGAN_WELD_SURFACE_SEAMS is off"
+            )
             rt_settings.set_weld_surface_seams(True)
             assert surface_weld_flags(grid) == (True, True, True), (
                 "a Sphere wraps in u and collapses at both poles"
