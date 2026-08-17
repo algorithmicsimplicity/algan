@@ -5,7 +5,9 @@
 :class:`Dot` and :class:`SurroundingRectangle` are all cubic bezier circuits
 (:class:`~algan.mobs.bezier_circuit.BezierCircuitCubic`), so they stay exactly
 smooth at any zoom and morph into one another. They take ``color``,
-``border_color`` and ``border_width``.
+``border_color`` and ``border_width``, plus ``texture_grid_width`` /
+``texture_grid_height`` for shapes that carry a gradient or an image rather than
+one flat colour.
 
 A second family -- :class:`~.Arc`, :class:`~.Annulus`, :class:`~.Ellipse`,
 :class:`~.Star`, :class:`~.Arrow` -- comes from the Manim compatibility layer and
@@ -129,6 +131,16 @@ class Line(BezierCircuitCubic):
     A :class:`Line` has no interior, so its stroke stays centred on the path
     rather than being drawn inside an outline the way a filled shape's border is.
 
+    A straight line's control points are collinear, which has two consequences
+    worth relying on. Its local frame's **first basis row points from the
+    line's centre toward** :meth:`~.Line.get_start` -- that is a guarantee, not
+    an accident of how the frame is derived. And its second row is synthesized
+    perpendicular to the path rather than measured from it, so the texture grid
+    defaults to ``texture_grid_width`` samples along the line and a single row
+    across it. Colour along the line with
+    :meth:`~.Line.set_color_by_function`, which parametrizes it by ``t`` running
+    from the start to the end.
+
     Parameters
     ----------
     start, end
@@ -145,8 +157,8 @@ class Line(BezierCircuitCubic):
         usual degrees. Positive and negative values bulge opposite ways. Defaults
         to ``0`` (a straight segment).
     *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic` -- notably ``color`` and
-        ``border_width``.
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``color``,
+        ``border_width`` and ``texture_grid_width``.
 
     Examples
     --------
@@ -220,6 +232,97 @@ class Line(BezierCircuitCubic):
 
     def get_length(self):
         return self.get_vector().norm(p=2, dim=-1)
+
+    def set_color_by_function(self, function):
+        """Colour the line by a function of ``t``, its progress from start to end.
+
+        The same as
+        :meth:`BezierCircuitCubic.set_color_by_function <algan.mobs.bezier_circuit.BezierCircuitCubic.set_color_by_function>`,
+        except that a line is one-dimensional: instead of ``(u, v)`` coordinates
+        over a 2-D frame, the function is handed a single ``t`` running from 0 at
+        :meth:`~.Line.get_start` to 1 at :meth:`~.Line.get_end`. A gradient along
+        a line, or a value plotted onto one, is written directly in those terms.
+
+        A line is unfilled, so this colours its stroke. The resolution is the
+        line's texture grid, which is one flat colour unless you asked for more:
+        build it with ``texture_grid_width`` (``Line(LEFT, RIGHT,
+        texture_grid_width=64)``). The height defaults to a single row across
+        the line, so ``texture_grid_width`` alone is the number of colour
+        samples along it.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default), so the colours cross-fade smoothly. Wrap the call in
+        ``Off()`` to apply it instantly.
+
+        Parameters
+        ----------
+        function
+            Callable taking a ``t`` tensor of shape ``[..., 1]``, in ``[0, 1]``,
+            and returning colours of shape ``[..., 3]`` (RGB), ``[..., 4]``
+            (RGBA) or ``[..., 5]`` (RGB, glow, alpha -- Algan's internal channel
+            order). Channels are in ``[0, 1]``; a missing alpha defaults to 1 and
+            a missing glow to 0. Must be vectorized -- it is called once on the
+            whole grid, not per texel.
+
+        Returns
+        -------
+        :class:`~.Line`
+            This line, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If the line has a single-texel texture grid, or if ``function``
+            returns the wrong number of colours.
+
+        Examples
+        --------
+        .. algan:: Example1LineSetColorByFunction
+            :save_last_frame:
+
+            from algan import *
+            import torch
+
+            line = Line(LEFT * 3, RIGHT * 3, border_width=20, texture_grid_width=64)
+            line.set_color_by_function(
+                lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
+            )
+            line.spawn()
+
+            Scene.save_video()
+        """
+        self._require_texture_grid("set_color_by_function")
+        return self._apply_texture_grid_colors(
+            function(self._path_parameters()), "set_color_by_function's function"
+        )
+
+    def _path_parameters(self):
+        """Internal: ``t`` at every texel of the texture grid, shape ``[W, H, 1]``.
+
+        Each texel is projected onto the chord from :meth:`~.Line.get_start` to
+        :meth:`~.Line.get_end`. For a straight line, whose first basis row points
+        at the start and whose second is perpendicular to the path, that is
+        exactly ``1 - u``; for an arc it measures progress along the chord,
+        which is the only well-defined reading of "along the line" there.
+        """
+        uv = self.get_base_grid()
+        center = self.location.reshape(-1, 3)[:1]
+        basis = self.basis.reshape(-1, 9)[:1]
+        points = (
+            center
+            + (2 * uv[..., :1] - 1) * basis[..., :3]
+            + (2 * uv[..., 1:] - 1) * basis[..., 3:6]
+        )
+        # One row per bezier segment: the path starts at the first segment's
+        # start and ends at the last one's end.
+        start = self.get_start().reshape(-1, 3)[:1]
+        chord = self.get_end().reshape(-1, 3)[-1:] - start
+        length_squared = chord.square().sum(-1, keepdim=True).clamp_min(1e-12)
+        return (
+            ((points - start) * chord).sum(-1, keepdim=True) / length_squared
+        ).clamp(0.0, 1.0)
 
     def put_start_and_end_on(self, start, end):
         target = Line(start, end, scene=self.scene, add_to_scene=False)

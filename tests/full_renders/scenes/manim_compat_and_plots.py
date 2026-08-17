@@ -82,7 +82,7 @@ with Seq():
     with Sync(run_time=1.2):
         parabola.color = TEAL_A
         line_plot.color = MAROON_A
-        vector.rotate(0.7)
+        vector.rotate(40)
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
@@ -123,7 +123,7 @@ with Seq():
         graph.spawn()
     data_label.spawn()
     with Sync(run_time=1.2):
-        matrix.rotate(0.35)
+        matrix.rotate(20)
         graph.scale(1.25)
     Scene.wait(0.2)
 
@@ -188,9 +188,9 @@ with Seq():
     with Sync(run_time=1.8):
         # Directly transforming a compatibility Mob keeps its backing Manim
         # object in step, which is the supported way to move one.
-        star.rotate(0.9)
+        star.rotate(50)
         annulus.scale(1.25)
-        compat_arrow.rotate(1.2)
+        compat_arrow.rotate(70)
         ApplyMatrix(grid, [[1.0, 0.6], [0.0, 1.0]], run_time=1.8)
         MoveAlongPath(traveller, path, run_time=1.8)
         # A genuine deformation, not a translation: the shear grows with y.
@@ -202,5 +202,5 @@ with Seq():
     with Sync(run_time=1.6):
         ApplyComplexFunction(grid, lambda z: z * (0.8 + 0.4j), run_time=1.6)
         MoveAlongPath(traveller, path, run_time=1.6)
-        star.rotate(-0.9)
+        star.rotate(-50)
     Scene.wait(0.4)
