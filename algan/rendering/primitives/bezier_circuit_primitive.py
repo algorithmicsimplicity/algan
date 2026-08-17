@@ -128,8 +128,8 @@ class BezierCircuitPrimitive(RenderPrimitive):
                         broadcast_all(
                             (
                                 triangle.mob_center,
-                                triangle.grid_height.int(),
                                 triangle.grid_width.int(),
+                                triangle.grid_height.int(),
                                 triangle.basis1,
                                 triangle.basis2,
                             ),

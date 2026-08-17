@@ -13,6 +13,17 @@ the fill instead of growing the silhouette -- which keeps bordered text legible
 and stops neighbouring glyphs fusing. An unfilled circuit has no interior to eat
 into, so its stroke stays centred on the path.
 
+It owns colour *across* the shape too. Since there are no vertices to hang
+colours off, a circuit carries a ``texture_grid_width`` x
+``texture_grid_height`` grid of colour samples laid over its own frame, which
+the renderer samples bilinearly per fragment.
+:meth:`BezierCircuitCubic.set_color_by_function` fills the grid in from ``(u,
+v)`` -- the same domain :class:`~algan.mobs.surfaces.surface.Surface` uses --
+:meth:`BezierCircuitCubic.set_color_by_image` from a picture, and
+:meth:`~algan.mobs.shapes_2d.Line.set_color_by_function` from a single ``t``
+along the path. The grid is one texel, i.e. one flat colour, unless it was asked
+for.
+
 ``build_render_primitives_batched`` packs many circuits into one
 :class:`~algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive`
 for the renderer, which evaluates the curves analytically rather than
@@ -27,7 +38,7 @@ import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
-from algan.animation_timeline.animation_contexts import Off
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
 from algan.constants.spatial import OUT, RIGHT, UP
 from algan.geometry.geometry import rotate_vector_around_axis
@@ -69,20 +80,47 @@ def _circuit_ior(ior, metalness):
 
 
 def _resample_texture_grid(value, old_size, new_size):
-    """Resample per-texel circuit values from an ``old_size`` to a ``new_size``
-    square grid, for every circuit packed into ``value`` ``[..., N * old, C]``.
+    """Resample per-texel circuit values between two ``(width, height)`` texture
+    grids, for every circuit packed into ``value`` ``[..., N * old, C]``.
+
+    Texels are stored with the width (first basis) axis outermost, so the packed
+    rows reshape straight into a ``[width, height]`` image.
     """
     leading = value.shape[:-2]
     channels = value.shape[-1]
-    image = value.reshape(-1, old_size, old_size, channels).permute(0, 3, 1, 2)
+    image = value.reshape(-1, *old_size, channels).permute(0, 3, 1, 2)
     resized = F.interpolate(
-        image, size=(new_size, new_size), mode="bilinear", align_corners=True
+        image, size=tuple(new_size), mode="bilinear", align_corners=True
     )
     return resized.permute(0, 2, 3, 1).reshape(*leading, -1, channels)
 
 
+def _extremal_control_point_index(dists, relative_tolerance=0.0):
+    """Index of the control point furthest from a circuit's centre, ties broken
+    toward the lowest index.
+
+    ``torch.argmax`` does not promise which of several equal maxima it hands
+    back, and a circuit's control points tie constantly: every corner of a
+    square is the same distance from its centre, and so is every point of a
+    circle. Since the winner sets the whole local frame -- including the sign of
+    the plane normal -- an unspecified tie-break is an unspecified basis, which
+    is exactly what this avoids.
+
+    ``relative_tolerance`` widens "equal" to a fraction of the maximum, for the
+    collinear case where the two ends of a path are equidistant in exact
+    arithmetic and an ulp apart in practice.
+    """
+    dists = dists.reshape(-1)
+    threshold = dists.amax()
+    if relative_tolerance:
+        threshold = threshold * (1.0 - relative_tolerance)
+    inds = torch.arange(dists.numel(), device=dists.device)
+    return int(torch.where(dists >= threshold, inds, dists.numel()).amin())
+
+
 def _circuit_location_and_basis(control_points):
-    """Return the same local frame used by a standalone bezier circuit.
+    """Return the same local frame used by a standalone bezier circuit, plus
+    whether its second in-plane axis had to be synthesized.
 
     Row 2 is the circuit's plane normal. Rows 0 and 1 span that plane and always
     share a length, so the frame is orthogonal with a square in-plane footprint
@@ -100,7 +138,16 @@ def _circuit_location_and_basis(control_points):
 
     A straight Line is the exception and keeps the geometry-derived frame: its
     control points are collinear, so there is no plane to align to, and the
-    extremal displacement genuinely is the shape's own axis.
+    extremal displacement genuinely is the shape's own axis. Row 0 is pinned to
+    the START of such a path -- see :class:`~algan.mobs.shapes_2d.Line`, whose
+    documented guarantee this is.
+
+    Returns
+    -------
+    tuple
+        ``(location, basis, second_axis_synthesized)``: the circuit's centre,
+        its flattened 3x3 frame, and whether the control points were collinear
+        so that row 1 carries no extent of the shape's own.
     """
     control_points = control_points.reshape(-1, 3)
     mn = control_points.amin(-2)
@@ -110,24 +157,32 @@ def _circuit_location_and_basis(control_points):
         basis = squish(
             torch.eye(3, device=control_points.device, dtype=control_points.dtype)
         )
-        return location, basis.reshape(-1)
+        return location, basis.reshape(-1), True
 
     disps = control_points - location
-    dists = disps.norm(p=2, dim=-1, keepdim=True)
-    first_basis = disps[..., dists.argmax(-2, keepdim=True).squeeze(), :].unsqueeze(-2)
+    centre_dists = disps.norm(p=2, dim=-1, keepdim=True)
+    first_basis = disps[_extremal_control_point_index(centre_dists)].unsqueeze(-2)
     if first_basis.norm(p=2, dim=-1) <= 1e-4:
         first_basis = RIGHT.to(control_points) * 1e-4
     first_basis_n = F.normalize(first_basis, p=2, dim=-1)
 
     planar_disps = disps - dot_product(disps, first_basis_n) * first_basis_n
     dists = planar_disps.norm(p=2, dim=-1, keepdim=True)
-    second_basis = planar_disps[
-        ..., dists.argmax(-2, keepdim=True).squeeze(), :
-    ].unsqueeze(-2)
-    scale = first_basis.norm(p=2, dim=-1, keepdim=True)
+    second_basis = planar_disps[_extremal_control_point_index(dists)].unsqueeze(-2)
     degenerate = bool(second_basis.norm(p=2, dim=-1).max() <= 1e-4)
     if degenerate:
+        # Collinear control points: no plane to derive a second axis from, so
+        # row 1 is synthesized perpendicular to row 0 and carries none of the
+        # shape's own extent. Re-pick row 0 with a tolerance, so that the two
+        # ends of a path -- equidistant from its centre in exact arithmetic,
+        # an ulp apart in practice -- always resolve to the lowest-indexed
+        # control point, i.e. the start.
+        first_basis = disps[
+            _extremal_control_point_index(centre_dists, 1e-6)
+        ].unsqueeze(-2)
+        first_basis_n = F.normalize(first_basis, p=2, dim=-1)
         second_basis = rotate_vector_around_axis(first_basis, 90, OUT, -1)
+    scale = first_basis.norm(p=2, dim=-1, keepdim=True)
     second_basis = second_basis * scale / second_basis.norm(p=2, dim=-1, keepdim=True)
     third_basis_n = F.normalize(
         broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1
@@ -155,10 +210,110 @@ def _circuit_location_and_basis(control_points):
                 break
 
     basis = torch.cat((first_basis, second_basis, third_basis_n), -1)
-    return location, basis.reshape(-1)
+    return location, basis.reshape(-1), degenerate
 
 
 class BezierCircuitCubic(Mob):
+    """A closed loop of cubic bezier curves -- the geometry every 2-D shape is
+    made of.
+
+    The curves are evaluated analytically by the renderer rather than
+    tessellated, so a circuit stays exactly smooth at any zoom, and any circuit
+    can :meth:`~algan.animatable_base.mob.Mob.become` any other. On a filled
+    circuit the border is drawn *inside* the outline, so raising ``border_width``
+    eats into the fill instead of growing the silhouette; an unfilled circuit has
+    no interior to eat into, so its stroke stays centred on the path.
+
+    **Colour across a circuit.** A circuit carries a rectangular texture grid of
+    colour samples, laid across its own frame and sampled bilinearly per
+    fragment by the renderer. ``texture_grid_width`` x ``texture_grid_height``
+    is therefore the resolution of everything painted on the shape -- a
+    gradient, an image, a colour wave -- and it defaults to a single texel, i.e.
+    one flat colour. Raise it and fill it in with
+    :meth:`~.BezierCircuitCubic.set_color_by_function` or
+    :meth:`~.BezierCircuitCubic.set_color_by_image`.
+
+    The grid's ``(u, v)`` domain is the circuit's own frame, exactly as
+    :class:`~algan.mobs.surfaces.surface.Surface`'s is: ``u`` runs from 0 to 1
+    along the first basis row and ``v`` along the second, which for an upright
+    2-D shape means ``u`` left to right and ``v`` top to bottom. Both rows are as
+    long as the distance from the centre to the furthest control point, so the
+    frame spans the square that circumscribes the shape and the shape itself
+    covers the middle of the domain rather than all of it.
+
+    Parameters
+    ----------
+    control_points
+        The cubic bezier control points, shape ``(*, 3)`` in world units, in
+        groups of four: ``P0, P1, P2, P3`` per segment, with each segment
+        starting where the previous one ended. A segment that starts somewhere
+        else begins a new sub-circuit, which is how a shape gets holes.
+    normals
+        Per-control-point normals, shape ``(*, 3)``, used for lighting. Defaults
+        to ``None``, meaning the circuit's own plane normal is used.
+    border_width
+        Width of the border stroke, in pixels against a 960-pixel-tall frame so
+        it keeps its apparent weight at any resolution. Defaults to ``5``; pass
+        ``0`` for no border.
+    border_color
+        Colour of the border stroke. Defaults to ``WHITE``. The circuit's
+        ``color`` is its *fill* colour and does not touch the border; see
+        :attr:`~.BezierCircuitCubic.border_color`.
+    portion_of_curve_drawn
+        How much of the path is drawn, from 0 (nothing) to 1 (all of it).
+        Animating it is what draws a shape on. Defaults to ``1.0``.
+    filled
+        Whether the interior is painted. Defaults to ``True``; ``False`` leaves
+        an outline whose stroke is centred on the path (what
+        :class:`~algan.mobs.shapes_2d.Line` uses).
+    add_texture_grid
+        Whether to build the texture grid at all. Defaults to ``True``. ``False``
+        leaves the circuit one colour and no per-texel storage, and the
+        ``set_color_by_*`` methods then have nothing to write to.
+    texture_grid_width
+        Number of colour samples along the circuit's first basis row -- ``u``,
+        left to right on an upright shape. Defaults to ``1``: one flat colour,
+        which is what a shape wants unless you are painting something across it.
+    texture_grid_height
+        Number of colour samples along the second basis row (``v``). Defaults to
+        ``None``, meaning match ``texture_grid_width`` -- except on a circuit
+        whose control points are collinear (a straight
+        :class:`~algan.mobs.shapes_2d.Line`), where the second row is synthesized
+        perpendicular to the path and carries no extent of the shape, so it
+        defaults to ``1`` and the grid runs along the line only.
+    empty
+        Whether the circuit is invisible: fill and border are forced to zero
+        opacity. Defaults to ``False``. Used for shapes that exist only to
+        position or morph into something else.
+    **kwargs
+        Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
+        which is the fill colour.
+
+    See Also
+    --------
+    :meth:`~.BezierCircuitCubic.set_color_by_function` : Colour it by a function of ``(u, v)``.
+    :meth:`~.BezierCircuitCubic.set_color_by_image` : Paint an image across it.
+    :class:`~algan.mobs.surfaces.surface.Surface` : The 3-D counterpart, with the same ``(u, v)`` conventions.
+
+    Examples
+    --------
+    .. algan:: Example1BezierCircuitCubic
+        :save_last_frame:
+
+        from algan import *
+        import torch
+
+        square = Square(texture_grid_width=32, texture_grid_height=32, border_width=0)
+        square.set_color_by_function(
+            lambda uv: torch.cat(
+                (uv[..., :1], uv[..., 1:], torch.zeros_like(uv[..., :1])), -1
+            )
+        )
+        square.spawn()
+
+        Scene.save_video()
+    """
+
     _morph_family = "bezier"
 
     def __init__(
@@ -170,7 +325,8 @@ class BezierCircuitCubic(Mob):
         portion_of_curve_drawn=1.0,
         filled=True,
         add_texture_grid=True,
-        texture_grid_size=1,
+        texture_grid_width=1,
+        texture_grid_height=None,
         empty=False,
         **kwargs,
     ):
@@ -185,9 +341,11 @@ class BezierCircuitCubic(Mob):
             )
         if normals is not None:
             normals = normals.reshape(-1, 3)
-        kwargs2["location"], kwargs2["basis"] = _circuit_location_and_basis(
-            control_points
-        )
+        (
+            kwargs2["location"],
+            kwargs2["basis"],
+            second_axis_synthesized,
+        ) = _circuit_location_and_basis(control_points)
 
         self.grid_width = self.grid_height = 1
         self.num_texture_points = 0
@@ -209,18 +367,26 @@ class BezierCircuitCubic(Mob):
 
         texture_triangle_vertices = self.location.squeeze(0)
         if add_texture_grid:
-            aspect_ratio = second_basis.norm(p=2, dim=-1) / first_basis.norm(
-                p=2, dim=-1
-            )
+            width = max(int(texture_grid_width), 1)
+            if texture_grid_height is None:
+                # A collinear circuit's second basis row is synthesized
+                # perpendicular to the path, so every point of the shape maps to
+                # the same v: sampling it more than once buys nothing.
+                height = 1 if second_axis_synthesized else width
+            else:
+                height = max(int(texture_grid_height), 1)
 
-            a1 = torch.linspace(-1, 1, texture_grid_size).view(-1, 1, 1) * (1 + 1e-5)
-            a2 = torch.linspace(
-                -1, 1, int((texture_grid_size * aspect_ratio).round())
-            ).view(1, -1, 1) * (1 + 1e-5)
+            # ``linspace(-1, 1, 1)`` is -1, so a single-sample axis puts its one
+            # texel at that end of the frame rather than in the middle. The
+            # renderer clamps the whole axis to it either way, so it is one
+            # colour across the span regardless; what it does change is where
+            # ``wave_color`` reads the texel's position from.
+            a1 = torch.linspace(-1, 1, width).view(-1, 1, 1) * (1 + 1e-5)
+            a2 = torch.linspace(-1, 1, height).view(1, -1, 1) * (1 + 1e-5)
             texture_grid_points = (a1 * first_basis + a2 * second_basis) + self.location
             texture_triangle_vertices = texture_grid_points
-            self.grid_width = texture_triangle_vertices.shape[-2]
-            self.grid_height = texture_triangle_vertices.shape[-3]
+            self.grid_width = width
+            self.grid_height = height
             texture_triangle_vertices = texture_triangle_vertices.reshape(
                 -1, texture_triangle_vertices.shape[-1]
             )
@@ -289,7 +455,7 @@ class BezierCircuitCubic(Mob):
             )
 
         mob = cls(torch.cat(batches, -2), *args, **kwargs)
-        locations, bases = zip(
+        locations, bases, _ = zip(
             *[_circuit_location_and_basis(points) for points in batches]
         )
         locations = torch.stack(locations, -2).unsqueeze(0)
@@ -321,7 +487,7 @@ class BezierCircuitCubic(Mob):
                 torch.linspace(
                     -1,
                     1,
-                    mob.grid_height,
+                    mob.grid_width,
                     device=locations.device,
                     dtype=locations.dtype,
                 ).view(1, 1, -1, 1, 1)
@@ -330,7 +496,7 @@ class BezierCircuitCubic(Mob):
                 + torch.linspace(
                     -1,
                     1,
-                    mob.grid_width,
+                    mob.grid_height,
                     device=locations.device,
                     dtype=locations.dtype,
                 ).view(1, 1, 1, -1, 1)
@@ -375,11 +541,15 @@ class BezierCircuitCubic(Mob):
         A circuit's fill and border are coloured by bilinearly sampling the
         independent ``texture_points`` and ``border_texture_points`` grids laid
         across it. Those grids are a single sample unless
-        ``texture_grid_size`` was raised by hand, so a shape flashes as one flat
-        colour instead of showing the wave travelling over it. Lay down a grid
-        fine enough that neighbouring samples are no further than
-        ``max_spacing`` apart along the wave (see
+        ``texture_grid_width`` / ``texture_grid_height`` were raised by hand, so
+        a shape flashes as one flat colour instead of showing the wave
+        travelling over it. Lay down a grid fine enough that neighbouring
+        samples are no further than ``max_spacing`` apart along the wave (see
         :meth:`~.Mob._refine_sampling_for_color_wave`).
+
+        A circuit whose grid is already rectangular was sized deliberately by
+        its author, so it is left exactly as it is rather than being squared up
+        for the duration of a wave.
         """
         if "color" not in pulsed_attrs:
             # Only colour is stored per texture point. A circuit's opacity is a
@@ -422,22 +592,23 @@ class BezierCircuitCubic(Mob):
         new_size = max(size, min(required, _MAX_WAVE_TEXTURE_RESOLUTION))
         if new_size == size:
             return None
-        self._set_texture_grid_resolution(new_size)
+        self._set_texture_grid_resolution(new_size, new_size)
 
         def restore():
-            self._set_texture_grid_resolution(size)
+            self._set_texture_grid_resolution(size, size)
 
         return restore
 
-    def _set_texture_grid_resolution(self, size):
-        """Internal: rebuild the texture grid at ``size x size`` per circuit.
+    def _set_texture_grid_resolution(self, width, height):
+        """Internal: rebuild the texture grid at ``width x height`` per circuit.
 
         The grid is laid out exactly as the constructor lays it out, so the
-        renderer's texture lookup is unchanged: ``size`` samples along the first
-        basis vector, each holding ``size`` samples along the second. Existing
+        renderer's texture lookup is unchanged: ``width`` samples along the first
+        basis vector, each holding ``height`` samples along the second. Existing
         per-texel values are resampled onto the new grid. Row counts change, so
         callers must be prepared for the history split this performs.
         """
+        old_size = (self.grid_width, self.grid_height)
         old_points = self.num_texture_points
         objects = self.location.shape[-2]
         old_values = {}
@@ -454,21 +625,23 @@ class BezierCircuitCubic(Mob):
         # old ones, so the recorded history stays behind on a frozen clone.
         if self.is_spawned():
             self.detach_history()
-        self.grid_width = self.grid_height = size
-        self.num_texture_points = size * size
+        self.grid_width, self.grid_height = width, height
+        self.num_texture_points = width * height
 
         location = self.location
-        offsets = torch.linspace(
-            -1, 1, size, device=location.device, dtype=location.dtype
-        ) * (1 + 1e-5)
+
+        def offsets(size):
+            return torch.linspace(
+                -1, 1, size, device=location.device, dtype=location.dtype
+            ) * (1 + 1e-5)
+
         first = self.basis[..., :3].unsqueeze(-2).unsqueeze(-2)
         second = self.basis[..., 3:6].unsqueeze(-2).unsqueeze(-2)
         points = (
-            offsets.view(-1, 1, 1) * first
-            + offsets.view(1, -1, 1) * second
+            offsets(width).view(-1, 1, 1) * first
+            + offsets(height).view(1, -1, 1) * second
             + location.unsqueeze(-2).unsqueeze(-2)
         )
-        old_size = int(round(old_points**0.5))
         new_locations = points.reshape(*points.shape[:-4], -1, 3)
         for texture_mob in (self.texture_points, self.border_texture_points):
             texture_mob._setattr_and_rebatch_without_record("location", new_locations)
@@ -479,7 +652,7 @@ class BezierCircuitCubic(Mob):
                 if attr == "location" or value.shape[-2] != objects * old_points:
                     continue
                 texture_mob._setattr_and_rebatch_without_record(
-                    attr, _resample_texture_grid(value, old_size, size)
+                    attr, _resample_texture_grid(value, old_size, (width, height))
                 )
 
             if texture_mob.parent_batch_sizes is not None:
@@ -503,6 +676,223 @@ class BezierCircuitCubic(Mob):
     @border_color.setter
     def border_color(self, value):
         self.border_texture_points.color = value
+
+    def get_base_grid(self) -> torch.Tensor:
+        """Get the circuit's texture grid, the ``(u, v)`` domain it is coloured
+        over.
+
+        Values run from 0 to 1 along both axes: ``u`` along the circuit's first
+        basis row, ``v`` along its second, which on an upright 2-D shape means
+        ``u`` left to right and ``v`` top to bottom. Both rows are as long as the
+        distance from the circuit's centre to its furthest control point, so the
+        domain covers the square that circumscribes the shape and the shape sits
+        in the middle of it. An axis with a single sample carries one colour for the whole span
+        and is evaluated at its centre, ``0.5``.
+
+        This is the input the ``set_color_by_*`` methods evaluate their
+        functions over, so it is what to write those functions in terms of.
+
+        Returns
+        -------
+        torch.Tensor
+            The ``(u, v)`` coordinates, shape
+            ``[texture_grid_width, texture_grid_height, 2]``.
+
+        See Also
+        --------
+        :meth:`~.BezierCircuitCubic.set_color_by_function` : Colour the circuit over this grid.
+        """
+        device = self.texture_points.location.device
+
+        def axis(size):
+            if size < 2:
+                return torch.full((1,), 0.5, device=device)
+            return torch.linspace(0, 1, size, device=device)
+
+        width, height = self.grid_width, self.grid_height
+        return torch.stack(
+            (
+                axis(width).view(-1, 1).expand(-1, height),
+                axis(height).view(1, -1).expand(width, -1),
+            ),
+            -1,
+        )
+
+    def _apply_texture_grid_colors(self, colors, what):
+        """Internal: write one colour per texel onto the grids that are visible.
+
+        ``colors`` holds one entry per texel of :meth:`get_base_grid`, in that
+        grid's own layout. The fill grid always takes them; an unfilled circuit
+        has no interior to show them in, so its border grid takes them too --
+        the same pairing the constructor makes when it hands an unfilled
+        circuit's texture grids the border colour.
+        """
+        colors = Color.add_defaults(cast_to_tensor(colors))
+        colors = colors.reshape(-1, colors.shape[-1])
+        if colors.shape[-2] != self.num_texture_points:
+            raise ValueError(
+                f"{what} must return one colour per texel: expected "
+                f"{self.num_texture_points} "
+                f"({self.grid_width} x {self.grid_height}), got {colors.shape[-2]}"
+            )
+        objects = self.location.shape[-2]
+        if objects > 1:
+            # ``from_batches`` mobs (Text, Tex) pack every circuit's texels into
+            # one row block each, and every circuit is coloured over its own
+            # frame, so the same grid of colours repeats per circuit.
+            colors = colors.repeat(objects, 1)
+        targets = [self.texture_points]
+        if not self.filled:
+            targets.append(self.border_texture_points)
+        with Sync(animation_manager=self.animation_manager):
+            for target in targets:
+                target.color = colors.unsqueeze(0)
+        return self
+
+    def _require_texture_grid(self, method):
+        """Internal: refuse to paint a circuit that has nowhere to paint."""
+        if self.num_texture_points < 2:
+            raise ValueError(
+                f"{type(self).__name__}.{method} needs a texture grid with more "
+                "than one texel, but this circuit has "
+                f"{self.num_texture_points}. The grid is the resolution of "
+                "anything painted across the shape, and it is one flat colour "
+                "by default -- construct the shape with e.g. "
+                "texture_grid_width=64, texture_grid_height=64."
+            )
+
+    def set_color_by_function(self, function):
+        """Colour the circuit by a function of its ``(u, v)`` parameters.
+
+        Gives each texel of the circuit's texture grid its own colour, for
+        gradients, heat maps or anything where colour carries data, and the
+        renderer interpolates between them across the shape. The colours travel
+        with the circuit as it moves and morphs.
+
+        The grid is the resolution of the result, and it is a single flat colour
+        unless you asked for more: build the shape with ``texture_grid_width`` /
+        ``texture_grid_height`` (see :class:`~.BezierCircuitCubic`). On a filled
+        circuit this colours the fill, leaving ``border_color`` alone; on an
+        unfilled one, where the stroke is all there is, it colours the stroke.
+        A multi-circuit mob (a :class:`~algan.mobs.text.Text`, a
+        :class:`~algan.mobs.text.Tex`) colours every circuit over its own frame,
+        so the pattern repeats per glyph.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default), so the colours cross-fade smoothly. Wrap the call in
+        ``Off()`` to apply it instantly.
+
+        Parameters
+        ----------
+        function
+            Callable taking a ``(u, v)`` tensor of shape ``[..., 2]``, with both
+            coordinates in ``[0, 1]``, and returning colours of shape
+            ``[..., 3]`` (RGB), ``[..., 4]`` (RGBA) or ``[..., 5]`` (RGB, glow,
+            alpha -- Algan's internal channel order). Channels are in ``[0, 1]``;
+            a missing alpha defaults to 1 and a missing glow to 0. Must be
+            vectorized -- it is called once on the whole grid, not per texel.
+
+        Returns
+        -------
+        :class:`~.BezierCircuitCubic`
+            This circuit, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If the circuit has a single-texel texture grid, or if ``function``
+            returns the wrong number of colours.
+
+        See Also
+        --------
+        :meth:`~.BezierCircuitCubic.set_color_by_image` : Paint an image on instead.
+        :meth:`~.BezierCircuitCubic.get_base_grid` : The ``(u, v)`` grid this evaluates over.
+
+        Examples
+        --------
+        .. algan:: Example1BezierCircuitCubicSetColorByFunction
+            :save_last_frame:
+
+            from algan import *
+            import torch
+
+            circle = Circle(texture_grid_width=48, texture_grid_height=48)
+            circle.set_color_by_function(
+                lambda uv: torch.cat(
+                    (uv[..., :1], torch.zeros_like(uv[..., :1]), uv[..., 1:]), -1
+                )
+            )
+            circle.spawn()
+
+            Scene.save_video()
+        """
+        self._require_texture_grid("set_color_by_function")
+        return self._apply_texture_grid_colors(
+            function(self.get_base_grid().clone()), "set_color_by_function's function"
+        )
+
+    def set_color_by_image(self, rgba_array_or_file_path):
+        """Paint an image across the circuit.
+
+        The image is resampled onto the circuit's texture grid and interpolated
+        across the shape by the renderer, and it follows the shape as it moves
+        and morphs. The image's top-left corner lands at ``(u, v) == (0, 0)``,
+        which on an upright 2-D shape is the top left of the frame.
+
+        Unlike :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`,
+        which keeps the image at its own resolution, a circuit has no separate
+        texture map: the texture grid *is* the resolution, so build the shape
+        with a ``texture_grid_width`` / ``texture_grid_height`` matching the
+        detail you need. Remember too that the grid spans the square
+        circumscribing the shape, so the shape shows the middle of the picture.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default): the circuit cross-fades, texel by texel, to the image. Wrap
+        the call in ``Off()`` to apply it instantly.
+
+        Parameters
+        ----------
+        rgba_array_or_file_path
+            Path to an image file, or an RGBA array of shape ``[H, W, 4]`` or
+            ``[H, W, 5]`` with channels in ``[0, 1]``. Paths resolve relative to
+            the working directory and then the main script's directory, so an
+            image beside your script is found either way.
+
+        Returns
+        -------
+        :class:`~.BezierCircuitCubic`
+            This circuit, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If the circuit has a single-texel texture grid.
+
+        See Also
+        --------
+        :meth:`~.BezierCircuitCubic.set_color_by_function` : Colour it by a function instead.
+        :class:`~algan.mobs.image_mob.ImageMob` : An image as a Mob of its own, at full resolution.
+        """
+        self._require_texture_grid("set_color_by_image")
+        from algan.utils.file_utils import get_image
+
+        image = get_image(rgba_array_or_file_path)
+        # ``image`` is [row, column, channel] with rows running down the
+        # picture; the grid is [u, v] with v running down the circuit's frame,
+        # so the resample lands on (v, u) and transposes back.
+        resized = F.interpolate(
+            image.permute(2, 0, 1).unsqueeze(0),
+            (self.grid_height, self.grid_width),
+            mode="bilinear",
+            antialias=True,
+        ).squeeze(0)
+        return self._apply_texture_grid_colors(
+            resized.permute(2, 1, 0), "set_color_by_image's image"
+        )
 
     def get_default_color(self):
         return PURPLE
@@ -1068,11 +1458,8 @@ def build_render_primitives_batched(actors, scene):
         )
 
     mega.mob_center = loc.to(device)
-    # NB: the triangle_collection constructor assigns each primitive's
-    # grid_height into the collection's .grid_width and vice versa;
-    # reproduced as-is for byte-identity.
-    mega.grid_width = per_actor_int([a.grid_height for a in actors]).to(device)
-    mega.grid_height = per_actor_int([a.grid_width for a in actors]).to(device)
+    mega.grid_width = per_actor_int([a.grid_width for a in actors]).to(device)
+    mega.grid_height = per_actor_int([a.grid_height for a in actors]).to(device)
     mega.basis1 = basis[..., :3].to(device)
     mega.basis2 = basis[..., 3:6].to(device)
     mega.reflectivity = reflectivity.to(device)

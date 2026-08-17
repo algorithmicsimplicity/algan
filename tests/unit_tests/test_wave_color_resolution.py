@@ -182,7 +182,7 @@ def test_circuit_wave_color_animates_fill_and_border_texture_grids():
     square = Square(
         color=YELLOW,
         border_color=YELLOW,
-        texture_grid_size=2,
+        texture_grid_width=2,
     ).spawn(animate=False)
 
     square.wave_color(
@@ -208,13 +208,13 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
         width=6,
         height=1,
         color=YELLOW,
-        texture_grid_size=33,
+        texture_grid_width=33,
     )
     glyphs = [
         Square(
             side_length=0.25,
             color=YELLOW,
-            texture_grid_size=3,
+            texture_grid_width=3,
         ).move(RIGHT * x)
         for x in (-2.0, -1.0, 0.0, 1.0, 2.0)
     ]
