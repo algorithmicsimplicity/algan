@@ -135,12 +135,46 @@ which is what ``DESIGN_mesh_identity.md`` ss2.2 declares and no consumer reads.
 
 WHAT IT ARBITRATES. ``DESIGN_mesh_identity.md`` ss4.5 wanted rendered coverage
 against an exact reference to decide ``ALGAN_MESH_ID``, and said this harness
-could not supply it. It can now, and the answer is NEUTRAL. Mean |actual-E| over
-silhouette pixels, ``--res md``, ``ALGAN_MESH_ID=0`` -> ``1``: Cube
-0.0250 -> 0.0248, Icosahedron 0.0258 -> 0.0256 (0.0264 -> 0.0262 with
-``ALGAN_POLYHEDRON_WINDING=1``), quad and every ``Surface``-backed case unmoved
--- a ``Surface`` is already one merged member, so its ``sid`` does not move.
-Nothing regresses and nothing gains beyond noise.
+could not supply it. It can now, and on the scored metric the answer is NEUTRAL.
+Mean |actual-E| over silhouette pixels, ``--res md``, ``ALGAN_MESH_ID=0`` ->
+``1``: Cube 0.0250 -> 0.0248, Icosahedron 0.0258 -> 0.0256 (0.0264 -> 0.0262
+with ``ALGAN_POLYHEDRON_WINDING=1``), quad and every single-solid ``Surface``
+case unmoved -- a ``Surface`` is already one merged member, so its ``sid`` does
+not move. Nothing regresses and nothing gains beyond noise.
+
+THE SCORED COLUMN IS THE WRONG INSTRUMENT FOR A PACKED GRID, which is why
+``--mesh-ab`` exists. ``_exact_coverage`` has to DROP a pixel whose facing group
+holds two sheets, and on a pack of spheres those drops are concentrated exactly
+where two spheres overlap -- the population MESH_ID is there to fix. So
+``--mesh-ab`` differences painted coverage between the two settings per pixel
+instead: no reference, so it sees every covered pixel. Measured, ``--res md``:
+
+    case                 covered px   moved   max |d|   mean off-on
+    quad (control)            33438       0    0.0000       +0.0000
+    cube                      39914      17    0.0885       +0.0001
+    icosahedron               46220     235    0.4968       -0.2098
+    cylinder (default)        43124       0    0.0000       +0.0000
+    cylinder (256x2)          43228       0    0.0000       +0.0000
+    sphere (192x96)           27734       0    0.0000       +0.0000
+    packed 4x4 (apart)        43560       0    0.0000       +0.0000
+    packed 4x4 (overlap)      36224      18    0.2002       +0.0539
+
+The packed prediction holds in sign and mechanism and is small in population:
+18 of 36224 pixels, with ``off - on`` POSITIVE -- MESH_ID=0 paints more, the
+over-claim that happens when one id for the whole pack lets a run carry across
+two spheres until their masks OR to a full union. The ``apart`` control moves
+ZERO pixels, which is what makes that reading sound: the effect is the packing,
+not the batching. The Icosahedron's 235 moved pixels are mostly the winding
+defect, not MESH_ID -- with ``ALGAN_POLYHEDRON_WINDING=1`` they fall to 11 at
+mean |d| 0.024.
+
+Getting there needed a DEFECT fixed. Both packed cases were byte-identical
+across MESH_ID at first, because a packed grid is diced logical PN and
+``_dice_logical_pn`` built its patch->surface map from the per-member
+``_rt_obj_counts`` alone. A lone packed primitive is ONE member covering every
+sphere, so the pack diced to a single id and the ``mesh_ids``
+``Surface.get_render_primitives`` stamps were resolved at construction and then
+thrown away. The dice now consults the declaration first, like the flat path.
 
 That is a CORRECTION of a number this docstring carried earlier, and the reason
 is worth keeping: an intermediate version of ``_exact_coverage`` accepted a
@@ -165,6 +199,7 @@ neutral.)
 
 Run:  <venv-python> benchmarks/_aa_run_gate_check.py [--res md|ld|hd]
                                                      [--cases ...] [--verify N]
+                                                     [--mesh-ab]
 """
 
 from __future__ import annotations
@@ -199,6 +234,7 @@ from algan import (  # noqa: E402
     TriangleTriangulated,
 )
 from algan.rendering.raytracing import raster_pipeline as rp  # noqa: E402
+from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_BACKFACE_BIT,
     _AA_MASK_ALL,
@@ -262,6 +298,47 @@ def _cases():
     def sphere_fine():
         Sphere(radius=0.9, resolution=(192, 96)).rotate(20, OUT).spawn()
 
+    def _pack(spacing, depth):
+        # ``batch_mobs`` flattens several INDEPENDENT Sphere grids into one
+        # packed grid, which reaches the renderer as a SINGLE
+        # LogicalPNTrianglePrimitive -- one collection member covering every
+        # sphere. That is the end DESIGN_mesh_identity.md ss2.2 fixes in the
+        # other direction: with MESH_ID off the whole pack is one surface, so
+        # _aa_run_scan may carry a run ACROSS two spheres and sum coverage over
+        # objects that merely overlap on screen; with it on, surface.py's
+        # per-grid ``mesh_ids`` break the run at each sphere boundary.
+        from algan.utils.mob_utils import batch_mobs
+
+        dots = [
+            Sphere(
+                radius=0.28,
+                resolution=(24, 12),
+                color=WHITE,
+                add_to_scene=False,
+            ).move_to(
+                RIGHT * ((i % 4) - 1.5) * spacing
+                + UP * ((i // 4) - 1.5) * spacing
+                + OUT * (depth if (i % 2) else -depth)
+            )
+            for i in range(16)
+        ]
+        batch_mobs(dots, add_to_scene=True).spawn()
+
+    def packed_apart():
+        # The CONTROL for the packed pair: same construction, spaced so no two
+        # footprints can touch (centres 0.75 apart, radii summing to 0.56). Every
+        # pixel is covered by at most one sphere, so a cross-sphere run is
+        # geometrically impossible and MESH_ID has nothing to separate. It is
+        # what makes the overlapping row below readable: whatever moves there
+        # and not here is the packing, not the batching.
+        _pack(0.75, 0.0)
+
+    def packed_overlap():
+        # THE case ss4.5 asks for. Centres 0.45 apart with radius 0.28 (sum
+        # 0.56), so adjacent footprints DO overlap, and alternating depth so one
+        # sphere of each overlapping pair is genuinely in front of the other.
+        _pack(0.45, 0.30)
+
     return {
         "quad (flat control)": quad,
         "cube (flat)": cube,
@@ -269,6 +346,8 @@ def _cases():
         "cylinder (default)": cylinder,
         "cylinder (256x2)": cylinder_fine,
         "sphere (192x96)": sphere_fine,
+        "packed 4x4 (apart)": packed_apart,
+        "packed 4x4 (overlap)": packed_overlap,
     }
 
 
@@ -679,11 +758,18 @@ class _Svis:
         self.on_lattice = 0
         self.unreferenced = 0
         self.covered = 0
+        self.multi_obj = 0
         self.claim_occ_max = 0.0
         self.by_verdict = Counter()
         self.err_by_verdict = Counter()
+        # Painted coverage per kernel-space pixel, for the REFERENCE-FREE A/B
+        # (--mesh-ab). Every covered pixel, not just the scored ones: the whole
+        # point is to see the population _exact_coverage has to drop.
+        self.painted = {}
 
-    def add(self, verdict, truth, ok, actual, occ, own, ce, cf, one_sheet):
+    def add(
+        self, verdict, truth, ok, actual, occ, own, ce, cf, one_sheet, sids=(), faces=()
+    ):
         self.covered += 1
         self.claim_occ_max = max(self.claim_occ_max, abs(actual - occ))
         if not ok:
@@ -691,6 +777,25 @@ class _Svis:
             return
         if not (_SILH_LO < truth < _SILH_HI):
             return
+        # SOUNDNESS, not a result. _exact_coverage sums one sheet's clipped
+        # areas, which is the pixel's true coverage only while that sheet
+        # belongs to ONE solid. Two DISTINCT solids overlapping in a pixel sum
+        # to more than the area of their union, and the partition test above
+        # only catches it when their masks collide -- an overlap holding no
+        # sample point slips through and inflates the reference. So count the
+        # surviving pixels where a facing group holds more than one surface id:
+        # while this is zero the reference is exactly as sound as its docstring
+        # claims, and where it is not, the row's error is an upper bound at best.
+        #
+        # Reads sid, so it is only meaningful where sid names a SOLID:
+        # ALGAN_MESH_ID=1 on the packed cases (with it off the whole pack is one
+        # id and this cannot see the overlap), and it is noise on a Polyhedron
+        # with MESH_ID off, where every triangle is already its own id.
+        groups = {}
+        for s, f in zip(sids, faces):
+            groups.setdefault(f, set()).add(s)
+        if any(len(v) > 1 for v in groups.values()):
+            self.multi_obj += 1
         self.n += 1
         self.err_actual += abs(actual - truth)
         self.err_own += abs(own - truth)
@@ -783,9 +888,12 @@ def _measure(build, settings, capture=None):
             for m in ms:
                 union |= m & _AA_MASK_ALL
             own = _popcount(union) / _AA_NUM_SAMPLES
-            svis_stats.add(verdict, truth, ok, actual, occ, own, ce, cf, one_sheet)
+            svis_stats.add(
+                verdict, truth, ok, actual, occ, own, ce, cf, one_sheet, sids, faces
+            )
             p = pix[i] % ppf
             py, px = p // width, p % width
+            svis_stats.painted[(px, py)] = actual
             if ok and _SILH_LO < truth < _SILH_HI:
                 silhouettes.append((px, py, truth, actual, own))
             if capture and (px, py) in capture:
@@ -879,10 +987,66 @@ def _verify(build, settings, silhouettes, limit):
     return worst, rows_seen, len(probes)
 
 
+def _mesh_ab(cases, settings):
+    """Reference-free A/B of ``ALGAN_MESH_ID`` on painted coverage.
+
+    The ss6.3 table scores against ``_exact_coverage``, which has to DROP a
+    pixel whose facing group holds two sheets -- and on a packed grid those
+    drops are concentrated exactly where two spheres overlap, which is the
+    population MESH_ID is supposed to fix. Scoring only the survivors can
+    therefore report "neutral" while being blind to the effect.
+
+    This compares the two settings against each OTHER instead: same scene, same
+    frame, ``rp.prepare_sparse_raster_coverage`` replayed both ways, differenced
+    per covered pixel. It needs no reference, so it sees every pixel including
+    the dropped ones. It says how MUCH moves, not which side is right.
+    """
+    print("\nMESH_ID A/B on painted coverage (reference-free, every covered pixel):")
+    head = (
+        f"{'case':22s} {'pixels':>8s} {'moved':>7s} {'max |d|':>9s} "
+        f"{'mean |d|':>9s} {'mean off-on':>12s}"
+    )
+    print(head)
+    print("-" * len(head))
+    for name, build in cases.items():
+        painted = []
+        for enabled in (False, True):
+            rt_settings.set_mesh_id(enabled)
+            *_rest, sv, _silh, _cap = _measure(build, settings)
+            painted.append(sv.painted)
+        rt_settings.set_mesh_id(False)
+        off, on = painted
+        shared = off.keys() & on.keys()
+        signed = [off[k] - on[k] for k in shared if abs(off[k] - on[k]) > 1e-9]
+        only = (len(off) - len(shared)) + (len(on) - len(shared))
+        n_moved = len(signed)
+        mean_abs = sum(abs(d) for d in signed) / n_moved if n_moved else 0.0
+        mean_signed = sum(signed) / n_moved if n_moved else 0.0
+        worst = max((abs(off[k] - on[k]) for k in shared), default=0.0)
+        # A POSITIVE 'mean off-on' means MESH_ID=0 paints more than MESH_ID=1,
+        # which is the signature the packed grid predicts: with one id for the
+        # whole pack a run carries across two spheres and their masks OR to a
+        # full union, so corr short-circuits to 1 and the pixel claims coverage
+        # neither sphere has. It says the two disagree in the predicted
+        # direction; it does not by itself say the smaller number is right.
+        print(
+            f"{name:22s} {len(shared):8d} {n_moved:7d} {worst:9.4f} "
+            f"{mean_abs:9.4f} {mean_signed:+12.4f}"
+            + (f"   (+{only} one-sided)" if only else "")
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--res", choices=sorted(RESOLUTIONS), default="md")
     ap.add_argument("--cases", nargs="*", default=None)
+    ap.add_argument(
+        "--mesh-ab",
+        action="store_true",
+        help="difference painted coverage between ALGAN_MESH_ID=0 and =1 per "
+        "pixel, which needs no reference and so sees the pixels _exact_coverage "
+        "has to drop",
+    )
     ap.add_argument(
         "--verify",
         type=int,
@@ -900,6 +1064,11 @@ def main():
 
     print(f"samples/pixel = {_AA_NUM_SAMPLES}, run-scan cap = {_AA_MAX_RUN_SCAN}")
     print(f"resolution = {args.res}\n")
+
+    if args.mesh_ab:
+        _mesh_ab(cases, settings)
+        return
+
     header = (
         f"{'case':22s} {'covered':>8s} {'full':>7s} {'corrected':>10s} "
         f"{'union-full':>11s} {'split':>6s} {'capped':>7s} {'|err| sum':>10s}"
@@ -981,6 +1150,10 @@ def main():
             f"{'':22s} no trustworthy reference (sheets disagree) "
             f"{sv.unreferenced}/{sv.covered}   "
             f"claim-vs-occlusion max {sv.claim_occ_max:.2e}"
+        )
+        print(
+            f"{'':22s} scored pixels holding >1 surface id per facing group "
+            f"{sv.multi_obj}/{n}"
         )
     print(
         "\nE is the EXACT area of (footprint n pixel), summed from one sheet's\n"

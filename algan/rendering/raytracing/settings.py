@@ -494,8 +494,18 @@ MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 # measured quality win. _analytic_aa_fillrule_check and _aa_dump_check both pass
 # with it on.
 #
-# The one case that could still show a win is the packed-grid Surface -- the end
-# this fixes in the other direction -- and no harness case exercises it yet.
+# The packed-grid Surface -- the end this fixes in the other direction -- is now
+# covered too, by two _aa_run_gate_check cases (a 4x4 pack whose footprints
+# overlap, and a spaced-out control). It needed a defect fixed first: a packed
+# grid is diced logical PN, and _dice_logical_pn built its patch->surface map
+# from per-member counts alone, so the mesh_ids Surface stamps on it were
+# resolved and then discarded. With that fixed, the harness's reference-free A/B
+# (--mesh-ab, which unlike the scored column also sees the overlapping pixels
+# the exact reference has to drop) reports the predicted gain: 18 of 36224
+# pixels move on the overlapping pack and MESH_ID=0 is the side that paints
+# MORE, while the non-overlapping control moves zero. Small, but it is the win
+# this was said to be missing.
+#
 # Flipping also moves the fast-suite render by up to 49 channel values at solid
 # edges, so BOTH device baseline sets have to be regenerated and
 # expected_outputs_cuda/ needs a CUDA machine. DESIGN_mesh_identity.md 3.5, 4.5.

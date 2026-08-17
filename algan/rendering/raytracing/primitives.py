@@ -789,7 +789,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             obj_ids = None
         if pn_obj is not None:
             self._rt_tri_obj = pn_obj
-            self._rt_tri_obj_n = len(counts) if counts else 1
+            # The dice records its own id count: with MESH_ID on it resolves the
+            # members' declaration rather than their counts, and the merge needs
+            # the real number to offset this primitive's ids without colliding.
+            self._rt_tri_obj_n = getattr(
+                self, "_logical_pn_tri_obj_n", len(counts) if counts else 1
+            )
         elif obj_ids is not None:
             self._rt_tri_obj = obj_ids.view(1, -1).to(corners.device).contiguous()
             self._rt_tri_obj_n = int(self._rt_obj_ids_n)
@@ -1461,13 +1466,31 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # alpha-zero and never emit a fragment.
         num_patches = counts.shape[1] if counts.ndim > 1 else 0
         counts_src = getattr(self, "_rt_obj_counts", None)
-        if counts_src:
+        # Same three sources in the same order as the flat path in
+        # ``_pack_projected_flat_geometry``, most specific first: the members'
+        # own ``mesh_key``/``mesh_ids`` declaration, then the per-member counts.
+        # Consulting the declaration here is what makes it reach a DICED
+        # surface at all -- ``_pack_projected_flat_geometry`` gives ``pn_obj``
+        # priority over ``_rt_obj_ids``, so whatever this builds is final. A
+        # packed-grid ``Surface`` is one member covering every packed sphere, so
+        # without it the whole pack dices to a single surface id and the
+        # per-grid ``mesh_ids`` that ``Surface.get_render_primitives`` stamps
+        # are read by nothing. A logical-PN member's ``mesh_ids`` are per PATCH
+        # (its ``corners`` are patch corners), which is the granularity wanted
+        # here; the searchsorted below carries them to the diced rows.
+        obj_ids = getattr(self, "_rt_obj_ids", None) if rt_settings.MESH_ID else None
+        if obj_ids is not None:
+            patch_source = obj_ids.reshape(-1).to(device=device, dtype=torch.int32)
+            self._logical_pn_tri_obj_n = int(self._rt_obj_ids_n)
+        elif counts_src:
             patch_source = torch.repeat_interleave(
                 torch.arange(len(counts_src), dtype=torch.int32, device=device),
                 torch.tensor(counts_src, dtype=torch.int64, device=device),
             )
+            self._logical_pn_tri_obj_n = len(counts_src)
         else:
             patch_source = torch.zeros((num_patches,), dtype=torch.int32, device=device)
+            self._logical_pn_tri_obj_n = 1
         if patch_source.shape[0] != num_patches:
             raise RuntimeError(
                 "logical PN patch/source mismatch: "

@@ -7,10 +7,15 @@ within a run and composited between runs. Getting the granularity wrong is
 therefore silently visible: too coarse and coverage is summed across objects that
 merely overlap, too fine and a mesh's own interior edges can never share a run.
 
-Nothing tested ``tri_obj`` before this file, in any suite. These are pure tensor
-assertions on the primitive build -- no render, no Taichi -- so they are cheap
-enough for the fast suite, and they guard a contract shared by the merge, the
-resolve and the shadow-event walk.
+Nothing tested ``tri_obj`` before this file, in any suite. Most of these are pure
+tensor assertions on the primitive build -- no render, no Taichi -- so they are
+cheap enough for the fast suite, and they guard a contract shared by the merge,
+the resolve and the shadow-event walk.
+
+``test_declared_shells_survive_the_logical_pn_dice`` is the exception and renders
+a frame, because the defect it pins lives downstream of every construction-time
+assertion: the ids were resolved correctly and then discarded by the dice. It is
+unmarked, so it stays out of the fast suite.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import pytest
 import torch
 
 from algan import (
+    LD,
     RIGHT,
     Cube,
     Icosahedron,
@@ -334,3 +340,87 @@ def test_orienting_faces_fixes_a_deliberately_mis_wound_closed_mesh():
     assert orient_faces_outward(points, mixed) == good
     inverted = [list(reversed(f)) for f in good]
     assert orient_faces_outward(points, inverted) == good
+
+
+def test_a_packed_grid_declares_one_shell_per_sphere():
+    """``batch_mobs`` flattens several independent Sphere grids into ONE packed
+    grid, which reaches the renderer as a single primitive. Without per-grid
+    ``mesh_ids`` the whole pack is one surface, so the resolve may carry a run
+    across two spheres and sum coverage over objects that merely overlap.
+    """
+    from algan.utils.mob_utils import batch_mobs
+
+    with Scene(), Off():
+        dots = [
+            Sphere(radius=0.3, add_to_scene=False).move(RIGHT * i) for i in range(4)
+        ]
+        pack = batch_mobs(dots, add_to_scene=True).spawn()
+        prims = _primitives(pack)
+
+    assert len(prims) == 1
+    ids = getattr(prims[0], "mesh_ids", None)
+    assert ids is not None, "a packed grid must declare its shells"
+    assert sorted(set(ids.tolist())) == [0, 1, 2, 3]
+    # Contiguous blocks: the flatten keeps each grid's triangles together.
+    assert len(set(ids[: len(ids) // 4].tolist())) == 1
+
+    resolved, n = _mesh_ids_from_collection(prims, None)
+    assert n == 4
+    assert resolved.shape[0] == prims[0].corners.shape[1] // 3
+
+
+def test_declared_shells_survive_the_logical_pn_dice(tmp_path):
+    """REGRESSION. A packed grid is diced logical PN, and
+    ``_pack_projected_flat_geometry`` gives the dice's ``_logical_pn_tri_obj``
+    priority over ``_rt_obj_ids``. The dice built its patch->surface map from
+    the per-member COUNTS alone, so a lone packed primitive -- one member
+    covering every sphere -- collapsed to a single id and the ``mesh_ids``
+    resolved above were read by nothing, with MESH_ID on or off.
+
+    Renders a frame and reads the ``tri_obj`` the scene merge actually hands
+    the resolve, because that discarding happened downstream of every
+    construction-time assertion.
+    """
+    from algan import SETTINGS
+    from algan.rendering.raytracing import raster_pipeline as rp
+    from algan.utils.mob_utils import batch_mobs
+
+    def render_and_read_tri_obj():
+        seen = []
+        original = rp.prepare_sparse_raster_coverage
+
+        def spy(*args, **kwargs):
+            merged = kwargs.get("merged", args[0] if args else None)
+            if merged is not None and "tri_obj" in merged:
+                seen.append(int(merged["tri_obj"].max()) + 1)
+            return original(*args, **kwargs)
+
+        rp.prepare_sparse_raster_coverage = spy
+        try:
+            with Scene() as scene:
+                with Off():
+                    dots = [
+                        Sphere(radius=0.3, resolution=(8, 4), add_to_scene=False).move(
+                            RIGHT * (i - 1.5) * 0.8
+                        )
+                        for i in range(4)
+                    ]
+                    batch_mobs(dots, add_to_scene=True).spawn()
+                scene.save_frame(str(tmp_path / "packed.png"), video_settings=LD)
+        finally:
+            rp.prepare_sparse_raster_coverage = original
+        return max(seen) if seen else 0
+
+    rt = SETTINGS.raytracing
+    original = rt.MESH_ID
+    try:
+        rt.experimental.set(mesh_id=True)
+        assert render_and_read_tri_obj() == 4, (
+            "the four packed spheres must reach the resolve as four surfaces"
+        )
+        rt.experimental.set(mesh_id=False)
+        assert render_and_read_tri_obj() == 1, (
+            "MESH_ID off must restore the per-member id exactly"
+        )
+    finally:
+        rt.experimental.set(mesh_id=original)

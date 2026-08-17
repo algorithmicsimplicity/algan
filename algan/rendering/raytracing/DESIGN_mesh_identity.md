@@ -57,11 +57,16 @@ the second's prescription:
   no extra samples, no interior cost (§6.3.2).
 
 Building that measurement also produced the arbiter §4.5 had been waiting for.
-`ALGAN_MESH_ID=1` measures **neutral** on coverage — nothing regresses, nothing
-gains beyond noise — which neither blocks the flip nor argues for it, and leaves
-the case for it resting on §2.2's correctness argument rather than on a measured
-win (§4.5). The one case that could still show a win, a packed-grid `Surface`,
-is the one the arbiter has not been pointed at; §4.5 says how.
+`ALGAN_MESH_ID=1` measures **neutral on the scored metric and slightly positive
+reference-free** (§4.5). Pointing the arbiter at the packed-grid `Surface` — the
+one case that was supposed to show a win — found first that the win could not
+happen: `Surface`'s declared `mesh_ids` were resolved at construction and then
+**discarded by the logical-PN dice**, which built its patch→surface map from
+per-member counts alone. That is now fixed (gated behind `MESH_ID`, default path
+untouched, regression test pins it), and with it the packed grid does show the
+predicted gain — small, 18 of 36224 pixels, but in the right direction, with a
+non-overlapping control that moves exactly zero. The flip's case still rests on
+§2.2's correctness argument rather than on a large measured win.
 
 And it turned up a `Polyhedron` winding defect, now fixed behind
 `ALGAN_POLYHEDRON_WINDING`, default off (§3.7, §6.5). Three predictions about it
@@ -69,7 +74,10 @@ were made and measured, and **all three were wrong**: it is not why MESH_ID
 regressed under the old metric, fixing it does not make MESH_ID pay, and it does
 not move the fast-suite render at all with MESH_ID off (byte-identical). What it
 does do is make the sheets of a solid nameable — the arbiter's drop count on an
-`Icosahedron` goes 960 to 4. Read §6.5 before reusing any of them.
+`Icosahedron` goes 960 to 4 — and, measured later with the reference-free A/B,
+it accounts for nearly all of MESH_ID's *visible* effect on an `Icosahedron`
+(235 moved pixels down to 11). The two instruments see different populations;
+§4.5 says how to quote them together. Read §6.5 before reusing any of them.
 
 **Recommended next step, in priority order.**
 
@@ -78,9 +86,8 @@ does do is make the sheets of a solid nameable — the arbiter's drop count on a
    `DESIGN_analytic_aa_v2` change rather than a mesh-identity one, but it is
    fully specified in §6.3.2 including the implementation shape and the four
    harnesses that qualify it. Needs a CUDA machine only for the baselines.
-2. **Point the arbiter at a packed-grid `Surface`** (§4.5). One new case in
-   `_aa_run_gate_check.py`, CPU-runnable, and it is the missing evidence for or
-   against §3.5. Do this before spending a CUDA re-baseline on MESH_ID.
+2. ~~Point the arbiter at a packed-grid `Surface`~~ — **DONE**, and it found and
+   fixed the dice defect on the way (§4.5). Nothing left to decide on CPU.
 3. **On a CUDA machine: §4.1–§4.4**, the deferred verification for the PN
    deletion — one run each. If 1 and §3.5 are both going in, land them together
    so it is one re-baseline instead of two.
@@ -292,12 +299,18 @@ unrelated to BVH build order.
 
 3.5 Flip `ALGAN_MESH_ID` on  [qualified; blocked only on CUDA baselines]
 -------------------------------------------------------------------------
-§4.5 is measured and comes back **neutral**: nothing regresses, nothing gains,
-and the fill-rule and dump checks pass with it on. So this is no longer blocked
-on a quality question — it is blocked on someone deciding the correctness
-argument is worth a re-baseline, and on the one piece of evidence that could
-still make it a win: the packed-grid `Surface` case §4.5 asks for. Point the
-arbiter there first.
+§4.5 is measured. On the scored `|actual-E|` metric it is **neutral**: nothing
+regresses, nothing gains, and the fill-rule and dump checks pass with it on.
+Reference-free it is **slightly positive**: the packed-grid case gains in the
+predicted direction (18 of 36224 pixels, `off − on` positive), its
+non-overlapping control moves zero pixels, and the `Icosahedron` movement that
+looked like a cost is mostly §3.7's winding defect (235 pixels down to 11 with
+the winding gate on). Every remaining CPU question here is answered.
+
+So this is blocked only on someone deciding the correctness argument is worth a
+re-baseline. Note the packed-grid gain **depends on the dice fix in §4.5** — a
+`Surface`'s `mesh_ids` reached nothing before it, so a flip on an older tree
+would have bought the `Polyhedron` half of §2.2 and none of the packed half.
 
 If it goes in: regenerate `expected_outputs_cpu/` **and**
 `expected_outputs_cuda/` for `tests/fast` and `tests/full_renders`, look at the
@@ -424,13 +437,72 @@ has moved output, so they should:
     holding two sheets and the pixel is dropped — and every row prints its drop
     count. The other five rows were unaffected and did not move.
 
-    **The gap in the evidence, and the experiment that closes it.** None of
-    these six cases is a **packed-grid `Surface`**, which is the end §2.2 fixes
-    in the other direction: one merged member covering every packed sphere, so
-    distinct spheres are unioned into one surface and their coverage summed
-    across objects that merely overlap. That is where a measurable win should
-    be, and it is the one case the arbiter has not been pointed at. Add it
-    before deciding.
+    **The packed-grid experiment — RUN, and it found a defect first.** The six
+    cases above are all one solid, so none of them was the end §2.2 fixes in the
+    *other* direction: a packed-grid `Surface`, one merged member covering every
+    packed sphere. Two cases now cover it, both a 4×4 grid of `Sphere`s flattened
+    by `batch_mobs` into one packed grid:
+
+        packed 4x4 (apart)     centres 0.75 apart, radii summing to 0.56, so no
+                               two footprints can touch — the CONTROL
+        packed 4x4 (overlap)   centres 0.45 apart, alternating depth, so adjacent
+                               footprints genuinely overlap
+
+    The first run came back **byte-identical** between `ALGAN_MESH_ID=0` and `=1`,
+    and the reason was not that identity does not matter — it was that
+    **`Surface`'s declared `mesh_ids` were never read by anything.** A packed
+    grid is diced logical PN, `_pack_projected_flat_geometry` gives the dice's
+    `_logical_pn_tri_obj` priority over `_rt_obj_ids`, and `_dice_logical_pn`
+    built its patch→surface map from the per-member `_rt_obj_counts` alone. For a
+    lone packed primitive — one member covering every sphere — that is a single
+    id, so the whole pack diced to one surface and the `mesh_ids`
+    `Surface.get_render_primitives` stamps (`surface.py:2618`, added by §2.2)
+    were resolved correctly at construction and then discarded. **Fixed**: the
+    dice now consults the declaration first, in the same order as the flat path.
+    Gated behind `MESH_ID`, so the default path is untouched, and
+    `test_declared_shells_survive_the_logical_pn_dice` renders a frame and reads
+    the merge's own `tri_obj` to pin it (it fails without the fix — checked, not
+    assumed).
+
+    **What the fixed measurement says.** The scored `|actual-E|` barely moves
+    (overlap 0.0340 → 0.0340), but that column cannot settle this case: on a
+    packed grid the pixels `_exact_coverage` must **drop** are exactly the
+    overlapping ones, which is the population at issue. So the harness grew a
+    reference-free A/B (`--mesh-ab`) that differences painted coverage per pixel
+    between the two settings — no reference, so it sees the dropped pixels too:
+
+        case                 covered px   moved   max |d|   mean off−on
+        quad (control)            33438       0    0.0000       +0.0000
+        cube                      39914      17    0.0885       +0.0001
+        icosahedron               46220     235    0.4968       −0.2098
+        cylinder / (256x2)      43124/43228     0    0.0000       +0.0000
+        sphere (192x96)           27734       0    0.0000       +0.0000
+        packed 4x4 (apart)        43560       0    0.0000       +0.0000
+        packed 4x4 (overlap)      36224      18    0.2002       +0.0539
+
+    The packed prediction is **confirmed in sign and mechanism, and small in
+    population**: 18 of 36224 pixels, and `off − on` is *positive*, meaning
+    MESH_ID=0 paints more — the over-claim §2.2 predicts, where one id for the
+    whole pack lets a run carry across two spheres until their masks OR to a full
+    union and `corr` short-circuits to 1. The `apart` control moves **zero**
+    pixels, which is what makes that reading sound: the effect is the packing,
+    not the batching. The scored rows agree at the margin (overlap `split`
+    48 → 34 pixels as runs stop at the sphere boundary).
+
+    **This also re-reads the icosahedron.** Its 235 moved pixels at mean |d|
+    0.21 were the strongest evidence *against* MESH_ID. With §3.7's winding gate
+    on they collapse to **11 pixels at mean |d| 0.024** — so nearly all of it was
+    the winding defect, not MESH_ID. That does not resurrect the refuted
+    prediction in §6.5 (the *scored* metric is still neutral either way, and
+    MESH_ID still does not "pay"); the two instruments simply see different
+    populations, because a mis-wound pixel is one `_exact_coverage` drops. Quote
+    them together or neither.
+
+    **Net.** On coverage the flip is neutral-to-slightly-positive: a small
+    genuine gain on packed grids, no measurable cost anywhere once winding is
+    fixed. The case for it still rests on §2.2's correctness argument and §5.2's
+    unlocks rather than on a quality win — but the one case that was supposed to
+    show a win does show one, in the predicted direction.
 
     Corroborated, both with `ALGAN_MESH_ID=1`: `_analytic_aa_fillrule_check.py`
     reports `FILL_RULE_OK: True` over 256000 pixel tests with 0 samples claimed
