@@ -522,14 +522,23 @@ MESH_ID = env_flag("ALGAN_MESH_ID", True)
 # nothing -- measured, 960 of an Icosahedron's 46220 covered pixels have one
 # facing group holding BOTH sheets, against 4 with this on.
 #
-# DEFAULT ON since 2026-08. It was held back pending a full-render check, NOT
-# because it is known to move output: measured, the fast-suite render (which
-# draws a Cube, an Icosahedron and an Octahedron) is BYTE-IDENTICAL across this
-# flag while MESH_ID is off --
+# DEFAULT ON since 2026-08. Measured, the fast-suite render (which draws a Cube,
+# an Icosahedron and an Octahedron) is BYTE-IDENTICAL across this flag while
+# MESH_ID is off --
 # a per-triangle surface id makes every run one fragment, so the facing bit
 # groups nothing. With MESH_ID=1 it does change the render, which is the
 # mechanism: one id per solid leaves facing as the only separator between the
 # near and far sheets. Read at Polyhedron construction, not at render time.
+# IT DOES MOVE A `become` MORPH, which the byte-identical static result above
+# does not cover and which cost a full-render investigation to pin down.
+# Reversing an inward face reverses the vertex order WITHIN it, and `become`
+# pairs primitives corner by corner, so the interpolation path changes: measured,
+# Tetrahedron.become(Cube) differs by up to 227 channel values across this flag
+# while a STATIC Tetrahedron is byte-identical and Tetrahedron.become(Tetrahedron)
+# is too (there the reordering cancels on both sides). The endpoints are the
+# correct solids either way; only the in-between path moves. That is what makes
+# tests/full_renders' complex_hierarchy_become move by 197, entirely from this
+# flag and not at all from MESH_ID.
 # DESIGN_mesh_identity.md 3.7 and 6.5.
 POLYHEDRON_WINDING = env_flag("ALGAN_POLYHEDRON_WINDING", True)
 

@@ -450,12 +450,14 @@ intended effect — coarser runs resolve a solid's edge differently.
 
 * `tests/fast/expected_outputs_cpu/` — **regenerated** (this commit).
 * `tests/fast/expected_outputs_cuda/` — stale, needs a CUDA machine.
-* `tests/full_renders/expected_outputs_cpu/` — stale, and **it was already
-  stale before this branch**: all six scenes fail here at the shipped defaults
-  with every gate off. Those baselines belong to a different machine, exactly as
-  `CLAUDE.md` warns ("per **machine**, not merely per device"). Regenerating them
-  here would replace another machine's correct baselines with this one's, so it
-  was deliberately not done.
+* `tests/full_renders/expected_outputs_cpu/` — **regenerated** (4 of 6 scenes
+  moved). This became possible only after merging `master`: its `d520e1e` had
+  re-baselined the CPU set, and that baseline reproduces *exactly* on this
+  container (7/7 pass), so the machine-compatibility objection that had blocked
+  it no longer applied. Every moved scene was attributed to a flag before
+  regenerating — `complex_hierarchy_become` 197 to winding alone,
+  `materials_and_lighting` 47 and `shapes_and_timeline` 96 to MESH_ID alone,
+  `solids_and_camera` to both — and nothing moved with both gates off.
 * `tests/full_renders/expected_outputs_cuda/` — stale, needs a CUDA machine.
 
 So whoever picks this up on a GPU box owns three of the four sets, and should
@@ -510,6 +512,18 @@ itself (the per-solid inward counts, so a face-list edit cannot change them
 quietly), that the pass fixes all five solids without changing which vertices a
 face uses, that it declines on open / non-manifold / degenerate input, and that
 it repairs a deliberately mis-wound and a wholly inverted tetrahedron.
+
+**It moves a `become` morph, and nothing above covers that.** Reversing an
+inward face reverses the vertex order *within* it, and `become` pairs primitives
+corner by corner, so the interpolation path changes. Measured:
+`Tetrahedron.become(Cube)` differs by up to **227** channel values across the
+gate, while a *static* `Tetrahedron` is byte-identical and
+`Tetrahedron.become(Tetrahedron)` is byte-identical too — there the reordering
+cancels on both sides, which is why the first probe of this looked clean and the
+mechanism took a full-render investigation to find. The endpoints are the correct
+solids either way; only the in-between path moves. This is the whole of
+`complex_hierarchy_become`'s 197-channel movement in `tests/full_renders`
+(attributed: MESH_ID alone passes that scene, winding alone reproduces the 197).
 
 Measured, and **not** what §6.5 first predicted: with `ALGAN_MESH_ID` off the
 fast-suite render is **byte-identical** across this gate (same sha256, and that
