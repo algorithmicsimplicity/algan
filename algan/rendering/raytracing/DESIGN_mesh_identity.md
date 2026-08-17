@@ -10,9 +10,9 @@ the reasoning.
 Reading order. §0 is the state of the branch and what to do next. §1–§2 are the
 problem and what shipped. §3 is the unstarted work with the anchors to do it. §4
 is what needs a CUDA device and the experiment for each claim. §5 is what the
-system enables. §6 is the **measured negative results** — read it before
-building anything in this area, it will save you a day. §7 is methodology that
-cost real debugging time.
+system enables. §6 is **what has actually been measured about the AA gap**,
+mostly results that closed a door — read it before building anything in this
+area, it will save you a day. §7 is methodology that cost real debugging time.
 
 Everything measured here was measured on the **CPU** render device on a machine
 with no GPU, unless it says otherwise. That is why §4 exists.
@@ -22,8 +22,7 @@ with no GPU, unless it says otherwise. That is why §4 exists.
 0. STATE OF THE BRANCH, AND WHAT TO DO NEXT
 ================================================================================
 
-Branch `claude/triangle-rendering-rework-73e2jv`, six commits on top of
-`efb3a95`:
+Branch `claude/renderer-mesh-id-rework-n5ezw5`, on top of `efb3a95`:
 
     b49b01b  Delete the unreachable curved PN-patch renderer
     c87c26b  Add _aa_run_gate_check: attribute the diced-mesh AA gap
@@ -31,28 +30,56 @@ Branch `claude/triangle-rendering-rework-73e2jv`, six commits on top of
     568b5ae  Add DESIGN_mesh_identity.md
     6d02488  Delete TriangleVertices2 and correct stale renderer comments
     a90b2ff  Apply ruff format to the files this branch touched
+    c8e9b9b  Make DESIGN_mesh_identity.md a self-contained handoff
+    e851ee6  Replay the resolve's svis walk: the AA gap is ownership
 
-`981 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `ruff check
---no-fix` and `ruff format --check` both clean; pixel baselines untouched (every
-behaviour change is gated off). PR #34 was opened as a draft and closed
-deliberately — the next session owns the PR.
+`ruff check --no-fix` and `ruff format --check` clean; pixel baselines untouched
+(every behaviour change is still gated off, and no engine code has changed since
+`a90b2ff` — the last two commits are a benchmark and this file).
+
+**What the last session settled.** §6.3 was the gating question and it is
+answered, in three steps that must be read in order because the third supersedes
+the second's prescription:
+
+* The diced-mesh AA error lands exactly on the **ownership** answer — 91% of a
+  fine `Sphere`'s silhouette pixels on the 1/8 lattice (§6.3).
+* Doubling the sample count behaves like a sampling limit: −30% ink wobble on a
+  `Cylinder`, flat control unmoved (§6.3.1).
+* But it is **not** a sampling limit. The magnitude is available and is being
+  discarded by one gate: v2 §4.2 starts the run lookahead only on a partial
+  mask, which excludes 52% of a `Sphere`'s silhouette pixels. Relaxing that gate
+  to "partial mask, or a full mask whose exact area is not within dust of 1"
+  takes the `Cylinder` from 0.0260 to 0.0030 and makes the flat control exact —
+  no extra samples, no interior cost (§6.3.2).
+
+Building that measurement also produced the arbiter §4.5 had been waiting for,
+so `ALGAN_MESH_ID=1` is now **qualified on coverage**: nothing regresses, an
+`Icosahedron` halves, and the old per-fragment metric's verdict is reversed
+(§4.5). And it turned up a `Polyhedron` winding defect (§6.5), whose predicted
+interaction with MESH_ID was then measured and refuted — read §6.5 before
+reusing that hypothesis.
 
 **Recommended next step, in priority order.**
 
-1. **§6.3's `svis` measurement.** Cheapest, and it decides whether any further
-   work in this area is worth doing. Extend `benchmarks/_aa_run_gate_check.py`
-   to replay the resolve's per-sample transmittance and report how much of a
-   diced silhouette pixel's final coverage is decided by *ownership* (which of
-   the eight fixed sample points a fragment claims) rather than *magnitude*
-   (how exactly its area is known). §6 has ruled out grouping and magnitude;
-   ownership is the untested hypothesis, and if it dominates then the lever is
-   the sample count or the ownership representation, not the run rule.
-2. **§3.1 seam welding.** Self-contained, CPU-verifiable, valuable on its own
+1. **§6.3.2's gate relaxation.** The biggest measured quality win in this area
+   by a wide margin, and the only one that costs nothing. It is a
+   `DESIGN_analytic_aa_v2` change rather than a mesh-identity one, but it is
+   fully specified in §6.3.2 including the implementation shape and the four
+   harnesses that qualify it. Needs a CUDA machine only for the baselines.
+2. **On a CUDA machine: land §3.5.** `ALGAN_MESH_ID=1` is measured-good and the
+   only thing left is regenerating both baseline sets. Do §4.1–§4.4 in the same
+   sitting — they are the deferred verification for the PN deletion and cost one
+   run each. Landing 1 and 2 together is one re-baseline instead of two.
+3. **§3.1 seam welding.** Self-contained, CPU-verifiable, valuable on its own
    (it retires two authoring-side epsilons), and the prerequisite for §3.2.
-3. **§3.2 the watertight test**, then §3.3 and §3.4.
+   Note §6.3 has downgraded the *AA* case for §3.1/§3.2: neither addresses what
+   the error turned out to be. They are worth doing for watertightness and for
+   the epsilon retirement, not as a quality fix.
+4. **§3.7 the winding fix**, then **§3.2 the watertight test**, then §3.3, §3.4.
 
-Do **not** start by regrouping the run rule or by making the run rule consult
-`E`. Both were built and measured on this branch and neither works — §6.
+Do **not** start by regrouping the run rule, by consulting `E` only inside the
+existing gate, or by buying more samples. All three were built or measured here
+and none is the lever — §6.
 
 
 ================================================================================
@@ -163,6 +190,14 @@ the measured tables.
 before. Pure tensor assertions, no render, no Taichi, so the end-to-end cases
 are marked `fast`.
 
+2.5 The resolve, replayed on the host (`e851ee6`)
+--------------------------------------------------
+The same harness now also replays `raster_first_shade`'s per-sample
+transmittance walk for every covered pixel and scores the coverage each pixel
+ends up with against an **exact** analytic reference, verified against the
+kernel's own `ALGAN_AA_DUMP` rows. That is what §4.5 asked for and could not
+have, and it is what answered §6.3. No engine code changed; output is untouched.
+
 
 ================================================================================
 3. WHAT HAS NOT LANDED
@@ -241,8 +276,15 @@ its slot" constraint was PN-specific and went with the PN merge block in
 grouping promoted triangles by material value (`scene_builder.py:572`), which is
 unrelated to BVH build order.
 
-3.5 Flip `ALGAN_MESH_ID` on  [blocked on §4.5]
------------------------------------------------
+3.5 Flip `ALGAN_MESH_ID` on  [qualified; blocked only on CUDA baselines]
+-------------------------------------------------------------------------
+§4.5 is measured and it comes back for the flip: nothing regresses, the
+icosahedron halves, the fill-rule and dump checks pass. What is left is
+mechanical and needs a CUDA machine — regenerate `expected_outputs_cpu/` **and**
+`expected_outputs_cuda/` for `tests/fast` and `tests/full_renders`, look at the
+diff videos, then change the default in `settings.py:488` and rewrite the
+"DEFAULT OFF pending the run rule's magnitude fix" comment (its "not this
+harness" caveat is already out of date — see §2.5).
 
 3.6 Two-level BVH (TLAS/BLAS)  [design only]
 ---------------------------------------------
@@ -250,6 +292,25 @@ See §5.2. Blocker to clear first: `_split_promotable` (`scene_builder.py:572`)
 reorders promoted triangles by material value, so a partly-promoted surface
 already lands in two disjoint spans; per-mesh contiguity has to exist before a
 BLAS is meaningful.
+
+3.7 Orient `Polyhedron` faces outward  [CPU-verifiable; NOT §3.5's blocker]
+----------------------------------------------------------------------------
+§6.5 is the measurement, including the part where its predicted interaction with
+§3.5 was measured and refuted. Do NOT fix it by hand-reversing the four hardcoded
+index lists: the same broken lists reach Algan through user data and through
+every Manim script, and `Polyhedron` is public API. Orient at construction —
+flood-fill winding consistency across shared edges (a consistently oriented pair
+of faces traverses their shared edge in opposite directions), then flip the
+whole shell if the signed volume comes out negative — and **no-op** when the
+input is not a closed orientable manifold (any undirected edge not shared by
+exactly two faces, or a flood fill that contradicts itself). That fixes any
+closed polyhedron, convex or not, and leaves open and non-manifold input alone.
+
+Gate `ALGAN_POLYHEDRON_WINDING`, default off: output moves (§6.5's last
+paragraph). Validation on CPU: assert 0 inward faces for all five solids and for
+a deliberately mis-wound user polyhedron; assert the pass is a no-op on an open
+mesh; then re-run §4.5's arbiter with the gate on and `ALGAN_MESH_ID=1` — the
+icosahedron row is the one that should move.
 
 
 ================================================================================
@@ -290,24 +351,50 @@ has moved output, so they should:
     cold-compile wall time; the deletion removes the `has_pn` template
     dimension from four kernels.
 
-4.5 **Qualify `ALGAN_MESH_ID=1`.** This needs an arbiter this branch did not
-    have. Turning it on moves the fast-suite render by up to 49 channel values
-    at solid edges (edge-confined; no interior shading change), and
-    `_aa_run_gate_check` reports an Icosahedron's per-fragment error *rising*
-    (14.35 → 146.84) because coarser identity puts more pixels through the
-    union-full short-circuit. That harness **cannot** say which render is
-    better: it does not model the per-sample transmittance that the
-    fine-grained ids get wrong. The experiment that can:
+4.5 **`ALGAN_MESH_ID=1` — QUALIFIED on coverage; what is left is baselines.**
+    The arbiter this asked for now exists and is CPU-runnable:
+    `_aa_run_gate_check.py`'s `|actual-E|` column (§6.3) compares the *rendered*
+    coverage — replayed per-sample transmittance and all — against an EXACT
+    analytic reference, which is precisely what the old per-fragment error
+    metric could not do. Run both ways:
 
-        Render a Polyhedron silhouette at anti_alias_level=8 as ground truth,
-        then compare MESH_ID=0 and MESH_ID=1 at aa=1 against it. Better: add a
-        Polyhedron case to benchmarks/_aa_line_check.py, which already compares
-        against EXACT analytic coverage rather than a supersampled reference.
+        for m in 0 1; do ALGAN_MESH_ID=$m <venv-python> \
+            benchmarks/_aa_run_gate_check.py --res md --verify 4; done
 
-    Also re-run `_analytic_aa_fillrule_check.py` (the sample-partition
-    property) and `_aa_dump_check.py` (golden host-side walk vs the kernel's own
-    dump — this is what catches a resolve/shadow-event desync). If MESH_ID=1
-    wins, re-baseline **both** device sets and flip the default.
+    Measured, `--res md`, CPU, mean |actual-E| over silhouette pixels:
+
+        case               MESH_ID=0   MESH_ID=1
+        quad (control)        0.0020      0.0020   (declares no identity)
+        cube                  0.0250      0.0248
+        icosahedron           0.0492      0.0231    -53%
+        cylinder              0.0260      0.0260   (a Surface is already
+        cylinder (256x2)      0.0211      0.0211    one merged member, so
+        sphere (192x96)       0.0383      0.0383    its sid does not move)
+
+    **Nothing regresses and the icosahedron halves.** The mechanism is the one
+    §2.2 predicted: a run may now span a silhouette pixel where two faces of one
+    solid tile, so the `corrected` verdict's mean error drops 0.059 → 0.016 and
+    `|actual-own|` *rises* 0.0180 → 0.0441 — the answer moving away from the
+    pure-ownership value is the magnitude correction reaching pixels it could
+    not reach before. `on-lattice` falls 58.9% → 53.5%, same story.
+
+    Note how completely this reverses the old reading. The per-fragment metric
+    said an Icosahedron got ~10x worse (14.35 → 146.84); measured against an
+    exact reference it gets 2x better. That is exactly the failure mode §4.5
+    warned about, now demonstrated rather than argued.
+
+    Corroborated, both with `ALGAN_MESH_ID=1`: `_analytic_aa_fillrule_check.py`
+    reports `FILL_RULE_OK: True` over 256000 pixel tests with 0 samples claimed
+    by both or neither, and `_aa_dump_check.py` passes all nine checks including
+    resolve/shadow lockstep (worst golden-walk error 2.75e-08).
+
+    **Not yet done, and it is what blocks the flip:** turning it on moves the
+    fast-suite render by up to 49 channel values at solid edges, so **both**
+    device baseline sets have to be regenerated, and `expected_outputs_cuda/`
+    cannot be produced on a GPU-less machine. Everything else is measured.
+    Worth doing on the CUDA machine at the same time: re-run the arbiter with a
+    packed-grid `Surface` case, which is the other end §2.2 fixes and which no
+    case here exercises.
 
 4.6 **Shadow-mode agreement — a testable prediction.** Three `SHADOW_ANYHIT`
     modes disagree today in corner cases documented as seam-merge artifacts
@@ -449,30 +536,220 @@ no new kernel argument), and branch on `ti.static(aa_grp == 2)` inside the
 `rU == _AA_MASK_ALL` arm at **both** lockstep sites in `raster_taichi.py`
 (`raster_first_shade` and `raster_shadow_event_build`).
 
-6.3 What that leaves — the untested hypothesis
------------------------------------------------
-Ruled out: the grouping, and the magnitude correction. **Not examined:** the one
-thing the harness deliberately skips — the per-sample transmittance, and the
-sampled **ownership** underneath it. A partial fragment's claim is positioned on
-eight fixed sample points whatever its magnitude, and on a sub-pixel-diced mesh
-many fragments compete for those eight positions; `_aa_line_check`'s own
-docstring already blames "silhouette pixels contended by several triangles".
-
-The honest reading is that this is a *representation* limit rather than a bug in
+6.3 ANSWERED — the pixel lands on the ownership answer, but the magnitude
+    that would move it off is being *discarded*, not missing
+--------------------------------------------------------------------------
+The hypothesis was that this is a *representation* limit rather than a bug in
 the run rule: eight sample positions cannot resolve a silhouette crossed by a
-dozen sub-pixel triangles however exactly each area is known. If that is right,
-the levers are the sample count or the ownership representation — and note
-`_AA_SAMPLES` is deliberately a compile-time constant rather than a setting
-(`raster_taichi.py:213`), so changing it means editing that line and
-clearing the cache.
+dozen sub-pixel triangles however exactly each area is known. **The symptom is
+exactly that. The diagnosis is not** — see §6.3.2, which was measured after
+§6.3.1 and supersedes its prescription. Read all three parts before acting.
 
-Measure before building: extend `_aa_run_gate_check.py` to replay `svis`.
+`_aa_run_gate_check.py` now replays `raster_first_shade`'s per-sample
+transmittance walk in Python, for every covered pixel, and compares the coverage
+the pixel actually ends up with against the **exact** area of (footprint ∩
+pixel) — summed from one sheet's exact clipped areas, with the other sheet
+required to agree or the pixel dropped. No supersampled reference, no fitted
+model. `--verify` proves the replay against the kernel's own `ALGAN_AA_DUMP`
+rows rather than asserting it: worst per-fragment `eff` difference 5e-8 over six
+cases. Mean over silhouette pixels, `--res md`, CPU:
+
+    case               silh  |actual-E|  |own-E|  |actual-own|  on-lattice
+    quad (control)      827      0.0020   0.0390        0.0370        7.9%
+    cube                947      0.0250   0.0405        0.0241       51.0%
+    icosahedron        1000      0.0492   0.0650        0.0180       58.9%
+    cylinder           2307      0.0260   0.0367        0.0116       72.5%
+    cylinder (256x2)   2139      0.0211   0.0329        0.0128       70.6%
+    sphere (192x96)    2628      0.0383   0.0408        0.0047       90.8%
+
+`own` is `popcount(union of every fragment mask)/N` — the pixel's coverage with
+all magnitude information discarded. `on-lattice` is the share of silhouette
+pixels whose painted coverage is an exact multiple of 1/N.
+
+Read it as: **on the flat control the magnitude machinery works** (error 0.0020
+against 0.0390 for ownership alone, so 95% of the sample quantization is
+removed, and only 7.9% of pixels land on the sample lattice). **On a diced
+closed mesh it is neutralized** — the sphere's painted coverage sits 0.0047 from
+the pure-ownership answer and 91% of its silhouette pixels land exactly on
+eighths. The signed error is positive in every case: dilation, which is what
+`_aa_line_check` reads as ink wobble. The control is what makes this reading
+sound; without it "the error is near the ownership answer" could just mean that
+answer happens to be good.
+
+`own` is **not** a floor for this architecture, and §6.3.2 is where that
+matters: it is the floor for a scheme carrying no magnitude at all, and the run
+correction produces off-lattice coverage wherever it is allowed to run.
+
+Two mechanisms produce it, and the by-verdict line separates them:
+
+* **`full`** — 52% of the sphere's silhouette pixels, mean error 0.042. ONE
+  fragment owns all N samples while covering less than the whole pixel, so the
+  run scan never starts (v2 §4.2 gates on a partial mask) and the pixel is
+  painted at 1.0. Its exact area sits unread in `frag_cov`.
+* **The far-sheet re-claim.** A run's `corr < 1` scales the occlusion write as
+  well as the claim, so the samples the near sheet owns keep a residual
+  transmittance — standing for the part of the pixel the sheet does not cover,
+  which at a silhouette lies OUTSIDE the mesh entirely. The residue has no
+  position, so the far sheet of the same solid claims it, uncorrected (`svis` is
+  no longer uniform, so its own run cannot engage). Measured on one cylinder
+  pixel: near sheet claims 0.2396 (exact, `corr` 0.9583), far sheet adds 0.0104,
+  pixel lands on 0.2500 = 2/8 against a true 0.2394. The harness's `1sheet`
+  column suppresses it: **0.0250 → 0.0041 on the cube** (84% of the error), but
+  only 0.0383 → 0.0346 on the sphere, where `full` dominates.
+
+  This is the *opaque* face of something `DESIGN_analytic_aa.md` §16.6 already
+  recorded for translucency — "scalar transmittance treats a mesh's two sheets
+  as independently overlapping rather than as one sub-area seen twice".
+
+Both are magnitude thrown away rather than magnitude unavailable, but neither is
+reachable by the run rule as scoped: the first never enters it, and the second
+needs to know that two sheets belong to ONE mesh — which is what §2.2 declares
+and no consumer yet reads.
+
+6.3.1 The sample count is the live lever — measured
+----------------------------------------------------
+`_AA_SAMPLES` is a compile-time constant rather than a setting
+(`raster_taichi.py:213`), so the experiment is: edit that line to
+`_AA_PATTERN_16`, clear the Taichi cache, re-run. Done, same machine, `--res md`
+(`_AA_DUMP_COLS` must become `16 + _AA_NUM_SAMPLES` or the dump writes off the
+end of its buffer):
+
+    ink wobble (px)        8 samples   16 samples
+    bezier Line               0.0042       0.0042   (SDF coverage, no masks)
+    flat quad                 0.0138       0.0141
+    Cylinder                  0.0568       0.0391    -31%
+    Cylinder (256, 2)         0.0773       0.0543    -30%
+
+    |actual-E| (harness)   8 samples   16 samples
+    quad (control)            0.0020       0.0028
+    cylinder                  0.0260       0.0126
+    sphere (192x96)           0.0383       0.0236
+
+**The flat control does not move and the diced meshes improve ~30%.** That is
+the signature of an ownership-limited error, and it is the first thing measured
+in this area that moves the metric §6 is about — §6.2's `consult E` moved it by
+0.4%.
+
+This is NOT a recommendation to ship 16. `DESIGN_analytic_aa.md` §16.4 measured
+8-vs-16 on a different metric (L1 against an aa=4 reference over four configs)
+and found a wash bought at ~30% more device time in `raster_tri_count` /
+`raster_tri_write` / `raster_first_shade`, plus a regression on the `thin`
+config, and concluded 8 ships. Nothing here overturns the cost side; what it adds
+is that the *benefit* is concentrated exactly on the case §6 is chasing, which
+§16.4's aggregate metrics could not see. A sample-count change is a
+`DESIGN_analytic_aa.md` decision, not a mesh-identity one.
+
+**And §6.3.2 makes it the wrong lever to pull first anyway.**
+
+6.3.2 THE ACTUAL FIX — let the run rule see full-mask pixels
+--------------------------------------------------------------
+The `full` verdict is the largest single contributor (52% of a fine `Sphere`'s
+silhouette pixels) and it is excluded from the run rule *by the run rule's own
+gate*: v2 §4.2 starts the lookahead only when the first fragment's mask is
+partial, so a pixel whose first fragment owns all N samples never scans, never
+computes `E`, and is painted at 1.0 however little of the pixel its sheet
+covers. That gate exists for the hot path — an interior pixel is one full-mask
+fragment and must not pay for a lookahead — and an interior full-mask fragment
+has `cov` within float dust of 1. So the gate can be relaxed to
+
+    partial mask  OR  (full mask AND cov < 1 - 1e-3)
+
+which leaves the interior hot path untouched and admits exactly the silhouette
+pixels. The scan's `rU == _AA_MASK_ALL` arm then takes `corr = E` (`Q == 1`
+there), which is §6.2's rule finally reaching the pixels that needed it.
+
+Replayed in the harness as the `|cF-E|` column:
+
+    |actual-E|         shipped   16 samples   relaxed gate
+    quad (control)      0.0020       0.0028         0.0000
+    cube                0.0250            -         0.0214
+    icosahedron         0.0492            -         0.0369
+    cylinder            0.0260       0.0126         0.0030    -88%
+    cylinder (256x2)    0.0211            -         0.0030    -86%
+    sphere (192x96)     0.0383       0.0236         0.0060    -84%
+
+The flat control becomes **exact**. This is worth far more than doubling the
+sample count and costs no samples and no interior work.
+
+Scope it to the **run**, not the fragment. A full-mask fragment owns every
+sample, so by the fill rule the rest of its sheet in that pixel owns none — they
+are empty-mask area donors whose area is real, and only the run's `E` counts
+them. Both were measured; on the sphere fragment scope reaches 0.0255 and run
+scope 0.0060, and on the two flat solids (no donors) they coincide.
+
+Why it is measured rather than built here: it moves output, so it needs a gate
+plus regenerated baselines on both devices, and it is a `DESIGN_analytic_aa_v2`
+change rather than a mesh-identity one. The implementation shape is the one §6.2
+already sketched — widen `aa_grp` from 0/1 to 0/1/2 (every existing
+`ti.static(aa_grp)` test is a truthiness test, so 2 is safe and costs no new
+kernel argument) and change the scan gate plus the `rU == _AA_MASK_ALL` arm at
+**both** lockstep sites in `raster_taichi.py` (`raster_first_shade` and
+`raster_shadow_event_build`; any divergence desynchronizes every shadow id).
+Qualify it with `_analytic_aa_fillrule_check.py`, `_aa_dump_check.py`,
+`_aa_line_check.py` and this harness, and look at the diff videos.
+
+One caution, from §21.3: reconciling EVERY fragment's magnitude against its
+exact area put 5920 notches into a mesh. A full mask is exactly the case where
+that argument does not apply — the fragment owning all N samples is alone in its
+sheet's sample partition, so there is no neighbour to disagree with — but "the
+argument does not apply" is not a proof, and `_analytic_aa_fillrule_check` is.
+
+Note also what this does **not** fix: the two flat solids barely move
+(`cube` 0.0250 → 0.0214), because their error is the far-sheet re-claim, not the
+`full` gate. That one still wants the mesh-level union rule, and therefore §2.2's
+identity. The two halves of §6.3 have different owners.
 
 6.4 This interacts with §4.5
 -----------------------------
 `ALGAN_MESH_ID=1` makes runs coarser, which puts *more* pixels through the
 union-full branch. The two changes are coupled, and the arbiter has to be
 rendered coverage against an exact reference, not a per-fragment error metric.
+**That arbiter now exists** — the §6.3 harness is it, and `settings.py:485`'s
+"not this harness" caveat is out of date. See §4.5.
+
+6.5 `Polyhedron` does not wind its faces consistently
+------------------------------------------------------
+Found while building §6.3's exact reference, and load-bearing for §3.5.
+
+`Polyhedron` builds each face from a hardcoded index list (Manim's, verbatim),
+and those lists are not consistently oriented. Measured — outward test is
+`dot(cross(p1-p0, p2-p0), face_centroid - solid_centroid) > 0`:
+
+    Tetrahedron    2 of  4 faces wound inward
+    Cube           0 of  6
+    Octahedron     2 of  8
+    Icosahedron   12 of 20
+    Dodecahedron   3 of 12
+
+The projected winding sign **is** `_AA_BACKFACE_BIT` (`raster_taichi.py:152`),
+so on those solids the facing bit does not name a sheet. Measured on the
+icosahedron: 858 of 46220 covered pixels have a "front" group holding *both*
+sheets — one such pixel sums its front group to 1.98 while the true sheets tile
+to 1.0000 and 1.0000. The §6.3 harness drops those pixels rather than
+referencing them wrongly, and reports the count.
+
+Why this matters here rather than in the AA docs: the run rule groups by
+`(sid, facing)`. Today `sid` is per-triangle for a `Polyhedron`, so a run is one
+triangle and a broken facing bit is nearly harmless. Under `ALGAN_MESH_ID=1`
+(§2.2) the whole solid becomes ONE `sid`, and then `facing` is the *only* thing
+separating the near sheet from the far one — so a run can span both sheets and
+sum their exact areas into one `E`.
+
+**That predicted MESH_ID=1 would hurt the icosahedron and not the cube. It is
+wrong, and §4.5 measured it wrong**: MESH_ID=1 *halves* the icosahedron's
+coverage error and leaves the cube alone. So the broken winding is not what
+blocks §3.5, and it is not a reason to hold the flip. It stays on the list as a
+correctness defect with two demonstrated costs — the facing bit names nothing on
+four of the five solids, and 858 of the icosahedron's covered pixels have no
+usable sheet decomposition at all — plus an untested upside: with the sheets
+actually separated, a MESH_ID run could not span them, and the icosahedron's
+remaining 0.0231 might fall further. Measure that, do not assume it.
+
+Fixing it moves output — reversing a face's index list changes the vertex order
+handed to `TriangleTriangulated`, whose `location` is a circumcenter computed
+with the first corner as origin, so the last bits move — which is why the
+harness gained an opaque `Cube` case (0 of 6 inward) as the *referenced*
+polyhedron rather than the icosahedron being silently corrected.
 
 
 ================================================================================

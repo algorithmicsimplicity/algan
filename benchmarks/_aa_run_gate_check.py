@@ -85,20 +85,20 @@ MEASURED (2026-08, CPU, ``--res md``, mean over silhouette pixels):
 with all magnitude information discarded. ``on-lattice`` is the share of
 silhouette pixels whose painted coverage is an exact multiple of 1/N.
 
-THE ANSWER IS OWNERSHIP. On the flat control the machinery works as designed --
-error 0.0020 against an ownership floor of 0.0390, so 95% of the quantization is
-removed and only 7.9% of pixels land on the sample lattice. On a diced closed
-mesh it is neutralized: the sphere's painted coverage sits 0.0047 from the pure
-ownership answer, 91% of its silhouette pixels land exactly on eighths, and the
-error converges on the floor from below. The signed error is positive in every
-case, which is the dilation ``_aa_line_check`` reads as ink wobble.
+WHAT THE SHIPPED WALK DOES. On the flat control the machinery works as designed
+-- error 0.0020 against 0.0390 for ownership alone, so 95% of the sample
+quantization is removed and only 7.9% of pixels land on the lattice. On a diced
+closed mesh it is neutralized: the sphere's painted coverage sits 0.0047 from
+the pure-ownership answer and 91% of its silhouette pixels land exactly on
+eighths. The signed error is positive in every case -- dilation, which is what
+``_aa_line_check`` reads as ink wobble.
 
-Two mechanisms produce it, and the by-verdict line separates them:
+Two mechanisms, separated by the by-verdict line:
 
   * ``full`` (52% of the sphere's silhouette pixels, mean error 0.042). ONE
     fragment owns all N samples while covering less than the whole pixel, so
-    the run scan never starts (v2 ss4.2 gates on a partial mask) and the pixel
-    is painted at 1.0. Its exact area sits unread in ``frag_cov``.
+    the run scan never starts (v2 ss4.2 gates the lookahead on a partial mask)
+    and the pixel is painted at 1.0. Its sheet's exact area sits unread.
   * The FAR SHEET re-claim. A run's ``corr < 1`` scales the occlusion write as
     well as the claim, so the samples the near sheet owns keep a residual
     transmittance -- standing for the part of the pixel the sheet does not
@@ -108,10 +108,41 @@ Two mechanisms produce it, and the by-verdict line separates them:
     ``1sheet`` column suppresses it: 0.0250 -> 0.0041 on the cube (84% of the
     error), but only 0.0383 -> 0.0346 on the sphere, where ``full`` dominates.
 
-Both are magnitude thrown away rather than magnitude unavailable, but neither is
-reachable by the run rule as scoped: the first never enters it, and the second
-needs to know that two sheets belong to ONE mesh -- which is what
-``DESIGN_mesh_identity.md`` ss2.2 declares and no consumer yet reads.
+IT IS NOT A SAMPLING LIMIT -- IT IS A DISCARDED MAGNITUDE. Landing on the
+pure-ownership answer looks like a representation ceiling, and doubling the
+sample count behaves like one (see below). It is not: ``own`` is only a floor
+for a scheme with no magnitude at all, and this architecture HAS one -- the run
+correction produces off-lattice coverage whenever it is allowed to run. Letting
+it run on full-mask pixels too (``cF``, one relaxed gate, no extra samples, no
+extra kernel work on the interior hot path) recovers most of the error:
+
+    |actual-E|         shipped   16 samples   cF (relaxed gate)
+    quad (control)      0.0020       0.0028              0.0000
+    cube                0.0250            -              0.0214
+    icosahedron         0.0492            -              0.0369
+    cylinder            0.0260       0.0126              0.0030   -88%
+    cylinder (256x2)    0.0211            -              0.0030   -86%
+    sphere (192x96)     0.0383       0.0236              0.0060   -84%
+
+So the ordering of levers is: fix the gate first, and only then ask whether the
+residue is worth more samples. The two flat solids are the exception -- their
+``cF`` barely moves, because their error is the far-sheet re-claim, which needs
+a mesh-level union rule instead (``DESIGN_mesh_identity.md`` ss6.3).
+
+Neither is reachable by the run rule as it stands: the first is excluded by its
+own gate, and the second needs to know that two sheets belong to ONE mesh --
+which is what ``DESIGN_mesh_identity.md`` ss2.2 declares and no consumer reads.
+
+WHAT IT ARBITRATES. ``DESIGN_mesh_identity.md`` ss4.5 wanted rendered coverage
+against an exact reference to decide ``ALGAN_MESH_ID``, and said this harness
+could not supply it. It can now. Measured at ``--res md``, mean |actual-E| over
+silhouette pixels, ``ALGAN_MESH_ID=0`` -> ``1``: Icosahedron 0.0492 -> 0.0231,
+Cube 0.0250 -> 0.0248, quad and every ``Surface``-backed case unmoved (a
+``Surface`` is already one merged member, so its ``sid`` does not move). Nothing
+regresses. The Icosahedron's ``corrected`` verdict falls 0.059 -> 0.016 while
+``|actual-own|`` RISES 0.0180 -> 0.0441 -- the answer moving away from the
+pure-ownership value is the magnitude correction reaching pixels a per-triangle
+``sid`` kept it away from.
 
 A SIDE FINDING, load-bearing for mesh identity. ``Polyhedron`` builds each face
 from a hardcoded index list and those lists are not consistently oriented:
@@ -120,7 +151,9 @@ measured, 12 of an ``Icosahedron``'s 20 faces wind inward, 2 of 4 on a
 of 6 on a ``Cube``. The projected winding sign IS ``_AA_BACKFACE_BIT``, so on
 those solids the facing bit does not name a sheet -- 858 of the icosahedron's
 46220 covered pixels have a "front" group holding both sheets, and this harness
-drops them rather than referencing them wrongly.
+drops them rather than referencing them wrongly. (The obvious follow-on guess,
+that this is why ``ALGAN_MESH_ID=1`` regressed an Icosahedron under the old
+metric, is measured above and is WRONG: MESH_ID=1 halves it.)
 
 Run:  <venv-python> benchmarks/_aa_run_gate_check.py [--res md|ld|hd]
                                                      [--cases ...] [--verify N]
@@ -333,7 +366,17 @@ def _host_redistribute(svis, run_U, resid):
             svis[s] *= sc
 
 
-def _replay(sids, faces, msks, covs, bez, rule_b, consult_e=False, one_sheet=False):
+def _replay(
+    sids,
+    faces,
+    msks,
+    covs,
+    bez,
+    rule_b,
+    consult_e=False,
+    one_sheet=False,
+    consult_full=False,
+):
     """Walk one pixel's fragment list exactly as the resolve does.
 
     Returns ``(ink, occ, effs)``: the coverage the geometry CLAIMS (the sum of
@@ -374,6 +417,39 @@ def _replay(sids, faces, msks, covs, bez, rule_b, consult_e=False, one_sheet=Fal
     Interleaving makes the suppression approximate (a near-sheet run resumed
     after a suppressed far-sheet fragment can miss its rescan), which is
     tolerable here only because ``split`` is measured at 0.02%.
+
+    ``consult_full`` lets the ``full`` verdict reach ``consult_e`` at all. v2
+    ss4.2 gates the run lookahead on a PARTIAL first mask, so a pixel whose
+    first fragment owns every sample never scans, never computes ``E``, and is
+    painted at 1.0 however little of it the geometry covers -- 52% of a fine
+    ``Sphere``'s silhouette pixels, and the largest single contributor measured.
+    The relaxed gate is "partial mask, OR a full mask whose exact area is not
+    within dust of the whole pixel", which leaves the interior hot path exactly
+    as it is, since there ``cov`` IS 1 to within dust.
+
+    Deliberately scoped to the RUN and not to the fragment. A full-mask fragment
+    owns every sample, so by the fill rule the rest of its sheet in that pixel
+    owns none -- they are empty-mask area donors, and their area is real. Taking
+    the magnitude from that one fragment's ``cov`` would drop them; taking it
+    from the run's ``E`` does not, and the difference is most of the result.
+    Both were measured; run scope is the column reported:
+
+        |cF-E|        fragment scope   run scope
+        quad                  0.0000      0.0000
+        cube                  0.0214      0.0214    (flat: no donors)
+        icosahedron           0.0369      0.0369    (flat: no donors)
+        cylinder              0.0050      0.0030
+        cylinder (256x2)      0.0063      0.0030
+        sphere (192x96)       0.0255      0.0060
+
+    Measured here rather than built because it is a narrower cousin of something
+    v2 ss21.3 already rejected -- reconciling EVERY fragment's magnitude against
+    its exact area put 5920 notches into a mesh. A full mask is exactly the case
+    where that cannot happen: the fragment owning all N samples is alone in its
+    sheet's sample partition, so there is no neighbour to disagree with. "Cannot
+    happen by this argument" is not "cannot happen", and shipping it means
+    ``_analytic_aa_fillrule_check`` and a look at the diff videos, not this
+    column.
     """
     n = len(sids)
     N = _AA_NUM_SAMPLES
@@ -408,7 +484,16 @@ def _replay(sids, faces, msks, covs, bez, rule_b, consult_e=False, one_sheet=Fal
                 run_resid = 0.0
             run_mode = 0
             run_end = q1 + 1
-            if msk != _AA_MASK_ALL:
+            # The kernel gates the lookahead on a PARTIAL mask so the hot path
+            # (an interior pixel, one full-mask fragment) never pays for it.
+            # ``consult_full`` relaxes that to "partial mask, or a full mask
+            # whose exact area is not within dust of the whole pixel", which
+            # leaves the hot path free and is the only gate a shipped version
+            # would need.
+            scan = msk != _AA_MASK_ALL
+            if consult_full and not scan:
+                scan = cov < 1.0 - 1e-3
+            if scan:
                 v0 = svis[0]
                 uniform = v0 > 0.0 and all(v == v0 for v in svis[1:])
                 if uniform:
@@ -551,6 +636,7 @@ class _Svis:
         self.err_actual = 0.0
         self.err_own = 0.0
         self.err_ce = 0.0
+        self.err_cf = 0.0
         self.err_1s = 0.0
         self.sig_actual = 0.0
         self.sig_own = 0.0
@@ -562,7 +648,7 @@ class _Svis:
         self.by_verdict = Counter()
         self.err_by_verdict = Counter()
 
-    def add(self, verdict, truth, ok, actual, occ, own, ce, one_sheet):
+    def add(self, verdict, truth, ok, actual, occ, own, ce, cf, one_sheet):
         self.covered += 1
         self.claim_occ_max = max(self.claim_occ_max, abs(actual - occ))
         if not ok:
@@ -574,6 +660,7 @@ class _Svis:
         self.err_actual += abs(actual - truth)
         self.err_own += abs(own - truth)
         self.err_ce += abs(ce - truth)
+        self.err_cf += abs(cf - truth)
         self.err_1s += abs(one_sheet - truth)
         self.sig_actual += actual - truth
         self.sig_own += own - truth
@@ -651,6 +738,9 @@ def _measure(build, settings, capture=None):
             truth, ok = _exact_coverage(faces, cs)
             actual, occ, effs = _replay(sids, faces, ms, cs, bz, rule_b)
             ce, _occ_ce, _e = _replay(sids, faces, ms, cs, bz, rule_b, consult_e=True)
+            cf, _occ_cf, _e2 = _replay(
+                sids, faces, ms, cs, bz, rule_b, consult_e=True, consult_full=True
+            )
             one_sheet, _occ_1s, _e1 = _replay(
                 sids, faces, ms, cs, bz, rule_b, one_sheet=True
             )
@@ -658,7 +748,7 @@ def _measure(build, settings, capture=None):
             for m in ms:
                 union |= m & _AA_MASK_ALL
             own = _popcount(union) / _AA_NUM_SAMPLES
-            svis_stats.add(verdict, truth, ok, actual, occ, own, ce, one_sheet)
+            svis_stats.add(verdict, truth, ok, actual, occ, own, ce, cf, one_sheet)
             p = pix[i] % ppf
             py, px = p // width, p % width
             if ok and _SILH_LO < truth < _SILH_HI:
@@ -829,7 +919,7 @@ def main():
     # -- ss6.3: ownership vs magnitude --------------------------------------
     head2 = (
         f"\n{'case':22s} {'silh px':>8s} {'|actual-E|':>11s} {'|own-E|':>9s} "
-        f"{'|actual-own|':>13s} {'|cE-E|':>8s} {'|1sheet-E|':>11s} "
+        f"{'|actual-own|':>13s} {'|cE-E|':>8s} {'|cF-E|':>8s} {'|1sheet-E|':>11s} "
         f"{'on-lattice':>11s} {'signed':>8s}"
     )
     print(head2)
@@ -842,7 +932,7 @@ def main():
         print(
             f"{name:22s} {n:8d} {sv.err_actual / n:11.4f} "
             f"{sv.err_own / n:9.4f} {sv.gap_actual_own / n:13.4f} "
-            f"{sv.err_ce / n:8.4f} {sv.err_1s / n:11.4f} "
+            f"{sv.err_ce / n:8.4f} {sv.err_cf / n:8.4f} {sv.err_1s / n:11.4f} "
             f"{100.0 * sv.on_lattice / n:10.1f}% {sv.sig_actual / n:+8.4f}"
         )
         worst = " ".join(

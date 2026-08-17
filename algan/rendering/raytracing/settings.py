@@ -473,18 +473,29 @@ MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 # ``primitives._mesh_ids_from_collection`` resolves those into explicit ids.
 # Off restores the per-member ids exactly, so it is a byte-level A/B switch.
 #
-# DEFAULT OFF pending the run rule's magnitude fix. Coarser identity is more
-# correct -- a Cube's face diagonal becomes an interior edge rather than a
-# boundary between two "surfaces" -- but it also makes the v2 4.2
+# DEFAULT OFF pending pixel baselines, NOT pending a quality question -- that
+# one is settled. Coarser identity is more correct (a Cube's face diagonal
+# becomes an interior edge rather than a boundary between two "surfaces"), and
+# it was held back because it also makes the v2 4.2
 # ``U == _AA_MASK_ALL -> corr = 1`` short-circuit fire on facet-boundary pixels
 # where the facets fill all eight sub-pixel samples without covering the pixel's
-# area. Measured on an Icosahedron by benchmarks/_aa_run_gate_check.py: turning
-# this on moves 0.61% of covered pixels into ``union-full``, 125 of them with
-# ``1 - E`` past 0.30. Landing it before the run rule consults E would trade a
-# compositing error for a dilation error. Flip the default with that fix, and
-# re-measure rendered coverage against an exact reference (not this harness,
-# whose per-fragment error metric cannot arbitrate: it does not model the
-# per-sample transmittance that the fine-grained ids get wrong).
+# area -- on an Icosahedron, 0.61% of covered pixels move into ``union-full``,
+# 125 of them with ``1 - E`` past 0.30.
+#
+# benchmarks/_aa_run_gate_check.py now settles which of those two effects wins,
+# by replaying the resolve's per-sample transmittance and scoring the coverage
+# each pixel actually ends up with against an EXACT analytic reference (the
+# per-fragment error metric it used to report could not: it did not model the
+# transmittance at all). Measured at --res md on CPU, mean coverage error over
+# silhouette pixels: Icosahedron 0.0492 -> 0.0231, Cube 0.0250 -> 0.0248, and
+# every Surface-backed case unmoved because a Surface is already one merged
+# member. Nothing regresses. _analytic_aa_fillrule_check and _aa_dump_check both
+# pass with it on.
+#
+# What is left before the flip is mechanical: it moves the fast-suite render by
+# up to 49 channel values at solid edges, so BOTH device baseline sets have to
+# be regenerated, and expected_outputs_cuda/ needs a CUDA machine.
+# DESIGN_mesh_identity.md 3.5 and 4.5.
 MESH_ID = env_flag("ALGAN_MESH_ID", False)
 
 
