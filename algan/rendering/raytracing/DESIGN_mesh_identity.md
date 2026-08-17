@@ -32,10 +32,14 @@ Branch `claude/renderer-mesh-id-rework-n5ezw5`, on top of `efb3a95`:
     a90b2ff  Apply ruff format to the files this branch touched
     c8e9b9b  Make DESIGN_mesh_identity.md a self-contained handoff
     e851ee6  Replay the resolve's svis walk: the AA gap is ownership
+    e067702  Qualify ALGAN_MESH_ID on coverage; find the gate that costs the
+             AA error
+    (this)   Sound sheet reference; ALGAN_POLYHEDRON_WINDING
 
-`ruff check --no-fix` and `ruff format --check` clean; pixel baselines untouched
-(every behaviour change is still gated off, and no engine code has changed since
-`a90b2ff` — the last two commits are a benchmark and this file).
+`985 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `ruff check
+--no-fix` and `ruff format --check` clean; pixel baselines untouched (every
+behaviour change is still gated off, and the fast-suite render is byte-identical
+across `ALGAN_POLYHEDRON_WINDING` with `ALGAN_MESH_ID` off).
 
 **What the last session settled.** §6.3 was the gating question and it is
 answered, in three steps that must be read in order because the third supersedes
@@ -52,12 +56,20 @@ the second's prescription:
   takes the `Cylinder` from 0.0260 to 0.0030 and makes the flat control exact —
   no extra samples, no interior cost (§6.3.2).
 
-Building that measurement also produced the arbiter §4.5 had been waiting for,
-so `ALGAN_MESH_ID=1` is now **qualified on coverage**: nothing regresses, an
-`Icosahedron` halves, and the old per-fragment metric's verdict is reversed
-(§4.5). And it turned up a `Polyhedron` winding defect (§6.5), whose predicted
-interaction with MESH_ID was then measured and refuted — read §6.5 before
-reusing that hypothesis.
+Building that measurement also produced the arbiter §4.5 had been waiting for.
+`ALGAN_MESH_ID=1` measures **neutral** on coverage — nothing regresses, nothing
+gains beyond noise — which neither blocks the flip nor argues for it, and leaves
+the case for it resting on §2.2's correctness argument rather than on a measured
+win (§4.5). The one case that could still show a win, a packed-grid `Surface`,
+is the one the arbiter has not been pointed at; §4.5 says how.
+
+And it turned up a `Polyhedron` winding defect, now fixed behind
+`ALGAN_POLYHEDRON_WINDING`, default off (§3.7, §6.5). Three predictions about it
+were made and measured, and **all three were wrong**: it is not why MESH_ID
+regressed under the old metric, fixing it does not make MESH_ID pay, and it does
+not move the fast-suite render at all with MESH_ID off (byte-identical). What it
+does do is make the sheets of a solid nameable — the arbiter's drop count on an
+`Icosahedron` goes 960 to 4. Read §6.5 before reusing any of them.
 
 **Recommended next step, in priority order.**
 
@@ -66,16 +78,18 @@ reusing that hypothesis.
    `DESIGN_analytic_aa_v2` change rather than a mesh-identity one, but it is
    fully specified in §6.3.2 including the implementation shape and the four
    harnesses that qualify it. Needs a CUDA machine only for the baselines.
-2. **On a CUDA machine: land §3.5.** `ALGAN_MESH_ID=1` is measured-good and the
-   only thing left is regenerating both baseline sets. Do §4.1–§4.4 in the same
-   sitting — they are the deferred verification for the PN deletion and cost one
-   run each. Landing 1 and 2 together is one re-baseline instead of two.
-3. **§3.1 seam welding.** Self-contained, CPU-verifiable, valuable on its own
+2. **Point the arbiter at a packed-grid `Surface`** (§4.5). One new case in
+   `_aa_run_gate_check.py`, CPU-runnable, and it is the missing evidence for or
+   against §3.5. Do this before spending a CUDA re-baseline on MESH_ID.
+3. **On a CUDA machine: §4.1–§4.4**, the deferred verification for the PN
+   deletion — one run each. If 1 and §3.5 are both going in, land them together
+   so it is one re-baseline instead of two.
+4. **§3.1 seam welding.** Self-contained, CPU-verifiable, valuable on its own
    (it retires two authoring-side epsilons), and the prerequisite for §3.2.
    Note §6.3 has downgraded the *AA* case for §3.1/§3.2: neither addresses what
    the error turned out to be. They are worth doing for watertightness and for
    the epsilon retirement, not as a quality fix.
-4. **§3.7 the winding fix**, then **§3.2 the watertight test**, then §3.3, §3.4.
+5. **§3.2 the watertight test**, then §3.3, §3.4.
 
 Do **not** start by regrouping the run rule, by consulting `E` only inside the
 existing gate, or by buying more samples. All three were built or measured here
@@ -278,13 +292,17 @@ unrelated to BVH build order.
 
 3.5 Flip `ALGAN_MESH_ID` on  [qualified; blocked only on CUDA baselines]
 -------------------------------------------------------------------------
-§4.5 is measured and it comes back for the flip: nothing regresses, the
-icosahedron halves, the fill-rule and dump checks pass. What is left is
-mechanical and needs a CUDA machine — regenerate `expected_outputs_cpu/` **and**
+§4.5 is measured and comes back **neutral**: nothing regresses, nothing gains,
+and the fill-rule and dump checks pass with it on. So this is no longer blocked
+on a quality question — it is blocked on someone deciding the correctness
+argument is worth a re-baseline, and on the one piece of evidence that could
+still make it a win: the packed-grid `Surface` case §4.5 asks for. Point the
+arbiter there first.
+
+If it goes in: regenerate `expected_outputs_cpu/` **and**
 `expected_outputs_cuda/` for `tests/fast` and `tests/full_renders`, look at the
-diff videos, then change the default in `settings.py:488` and rewrite the
-"DEFAULT OFF pending the run rule's magnitude fix" comment (its "not this
-harness" caveat is already out of date — see §2.5).
+diff videos, then change the default in `settings.py` and rewrite the
+"DEFAULT OFF" comment there.
 
 3.6 Two-level BVH (TLAS/BLAS)  [design only]
 ---------------------------------------------
@@ -293,24 +311,41 @@ reorders promoted triangles by material value, so a partly-promoted surface
 already lands in two disjoint spans; per-mesh contiguity has to exist before a
 BLAS is meaningful.
 
-3.7 Orient `Polyhedron` faces outward  [CPU-verifiable; NOT §3.5's blocker]
-----------------------------------------------------------------------------
+3.7 Orient `Polyhedron` faces outward  [LANDED, gated off]
+------------------------------------------------------------
 §6.5 is the measurement, including the part where its predicted interaction with
-§3.5 was measured and refuted. Do NOT fix it by hand-reversing the four hardcoded
-index lists: the same broken lists reach Algan through user data and through
-every Manim script, and `Polyhedron` is public API. Orient at construction —
+§3.5 was measured and refuted. It was not fixed by hand-reversing the four hardcoded
+index lists, because the same broken lists reach Algan through user data and
+through every Manim script and `Polyhedron` is public API. It orients at
+construction —
 flood-fill winding consistency across shared edges (a consistently oriented pair
-of faces traverses their shared edge in opposite directions), then flip the
-whole shell if the signed volume comes out negative — and **no-op** when the
+of faces traverses their shared edge in opposite directions), then flips the
+whole shell if the signed volume comes out negative — and **no-ops** when the
 input is not a closed orientable manifold (any undirected edge not shared by
-exactly two faces, or a flood fill that contradicts itself). That fixes any
-closed polyhedron, convex or not, and leaves open and non-manifold input alone.
+exactly two faces, a flood fill that contradicts itself, a shell in more than
+one piece, or zero volume). That fixes any closed polyhedron, convex or not, and
+leaves open and non-manifold input alone.
 
-Gate `ALGAN_POLYHEDRON_WINDING`, default off: output moves (§6.5's last
-paragraph). Validation on CPU: assert 0 inward faces for all five solids and for
-a deliberately mis-wound user polyhedron; assert the pass is a no-op on an open
-mesh; then re-run §4.5's arbiter with the gate on and `ALGAN_MESH_ID=1` — the
-icosahedron row is the one that should move.
+**LANDED**, gated `ALGAN_POLYHEDRON_WINDING`, default off, surfaced as
+`SETTINGS.raytracing.experimental.set(polyhedron_winding=...)`. Implemented as
+described above in `shapes_3d.orient_faces_outward`, called from
+`Polyhedron.__init__`. `tests/unit_tests/test_mesh_identity.py` pins the defect
+itself (the per-solid inward counts, so a face-list edit cannot change them
+quietly), that the pass fixes all five solids without changing which vertices a
+face uses, that it declines on open / non-manifold / degenerate input, and that
+it repairs a deliberately mis-wound and a wholly inverted tetrahedron.
+
+Measured, and **not** what §6.5 first predicted: with `ALGAN_MESH_ID` off the
+fast-suite render is **byte-identical** across this gate (same sha256, and that
+scene draws a `Cube`, an `Icosahedron` and an `Octahedron`). A per-triangle
+surface id makes every run one fragment, so the facing bit groups nothing and
+flipping it changes nothing downstream. With `ALGAN_MESH_ID=1` the render does
+change — which is the mechanism stated plainly: one id per solid leaves facing
+as the only thing separating the two sheets.
+
+Left to do before the default flips: `tests/full_renders` on a machine whose
+baselines those are, plus the CUDA fast suite. If those are byte-identical too,
+this can flip with no re-baseline at all.
 
 
 ================================================================================
@@ -351,7 +386,7 @@ has moved output, so they should:
     cold-compile wall time; the deletion removes the `has_pn` template
     dimension from four kernels.
 
-4.5 **`ALGAN_MESH_ID=1` — QUALIFIED on coverage; what is left is baselines.**
+4.5 **`ALGAN_MESH_ID=1` — measured NEUTRAL on coverage.**
     The arbiter this asked for now exists and is CPU-runnable:
     `_aa_run_gate_check.py`'s `|actual-E|` column (§6.3) compares the *rendered*
     coverage — replayed per-sample transmittance and all — against an EXACT
@@ -366,35 +401,45 @@ has moved output, so they should:
         case               MESH_ID=0   MESH_ID=1
         quad (control)        0.0020      0.0020   (declares no identity)
         cube                  0.0250      0.0248
-        icosahedron           0.0492      0.0231    -53%
+        icosahedron           0.0258      0.0256   (0.0264 -> 0.0262 with
+                                                    §3.7's winding gate on)
         cylinder              0.0260      0.0260   (a Surface is already
         cylinder (256x2)      0.0211      0.0211    one merged member, so
         sphere (192x96)       0.0383      0.0383    its sid does not move)
 
-    **Nothing regresses and the icosahedron halves.** The mechanism is the one
-    §2.2 predicted: a run may now span a silhouette pixel where two faces of one
-    solid tile, so the `corrected` verdict's mean error drops 0.059 → 0.016 and
-    `|actual-own|` *rises* 0.0180 → 0.0441 — the answer moving away from the
-    pure-ownership value is the magnitude correction reaching pixels it could
-    not reach before. `on-lattice` falls 58.9% → 53.5%, same story.
+    **Nothing regresses, and nothing gains beyond noise.** So the coverage
+    evidence neither blocks the flip nor argues for it, and the case for
+    MESH_ID rests where §2.2 put it — a `Cube`'s face diagonal ought to be an
+    interior edge, a packed grid's distinct spheres ought not to be unioned —
+    plus §5.2's unlocks, not on a measured quality win.
 
-    Note how completely this reverses the old reading. The per-fragment metric
-    said an Icosahedron got ~10x worse (14.35 → 146.84); measured against an
-    exact reference it gets 2x better. That is exactly the failure mode §4.5
-    warned about, now demonstrated rather than argued.
+    **Read this before quoting an earlier number.** A previous revision of this
+    section reported the icosahedron going 0.0492 → 0.0231 and called MESH_ID
+    qualified. That was wrong, and it was the *reference* that was wrong, not
+    the walk: `_exact_coverage` then accepted a mis-wound pixel whose two sheets
+    had landed in one facing group, reporting double its true coverage, which
+    both inflated the icosahedron's error and made MESH_ID look like it halved
+    it. The gate is now the fill rule's own property — within one sheet the
+    masks partition the samples, so a facing group whose masks overlap is
+    holding two sheets and the pixel is dropped — and every row prints its drop
+    count. The other five rows were unaffected and did not move.
+
+    **The gap in the evidence, and the experiment that closes it.** None of
+    these six cases is a **packed-grid `Surface`**, which is the end §2.2 fixes
+    in the other direction: one merged member covering every packed sphere, so
+    distinct spheres are unioned into one surface and their coverage summed
+    across objects that merely overlap. That is where a measurable win should
+    be, and it is the one case the arbiter has not been pointed at. Add it
+    before deciding.
 
     Corroborated, both with `ALGAN_MESH_ID=1`: `_analytic_aa_fillrule_check.py`
     reports `FILL_RULE_OK: True` over 256000 pixel tests with 0 samples claimed
     by both or neither, and `_aa_dump_check.py` passes all nine checks including
     resolve/shadow lockstep (worst golden-walk error 2.75e-08).
 
-    **Not yet done, and it is what blocks the flip:** turning it on moves the
-    fast-suite render by up to 49 channel values at solid edges, so **both**
-    device baseline sets have to be regenerated, and `expected_outputs_cuda/`
-    cannot be produced on a GPU-less machine. Everything else is measured.
-    Worth doing on the CUDA machine at the same time: re-run the arbiter with a
-    packed-grid `Surface` case, which is the other end §2.2 fixes and which no
-    case here exercises.
+    Whenever it is flipped, it moves the fast-suite render by up to 49 channel
+    values at solid edges, so **both** device baseline sets have to be
+    regenerated and `expected_outputs_cuda/` needs a GPU.
 
 4.6 **Shadow-mode agreement — a testable prediction.** Three `SHADOW_ANYHIT`
     modes disagree today in corner cases documented as seam-merge artifacts
@@ -557,7 +602,7 @@ cases. Mean over silhouette pixels, `--res md`, CPU:
     case               silh  |actual-E|  |own-E|  |actual-own|  on-lattice
     quad (control)      827      0.0020   0.0390        0.0370        7.9%
     cube                947      0.0250   0.0405        0.0241       51.0%
-    icosahedron        1000      0.0492   0.0650        0.0180       58.9%
+    icosahedron         898      0.0258   0.0407        0.0174       59.5%
     cylinder           2307      0.0260   0.0367        0.0116       72.5%
     cylinder (256x2)   2139      0.0211   0.0329        0.0128       70.6%
     sphere (192x96)    2628      0.0383   0.0408        0.0047       90.8%
@@ -663,7 +708,7 @@ Replayed in the harness as the `|cF-E|` column:
     |actual-E|         shipped   16 samples   relaxed gate
     quad (control)      0.0020       0.0028         0.0000
     cube                0.0250            -         0.0214
-    icosahedron         0.0492            -         0.0369
+    icosahedron         0.0258            -         0.0120
     cylinder            0.0260       0.0126         0.0030    -88%
     cylinder (256x2)    0.0211            -         0.0030    -86%
     sphere (192x96)     0.0383       0.0236         0.0060    -84%
@@ -736,14 +781,24 @@ separating the near sheet from the far one — so a run can span both sheets and
 sum their exact areas into one `E`.
 
 **That predicted MESH_ID=1 would hurt the icosahedron and not the cube. It is
-wrong, and §4.5 measured it wrong**: MESH_ID=1 *halves* the icosahedron's
-coverage error and leaves the cube alone. So the broken winding is not what
-blocks §3.5, and it is not a reason to hold the flip. It stays on the list as a
-correctness defect with two demonstrated costs — the facing bit names nothing on
-four of the five solids, and 858 of the icosahedron's covered pixels have no
-usable sheet decomposition at all — plus an untested upside: with the sheets
-actually separated, a MESH_ID run could not span them, and the icosahedron's
-remaining 0.0231 might fall further. Measure that, do not assume it.
+wrong**, and so was the follow-up guess that fixing the winding would make
+MESH_ID pay. Both were measured, in the full 2x2, mean |actual-E| on the
+icosahedron:
+
+                       MESH_ID=0   MESH_ID=1
+    winding as shipped    0.0258      0.0256
+    winding fixed         0.0264      0.0262
+
+The winding does not interact with MESH_ID at all on this metric. What it *does*
+do is decide whether the pixel is measurable: the harness's own
+sheet-decomposition check drops **960** of the icosahedron's 46220 covered
+pixels as shipped and **4** with `ALGAN_POLYHEDRON_WINDING=1`. That number is
+the evidence the orientation pass works, and it is the concrete cost of the
+defect — on four of the five solids the facing bit names nothing, so anything
+downstream that wants a mesh's near sheet cannot have it.
+
+Keep both refutations. The first cost a plausible-sounding paragraph in this
+file; the second nearly cost a second one.
 
 Fixing it moves output — reversing a face's index list changes the vertex order
 handed to `TriangleTriangulated`, whose `location` is a circumcenter computed

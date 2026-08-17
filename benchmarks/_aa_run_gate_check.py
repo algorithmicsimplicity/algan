@@ -76,7 +76,7 @@ MEASURED (2026-08, CPU, ``--res md``, mean over silhouette pixels):
     case               silh  |actual-E|  |own-E|  |actual-own|  on-lattice
     quad (control)      827      0.0020   0.0390        0.0370        7.9%
     cube                947      0.0250   0.0405        0.0241       51.0%
-    icosahedron        1000      0.0492   0.0650        0.0180       58.9%
+    icosahedron         898      0.0258   0.0407        0.0174       59.5%
     cylinder           2307      0.0260   0.0367        0.0116       72.5%
     cylinder (256x2)   2139      0.0211   0.0329        0.0128       70.6%
     sphere (192x96)    2628      0.0383   0.0408        0.0047       90.8%
@@ -119,7 +119,7 @@ extra kernel work on the interior hot path) recovers most of the error:
     |actual-E|         shipped   16 samples   cF (relaxed gate)
     quad (control)      0.0020       0.0028              0.0000
     cube                0.0250            -              0.0214
-    icosahedron         0.0492            -              0.0369
+    icosahedron         0.0258            -              0.0120
     cylinder            0.0260       0.0126              0.0030   -88%
     cylinder (256x2)    0.0211            -              0.0030   -86%
     sphere (192x96)     0.0383       0.0236              0.0060   -84%
@@ -135,14 +135,20 @@ which is what ``DESIGN_mesh_identity.md`` ss2.2 declares and no consumer reads.
 
 WHAT IT ARBITRATES. ``DESIGN_mesh_identity.md`` ss4.5 wanted rendered coverage
 against an exact reference to decide ``ALGAN_MESH_ID``, and said this harness
-could not supply it. It can now. Measured at ``--res md``, mean |actual-E| over
-silhouette pixels, ``ALGAN_MESH_ID=0`` -> ``1``: Icosahedron 0.0492 -> 0.0231,
-Cube 0.0250 -> 0.0248, quad and every ``Surface``-backed case unmoved (a
-``Surface`` is already one merged member, so its ``sid`` does not move). Nothing
-regresses. The Icosahedron's ``corrected`` verdict falls 0.059 -> 0.016 while
-``|actual-own|`` RISES 0.0180 -> 0.0441 -- the answer moving away from the
-pure-ownership value is the magnitude correction reaching pixels a per-triangle
-``sid`` kept it away from.
+could not supply it. It can now, and the answer is NEUTRAL. Mean |actual-E| over
+silhouette pixels, ``--res md``, ``ALGAN_MESH_ID=0`` -> ``1``: Cube
+0.0250 -> 0.0248, Icosahedron 0.0258 -> 0.0256 (0.0264 -> 0.0262 with
+``ALGAN_POLYHEDRON_WINDING=1``), quad and every ``Surface``-backed case unmoved
+-- a ``Surface`` is already one merged member, so its ``sid`` does not move.
+Nothing regresses and nothing gains beyond noise.
+
+That is a CORRECTION of a number this docstring carried earlier, and the reason
+is worth keeping: an intermediate version of ``_exact_coverage`` accepted a
+mis-wound pixel whose two sheets had landed in ONE facing group, reporting
+double its true coverage. The Icosahedron's error read 0.0492 and MESH_ID
+appeared to halve it. Neither survived a sound reference. The lesson is the
+plain one -- an arbiter needs its own validity check before its verdicts are
+worth anything, which is why the drop count is now printed beside every row.
 
 A SIDE FINDING, load-bearing for mesh identity. ``Polyhedron`` builds each face
 from a hardcoded index list and those lists are not consistently oriented:
@@ -151,9 +157,12 @@ measured, 12 of an ``Icosahedron``'s 20 faces wind inward, 2 of 4 on a
 of 6 on a ``Cube``. The projected winding sign IS ``_AA_BACKFACE_BIT``, so on
 those solids the facing bit does not name a sheet -- 858 of the icosahedron's
 46220 covered pixels have a "front" group holding both sheets, and this harness
-drops them rather than referencing them wrongly. (The obvious follow-on guess,
-that this is why ``ALGAN_MESH_ID=1`` regressed an Icosahedron under the old
-metric, is measured above and is WRONG: MESH_ID=1 halves it.)
+drops them rather than referencing them wrongly -- 960 of them, against 4 with
+``ALGAN_POLYHEDRON_WINDING=1``, which is the measurement that the orientation
+pass works. (The obvious follow-on guess, that the winding is why
+``ALGAN_MESH_ID=1`` regressed an Icosahedron under the old per-fragment metric,
+is measured above and is WRONG: with the winding fixed, MESH_ID is still
+neutral.)
 
 Run:  <venv-python> benchmarks/_aa_run_gate_check.py [--res md|ld|hd]
                                                      [--cases ...] [--verify N]
@@ -572,7 +581,7 @@ def _replay(
 _SHEET_TOL = 1e-3
 
 
-def _exact_coverage(faces, covs):
+def _exact_coverage(faces, msks, covs):
     """The pixel's TRUE coverage by the object's footprint, from exact areas.
 
     Returns ``(truth, ok)``. Every case here is one closed convex opaque solid
@@ -582,11 +591,30 @@ def _exact_coverage(faces, covs):
     answer, with no supersampled reference and no fitted model.
 
     Sheets are separated by the facing bit, and the reference VALIDATES that
-    separation rather than assuming it: for a closed solid both sheets must sum
-    to the same area, and for an open one the single sheet must not exceed the
-    pixel. A pixel that fails is dropped from the statistics and counted.
+    separation rather than assuming it, with the fill rule's own property:
+    WITHIN one sheet the masks PARTITION the sub-pixel samples, so no sample may
+    be claimed twice. A facing group whose masks overlap is holding more than
+    one sheet and the pixel is dropped.
 
-    That gate is not hypothetical. ``Polyhedron`` builds each face from a
+    That test rather than the obvious ones, because the obvious ones are both
+    wrong, and each was wrong in a way that produced a plausible-looking table:
+
+      * "The two groups must agree" alone leaves a hole a mis-wound solid drives
+        straight through -- with BOTH sheets in one group and the other empty, a
+        pixel of true coverage 0.3 reports 0.6 and passes, since 0.6 is under
+        the one-pixel bound the empty-group branch tests. This published a wrong
+        Icosahedron number before it was found.
+      * "A closed solid must show both groups" over-corrects and silently
+        deletes the population the whole measurement is about. A pixel whose
+        near sheet ends in a FULL-mask fragment is truncated by the emission
+        right there (``prepare_sparse_raster_coverage``'s opaque prefix), so its
+        far sheet never reaches the resolve -- and those are exactly the ``full``
+        verdict pixels, 52% of a fine Sphere's silhouette. One sheet is the
+        correct and complete answer for them.
+
+    A pixel that fails is dropped from the statistics and counted.
+
+    The gate is not hypothetical. ``Polyhedron`` builds each face from a
     hardcoded index list, and those lists are not consistently oriented --
     measured on this repo, 12 of an ``Icosahedron``'s 20 faces, 2 of 4 on a
     ``Tetrahedron``, 2 of 8 on an ``Octahedron`` and 3 of 12 on a
@@ -594,10 +622,18 @@ def _exact_coverage(faces, covs):
     winding sign IS ``_AA_BACKFACE_BIT``, so on those solids the bit does not
     name a sheet, and a near and a far face can land in one group (measured: a
     pixel whose "front" group sums to 1.98 because it holds both sheets, while
-    the true sheets tile to 1.0000 each). See the note in ``main``.
+    the true sheets tile to 1.0000 each). ``ALGAN_POLYHEDRON_WINDING=1`` fixes
+    it, and this function's drop count is the evidence that it does.
     """
-    front = sum(c for f, c in zip(faces, covs) if f == 0)
-    back = sum(c for f, c in zip(faces, covs) if f == 1)
+    sums = [0.0, 0.0]
+    claimed = [0, 0]
+    for f, m, c in zip(faces, msks, covs):
+        bits = m & _AA_MASK_ALL
+        if bits & claimed[f]:
+            return 0.0, False  # one group, two sheets
+        claimed[f] |= bits
+        sums[f] += c
+    front, back = sums
     if front > 0.0 and back > 0.0:
         if abs(front - back) > _SHEET_TOL:
             return 0.0, False
@@ -735,7 +771,7 @@ def _measure(build, settings, capture=None):
             stats[verdict] += 1
 
             # -- the ss6.3 measurement ---------------------------------------
-            truth, ok = _exact_coverage(faces, cs)
+            truth, ok = _exact_coverage(faces, ms, cs)
             actual, occ, effs = _replay(sids, faces, ms, cs, bz, rule_b)
             ce, _occ_ce, _e = _replay(sids, faces, ms, cs, bz, rule_b, consult_e=True)
             cf, _occ_cf, _e2 = _replay(

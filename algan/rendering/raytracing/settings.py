@@ -487,16 +487,48 @@ MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 # each pixel actually ends up with against an EXACT analytic reference (the
 # per-fragment error metric it used to report could not: it did not model the
 # transmittance at all). Measured at --res md on CPU, mean coverage error over
-# silhouette pixels: Icosahedron 0.0492 -> 0.0231, Cube 0.0250 -> 0.0248, and
+# silhouette pixels: Cube 0.0250 -> 0.0248, Icosahedron 0.0258 -> 0.0256, and
 # every Surface-backed case unmoved because a Surface is already one merged
-# member. Nothing regresses. _analytic_aa_fillrule_check and _aa_dump_check both
-# pass with it on.
+# member. Nothing regresses and nothing gains beyond noise, so the coverage
+# evidence is NEUTRAL: what argues for this is the correctness case above, not a
+# measured quality win. _analytic_aa_fillrule_check and _aa_dump_check both pass
+# with it on.
 #
-# What is left before the flip is mechanical: it moves the fast-suite render by
-# up to 49 channel values at solid edges, so BOTH device baseline sets have to
-# be regenerated, and expected_outputs_cuda/ needs a CUDA machine.
-# DESIGN_mesh_identity.md 3.5 and 4.5.
+# The one case that could still show a win is the packed-grid Surface -- the end
+# this fixes in the other direction -- and no harness case exercises it yet.
+# Flipping also moves the fast-suite render by up to 49 channel values at solid
+# edges, so BOTH device baseline sets have to be regenerated and
+# expected_outputs_cuda/ needs a CUDA machine. DESIGN_mesh_identity.md 3.5, 4.5.
 MESH_ID = env_flag("ALGAN_MESH_ID", False)
+
+
+# Orient a closed ``Polyhedron``'s faces outward at construction
+# (``shapes_3d.orient_faces_outward``). The face index lists Algan ships for the
+# Platonic solids are Manim's and are not consistently oriented: 12 of an
+# Icosahedron's 20 faces wind inward, 2 of 4 on a Tetrahedron, 2 of 8 on an
+# Octahedron, 3 of 12 on a Dodecahedron, 0 of 6 on a Cube. The projected winding
+# sign IS ``_AA_BACKFACE_BIT``, which is what separates a closed mesh's near and
+# far sheets for the analytic-AA run rule, so on those solids the bit names
+# nothing -- measured, 858 of an Icosahedron's 46220 covered pixels have a
+# "front" group holding BOTH sheets.
+#
+# DEFAULT OFF pending a full-render check, NOT because it is known to move
+# output: measured, the fast-suite render (which draws a Cube, an Icosahedron
+# and an Octahedron) is BYTE-IDENTICAL across this flag while MESH_ID is off --
+# a per-triangle surface id makes every run one fragment, so the facing bit
+# groups nothing. With MESH_ID=1 it does change the render, which is the
+# mechanism: one id per solid leaves facing as the only separator between the
+# near and far sheets. Read at Polyhedron construction, not at render time.
+# DESIGN_mesh_identity.md 3.7 and 6.5.
+POLYHEDRON_WINDING = env_flag("ALGAN_POLYHEDRON_WINDING", False)
+
+
+def set_polyhedron_winding(enabled):
+    """Toggle outward face orientation for closed polyhedra (see
+    ``POLYHEDRON_WINDING``). Takes effect for the next ``Polyhedron`` built.
+    """
+    global POLYHEDRON_WINDING
+    POLYHEDRON_WINDING = bool(enabled)
 
 
 def set_mesh_id(enabled):

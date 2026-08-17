@@ -227,3 +227,110 @@ def test_a_2d_circuit_mob_has_no_triangle_identity():
         prims = _primitives(square)
         assert prims
         assert all(isinstance(p, RayTracedBezierCircuitPrimitive) for p in prims)
+
+
+# --------------------------------------------------------------------------
+# Face winding (DESIGN_mesh_identity.md ss6.5)
+# --------------------------------------------------------------------------
+# The projected winding sign IS the renderer's backface bit, which is what
+# separates a closed mesh's near and far sheets for the run rule. Algan ships
+# Manim's face index lists for the Platonic solids and they are not consistently
+# oriented, so on four of the five the bit names nothing.
+
+
+def _inward_face_count(mob):
+    """How many of a Polyhedron's faces point at its own centroid."""
+    coords = mob.vertex_coords.to(torch.float64)
+    centre = coords.mean(0)
+    inward = 0
+    for face in mob.faces_list:
+        points = coords[list(face)]
+        normal = torch.linalg.cross(points[1] - points[0], points[2] - points[0])
+        if torch.dot(normal, points.mean(0) - centre) <= 0:
+            inward += 1
+    return inward
+
+
+@pytest.mark.fast
+def test_shipped_platonic_solids_are_not_consistently_wound():
+    """The defect itself, pinned so a face-list edit cannot silently change it.
+
+    This is a regression guard on a KNOWN BUG, not on desired behaviour: with
+    ``ALGAN_POLYHEDRON_WINDING`` off these counts are what the renderer sees.
+    """
+    from algan import Dodecahedron, Octahedron, Tetrahedron
+
+    expected = {
+        Tetrahedron: (4, 2),
+        Cube: (6, 0),
+        Octahedron: (8, 2),
+        Icosahedron: (20, 12),
+        Dodecahedron: (12, 3),
+    }
+    with Scene(), Off():
+        for cls, (n_faces, n_inward) in expected.items():
+            mob = cls()
+            assert len(mob.faces_list) == n_faces, cls.__name__
+            assert _inward_face_count(mob) == n_inward, cls.__name__
+
+
+@pytest.mark.fast
+def test_orienting_faces_outward_fixes_every_shipped_solid():
+    from algan import Dodecahedron, Octahedron, Tetrahedron
+    from algan.mobs.shapes_3d import orient_faces_outward
+
+    with Scene(), Off():
+        for cls in (Tetrahedron, Cube, Octahedron, Icosahedron, Dodecahedron):
+            mob = cls()
+            oriented = orient_faces_outward(mob.vertex_coords, mob.faces_list)
+            mob.faces_list = oriented
+            assert _inward_face_count(mob) == 0, cls.__name__
+            # Rewinding must not change WHICH vertices a face uses, only their
+            # order -- the solid's geometry is untouched.
+            for before, after in zip(cls().faces_list, oriented):
+                assert sorted(before) == sorted(after)
+
+
+def test_orienting_faces_is_a_no_op_on_geometry_it_cannot_judge():
+    """A ``Polyhedron`` takes arbitrary user geometry, so "outward" is often
+    undefined and the pass must decline rather than guess.
+    """
+    from algan.mobs.shapes_3d import orient_faces_outward
+
+    square = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]
+    # An OPEN mesh: two triangles of a square sheet, every edge of the hull used
+    # once.
+    open_faces = [[0, 1, 2], [0, 2, 3]]
+    assert orient_faces_outward(square, open_faces) is open_faces
+
+    # A NON-MANIFOLD fin: three triangles meeting along one edge.
+    fin_pts = square + [[0.5, 0.5, 1.0]]
+    fin_faces = [[0, 1, 2], [0, 2, 3], [0, 2, 4]]
+    assert orient_faces_outward(fin_pts, fin_faces) is fin_faces
+
+    # A single face has no neighbour to agree with.
+    assert orient_faces_outward(square, [[0, 1, 2]]) == [[0, 1, 2]]
+
+    # A face repeating a vertex is not a simple polygon.
+    assert orient_faces_outward(square, [[0, 1, 0], [0, 1, 2]]) == [
+        [0, 1, 0],
+        [0, 1, 2],
+    ]
+
+
+def test_orienting_faces_fixes_a_deliberately_mis_wound_closed_mesh():
+    """The case the shipped solids are: closed and orientable, but with some
+    faces listed the wrong way round.
+    """
+    from algan.mobs.shapes_3d import orient_faces_outward
+
+    # Unit tetrahedron, all four faces wound outward.
+    points = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    good = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+    assert orient_faces_outward(points, good) == good
+
+    # Same solid with two faces reversed, and with the whole shell inverted.
+    mixed = [good[0], list(reversed(good[1])), good[2], list(reversed(good[3]))]
+    assert orient_faces_outward(points, mixed) == good
+    inverted = [list(reversed(f)) for f in good]
+    assert orient_faces_outward(points, inverted) == good
