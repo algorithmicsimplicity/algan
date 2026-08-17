@@ -39,6 +39,101 @@ from algan.mobs.surfaces.surface import Surface
 from algan.utils.tensor_utils import cast_to_tensor
 
 
+def orient_faces_outward(vertex_coords, faces_list):
+    """Rewind a closed polyhedron's faces so every one of them faces outward.
+
+    Returns a new face list, or the input unchanged when the mesh is not a
+    closed orientable manifold and the question therefore has no answer.
+
+    Two steps, both standard. First make the winding CONSISTENT: two faces that
+    agree on their orientation traverse their shared edge in opposite
+    directions, so a flood fill over the shared-edge graph flips whichever
+    neighbour disagrees. Then fix the global sign, which consistency alone
+    cannot: the signed volume of the closed shell (the divergence theorem, one
+    tetrahedron per triangle of the fan) is positive exactly when the faces
+    point outward, so a negative total flips all of them.
+
+    It bails out, leaving the input alone, on anything that is not a closed
+    orientable manifold -- an undirected edge used by other than two faces (an
+    open mesh, a T-junction, a non-manifold fin), a flood fill that reaches a
+    face two ways with contradicting orientations (a Moebius-like shell), a
+    shell in more than one connected piece, or a degenerate zero volume. A
+    ``Polyhedron`` is public API and takes arbitrary user geometry, so the pass
+    has to be a no-op wherever "outward" is not defined rather than guess.
+
+    Why this exists: the projected winding sign IS the renderer's backface bit
+    (``raster_taichi._AA_BACKFACE_BIT``), which is what separates the near and
+    far sheets of a closed mesh for the analytic-AA run rule. The face lists
+    Algan ships for the Platonic solids are Manim's, and they are not
+    consistently oriented -- 12 of an ``Icosahedron``'s 20 faces, 2 of 4 on a
+    ``Tetrahedron``, 2 of 8 on an ``Octahedron``, 3 of 12 on a
+    ``Dodecahedron``, 0 of 6 on a ``Cube``. See
+    ``rendering/raytracing/DESIGN_mesh_identity.md`` ss6.5.
+    """
+    faces = [list(face) for face in faces_list]
+    if len(faces) < 2:
+        return faces_list
+    # Undirected edge -> the faces using it. Each face must contribute every
+    # edge exactly once; a repeated vertex inside one face makes the shell
+    # non-manifold and is rejected with everything else.
+    edge_faces = {}
+    for fi, face in enumerate(faces):
+        if len(face) < 3 or len(set(face)) != len(face):
+            return faces_list
+        for a, b in zip(face, face[1:] + face[:1]):
+            edge_faces.setdefault((min(a, b), max(a, b)), []).append(fi)
+    if any(len(v) != 2 for v in edge_faces.values()):
+        return faces_list
+
+    def _directed(face):
+        return set(zip(face, face[1:] + face[:1]))
+
+    # Flood fill. ``flip[i]`` is whether face i must be reversed to agree with
+    # face 0. Neighbours agree when they traverse the shared edge in OPPOSITE
+    # directions, so sharing a directed edge means exactly one of them flips.
+    flip = [None] * len(faces)
+    flip[0] = False
+    stack = [0]
+    directed = [_directed(f) for f in faces]
+    seen_count = 1
+    while stack:
+        fi = stack.pop()
+        for a, b in zip(faces[fi], faces[fi][1:] + faces[fi][:1]):
+            pair = edge_faces[(min(a, b), max(a, b))]
+            fj = pair[0] if pair[1] == fi else pair[1]
+            # Whether fj currently traverses this edge the same way fi does,
+            # corrected for fi's own pending flip.
+            same = (a, b) in directed[fj]
+            want = same != flip[fi]
+            if flip[fj] is None:
+                flip[fj] = want
+                seen_count += 1
+                stack.append(fj)
+            elif flip[fj] != want:
+                return faces_list  # not orientable
+    if seen_count != len(faces):
+        return faces_list  # more than one shell
+
+    oriented = [list(reversed(f)) if flip[i] else f for i, f in enumerate(faces)]
+
+    # Global sign, from the signed volume of the triangulated shell. The fan
+    # matches Polyhedron's own triangulation, so a polygon face contributes the
+    # same tetrahedra the renderer will see.
+    coords = cast_to_tensor(vertex_coords).reshape(-1, 3).to(torch.float64)
+    volume = 0.0
+    for face in oriented:
+        p0 = coords[face[0]]
+        for i in range(1, len(face) - 1):
+            p1 = coords[face[i]]
+            p2 = coords[face[i + 1]]
+            volume += float(torch.dot(p0, torch.linalg.cross(p1, p2)))
+    if volume == 0.0:
+        return faces_list
+    if volume < 0.0:
+        oriented = [list(reversed(f)) for f in oriented]
+    return oriented
+
+
 def _surface_resolution_kwargs(resolution, kwargs):
     """Translate Manim's surface resolution/style names to Algan's Surface."""
     if resolution is not None:
@@ -1051,6 +1146,21 @@ class Polyhedron(Mob):
 
         self.vertex_coords = cast_to_tensor(vertex_coords).reshape(-1, 3)
         self.faces_list = [list(face) for face in faces_list]
+        # Imported here rather than at module scope: the raytracing settings
+        # module pulls in Taichi, and no mob module is on that import chain
+        # today. Read live, per the settings-are-read-at-call-time rule.
+        from algan.rendering.raytracing import settings as rt_settings
+
+        if rt_settings.POLYHEDRON_WINDING:
+            # Gated, but not because it is known to move output -- measured, the
+            # fast-suite render is BYTE-IDENTICAL across this flag while
+            # ALGAN_MESH_ID is off, since a per-triangle surface id makes every
+            # run one fragment and the facing bit then groups nothing. With
+            # MESH_ID on it does move, which is the mechanism: one id per solid
+            # leaves facing as the only thing separating the two sheets. Off by
+            # default until tests/full_renders has been checked on a machine
+            # whose baselines those are.
+            self.faces_list = orient_faces_outward(self.vertex_coords, self.faces_list)
         self.vertex_indices = list(range(len(self.vertex_coords)))
         self.layout = {i: self.vertex_coords[i] for i in self.vertex_indices}
         self.face_coords = [
@@ -1119,6 +1229,14 @@ class Polyhedron(Mob):
             if primitive is None:
                 continue
             primitives.extend(primitive if isinstance(primitive, list) else [primitive])
+        # One member per triangle -- a Cube arrives as twelve. Declare them one
+        # SURFACE so the analytic-AA run rule can span a face's diagonal and a
+        # silhouette corner where two faces tile the same pixel: a polyhedron is
+        # a single closed solid, so summing its exact areas is what tiles mean
+        # (see primitives._mesh_ids_from_collection). Deliberately not done for
+        # Arrow3D, whose children are separate interpenetrating solids.
+        for primitive in primitives:
+            primitive.mesh_key = ("polyhedron", self.id)
         return primitives or None
 
     @staticmethod

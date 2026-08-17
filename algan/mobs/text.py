@@ -233,12 +233,15 @@ class Tex(Mob):
                 for char in chars
                 if isinstance(char, mn.ImageMobject)
             ]
-            # Outline settings belong to the packed Bezier child, not the
-            # non-renderable Text container.  Passing them to Mob leaks into
-            # Animatable.__init__ and breaks ordinary Text construction.
+            # Outline and texture-grid settings belong to the packed Bezier
+            # child, not the non-renderable Text container.  Passing them to Mob
+            # leaks into Animatable.__init__ and breaks ordinary Text
+            # construction.
             mob_kwargs = dict(kwargs)
             mob_kwargs.pop("border_width", None)
             mob_kwargs.pop("border_color", None)
+            mob_kwargs.pop("texture_grid_width", None)
+            mob_kwargs.pop("texture_grid_height", None)
             super().__init__(**mob_kwargs)
             if self._character_batch is not None:
                 self.add_children(self._character_batch)

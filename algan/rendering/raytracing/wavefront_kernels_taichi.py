@@ -35,21 +35,16 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
     NODE_ARG,
-    PN_SEAM_DEPTH_EPSILON,
     _M_IOR,
     _M_REFLECTIVITY,
     _M_TRANSMISSION,
-    _PN_META,
-    _PN_UV,
     _axis_cos,
     _bezier_normal,
     _collect_hits,
     _comes_after,
     _generate_ray,
-    _pn_normal,
     _safe_inverse,
     _sample_circuit_color,
-    _shade_pn_hit,
     _shade_tri_hit,
     _shadow_occluded,
     _triangle_color,
@@ -669,151 +664,6 @@ def _tri_normal_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
         normal = _flat_triangle_normal(
             f, prim, w0, w1, w2, tri_norm, tri_pos, tri_uvs, tex_meta, textures,
             num_colored)
-    return normal
-
-
-# ---------------------------------------------------------------------------
-# PN (curved point-normal) patch texture sampling. Unlike flat triangles, PN
-# patches have no dedicated uv/tex-meta kernel arrays (the general wavefront
-# shade kernel is at Taichi's 64-arg ceiling); the per-corner UVs and the
-# per-patch texture metadata ride in the *widened* pn_extra array built by
-# _merge_scene: cols 15-20 per-corner UV (u0,v0,u1,v1,u2,v2), 21-23 color map
-# (offset, w, h) into the shared ``textures`` buffer, 24-26 material map, 27-29
-# normal map, 30 material bitmask. A map offset of -1 means "no map" (fall back
-# to the per-vertex value). All three maps sample the same shared ``textures``
-# buffer the flat path uses.
-# ---------------------------------------------------------------------------
-
-
-@ti.func
-def _pn_uv(te, prim, w0, w1, w2, pn_extra: ti.template()):
-    """Barycentric UV of a PN hit (per-corner UVs live in pn_extra cols 15-20)."""
-    u = (w0 * pn_extra[te, prim, _PN_UV] + w1 * pn_extra[te, prim, _PN_UV + 2]
-         + w2 * pn_extra[te, prim, _PN_UV + 4])
-    v = (w0 * pn_extra[te, prim, _PN_UV + 1] + w1 * pn_extra[te, prim, _PN_UV + 3]
-         + w2 * pn_extra[te, prim, _PN_UV + 5])
-    return u, v
-
-
-@ti.func
-def _pn_hit_color(f, prim, w0, w1, w2, pn_colors: ti.template(),
-                  pn_extra: ti.template(), textures: ti.template()):
-    """Color + alpha of a PN hit: the bilinearly-sampled color map (pn_extra
-    cols 21-23) if present, else the per-vertex pn_colors."""
-    te = f % pn_extra.shape[0]
-    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-    alpha = 0.0
-    coff = ti.cast(pn_extra[te, prim, _PN_META], ti.i32)
-    if coff < 0:
-        color, alpha = _triangle_color(f, prim, w0, w1, w2, pn_colors)
-    else:
-        u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
-        m = _sample_tex_vec5(f, u, v, coff,
-                             ti.cast(pn_extra[te, prim, _PN_META + 1], ti.i32),
-                             ti.cast(pn_extra[te, prim, _PN_META + 2], ti.i32), textures)
-        color = ti.math.vec4(m[0], m[1], m[2], m[3])
-        alpha = m[4]
-    return color, alpha
-
-
-@ti.func
-def _pn_hit_extra(f, prim, w0, w1, w2, pn_extra: ti.template(),
-                  textures: ti.template()):
-    """(reflectivity, roughness) of a PN hit: per-vertex (``_triangle_extra``
-    on pn_extra cols 0-5) unless the material map (cols 24-26) overrides the
-    channel marked in the bitmask (col 30)."""
-    reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2, pn_extra)
-    te = f % pn_extra.shape[0]
-    moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
-    if moff >= 0:
-        flags = ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32)
-        u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
-        m = _sample_tex_vec5(f, u, v, moff,
-                             ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
-                             ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32), textures)
-        if (flags & 1) != 0:
-            reflectivity = m[0]
-        if (flags & 2) != 0:
-            roughness = m[1]
-    return reflectivity, roughness
-
-
-@ti.func
-def _pn_hit_ior_transmission(f, prim, w0, w1, w2, pn_extra: ti.template(),
-                             textures: ti.template()):
-    """(IOR, transmission) of a PN hit: per-vertex (``_corner_ior`` /
-    ``_corner_transmission``) unless the material map's bitmask marks the
-    property texture-driven (bit 2 / channel 2, bit 3 / channel 3). One
-    fused map fetch serves both properties."""
-    ior = _corner_ior(f, prim, w0, w1, w2, pn_extra)
-    transmission = _corner_transmission(f, prim, w0, w1, w2, pn_extra)
-    te = f % pn_extra.shape[0]
-    moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
-    if moff >= 0:
-        flags = ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32)
-        if (flags & 12) != 0:
-            u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
-            m = _sample_tex_vec5(f, u, v, moff,
-                                 ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
-                                 ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32),
-                                 textures)
-            if (flags & 4) != 0:
-                ior = m[2]
-            if (flags & 8) != 0:
-                transmission = m[3]
-    return ior, transmission
-
-
-@ti.func
-def _pn_hit_normal(f, prim, a, b, pn_norm: ti.template(),
-                   pn_ctrl: ti.template(), pn_extra: ti.template(),
-                   textures: ti.template()):
-    """Shading normal of a PN hit, perturbed by a tangent-space normal map
-    (pn_extra cols 27-29) when present. The tangent frame is derived per hit
-    from the patch's surface derivatives (dP/da, dP/db) and the UV gradients --
-    the curved analogue of the flat triangle's edge/UV tangent frame."""
-    normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
-    te = f % pn_extra.shape[0]
-    noff = ti.cast(pn_extra[te, prim, _PN_META + 6], ti.i32)
-    if noff >= 0:
-        w0 = 1.0 - a - b
-        u, v = _pn_uv(te, prim, w0, a, b, pn_extra)
-        m = _sample_tex_vec5(f, u, v, noff,
-                             ti.cast(pn_extra[te, prim, _PN_META + 7], ti.i32),
-                             ti.cast(pn_extra[te, prim, _PN_META + 8], ti.i32), textures)
-        tn = ti.math.vec3(m[0], m[1], m[2])
-        if tn.norm() > 1e-6 and normal.norm() > 1e-9:
-            nb = normal.normalized()
-            # Patch surface derivatives dP/da (su) and dP/db (sv) at the hit.
-            tp = f % pn_ctrl.shape[0]
-            su = ti.math.vec3(0.0, 0.0, 0.0)
-            sv = ti.math.vec3(0.0, 0.0, 0.0)
-            for ci in ti.static(range(3)):
-                su[ci] = (pn_ctrl[tp, prim, 3 + ci]
-                          + 2.0 * a * pn_ctrl[tp, prim, 9 + ci]
-                          + b * pn_ctrl[tp, prim, 15 + ci])
-                sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
-                          + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
-                          + a * pn_ctrl[tp, prim, 15 + ci])
-            # UV gradients w.r.t. barycentric (a, b): linear in the corner UVs.
-            du1 = pn_extra[te, prim, _PN_UV + 2] - pn_extra[te, prim, _PN_UV]
-            dv1 = pn_extra[te, prim, _PN_UV + 3] - pn_extra[te, prim, _PN_UV + 1]
-            du2 = pn_extra[te, prim, _PN_UV + 4] - pn_extra[te, prim, _PN_UV]
-            dv2 = pn_extra[te, prim, _PN_UV + 5] - pn_extra[te, prim, _PN_UV + 1]
-            det = du1 * dv2 - du2 * dv1
-            if ti.abs(det) > 1e-12:
-                inv_det = 1.0 / det
-                tang = (su * dv2 - sv * dv1) * inv_det
-                tang = tang - nb * nb.dot(tang)  # Gram-Schmidt vs normal
-                if tang.norm() > 1e-9:
-                    tang = tang.normalized()
-                    bit = (sv * du1 - su * du2) * inv_det
-                    bit = bit - nb * nb.dot(bit) - tang * tang.dot(bit)
-                    if bit.norm() > 1e-9:
-                        bit = bit.normalized()
-                        pert = tang * tn[0] + bit * tn[1] + nb * tn[2]
-                        if pert.norm() > 1e-9:
-                            normal = pert.normalized()
     return normal
 
 
@@ -1525,10 +1375,6 @@ def wavefront_traverse(
         t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int, tri_pos: ti.types.ndarray(),
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int, pn_ctrl: ti.types.ndarray(),
-        pn_obb: ti.types.ndarray(),
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int, circuit_meta: ti.types.ndarray(),
@@ -1539,16 +1385,13 @@ def wavefront_traverse(
         ot_nodes: NODE_ARG, ot_node_miss: ti.types.ndarray(),
         ot_leaf_prim: ti.types.ndarray(), ot_leaf_tspan: ti.types.ndarray(),
         ot_first_leaf: int,
-        op_nodes: NODE_ARG, op_node_miss: ti.types.ndarray(),
-        op_leaf_prim: ti.types.ndarray(), op_leaf_tspan: ti.types.ndarray(),
-        op_first_leaf: int,
         ob_nodes: NODE_ARG, ob_node_miss: ti.types.ndarray(),
         ob_leaf_prim: ti.types.ndarray(), ob_leaf_tspan: ti.types.ndarray(),
         ob_first_leaf: int,
         pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: float, layer_offset_pn: float,
+        layer_offset_triangles: float,
         refit: ti.template(),
-        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
         opaque_closest: ti.template(),
         opaque_prepass: ti.template(),
         time_start: int, width: int, height: int, ray_offset: int,
@@ -1641,14 +1484,11 @@ def wavefront_traverse(
         if ti.static(opaque_closest):
             (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
              hit_border, edge_hit) = _nearest_surface_g(
-                refit, has_tri, has_pn, has_bez,
+                refit, has_tri, has_bez,
                 ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_accel)
             num_hits = found
@@ -1666,14 +1506,11 @@ def wavefront_traverse(
                 (opq_found, initial_opq_t, initial_opq_layer, opq_prim,
                  opq_type, opq_a, opq_b, opq_border, opq_edge) = \
                     _nearest_surface_g(
-                        refit, has_tri, has_pn, has_bez,
+                        refit, has_tri, has_bez,
                         ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                         pixel_size_per_t, base_dist, layer_offset_triangles,
-                        layer_offset_pn,
                         ot_nodes, ot_node_miss, ot_leaf_prim,
                         ot_leaf_tspan, ot_first_leaf, tri_pos,
-                        op_nodes, op_node_miss, op_leaf_prim,
-                        op_leaf_tspan, op_first_leaf, pn_ctrl, pn_obb,
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
                         edges_2d, edge_accel)
@@ -1683,14 +1520,11 @@ def wavefront_traverse(
             num_hits = _collect_hits(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
                 tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-                pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, edges_2d, edge_accel, has_tri, has_pn, has_bez,
+                circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
                 initial_opq_t, initial_opq_layer)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
@@ -1713,10 +1547,6 @@ def wavefront_traverse_events(
         t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int, tri_pos: ti.types.ndarray(),
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int, pn_ctrl: ti.types.ndarray(),
-        pn_obb: ti.types.ndarray(),
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int, circuit_meta: ti.types.ndarray(),
@@ -1727,16 +1557,13 @@ def wavefront_traverse_events(
         ot_nodes: NODE_ARG, ot_node_miss: ti.types.ndarray(),
         ot_leaf_prim: ti.types.ndarray(), ot_leaf_tspan: ti.types.ndarray(),
         ot_first_leaf: int,
-        op_nodes: NODE_ARG, op_node_miss: ti.types.ndarray(),
-        op_leaf_prim: ti.types.ndarray(), op_leaf_tspan: ti.types.ndarray(),
-        op_first_leaf: int,
         ob_nodes: NODE_ARG, ob_node_miss: ti.types.ndarray(),
         ob_leaf_prim: ti.types.ndarray(), ob_leaf_tspan: ti.types.ndarray(),
         ob_first_leaf: int,
         pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: float, layer_offset_pn: float,
+        layer_offset_triangles: float,
         refit: ti.template(),
-        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
         opaque_closest: ti.template(),
         opaque_prepass: ti.template(),
         time_start: int, width: int, height: int, ray_offset: int,
@@ -1830,14 +1657,11 @@ def wavefront_traverse_events(
         if ti.static(opaque_closest):
             (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
              hit_border, edge_hit) = _nearest_surface_g(
-                refit, has_tri, has_pn, has_bez,
+                refit, has_tri, has_bez,
                 ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_accel)
             num_hits = found
@@ -1855,14 +1679,11 @@ def wavefront_traverse_events(
                 (opq_found, initial_opq_t, initial_opq_layer, opq_prim,
                  opq_type, opq_a, opq_b, opq_border, opq_edge) = \
                     _nearest_surface_g(
-                        refit, has_tri, has_pn, has_bez,
+                        refit, has_tri, has_bez,
                         ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                         pixel_size_per_t, base_dist, layer_offset_triangles,
-                        layer_offset_pn,
                         ot_nodes, ot_node_miss, ot_leaf_prim,
                         ot_leaf_tspan, ot_first_leaf, tri_pos,
-                        op_nodes, op_node_miss, op_leaf_prim,
-                        op_leaf_tspan, op_first_leaf, pn_ctrl, pn_obb,
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
                         edges_2d, edge_accel)
@@ -1872,14 +1693,11 @@ def wavefront_traverse_events(
             num_hits = _collect_hits(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
                 tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-                pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, edges_2d, edge_accel, has_tri, has_pn, has_bez,
+                circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
                 initial_opq_t, initial_opq_layer)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
@@ -1909,12 +1727,6 @@ def wavefront_shadow(
         tri_colors: ti.types.ndarray(), tri_uvs: ti.types.ndarray(),
         tri_tex_meta: ti.types.ndarray(), textures: ti.types.ndarray(),
         num_colored_triangles: ti.i32,
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int,
-        pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
-        pn_extra: ti.types.ndarray(),
-        pn_colors: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
@@ -1922,9 +1734,9 @@ def wavefront_shadow(
         circuit_border_colors: ti.types.ndarray(),
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: float, layer_offset_pn: float,
+        layer_offset_triangles: float,
         refit: ti.template(),
-        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
         light_pos: ti.types.ndarray(), num_lights: int,
         time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
@@ -1975,45 +1787,25 @@ def wavefront_shadow(
                     prim = hit_i[i, q, 0]
                     if prim >= 0:
                         htype = hit_i[i, q, 1] & 3
-                        if (htype == 1) or (htype == 2):
+                        if htype == 1:
                             a = hit_f[i, q, 2]
                             b = hit_f[i, q, 3]
                             t_hit = hit_f[i, q, 0]
-                            snrm = ti.math.vec3(0.0, 0.0, 0.0)
-                            fnrm = ti.math.vec3(0.0, 0.0, 0.0)
-                            if htype == 1:
-                                snrm = _flat_triangle_normal(
-                                    f, prim, 1.0 - a - b, a, b, tri_norm,
-                                    tri_pos, tri_uvs, tri_tex_meta, textures,
-                                    num_colored_triangles)
-                                tp = f % tri_pos.shape[0]
-                                v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                                  tri_pos[tp, prim, 1],
-                                                  tri_pos[tp, prim, 2])
-                                v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                                  tri_pos[tp, prim, 4],
-                                                  tri_pos[tp, prim, 5])
-                                v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                                  tri_pos[tp, prim, 7],
-                                                  tri_pos[tp, prim, 8])
-                                fnrm = (v1 - v0).cross(v2 - v0)
-                            else:
-                                snrm = _pn_hit_normal(f, prim, a, b, pn_norm,
-                                                      pn_ctrl, pn_extra,
-                                                      textures)
-                                tp = f % pn_ctrl.shape[0]
-                                su = ti.math.vec3(0.0, 0.0, 0.0)
-                                sv = ti.math.vec3(0.0, 0.0, 0.0)
-                                for ci in ti.static(range(3)):
-                                    su[ci] = (pn_ctrl[tp, prim, 3 + ci]
-                                              + 2.0 * a * pn_ctrl[tp, prim,
-                                                                  9 + ci]
-                                              + b * pn_ctrl[tp, prim, 15 + ci])
-                                    sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
-                                              + 2.0 * b * pn_ctrl[tp, prim,
-                                                                  12 + ci]
-                                              + a * pn_ctrl[tp, prim, 15 + ci])
-                                fnrm = su.cross(sv)
+                            snrm = _flat_triangle_normal(
+                                f, prim, 1.0 - a - b, a, b, tri_norm,
+                                tri_pos, tri_uvs, tri_tex_meta, textures,
+                                num_colored_triangles)
+                            tp = f % tri_pos.shape[0]
+                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                              tri_pos[tp, prim, 1],
+                                              tri_pos[tp, prim, 2])
+                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                              tri_pos[tp, prim, 4],
+                                              tri_pos[tp, prim, 5])
+                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                              tri_pos[tp, prim, 7],
+                                              tri_pos[tp, prim, 8])
+                            fnrm = (v1 - v0).cross(v2 - v0)
                             snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
                             spos = ro + t_hit * rd
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
@@ -2033,18 +1825,13 @@ def wavefront_shadow(
                                                 ldist - 20.0 * MIN_HIT_DISTANCE,
                                                 pixel_size_per_t, base_dist,
                                                 layer_offset_triangles,
-                                                layer_offset_pn,
-                                                has_tri, has_pn, has_bez,
+                                                has_tri, has_bez,
                                                 t_nodes, t_node_miss,
                                                 t_leaf_prim, t_leaf_tspan,
                                                 t_first_leaf, tri_pos,
                                                 tri_colors, tri_uvs,
                                                 tri_tex_meta, textures,
                                                 num_colored_triangles,
-                                                p_nodes, p_node_miss,
-                                                p_leaf_prim, p_leaf_tspan,
-                                                p_first_leaf, pn_ctrl, pn_obb,
-                                                pn_colors,
                                                 b_nodes, b_node_miss,
                                                 b_leaf_prim, b_leaf_tspan,
                                                 b_first_leaf, circuit_meta,
@@ -2075,12 +1862,6 @@ def wavefront_shade(
         # _trim). Unused when ``mem_trim == 0`` (col_row is a 1-elem stub).
         col_row: ti.types.ndarray(),
         # PN patch STBVH + geometry/shading data.
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int,
-        pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
-        pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
-        pn_obb: ti.types.ndarray(),
         # Bezier STBVH + geometry/shading data.
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -2105,11 +1886,11 @@ def wavefront_shade(
         # drops the per-hit id fetch and compare with them (see
         # ``shading_taichi._run_frag_pipeline``). ``ALL_PIDS`` keeps every
         # stage, which is the ungated kernel.
-        tri_pids: ti.template(), pn_pids: ti.template(),
+        tri_pids: ti.template(),
         shadows: ti.template(),
         refraction: ti.template(),
         refit: ti.template(),
-        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
         deferred_shadows: ti.template(),
         skip_unlit_normal: ti.template(),
         mem_trim: ti.template(),
@@ -2119,7 +1900,7 @@ def wavefront_shade(
         # it is used as compile-time constants here (acc = 0, weight = 1,
         # t_prev = 0, layer_prev = 1e30, seam_t = -1e30, base_dist = 0,
         # processed = 0, pix = r) instead of read from global state;
-        # max_bounces rides in layer_offsets[7] (this kernel is at the CUDA
+        # max_bounces rides in layer_offsets[6] (this kernel is at the CUDA
         # 64-arg ceiling). Survivors write their state back below exactly as
         # before (plus rs_pix), so iterations >= 1 run the classic kernel.
         first_iter: ti.template(),
@@ -2132,7 +1913,6 @@ def wavefront_shade(
         # constant (``ti.static`` rejects an ndarray ``.shape`` expression).
         compact: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
-        pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
         time_start: int, width: int, height: int, ray_offset: int,
@@ -2166,27 +1946,26 @@ def wavefront_shade(
     the ``compact`` template selects that representation without consuming
     another runtime argument."""
     pixels_per_frame = width * height
-    # Unpack the two layer offsets (packed into one ndarray to stay within the
-    # 64-arg ceiling); the body below references these names unchanged.
+    # Unpack the layer offset (packed into one ndarray to stay within the
+    # 64-arg ceiling); the body below references this name unchanged.
     layer_offset_triangles = layer_offsets[0]
-    layer_offset_pn = layer_offsets[1]
-    # Optional extras ride behind the two layer offsets in the same packed
-    # ndarray (again: 64-arg ceiling): [2..5] = environment map placement
+    # Optional extras ride behind the layer offset in the same packed
+    # ndarray (again: 64-arg ceiling): [1..4] = environment map placement
     # (offset, width, height, intensity) in the shared texel buffer -- rays
     # that retire without consuming all their throughput pick up the
     # environment in their final direction (skybox + correct reflections) --
-    # and [6] = the camera's far clip distance (0 = disabled).
+    # and [5] = the camera's far clip distance (0 = disabled).
     env_off = 0
     env_w = 0
     env_h = 0
     env_intensity = 0.0
     far_clip = 0.0
-    if layer_offsets.shape[0] > 6:
-        env_off = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-        env_w = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-        env_h = ti.cast(layer_offsets[4] + 0.5, ti.i32)
-        env_intensity = layer_offsets[5]
-        far_clip = layer_offsets[6]
+    if layer_offsets.shape[0] > 5:
+        env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
+        env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
+        env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
+        env_intensity = layer_offsets[4]
+        far_clip = layer_offsets[5]
     for i in range(num_active):
         r = active[i]
         pix = r
@@ -2209,7 +1988,7 @@ def wavefront_shade(
             bounces_left = 0
             processed = 0
             if ti.static(first_iter != 0):
-                bounces_left = ti.cast(layer_offsets[7] + 0.5, ti.i32)
+                bounces_left = ti.cast(layer_offsets[6] + 0.5, ti.i32)
             else:
                 acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
                                    rs_acc[r, 3])
@@ -2285,8 +2064,7 @@ def wavefront_shade(
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
 
-                seam_eps = PN_SEAM_DEPTH_EPSILON if htype == 2 \
-                    else DEPTH_TIE_EPSILON
+                seam_eps = DEPTH_TIE_EPSILON
                 if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                     t_prev = t_hit
                     layer_prev = hit_layer
@@ -2305,12 +2083,6 @@ def wavefront_shade(
                     reflectivity, _rough = _tri_extra_g(
                         mem_trim, f, prim, w0, a, b, tri_extra, col_row,
                         tri_uvs, tri_tex_meta, textures, num_colored_triangles)
-                elif htype == 2:
-                    w0 = 1.0 - a - b
-                    color, alpha = _pn_hit_color(f, prim, w0, a, b,
-                                                 pn_colors, pn_extra, textures)
-                    reflectivity, _rough = _pn_hit_extra(f, prim, w0, a, b,
-                                                         pn_extra, textures)
                 else:
                     color, alpha = _sample_circuit_color(
                         prim, f, a, b, border,
@@ -2367,14 +2139,8 @@ def wavefront_shade(
                         do_fan = 0
                         fan_exact = 1
                         fan_geom = 0
-                        if (htype == 1) or (htype == 2):
-                            pid_s = 0
-                            if htype == 1:
-                                pid_s = tri_mat_id[f % tri_mat_id.shape[0],
-                                                   prim]
-                            else:
-                                pid_s = pn_mat_id[f % pn_mat_id.shape[0],
-                                                  prim]
+                        if htype == 1:
+                            pid_s = tri_mat_id[f % tri_mat_id.shape[0], prim]
                             if pid_s != _MID_UNLIT:
                                 do_fan = 1
                                 if pid_s < _USER_PIPELINE_BASE:
@@ -2389,41 +2155,21 @@ def wavefront_shade(
                         if do_fan == 1:
                             # Smooth shading normal and the *geometric* face
                             # normal of the hit facet/patch.
-                            snrm = ti.math.vec3(0.0, 0.0, 0.0)
-                            fnrm = ti.math.vec3(0.0, 0.0, 0.0)
-                            if htype == 1:
-                                snrm = _tri_normal_g(
-                                    mem_trim, f, prim, 1.0 - a - b, a, b,
-                                    tri_norm, tri_pos, tri_uvs, tri_tex_meta,
-                                    textures, num_colored_triangles)
-                                tp = f % tri_pos.shape[0]
-                                v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                                  tri_pos[tp, prim, 1],
-                                                  tri_pos[tp, prim, 2])
-                                v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                                  tri_pos[tp, prim, 4],
-                                                  tri_pos[tp, prim, 5])
-                                v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                                  tri_pos[tp, prim, 7],
-                                                  tri_pos[tp, prim, 8])
-                                fnrm = (v1 - v0).cross(v2 - v0)
-                            else:
-                                snrm = _pn_hit_normal(f, prim, a, b, pn_norm,
-                                                      pn_ctrl, pn_extra,
-                                                      textures)
-                                tp = f % pn_ctrl.shape[0]
-                                su = ti.math.vec3(0.0, 0.0, 0.0)
-                                sv = ti.math.vec3(0.0, 0.0, 0.0)
-                                for ci in ti.static(range(3)):
-                                    su[ci] = (pn_ctrl[tp, prim, 3 + ci]
-                                              + 2.0 * a * pn_ctrl[tp, prim,
-                                                                  9 + ci]
-                                              + b * pn_ctrl[tp, prim, 15 + ci])
-                                    sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
-                                              + 2.0 * b * pn_ctrl[tp, prim,
-                                                                  12 + ci]
-                                              + a * pn_ctrl[tp, prim, 15 + ci])
-                                fnrm = su.cross(sv)
+                            snrm = _tri_normal_g(
+                                mem_trim, f, prim, 1.0 - a - b, a, b,
+                                tri_norm, tri_pos, tri_uvs, tri_tex_meta,
+                                textures, num_colored_triangles)
+                            tp = f % tri_pos.shape[0]
+                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                              tri_pos[tp, prim, 1],
+                                              tri_pos[tp, prim, 2])
+                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                              tri_pos[tp, prim, 4],
+                                              tri_pos[tp, prim, 5])
+                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                              tri_pos[tp, prim, 7],
+                                              tri_pos[tp, prim, 8])
+                            fnrm = (v1 - v0).cross(v2 - v0)
                             snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
                             spos = ro + t_hit * rd
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
@@ -2534,19 +2280,13 @@ def wavefront_shade(
                                                     * MIN_HIT_DISTANCE,
                                                     pixel_size_per_t, base_dist,
                                                     layer_offset_triangles,
-                                                    layer_offset_pn,
-                                                    has_tri, has_pn, has_bez,
+                                                    has_tri, has_bez,
                                                     t_nodes, t_node_miss,
                                                     t_leaf_prim, t_leaf_tspan,
                                                     t_first_leaf, tri_pos,
                                                     tri_colors, tri_uvs,
                                                     tri_tex_meta, textures,
                                                     num_colored_triangles,
-                                                    p_nodes, p_node_miss,
-                                                    p_leaf_prim, p_leaf_tspan,
-                                                    p_first_leaf, pn_ctrl,
-                                                    pn_obb,
-                                                    pn_colors,
                                                     b_nodes, b_node_miss,
                                                     b_leaf_prim, b_leaf_tspan,
                                                     b_first_leaf, circuit_meta,
@@ -2585,22 +2325,6 @@ def wavefront_shade(
                                                tri_mat_id, tri_mat,
                                                light_pos, light_col, num_lights,
                                                color, shadows, vis)
-                    elif htype == 2:
-                        sn = ti.math.vec3(0.0, 0.0, 0.0)
-                        if ti.static(skip_unlit_normal != 0):
-                            if pn_mat_id[f % pn_mat_id.shape[0], prim] \
-                                    != _MID_UNLIT:
-                                sn = _pn_hit_normal(f, prim, a, b, pn_norm,
-                                                    pn_ctrl, pn_extra, textures)
-                        else:
-                            sn = _pn_hit_normal(f, prim, a, b, pn_norm, pn_ctrl,
-                                                pn_extra, textures)
-                        color = _shade_pn_hit(frag_pipelines, pn_pids,
-                                              f, prim, a, b, rd,
-                                              t_hit, ro, pn_ctrl, sn,
-                                              pn_mat_id, pn_mat,
-                                              light_pos, light_col, num_lights,
-                                              color, shadows, vis)
 
                 if ti.static(len(frag_scatters) == 0):
                     # Built-in continuation.  The packed surface channels carry
@@ -2615,9 +2339,6 @@ def wavefront_shade(
                             mem_trim, f, prim, 1.0 - a - b, a, b,
                             tri_extra, col_row, tri_uvs, tri_tex_meta,
                             textures, num_colored_triangles)
-                    elif htype == 2:
-                        ior, T = _pn_hit_ior_transmission(
-                            f, prim, 1.0 - a - b, a, b, pn_extra, textures)
                     else:
                         if ti.static(has_bez != 0):
                             cmr = f % circuit_meta.shape[0]
@@ -2659,24 +2380,10 @@ def wavefront_shade(
                                               tri_pos[gp, prim, 7],
                                               tri_pos[gp, prim, 8])
                             geo_normal = (g1 - g0).cross(g2 - g0)
-                        elif htype == 2:
-                            normal = _pn_hit_normal(f, prim, a, b, pn_norm,
-                                                    pn_ctrl, pn_extra, textures)
-                            gp = f % pn_ctrl.shape[0]
-                            gsu = ti.math.vec3(0.0, 0.0, 0.0)
-                            gsv = ti.math.vec3(0.0, 0.0, 0.0)
-                            for ci in ti.static(range(3)):
-                                gsu[ci] = (pn_ctrl[gp, prim, 3 + ci]
-                                           + 2.0 * a * pn_ctrl[gp, prim, 9 + ci]
-                                           + b * pn_ctrl[gp, prim, 15 + ci])
-                                gsv[ci] = (pn_ctrl[gp, prim, 6 + ci]
-                                           + 2.0 * b * pn_ctrl[gp, prim, 12 + ci]
-                                           + a * pn_ctrl[gp, prim, 15 + ci])
-                            geo_normal = gsu.cross(gsv)
                         else:
                             normal = _bezier_normal(f, prim, circuit_meta)
                         normal = normal.normalized()
-                        if htype != 1 and htype != 2:
+                        if htype != 1:
                             geo_normal = normal
 
                     R, diel_pass = _material_reflectance(
@@ -2701,7 +2408,7 @@ def wavefront_shade(
                     if ti.static(refraction != 0):
                         if (T > 1e-4) and (bounces_left > 0) \
                                 and (ior > 1.0 + 1e-4):
-                            if (htype == 1) or (htype == 2):
+                            if htype == 1:
                                 is_glass = True
                             else:
                                 is_pane = True
@@ -2945,20 +2652,6 @@ def wavefront_shade(
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
                         sfn = (v1 - v0).cross(v2 - v0)
-                    elif htype == 2:
-                        sni = _pn_hit_normal(f, prim, a, b, pn_norm, pn_ctrl,
-                                             pn_extra, textures)
-                        tp = f % pn_ctrl.shape[0]
-                        su = ti.math.vec3(0.0, 0.0, 0.0)
-                        sv = ti.math.vec3(0.0, 0.0, 0.0)
-                        for ci in ti.static(range(3)):
-                            su[ci] = (pn_ctrl[tp, prim, 3 + ci]
-                                      + 2.0 * a * pn_ctrl[tp, prim, 9 + ci]
-                                      + b * pn_ctrl[tp, prim, 15 + ci])
-                            sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
-                                      + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
-                                      + a * pn_ctrl[tp, prim, 15 + ci])
-                        sfn = su.cross(sv)
                     else:
                         sni = _bezier_normal(f, prim, circuit_meta)
                         sfn = sni
@@ -2969,9 +2662,6 @@ def wavefront_shade(
                             mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
                             col_row, tri_uvs, tri_tex_meta, textures,
                             num_colored_triangles)
-                    elif htype == 2:
-                        s_ior, s_trans = _pn_hit_ior_transmission(
-                            f, prim, 1.0 - a - b, a, b, pn_extra, textures)
                     else:
                         if ti.static(has_bez != 0):
                             cmr = f % circuit_meta.shape[0]
@@ -2993,12 +2683,6 @@ def wavefront_shade(
                             frag_scatters, tri_mat_id, f, prim, rd, sni, sfn,
                             hit_point, color, albedo3, alpha, reflectivity,
                             s_ior, s_trans, tri_mat, bounces_left, refraction)
-                    elif htype == 2:
-                        (contrib, pass_w, refl_orig, refl_dir, refl_w,
-                         trans_orig, trans_dir, trans_w) = _run_frag_scatter(
-                            frag_scatters, pn_mat_id, f, prim, rd, sni, sfn,
-                            hit_point, color, albedo3, alpha, reflectivity,
-                            s_ior, s_trans, pn_mat, bounces_left, refraction)
                     else:
                         # Circuits are never material-shaded, so no user
                         # pipeline (hence no user scatter) can own them; they

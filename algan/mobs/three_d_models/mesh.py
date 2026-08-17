@@ -359,7 +359,7 @@ class TriangleMesh(Mob):
             op = self.opacity.reshape(-1, 1, 1, 1)
             texture_map = tmap.as_subclass(Color).mult_opacity(op)
 
-        return effective_triangle_primitive()(
+        primitive = effective_triangle_primitive()(
             corners=corners,
             colors=colors,
             normals=normals,
@@ -372,6 +372,64 @@ class TriangleMesh(Mob):
             normal_texture_map=self.normal_texture_map,
             **self.grid.get_shader_params(),
         )
+        shells = self.triangle_shell_ids()
+        if shells is not None:
+            primitive.mesh_ids = shells
+        return primitive
+
+    def triangle_shell_ids(self):
+        """Per-triangle connected-component id, or ``None`` for a single shell.
+
+        An imported file's mesh routinely holds several disconnected parts, and
+        treating them as one surface lets the analytic-AA run rule sum coverage
+        across parts that merely overlap on screen. ``corner_index`` already
+        carries the topology the loader read (it is kept for smooth normals), so
+        the components are a graph walk over shared EDGES -- not shared
+        vertices, which would fuse two cones meeting at a single apex.
+
+        Computed once and cached: the result depends only on construction-time
+        topology, never on the animated positions.
+        """
+        cached = getattr(self, "_triangle_shell_ids", None)
+        if cached is not None:
+            return None if cached is False else cached
+
+        faces = self.corner_index.reshape(-1, 3).detach().cpu()
+        n_faces = faces.shape[0]
+        if n_faces <= 1:
+            self._triangle_shell_ids = False
+            return None
+        try:
+            import numpy as np
+            from scipy.sparse import coo_matrix
+            from scipy.sparse.csgraph import connected_components
+        except Exception:
+            # scipy is a core dependency, but a shell id is an optimisation:
+            # degrade to one surface rather than fail a render over it.
+            self._triangle_shell_ids = False
+            return None
+
+        f = faces.numpy()
+        # Undirected edge -> face incidence, keyed by the sorted vertex pair, so
+        # two faces are adjacent exactly when they share an edge.
+        pairs = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], axis=0)
+        pairs = np.sort(pairs, axis=1)
+        keys, edge_of = np.unique(pairs, axis=0, return_inverse=True)
+        face_of = np.tile(np.arange(n_faces), 3)
+        inc = coo_matrix(
+            (np.ones(edge_of.shape[0], dtype=np.int8), (face_of, edge_of)),
+            shape=(n_faces, keys.shape[0]),
+        ).tocsr()
+        n_shells, labels = connected_components(
+            inc @ inc.T, directed=False, return_labels=True
+        )
+        if n_shells <= 1:
+            self._triangle_shell_ids = False
+            return None
+        self._triangle_shell_ids = torch.as_tensor(
+            labels.astype("int32"), device=self.corner_index.device
+        )
+        return self._triangle_shell_ids
 
     def _get_memory_used_per_timestep(self):
         n_v = self.num_triangles * 3

@@ -503,12 +503,6 @@ def install_pipeline_hooks():
         "_build_frame_bounds",
     ):
         _try_wrap(rtp.RayTracedBezierCircuitPrimitive, sub, f"beziers:   - {sub}")
-    if hasattr(rtp, "RayTracedPNTrianglePrimitive"):
-        _try_wrap(
-            rtp.RayTracedPNTrianglePrimitive,
-            "project_to_screen",
-            "PN triangles: shade + pack (project_to_screen)",
-        )
     # LogicalPNTrianglePrimitive overrides project_to_screen (dice + shade +
     # pack) without calling the base method, so the base-class wrap above
     # never fires for it and all Surface dicing cost was invisible.

@@ -1,7 +1,7 @@
 """Shared Taichi ray-tracing library + the Monte Carlo path-tracing kernels.
 
 This module holds the ``@ti.func`` building blocks every renderer uses --
-sibling-block STBVH traversal, triangle / PN-patch / bezier-circuit
+sibling-block STBVH traversal, triangle / bezier-circuit
 intersection and colour/material sampling, batched hit gathering
 (``_collect_hits``), shadow occlusion and tonemapping -- plus the Monte Carlo
 megakernels used when ``samples_per_pixel > 1``: ``path_trace_scene_stbvh``
@@ -45,13 +45,6 @@ separate from cold data (what only confirmed hits touch):
   usually single-frame) and
   ``tri_colors [Tc, N, 3, 5]``
   (RGB, glow, alpha per corner);
-* PN (curved point-normal) triangles, rendered as quadratic Bezier
-  (Steiner) triangle patches: monomial coefficients ``pn_ctrl [Tp, N, 18]``
-  packing ``S(u, v) = K0 + Ku u + Kv v + Kuu u^2 + Kvv v^2 + Kuv uv`` over
-  the barycentric domain (hot); shading data ``pn_norm/pn_extra/pn_colors``
-  with the same per-corner layouts as triangles, interpolated at vertex
-  weights ``(1 - u - v, u, v)``. A ray can pierce one patch up to four
-  times; ``_pn_intersect`` returns every hit so depth peeling stays exact;
 * planar bezier circuits: ``circuit_meta [Tm, C, 24]`` (plane frame, border
   width, fill flag, texture grid transform and four surface-transport
   channels), 2D polyline ``edges_2d`` with packed scanline/spatial tables
@@ -59,8 +52,8 @@ separate from cold data (what only confirmed hits touch):
   and border/texture colors ``circuit_border_colors [Tb, C, P, 5]``
   (both bilinearly sampled; P = 1 for plain colors).
 
-Coplanar-surface layer order is bezier circuits < triangles < PN patches,
-with each type's primitive index breaking ties within the type.
+Coplanar-surface layer order is bezier circuits < triangles, with each type's
+primitive index breaking ties within the type.
 """
 
 import taichi as ti
@@ -88,13 +81,6 @@ from algan.rendering.raytracing.shading_taichi import (
 from algan.rendering.taichi_runtime import init_taichi
 
 init_taichi()
-
-# Cull PN-patch candidates against their tight oriented box before the
-# matrix-pencil solve (default on; env ALGAN_PN_OBB=0 disables for A/B). Output
-# is identical -- the OBB conservatively bounds the patch -- and it removes the
-# ~98% of solver invocations whose ray pierces a patch's loose axis-aligned leaf
-# box but misses the (thin, often diagonal) patch itself.
-_PN_OBB_ON = env_flag("ALGAN_PN_OBB", True)
 
 # Sibling-block traversal stack. The walk descends into one intersected
 # child at a time and pushes the sibling group's *remaining* mask; a complete
@@ -133,35 +119,138 @@ BARYCENTRIC_EPSILON = 1e-4
 # second is discarded so the mesh behaves as one cohesive surface (in
 # particular, a partially transparent mesh must not blend twice on seams).
 TRIANGLE_EDGE_EPSILON = 2e-4
-# Slightly larger tolerances for the point-normal (PN) triangle patch
-# numerical intersection solver and edge/seam de-duplication, to cover
-# larger floating-point / solver noise.
-PN_BARYCENTRIC_EPSILON = 1e-4
-# Two G0-adjacent PN patches share their boundary curve but have different
-# tangent planes there, so near a seam their curved surfaces overlap in a thin
-# band and a ray can pierce *both* a small distance inside their shared edge.
-# A PN hit counts as an edge hit (a seam-merge candidate) when its smallest
-# barycentric coordinate is below this -- wide enough to cover that overlap
-# band, so a translucent seam is blended once rather than twice.
-PN_EDGE_EPSILON = 8e-3
-# A ray grazing or near-edge piercing a patch makes two intersections nearly
-# coincide, and the solver can recover them as several candidate hits at
-# essentially the same surface point (via the two split lines, or the linear
-# fallback landing on a pencil hit); Newton leaves them a few
-# thousandths apart in (u, v) -- and, where the surface is steep, more than
-# DEPTH_TIE_EPSILON apart in depth -- so they survive the depth tie-break and
-# would blend two or three times (a bright seam on a translucent patch). Hits
-# whose patch parameters agree to within this are treated as the same hit.
-PN_DEDUP_UV_EPSILON = 5e-3
-# Depth window for merging the duplicate edge hits of a *shared PN-patch seam*
-# (the two curved patches meeting along a boundary curve). Across the overlap
-# band the two near-edge hits sit a few thousandths apart in depth -- past
-# DEPTH_TIE_EPSILON -- so the seam-merge needs a looser window than the
-# flat-triangle case or a translucent seam blends twice. Still far below any
-# visible surface separation (sub-pixel at typical scene scales), and only the
-# extreme silhouette could merge a front/back pair this close, over a band far
-# narrower than a pixel.
-PN_SEAM_DEPTH_EPSILON = 8e-3
+
+# WATERTIGHT ray/triangle intersection (Woop-Benthin-Wald), gated off.
+# DESIGN_mesh_identity.md ss3.2.
+#
+# The two epsilons above are a matched pair and neither means anything alone:
+# BARYCENTRIC_EPSILON dilates every triangle so a ray on a shared edge cannot
+# miss BOTH neighbours and leave a crack, and TRIANGLE_EDGE_EPSILON removes the
+# duplicate hit that the dilation then manufactures.
+#
+# WBW removes the need for both. It transforms the ray into a space where it is
+# the +z axis, so a shared edge's edge function is computed from the SAME two
+# projected vertices in both triangles and comes out as the exact negative --
+# exactly one neighbour accepts, with no dilation and no duplicate to discard.
+# It is the same argument the raster path's exact fixed-point rule already makes
+# (``_ss_pixel`` in raster_taichi.py).
+#
+# Import-time, not a live setting: it changes the compiled kernel body, so a
+# runtime toggle would silently reuse a cached kernel (the _AA_SAMPLES
+# cache-trap rule). Clear the Taichi cache when flipping it.
+WATERTIGHT_TRI = env_flag("ALGAN_WATERTIGHT_TRI", False)
+
+
+@ti.func
+def _edge_is_canonical(px, py, qx, qy) -> bool:
+    """Deterministic owner of an edge a ray passes through EXACTLY.
+
+    A zero edge function means the ray is on the edge, and there the sign test
+    alone accepts in both neighbours -- exact negation makes zero zero either
+    way. Consistently wound neighbours traverse a shared edge in opposite
+    directions, so any strict total order on the projected endpoints picks
+    exactly one of them. This is the analogue of the raster path's top-left
+    fill rule, and it is why that rule PARTITIONS its samples.
+    """
+    return (py < qy) or ((py == qy) and (px < qx))
+
+
+@ti.func
+def _tri_hit(ro, rd, v0, v1, v2):
+    """Ray/triangle intersection: ``(ok, w1, w2, t)``.
+
+    ``w1``/``w2`` are the barycentric weights of ``v1``/``v2`` (so
+    ``w0 = 1 - w1 - w2``) and ``t`` the ray parameter, matching what the three
+    call sites used to compute inline. Under ``WATERTIGHT_TRI`` this is
+    Woop-Benthin-Wald; otherwise it is the shipped dilated Moller-Trumbore,
+    unchanged and bit-for-bit.
+    """
+    ok = 0
+    w1 = 0.0
+    w2 = 0.0
+    t = 0.0
+    if ti.static(WATERTIGHT_TRI):
+        a = v0 - ro
+        b = v1 - ro
+        c = v2 - ro
+        # Permute so the ray's dominant axis becomes z, written as explicit
+        # cases: Taichi indexes a vector by a runtime value only under a global
+        # flag, and codegens it poorly in the hottest loop in the renderer.
+        ax = ti.abs(rd[0])
+        ay = ti.abs(rd[1])
+        az = ti.abs(rd[2])
+        a_x, a_y, a_z = a[0], a[1], a[2]
+        b_x, b_y, b_z = b[0], b[1], b[2]
+        c_x, c_y, c_z = c[0], c[1], c[2]
+        d_x, d_y, d_z = rd[0], rd[1], rd[2]
+        if (ax >= ay) and (ax >= az):
+            a_x, a_y, a_z = a[1], a[2], a[0]
+            b_x, b_y, b_z = b[1], b[2], b[0]
+            c_x, c_y, c_z = c[1], c[2], c[0]
+            d_x, d_y, d_z = rd[1], rd[2], rd[0]
+        elif ay >= az:
+            a_x, a_y, a_z = a[2], a[0], a[1]
+            b_x, b_y, b_z = b[2], b[0], b[1]
+            c_x, c_y, c_z = c[2], c[0], c[1]
+            d_x, d_y, d_z = rd[2], rd[0], rd[1]
+        if d_z < 0.0:
+            # Preserve winding when the dominant component points the other way.
+            a_x, a_y = a_y, a_x
+            b_x, b_y = b_y, b_x
+            c_x, c_y = c_y, c_x
+            d_x, d_y = d_y, d_x
+        if d_z != 0.0:
+            inv_dz = 1.0 / d_z
+            sx = d_x * inv_dz
+            sy = d_y * inv_dz
+            axs = a_x - sx * a_z
+            ays = a_y - sy * a_z
+            bxs = b_x - sx * b_z
+            bys = b_y - sy * b_z
+            cxs = c_x - sx * c_z
+            cys = c_y - sy * c_z
+            # Edge functions, one per opposite vertex.
+            u = cxs * bys - cys * bxs
+            v = axs * cys - ays * cxs
+            w = bxs * ays - bys * axs
+            lo = ti.min(u, ti.min(v, w))
+            hi = ti.max(u, ti.max(v, w))
+            inside = (lo >= 0.0) or (hi <= 0.0)
+            if inside:
+                # An exactly-zero edge function is the shared-edge case; break
+                # the tie so one neighbour owns it.
+                if u == 0.0:
+                    inside = inside and _edge_is_canonical(bxs, bys, cxs, cys)
+                if v == 0.0:
+                    inside = inside and _edge_is_canonical(cxs, cys, axs, ays)
+                if w == 0.0:
+                    inside = inside and _edge_is_canonical(axs, ays, bxs, bys)
+            if inside:
+                det = u + v + w
+                if det != 0.0:
+                    inv_det = 1.0 / det
+                    t = (u * a_z + v * b_z + w * c_z) * inv_dz * inv_det
+                    w1 = v * inv_det
+                    w2 = w * inv_det
+                    ok = 1
+    else:
+        e1 = v1 - v0
+        e2 = v2 - v0
+        pv = rd.cross(e2)
+        det = e1.dot(pv)
+        if ti.abs(det) > 1e-12:
+            inv_det = 1.0 / det
+            tvec = ro - v0
+            w1 = tvec.dot(pv) * inv_det
+            qv = tvec.cross(e1)
+            w2 = rd.dot(qv) * inv_det
+            if ((w1 >= -BARYCENTRIC_EPSILON)
+                    and (w2 >= -BARYCENTRIC_EPSILON)
+                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
+                t = e2.dot(qv) * inv_det
+                ok = 1
+    return ok, w1, w2, t
+
 # Hits gathered per BVH traversal by the deterministic renderer. Depth
 # peeling consumes hits strictly front-to-back; collecting a small batch of
 # nearest hits per traversal lets a ray crossing several translucent
@@ -189,16 +278,10 @@ else:
     NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(BVH_ARITY, ti.f32),
                                 ndim=2)
 
-# tri_extra / pn_extra surface-transport block (see ``_pack_surface_extra``):
+# tri_extra surface-transport block (see ``_pack_surface_extra``):
 # per-corner (reflectivity, roughness) pairs in 0-5, per-corner IOR in 6-8,
 # per-corner transmission in 9-11.
 _EXTRA_W = 12
-# ``pn_extra`` appends the per-corner UVs and then the per-patch texture
-# metadata after that block (see ``_merge_scene``), so both are addressed
-# relative to its width -- deriving them keeps the kernel in step with the
-# packer instead of hard-coding offsets that silently rot when it changes.
-_PN_UV = _EXTRA_W          # 6 cols: (u, v) per corner
-_PN_META = _EXTRA_W + 6    # 10 cols: color(3), material(3), normal(3), flags
 
 # circuit_meta channel layout.
 _M_CENTER = 0      # 0-2   plane origin
@@ -736,44 +819,6 @@ def _test_root(f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
 
 
 @ti.func
-def _obb_misses(ro, rd, po, prim, pn_obb: ti.template(), t_lo, t_hi) -> bool:
-    """Conservative ray/OBB cull for a PN patch: True when the ray misses the
-    patch's tight oriented box within ``[t_lo, t_hi]``. The box (built in
-    :func:`pn_obb`) bounds the patch's control hull, so a miss here is a
-    guaranteed miss of the patch and the matrix-pencil solve can be skipped --
-    this rejects the bulk of false-positive candidates whose loose axis-aligned
-    leaf box the ray pierces but whose (thin, often diagonal) patch it does not.
-    The three packed axes are the frame directions scaled by their half-extents;
-    a zero-extent axis (a perfectly flat patch) is left unconstrained.
-    """
-    cen = ti.math.vec3(pn_obb[po, prim, 0], pn_obb[po, prim, 1],
-                       pn_obb[po, prim, 2])
-    d = ro - cen
-    tnear = -1e30
-    tfar = 1e30
-    miss = False
-    for ax in ti.static(range(3)):
-        a = ti.math.vec3(pn_obb[po, prim, 3 + ax * 3],
-                         pn_obb[po, prim, 4 + ax * 3],
-                         pn_obb[po, prim, 5 + ax * 3])
-        l2 = a.dot(a)
-        if l2 > 1e-30:
-            inv = 1.0 / l2
-            e = d.dot(a) * inv      # ray-origin coord in [-1, 1] slab units
-            g = rd.dot(a) * inv
-            if ti.abs(g) > 1e-12:
-                ta = (-1.0 - e) / g
-                tb = (1.0 - e) / g
-                tnear = ti.max(tnear, ti.min(ta, tb))
-                tfar = ti.min(tfar, ti.max(ta, tb))
-            elif ti.abs(e) > 1.0:
-                miss = True
-    if (tnear > tfar) or (tfar < t_lo) or (tnear > t_hi):
-        miss = True
-    return miss
-
-
-@ti.func
 def _comes_after(t, layer, t_prev, layer_prev) -> bool:
     """Strict, transitive total order along the ray: by distance, with
     near-coplanar hits ordered by descending layer index.
@@ -790,462 +835,6 @@ def _comes_after(t, layer, t_prev, layer_prev) -> bool:
     bt = ti.floor(t * INV_DEPTH_TIE_EPSILON)
     bp = ti.floor(t_prev * INV_DEPTH_TIE_EPSILON)
     return (bt > bp) or ((bt == bp) and (layer < layer_prev))
-
-
-@ti.func
-def _cbrt(x):
-    """Real cube root, valid for negative arguments."""
-    r = ti.pow(ti.abs(x), 1.0 / 3.0)
-    if x < 0.0:
-        r = -r
-    return r
-
-
-@ti.func
-def _cubic_real_roots(a3, a2, a1, a0):
-    """Real roots of ``a3 x^3 + a2 x^2 + a1 x + a0`` in closed form.
-
-    Degenerate-degree aware: a vanishing leading coefficient falls back to
-    the stable quadratic / linear formula, so the same routine serves the
-    flat-patch pencil (whose cubic collapses to a quadratic) and the curved
-    case. Returns ``(count, roots)`` with the real roots in ``roots[:count]``
-    (``count`` in 0..3); the order is unspecified -- callers select a root by
-    conditioning, not by magnitude.
-    """
-    roots = ti.math.vec3(0.0, 0.0, 0.0)
-    count = 0
-    scale = ti.max(ti.max(ti.abs(a3), ti.abs(a2)),
-                   ti.max(ti.abs(a1), ti.max(ti.abs(a0), 1e-30)))
-    if ti.abs(a3) <= 1e-7 * scale:
-        # Effectively quadratic a2 x^2 + a1 x + a0 (or linear).
-        if ti.abs(a2) <= 1e-7 * scale:
-            if ti.abs(a1) > 1e-30:
-                roots[0] = -a0 / a1
-                count = 1
-        else:
-            disc = a1 * a1 - 4.0 * a2 * a0
-            if disc >= 0.0:
-                sq = ti.sqrt(disc)
-                w = -0.5 * (a1 + sq)
-                if a1 < 0.0:
-                    w = -0.5 * (a1 - sq)
-                if ti.abs(w) > 1e-30:
-                    roots[0] = w / a2
-                    roots[1] = a0 / w
-                else:
-                    roots[0] = -0.5 * a1 / a2
-                    roots[1] = roots[0]
-                count = 2
-    else:
-        # Depressed cubic y^3 + p y + q via x = y - a2 / (3 a3).
-        b = a2 / a3
-        c = a1 / a3
-        d = a0 / a3
-        shift = b * (1.0 / 3.0)
-        p = c - b * b * (1.0 / 3.0)
-        q = (2.0 / 27.0) * b * b * b - (1.0 / 3.0) * b * c + d
-        half_q = 0.5 * q
-        disc = half_q * half_q + p * p * p * (1.0 / 27.0)
-        if disc >= 0.0:
-            # One real root (Cardano); the other two are complex.
-            sq = ti.sqrt(disc)
-            roots[0] = _cbrt(-half_q + sq) + _cbrt(-half_q - sq) - shift
-            count = 1
-        else:
-            # Three distinct real roots (p < 0): trigonometric form.
-            m = 2.0 * ti.sqrt(-p * (1.0 / 3.0))
-            arg = ti.math.clamp(3.0 * q / (p * m), -1.0, 1.0)
-            theta = ti.acos(arg) * (1.0 / 3.0)
-            roots[0] = m * ti.cos(theta) - shift
-            roots[1] = m * ti.cos(theta - 2.0943951023931953) - shift
-            roots[2] = m * ti.cos(theta - 4.1887902047863905) - shift
-            count = 3
-    return count, roots
-
-
-@ti.func
-def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
-    """Every intersection (up to four) of a ray with a quadratic Bezier
-    (Steiner) triangle patch, packed as monomial coefficients
-    ``S(u, v) = K0 + Ku u + Kv v + Kuu u^2 + Kvv v^2 + Kuv uv`` over the
-    barycentric domain ``u, v >= 0, u + v <= 1``.
-
-    Sederberg & Anderson's two-plane method: the patch is projected onto two
-    orthogonal planes containing the ray, giving two bivariate quadratics
-    ``f(u, v) = g(u, v) = 0`` whose common roots are the hits. Rather than
-    eliminating a variable into a resultant quartic (numerically fragile --
-    catastrophic cancellation near grazing rays), the pair is solved with the
-    *matrix pencil*: each quadratic is a symmetric 3x3 conic matrix
-    (``MF``, ``MG``), and ``det(x MF + MG)`` is a cubic in ``x`` whose real
-    roots make ``M = x MF + MG`` a degenerate conic -- a product of two
-    straight lines through all four common roots of ``f`` and ``g``. The root
-    whose member splits into a *real* line pair (adjugate with a negative
-    diagonal -- the squared homogeneous intersection point) is chosen, ``M``
-    is factored into the two lines via ``M + [p]_x`` (rank 1), and each line
-    is intersected with ``f`` through a single stable 1D quadratic. A flat
-    patch makes f and g linear, which collapses the pencil (``det`` vanishes
-    identically); that case falls back to the 2x2 linear solve. Every
-    candidate is polished with three Newton steps on ``(f, g)`` to f32
-    accuracy and kept only if it lands in the barycentric domain.
-
-    Returns ``(count, t, u, v)`` with per-hit values in the vec4 slots
-    ``[0, count)``; hits closer than DEPTH_TIE_EPSILON along the ray
-    (tangential double roots) are merged.
-    """
-    k0 = ti.math.vec3(pn_ctrl[tp, prim, 0], pn_ctrl[tp, prim, 1],
-                      pn_ctrl[tp, prim, 2]) - ro
-    ku = ti.math.vec3(pn_ctrl[tp, prim, 3], pn_ctrl[tp, prim, 4],
-                      pn_ctrl[tp, prim, 5])
-    kv = ti.math.vec3(pn_ctrl[tp, prim, 6], pn_ctrl[tp, prim, 7],
-                      pn_ctrl[tp, prim, 8])
-    kuu = ti.math.vec3(pn_ctrl[tp, prim, 9], pn_ctrl[tp, prim, 10],
-                       pn_ctrl[tp, prim, 11])
-    kvv = ti.math.vec3(pn_ctrl[tp, prim, 12], pn_ctrl[tp, prim, 13],
-                       pn_ctrl[tp, prim, 14])
-    kuv = ti.math.vec3(pn_ctrl[tp, prim, 15], pn_ctrl[tp, prim, 16],
-                       pn_ctrl[tp, prim, 17])
-
-    helper = ti.math.vec3(1.0, 0.0, 0.0)
-    if ti.abs(rd[0]) > 0.9:
-        helper = ti.math.vec3(0.0, 1.0, 0.0)
-    n1 = rd.cross(helper).normalized()
-    n2 = rd.cross(n1)
-
-    # f and g, each normalized so its largest coefficient is 1 (the
-    # geometry is already relative to the ray origin via k0).
-    A1 = n1.dot(kuu)
-    B1 = n1.dot(kuv)
-    C1 = n1.dot(kvv)
-    D1 = n1.dot(ku)
-    E1 = n1.dot(kv)
-    F1 = n1.dot(k0)
-    sf = ti.max(ti.max(ti.max(ti.abs(A1), ti.abs(B1)),
-                       ti.max(ti.abs(C1), ti.abs(D1))),
-                ti.max(ti.abs(E1), ti.max(ti.abs(F1), 1e-30)))
-    A1 /= sf
-    B1 /= sf
-    C1 /= sf
-    D1 /= sf
-    E1 /= sf
-    F1 /= sf
-    A2 = n2.dot(kuu)
-    B2 = n2.dot(kuv)
-    C2 = n2.dot(kvv)
-    D2 = n2.dot(ku)
-    E2 = n2.dot(kv)
-    F2 = n2.dot(k0)
-    sg = ti.max(ti.max(ti.max(ti.abs(A2), ti.abs(B2)),
-                       ti.max(ti.abs(C2), ti.abs(D2))),
-                ti.max(ti.abs(E2), ti.max(ti.abs(F2), 1e-30)))
-    A2 /= sg
-    B2 /= sg
-    C2 /= sg
-    D2 /= sg
-    E2 /= sg
-    F2 /= sg
-
-    # Symmetric conic matrices of f and g: (u, v, 1) M (u, v, 1)^T equals the
-    # quadratic, so the cross/linear terms carry the standard factor 1/2.
-    mf00 = A1
-    mf11 = C1
-    mf22 = F1
-    mf01 = 0.5 * B1
-    mf02 = 0.5 * D1
-    mf12 = 0.5 * E1
-    mg00 = A2
-    mg11 = C2
-    mg22 = F2
-    mg01 = 0.5 * B2
-    mg02 = 0.5 * D2
-    mg12 = 0.5 * E2
-
-    # Adjugates (symmetric) of MF and MG.
-    af00 = mf11 * mf22 - mf12 * mf12
-    af11 = mf00 * mf22 - mf02 * mf02
-    af22 = mf00 * mf11 - mf01 * mf01
-    af01 = mf02 * mf12 - mf01 * mf22
-    af02 = mf01 * mf12 - mf02 * mf11
-    af12 = mf01 * mf02 - mf00 * mf12
-    ag00 = mg11 * mg22 - mg12 * mg12
-    ag11 = mg00 * mg22 - mg02 * mg02
-    ag22 = mg00 * mg11 - mg01 * mg01
-    ag01 = mg02 * mg12 - mg01 * mg22
-    ag02 = mg01 * mg12 - mg02 * mg11
-    ag12 = mg01 * mg02 - mg00 * mg12
-
-    # det(x MF + MG) = c3 x^3 + c2 x^2 + c1 x + c0 (the matrix pencil):
-    # c3 = det(MF), c0 = det(MG), c2 = tr(adj(MF) MG), c1 = tr(adj(MG) MF).
-    c3 = mf00 * af00 + mf01 * af01 + mf02 * af02
-    c0 = mg00 * ag00 + mg01 * ag01 + mg02 * ag02
-    c2 = (af00 * mg00 + af11 * mg11 + af22 * mg22
-          + 2.0 * (af01 * mg01 + af02 * mg02 + af12 * mg12))
-    c1 = (ag00 * mf00 + ag11 * mf11 + ag22 * mf22
-          + 2.0 * (ag01 * mf01 + ag02 * mf02 + ag12 * mf12))
-
-    nx, xr = _cubic_real_roots(c3, c2, c1, c0)
-
-    # Pick the real pencil root whose member conic splits into a real line
-    # pair. det(M) = 0 makes M two lines; the pair is real iff M's adjugate
-    # has a negative diagonal entry (= -|intersection point|^2 in homogeneous
-    # coordinates). Comparing on the scale-normalized M keeps a large root
-    # (the member near the line at infinity) from looking spuriously
-    # well-conditioned.
-    best_q = 0.0
-    x0 = 0.0
-    found = 0
-    for i in ti.static(range(3)):
-        if i < nx:
-            xroot = xr[i]
-            a00 = xroot * mf00 + mg00
-            a11 = xroot * mf11 + mg11
-            a22 = xroot * mf22 + mg22
-            a01 = xroot * mf01 + mg01
-            a02 = xroot * mf02 + mg02
-            a12 = xroot * mf12 + mg12
-            ms = ti.max(ti.max(ti.max(ti.abs(a00), ti.abs(a11)),
-                               ti.max(ti.abs(a22), ti.abs(a01))),
-                        ti.max(ti.abs(a02), ti.max(ti.abs(a12), 1e-30)))
-            inv = 1.0 / ms
-            a00 *= inv
-            a11 *= inv
-            a22 *= inv
-            a01 *= inv
-            a02 *= inv
-            a12 *= inv
-            d00 = a11 * a22 - a12 * a12
-            d11 = a00 * a22 - a02 * a02
-            d22 = a00 * a11 - a01 * a01
-            q = ti.max(ti.max(-d00, -d11), -d22)
-            if q > best_q:
-                best_q = q
-                x0 = xroot
-                found = 1
-
-    count = 0
-    out_t = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-    out_u = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-    out_v = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-
-    # Linear fallback. A flat patch (or any ray whose two planes both cut the
-    # patch in a straight line) makes f and g linear, so MF and MG share the
-    # line at infinity and det(x MF + MG) vanishes for every x -- the pencil
-    # has no usable root (found == 0). The lone hit is then the solution of
-    # the 2x2 linear system, processed through the same path as the curved
-    # candidates below.
-    ldet = D1 * E2 - E1 * D2
-    lin_u = 0.0
-    lin_v = 0.0
-    lin_ok = 0
-    if (found == 0) and (ti.abs(ldet) > 1e-9):
-        lin_u = (E1 * F2 - E2 * F1) / ldet
-        lin_v = (D2 * F1 - D1 * F2) / ldet
-        lin_ok = 1
-
-    # The two split lines (defaulted so the loop skips them when found == 0).
-    lines_a = ti.math.vec2(0.0, 0.0)
-    lines_b = ti.math.vec2(0.0, 0.0)
-    lines_c = ti.math.vec2(0.0, 0.0)
-    if found == 1:
-        # Rebuild the chosen degenerate member (scale-normalized) and split it
-        # into the two lines L0 (largest-norm row of M + [p]_x) and L1
-        # (largest-norm column): M + [p]_x is the rank-1 outer product of the
-        # two line vectors, p being their intersection point.
-        a00 = x0 * mf00 + mg00
-        a11 = x0 * mf11 + mg11
-        a22 = x0 * mf22 + mg22
-        a01 = x0 * mf01 + mg01
-        a02 = x0 * mf02 + mg02
-        a12 = x0 * mf12 + mg12
-        ms = ti.max(ti.max(ti.max(ti.abs(a00), ti.abs(a11)),
-                           ti.max(ti.abs(a22), ti.abs(a01))),
-                    ti.max(ti.abs(a02), ti.max(ti.abs(a12), 1e-30)))
-        inv = 1.0 / ms
-        a00 *= inv
-        a11 *= inv
-        a22 *= inv
-        a01 *= inv
-        a02 *= inv
-        a12 *= inv
-        b00 = a11 * a22 - a12 * a12
-        b11 = a00 * a22 - a02 * a02
-        b22 = a00 * a11 - a01 * a01
-        b01 = a02 * a12 - a01 * a22
-        b02 = a01 * a12 - a02 * a11
-        b12 = a01 * a02 - a00 * a12
-        px = 0.0
-        py = 0.0
-        pz = 0.0
-        if (-b00 >= -b11) and (-b00 >= -b22):
-            s = ti.sqrt(ti.max(-b00, 1e-30))
-            px = b00 / s
-            py = b01 / s
-            pz = b02 / s
-        elif -b11 >= -b22:
-            s = ti.sqrt(ti.max(-b11, 1e-30))
-            px = b01 / s
-            py = b11 / s
-            pz = b12 / s
-        else:
-            s = ti.sqrt(ti.max(-b22, 1e-30))
-            px = b02 / s
-            py = b12 / s
-            pz = b22 / s
-        c00 = a00
-        c01 = a01 - pz
-        c02 = a02 + py
-        c10 = a01 + pz
-        c11 = a11
-        c12 = a12 - px
-        c20 = a02 - py
-        c21 = a12 + px
-        c22 = a22
-        r0n = c00 * c00 + c01 * c01 + c02 * c02
-        r1n = c10 * c10 + c11 * c11 + c12 * c12
-        r2n = c20 * c20 + c21 * c21 + c22 * c22
-        la0 = c00
-        lb0 = c01
-        lc0 = c02
-        if (r1n >= r0n) and (r1n >= r2n):
-            la0 = c10
-            lb0 = c11
-            lc0 = c12
-        elif r2n >= r0n:
-            la0 = c20
-            lb0 = c21
-            lc0 = c22
-        k0n = c00 * c00 + c10 * c10 + c20 * c20
-        k1n = c01 * c01 + c11 * c11 + c21 * c21
-        k2n = c02 * c02 + c12 * c12 + c22 * c22
-        la1 = c00
-        lb1 = c10
-        lc1 = c20
-        if (k1n >= k0n) and (k1n >= k2n):
-            la1 = c01
-            lb1 = c11
-            lc1 = c21
-        elif k2n >= k0n:
-            la1 = c02
-            lb1 = c12
-            lc1 = c22
-        lines_a = ti.math.vec2(la0, la1)
-        lines_b = ti.math.vec2(lb0, lb1)
-        lines_c = ti.math.vec2(lc0, lc1)
-
-    # Candidate (u, v) sources: the two split lines (li 0, 1) intersected with
-    # f, plus the linear-fallback point (li 2). Each is Newton-polished on
-    # (f, g), domain-tested and de-duplicated.
-    for li in ti.static(range(3)):
-        u_c0 = 0.0
-        v_c0 = 0.0
-        u_c1 = 0.0
-        v_c1 = 0.0
-        num_uv = 0
-        if ti.static(li < 2):
-            la = lines_a[li]
-            lb = lines_b[li]
-            lc = lines_c[li]
-            if ti.max(ti.abs(la), ti.abs(lb)) > 1e-12:
-                # Substitute the line into f -> a stable 1D quadratic, solved
-                # along whichever axis the line is least parallel to.
-                qa = 0.0
-                qb = 0.0
-                qc = 0.0
-                use_u = ti.abs(la) >= ti.abs(lb)
-                al = 0.0
-                be = 0.0
-                if use_u:
-                    al = -lb / la
-                    be = -lc / la
-                    qa = A1 * al * al + B1 * al + C1
-                    qb = 2.0 * A1 * al * be + B1 * be + D1 * al + E1
-                    qc = A1 * be * be + D1 * be + F1
-                else:
-                    al = -la / lb
-                    be = -lc / lb
-                    qa = C1 * al * al + B1 * al + A1
-                    qb = 2.0 * C1 * al * be + B1 * be + E1 * al + D1
-                    qc = C1 * be * be + E1 * be + F1
-                t0 = 0.0
-                t1 = 0.0
-                if ti.abs(qa) <= 1e-12 * ti.max(ti.abs(qb), 1e-30):
-                    if ti.abs(qb) > 1e-30:
-                        t0 = -qc / qb
-                        t1 = t0
-                        num_uv = 1
-                else:
-                    disc = qb * qb - 4.0 * qa * qc
-                    qsc = ti.max(qb * qb, ti.abs(4.0 * qa * qc)) + 1e-30
-                    # A line through a real common root meets f; a slightly
-                    # negative discriminant (a near-tangent rounded below zero)
-                    # is clamped so the grazing double root is still recovered.
-                    if disc >= -1e-6 * qsc:
-                        sq = ti.sqrt(ti.max(disc, 0.0))
-                        w = -0.5 * (qb + sq)
-                        if qb < 0.0:
-                            w = -0.5 * (qb - sq)
-                        if ti.abs(w) > 1e-30:
-                            t0 = w / qa
-                            t1 = qc / w
-                        else:
-                            t0 = -0.5 * qb / qa
-                            t1 = t0
-                        num_uv = 2
-                if use_u:
-                    v_c0 = t0
-                    u_c0 = al * t0 + be
-                    v_c1 = t1
-                    u_c1 = al * t1 + be
-                else:
-                    u_c0 = t0
-                    v_c0 = al * t0 + be
-                    u_c1 = t1
-                    v_c1 = al * t1 + be
-        else:
-            if lin_ok == 1:
-                u_c0 = lin_u
-                v_c0 = lin_v
-                num_uv = 1
-        for vc in ti.static(range(2)):
-            if vc < num_uv:
-                u = u_c0 if ti.static(vc == 0) else u_c1
-                v = v_c0 if ti.static(vc == 0) else v_c1
-                for _ in ti.static(range(3)):
-                    fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
-                    gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                    fu = 2.0 * A1 * u + B1 * v + D1
-                    fv = B1 * u + 2.0 * C1 * v + E1
-                    gu = 2.0 * A2 * u + B2 * v + D2
-                    gv = B2 * u + 2.0 * C2 * v + E2
-                    det = fu * gv - fv * gu
-                    if ti.abs(det) > 1e-12:
-                        du = (gv * fval - fv * gval) / det
-                        dv = (fu * gval - gu * fval) / det
-                        u -= ti.math.clamp(du, -0.2, 0.2)
-                        v -= ti.math.clamp(dv, -0.2, 0.2)
-                fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
-                gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                if ((u >= -PN_BARYCENTRIC_EPSILON)
-                        and (v >= -PN_BARYCENTRIC_EPSILON)
-                        and (u + v <= 1.0 + PN_BARYCENTRIC_EPSILON)
-                        and (ti.abs(fval) < 2e-3) and (ti.abs(gval) < 2e-3)):
-                    x = (k0 + u * ku + v * kv + (u * u) * kuu
-                         + (v * v) * kvv + (u * v) * kuv)
-                    t = x.dot(rd)
-                    dup = 0
-                    for c in ti.static(range(4)):
-                        if (c < count) and (
-                                (ti.abs(out_t[c] - t) <= DEPTH_TIE_EPSILON)
-                                or ((ti.abs(out_u[c] - u)
-                                     <= PN_DEDUP_UV_EPSILON)
-                                    and (ti.abs(out_v[c] - v)
-                                         <= PN_DEDUP_UV_EPSILON))):
-                            dup = 1
-                    if (dup == 0) and (count < 4):
-                        out_t[count] = t
-                        out_u[count] = u
-                        out_v[count] = v
-                        count += 1
-    return count, out_t, out_u, out_v
 
 
 @ti.func
@@ -1333,31 +922,19 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                         v2 = ti.math.vec3(tri_pos[tp, prim, 6],
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
-                        e1 = v1 - v0
-                        e2 = v2 - v0
-                        pv = rd.cross(e2)
-                        det = e1.dot(pv)
-                        if ti.abs(det) > 1e-12:
-                            inv_det = 1.0 / det
-                            tvec = ro - v0
-                            w1 = tvec.dot(pv) * inv_det
-                            qv = tvec.cross(e1)
-                            w2 = rd.dot(qv) * inv_det
-                            if ((w1 >= -BARYCENTRIC_EPSILON)
-                                    and (w2 >= -BARYCENTRIC_EPSILON)
-                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                t = e2.dot(qv) * inv_det
-                                layer = layer_offset + ti.cast(prim, ti.f32)
-                                if ((t > MIN_HIT_DISTANCE)
-                                        and _comes_after(t, layer, t_prev,
-                                                         layer_prev)
-                                        and _comes_after(best_t, best_layer,
-                                                         t, layer)):
-                                    best_t = t
-                                    best_layer = layer
-                                    best_prim = prim
-                                    best_w1 = w1
-                                    best_w2 = w2
+                        hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        if hit_ok != 0:
+                            layer = layer_offset + ti.cast(prim, ti.f32)
+                            if ((t > MIN_HIT_DISTANCE)
+                                    and _comes_after(t, layer, t_prev,
+                                                     layer_prev)
+                                    and _comes_after(best_t, best_layer,
+                                                     t, layer)):
+                                best_t = t
+                                best_layer = layer
+                                best_prim = prim
+                                best_w1 = w1
+                                best_w2 = w2
             else:
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
@@ -1369,120 +946,6 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                     ti.min(best_t + DEPTH_TIE_EPSILON,
                            t_cap + DEPTH_TIE_EPSILON), nodes)
     return best_t, best_prim, best_w1, best_w2, best_layer
-
-
-@ti.func
-def _nearest_pn_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
-                    layer_prev, t_cap,
-                    layer_offset,
-                    nodes: ti.template(), node_miss: ti.template(),
-                    leaf_prim: ti.template(), leaf_tspan: ti.template(),
-                    first_leaf, pn_ctrl: ti.template(), pn_obb: ti.template()):
-    """Nearest PN-patch intersection strictly after (t_prev, layer_prev).
-    Every root of each candidate patch is considered (a ray can pierce a
-    curved patch several times) and the patch parameters (u, v) of the
-    winning hit double as its color/normal interpolation weights.
-
-    Each candidate is first culled against its tight oriented box
-    (:func:`_obb_misses`) within the still-useful window, skipping the
-    matrix-pencil solve for the many rays that pierce a patch's loose leaf AABB
-    but miss the patch itself -- the same conservative (output-preserving) cull
-    the primary depth-peel uses.
-    """
-    best_t = 1e30
-    best_layer = -1e30
-    best_prim = -1
-    best_u = 0.0
-    best_v = 0.0
-    tp = f % pn_ctrl.shape[0]
-    po = f % pn_obb.shape[0]
-    row0 = 0
-    if ti.static(refit != 0):
-        row0 = _refit_row0(f, first_leaf, nodes)
-    g_sp = 0
-    g_st = ti.Vector([0] * _GROUP_STACK)
-    g_cur = 0
-    g_pend, g_near = _group_test(
-        refit, row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
-        ti.min(best_t + DEPTH_TIE_EPSILON,
-               t_cap + DEPTH_TIE_EPSILON), nodes)
-    while True:
-        if g_pend == 0:
-            if g_sp == 0:
-                break
-            g_sp -= 1
-            saved = g_st[g_sp]
-            g_cur = saved >> BVH_ARITY
-            saved_mask = saved & _GROUP_MASK
-            fresh_mask, g_near = _group_test(
-                refit, row0, g_cur, f, ro, inv_rd,
-                t_prev - DEPTH_TIE_EPSILON,
-                ti.min(best_t + DEPTH_TIE_EPSILON,
-                       t_cap + DEPTH_TIE_EPSILON), nodes)
-            g_pend = saved_mask & fresh_mask
-        else:
-            g_c = _nearest_pending_child(g_pend, g_near)
-            g_pend &= ~(1 << g_c)
-            descend = 0
-            child_blk = 0
-            l_prim = -1
-            l_base = 0
-            if ti.static(refit != 0):
-                w = _refit_link(row0 + g_cur, g_c, nodes)
-                if w >= 0:
-                    descend = 1
-                    child_blk = w
-                else:
-                    l_prim = w & _REFIT_PRIM_MASK
-            else:
-                g_child = BVH_ARITY * g_cur + 1 + g_c
-                if g_child >= first_leaf:
-                    l_base = (g_child - first_leaf) * LEAF_SIZE
-                else:
-                    descend = 1
-                    child_blk = g_child
-            if descend == 0:
-                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
-                    prim = l_prim
-                    if ti.static(refit == 0):
-                        prim = -1
-                        p0 = leaf_prim[l_base + j]
-                        tspan = leaf_tspan[l_base + j]
-                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))):
-                            prim = p0
-                    if ((prim >= 0)
-                            and (ti.static(not _PN_OBB_ON) or not _obb_misses(
-                                ro, rd, po, prim, pn_obb,
-                                t_prev - DEPTH_TIE_EPSILON,
-                                best_t + DEPTH_TIE_EPSILON))):
-                        cnt, ts, us, vs = _pn_intersect(ro, rd, tp, prim,
-                                                        pn_ctrl)
-                        layer = layer_offset + ti.cast(prim, ti.f32)
-                        for r in ti.static(range(4)):
-                            if r < cnt:
-                                t = ts[r]
-                                if ((t > MIN_HIT_DISTANCE)
-                                        and _comes_after(t, layer, t_prev,
-                                                         layer_prev)
-                                        and _comes_after(best_t, best_layer,
-                                                         t, layer)):
-                                    best_t = t
-                                    best_layer = layer
-                                    best_prim = prim
-                                    best_u = us[r]
-                                    best_v = vs[r]
-            else:
-                if g_pend != 0:
-                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
-                    g_sp += 1
-                g_cur = child_blk
-                g_pend, g_near = _group_test(
-                    refit, row0, g_cur, f, ro, inv_rd,
-                    t_prev - DEPTH_TIE_EPSILON,
-                    ti.min(best_t + DEPTH_TIE_EPSILON,
-                           t_cap + DEPTH_TIE_EPSILON), nodes)
-    return best_t, best_prim, best_u, best_v, best_layer
 
 
 @ti.func
@@ -1808,10 +1271,7 @@ def _circuit_alpha(circuit, f, u, v, in_border,
 
 @ti.func
 def _triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template()):
-    """Barycentric color (RGB + glow) and alpha of a confirmed triangle hit.
-    PN-patch hits share the per-corner layout and pass ``pn_colors`` with
-    weights ``(1 - u - v, u, v)``; likewise for the alpha/extra variants.
-    """
+    """Barycentric color (RGB + glow) and alpha of a confirmed triangle hit."""
     tc = f % tri_colors.shape[0]
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     for ci in ti.static(range(4)):
@@ -2017,37 +1477,6 @@ def _triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
 
 
 @ti.func
-def _pn_normal(f, prim, u, v, pn_norm: ti.template(), pn_ctrl: ti.template()):
-    """Interpolated shading normal of a PN-patch hit, at the flat-triangle
-    vertex weights (1 - u - v, u, v): continuous across patch seams, exactly
-    like Phong shading on the source mesh. Falls back to the patch's
-    geometric normal (the cross product of the parametric tangents) when the
-    vertex normals are degenerate. Only fetched for hits that scatter or
-    reflect.
-    """
-    tn = f % pn_norm.shape[0]
-    w0 = 1.0 - u - v
-    normal = ti.math.vec3(0.0, 0.0, 0.0)
-    for ci in ti.static(range(3)):
-        normal[ci] = (w0 * pn_norm[tn, prim, ci]
-                      + u * pn_norm[tn, prim, 3 + ci]
-                      + v * pn_norm[tn, prim, 6 + ci])
-    if normal.norm() < 1e-6:
-        tp = f % pn_ctrl.shape[0]
-        su = ti.math.vec3(0.0, 0.0, 0.0)
-        sv = ti.math.vec3(0.0, 0.0, 0.0)
-        for ci in ti.static(range(3)):
-            su[ci] = (pn_ctrl[tp, prim, 3 + ci]
-                      + 2.0 * u * pn_ctrl[tp, prim, 9 + ci]
-                      + v * pn_ctrl[tp, prim, 15 + ci])
-            sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
-                      + 2.0 * v * pn_ctrl[tp, prim, 12 + ci]
-                      + u * pn_ctrl[tp, prim, 15 + ci])
-        normal = su.cross(sv)
-    return normal
-
-
-@ti.func
 def _bezier_normal(f, circuit, circuit_meta: ti.template()):
     tm = f % circuit_meta.shape[0]
     return ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
@@ -2101,54 +1530,15 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
 
 
 @ti.func
-def _shade_pn_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
-                  f, prim, a, b, rd, t_hit, ro,
-                  pn_ctrl: ti.template(), shade_normal,
-                  pn_mat_id: ti.template(), pn_mat: ti.template(),
-                  light_pos: ti.template(), light_col: ti.template(),
-                  num_lights, albedo, shadows: ti.template(), vis):
-    """Per-fragment material shading of a confirmed PN-patch hit. Like
-    :func:`_shade_tri_hit` (caller-supplied normal-mapped ``shade_normal``) but
-    the geometric face normal is the cross product of the patch's parametric
-    tangents at (u, v) = (a, b). ``pids_present`` is the compile-time bitmask
-    of the ids the batch's PN PATCHES carry -- separate from the triangle one,
-    so a scene whose meshes and patches use different materials still resolves
-    each site to a single stage."""
-    tp = f % pn_ctrl.shape[0]
-    su = ti.math.vec3(0.0, 0.0, 0.0)
-    sv = ti.math.vec3(0.0, 0.0, 0.0)
-    for ci in ti.static(range(3)):
-        su[ci] = (pn_ctrl[tp, prim, 3 + ci]
-                  + 2.0 * a * pn_ctrl[tp, prim, 9 + ci]
-                  + b * pn_ctrl[tp, prim, 15 + ci])
-        sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
-                  + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
-                  + a * pn_ctrl[tp, prim, 15 + ci])
-    face_n = su.cross(sv)
-    pos = ro + t_hit * rd
-    rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _run_frag_pipeline(frag_pipelines, pids_present,
-                              prim, f, pos, -rd, shade_normal,
-                              face_n, rgb,
-                              albedo[3], light_pos, light_col, num_lights,
-                              pn_mat_id, pn_mat, shadows, vis)
-
-
-@ti.func
 def _nearest_surface_g(refit: ti.template(),
-                     has_tri: ti.template(), has_pn: ti.template(),
+                     has_tri: ti.template(),
                      has_bez: ti.template(),
                      ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      t_cap,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
-                     layer_offset_pn,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
-                     p_nodes: ti.template(), p_node_miss: ti.template(),
-                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
-                     p_first_leaf, pn_ctrl: ti.template(),
-                     pn_obb: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
@@ -2158,13 +1548,11 @@ def _nearest_surface_g(refit: ti.template(),
     fetched by the caller for the hits it actually uses.
 
     Returns ``(found, t_hit, layer, prim, hit_type, a, b, border,
-    edge_hit)`` where ``hit_type`` is 0 for bezier circuits, 1 for
-    triangles and 2 for PN patches, and ``(a, b)`` are the barycentric
-    ``(w1, w2)`` for triangle hits, the patch parameters ``(u, v)`` for PN
-    hits (their vertex weights are ``(1 - u - v, u, v)``) or the plane
-    ``(u, v)`` for bezier hits; ``found == 0`` means the ray escapes the
-    scene, ``edge_hit == 1`` flags a triangle/patch hit on/near one of its
-    edges (used to merge the duplicate hits of mesh seams).
+    edge_hit)`` where ``hit_type`` is 0 for bezier circuits and 1 for
+    triangles, and ``(a, b)`` are the barycentric ``(w1, w2)`` for triangle
+    hits or the plane ``(u, v)`` for bezier hits; ``found == 0`` means the ray
+    escapes the scene, ``edge_hit == 1`` flags a triangle hit on/near one of
+    its edges (used to merge the duplicate hits of mesh seams).
     """
     found = 0
     t_hit = 1e30
@@ -2187,20 +1575,6 @@ def _nearest_surface_g(refit: ti.template(),
             layer_offset_triangles,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos)
-    pt = 1e30
-    p_prim = -1
-    p_u = 0.0
-    p_v = 0.0
-    p_layer = -1e30
-    if ti.static(has_pn != 0):
-        pn_cap = t_cap
-        if t_prim >= 0:
-            pn_cap = ti.min(pn_cap, tt + DEPTH_TIE_EPSILON)
-        pt, p_prim, p_u, p_v, p_layer = _nearest_pn_hit(
-            refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, pn_cap,
-            layer_offset_pn,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl, pn_obb)
     bt = 1e30
     b_circ = -1
     b_border = 0
@@ -2211,8 +1585,6 @@ def _nearest_surface_g(refit: ti.template(),
         bez_cap = t_cap
         if t_prim >= 0:
             bez_cap = ti.min(bez_cap, tt + DEPTH_TIE_EPSILON)
-        if p_prim >= 0:
-            bez_cap = ti.min(bez_cap, pt + DEPTH_TIE_EPSILON)
         bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, bez_cap,
             pixel_size_per_t, base_dist, b_nodes, b_node_miss, b_leaf_prim,
@@ -2226,16 +1598,6 @@ def _nearest_surface_g(refit: ti.template(),
         hit_type = 1
         a = w1
         b = w2
-    if (p_prim >= 0) and ((found == 0)
-                          or (not _comes_after(pt, p_layer, t_hit,
-                                               hit_layer))):
-        found = 1
-        t_hit = pt
-        hit_layer = p_layer
-        hit_prim = p_prim
-        hit_type = 2
-        a = p_u
-        b = p_v
     if (b_circ >= 0) and ((found == 0)
                           or (not _comes_after(bt, b_layer, t_hit,
                                                hit_layer))):
@@ -2249,10 +1611,7 @@ def _nearest_surface_g(refit: ti.template(),
         border = b_border
     if (found == 1) and (hit_type >= 1):
         w0 = 1.0 - a - b
-        eps = TRIANGLE_EDGE_EPSILON
-        if hit_type == 2:
-            eps = PN_EDGE_EPSILON
-        if ti.min(w0, ti.min(a, b)) < eps:
+        if ti.min(w0, ti.min(a, b)) < TRIANGLE_EDGE_EPSILON:
             edge_hit = 1
     return (found, t_hit, hit_layer, hit_prim, hit_type, a, b, border,
             edge_hit)
@@ -2415,14 +1774,9 @@ def _distance_sq_to_point(ro, rd, t_max, p):
 def _nearest_surface(refit: ti.template(),
                      ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
-                     layer_offset_pn,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
-                     p_nodes: ti.template(), p_node_miss: ti.template(),
-                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
-                     p_first_leaf, pn_ctrl: ti.template(),
-                     pn_obb: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
@@ -2431,13 +1785,11 @@ def _nearest_surface(refit: ti.template(),
     (Monte-Carlo path tracers + gbuffer) that don't specialize on which geometry
     types are present. Byte-identical to the pre-gating ``_nearest_surface``."""
     return _nearest_surface_g(
-        refit, 1, 1, 1,
+        refit, 1, 1,
         ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         1e30,
-        pixel_size_per_t, base_dist, layer_offset_triangles, layer_offset_pn,
+        pixel_size_per_t, base_dist, layer_offset_triangles,
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
-        p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-        pn_ctrl, pn_obb,
         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
         circuit_meta, edges_2d, edge_accel)
 
@@ -2446,39 +1798,34 @@ def _nearest_surface(refit: ti.template(),
 def _collect_hits(refit: ti.template(),
                   ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   pixel_size_per_t, base_dist, layer_offset_triangles,
-                  layer_offset_pn,
                   hit_t: ti.template(), hit_layer: ti.template(),
                   hit_prim: ti.template(), hit_flags: ti.template(),
                   hit_a: ti.template(), hit_b: ti.template(),
                   t_nodes: ti.template(), t_node_miss: ti.template(),
                   t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                   t_first_leaf, tri_pos: ti.template(),
-                  p_nodes: ti.template(), p_node_miss: ti.template(),
-                  p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
-                  p_first_leaf, pn_ctrl: ti.template(),
-                  pn_obb: ti.template(),
                   b_nodes: ti.template(), b_node_miss: ti.template(),
                   b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                   b_first_leaf, circuit_meta: ti.template(),
                   edges_2d: ti.template(), edge_accel: ti.template(),
-                  has_tri: ti.template(), has_pn: ti.template(),
+                  has_tri: ti.template(),
                   has_bez: ti.template(), initial_opq_t: ti.f32,
                   initial_opq_layer: ti.f32) -> ti.i32:
     """Gather the up-to-``KBUF`` nearest hits strictly after
     (t_prev, layer_prev) into the caller's buffers, in one traversal of each
-    BVH. Triangles are traversed first; the PN-patch and bezier traversals
-    then prune against the hits already gathered.
+    BVH. Triangles are traversed first; the bezier traversal then prunes
+    against the hits already gathered.
 
-    ``has_tri``/``has_pn``/``has_bez`` flag which geometry types are present;
+    ``has_tri``/``has_bez`` flag which geometry types are present;
     a type absent from the whole batch has only a placeholder (empty) BVH, so
     its traversal is skipped outright (a launch-uniform branch, no divergence).
-    ``refit != 0`` selects the refit-tree walk for ALL three trees (see
+    ``refit != 0`` selects the refit-tree walk for BOTH trees (see
     refit_bvh.py): per-frame link-gated blocks, explicit child indices, the
     per-frame opacity flag in the leaf link word, and unused leaf-slot arrays.
 
     Buffers hold geometry only (the consumer fetches shading data):
-    ``hit_flags`` packs the hit type (0 = bezier circuit, 1 = triangle,
-    2 = PN patch) in bits 0-1, plus ``edge_hit << 2`` and ``border << 3``.
+    ``hit_flags`` packs the hit type (0 = bezier circuit, 1 = triangle)
+    in bits 0-1, plus ``edge_hit << 2`` and ``border << 3``.
     Returns the number of hits gathered. When the return value is smaller
     than ``KBUF``, the buffer provably contains *every* remaining hit along
     the ray, so the consumer never needs another traversal.
@@ -2567,68 +1914,55 @@ def _collect_hits(refit: ti.template(),
                             v2 = ti.math.vec3(tri_pos[tp, prim, 6],
                                               tri_pos[tp, prim, 7],
                                               tri_pos[tp, prim, 8])
-                            e1 = v1 - v0
-                            e2 = v2 - v0
-                            pv = rd.cross(e2)
-                            det = e1.dot(pv)
-                            if ti.abs(det) > 1e-12:
-                                inv_det = 1.0 / det
-                                tvec = ro - v0
-                                w1 = tvec.dot(pv) * inv_det
-                                qv = tvec.cross(e1)
-                                w2 = rd.dot(qv) * inv_det
-                                if ((w1 >= -BARYCENTRIC_EPSILON)
-                                        and (w2 >= -BARYCENTRIC_EPSILON)
-                                        and (w1 + w2
-                                             <= 1.0 + BARYCENTRIC_EPSILON)):
-                                    t = e2.dot(qv) * inv_det
-                                    layer = (layer_offset_triangles
-                                             + ti.cast(prim, ti.f32))
-                                    accept = ((t > MIN_HIT_DISTANCE)
-                                              and _comes_after(
-                                                  t, layer, t_prev,
-                                                  layer_prev)
-                                              and not _comes_after(
-                                                  t, layer, opq_t,
-                                                  opq_layer))
-                                    if accept and (count == KBUF):
-                                        accept = _comes_after(
-                                            worst_t, worst_layer, t, layer)
-                                    if accept:
-                                        slot = worst_idx
-                                        if count < KBUF:
-                                            slot = count
-                                            count += 1
-                                        hit_t[slot] = t
-                                        hit_layer[slot] = layer
-                                        hit_prim[slot] = prim
-                                        w0 = 1.0 - w1 - w2
-                                        eh = 1 if (ti.min(w0,
-                                                          ti.min(w1, w2))
-                                                   < TRIANGLE_EDGE_EPSILON) \
-                                            else 0
-                                        hit_flags[slot] = 1 | (eh << 2)
-                                        hit_a[slot] = w1
-                                        hit_b[slot] = w2
-                                        if (opq != 0) and _comes_after(
-                                                opq_t, opq_layer, t, layer):
-                                            opq_t = t
-                                            opq_layer = layer
-                                        if count == KBUF:
-                                            worst_idx = 0
-                                            worst_t = hit_t[0]
-                                            worst_layer = hit_layer[0]
-                                            for q in ti.static(
-                                                    range(1, KBUF)):
-                                                if _comes_after(
-                                                        hit_t[q],
-                                                        hit_layer[q],
-                                                        worst_t,
-                                                        worst_layer):
-                                                    worst_idx = q
-                                                    worst_t = hit_t[q]
-                                                    worst_layer = \
-                                                        hit_layer[q]
+                            hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                            if hit_ok != 0:
+                                layer = (layer_offset_triangles
+                                         + ti.cast(prim, ti.f32))
+                                accept = ((t > MIN_HIT_DISTANCE)
+                                          and _comes_after(
+                                              t, layer, t_prev,
+                                              layer_prev)
+                                          and not _comes_after(
+                                              t, layer, opq_t,
+                                              opq_layer))
+                                if accept and (count == KBUF):
+                                    accept = _comes_after(
+                                        worst_t, worst_layer, t, layer)
+                                if accept:
+                                    slot = worst_idx
+                                    if count < KBUF:
+                                        slot = count
+                                        count += 1
+                                    hit_t[slot] = t
+                                    hit_layer[slot] = layer
+                                    hit_prim[slot] = prim
+                                    w0 = 1.0 - w1 - w2
+                                    eh = 1 if (ti.min(w0,
+                                                      ti.min(w1, w2))
+                                               < TRIANGLE_EDGE_EPSILON) \
+                                        else 0
+                                    hit_flags[slot] = 1 | (eh << 2)
+                                    hit_a[slot] = w1
+                                    hit_b[slot] = w2
+                                    if (opq != 0) and _comes_after(
+                                            opq_t, opq_layer, t, layer):
+                                        opq_t = t
+                                        opq_layer = layer
+                                    if count == KBUF:
+                                        worst_idx = 0
+                                        worst_t = hit_t[0]
+                                        worst_layer = hit_layer[0]
+                                        for q in ti.static(
+                                                range(1, KBUF)):
+                                            if _comes_after(
+                                                    hit_t[q],
+                                                    hit_layer[q],
+                                                    worst_t,
+                                                    worst_layer):
+                                                worst_idx = q
+                                                worst_t = hit_t[q]
+                                                worst_layer = \
+                                                    hit_layer[q]
                 else:
                     if g_pend != 0:
                         g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
@@ -2641,140 +1975,7 @@ def _collect_hits(refit: ti.template(),
                         refit, t_row0, g_cur, f, ro, inv_rd,
                         t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes)
 
-    # --- PN patch BVH (window already tightened by the triangle hits) ---
-    if ti.static(has_pn != 0):
-        pp = f % pn_ctrl.shape[0]
-        po = f % pn_obb.shape[0]
-        p_row0 = 0
-        if ti.static(refit != 0):
-            p_row0 = _refit_row0(f, p_first_leaf, p_nodes)
-        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
-        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-        g_sp = 0
-        g_st = ti.Vector([0] * _GROUP_STACK)
-        g_cur = 0
-        g_pend, g_near = _group_test(
-            refit, p_row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
-            window_hi, p_nodes)
-        while True:
-            if g_pend == 0:
-                if g_sp == 0:
-                    break
-                g_sp -= 1
-                saved = g_st[g_sp]
-                g_cur = saved >> BVH_ARITY
-                saved_mask = saved & _GROUP_MASK
-                window_hi = (worst_t + DEPTH_TIE_EPSILON
-                             if count == KBUF else 1e30)
-                window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                fresh_mask, g_near = _group_test(
-                    refit, p_row0, g_cur, f, ro, inv_rd,
-                    t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes)
-                g_pend = saved_mask & fresh_mask
-            else:
-                g_c = _nearest_pending_child(g_pend, g_near)
-                g_pend &= ~(1 << g_c)
-                descend = 0
-                child_blk = 0
-                l_prim = -1
-                l_opq = 0
-                l_base = 0
-                if ti.static(refit != 0):
-                    w = _refit_link(p_row0 + g_cur, g_c, p_nodes)
-                    if w >= 0:
-                        descend = 1
-                        child_blk = w
-                    else:
-                        l_prim = w & _REFIT_PRIM_MASK
-                        l_opq = (w >> 30) & 1
-                else:
-                    g_child = BVH_ARITY * g_cur + 1 + g_c
-                    if g_child >= p_first_leaf:
-                        l_base = (g_child - p_first_leaf) * LEAF_SIZE
-                    else:
-                        descend = 1
-                        child_blk = g_child
-                if descend == 0:
-                    # Refresh the depth window at the leaf so the OBB cull
-                    # prunes with the hits gathered since the parent's test.
-                    window_hi = worst_t + DEPTH_TIE_EPSILON \
-                        if count == KBUF else 1e30
-                    window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                    for j in ti.static(
-                            range(1 if refit != 0 else LEAF_SIZE)):
-                        prim = l_prim
-                        opq = l_opq
-                        if ti.static(refit == 0):
-                            prim = -1
-                            p0 = p_leaf_prim[l_base + j]
-                            tspan = p_leaf_tspan[l_base + j]
-                            if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
-                                    and (f <= ((tspan >> 16) & 0x7FFF))):
-                                prim = p0
-                                opq = 1 if tspan < 0 else 0
-                        if ((prim >= 0)
-                                and (ti.static(not _PN_OBB_ON) or not _obb_misses(
-                                    ro, rd, po, prim, pn_obb,
-                                    t_prev - DEPTH_TIE_EPSILON, window_hi))):
-                            cnt, ts, us, vs = _pn_intersect(ro, rd, pp, prim,
-                                                            pn_ctrl)
-                            layer = layer_offset_pn + ti.cast(prim, ti.f32)
-                            for r in ti.static(range(4)):
-                                if r < cnt:
-                                    t = ts[r]
-                                    accept = ((t > MIN_HIT_DISTANCE)
-                                              and _comes_after(t, layer, t_prev,
-                                                               layer_prev)
-                                              and not _comes_after(
-                                                  t, layer, opq_t, opq_layer))
-                                    if accept and (count == KBUF):
-                                        accept = _comes_after(worst_t, worst_layer,
-                                                              t, layer)
-                                    if accept:
-                                        slot = worst_idx
-                                        if count < KBUF:
-                                            slot = count
-                                            count += 1
-                                        hit_t[slot] = t
-                                        hit_layer[slot] = layer
-                                        hit_prim[slot] = prim
-                                        u = us[r]
-                                        v = vs[r]
-                                        w0 = 1.0 - u - v
-                                        eh = 1 if (ti.min(w0, ti.min(u, v))
-                                                   < PN_EDGE_EPSILON) else 0
-                                        hit_flags[slot] = 2 | (eh << 2)
-                                        hit_a[slot] = u
-                                        hit_b[slot] = v
-                                        if (opq != 0) and _comes_after(
-                                                opq_t, opq_layer, t, layer):
-                                            opq_t = t
-                                            opq_layer = layer
-                                        if count == KBUF:
-                                            worst_idx = 0
-                                            worst_t = hit_t[0]
-                                            worst_layer = hit_layer[0]
-                                            for q in ti.static(range(1, KBUF)):
-                                                if _comes_after(hit_t[q],
-                                                                hit_layer[q],
-                                                                worst_t,
-                                                                worst_layer):
-                                                    worst_idx = q
-                                                    worst_t = hit_t[q]
-                                                    worst_layer = hit_layer[q]
-                else:
-                    if g_pend != 0:
-                        g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
-                        g_sp += 1
-                    g_cur = child_blk
-                    window_hi = worst_t + DEPTH_TIE_EPSILON \
-                        if count == KBUF else 1e30
-                    window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                    g_pend, g_near = _group_test(
-                        refit, p_row0, g_cur, f, ro, inv_rd,
-                        t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes)
-
-    # --- Bezier BVH (window tightened by the triangle and patch hits) ---
+    # --- Bezier BVH (window tightened by the triangle hits) ---
     if ti.static(has_bez != 0):
         num_meta_frames = circuit_meta.shape[0]
         num_edge_frames = edges_2d.shape[0]
@@ -3017,111 +2218,10 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                         v2 = ti.math.vec3(tri_pos[tp, prim, 6],
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
-                        e1 = v1 - v0
-                        e2 = v2 - v0
-                        pv = rd.cross(e2)
-                        det = e1.dot(pv)
-                        if ti.abs(det) > 1e-12:
-                            inv_det = 1.0 / det
-                            tvec = ro - v0
-                            w1 = tvec.dot(pv) * inv_det
-                            qv = tvec.cross(e1)
-                            w2 = rd.dot(qv) * inv_det
-                            if ((w1 >= -BARYCENTRIC_EPSILON)
-                                    and (w2 >= -BARYCENTRIC_EPSILON)
-                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                t = e2.dot(qv) * inv_det
-                                if (t > MIN_HIT_DISTANCE) and (t < max_t):
-                                    hit = 1
-            else:
-                if g_pend != 0:
-                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
-                    g_sp += 1
-                g_cur = child_blk
-                g_pend, g_near = _group_test(
-                    refit, row0, g_cur, f, ro, inv_rd, t_lo,
-                    max_t + DEPTH_TIE_EPSILON, nodes)
-    return hit
-
-
-@ti.func
-def _anyhit_opaque_pn(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
-                      nodes: ti.template(), leaf_prim: ti.template(),
-                      leaf_tspan: ti.template(), first_leaf,
-                      pn_ctrl: ti.template(),
-                      pn_obb: ti.template()) -> ti.i32:
-    """PN-patch arm of the opaque any-hit walk (see
-    :func:`_anyhit_opaque_tri`); keeps the OBB pre-cull so the matrix-pencil
-    solve still only runs for rays that can actually touch a patch.
-    """
-    hit = 0
-    tp = f % pn_ctrl.shape[0]
-    po = f % pn_obb.shape[0]
-    row0 = 0
-    if ti.static(refit != 0):
-        row0 = _refit_row0(f, first_leaf, nodes)
-    g_sp = 0
-    g_st = ti.Vector([0] * _GROUP_STACK)
-    g_cur = 0
-    g_pend, g_near = _group_test(
-        refit, row0, 0, f, ro, inv_rd, t_lo,
-        max_t + DEPTH_TIE_EPSILON, nodes)
-    while hit == 0:
-        if g_pend == 0:
-            if g_sp == 0:
-                break
-            g_sp -= 1
-            saved = g_st[g_sp]
-            g_cur = saved >> BVH_ARITY
-            saved_mask = saved & _GROUP_MASK
-            fresh_mask, g_near = _group_test(
-                refit, row0, g_cur, f, ro, inv_rd, t_lo,
-                max_t + DEPTH_TIE_EPSILON, nodes)
-            g_pend = saved_mask & fresh_mask
-        else:
-            g_c = _nearest_pending_child(g_pend, g_near)
-            g_pend &= ~(1 << g_c)
-            descend = 0
-            child_blk = 0
-            l_prim = -1
-            l_base = 0
-            if ti.static(refit != 0):
-                w = _refit_link(row0 + g_cur, g_c, nodes)
-                if w >= 0:
-                    descend = 1
-                    child_blk = w
-                elif ((w >> 30) & 1) != 0:
-                    l_prim = w & _REFIT_PRIM_MASK
-            else:
-                g_child = BVH_ARITY * g_cur + 1 + g_c
-                if g_child >= first_leaf:
-                    l_base = (g_child - first_leaf) * LEAF_SIZE
-                else:
-                    descend = 1
-                    child_blk = g_child
-            if descend == 0:
-                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
-                    prim = l_prim
-                    if ti.static(refit == 0):
-                        prim = -1
-                        p0 = leaf_prim[l_base + j]
-                        tspan = leaf_tspan[l_base + j]
-                        if ((p0 >= 0) and (tspan < 0)
-                                and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))):
-                            prim = p0
-                    if ((hit == 0) and (prim >= 0)
-                            and (ti.static(not _PN_OBB_ON) or not _obb_misses(
-                                ro, rd, po, prim, pn_obb,
-                                t_lo,
-                                max_t + DEPTH_TIE_EPSILON))):
-                        cnt, ts, us, vs = _pn_intersect(ro, rd, tp, prim,
-                                                        pn_ctrl)
-                        for r in ti.static(range(4)):
-                            if r < cnt:
-                                t = ts[r]
-                                if (t > MIN_HIT_DISTANCE) and (t < max_t):
-                                    hit = 1
+                        hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
+                        if hit_ok != 0:
+                            if (t > MIN_HIT_DISTANCE) and (t < max_t):
+                                hit = 1
             else:
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
@@ -3261,24 +2361,21 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
 
 @ti.func
 def _shadow_anyhit_opaque(refit: ti.template(),
-                          has_tri: ti.template(), has_pn: ti.template(),
+                          has_tri: ti.template(),
                           has_bez: ti.template(),
                           ro, rd, inv_rd, f, t_lo, max_t,
                           pixel_size_per_t, base_dist,
                           t_nodes: ti.template(), t_leaf_prim: ti.template(),
                           t_leaf_tspan: ti.template(), t_first_leaf,
                           tri_pos: ti.template(),
-                          p_nodes: ti.template(), p_leaf_prim: ti.template(),
-                          p_leaf_tspan: ti.template(), p_first_leaf,
-                          pn_ctrl: ti.template(), pn_obb: ti.template(),
                           b_nodes: ti.template(), b_leaf_prim: ti.template(),
                           b_leaf_tspan: ti.template(), b_first_leaf,
                           circuit_meta: ti.template(),
                           edges_2d: ti.template(),
                           edge_accel: ti.template()) -> ti.i32:
     """1 if any interval-opaque primitive of any geometry type blocks the
-    shadow ray before ``max_t``. Trees are tried triangle -> PN -> bezier,
-    each skipped entirely on a hit in an earlier one. ``t_lo`` prunes the
+    shadow ray before ``max_t``. Trees are tried triangle -> bezier, the
+    second skipped entirely on a hit in the first. ``t_lo`` prunes the
     node-visit window only (see :func:`_anyhit_opaque_tri`).
     """
     hit = 0
@@ -3286,11 +2383,6 @@ def _shadow_anyhit_opaque(refit: ti.template(),
         hit = _anyhit_opaque_tri(refit, ro, rd, inv_rd, f, t_lo, max_t,
                                  t_nodes, t_leaf_prim, t_leaf_tspan,
                                  t_first_leaf, tri_pos)
-    if ti.static(has_pn != 0):
-        if hit == 0:
-            hit = _anyhit_opaque_pn(refit, ro, rd, inv_rd, f, t_lo, max_t,
-                                    p_nodes, p_leaf_prim, p_leaf_tspan,
-                                    p_first_leaf, pn_ctrl, pn_obb)
     if ti.static(has_bez != 0):
         if hit == 0:
             hit = _anyhit_opaque_bez(refit, ro, rd, inv_rd, f, t_lo, max_t,
@@ -3305,8 +2397,7 @@ def _shadow_anyhit_opaque(refit: ti.template(),
 def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                      ro, rd, f, ff, max_t,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
-                     layer_offset_pn,
-                     has_tri: ti.template(), has_pn: ti.template(),
+                     has_tri: ti.template(),
                      has_bez: ti.template(),
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
@@ -3314,11 +2405,6 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                      tri_colors: ti.template(), tri_uvs: ti.template(),
                      tri_tex_meta: ti.template(), textures: ti.template(),
                      num_colored_triangles: ti.i32,
-                     p_nodes: ti.template(), p_node_miss: ti.template(),
-                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
-                     p_first_leaf, pn_ctrl: ti.template(),
-                     pn_obb: ti.template(),
-                     pn_colors: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
@@ -3358,12 +2444,10 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     if ti.static(anyhit == 3):
         occluded = ti.cast(
             _shadow_anyhit_opaque(
-                refit, has_tri, has_pn, has_bez, ro, rd, inv_rd, f,
+                refit, has_tri, has_bez, ro, rd, inv_rd, f,
                 -DEPTH_TIE_EPSILON, max_t,
                 pixel_size_per_t, base_dist,
                 t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
-                p_nodes, p_leaf_prim, p_leaf_tspan, p_first_leaf, pn_ctrl,
-                pn_obb,
                 b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                 circuit_meta, edges_2d, edge_accel),
             ti.f32)
@@ -3372,13 +2456,10 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
             occluded = _shadow_gather_occluded(
                 refit, ro, rd, inv_rd, f, ff, max_t,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
-                has_tri, has_pn, has_bez,
+                has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
                 textures, num_colored_triangles,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl, pn_obb, pn_colors,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, circuit_colors,
                 circuit_border_colors, edges_2d, edge_accel)
@@ -3386,13 +2467,10 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
             occluded = _shadow_march_occluded(
                 refit, anyhit, ro, rd, inv_rd, f, ff, max_t,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
-                has_tri, has_pn, has_bez,
+                has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
                 textures, num_colored_triangles,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl, pn_obb, pn_colors,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, circuit_colors,
                 circuit_border_colors, edges_2d, edge_accel)
@@ -3404,8 +2482,8 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                            ro, rd, inv_rd, f, ff,
                            max_t,
                            pixel_size_per_t, base_dist,
-                           layer_offset_triangles, layer_offset_pn,
-                           has_tri: ti.template(), has_pn: ti.template(),
+                           layer_offset_triangles,
+                           has_tri: ti.template(),
                            has_bez: ti.template(),
                            t_nodes: ti.template(), t_node_miss: ti.template(),
                            t_leaf_prim: ti.template(),
@@ -3415,12 +2493,6 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                            tri_tex_meta: ti.template(),
                            textures: ti.template(),
                            num_colored_triangles: ti.i32,
-                           p_nodes: ti.template(), p_node_miss: ti.template(),
-                           p_leaf_prim: ti.template(),
-                           p_leaf_tspan: ti.template(),
-                           p_first_leaf, pn_ctrl: ti.template(),
-                           pn_obb: ti.template(),
-                           pn_colors: ti.template(),
                            b_nodes: ti.template(), b_node_miss: ti.template(),
                            b_leaf_prim: ti.template(),
                            b_leaf_tspan: ti.template(),
@@ -3450,20 +2522,17 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
         # the (empty) beyond-horizon descent.
         (found, t_hit, hit_layer, prim, hit_type, a, b, border,
          edge_hit) = _nearest_surface_g(
-            refit, has_tri, has_pn, has_bez,
+            refit, has_tri, has_bez,
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             max_t,
             pixel_size_per_t, base_dist, layer_offset_triangles,
-            layer_offset_pn,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel)
         if (found == 0) or (t_hit >= max_t):
             break
-        seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2             else DEPTH_TIE_EPSILON
+        seam_eps = DEPTH_TIE_EPSILON
         if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
             t_prev = t_hit
             layer_prev = hit_layer
@@ -3473,8 +2542,6 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
         if hit_type == 1:
             alpha = _flat_triangle_alpha(f, prim, 1.0 - a - b, a, b, tri_colors,
                                          tri_uvs, tri_tex_meta, textures, num_colored_triangles)
-        elif hit_type == 2:
-            alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, pn_colors)
         else:
             alpha = _circuit_alpha(prim, f, a, b, border, circuit_meta,
                                    circuit_colors, circuit_border_colors)
@@ -3498,13 +2565,11 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             if behind_checked == 0:
                 behind_checked = 1
                 if _shadow_anyhit_opaque(
-                        refit, has_tri, has_pn, has_bez, ro, rd, inv_rd, f,
+                        refit, has_tri, has_bez, ro, rd, inv_rd, f,
                         t_hit - DEPTH_TIE_EPSILON, max_t,
                         pixel_size_per_t, base_dist,
                         t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf,
                         tri_pos,
-                        p_nodes, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-                        pn_ctrl, pn_obb,
                         b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                         circuit_meta, edges_2d, edge_accel) == 1:
                     transmitted = 0.0
@@ -3519,8 +2584,8 @@ def _shadow_gather_occluded(refit: ti.template(),
                             ro, rd, inv_rd, f, ff,
                             max_t,
                             pixel_size_per_t, base_dist,
-                            layer_offset_triangles, layer_offset_pn,
-                            has_tri: ti.template(), has_pn: ti.template(),
+                            layer_offset_triangles,
+                            has_tri: ti.template(),
                             has_bez: ti.template(),
                             t_nodes: ti.template(),
                             t_node_miss: ti.template(),
@@ -3532,13 +2597,6 @@ def _shadow_gather_occluded(refit: ti.template(),
                             tri_tex_meta: ti.template(),
                             textures: ti.template(),
                             num_colored_triangles: ti.i32,
-                            p_nodes: ti.template(),
-                            p_node_miss: ti.template(),
-                            p_leaf_prim: ti.template(),
-                            p_leaf_tspan: ti.template(),
-                            p_first_leaf, pn_ctrl: ti.template(),
-                            pn_obb: ti.template(),
-                            pn_colors: ti.template(),
                             b_nodes: ti.template(),
                             b_node_miss: ti.template(),
                             b_leaf_prim: ti.template(),
@@ -3589,14 +2647,11 @@ def _shadow_gather_occluded(refit: ti.template(),
         num_hits = _collect_hits(
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
-            layer_offset_pn,
             kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-            circuit_meta, edges_2d, edge_accel, has_tri, has_pn, has_bez,
+            circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
             max_t, -1e30)
         if num_hits == 0:
             alive = 0
@@ -3642,8 +2697,7 @@ def _shadow_gather_occluded(refit: ti.template(),
                 hit_type = flags & 3
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
-                seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
-                    else DEPTH_TIE_EPSILON
+                seam_eps = DEPTH_TIE_EPSILON
                 if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                     t_prev = t_hit
                     layer_prev = hit_layer
@@ -3654,9 +2708,6 @@ def _shadow_gather_occluded(refit: ti.template(),
                         alpha = _flat_triangle_alpha(
                             f, prim, 1.0 - a - b, a, b, tri_colors, tri_uvs,
                             tri_tex_meta, textures, num_colored_triangles)
-                    elif hit_type == 2:
-                        alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b,
-                                                pn_colors)
                     else:
                         alpha = _circuit_alpha(prim, f, a, b, border,
                                                circuit_meta, circuit_colors,
@@ -3688,12 +2739,6 @@ def path_trace_scene_stbvh(
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        # PN patch STBVH + packed geometry.
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int,
-        pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
-        pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
         # Bezier STBVH + packed geometry.
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -3708,11 +2753,9 @@ def path_trace_scene_stbvh(
         # Render parameters.
         time_start: int, time_end: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float,
-        layer_offset_triangles: float, layer_offset_pn: float,
+        layer_offset_triangles: float,
         max_bounces: int, transparent: int,
         samples_per_pixel: int, indirect_strength: float,
-        # Per-PN-patch oriented bounding box for the pre-solve cull.
-        pn_obb: ti.types.ndarray(),
         # Background buffer [time_end - time_start, width * height,
         # channels] (u8), read by paths that escape the scene.
         out: ti.types.ndarray(),
@@ -3793,11 +2836,8 @@ def path_trace_scene_stbvh(
              edge_hit) = _nearest_surface(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_accel)
             
@@ -3809,10 +2849,8 @@ def path_trace_scene_stbvh(
                 break
 
             # Mesh seams: skip the duplicate edge hit of the adjacent
-            # triangle/patch so the surface scatters/transmits exactly once
-            # (PN seams need a looser depth window than flat triangles).
-            seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
-                else DEPTH_TIE_EPSILON
+            # triangle so the surface scatters/transmits exactly once.
+            seam_eps = DEPTH_TIE_EPSILON
             if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                 t_prev = t_hit
                 layer_prev = hit_layer
@@ -3829,11 +2867,6 @@ def path_trace_scene_stbvh(
                                                     tri_uvs, tri_tex_meta, textures, num_colored_triangles)
                 reflectivity, roughness = _triangle_extra(
                     f, prim, w0, a, b, tri_extra)
-            elif hit_type == 2:
-                color, alpha = _triangle_color(f, prim, w0, a, b,
-                                               pn_colors)
-                reflectivity, roughness = _triangle_extra(
-                    f, prim, w0, a, b, pn_extra)
             else:
                 color, alpha = _sample_circuit_color(
                     prim, f, a, b, border,
@@ -3857,8 +2890,6 @@ def path_trace_scene_stbvh(
             if hit_type == 1:
                 normal = _triangle_normal(f, prim, w0, a, b, tri_norm,
                                           tri_pos)
-            elif hit_type == 2:
-                normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
             else:
                 normal = _bezier_normal(f, prim, circuit_meta)
             if normal.norm() > 1e-9:
@@ -3956,16 +2987,10 @@ def finalize_samples(samples_per_pixel: int, transparent: int,
 @ti.func
 def _transmittance(refit: ti.template(), ro, rd, f, ff, max_t,
                    pixel_size_per_t, base_dist, layer_offset_triangles,
-                   layer_offset_pn,
                    t_nodes: ti.template(), t_node_miss: ti.template(),
                    t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                    t_first_leaf, tri_pos: ti.template(),
                    tri_colors: ti.template(),
-                   p_nodes: ti.template(), p_node_miss: ti.template(),
-                   p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
-                   p_first_leaf, pn_ctrl: ti.template(),
-                   pn_obb: ti.template(),
-                   pn_colors: ti.template(),
                    b_nodes: ti.template(), b_node_miss: ti.template(),
                    b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                    b_first_leaf, circuit_meta: ti.template(),
@@ -3989,19 +3014,14 @@ def _transmittance(refit: ti.template(), ro, rd, f, ff, max_t,
          edge_hit) = _nearest_surface(
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
-            layer_offset_pn,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel)
         if (found == 0) or (t_hit >= max_t):
             break
-        # Skip the duplicate edge hit of mesh seams (attenuate once); PN
-        # seams need a looser depth window than flat triangles.
-        seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
-            else DEPTH_TIE_EPSILON
+        # Skip the duplicate edge hit of mesh seams (attenuate once).
+        seam_eps = DEPTH_TIE_EPSILON
         if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
             t_prev = t_hit
             layer_prev = hit_layer
@@ -4010,8 +3030,6 @@ def _transmittance(refit: ti.template(), ro, rd, f, ff, max_t,
         alpha = 0.0
         if hit_type == 1:
             alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, tri_colors)
-        elif hit_type == 2:
-            alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, pn_colors)
         else:
             alpha = _circuit_alpha(prim, f, a, b, border, circuit_meta,
                                    circuit_colors, circuit_border_colors)
@@ -4036,12 +3054,6 @@ def path_trace_physical_stbvh(
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        # PN patch STBVH + packed geometry.
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int,
-        pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
-        pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
         # Bezier STBVH + packed geometry.
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -4056,14 +3068,12 @@ def path_trace_physical_stbvh(
         # Render parameters.
         time_start: int, time_end: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float,
-        layer_offset_triangles: float, layer_offset_pn: float,
+        layer_offset_triangles: float,
         max_bounces: int, transparent: int,
         samples_per_pixel: int,
         # Explicit point lights [Tl, L, 3] and lighting controls.
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int, light_intensity: float, ambient: float,
-        # Per-PN-patch oriented bounding box for the pre-solve cull.
-        pn_obb: ti.types.ndarray(),
         # Background/environment buffer (u8), read by escaping paths.
         out: ti.types.ndarray(),
         # Per-pixel sample accumulator [frames, pixels, 5] (f32,
@@ -4146,11 +3156,8 @@ def path_trace_physical_stbvh(
              edge_hit) = _nearest_surface(
                 refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_accel)
 
@@ -4163,10 +3170,8 @@ def path_trace_physical_stbvh(
                 break
 
             # Mesh seams: skip the duplicate edge hit of the adjacent
-            # triangle/patch (one interaction per surface crossing); PN seams
-            # need a looser depth window than flat triangles.
-            seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
-                else DEPTH_TIE_EPSILON
+            # triangle (one interaction per surface crossing).
+            seam_eps = DEPTH_TIE_EPSILON
             if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                 t_prev = t_hit
                 layer_prev = hit_layer
@@ -4183,11 +3188,6 @@ def path_trace_physical_stbvh(
                                                     tri_uvs, tri_tex_meta, textures, num_colored_triangles)
                 reflectivity, roughness = _triangle_extra(
                     f, prim, w0, a, b, tri_extra)
-            elif hit_type == 2:
-                color, alpha = _triangle_color(f, prim, w0, a, b,
-                                               pn_colors)
-                reflectivity, roughness = _triangle_extra(
-                    f, prim, w0, a, b, pn_extra)
             else:
                 color, alpha = _sample_circuit_color(
                     prim, f, a, b, border,
@@ -4214,8 +3214,6 @@ def path_trace_physical_stbvh(
             if hit_type == 1:
                 normal = _triangle_normal(f, prim, w0, a, b, tri_norm,
                                           tri_pos)
-            elif hit_type == 2:
-                normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
             else:
                 normal = _bezier_normal(f, prim, circuit_meta)
             if normal.norm() > 1e-9:
@@ -4267,14 +3265,10 @@ def path_trace_physical_stbvh(
                             refit, shadow_origin, wi, f, ff,
                             light_dist - 20.0 * MIN_HIT_DISTANCE,
                             pixel_size_per_t, base_dist,
-                            layer_offset_triangles, layer_offset_pn,
+                            layer_offset_triangles,
                             t_nodes, t_node_miss, t_leaf_prim,
                             t_leaf_tspan, t_first_leaf, tri_pos,
                             tri_colors,
-                            p_nodes, p_node_miss, p_leaf_prim,
-                            p_leaf_tspan, p_first_leaf, pn_ctrl,
-                            pn_obb,
-                            pn_colors,
                             b_nodes, b_node_miss, b_leaf_prim,
                             b_leaf_tspan, b_first_leaf, circuit_meta,
                             circuit_colors, circuit_border_colors,

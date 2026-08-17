@@ -35,7 +35,7 @@ def test_manim_backed_graphing_and_mutation_api():
 
     with algan.Off():
         assert graph.scale(1.5) is graph
-        assert graph.rotate(np.pi / 4) is graph
+        assert graph.rotate(45) is graph
 
 
 def test_native_surface_accepts_manim_parametric_api():

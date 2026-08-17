@@ -23,10 +23,16 @@ from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_DUMP_COLS as AA_DUMP_COLS,
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
     _BEZ_BORDER_BITS,
@@ -58,6 +64,9 @@ _AA_DUMP_ROWS = 512
 LAST_AA_DUMP = {}
 
 
+#: Below this a facing group is empty rather than a sheet, and above this two
+#: groups' exact areas are not the same sheet seen twice (see the one-mesh rule
+#: in prepare_sparse_raster_coverage).
 def _aa_dump_request():
     """The requested (px, py, frame) from ``ALGAN_AA_DUMP``, or ``None``."""
     spec = env_str("ALGAN_AA_DUMP", "")
@@ -1203,6 +1212,15 @@ def prepare_sparse_raster_coverage(
             + 4 * min(aa_tri - 1, 2)
         )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    # 2 relaxes the run-scan gate onto full-mask silhouette fragments
+    # (DESIGN_mesh_identity.md ss6.3.2). Carried in aa_grp rather than as a
+    # new template argument: every ti.static(aa_grp) test is truthiness.
+    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
+        aa_grp = 2
+    # 3 adds the ONE-MESH rule on top (ss6.6). It implies the relaxed gate: the
+    # near sheet's exact area is only worth reading once the gate lets it be read.
+    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
+        aa_grp = 3
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1373,6 +1391,10 @@ def prepare_sparse_raster_coverage(
         cov_s = frag_cov_u.index_select(0, order)
         msk_s = frag_msk_u.index_select(0, order)
         opaque_s = opaque_u.index_select(0, order)
+        # Kept before the coverage adjustment below overwrites it: this is
+        # MATERIAL opacity, which the one-mesh rule needs, while the adjusted
+        # opaque_s means "occludes every sample".
+        mat_opaque_s = opaque_s
         if aa_bez or aa_tri:
             # A partially covering opaque hit does not hide what is behind it,
             # so it must not terminate its pixel's run: it stays an ordinary
@@ -1382,6 +1404,26 @@ def prepare_sparse_raster_coverage(
             # fragment occludes every sample whatever its exact area says.
             if aa_tri >= 3:
                 full_s = (msk_s & AA_MASK_ALL) == AA_MASK_ALL
+                if rt_settings.ANALYTIC_AA_RUN_FULL:
+                    # ss6.3.2 needs the run scan to SEE its sheet's area donors,
+                    # and this truncation is what hides them: a full-mask
+                    # fragment cuts its pixel's prefix right there, so the
+                    # empty-mask donors that complete its sheet's tiling never
+                    # reach the resolve. The run then sums E over the one
+                    # fragment it can see and darkens the pixel by (1 - E) --
+                    # correct at a silhouette, a NOTCH in an interior tiling,
+                    # and indistinguishable after the cut. Measured before this
+                    # was added: 531 interior pixels of a flat quad and 920 of a
+                    # Cylinder darkened by a mean 0.027, which is why
+                    # _aa_line_check got worse while the coverage harness (which
+                    # scores silhouette pixels only) said it got better.
+                    #
+                    # So under the relaxed gate a fragment must own every sample
+                    # AND cover the pixel to terminate the prefix. This is the
+                    # reason the shipped corr = 1 short-circuit is load-bearing
+                    # rather than lazy: without it, a full mask is the renderer's
+                    # only remaining evidence that the sheet tiles the pixel.
+                    full_s = full_s & (cov_s >= AA_FULL_COVERAGE)
                 opaque_s = opaque_s & torch.where(
                     ref_s >= 0, full_s, cov_s >= AA_FULL_COVERAGE
                 )
@@ -1422,16 +1464,81 @@ def prepare_sparse_raster_coverage(
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)
                 msk_s = msk_s.index_select(0, keep_idx)
+                mat_opaque_s = mat_opaque_s.index_select(0, keep_idx)
                 pix_s = key_s >> 32
                 covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
                 num_frags = int(key_s.shape[0])
 
+        # -- ONE-MESH PIXELS (DESIGN_mesh_identity.md ss6.6) -----------------
+        # A pixel every one of whose fragments is an OPAQUE triangle of a single
+        # surface. There the mesh's coverage is its near sheet's exact area and
+        # nothing else: both sheets project to the same silhouette, so the far
+        # sheet must not add coverage on top. Marked here rather than in the
+        # kernel because it is a segment reduction over the CSR the host already
+        # has, and it rides in a spare frag_msk flag bit so no kernel argument
+        # changes.
+        one_mesh_cap = None
+        if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
+            tri_obj = merged["tri_obj"]
+            ppf = int(width) * int(height)
+            frame_of = (pix_s // ppf) % tri_obj.shape[0]
+            safe_ref = ref_s.clamp_min(0).to(torch.int64)
+            sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+            # A bezier fragment has ref < 0 and no surface id; a pixel holding
+            # one is never single-mesh. Same for a non-opaque fragment, whose
+            # far sheet is legitimately visible THROUGH the near one.
+            usable = (ref_s >= 0) & mat_opaque_s
+            sid = torch.where(usable, sid, torch.full_like(sid, -1))
+            seg = torch.repeat_interleave(
+                torch.arange(covered.numel(), dtype=torch.int64, device=device),
+                counts,
+            )
+            lo = torch.full(
+                (covered.numel(),), 1 << 40, dtype=torch.int64, device=device
+            )
+            hi = torch.full((covered.numel(),), -1, dtype=torch.int64, device=device)
+            lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
+            hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+            one_mesh = (lo == hi) & (lo >= 0)
+            # The mesh's coverage CEILING: the larger of the two sheets' exact
+            # areas. Well inside a silhouette a closed solid's sheets tile to
+            # the same area, so this is that area and the far sheet gets no room
+            # -- the suppression rule, recovered. At the BOUNDARY the near
+            # sheet's projected area shrinks toward zero while the footprint
+            # does not, and there the larger sheet is the right answer where
+            # suppression under-covers (measured: a 0.045-radius rod diced to
+            # (256, 2) is nearly all boundary, and suppression flips its signed
+            # error to -0.0344 and notches 1676 of 3508 interior pixels).
+            is_back = (msk_s & AA_BACKFACE_BIT) != 0
+            front = torch.zeros(covered.numel(), dtype=cov_s.dtype, device=device)
+            back = torch.zeros_like(front)
+            zero = torch.zeros((), dtype=cov_s.dtype, device=device)
+            front.scatter_add_(0, seg, torch.where(is_back, zero, cov_s))
+            back.scatter_add_(0, seg, torch.where(is_back, cov_s, zero))
+            cap_pix = torch.maximum(front, back).clamp_max_(1.0)
+            msk_s = msk_s | torch.where(
+                one_mesh.index_select(0, seg),
+                torch.full_like(msk_s, AA_ONE_MESH_BIT),
+                torch.zeros_like(msk_s),
+            )
+            one_mesh_cap = (one_mesh, seg, cap_pix)
+
         num_covered = int(covered.numel())
+        # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
+        # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
+        cap_s = torch.full_like(cov_s, 2.0)
+        if one_mesh_cap is not None:
+            cap_s = torch.where(
+                one_mesh_cap[0].index_select(0, one_mesh_cap[1]),
+                one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
+                cap_s,
+            )
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
         frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
         frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
         frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+        frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
         covered_idx = _arena_tensor(memory, (num_covered,), torch.int32, persist=True)
         run_offsets = _arena_tensor(
             memory, (num_covered + 1,), torch.int32, 0, persist=True
@@ -1441,6 +1548,7 @@ def prepare_sparse_raster_coverage(
         frag_ab.copy_(ab_s)
         frag_cov.copy_(cov_s)
         frag_msk.copy_(msk_s)
+        frag_cap.copy_(cap_s)
         covered_idx.copy_(covered.to(torch.int32))
         run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
 
@@ -1472,6 +1580,7 @@ def prepare_sparse_raster_coverage(
         "frag_ab": frag_ab,
         "frag_cov": frag_cov,
         "frag_msk": frag_msk,
+        "frag_cap": frag_cap,
         "covered_idx": covered_idx,
         "run_offsets": run_offsets,
         "num_fragments": num_frags,
@@ -1518,10 +1627,8 @@ def shade_sparse_raster_coverage(
     rs_alloc,
     shadow_flag,
     t_bvh,
-    pn_bvh,
     bez_bvh,
     layer_offset_triangles,
-    layer_offset_pn,
     max_bounces,
 ):
     """Resolve one compact covered-pixel slice and seed its continuations."""
@@ -1558,6 +1665,7 @@ def shade_sparse_raster_coverage(
     frag_ab = coverage["frag_ab"][event_start:event_end]
     frag_cov = coverage["frag_cov"][event_start:event_end]
     frag_msk = coverage["frag_msk"][event_start:event_end]
+    frag_cap = coverage["frag_cap"][event_start:event_end]
     # Pinned at emission (see prepare_sparse_raster_coverage) so the resolve can
     # never compile for a different mode than the fragments were written in.
     aa_bez = int(coverage.get("aa_bez", 0))
@@ -1571,7 +1679,6 @@ def shade_sparse_raster_coverage(
     torch.sub(coverage["run_offsets"][c0 : c1 + 1], event_start, out=run_offsets)
 
     has_tri = 1 if int(merged.get("num_triangles", 0)) > 0 else 0
-    has_pn = 1 if int(merged.get("num_pn", 0)) > 0 else 0
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
     ss = 1 if rt_settings.RASTER_SS else 0
     tri_pos = merged["tri_pos"]
@@ -1615,6 +1722,7 @@ def shade_sparse_raster_coverage(
             frag_ab,
             frag_cov,
             frag_msk,
+            frag_cap,
             zbuf,
             tri_pos,
             tri_screen,
@@ -1692,14 +1800,6 @@ def shade_sparse_raster_coverage(
                 merged["tri_tex_meta"],
                 merged["textures"],
                 int(merged["num_colored_triangles"]),
-                pn_bvh.blocks,
-                pn_bvh.node_miss,
-                pn_bvh.leaf_prim,
-                pn_bvh.leaf_tspan,
-                int(pn_bvh.first_leaf),
-                merged["pn_ctrl"],
-                merged["pn_obb"],
-                merged["pn_colors"],
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
@@ -1715,10 +1815,8 @@ def shade_sparse_raster_coverage(
                 int(num_lights),
                 pixel_world_scale,
                 float(layer_offset_triangles),
-                float(layer_offset_pn),
                 1 if isinstance(t_bvh, RefitBVH) else 0,
                 has_tri,
-                has_pn,
                 has_bez,
                 event_dp,
                 sec_aa,
@@ -1741,6 +1839,7 @@ def shade_sparse_raster_coverage(
         frag_ab,
         frag_cov,
         frag_msk,
+        frag_cap,
         zbuf,
         merged["tri_pos"],
         tri_screen,
@@ -1848,10 +1947,8 @@ def raster_iteration_zero(
     rs_alloc,
     shadow_flag,
     t_bvh,
-    pn_bvh,
     bez_bvh,
     layer_offset_triangles,
-    layer_offset_pn,
     max_bounces,
     prefill=0,
     env_active=0,
@@ -1888,7 +1985,6 @@ def raster_iteration_zero(
     g0 = tile_start
     g1 = tile_start + tn_primary
     has_tri = 1 if int(merged.get("num_triangles", 0)) > 0 else 0
-    has_pn = 1 if int(merged.get("num_pn", 0)) > 0 else 0
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
 
     tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
@@ -1985,6 +2081,15 @@ def raster_iteration_zero(
             + 4 * min(aa_tri - 1, 2)
         )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    # 2 relaxes the run-scan gate onto full-mask silhouette fragments
+    # (DESIGN_mesh_identity.md ss6.3.2). Carried in aa_grp rather than as a
+    # new template argument: every ti.static(aa_grp) test is truthiness.
+    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
+        aa_grp = 2
+    # 3 adds the ONE-MESH rule on top (ss6.6). It implies the relaxed gate: the
+    # near sheet's exact area is only worth reading once the gate lets it be read.
+    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
+        aa_grp = 3
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -2196,6 +2301,9 @@ def raster_iteration_zero(
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32)
         frag_cov = _arena_tensor(memory, (num_frags,), torch.float32)
         frag_msk = _arena_tensor(memory, (num_frags,), torch.int32)
+        # The dense path has no one-mesh analysis, so every fragment carries the
+        # "no ceiling" sentinel and the rule compiles out to nothing there.
+        frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, 2.0)
         frag_key.copy_(frag_key_u.index_select(0, order))
         frag_ref.copy_(frag_ref_u.index_select(0, order))
         frag_ab.copy_(frag_ab_u.index_select(0, order))
@@ -2210,6 +2318,7 @@ def raster_iteration_zero(
         frag_ab = _arena_tensor(memory, (1, 2), torch.float32, 0)
         frag_cov = _arena_tensor(memory, (1,), torch.float32, 1.0)
         frag_msk = _arena_tensor(memory, (1,), torch.int32, AA_MASK_ALL)
+        frag_cap = _arena_tensor(memory, (1,), torch.float32, 2.0)
 
     # Covered-pixel-compacted resolve (RASTER_COVERED_SHADE). A pixel needs
     # shading iff it has a fragment (nrun > 0) or a z-prepass winner -- exactly
@@ -2264,6 +2373,7 @@ def raster_iteration_zero(
             frag_ab,
             frag_cov,
             frag_msk,
+            frag_cap,
             zbuf,
             tri_pos,
             tri_screen,
@@ -2341,14 +2451,6 @@ def raster_iteration_zero(
                 merged["tri_tex_meta"],
                 merged["textures"],
                 int(merged["num_colored_triangles"]),
-                pn_bvh.blocks,
-                pn_bvh.node_miss,
-                pn_bvh.leaf_prim,
-                pn_bvh.leaf_tspan,
-                int(pn_bvh.first_leaf),
-                merged["pn_ctrl"],
-                merged["pn_obb"],
-                merged["pn_colors"],
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
@@ -2364,10 +2466,8 @@ def raster_iteration_zero(
                 int(num_lights),
                 pixel_world_scale,
                 float(layer_offset_triangles),
-                float(layer_offset_pn),
                 1 if isinstance(t_bvh, RefitBVH) else 0,
                 has_tri,
-                has_pn,
                 has_bez,
                 event_dp,
                 sec_aa,
@@ -2390,6 +2490,7 @@ def raster_iteration_zero(
         frag_ab,
         frag_cov,
         frag_msk,
+        frag_cap,
         zbuf,
         merged["tri_pos"],
         tri_screen,

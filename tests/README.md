@@ -57,6 +57,7 @@ render:
 | `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
 | `test_settings_api.py` | `SETTINGS` is read live by every subsystem. |
 | `test_ux_regressions.py` (per test, not the whole module) | The front door: `save_video`/`save_frame` and what they leave behind, contexts, `Group`, the star exports, and the errors users hit. It is a catch-all file, so its tests are marked one by one — see below. |
+| `test_mesh_identity.py` (per test) | Per-triangle surface identity (`tri_obj`), which the analytic-AA resolve groups fragments by and the scene merge offsets per primitive. It is a contract between the mob side (what declares a surface), the merge and two kernel walks, so a change to batching, to a composite mob's `get_render_primitives`, or to the merge's offsetting breaks it from elsewhere. Pure tensor assertions — no render, no Taichi. |
 | `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
 
 ### What is not in it, and where that is covered instead

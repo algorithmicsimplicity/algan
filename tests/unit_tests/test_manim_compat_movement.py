@@ -17,6 +17,7 @@ the caller asked.
 
 import math
 
+import manim as mn
 import pytest
 import torch
 
@@ -28,9 +29,13 @@ from algan import (
     UP,
     Arrow,
     Axes,
+    ManimMob,
+    Off,
     SceneManager,
     Square,
     Star,
+    Sync,
+    rate_funcs,
 )
 
 
@@ -172,10 +177,11 @@ def test_batched_algan_points_are_accepted_where_manim_wants_one_point(name):
     assert mob.move_to(anchor.location) is mob
     torch.testing.assert_close(_center(mob), anchor_point, atol=2e-5, rtol=0)
 
-    # Same conversion reached through a Manim-only keyword: a half turn about
-    # the point the Mob is centered on is a point reflection, which leaves any
-    # shape's bounding-box center exactly where it was.
-    assert mob.rotate(math.pi, about_point=anchor.location) is mob
+    # Same conversion reached through ``about_point``: a half turn about the
+    # point the Mob is centered on is a point reflection, which leaves any
+    # shape's bounding-box center exactly where it was.  The angle is in
+    # degrees -- ``rotate`` on a compatibility Mob is Algan's, not Manim's.
+    assert mob.rotate(180, about_point=anchor.location) is mob
     torch.testing.assert_close(_center(mob), anchor_point, atol=2e-5, rtol=0)
 
     # And through the generic delegation to an un-overridden Manim method.
@@ -211,7 +217,96 @@ def test_rotating_after_a_parent_move_does_not_teleport_the_mob():
     star = Star()
     Group(star).move(UP * 1.35)
     before = _center(star).clone()
-    star.rotate(math.pi / 5)
+    star.rotate(36)
     # An in-place rotation may shift a Mob whose anchor is off its visual
     # centre, but never by most of the displacement the parent just applied.
     assert float((_center(star) - before).norm()) < 0.2
+
+
+# ---------------------------------------------------------------------------
+# ``rotate`` is a name Algan and Manim both use and disagree about: degrees
+# against radians, and opposite ``OUT`` vectors. A compatibility Mob used to
+# take Manim's reading, so the documented ``graph.rotate(20, UP)`` turned the
+# plot by 20 *radians*, and turned it by morphing between the two poses rather
+# than rotating. These pin Algan's reading.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
+def test_rotate_measures_degrees_exactly_as_a_plain_manim_mob_does(name):
+    """The compatibility subclass may not redefine an inherited Algan verb."""
+    compat = COMPAT_MOBS[name]()
+    plain = ManimMob(compat.get_manim_mobject().copy())
+
+    with Off():
+        compat.rotate(20, UP)
+        plain.rotate(20, UP)
+
+    # Compared about each Mob's own centre, because the two disagree about the
+    # pivot and only about the pivot: the plain wrapper turns about ``location``
+    # and the compatibility Mob about the composite centre Manim would use.
+    torch.testing.assert_close(
+        compat.control_points.location - compat.get_center(),
+        plain.control_points.location - plain.get_center(),
+        atol=2e-5,
+        rtol=0,
+    )
+
+
+def test_the_default_rotation_agrees_with_manims_despite_the_opposite_axis():
+    """Algan's ``OUT`` is Manim's ``-OUT``, and the two wind opposite ways
+    around an axis, so the conventions cancel: an unqualified turn of n degrees
+    is the same rotation as Manim's turn of n degrees' worth of radians.
+    """
+    star, expected = Star(), mn.Star()
+
+    with Off():
+        star.rotate(37)
+    expected.rotate(math.radians(37))
+
+    torch.testing.assert_close(
+        star.control_points.location.reshape(-1, 3),
+        torch.as_tensor(expected.points, dtype=torch.get_default_dtype()),
+        atol=2e-5,
+        rtol=0,
+    )
+
+
+def test_rotate_turns_the_mob_rather_than_morphing_between_two_poses():
+    """A morph cannot express a full turn: its two endpoints are one shape."""
+    scene = SceneManager.instance().current_scene
+    star = Star().spawn(animate=False)
+    start = star.control_points.location.clone()
+
+    # Linear timing, so a quarter of the run time really is a quarter turn.
+    with Sync(run_time=1, rate_func=rate_funcs.identity):
+        star.rotate(360, UP)
+
+    def points_at(time):
+        scene.timeline_manager.set_state_to_times(
+            torch.tensor([time], dtype=torch.get_default_dtype())
+        )
+        return star.control_points.location.clone()
+
+    torch.testing.assert_close(points_at(1.0), start, atol=2e-5, rtol=0)
+    # A quarter of the way through, a turn about UP has the star edge-on: its
+    # width has collapsed into depth, which no blend of two identical poses
+    # could produce.
+    quarter = points_at(0.25)
+    assert float(quarter[..., 2].abs().max()) > 0.5
+    assert float(quarter[..., 0].abs().max()) < 0.1
+
+
+def test_rotate_pivots_about_the_composite_center_like_manim():
+    """An Arrow's location is its shaft's centre; it must still turn in place."""
+    arrow = Arrow(LEFT, RIGHT)
+    expected = arrow.get_manim_mobject().copy()
+    expected.rotate(math.radians(90))
+
+    with Off():
+        arrow.rotate(90)
+
+    torch.testing.assert_close(
+        _center(arrow),
+        torch.as_tensor(expected.get_center(), dtype=torch.get_default_dtype()),
+        atol=2e-5,
+        rtol=0,
+    )

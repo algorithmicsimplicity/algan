@@ -6,13 +6,16 @@ Algan can colour a surface from an image or an array instead of a single flat
 colour, and can drive a surface's *material* properties -- roughness, reflectivity,
 refractive index, surface normals -- from images too.
 
-There are three separate mechanisms, and it is worth knowing which is which:
+There are four separate mechanisms, and it is worth knowing which is which:
 
 1. :class:`~.ImageMob` -- an image as a flat, textured Mob. What you want for
    showing a picture.
 2. :class:`~.Surface` texture arguments -- per-texel colour and material properties
    on any 3-D surface, sampled in the ray tracing kernel.
-3. :meth:`~algan.scene.Scene.set_background_color` -- an image behind the whole scene (see
+3. The **texture grid** on a 2-D shape -- per-texel colour across a
+   :class:`~.BezierCircuitCubic`, for gradients and images on a
+   :class:`~.Square`, a :class:`~.Circle` or a :class:`~.Line`.
+4. :meth:`~algan.scene.Scene.set_background_color` -- an image behind the whole scene (see
    :doc:`backgrounds_and_post_processing`).
 
 .. note::
@@ -185,6 +188,152 @@ Glow maps
 ``glow_texture`` is the exception to the per-fragment rule: glow is consumed by the
 glow accumulator per *vertex*, so the map is baked down to the surface grid
 resolution. Raise ``grid_width`` / ``grid_height`` if you need more detail from it.
+
+Colouring a 2-D Shape
+=====================
+
+Algan's 2-D shapes -- :class:`~.Square`, :class:`~.Circle`, :class:`~.Polygon`,
+:class:`~.Line`, the glyphs of :class:`~.Text` and :class:`~.Tex` -- are not
+meshes. They are cubic bezier circuits (:class:`~.BezierCircuitCubic`), evaluated
+analytically by the renderer, so there are no vertices to hang colours off.
+
+Instead a circuit carries a **texture grid**: a rectangular grid of colour
+samples laid across the shape's own frame, which the renderer interpolates
+bilinearly per fragment. It defaults to a single texel -- one flat colour, which
+is all a shape needs most of the time -- so painting anything across a shape
+starts by asking for a grid:
+
+.. algan:: TexturesCircuitGradient
+    :save_last_frame:
+
+    from algan import *
+    import torch
+
+    square = Square(texture_grid_width=64, texture_grid_height=64, border_width=0)
+    square.set_color_by_function(
+        lambda uv: torch.cat((uv[..., :1], 1 - uv[..., :1], uv[..., 1:]), -1)
+    )
+    square.spawn()
+
+    Scene.save_video()
+
+``texture_grid_width`` and ``texture_grid_height`` are the number of colour
+samples along each axis, and they are the resolution of everything painted on the
+shape. Both default to ``1``; giving only the width squares the grid up.
+
+The ``(u, v)`` domain
+---------------------
+
+:meth:`~.BezierCircuitCubic.set_color_by_function` hands your function a
+``[..., 2]`` tensor of ``(u, v)`` coordinates -- the same convention
+:class:`~.Surface` uses, so a colour function written for one works on the other.
+``u`` runs from 0 to 1 along the circuit's first basis row and ``v`` along its
+second, which for an upright 2-D shape means ``u`` left to right and ``v`` top to
+bottom. Return RGB, RGBA, or Algan's five-channel RGB + glow + alpha; the
+function is called once on the whole grid, so write it with tensor operations.
+
+.. note::
+
+    Both basis rows are as long as the distance from the circuit's centre to its
+    furthest control point, so the domain covers the square that *circumscribes*
+    the shape. A :class:`~.Square` therefore occupies the middle of it rather
+    than all of it: a gradient across ``u`` has already run through part of its
+    range by the time it reaches the square's left edge, and finishes the rest
+    beyond its right one. :meth:`~.BezierCircuitCubic.get_base_grid` returns the
+    grid if you want to look at it.
+
+Painting an image on a shape
+----------------------------
+
+:meth:`~.BezierCircuitCubic.set_color_by_image` takes the same paths and arrays
+:class:`~.ImageMob` does and resamples them onto the grid, with the image's top
+left at ``(u, v) == (0, 0)``:
+
+.. algan:: TexturesCircuitImage
+    :save_last_frame:
+
+    from algan import *
+
+    circle = Circle(texture_grid_width=128, texture_grid_height=128, border_width=0)
+    circle.set_color_by_image('world_map.png')
+    circle.spawn()
+
+    Scene.save_video()
+
+.. important::
+
+    A circuit has no separate texture map: the texture grid **is** the
+    resolution. That is the difference from
+    :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`, which keeps
+    the image at its own resolution however coarse the surface's grid is. Ask for
+    a grid comparable to the detail you need -- and reach for
+    :class:`~.ImageMob` when what you want is the picture itself rather than a
+    shape wearing it.
+
+Both methods are recorded as animations, like any other attribute write, so the
+colours cross-fade over the current context's duration:
+
+.. code-block:: python
+
+    with Seq(run_time=2):
+        square.set_color_by_function(hot)   # cross-fades from whatever it was
+
+On a filled circuit these colour the fill and leave ``border_color`` alone. On an
+unfilled one, where the stroke is all there is, they colour the stroke. And on a
+multi-circuit Mob -- a :class:`~.Text`, a :class:`~.Tex`, which take the same
+grid arguments and pass them down to their packed glyphs -- each circuit is
+coloured over its own frame, so the pattern repeats per glyph:
+
+.. algan:: TexturesTextGradient
+    :save_last_frame:
+
+    from algan import *
+    import torch
+
+    text = Text('Algan', texture_grid_width=16, texture_grid_height=16)
+    for glyph in text.character_mobs:
+        glyph.set_color_by_function(
+            lambda uv: torch.cat(
+                (uv[..., 1:], 1 - uv[..., 1:], torch.zeros_like(uv[..., :1])), -1
+            )
+        )
+    text.spawn()
+
+    Scene.save_video()
+
+Colouring along a line
+----------------------
+
+A :class:`~.Line` is one-dimensional, and its texture grid follows: its control
+points are collinear, so the second basis row is synthesized perpendicular to the
+path and carries none of the shape's extent. ``texture_grid_height`` therefore
+defaults to a single row and ``texture_grid_width`` alone is the number of colour
+samples *along* the line.
+
+:meth:`Line.set_color_by_function <algan.mobs.shapes_2d.Line.set_color_by_function>`
+drops the second coordinate to match, handing your function a single ``t``
+running from 0 at :meth:`~.Line.get_start` to 1 at :meth:`~.Line.get_end`:
+
+.. algan:: TexturesLineGradient
+    :save_last_frame:
+
+    from algan import *
+    import torch
+
+    line = Line(LEFT * 4, RIGHT * 4, border_width=30, texture_grid_width=64)
+    line.set_color_by_function(
+        lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
+    )
+    line.spawn()
+
+    Scene.save_video()
+
+.. note::
+
+    A straight line's frame is pinned to its geometry: **the first basis row
+    points from the line's centre toward its start**. That is a guarantee, so
+    ``t == 1 - u`` and you never have to work out which end of a line ``u == 0``
+    sits at.
 
 Choosing a resolution
 =====================
