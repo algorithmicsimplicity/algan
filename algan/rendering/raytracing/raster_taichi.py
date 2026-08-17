@@ -24,9 +24,10 @@ Important implementation properties:
   region covers -- a box filter of the outline signed-distance field that
   ``_bezier_point_metrics`` already computes -- and the resolve folds that into
   the fragment's alpha, so circuit silhouettes resolve continuously at
-  ``anti_alias_level = 1`` instead of all-or-nothing.  Flat triangles keep
-  coverage 1.0 (phase 2), so the coverage lane is host-pre-filled and only the
-  circuit kernels write it.
+  ``anti_alias_level = 1`` instead of all-or-nothing.  The coverage lane is
+  host-pre-filled to 1.0 and written by the circuit kernels and -- under
+  ``ANALYTIC_AA_TRI`` -- by ``raster_tri_write`` too, which carries each
+  triangle fragment's exact clipped area for the run rule.
 * :func:`raster_shadow_event_build` performs the same ordered transport/seam
   decisions as final resolve and emits only accepted triangle lighting events.
   :func:`raster_shadow_trace` traces that separate sparse any-hit queue and
@@ -1064,33 +1065,33 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                 # regress dense moving meshes despite skipping sample tests.
                 if ti.static(aa):
                     # EXACT fixed-point coverage (DESIGN_analytic_aa.md ss15).
-                #
-                # Snap the projected vertices to a 1/256-pixel integer lattice
-                # and evaluate the edge functions in int64. Two triangles that
-                # share an edge traverse it in opposite directions, and in
-                # exact integer arithmetic their edge functions are then exact
-                # negatives -- because E = D x (Q - V1) and the reversed edge
-                # gives -D x (Q - V2) = -(D x (Q - V1)) once D x D = 0 drops
-                # out. In FLOAT they are merely near-negatives, which is what
-                # made a sample lying on a shared edge belong to whichever
-                # triangle rounding happened to favour, and forced a choice
-                # between a silhouette halo and speckle along every shared edge.
-                #
-                # Exactness lets the classic top-left fill rule settle it: a
-                # sample exactly on an edge counts only for the triangle whose
-                # traversal of that edge runs "down", or runs "left" when
-                # horizontal. The neighbour traverses it the other way, so
-                # exactly one of the pair takes the sample -- the masks
-                # partition the pixel with no epsilon anywhere, and the same
-                # mask can serve both as what a fragment claims and as what it
-                # occludes.
-                #
-                # This relies on adjacent triangles carrying bit-identical
-                # coordinates for a shared vertex. They do: the merged soup
-                # stores each triangle's own copy, but from the same source
-                # vertex, and the projection is one elementwise torch
-                # expression. If that ever stopped holding, the failure is
-                # graceful -- back to the float-era ambiguity on those edges.
+                    #
+                    # Snap the projected vertices to a 1/4096-pixel integer lattice
+                    # and evaluate the edge functions in int64. Two triangles that
+                    # share an edge traverse it in opposite directions, and in
+                    # exact integer arithmetic their edge functions are then exact
+                    # negatives -- because E = D x (Q - V1) and the reversed edge
+                    # gives -D x (Q - V2) = -(D x (Q - V1)) once D x D = 0 drops
+                    # out. In FLOAT they are merely near-negatives, which is what
+                    # made a sample lying on a shared edge belong to whichever
+                    # triangle rounding happened to favour, and forced a choice
+                    # between a silhouette halo and speckle along every shared edge.
+                    #
+                    # Exactness lets the classic top-left fill rule settle it: a
+                    # sample exactly on an edge counts only for the triangle whose
+                    # traversal of that edge runs "down", or runs "left" when
+                    # horizontal. The neighbour traverses it the other way, so
+                    # exactly one of the pair takes the sample -- the masks
+                    # partition the pixel with no epsilon anywhere, and the same
+                    # mask can serve both as what a fragment claims and as what it
+                    # occludes.
+                    #
+                    # This relies on adjacent triangles carrying bit-identical
+                    # coordinates for a shared vertex. They do: the merged soup
+                    # stores each triangle's own copy, but from the same source
+                    # vertex, and the projection is one elementwise torch
+                    # expression. If that ever stopped holding, the failure is
+                    # graceful -- back to the float-era ambiguity on those edges.
                     fx0 = ti.cast(ti.round(sx0 * _AA_FIXED_SCALE), ti.i64)
                     fx1 = ti.cast(ti.round(sx1 * _AA_FIXED_SCALE), ti.i64)
                     fx2 = ti.cast(ti.round(sx2 * _AA_FIXED_SCALE), ti.i64)

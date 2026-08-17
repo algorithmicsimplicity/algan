@@ -15,9 +15,7 @@ from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUT, RIGHT, UP
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Quad, Rectangle, TriangleTriangulated
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
-from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.utils.tensor_utils import (
-    broadcast_all,
     broadcast_cross_product,
     interpolate,
     mean,
@@ -309,26 +307,6 @@ class FunctionPlotMob(Mob):
         self.despawn_tilewise_recursive()
 
 
-class TriangleVertices2(Mob):
-    def __init__(self, corner_locations, **kwargs):
-        kwargs2 = dict(kwargs.items())
-        if "location" in kwargs2:
-            del kwargs2["location"]
-        kwargs2["location"] = corner_locations.view(-1, 3)
-        super().__init__(**kwargs2)
-        self.is_primitive = True
-
-    def get_default_color(self):
-        return RED
-
-    def get_boundary_points_recursive(self):
-        return self.location.view(-1, 3)
-
-    def get_render_primitives(self):
-        locations, c, o = broadcast_all(
-            [self.location, self.color, self.opacity], ignore_dims=[-1]
-        )
-        return TrianglePrimitive(locations, c, o)
 
 
 class Quad(Mob):

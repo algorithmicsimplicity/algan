@@ -1108,7 +1108,7 @@ def analytic_aa_bez_mode():
 
     0 off, 1 the box filter, 2 the exact angle-aware area
     (``ANALYTIC_AA_EXACT``), 3 that plus the two-segment boundary model
-    (``ANALYTIC_AA_BEZ_WEDGE``, default off -- see its comment).
+    (``ANALYTIC_AA_BEZ_WEDGE``, default on since 2026-08-13).
     The distinction rides in the template value so the two forms cannot share an
     offline-cache entry; everything downstream that only asks whether circuit
     coverage is on keeps testing it for truth.
