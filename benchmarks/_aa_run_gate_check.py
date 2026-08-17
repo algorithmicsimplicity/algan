@@ -48,6 +48,27 @@ Grouping and magnitude are all this measures; it deliberately does not
 re-derive ``svis``, which is a consequence of the walk rather than an input to
 the ordering question.
 
+NEGATIVE RESULT, so nobody spends the effort twice. Both obvious fixes suggested
+by the table above were built and measured, and neither closes the gap:
+
+  * Regrouping the consecutive run into an order-independent equivalence class
+    cannot help, because ``split`` is already ~0.02%.
+  * Consulting ``E`` instead of short-circuiting ``corr = 1`` under a full mask
+    (``corr = E`` there, since ``Q == 1``, with a 1e-3 dust band so genuine
+    tilings stay bit-identical) moves ``_aa_line_check`` by nothing: default
+    Cylinder ink wobble 0.0568 -> 0.0566 px with coverage rms 0.0094 -> 0.0099,
+    and the fine Cylinder 0.0773 -> 0.0781 / 0.0164 -> 0.0166. The dilation tail
+    is real but far too small a pixel population to move a frame-wide metric --
+    which the ``dust`` bucket dominating every histogram already implies.
+
+So the diced-mesh wobble is NOT primarily a run-rule magnitude defect. What this
+harness has ruled out is the grouping and the magnitude correction; what it has
+not examined is the one thing it deliberately skips, the per-sample
+transmittance, and the sampled OWNERSHIP underneath it -- a partial fragment's
+claim is positioned on eight fixed sample points whatever its magnitude, and on
+a sub-pixel-diced mesh many fragments compete for those eight positions. Extend
+this harness to replay ``svis`` before building anything else.
+
 Run:  <venv-python> benchmarks/_aa_run_gate_check.py [--res md|ld|hd] [--cases ...]
 """
 
