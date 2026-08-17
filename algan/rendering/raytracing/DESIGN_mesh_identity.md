@@ -24,22 +24,27 @@ with no GPU, unless it says otherwise. That is why §4 exists.
 
 Branch `claude/renderer-mesh-id-rework-n5ezw5`, on top of `efb3a95`:
 
-    b49b01b  Delete the unreachable curved PN-patch renderer
-    c87c26b  Add _aa_run_gate_check: attribute the diced-mesh AA gap
-    690009a  Mob-declared surface identity for tri_obj, gated off
-    568b5ae  Add DESIGN_mesh_identity.md
-    6d02488  Delete TriangleVertices2 and correct stale renderer comments
+    2d1432a  Turn mesh identity and Polyhedron winding on by default (§3.5, §3.7)
+    86ff500  Add the watertight ray/triangle test (§3.2), gated off
+    d878f76  Weld closed surface seams and collapsed poles (§3.1), gated off
+    517c842  Build §6.3.2's relaxed AA run gate and §3.4's bezier split, both gated off
+    32bdc9d  Make a packed grid's declared mesh_ids reach the renderer, and measure it
+    89b81a1  Correct three stale drop counts and the last refuted winding prediction
+    59d6782  Sound the sheet reference, correct the MESH_ID verdict, land the winding fix
+    e067702  Qualify ALGAN_MESH_ID on coverage, and find the gate that costs the AA error
+    e851ee6  Replay the resolve's svis walk: the diced-mesh AA gap is ownership
+    c8e9b9b  Make DESIGN_mesh_identity.md a self-contained handoff; drop orphaned PN comments
     a90b2ff  Apply ruff format to the files this branch touched
-    c8e9b9b  Make DESIGN_mesh_identity.md a self-contained handoff
-    e851ee6  Replay the resolve's svis walk: the AA gap is ownership
-    e067702  Qualify ALGAN_MESH_ID on coverage; find the gate that costs the
-             AA error
-    (this)   Sound sheet reference; ALGAN_POLYHEDRON_WINDING
+    6d02488  Delete TriangleVertices2 and correct stale renderer comments
+    568b5ae  Add DESIGN_mesh_identity.md: CUDA verification plan and negative results
+    690009a  Mob-declared surface identity for tri_obj, gated off pending the run-rule fix
+    c87c26b  Add _aa_run_gate_check: attribute the diced-mesh AA gap
+    b49b01b  Delete the unreachable curved PN-patch renderer
 
-`985 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `ruff check
---no-fix` and `ruff format --check` clean; pixel baselines untouched (every
-behaviour change is still gated off, and the fast-suite render is byte-identical
-across `ALGAN_POLYHEDRON_WINDING` with `ALGAN_MESH_ID` off).
+`997 passed, 87 skipped` on `pytest -q tests/unit_tests tests/fast`; `ruff check
+--no-fix` and `ruff format --check` clean. `tests/fast`'s CPU baseline was
+regenerated for the §3.5/§3.7 flip; every other behaviour change is gated off
+and the other three baseline sets are stale (§3.5 says which and why).
 
 **What the last session settled.** §6.3 was the gating question and it is
 answered, in three steps that must be read in order because the third supersedes
@@ -79,27 +84,46 @@ it accounts for nearly all of MESH_ID's *visible* effect on an `Icosahedron`
 (235 moved pixels down to 11). The two instruments see different populations;
 §4.5 says how to quote them together. Read §6.5 before reusing any of them.
 
+**WHERE EVERY SECTION STANDS.** Every item in §3 has now been built, flipped,
+or deliberately not started with the reason recorded.
+
+    §3.1  weld surface seams/poles     BUILT, gated off  ALGAN_WELD_SURFACE_SEAMS
+    §3.2  watertight tri intersection  BUILT, gated off  ALGAN_WATERTIGHT_TRI
+    §3.3  delete the epsilons          BLOCKED on §3.2's default flip (structural)
+    §3.4  median-split bezier BVH      BUILT, gated off  ALGAN_BEZ_BVH_SPLIT
+    §3.5  mesh identity                FLIPPED ON, tests/fast CPU re-baselined
+    §3.6  two-level BVH                NOT STARTED, scoped in §3.6
+    §3.7  Polyhedron winding           FLIPPED ON, same re-baseline
+    §6.3.2 relaxed AA run gate         BUILT, gated off  ALGAN_ANALYTIC_AA_RUN_FULL
+
+Three of those carry a result that contradicts what this document predicted, and
+each is written up where it belongs rather than quietly corrected:
+
+* **§6.3.2 does not deliver its −88%.** Its premise was false — the emission
+  truncates a pixel's fragment list at the first full-mask fragment, so the run
+  scan can never reach that sheet's area donors. As specified it puts notches
+  into interior tilings. Mitigated, it is −63% ink wobble on FLAT triangle
+  geometry and nothing at all on a diced mesh, which is what it was built for.
+* **§3.1 does not move the pixels, and does not retire the two epsilons it
+  claimed.** A Sphere/Cylinder/Torus/Cone scene is byte-identical across the
+  gate; the normal accumulation runs on the grid rather than the welded
+  topology, so both fixups stay.
+* **`tests/full_renders` cannot arbitrate anything from a cloud container.** All
+  six scenes fail here at the shipped defaults with every gate off — those
+  baselines are another machine's. §3.5 lists the resulting baseline debt.
+
 **Recommended next step, in priority order.**
 
-1. ~~§6.3.2's gate relaxation~~ — **BUILT**, `ALGAN_ANALYTIC_AA_RUN_FULL`,
-   default off, and the predicted −88% did NOT materialize. Its premise was
-   false (the emission truncates a pixel's list at the full-mask fragment, so
-   the run scan can never reach that sheet's area donors), and as specified it
-   put notches into interior tilings. With the truncation mitigated it is a
-   −63% win on FLAT triangle geometry and does nothing for a diced mesh, which
-   is what it was built for. §6.3.2 has the numbers and the one open question
-   left. Do not re-derive it from the `|cF-E|` column, which was computed
-   against already-truncated fragment lists.
-2. ~~Point the arbiter at a packed-grid `Surface`~~ — **DONE**, and it found and
-   fixed the dice defect on the way (§4.5). Nothing left to decide on CPU.
-3. **On a CUDA machine: §4.1–§4.4**, the deferred verification for the PN
-   deletion — one run each, plus baselines for whatever gates get flipped.
-4. **§3.1 seam welding.** Self-contained, CPU-verifiable, valuable on its own
-   (it retires two authoring-side epsilons), and the prerequisite for §3.2.
-   Note §6.3 has downgraded the *AA* case for §3.1/§3.2: neither addresses what
-   the error turned out to be. They are worth doing for watertightness and for
-   the epsilon retirement, not as a quality fix.
-5. **§3.2 the watertight test**, then §3.3, §3.4.
+1. **On a CUDA machine, pay the baseline debt and run §4.1–§4.4.** Three of the
+   four baseline sets are stale (§3.5 says exactly which and why the full-render
+   CPU set must be regenerated on the machine that owns it, not here).
+2. **Qualify §3.2** — §4.7's watertightness runs plus a perf A/B on its extra
+   branches. That unblocks §3.3, which is otherwise not startable.
+3. **Decide §6.3.2's default.** It is a genuine win on flat geometry and inert
+   on meshes; the one open question is the ~355 interior pixels a crude LUT diff
+   still finds on a quad strip where the exact-area notch counter finds none.
+4. **§3.6 if the perf case justifies it** — scoped in §3.6; it is a multi-day
+   project with a structural blocker, not a switch.
 
 Do **not** start by regrouping the run rule, by consulting `E` only inside the
 existing gate, or by buying more samples. All three were built or measured here
@@ -342,14 +366,26 @@ Still needed before the default can flip: §4.7's CUDA runs, and a perf A/B — 
 extra branches sit in the innermost loop of three traversal kernels and nothing
 here measures their cost.
 
-3.3 Delete the epsilon apparatus  [blocked on 3.2 qualifying]
---------------------------------------------------------------
+3.3 Delete the epsilon apparatus  [BLOCKED — not startable, see below]
+------------------------------------------------------------------------
 `BARYCENTRIC_EPSILON`, `TRIANGLE_EDGE_EPSILON`, the `edge_hit` flag bit
 (packing documented at `raytrace_kernels_taichi.py:1708`, frees a bit), `seam_t` (`rs_sca[r, 3]`,
 frees a per-ray f32) and the 8 call sites with their initialisations and bounce
-resets. Cannot land while a gate must still be able to select the old
-behaviour, so this is a follow-up commit conditioned on §4.7 coming back clean.
-`rs_sca` shrinking moves the arena fit — re-check `memory_model` (§4.7).
+resets. `rs_sca` shrinking moves the arena fit — re-check `memory_model` (§4.7).
+
+**Deliberately not attempted, and the dependency is structural rather than a
+matter of effort.** Deleting the epsilons removes the *shipped* arm of
+`_tri_hit`, which makes the watertight path mandatory. That path is default off
+because it is unqualified: §4.7's CUDA runs have not happened, and nothing has
+measured what its extra branches cost in the innermost loop of three traversal
+kernels. So the chain is: qualify §3.2 on CUDA → flip its default → *then* this
+becomes a deletion rather than a behaviour change. Doing it now would silently
+promote an unmeasured intersection routine to the only one, which is the
+opposite of what a gated rollout is for.
+
+What *can* be done ahead of that, and was: §3.2 now routes both arms through one
+`_tri_hit`, so the deletion is a single function body plus the constants, rather
+than eight independently drifting call sites.
 
 3.4 Median-split STBVH for bezier circuits  [needs CUDA to qualify]
 --------------------------------------------------------------------
@@ -402,12 +438,30 @@ So whoever picks this up on a GPU box owns three of the four sets, and should
 regenerate the full-render CPU set on the machine that owns it rather than on a
 cloud container.
 
-3.6 Two-level BVH (TLAS/BLAS)  [design only]
----------------------------------------------
+3.6 Two-level BVH (TLAS/BLAS)  [design only — NOT attempted, scoped below]
+---------------------------------------------------------------------------
 See §5.2. Blocker to clear first: `_split_promotable` (`scene_builder.py:572`)
 reorders promoted triangles by material value, so a partly-promoted surface
 already lands in two disjoint spans; per-mesh contiguity has to exist before a
 BLAS is meaningful.
+
+**Scope, so the next person can decide rather than discover.** This is the one
+item in §3 that is not a gated switch. It needs, at minimum:
+
+* a per-mesh contiguity guarantee in the merge, which means either reversing
+  `_split_promotable`'s material grouping or making promotion mesh-aware —
+  `scene_builder.py` is ~2100 lines and the merge's field layout is load-bearing
+  for every kernel ("do not casually change merged-field widths, ordering, dtype
+  or lifetime");
+* a two-level build in `stbvh.py` (~840 lines), which today builds one flat
+  instance tree per geometry type;
+* two-level traversal in `raytrace_kernels_taichi.py` (~3340 lines), in the
+  megakernel *and* the wavefront path, plus the raster path's own gather.
+
+That is a project measured in days with a CUDA machine for the perf case that
+justifies it, not a session's work, and a half-landed version is worse than
+none: a TLAS that does not actually reduce traversal steps costs a build per
+batch for nothing. Left unstarted on purpose.
 
 3.7 Orient `Polyhedron` faces outward  [DONE, default ON]
 ------------------------------------------------------------
