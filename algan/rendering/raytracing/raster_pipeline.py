@@ -1523,13 +1523,33 @@ def prepare_sparse_raster_coverage(
             # suppression under-covers (measured: a 0.045-radius rod diced to
             # (256, 2) is nearly all boundary, and suppression flips its signed
             # error to -0.0344 and notches 1676 of 3508 interior pixels).
+            # Accumulated in FLOAT64 and rounded back, and that is load-bearing
+            # rather than cautious. ``scatter_add_`` is a float atomic add, so its
+            # summation order is not reproducible on CUDA -- measured, a 400k-into-
+            # 5k reduction of this shape spreads 1.5e-05 across runs. That would be
+            # invisible in a colour, but this feeds a THRESHOLD: the kernel clips
+            # only when ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in
+            # its low bits flips borderline fragments in and out of being clipped,
+            # which is a finite coverage change, which bloom then amplifies. It was
+            # measured: two consecutive renders of ``materials_and_lighting``
+            # differed by up to 28 channel values over 9.6% of a frame, while the
+            # same scene with the rule OFF is bit-identical run to run.
+            #
+            # In float64 the reassociation error lands ~9 orders below a float32
+            # ulp, so rounding the ceiling to float32 absorbs it: the reduction is
+            # bitwise reproducible in practice (verified over 6 runs, spread 0.0),
+            # and any residual last-bit float64 difference cannot survive the cast.
+            # Cost is nothing measurable -- it is one pass over the fragments,
+            # against a render this sits at ~1% of.
             is_back = (msk_s & AA_BACKFACE_BIT) != 0
-            front = torch.zeros(covered.numel(), dtype=cov_s.dtype, device=device)
+            acc = torch.float64
+            cov_acc = cov_s.to(acc)
+            front = torch.zeros(covered.numel(), dtype=acc, device=device)
             back = torch.zeros_like(front)
-            zero = torch.zeros((), dtype=cov_s.dtype, device=device)
-            front.scatter_add_(0, seg, torch.where(is_back, zero, cov_s))
-            back.scatter_add_(0, seg, torch.where(is_back, cov_s, zero))
-            cap_pix = torch.maximum(front, back).clamp_max_(1.0)
+            zero = torch.zeros((), dtype=acc, device=device)
+            front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
+            back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
+            cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
             msk_s = msk_s | torch.where(
                 one_mesh.index_select(0, seg),
                 torch.full_like(msk_s, AA_ONE_MESH_BIT),
