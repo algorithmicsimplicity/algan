@@ -196,7 +196,7 @@ def test_two_spheres_in_one_collection_stay_two_surfaces():
 
 def test_mesh_identity_is_off_switchable():
     """``ALGAN_MESH_ID=0`` must restore the per-member ids exactly, so the
-    switch is a byte-level A/B rather than a behaviour flag.
+    switch stays a byte-level A/B rather than a behaviour flag.
     """
     from algan import SETTINGS
 
@@ -207,14 +207,14 @@ def test_mesh_identity_is_off_switchable():
         assert all(getattr(p, "mesh_key", None) is not None for p in prims)
 
     rt = SETTINGS.raytracing
-    assert rt.MESH_ID is False, (
-        "mesh identity is expected OFF by default until the run rule consults "
-        "E -- see the MESH_ID comment in raytracing/settings.py"
+    assert rt.MESH_ID is True, (
+        "mesh identity is ON by default since the packed-grid case measured "
+        "positive -- see the MESH_ID comment in raytracing/settings.py"
     )
     original = rt.MESH_ID
     try:
-        rt.experimental.set(mesh_id=True)
-        assert rt.MESH_ID is True
+        rt.experimental.set(mesh_id=False)
+        assert rt.MESH_ID is False
     finally:
         rt.experimental.set(mesh_id=original)
     assert rt.MESH_ID is original
@@ -261,10 +261,14 @@ def _inward_face_count(mob):
 def test_shipped_platonic_solids_are_not_consistently_wound():
     """The defect itself, pinned so a face-list edit cannot silently change it.
 
-    This is a regression guard on a KNOWN BUG, not on desired behaviour: with
-    ``ALGAN_POLYHEDRON_WINDING`` off these counts are what the renderer sees.
+    This is a regression guard on a KNOWN BUG in the shipped index lists (which
+    are Manim's, verbatim), not on desired behaviour. ``Polyhedron`` now orients
+    them at construction, so the test turns that off to observe the raw lists --
+    which is also what makes it a check on the ORIENTATION PASS: if the pass
+    ever silently became a no-op, these counts would still be what the renderer
+    sees, and the sibling test below would be the one to fail.
     """
-    from algan import Dodecahedron, Octahedron, Tetrahedron
+    from algan import SETTINGS, Dodecahedron, Octahedron, Tetrahedron
 
     expected = {
         Tetrahedron: (4, 2),
@@ -273,11 +277,17 @@ def test_shipped_platonic_solids_are_not_consistently_wound():
         Icosahedron: (20, 12),
         Dodecahedron: (12, 3),
     }
-    with Scene(), Off():
-        for cls, (n_faces, n_inward) in expected.items():
-            mob = cls()
-            assert len(mob.faces_list) == n_faces, cls.__name__
-            assert _inward_face_count(mob) == n_inward, cls.__name__
+    rt = SETTINGS.raytracing
+    original = rt.POLYHEDRON_WINDING
+    try:
+        rt.experimental.set(polyhedron_winding=False)
+        with Scene(), Off():
+            for cls, (n_faces, n_inward) in expected.items():
+                mob = cls()
+                assert len(mob.faces_list) == n_faces, cls.__name__
+                assert _inward_face_count(mob) == n_inward, cls.__name__
+    finally:
+        rt.experimental.set(polyhedron_winding=original)
 
 
 @pytest.mark.fast

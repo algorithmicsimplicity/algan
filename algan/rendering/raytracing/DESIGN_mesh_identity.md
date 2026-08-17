@@ -364,7 +364,7 @@ its slot" constraint was PN-specific and went with the PN merge block in
 grouping promoted triangles by material value (`scene_builder.py:572`), which is
 unrelated to BVH build order.
 
-3.5 Flip `ALGAN_MESH_ID` on  [qualified; blocked only on CUDA baselines]
+3.5 Flip `ALGAN_MESH_ID` on  [DONE, default ON]
 -------------------------------------------------------------------------
 §4.5 is measured. On the scored `|actual-E|` metric it is **neutral**: nothing
 regresses, nothing gains, and the fill-rule and dump checks pass with it on.
@@ -379,10 +379,28 @@ re-baseline. Note the packed-grid gain **depends on the dice fix in §4.5** — 
 `Surface`'s `mesh_ids` reached nothing before it, so a flip on an older tree
 would have bought the `Polyhedron` half of §2.2 and none of the packed half.
 
-If it goes in: regenerate `expected_outputs_cpu/` **and**
-`expected_outputs_cuda/` for `tests/fast` and `tests/full_renders`, look at the
-diff videos, then change the default in `settings.py` and rewrite the
-"DEFAULT OFF" comment there.
+**FLIPPED**, together with §3.7. `tests/fast`'s CPU baseline was regenerated
+here and the diff was looked at first: the change is confined to thin silhouette
+outlines, **435 pixels of 278784 at the worst frame** (0.16%), peak deviation 53
+channel values, mean 243 pixels per frame over 32 frames. That is the "up to 49
+channel values at solid edges" the settings comment predicted, and it is the
+intended effect — coarser runs resolve a solid's edge differently.
+
+**Baseline debt, stated precisely, because it cannot be paid from this machine.**
+
+* `tests/fast/expected_outputs_cpu/` — **regenerated** (this commit).
+* `tests/fast/expected_outputs_cuda/` — stale, needs a CUDA machine.
+* `tests/full_renders/expected_outputs_cpu/` — stale, and **it was already
+  stale before this branch**: all six scenes fail here at the shipped defaults
+  with every gate off. Those baselines belong to a different machine, exactly as
+  `CLAUDE.md` warns ("per **machine**, not merely per device"). Regenerating them
+  here would replace another machine's correct baselines with this one's, so it
+  was deliberately not done.
+* `tests/full_renders/expected_outputs_cuda/` — stale, needs a CUDA machine.
+
+So whoever picks this up on a GPU box owns three of the four sets, and should
+regenerate the full-render CPU set on the machine that owns it rather than on a
+cloud container.
 
 3.6 Two-level BVH (TLAS/BLAS)  [design only]
 ---------------------------------------------
@@ -391,7 +409,7 @@ reorders promoted triangles by material value, so a partly-promoted surface
 already lands in two disjoint spans; per-mesh contiguity has to exist before a
 BLAS is meaningful.
 
-3.7 Orient `Polyhedron` faces outward  [LANDED, gated off]
+3.7 Orient `Polyhedron` faces outward  [DONE, default ON]
 ------------------------------------------------------------
 §6.5 is the measurement, including the part where its predicted interaction with
 §3.5 was measured and refuted. It was not fixed by hand-reversing the four hardcoded
@@ -423,9 +441,12 @@ flipping it changes nothing downstream. With `ALGAN_MESH_ID=1` the render does
 change — which is the mechanism stated plainly: one id per solid leaves facing
 as the only thing separating the two sheets.
 
-Left to do before the default flips: `tests/full_renders` on a machine whose
-baselines those are, plus the CUDA fast suite. If those are byte-identical too,
-this can flip with no re-baseline at all.
+**FLIPPED**, together with §3.5, and the two were re-baselined as one change
+because their effects overlap (a per-solid `sid` is what makes the facing bit
+load-bearing at all). `tests/full_renders` could not be used as the gate it was
+meant to be: those baselines are not this machine's, and all six scenes fail
+here at the shipped defaults with every gate off. See §3.5 for the exact
+baseline debt this leaves.
 
 
 ================================================================================

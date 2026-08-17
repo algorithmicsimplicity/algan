@@ -473,8 +473,8 @@ MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 # ``primitives._mesh_ids_from_collection`` resolves those into explicit ids.
 # Off restores the per-member ids exactly, so it is a byte-level A/B switch.
 #
-# DEFAULT OFF pending pixel baselines, NOT pending a quality question -- that
-# one is settled. Coarser identity is more correct (a Cube's face diagonal
+# DEFAULT ON since 2026-08. The quality question is settled and the correctness
+# argument is the reason. Coarser identity is more correct (a Cube's face diagonal
 # becomes an interior edge rather than a boundary between two "surfaces"), and
 # it was held back because it also makes the v2 4.2
 # ``U == _AA_MASK_ALL -> corr = 1`` short-circuit fire on facet-boundary pixels
@@ -509,7 +509,7 @@ MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 # Flipping also moves the fast-suite render by up to 49 channel values at solid
 # edges, so BOTH device baseline sets have to be regenerated and
 # expected_outputs_cuda/ needs a CUDA machine. DESIGN_mesh_identity.md 3.5, 4.5.
-MESH_ID = env_flag("ALGAN_MESH_ID", False)
+MESH_ID = env_flag("ALGAN_MESH_ID", True)
 
 
 # Orient a closed ``Polyhedron``'s faces outward at construction
@@ -522,15 +522,16 @@ MESH_ID = env_flag("ALGAN_MESH_ID", False)
 # nothing -- measured, 960 of an Icosahedron's 46220 covered pixels have one
 # facing group holding BOTH sheets, against 4 with this on.
 #
-# DEFAULT OFF pending a full-render check, NOT because it is known to move
-# output: measured, the fast-suite render (which draws a Cube, an Icosahedron
-# and an Octahedron) is BYTE-IDENTICAL across this flag while MESH_ID is off --
+# DEFAULT ON since 2026-08. It was held back pending a full-render check, NOT
+# because it is known to move output: measured, the fast-suite render (which
+# draws a Cube, an Icosahedron and an Octahedron) is BYTE-IDENTICAL across this
+# flag while MESH_ID is off --
 # a per-triangle surface id makes every run one fragment, so the facing bit
 # groups nothing. With MESH_ID=1 it does change the render, which is the
 # mechanism: one id per solid leaves facing as the only separator between the
 # near and far sheets. Read at Polyhedron construction, not at render time.
 # DESIGN_mesh_identity.md 3.7 and 6.5.
-POLYHEDRON_WINDING = env_flag("ALGAN_POLYHEDRON_WINDING", False)
+POLYHEDRON_WINDING = env_flag("ALGAN_POLYHEDRON_WINDING", True)
 
 
 def set_polyhedron_winding(enabled):
