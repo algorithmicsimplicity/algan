@@ -211,6 +211,21 @@ Linting
    excluded in the Ruff configuration, which is why every kernel module's name
    has to end in ``_taichi``.
 
+Opening a pull request
+======================
+
+``.github/pull_request_template.md`` is the layout, and it asks for the things a
+diff cannot show: what the change is for, whether rendered output moved, which
+suites you ran and on what hardware, and which documentation pages moved with
+it. Write it in your own words -- a summary generated from the diff restates the
+diff, which is the one thing a reviewer can already see.
+
+The output question is the one to answer carefully. Say whether any rendered
+frame changed; if it did, say which baselines you regenerated, on which device,
+and why the new frames are the correct ones (see `Re-baselining a render`_). If
+a test was already failing before your change, say so and say how you know,
+rather than leaving it for a reviewer to rediscover.
+
 Repository conventions
 ======================
 
