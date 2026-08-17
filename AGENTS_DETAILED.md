@@ -168,13 +168,12 @@ Parent changes normally propagate to descendants through batched timeline row op
 Renderable mobs implement `get_render_primitives()`. The primary geometry families consumed by the renderer are:
 
 - flat triangle primitives;
-- PN curved triangle primitives;
 - cubic Bezier circuit primitives.
 
 Important mob implementations include:
 
 - 2D shapes and text, represented primarily as cubic Bezier circuits;
-- `Surface` and 3D shapes, represented as triangle or PN-triangle meshes;
+- `Surface` and 3D shapes, represented as flat triangle meshes (curved surfaces are diced from logical PN patches per frame);
 - `TriangleMesh` and `ThreeDModelMob` for imported 3D assets;
 - `PointCloud`/point-cloud mobs;
 - Manim compatibility wrappers and conversion helpers.

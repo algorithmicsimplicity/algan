@@ -43,16 +43,10 @@ Usage::
 
 from __future__ import annotations
 
-from algan.rendering.raytracing.pn_patch import (
-    evaluate_pn_patch,
-    pn_control_points,
-    pn_patch_coefficients,
-)
 from algan.rendering.raytracing.primitives import (
     MAX_BOUNCES,
     LogicalPNTrianglePrimitive,
     RayTracedBezierCircuitPrimitive,
-    RayTracedPNTrianglePrimitive,
     RayTracedTrianglePrimitive,
     is_post_process_tonemap_enabled,
     set_ambient_light,
@@ -72,7 +66,6 @@ __all__ = [
     "build_stbvh",
     "LogicalPNTrianglePrimitive",
     "RayTracedTrianglePrimitive",
-    "RayTracedPNTrianglePrimitive",
     "RayTracedBezierCircuitPrimitive",
     "is_post_process_tonemap_enabled",
     "set_samples_per_pixel",
@@ -83,7 +76,4 @@ __all__ = [
     "set_ray_traced_shadows",
     "set_unsupported_feature_policy",
     "RenderPlan",
-    "pn_control_points",
-    "pn_patch_coefficients",
-    "evaluate_pn_patch",
 ]

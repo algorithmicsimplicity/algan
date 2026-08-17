@@ -1518,10 +1518,8 @@ def shade_sparse_raster_coverage(
     rs_alloc,
     shadow_flag,
     t_bvh,
-    pn_bvh,
     bez_bvh,
     layer_offset_triangles,
-    layer_offset_pn,
     max_bounces,
 ):
     """Resolve one compact covered-pixel slice and seed its continuations."""
@@ -1571,7 +1569,6 @@ def shade_sparse_raster_coverage(
     torch.sub(coverage["run_offsets"][c0 : c1 + 1], event_start, out=run_offsets)
 
     has_tri = 1 if int(merged.get("num_triangles", 0)) > 0 else 0
-    has_pn = 1 if int(merged.get("num_pn", 0)) > 0 else 0
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
     ss = 1 if rt_settings.RASTER_SS else 0
     tri_pos = merged["tri_pos"]
@@ -1692,14 +1689,6 @@ def shade_sparse_raster_coverage(
                 merged["tri_tex_meta"],
                 merged["textures"],
                 int(merged["num_colored_triangles"]),
-                pn_bvh.blocks,
-                pn_bvh.node_miss,
-                pn_bvh.leaf_prim,
-                pn_bvh.leaf_tspan,
-                int(pn_bvh.first_leaf),
-                merged["pn_ctrl"],
-                merged["pn_obb"],
-                merged["pn_colors"],
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
@@ -1715,10 +1704,8 @@ def shade_sparse_raster_coverage(
                 int(num_lights),
                 pixel_world_scale,
                 float(layer_offset_triangles),
-                float(layer_offset_pn),
                 1 if isinstance(t_bvh, RefitBVH) else 0,
                 has_tri,
-                has_pn,
                 has_bez,
                 event_dp,
                 sec_aa,
@@ -1848,10 +1835,8 @@ def raster_iteration_zero(
     rs_alloc,
     shadow_flag,
     t_bvh,
-    pn_bvh,
     bez_bvh,
     layer_offset_triangles,
-    layer_offset_pn,
     max_bounces,
     prefill=0,
     env_active=0,
@@ -1888,7 +1873,6 @@ def raster_iteration_zero(
     g0 = tile_start
     g1 = tile_start + tn_primary
     has_tri = 1 if int(merged.get("num_triangles", 0)) > 0 else 0
-    has_pn = 1 if int(merged.get("num_pn", 0)) > 0 else 0
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
 
     tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
@@ -2341,14 +2325,6 @@ def raster_iteration_zero(
                 merged["tri_tex_meta"],
                 merged["textures"],
                 int(merged["num_colored_triangles"]),
-                pn_bvh.blocks,
-                pn_bvh.node_miss,
-                pn_bvh.leaf_prim,
-                pn_bvh.leaf_tspan,
-                int(pn_bvh.first_leaf),
-                merged["pn_ctrl"],
-                merged["pn_obb"],
-                merged["pn_colors"],
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
@@ -2364,10 +2340,8 @@ def raster_iteration_zero(
                 int(num_lights),
                 pixel_world_scale,
                 float(layer_offset_triangles),
-                float(layer_offset_pn),
                 1 if isinstance(t_bvh, RefitBVH) else 0,
                 has_tri,
-                has_pn,
                 has_bez,
                 event_dp,
                 sec_aa,

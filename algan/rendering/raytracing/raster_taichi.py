@@ -3346,11 +3346,6 @@ def raster_shadow_trace(
         tri_pos: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
-        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
-        p_first_leaf: int,
-        pn_ctrl: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
-        pn_colors: ti.types.ndarray(),
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
@@ -3359,9 +3354,9 @@ def raster_shadow_trace(
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int, pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: ti.f32, layer_offset_pn: ti.f32,
+        layer_offset_triangles: ti.f32,
         refit: ti.template(),
-        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        has_tri: ti.template(), has_bez: ti.template(),
         event_dp: ti.types.ndarray(), sec_aa: ti.template(),
         shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
@@ -3515,13 +3510,11 @@ def raster_shadow_trace(
                         ldn - 20.0 * MIN_HIT_DISTANCE,
                         pixel_world_scale[
                             f % pixel_world_scale.shape[0]], 0.0,
-                        layer_offset_triangles, layer_offset_pn,
-                        has_tri, has_pn, has_bez,
+                        layer_offset_triangles,
+                        has_tri, has_bez,
                         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                         t_first_leaf, tri_pos, tri_colors, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles,
-                        p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                        p_first_leaf, pn_ctrl, pn_obb, pn_colors,
                         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                         b_first_leaf, circuit_meta, circuit_colors,
                         circuit_border_colors, edges_2d, edge_accel)
@@ -3685,16 +3678,16 @@ def raster_first_shade(
     unbent-sharp (a separate lobe, and the transmitted branch has no `placed`
     in-slot ray to keep coherent).
 
-    ``layer_offsets`` is the tracer's 8-wide variant: [2..5] environment map
-    placement, [6] far clip (0 = off), [7] max_bounces.
+    ``layer_offsets`` is the tracer's 7-wide variant: [1..4] environment map
+    placement, [5] far clip (0 = off), [6] max_bounces.
     """
     pixels_per_frame = width * height
-    env_off = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-    env_w = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-    env_h = ti.cast(layer_offsets[4] + 0.5, ti.i32)
-    env_intensity = layer_offsets[5]
-    far_clip = layer_offsets[6]
-    max_bounces = ti.cast(layer_offsets[7] + 0.5, ti.i32)
+    env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
+    env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
+    env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
+    env_intensity = layer_offsets[4]
+    far_clip = layer_offsets[5]
+    max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
     loop_n = num_pixels
     if ti.static(covered):
         loop_n = num_covered

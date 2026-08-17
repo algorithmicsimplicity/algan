@@ -301,7 +301,7 @@ def _quantize(c, lo, hi):
 #
 # The default is per geometry type (chosen by the caller of build_stbvh):
 # "split" for triangles, whose depth-peel is provably arrangement-invariant
-# (verified byte-identical), "morton" for PN patches / bezier circuits, whose
+# (verified byte-identical), "morton" for bezier circuits, whose
 # seam de-duplication is discovery-order sensitive (split changes output at
 # the epsilon level there -- faster, but kept off to preserve baselines).
 # Setting ALGAN_BVH_BUILD forces one builder for every type (A/B escape

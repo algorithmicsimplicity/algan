@@ -395,7 +395,6 @@ def analytic_raster_route_active(
         or not rt_settings.HYBRID_RASTER
         or not rt_settings.ANALYTIC_AA
         or merged.get("tri_frame_valid") is None
-        or int(merged.get("num_pn", 0)) > 0
         or merged.get("textured_active")
         or float(near_clip) > 0.0
     ):
@@ -1088,16 +1087,14 @@ def render_batch_raytraced(
 
         build_deferred_bvhs(merged)
     tri_bvh = merged["tri_bvh"]
-    pn_bvh = merged["pn_bvh"]
     bez_bvh = merged["bez_bvh"]
     # A geometry type absent from the whole batch has only a placeholder BVH;
     # tell the deterministic kernel so it skips that empty traversal per ray.
     if rt_settings.gate_empty_traversals:
         has_tri = 1 if merged["num_triangles"] > 0 else 0
-        has_pn = 1 if merged["num_pn"] > 0 else 0
         has_bez = 1 if merged["num_circuits"] > 0 else 0
     else:  # benchmarking escape hatch: traverse every (possibly empty) tree
-        has_tri = has_pn = has_bez = 1
+        has_tri = has_bez = 1
     t_val = _get_tonemap_t_val()
     # The scene builder has already reduced every geometry type's per-frame
     # bounds/edge geometry to conservative batch-wide coverage-possibility bits.
@@ -1117,7 +1114,6 @@ def render_batch_raytraced(
         and not any(
             (
                 merged.get("tri_has_extent", False),
-                merged.get("pn_has_extent", False),
                 (
                     merged.get("bez_has_visible", False)
                     and merged.get("bez_has_nondegenerate_edges", False)
@@ -1169,7 +1165,6 @@ def render_batch_raytraced(
         else:
             batch_has_translucent = (
                 merged.get("tri_has_translucent", True)
-                or merged.get("pn_has_translucent", True)
                 or merged.get("bez_has_translucent", True)
                 or merged.get("has_uncertain_texture_alpha", True)
             )
@@ -1330,7 +1325,6 @@ def render_batch_raytraced(
                     accum.zero_()
             # Coplanar layer order: circuits < triangles < PN patches.
             layer_offset_triangles = float(merged["num_circuits"])
-            layer_offset_pn = layer_offset_triangles + float(merged["num_triangles"])
             shared_args = (
                 tri_bvh.blocks,
                 tri_bvh.node_miss,
@@ -1345,15 +1339,6 @@ def render_batch_raytraced(
                 merged["tri_tex_meta"],
                 merged["textures"],
                 int(merged["num_colored_triangles"]),
-                pn_bvh.blocks,
-                pn_bvh.node_miss,
-                pn_bvh.leaf_prim,
-                pn_bvh.leaf_tspan,
-                pn_bvh.first_leaf,
-                merged["pn_ctrl"],
-                merged["pn_norm"],
-                merged["pn_extra"],
-                merged["pn_colors"],
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
@@ -1376,7 +1361,6 @@ def render_batch_raytraced(
                 float(width // 2),
                 float(height // 2),
                 layer_offset_triangles,
-                layer_offset_pn,
                 int(MAX_BOUNCES),
                 1 if transparent_background else 0,
             )
@@ -1388,7 +1372,6 @@ def render_batch_raytraced(
                     *shared_args,
                     samples_eff,
                     float(INDIRECT_BOUNCE_STRENGTH),
-                    merged["pn_obb"],
                     out,
                     accum,
                 )
@@ -1410,7 +1393,6 @@ def render_batch_raytraced(
                     with memory.temp():
                         raytrace_render_wavefront(
                             tri_bvh,
-                            pn_bvh,
                             bez_bvh,
                             merged,
                             cam_origin,
@@ -1425,9 +1407,7 @@ def render_batch_raytraced(
                             float(width // 2),
                             float(height // 2),
                             layer_offset_triangles,
-                            layer_offset_pn,
                             has_tri,
-                            has_pn,
                             has_bez,
                             int(MAX_BOUNCES),
                             light_pos,
@@ -1860,7 +1840,6 @@ def _run_wavefront_tiles(
 
 def raytrace_render_wavefront(
     tri_bvh,
-    pn_bvh,
     bez_bvh,
     merged,
     cam_origin,
@@ -1875,9 +1854,7 @@ def raytrace_render_wavefront(
     half_screen_w,
     half_screen_h,
     layer_offset_triangles,
-    layer_offset_pn,
     has_tri,
-    has_pn,
     has_bez,
     max_bounces,
     light_pos,
@@ -1957,7 +1934,6 @@ def raytrace_render_wavefront(
     if merged.get("textured_active") and not uses_extended_features:
         return _raytrace_render_wavefront_textured(
             tri_bvh,
-            pn_bvh,
             bez_bvh,
             merged,
             cam_origin,
@@ -1972,9 +1948,7 @@ def raytrace_render_wavefront(
             half_screen_w,
             half_screen_h,
             layer_offset_triangles,
-            layer_offset_pn,
             has_tri,
-            has_pn,
             has_bez,
             max_bounces,
             light_pos,
@@ -1999,7 +1973,6 @@ def raytrace_render_wavefront(
     if use_sorted:
         return _raytrace_render_wavefront_sorted(
             tri_bvh,
-            pn_bvh,
             bez_bvh,
             merged,
             cam_origin,
@@ -2014,9 +1987,7 @@ def raytrace_render_wavefront(
             half_screen_w,
             half_screen_h,
             layer_offset_triangles,
-            layer_offset_pn,
             has_tri,
-            has_pn,
             has_bez,
             max_bounces,
             light_pos,
@@ -2116,7 +2087,6 @@ def raytrace_render_wavefront(
     # separate funcs -- a mesh scene's flat triangles and its PN patches each
     # get their own gate.
     tri_pids = _frag_pid_mask(merged, "tri", has_tri)
-    pn_pids = _frag_pid_mask(merged, "pn", has_pn)
     # Hybrid raster front-end: replace iteration zero with an opaque typed
     # visibility buffer plus ordered transparent fragment runs. PN patches are
     # conservatively routed to the classic path without altering their geometry.
@@ -2127,7 +2097,6 @@ def raytrace_render_wavefront(
         rt_settings.HYBRID_RASTER
         and merged.get("tri_frame_valid") is not None
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
-        and merged["num_pn"] == 0
         and not merged.get("textured_active")
         and mem_trim == 0
         and len(frag_scatters) == 0
@@ -2165,12 +2134,11 @@ def raytrace_render_wavefront(
         # Deferred-BVH batch (scene_builder._finalize_bvhs): build the real
         # trees and rebind everything derived from the placeholders. Deferral
         # implies mem_trim was inactive at merge, so t_bvh is plain tri_bvh.
-        nonlocal tri_bvh, pn_bvh, bez_bvh, t_bvh, bvh_refit
+        nonlocal tri_bvh, bez_bvh, t_bvh, bvh_refit
         from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
 
         build_deferred_bvhs(merged)
         tri_bvh = merged["tri_bvh"]
-        pn_bvh = merged["pn_bvh"]
         bez_bvh = merged["bez_bvh"]
         t_bvh = tri_bvh
         bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
@@ -2212,7 +2180,6 @@ def raytrace_render_wavefront(
         eo, ew, eh, ei = env_meta if env_meta is not None else (0, 0, 0, 0.0)
         layer_values = [
             float(layer_offset_triangles),
-            float(layer_offset_pn),
             float(eo),
             float(ew),
             float(eh),
@@ -2235,7 +2202,7 @@ def raytrace_render_wavefront(
             extended=int(env_meta is not None or far_clip > 0.0),
         ):
             layer_offsets_t = _arena_values(
-                memory, [float(layer_offset_triangles), float(layer_offset_pn)], f32
+                memory, [float(layer_offset_triangles)], f32
             )
 
     tri_screen = None
@@ -2311,13 +2278,6 @@ def raytrace_render_wavefront(
                     t_bvh.leaf_tspan,
                     int(t_bvh.first_leaf),
                     a_pos,
-                    pn_bvh.blocks,
-                    pn_bvh.node_miss,
-                    pn_bvh.leaf_prim,
-                    pn_bvh.leaf_tspan,
-                    int(pn_bvh.first_leaf),
-                    merged["pn_ctrl"],
-                    merged["pn_obb"],
                     bez_bvh.blocks,
                     bez_bvh.node_miss,
                     bez_bvh.leaf_prim,
@@ -2331,11 +2291,6 @@ def raytrace_render_wavefront(
                     merged["tri_opaque_bvh"].leaf_prim,
                     merged["tri_opaque_bvh"].leaf_tspan,
                     int(merged["tri_opaque_bvh"].first_leaf),
-                    merged["pn_opaque_bvh"].blocks,
-                    merged["pn_opaque_bvh"].node_miss,
-                    merged["pn_opaque_bvh"].leaf_prim,
-                    merged["pn_opaque_bvh"].leaf_tspan,
-                    int(merged["pn_opaque_bvh"].first_leaf),
                     merged["bez_opaque_bvh"].blocks,
                     merged["bez_opaque_bvh"].node_miss,
                     merged["bez_opaque_bvh"].leaf_prim,
@@ -2343,10 +2298,8 @@ def raytrace_render_wavefront(
                     int(merged["bez_opaque_bvh"].first_leaf),
                     pixel_world_scale,
                     float(layer_offset_triangles),
-                    float(layer_offset_pn),
                     bvh_refit,
                     int(has_tri),
-                    int(has_pn),
                     int(has_bez),
                     opaque_closest,
                     opaque_prepass,
@@ -2385,16 +2338,6 @@ def raytrace_render_wavefront(
                     merged["textures"],
                     int(merged["num_colored_triangles"]),
                     col_row_arr,
-                    pn_bvh.blocks,
-                    pn_bvh.node_miss,
-                    pn_bvh.leaf_prim,
-                    pn_bvh.leaf_tspan,
-                    int(pn_bvh.first_leaf),
-                    merged["pn_ctrl"],
-                    merged["pn_norm"],
-                    merged["pn_extra"],
-                    merged["pn_colors"],
-                    merged["pn_obb"],
                     bez_bvh.blocks,
                     bez_bvh.node_miss,
                     bez_bvh.leaf_prim,
@@ -2411,12 +2354,10 @@ def raytrace_render_wavefront(
                     frag_pipelines,
                     frag_scatters,
                     int(tri_pids),
-                    int(pn_pids),
                     int(shadow_flag),
                     int(refraction_flag),
                     bvh_refit,
                     int(has_tri),
-                    int(has_pn),
                     int(has_bez),
                     0,
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
@@ -2426,8 +2367,6 @@ def raytrace_render_wavefront(
                     1,  # compact: rs_int[:, 4] holds the accumulator row
                     a_matid,
                     a_mat,
-                    merged["pn_mat_id"],
-                    merged["pn_mat"],
                     light_pos,
                     light_col,
                     int(num_lights),
@@ -2569,10 +2508,8 @@ def raytrace_render_wavefront(
                                 rs_alloc,
                                 shadow_flag,
                                 t_bvh,
-                                pn_bvh,
                                 bez_bvh,
                                 layer_offset_triangles,
-                                layer_offset_pn,
                                 max_bounces,
                             )
                     except (InsufficientMemoryException, RuntimeError) as exc:
@@ -2761,10 +2698,8 @@ def raytrace_render_wavefront(
                     rs_alloc,
                     shadow_flag,
                     t_bvh,
-                    pn_bvh,
                     bez_bvh,
                     layer_offset_triangles,
-                    layer_offset_pn,
                     max_bounces,
                     prefill=1 if raster_prefill else 0,
                     env_active=1 if env_active else 0,
@@ -2811,13 +2746,6 @@ def raytrace_render_wavefront(
                     t_bvh.leaf_tspan,
                     int(t_bvh.first_leaf),
                     a_pos,
-                    pn_bvh.blocks,
-                    pn_bvh.node_miss,
-                    pn_bvh.leaf_prim,
-                    pn_bvh.leaf_tspan,
-                    int(pn_bvh.first_leaf),
-                    merged["pn_ctrl"],
-                    merged["pn_obb"],
                     bez_bvh.blocks,
                     bez_bvh.node_miss,
                     bez_bvh.leaf_prim,
@@ -2831,11 +2759,6 @@ def raytrace_render_wavefront(
                     merged["tri_opaque_bvh"].leaf_prim,
                     merged["tri_opaque_bvh"].leaf_tspan,
                     int(merged["tri_opaque_bvh"].first_leaf),
-                    merged["pn_opaque_bvh"].blocks,
-                    merged["pn_opaque_bvh"].node_miss,
-                    merged["pn_opaque_bvh"].leaf_prim,
-                    merged["pn_opaque_bvh"].leaf_tspan,
-                    int(merged["pn_opaque_bvh"].first_leaf),
                     merged["bez_opaque_bvh"].blocks,
                     merged["bez_opaque_bvh"].node_miss,
                     merged["bez_opaque_bvh"].leaf_prim,
@@ -2843,10 +2766,8 @@ def raytrace_render_wavefront(
                     int(merged["bez_opaque_bvh"].first_leaf),
                     pixel_world_scale,
                     float(layer_offset_triangles),
-                    float(layer_offset_pn),
                     bvh_refit,
                     int(has_tri),
-                    int(has_pn),
                     int(has_bez),
                     opaque_closest,
                     opaque_prepass,
@@ -2885,16 +2806,6 @@ def raytrace_render_wavefront(
                     merged["textures"],
                     int(merged["num_colored_triangles"]),
                     col_row_arr,
-                    pn_bvh.blocks,
-                    pn_bvh.node_miss,
-                    pn_bvh.leaf_prim,
-                    pn_bvh.leaf_tspan,
-                    int(pn_bvh.first_leaf),
-                    merged["pn_ctrl"],
-                    merged["pn_norm"],
-                    merged["pn_extra"],
-                    merged["pn_colors"],
-                    merged["pn_obb"],
                     bez_bvh.blocks,
                     bez_bvh.node_miss,
                     bez_bvh.leaf_prim,
@@ -2911,12 +2822,10 @@ def raytrace_render_wavefront(
                     frag_pipelines,
                     frag_scatters,
                     int(tri_pids),
-                    int(pn_pids),
                     int(shadow_flag),
                     int(refraction_flag),
                     bvh_refit,
                     int(has_tri),
-                    int(has_pn),
                     int(has_bez),
                     0,
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
@@ -2926,8 +2835,6 @@ def raytrace_render_wavefront(
                     0,  # compact: dense tiles accumulate at the ray's pixel
                     a_matid,
                     a_mat,
-                    merged["pn_mat_id"],
-                    merged["pn_mat"],
                     light_pos,
                     light_col,
                     int(num_lights),
@@ -2990,7 +2897,6 @@ def raytrace_render_wavefront(
 
 def _raytrace_render_wavefront_textured(
     tri_bvh,
-    pn_bvh,
     bez_bvh,
     merged,
     cam_origin,
@@ -3005,9 +2911,7 @@ def _raytrace_render_wavefront_textured(
     half_screen_w,
     half_screen_h,
     layer_offset_triangles,
-    layer_offset_pn,
     has_tri,
-    has_pn,
     has_bez,
     max_bounces,
     light_pos,
@@ -3088,13 +2992,6 @@ def _raytrace_render_wavefront_textured(
                 tri_bvh.leaf_tspan,
                 int(tri_bvh.first_leaf),
                 merged["tri_pos"],
-                pn_bvh.blocks,
-                pn_bvh.node_miss,
-                pn_bvh.leaf_prim,
-                pn_bvh.leaf_tspan,
-                int(pn_bvh.first_leaf),
-                merged["pn_ctrl"],
-                merged["pn_obb"],
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
                 bez_bvh.leaf_prim,
@@ -3108,11 +3005,6 @@ def _raytrace_render_wavefront_textured(
                 merged["tri_opaque_bvh"].leaf_prim,
                 merged["tri_opaque_bvh"].leaf_tspan,
                 int(merged["tri_opaque_bvh"].first_leaf),
-                merged["pn_opaque_bvh"].blocks,
-                merged["pn_opaque_bvh"].node_miss,
-                merged["pn_opaque_bvh"].leaf_prim,
-                merged["pn_opaque_bvh"].leaf_tspan,
-                int(merged["pn_opaque_bvh"].first_leaf),
                 merged["bez_opaque_bvh"].blocks,
                 merged["bez_opaque_bvh"].node_miss,
                 merged["bez_opaque_bvh"].leaf_prim,
@@ -3120,10 +3012,8 @@ def _raytrace_render_wavefront_textured(
                 int(merged["bez_opaque_bvh"].first_leaf),
                 pixel_world_scale,
                 float(layer_offset_triangles),
-                float(layer_offset_pn),
                 0,
                 int(has_tri),
-                int(has_pn),
                 int(has_bez_eff),
                 0,
                 0,
@@ -3307,7 +3197,6 @@ def _frag_pid_mask(merged, prefix, active, _record=True):
 
 def _raytrace_render_wavefront_sorted(
     tri_bvh,
-    pn_bvh,
     bez_bvh,
     merged,
     cam_origin,
@@ -3322,9 +3211,7 @@ def _raytrace_render_wavefront_sorted(
     half_screen_w,
     half_screen_h,
     layer_offset_triangles,
-    layer_offset_pn,
     has_tri,
-    has_pn,
     has_bez,
     max_bounces,
     light_pos,
@@ -3397,14 +3284,6 @@ def _raytrace_render_wavefront_sorted(
             fn, sc = _resolve(int(pid))
             has_custom_scatter |= sc is not default_scatter
             buckets.append(((1 << 8) | int(pid), fn, sc, merged["tri_mat"]))
-    if merged["num_pn"] > 0:
-        pn_material_ids = merged.get("pn_material_ids")
-        if pn_material_ids is None:
-            pn_material_ids = torch.unique(merged["pn_mat_id"].detach().cpu()).tolist()
-        for pid in pn_material_ids:
-            fn, sc = _resolve(int(pid))
-            has_custom_scatter |= sc is not default_scatter
-            buckets.append(((2 << 8) | int(pid), fn, sc, merged["pn_mat"]))
     # A custom scatter may spawn transmitted branches, which need the glass
     # split pool (and the peel's IOR sampling) even in a scene with no
     # refractive surface.
@@ -3470,13 +3349,6 @@ def _raytrace_render_wavefront_sorted(
                     tri_bvh.leaf_tspan,
                     int(tri_bvh.first_leaf),
                     merged["tri_pos"],
-                    pn_bvh.blocks,
-                    pn_bvh.node_miss,
-                    pn_bvh.leaf_prim,
-                    pn_bvh.leaf_tspan,
-                    int(pn_bvh.first_leaf),
-                    merged["pn_ctrl"],
-                    merged["pn_obb"],
                     bez_bvh.blocks,
                     bez_bvh.node_miss,
                     bez_bvh.leaf_prim,
@@ -3490,11 +3362,6 @@ def _raytrace_render_wavefront_sorted(
                     merged["tri_opaque_bvh"].leaf_prim,
                     merged["tri_opaque_bvh"].leaf_tspan,
                     int(merged["tri_opaque_bvh"].first_leaf),
-                    merged["pn_opaque_bvh"].blocks,
-                    merged["pn_opaque_bvh"].node_miss,
-                    merged["pn_opaque_bvh"].leaf_prim,
-                    merged["pn_opaque_bvh"].leaf_tspan,
-                    int(merged["pn_opaque_bvh"].first_leaf),
                     merged["bez_opaque_bvh"].blocks,
                     merged["bez_opaque_bvh"].node_miss,
                     merged["bez_opaque_bvh"].leaf_prim,
@@ -3502,10 +3369,8 @@ def _raytrace_render_wavefront_sorted(
                     int(merged["bez_opaque_bvh"].first_leaf),
                     pixel_world_scale,
                     float(layer_offset_triangles),
-                    float(layer_offset_pn),
                     0,
                     int(has_tri),
-                    int(has_pn),
                     int(has_bez),
                     0,
                     0,
@@ -3549,18 +3414,12 @@ def _raytrace_render_wavefront_sorted(
                     merged["tri_tex_meta"],
                     merged["textures"],
                     int(merged["num_colored_triangles"]),
-                    merged["pn_ctrl"],
-                    merged["pn_norm"],
-                    merged["pn_extra"],
-                    merged["pn_colors"],
                     merged["circuit_meta"],
                     merged["circuit_colors"],
                     merged["circuit_border_colors"],
                     merged["tri_mat_id"],
-                    merged["pn_mat_id"],
                     int(refraction_flag),
                     int(has_tri),
-                    int(has_pn),
                     int(has_bez),
                     int(time_start),
                     int(width),
@@ -3598,14 +3457,6 @@ def _raytrace_render_wavefront_sorted(
                         merged["tri_tex_meta"],
                         merged["textures"],
                         int(merged["num_colored_triangles"]),
-                        pn_bvh.blocks,
-                        pn_bvh.node_miss,
-                        pn_bvh.leaf_prim,
-                        pn_bvh.leaf_tspan,
-                        int(pn_bvh.first_leaf),
-                        merged["pn_ctrl"],
-                        merged["pn_obb"],
-                        merged["pn_colors"],
                         bez_bvh.blocks,
                         bez_bvh.node_miss,
                         bez_bvh.leaf_prim,
@@ -3618,9 +3469,7 @@ def _raytrace_render_wavefront_sorted(
                         merged["edge_accel"],
                         pixel_world_scale,
                         float(layer_offset_triangles),
-                        float(layer_offset_pn),
                         int(has_tri),
-                        int(has_pn),
                         int(has_bez),
                         light_pos,
                         int(num_lights),

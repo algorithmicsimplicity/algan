@@ -21,7 +21,6 @@ from algan.rendering.logical_pn import (
 )
 from algan.rendering.raytracing.primitives import (
     LogicalPNTrianglePrimitive,
-    RayTracedPNTrianglePrimitive,
     RayTracedTrianglePrimitive,
 )
 from algan.scene_manager import SceneManager
@@ -354,7 +353,6 @@ def test_logical_pn_packs_only_regular_flat_triangle_geometry():
 
     assert result is primitive
     assert isinstance(primitive, RayTracedTrianglePrimitive)
-    assert not isinstance(primitive, RayTracedPNTrianglePrimitive)
     assert hasattr(primitive, "_rt_tri_pos")
     assert not hasattr(primitive, "_rt_pn_ctrl")
     assert primitive._rt_tri_pos.shape[0] == 2
@@ -567,7 +565,6 @@ def test_surface_builds_new_logical_pn_primitive_with_both_tolerances():
     primitive = sphere.get_render_primitives()
 
     assert isinstance(primitive, LogicalPNTrianglePrimitive)
-    assert not isinstance(primitive, RayTracedPNTrianglePrimitive)
     assert sphere.geometry_tolerance == 0.04
     assert sphere.render_tolerance == 0.75
     assert primitive.render_tolerance == 0.75

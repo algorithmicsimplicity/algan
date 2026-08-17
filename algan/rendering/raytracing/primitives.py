@@ -27,13 +27,11 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
     batch_arange,
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
-from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
 from algan.rendering.raytracing.logical_pn_taichi import (
     bezier_chord_hull_error,
     pn_edge_chord_error,
     pn_patch_flatness_error,
 )
-from algan.rendering.raytracing.pn_patch import pn_obb
 from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
 from algan.rendering.raytracing.settings import (
     _MAT_DEFAULTS,
@@ -759,12 +757,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     """Adaptively diced logical PN patches rendered as ordinary flat triangles.
 
-    This class is deliberately unrelated to
-    :class:`RayTracedPNTrianglePrimitive`: the latter ray-intersects curved
-    patches directly and is retained only for legacy callers.  Logical PN
-    patches use their fixed construction-time topology as source geometry and
-    dice into flat triangles for each materialized camera frame.  The packed
-    result follows the normal flat-triangle/STBVH path.
+    Logical PN patches use their fixed construction-time topology as source
+    geometry and dice into flat triangles for each materialized camera frame.
+    The packed result follows the normal flat-triangle/STBVH path -- no curved
+    patch primitive reaches the ray tracer or the STBVH.
 
     **Every patch picks its own subdivision level, in every frame.**  A patch
     that fills the screen costs what it needs and nothing else pays for it --
@@ -1550,62 +1546,6 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return self._pack_projected_flat_geometry(camera)
 
 
-class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
-    """Curved point-normal (PN) triangle batch: each triangle is rendered as
-    the quadratic Bezier (Steiner) triangle whose mid-edge control points
-    bend the surface to respect the vertex normals (see
-    :mod:`algan.rendering.raytracing.pn_patch`), so coarsely tessellated
-    smooth surfaces keep smooth silhouettes. Construction, batching and
-    vertex shading are inherited from the flat triangles; only the packed
-    geometry differs (monomial patch coefficients instead of corner
-    positions) and the trace kernels intersect rays with the curved patch
-    (up to four hits per ray). Triangles with zero or face-constant normals
-    stay exactly flat, and adjacent patches share boundary curves, so PN
-    meshes stay watertight.
-    """
-
-    def project_to_screen(self, camera, light_sources):
-        self._shade_vertex_colors(camera, light_sources)
-
-        corners = self.corners.float()
-        normals = self.normals.float()
-        # Hot/cold split as for flat triangles, with the patch's
-        # monomial coefficients as the hot geometry. corners and
-        # normals share a time dimension by construction (the batching
-        # constructor broadcasts them together).
-        control_points = pn_control_points(corners, normals)
-        self._rt_pn_ctrl = pn_patch_coefficients(control_points).contiguous()
-        # Tight oriented bounding box per patch: the trace kernel tests it
-        # before the matrix-pencil solve to reject the (many) candidates
-        # whose loose axis-aligned leaf box the ray pierces but whose actual
-        # (often thin, diagonal) patch it misses.
-        self._rt_pn_obb = pn_obb(control_points).contiguous()
-        self._rt_pn_norm = normals.reshape(
-            normals.shape[0], normals.shape[1], 9
-        ).contiguous()
-        self._rt_pn_extra = self._pack_surface_extra("pn surface params")
-        self._rt_pn_colors = self.colors.float().contiguous()
-        self._rt_pn_mat_id, self._rt_pn_mat = self._pack_material()
-        self._rt_num_frames = camera.ray_origin.shape[0]
-
-        # Texture maps (color / material / normal). PN patches have no kernel
-        # argument budget left (the general wavefront shade kernel is at
-        # Taichi's 64-arg ceiling), so unlike flat triangles the UVs and the
-        # per-patch texture metadata are folded into the cold pn_extra array at
-        # merge time (see _merge_scene); here we just stash the raw maps + UVs.
-        self._rt_pn_uvs = self._stash_texture_maps()
-
-        # The patch lies in the convex hull of its control points, so
-        # the control net bounds it.
-        self._pack_frame_visibility(
-            control_points.amin(-2),
-            control_points.amax(-2),
-            self._rt_pn_colors,
-            "pn bounds/colors",
-        )
-
-        self._release_unpacked_geometry()
-        return self
 
 
 def _evaluate_cubic_bezier_batch(p, t):

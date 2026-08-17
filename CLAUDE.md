@@ -151,7 +151,7 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 - `Mob` (`animatable_base/mob.py` plus the `mob_*.py` mixins): 3D location/basis/color, spatial transforms, screen-relative layout, `become` morphing, and the shader/material API (`set_shader`, `set_fragment_shader`, `set_material` — all must be called *before* spawning).
 - Attribute changes on a parent propagate to children (the hierarchy is `children`/`components`; `Group.mobs` aliases `children`).
 - Shapes: 2D shapes (`shapes_2d.py`) and `Text`/`Tex` (`text.py`) are cubic bezier circuits (`bezier_circuit.py`); 3D shapes (`shapes_3d.py`) are triangle meshes via `Surface` (`surfaces/surface.py`); `ThreeDModelMob` (`three_d_models/`) imports .glb/.fbx; `ManimMob` wraps Manim mobjects.
-- To be renderable, a mob defines `get_render_primitives()` returning flat triangles, PN curved triangles, or cubic bezier circuits.
+- To be renderable, a mob defines `get_render_primitives()` returning flat triangles or cubic bezier circuits. Curved surfaces reach the renderer as *logical PN* patches diced to flat triangles per frame (`algan/rendering/logical_pn.py`); no curved-patch primitive exists in the renderer.
 - Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, ...) rather than ad-hoc reflectivity/roughness APIs.
 
 ### Rendering pipeline (`algan/rendering/`)

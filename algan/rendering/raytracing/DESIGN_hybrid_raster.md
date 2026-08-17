@@ -543,6 +543,13 @@ produced bogus numbers — see §10's measurement caveat).
 
 6.3 PN patches: preserved, classic fallback — NOT flattened
 -----------------------------------------------------------
+RETIRED. The curved PN-patch renderer this section describes has been deleted:
+nothing ever rebound `RENDERER_REGISTRY.triangle_primitive` to it, so `num_pn`
+was always 0 and the gate never fired. Curved surfaces reach the renderer as
+*logical PN* patches already diced to flat triangles
+(`algan/rendering/logical_pn.py`), which the raster front-end handles like any
+other flat mesh. The original policy note follows for the record.
+
 PN-patch rasterization is out of scope (the curved-patch intersection is not
 worth a rasterizer). The policy is: geometry construction must NOT depend on
 whether a later render batch happens to qualify for the raster front-end.

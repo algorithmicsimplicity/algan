@@ -40,12 +40,10 @@ from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
-from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     logical_pn_control_points,
 )
-from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.utils.file_utils import get_image
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
@@ -2223,44 +2221,21 @@ class Surface(Mob):
 
         return restore
 
-    def _uses_pn_triangles(self):
-        """True if newly created surfaces render as curved point-normal (PN)
-        triangles, i.e. ``enable_ray_tracing(pn_triangles=True)`` is active.
-
-        ``enable_ray_tracing`` rebinds this module's ``TrianglePrimitive`` name
-        to the PN primitive class in that case (and to a flat triangle class
-        otherwise), so checking the currently bound class tells us how the mesh
-        will actually be rendered.
-        """
-        try:
-            from algan.rendering.raytracing.primitives import (
-                RayTracedPNTrianglePrimitive,
-            )
-        except Exception:
-            return False
-        return isinstance(RENDERER_REGISTRY.triangle_primitive, type) and issubclass(
-            RENDERER_REGISTRY.triangle_primitive, RayTracedPNTrianglePrimitive
-        )
-
     def _compute_error(self, coord_function, W, H):
         """Max screen-space deviation in pixels for a ``W x H`` grid.
 
-        With PN (curved) triangles active each triangle is bent to a quadratic
-        patch, so we measure against that patch. Otherwise the surface is drawn
-        as flat triangles, so the resolution must instead make the *flat* mesh
-        approximate the surface to within tolerance.
+        A surface is drawn as flat triangles (logical PN patches dice into them
+        per frame), so the resolution must make the *flat* mesh approximate the
+        surface to within tolerance.
         """
-        if self._uses_pn_triangles():
-            return self._compute_pn_error(coord_function, W, H)
         return self._compute_flat_error(coord_function, W, H)
 
     def _compute_flat_error(self, coord_function, W, H):
         """Max deviation between the flat-triangle mesh and the true surface,
         sampled at a fixed set of barycentric coordinates per triangle.
 
-        Mirrors :meth:`_compute_pn_error` but approximates each triangle by the
-        flat plane through its three corners (linear interpolation of the corner
-        positions) instead of a curved PN patch.
+        Each triangle is approximated by the flat plane through its three
+        corners (linear interpolation of the corner positions).
         """
         device = self.location.device
         grid_u = torch.linspace(0, 1, W, device=device)
@@ -2307,68 +2282,6 @@ class Surface(Mob):
 
         return self._screen_space_error(S_points, P_true)
 
-    def _compute_pn_error(self, coord_function, W, H):
-        device = self.location.device
-        grid_u = torch.linspace(0, 1, W, device=device)
-        grid_v = torch.linspace(0, 1, H, device=device)
-        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing="ij")
-        base_grid = torch.stack([grid_uu, grid_vv], dim=-1)
-
-        grid_points = coord_function(base_grid.clone())
-
-        # Same normals the renderer will build for this grid -- including the
-        # seam and pole merges -- so the tessellation error this estimates is
-        # the error of the patches actually rendered.
-        vertex_normals = compute_grid_vertex_normals(grid_points)
-
-        triangle_uvs = grid_to_triangle_vertices(base_grid)
-        triangle_corners = grid_to_triangle_vertices(grid_points)
-        triangle_normals = grid_to_triangle_vertices(vertex_normals)
-
-        corners_3d = triangle_corners.reshape(-1, 3, 3)
-        normals_3d = triangle_normals.reshape(-1, 3, 3)
-        uvs_2d = triangle_uvs.reshape(-1, 3, 2)
-
-        from algan.rendering.raytracing.pn_patch import (
-            evaluate_pn_patch,
-            pn_control_points,
-            pn_patch_coefficients,
-        )
-
-        control_points = pn_control_points(corners_3d, normals_3d)
-        coefficients = pn_patch_coefficients(control_points)
-
-        bary_coords = torch.tensor(
-            [
-                [1 / 3, 1 / 3],
-                [1 / 2, 0.0],
-                [0.0, 1 / 2],
-                [1 / 2, 1 / 2],
-                [1 / 6, 1 / 6],
-                [1 / 6, 2 / 3],
-                [2 / 3, 1 / 6],
-            ],
-            device=device,
-        )
-
-        coefs = coefficients.unsqueeze(1)
-        u = bary_coords[:, 0].unsqueeze(0)
-        v = bary_coords[:, 1].unsqueeze(0)
-
-        S_points = evaluate_pn_patch(coefs, u, v)
-
-        uv0 = uvs_2d[:, 0, :].unsqueeze(1)
-        uv1 = uvs_2d[:, 1, :].unsqueeze(1)
-        uv2 = uvs_2d[:, 2, :].unsqueeze(1)
-
-        u_expanded = u.unsqueeze(-1)
-        v_expanded = v.unsqueeze(-1)
-        w_expanded = 1.0 - u_expanded - v_expanded
-
-        uv_true = w_expanded * uv0 + u_expanded * uv1 + v_expanded * uv2
-        P_true = coord_function(uv_true.clone())
-
-        return self._screen_space_error(S_points, P_true)
 
     @staticmethod
     def _normalize_texture_shape(tex, channels):
