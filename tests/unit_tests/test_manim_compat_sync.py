@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import torch
 
@@ -46,12 +48,15 @@ def test_parent_move_is_synced_before_direct_manim_compat_transform():
             Group(star).move(UP * 1.35)
 
         # The retained Manim object is synchronized lazily.  Work out exactly
-        # what Manim's next rotation should produce from that synchronized state.
+        # what Manim's next rotation should produce from that synchronized
+        # state.  ``Mob.rotate`` takes degrees about Algan's ``OUT`` and Manim's
+        # takes radians about its own, opposite, ``OUT``; the two conventions
+        # cancel, so the same turn is the same rotation in both.
         expected = star.get_manim_mobject().copy()
-        expected.rotate(0.2)
+        expected.rotate(math.radians(12))
 
         with Off(animation_manager=scene.animation_manager):
-            star.rotate(0.2)
+            star.rotate(12)
 
         np.testing.assert_allclose(
             star.get_manim_mobject().get_center(),

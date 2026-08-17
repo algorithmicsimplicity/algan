@@ -160,10 +160,12 @@ def test_manim_mob_batching_registers_only_the_batched_mob():
 
 
 def test_transforming_a_compat_mob_does_not_leak_morph_targets():
-    """``move_to``/``scale``/``rotate`` morph through a throwaway conversion.
+    """``move_to``/``scale`` morph through a throwaway conversion.
 
     Nothing of that target survives the ``become``, so none of it may be
     registered -- each transform used to leak one actor per Manim submobject.
+    ``rotate`` builds no target at all (it is Algan's own basis rotation), and
+    is here to hold that: whatever a transform does, the actor list is unmoved.
     """
     axes = algan.Axes(x_range=(-3, 3, 1), y_range=(-1.5, 1.5, 0.5))
     with algan.Off():
@@ -172,7 +174,7 @@ def test_transforming_a_compat_mob_does_not_leak_morph_targets():
 
     with algan.Off():
         axes.scale(1.5)
-        axes.rotate(0.25)
+        axes.rotate(15)
 
     assert len(axes.scene.actors) == before
 

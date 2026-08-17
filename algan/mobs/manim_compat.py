@@ -24,6 +24,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import Color
+from algan.constants.spatial import OUT
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
@@ -469,7 +470,11 @@ class ManimCompatMob(ManimMob):
         return self.become(target, detach_history=False)
 
     # These names also exist on Algan's Mob.  Override them so compatibility
-    # objects retain Manim's units, keyword arguments, and backing geometry.
+    # objects retain Manim's keyword arguments and backing geometry.  Where the
+    # two libraries disagree about what an argument *means*, Algan's meaning
+    # wins: these are Algan Mobs, animated on Algan's timeline, and a name that
+    # silently changes units between one Mob and the next is a trap.  See
+    # ``rotate``, the only one of them where the two readings differ.
     def move_to(
         self,
         point_or_mobject,
@@ -522,15 +527,38 @@ class ManimCompatMob(ManimMob):
         )
         return self._animate_to_manim(source, before_source=before)
 
-    def rotate(self, angle, axis=_manim.OUT, about_point=None, **kwargs):
-        before, source = self._prepare_manim_edit()
-        source.rotate(
-            angle,
-            axis=to_manim(axis),
-            about_point=None if about_point is None else to_manim(about_point),
-            **{key: to_manim(value) for key, value in kwargs.items()},
-        )
-        return self._animate_to_manim(source, before_source=before)
+    def rotate(
+        self,
+        num_degrees: float | torch.Tensor,
+        axis: torch.Tensor = OUT,
+        about_point: torch.Tensor | None = None,
+    ) -> Mob:
+        """Rotate the Mob, using Algan's rotation rather than Manim's.
+
+        ``rotate`` is one of the names this class shares with :class:`~.Mob`,
+        and the two libraries mean different things by it: Algan measures
+        ``num_degrees`` in degrees where Manim's angle is in radians, and an
+        explicit ``axis`` turns the opposite way in each (their default ``OUT``
+        are opposite vectors, which is exactly what makes the *default*
+        rotation agree).  A compatibility Mob is animated as an Algan Mob, so
+        this follows :meth:`~.MobOrientationMixin.rotate` exactly -- degrees,
+        Algan's direction constants, and a real rotation of the Mob's basis
+        that sweeps from 0 rather than a linear morph between the two poses
+        (which cannot express a turn of 180 degrees, let alone a full one).
+        The backing Manim object picks the new pose up through the usual lazy
+        synchronization.
+
+        Only the pivot is taken from Manim: it rotates about the composite's
+        center, whereas Algan's generic implementation uses ``location``, the
+        center of the backing Mobject's *own* points.  The two differ for every
+        Mob that also has submobjects -- an :class:`Arrow` would otherwise turn
+        about its shaft rather than in place -- so ``about_point`` defaults to
+        :meth:`~.MobLayoutMixin.get_center`, which agrees with Manim's
+        ``get_center`` for these objects.
+        """
+        if about_point is None:
+            about_point = self.get_center()
+        return Mob.rotate(self, num_degrees, axis, about_point)
 
     def set(self, **kwargs):
         # Algan's internal morphing path calls ``set`` with animatable state
