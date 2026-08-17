@@ -2590,7 +2590,7 @@ class Surface(Mob):
             LogicalPNTrianglePrimitive,
         )
 
-        return LogicalPNTrianglePrimitive(
+        primitive = LogicalPNTrianglePrimitive(
             corners=corners,
             colors=colors,
             normals=normals,
@@ -2607,6 +2607,19 @@ class Surface(Mob):
                 for k, v in self.grid.get_shader_params().items()
             },
         )
+        # A packed collection (point-cloud spheres are the main case) flattens
+        # several INDEPENDENT grids into one primitive, so "one member = one
+        # surface" would union every packed sphere into a single surface and let
+        # the analytic-AA run rule sum coverage across objects that merely
+        # overlap. Declare one shell per packed grid; the flatten keeps each
+        # grid's triangles contiguous, so this is a repeat_interleave.
+        packed = self._packed_grid_count()
+        if packed is not None and packed > 1:
+            per_grid = (corners.shape[1] // 3) // packed
+            primitive.mesh_ids = torch.arange(
+                packed, dtype=torch.int32, device=corners.device
+            ).repeat_interleave(per_grid)
+        return primitive
 
     def coord_function(self, uv: torch.Tensor):
         """Map the surface's ``(u, v)`` parameters to positions in space.

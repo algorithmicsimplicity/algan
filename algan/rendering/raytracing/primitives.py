@@ -161,6 +161,71 @@ def _pn_criterion_inputs(control_points, edge_controls, cam_o, sp, sb, front_sig
     )
 
 
+def _mesh_ids_from_collection(members, counts):
+    """Resolve a triangle collection's per-triangle SURFACE ids.
+
+    Returns ``(ids, n)`` where ``ids`` is an int32 ``[Ntri]`` tensor of
+    collection-local surface indices and ``n`` the number of distinct ones, or
+    ``(None, None)`` when no member declares identity -- in which case the
+    caller's per-member ``counts`` already say it and nothing changes.
+
+    Two declarations, both optional attributes a mob stamps on the primitive it
+    builds:
+
+    ``mesh_key``
+        An opaque hashable. Consecutive members carrying the same key are ONE
+        surface. This is what makes a ``Polyhedron`` a single mesh: it hands the
+        batcher one member per triangle, and without a key a Cube's twelve
+        coplanar triangles are twelve surfaces that can never share a run.
+    ``mesh_ids``
+        Per-triangle local shell indices for a member that is SEVERAL surfaces --
+        every sphere of a packed grid, every disconnected part of an imported
+        mesh. Needs no contiguity: the ids are threaded per triangle, not
+        summarized as counts.
+
+    ``mesh_ids`` wins where a member declares both. Keys are matched only
+    against the immediately preceding member, so identity never depends on how
+    far apart two members drifted in the concatenation.
+    """
+    if not any(
+        getattr(m, "mesh_key", None) is not None
+        or getattr(m, "mesh_ids", None) is not None
+        for m in members
+    ):
+        return None, None
+
+    device = members[0].corners.device
+    blocks = []
+    next_id = 0
+    prev_key = None
+    for i, member in enumerate(members):
+        n_tri = int(member.corners.shape[1]) // 3 if counts is None else counts[i]
+        local = getattr(member, "mesh_ids", None)
+        if local is not None:
+            local = torch.as_tensor(local, device=device).reshape(-1).to(torch.int32)
+            if local.shape[0] != n_tri:
+                raise ValueError(
+                    f"mesh_ids has {local.shape[0]} entries for a member of "
+                    f"{n_tri} triangles"
+                )
+            # Renumber into the collection's namespace, preserving distinctness.
+            uniq, inverse = torch.unique(local, return_inverse=True)
+            blocks.append(inverse.to(torch.int32) + next_id)
+            next_id += int(uniq.shape[0])
+            prev_key = None
+            continue
+        key = getattr(member, "mesh_key", None)
+        merges = key is not None and prev_key is not None and key == prev_key
+        if merges:
+            surface = next_id - 1
+        else:
+            surface = next_id
+            next_id += 1
+        blocks.append(torch.full((n_tri,), surface, dtype=torch.int32, device=device))
+        prev_key = key
+    return torch.cat(blocks).contiguous(), next_id
+
+
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
@@ -238,6 +303,19 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._rt_obj_counts = [
                 int(t.corners.shape[1]) // 3 for t in triangle_collection
             ]
+            # A member's count is the right surface granularity only when one
+            # member IS one surface, which is false at both ends: a
+            # ``Polyhedron`` hands the batcher one member per TRIANGLE (a Cube
+            # is twelve, so no run can ever span a face), and a packed-grid
+            # ``Surface`` hands it one member for EVERY packed sphere at once.
+            # Members may therefore declare identity themselves -- ``mesh_key``
+            # to merge with the neighbours sharing it, ``mesh_ids`` to subdivide
+            # into per-triangle shells -- which ``_mesh_ids_from_collection``
+            # resolves into explicit per-triangle ids. ``None`` keeps the
+            # per-member counts, so a mob that declares nothing is unchanged.
+            self._rt_obj_ids, self._rt_obj_ids_n = _mesh_ids_from_collection(
+                triangle_collection, self._rt_obj_counts
+            )
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
             # line up -- except along time: the references are sliced to a
@@ -289,6 +367,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 **shader_kwargs,
             )
             self._rt_obj_counts = None
+            # A lone primitive is one surface unless it declares its own shells
+            # (a packed-grid Surface, a multi-part glTF mesh).
+            self._rt_obj_ids, self._rt_obj_ids_n = _mesh_ids_from_collection(
+                [self], None
+            )
             self._derive_material_surface_params()
 
     def _derive_material_surface_params(self):
@@ -694,10 +777,22 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # levels). Local member indices; the scene merge offsets them per
         # primitive so ids are globally unique. ``_rt_tri_obj_n`` is the id
         # count, kept beside it so the merge needs no device sync to offset.
+        #
+        # Three sources, most specific first: the diced logical-PN map; explicit
+        # per-triangle ids resolved from the members' own ``mesh_key`` /
+        # ``mesh_ids`` declarations (``_mesh_ids_from_collection``); then the
+        # per-member counts, which are what a collection declaring nothing gets.
         pn_obj = getattr(self, "_logical_pn_tri_obj", None)
+        obj_ids = getattr(self, "_rt_obj_ids", None)
         counts = getattr(self, "_rt_obj_counts", None)
+        if not rt_settings.MESH_ID:
+            obj_ids = None
         if pn_obj is not None:
             self._rt_tri_obj = pn_obj
+            self._rt_tri_obj_n = len(counts) if counts else 1
+        elif obj_ids is not None:
+            self._rt_tri_obj = obj_ids.view(1, -1).to(corners.device).contiguous()
+            self._rt_tri_obj_n = int(self._rt_obj_ids_n)
         elif counts:
             self._rt_tri_obj = (
                 torch.repeat_interleave(
@@ -707,11 +802,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 .view(1, -1)
                 .contiguous()
             )
+            self._rt_tri_obj_n = len(counts)
         else:
             self._rt_tri_obj = torch.zeros(
                 (1, corners.shape[1]), dtype=torch.int32, device=corners.device
             )
-        self._rt_tri_obj_n = len(counts) if counts else 1
+            self._rt_tri_obj_n = 1
 
         uvs = self._stash_texture_maps()
         self._rt_tri_uvs = uvs.to(corners.device) if uvs is not None else None

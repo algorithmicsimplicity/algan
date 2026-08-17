@@ -89,6 +89,7 @@ _FIELD_TO_LEGACY = {
         "PROJECT_ON_GPU",
         "PROJECT_GPU_PEAK_FACTOR",
         "PN_CRITERION_KERNEL",
+        "MESH_ID",
         "WF_TEXTURED_FEATURES",
         "WAVEFRONT_SORT_MATERIALS",
         "SHADOWS",

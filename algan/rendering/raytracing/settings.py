@@ -461,6 +461,41 @@ def set_bvh_defer(enabled):
 MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 
 
+# Per-triangle SURFACE identity at the granularity the mob declares, rather than
+# one id per merged COLLECTION MEMBER. The member count is right only when one
+# member is one surface, and it is wrong at both ends: ``Polyhedron`` hands the
+# batcher one member per TRIANGLE (a Cube is twelve members, so the analytic-AA
+# run rule can never span one of its faces), while a packed-grid ``Surface``
+# hands it one member covering EVERY packed sphere at once (so distinct spheres
+# are unioned into one surface). Mobs that know better stamp ``mesh_key`` (merge
+# with the neighbours sharing it) or ``mesh_ids`` (subdivide into per-triangle
+# shells) on the primitive they build, and
+# ``primitives._mesh_ids_from_collection`` resolves those into explicit ids.
+# Off restores the per-member ids exactly, so it is a byte-level A/B switch.
+#
+# DEFAULT OFF pending the run rule's magnitude fix. Coarser identity is more
+# correct -- a Cube's face diagonal becomes an interior edge rather than a
+# boundary between two "surfaces" -- but it also makes the v2 4.2
+# ``U == _AA_MASK_ALL -> corr = 1`` short-circuit fire on facet-boundary pixels
+# where the facets fill all eight sub-pixel samples without covering the pixel's
+# area. Measured on an Icosahedron by benchmarks/_aa_run_gate_check.py: turning
+# this on moves 0.61% of covered pixels into ``union-full``, 125 of them with
+# ``1 - E`` past 0.30. Landing it before the run rule consults E would trade a
+# compositing error for a dilation error. Flip the default with that fix, and
+# re-measure rendered coverage against an exact reference (not this harness,
+# whose per-fragment error metric cannot arbitrate: it does not model the
+# per-sample transmittance that the fine-grained ids get wrong).
+MESH_ID = env_flag("ALGAN_MESH_ID", False)
+
+
+def set_mesh_id(enabled):
+    """Toggle mob-declared surface identity (see ``MESH_ID``). Takes effect at
+    the next batch's primitive build.
+    """
+    global MESH_ID
+    MESH_ID = bool(enabled)
+
+
 def set_merge_dedup_time(enabled):
     """Toggle the merge-time collapse of temporally-constant tables (see
     ``MERGE_DEDUP_TIME``). Takes effect at the next batch's scene merge.

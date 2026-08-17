@@ -1119,6 +1119,14 @@ class Polyhedron(Mob):
             if primitive is None:
                 continue
             primitives.extend(primitive if isinstance(primitive, list) else [primitive])
+        # One member per triangle -- a Cube arrives as twelve. Declare them one
+        # SURFACE so the analytic-AA run rule can span a face's diagonal and a
+        # silhouette corner where two faces tile the same pixel: a polyhedron is
+        # a single closed solid, so summing its exact areas is what tiles mean
+        # (see primitives._mesh_ids_from_collection). Deliberately not done for
+        # Arrow3D, whose children are separate interpenetrating solids.
+        for primitive in primitives:
+            primitive.mesh_key = ("polyhedron", self.id)
         return primitives or None
 
     @staticmethod

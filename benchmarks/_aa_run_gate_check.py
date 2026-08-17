@@ -72,6 +72,7 @@ from algan import (  # noqa: E402
     UP,
     WHITE,
     Cylinder,
+    Icosahedron,
     Off,
     Scene,
     Sphere,
@@ -101,6 +102,13 @@ def _cases():
         corners = torch.stack([a, b, c, a, c, d]).view(2, 3, 3)
         TriangleTriangulated(corners, color=WHITE).spawn()
 
+    def polyhedron():
+        # A Polyhedron arrives as one collection member per TRIANGLE. With
+        # MESH_ID off every triangle is its own surface and no run can span a
+        # facet boundary, so 'corrected' collapses; with it on the solid is one
+        # surface. Run with ALGAN_MESH_ID=0/1 to see the difference.
+        Icosahedron(edge_length=1.4).rotate(18, RIGHT).spawn()
+
     def cylinder():
         Cylinder(radius=0.9, height=1.8).rotate(24, RIGHT).spawn()
 
@@ -113,6 +121,7 @@ def _cases():
 
     return {
         "quad (flat control)": quad,
+        "icosahedron (flat)": polyhedron,
         "cylinder (default)": cylinder,
         "cylinder (256x2)": cylinder_fine,
         "sphere (192x96)": sphere_fine,
