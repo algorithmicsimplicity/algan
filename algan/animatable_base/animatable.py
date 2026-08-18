@@ -159,6 +159,30 @@ def animated_function(function=None, *, animated_args=None, unique_args=()):
     return _decorate
 
 
+def attr_ranges_for_mob(attr_timeline, mob):
+    """One mob's own rows of an attribute buffer, as a :class:`RowRanges`.
+
+    Shared by the descendant-union walk in
+    :meth:`Animatable._get_attr_ranges` and by the packed-subtree distribution
+    in :meth:`~algan.animatable_base.mob.Mob._distribute_over_packed_subtree`,
+    which has to know which buffer rows each descendant owns.
+    """
+    mob_inds = attr_timeline.mob_id_to_inds[mob.id]
+    sub_inds = getattr(mob, "data_sub_inds", None)
+    if sub_inds is None:
+        return attr_timeline.ranges_for(mob.id)
+    # Packed geometry components commonly store only one row for attributes
+    # they do not consume (for example control-point colors/bases).  Their
+    # location rows are still independently indexed, but a singleton attribute
+    # remains a shared broadcast row instead of being duplicated for every
+    # geometry point.
+    if mob_inds.numel() == 1:
+        return attr_timeline.ranges_for(mob.id)
+    selected = mob_inds[sub_inds]
+    ranges = RowRanges.from_contiguous_blocks([selected])
+    return ranges if ranges is not None else RowRanges(None, tensor=selected)
+
+
 class Animatable:
     """Base class for anything that needs animation.
 
@@ -895,20 +919,7 @@ class Animatable:
         attr_timeline = timeline.attr_to_timeline[key]
 
         def ranges_for_mob(mob):
-            mob_inds = attr_timeline.mob_id_to_inds[mob.id]
-            sub_inds = getattr(mob, "data_sub_inds", None)
-            if sub_inds is None:
-                return attr_timeline.ranges_for(mob.id)
-            # Packed geometry components commonly store only one row for
-            # attributes they do not consume (for example control-point
-            # colors/bases).  Their location rows are still independently
-            # indexed, but a singleton attribute remains a shared broadcast
-            # row instead of being duplicated for every geometry point.
-            if mob_inds.numel() == 1:
-                return attr_timeline.ranges_for(mob.id)
-            selected = mob_inds[sub_inds]
-            ranges = RowRanges.from_contiguous_blocks([selected])
-            return ranges if ranges is not None else RowRanges(None, tensor=selected)
+            return attr_ranges_for_mob(attr_timeline, mob)
 
         if not include_descendants:
             return ranges_for_mob(self)

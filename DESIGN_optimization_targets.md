@@ -35,6 +35,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P8b** the `dim_mobs` family, collated in the video project | **shipped** -- `map_animated_attribute` replaced the per-descendant loops. With P8 this took `save_video` 396.7 s -> **348.75 s** and `set_state_to_times` own time 92.5 s -> **56.4 s (1.64x)**, reproducing the harness prediction end to end. See the 2026-08-16 re-profile |
 | **P10** the batched surface build | **measured -- the top item.** `get_batch_of_primitives`' own time was never orchestration: **85.35 s (21.9%)** is `get_render_primitives_batched`, which **had no profiler hook**. With the hook added the stage's own time drops 23.8% -> **4.5%**. Inside it, 59.8% is `compute_grid_vertex_normals` and only 24.2% is the per-surface tail. See P10 |
 | **P11** pairwise triangle sides in `compute_grid_vertex_normals` | **shipped and confirmed end to end** -- **2.0-2.2x** on the function, **1.51x on the whole stage** (85.35 s / 21.9% -> 56.62 s / 15.8%), **bit-identical** (asserted on bit patterns, incl. NaN payloads and signed zeros). Removes an 8-copy stack, an 8-wide subtract, two stride-2 gathers and a length-4 reduction. See P11 |
+| **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
 | **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
 | **T5** sparse-coverage host chain | the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
@@ -1431,6 +1432,70 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > 390.5 s and 358.0 s apart on a thermally throttled machine, so some of that
 > gap is not P11. The stage's *share* -- 21.9% -> 15.8% of its own run -- is the
 > number that does not depend on thermal state.
+
+### P12 -- packed surfaces: one Mob for a whole collection (shipped)
+
+> **The cheapest primitive build is the one that was never a separate build.**
+> P10 and P11 attacked `get_render_primitives_batched`, which re-batches N
+> separate surface actors into one tensor pass **every frame batch**. A packed
+> surface does that batching **once, at construction**, and then there is only
+> one actor and one build to begin with.
+>
+> The mechanism already existed on the render side and was only reachable the
+> expensive way. `Surface._packed_grid_count` / `_reshape_grid_for_render` /
+> the per-shell `mesh_ids` stamp have handled a concatenated grid all along,
+> but the only way to *get* one was `batch_mobs`, which packs Mobs that already
+> exist -- so it removed the per-frame cost and none of the construction cost.
+> `Surface.from_batches` builds the packed grid directly, the way
+> `BezierCircuitCubic.from_batches` has always built a page of text.
+>
+> Measured on this machine (CPU, `Sphere(resolution=(8,4))`, 3 warm passes):
+>
+> | | cost |
+> | --- | --- |
+> | construct N spheres + `batch_mobs` (N=2048) | 2.258 s |
+> | **`Sphere.from_batches` (N=2048)** | **0.006 s** -- **378x**, and flat in N |
+> | primitive build/frame, 256 separate actors | 0.2133 s |
+> | same 256 via `get_render_primitives_batched` | 0.0527 s (4.0x) |
+> | **same 256 as one packed Mob** | **0.0040 s -- 54x / 13x** |
+> | Scene actors for 256 spheres | 512 -> **2** |
+>
+> And the case that motivated it, end to end -- `PMobject` built one `Dot3D`
+> per point and packed them afterwards, and now calls `from_batches` once:
+>
+> | `PMobject(points=rand(N, 3))` | before | after |
+> | --- | --- | --- |
+> | N = 1000 | 1.507 s | 0.174 s |
+> | N = 5000 | 6.742 s | **0.025 s** |
+>
+> **Read the third row against P10 before budgeting.** The 13x is against the
+> cross-actor batcher, so on a scene whose surfaces are already batchable this
+> caps what is left of the 56.62 s (15.8%) P11 left behind -- but only for
+> collections the author is willing to declare as one Mob. It does nothing for
+> surfaces that are genuinely independent, which is most of s05. The actor-count
+> drop feeds the same per-batch scans P4 measured at 0.5%, so do not budget on
+> that either.
+>
+> **What it cost to get right, which is the part worth keeping.** Two defects,
+> both silent, both in machinery that predates this work:
+>
+> * `parent_batch_sizes` documents itself as the map by which "the parent's
+>   attribute modifications will be expanded for this animatable's attributes",
+>   and **that expansion was never wired up** -- `_expand_batch_if_necessary`
+>   had no callers. So `pack.move(UP)` raised a shape error on *every* pack,
+>   `Text`'s glyph batch included, which is why a `Text` is moved through its
+>   unbatched container. `Mob._distribute_over_packed_subtree` supplies it.
+> * A subtree is addressed in **buffer order**, not descendant order --
+>   `RowRanges.from_runs` sorts and coalesces. Distributing a per-member value
+>   by concatenating in descendant order therefore lines up in *count* and
+>   hands every member a neighbour's value. A uniform move looks perfect either
+>   way; only distinct per-member values catch it, and only on a pack whose two
+>   orders differ (`from_batches` builds the grid first, `batch_mobs` does not,
+>   so the test parametrizes both).
+>
+> The general lesson matches P10's: **a caller-free helper is not dead code, it
+> is an unimplemented contract.** Grep for callers before trusting a docstring
+> that describes a mechanism.
 
 ### P9 -- the batched bezier build reaches 18.4% of the circuits (measured, not started)
 
