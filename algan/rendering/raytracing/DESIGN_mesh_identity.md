@@ -1,14 +1,17 @@
 # Algan — Mesh Identity in the Triangle Renderer
 
 **Status: PARTLY LANDED. This file is the handoff document — start here.**
+**One limitation ships knowingly: §0.5.**
 
 Plan of record for replacing the renderer's epsilon-based seam heuristics with
 declared mesh identity. Written to be self-contained: a fresh session with only
 this file and the repo should be able to continue without reconstructing any of
 the reasoning.
 
-Reading order. §0 is the state of the branch and what to do next. §1–§2 are the
-problem and what shipped. §3 is the unstarted work with the anchors to do it. §4
+Reading order. §0 is the state of the branch and what to do next. **§0.5 is a
+known limitation that ships in the default renderer** — diagnosed, costed and
+deliberately unfixed, so read it before treating a diced mesh's interior pixel as
+a bug. §1–§2 are the problem and what shipped. §3 is the unstarted work with the anchors to do it. §4
 is what needs a CUDA device and the experiment for each claim. §5 is what the
 system enables. §6 is **what has actually been measured about the AA gap** — the
 result that closed it is §6.6, and everything before it is a door that closed;
@@ -181,9 +184,9 @@ where it belongs; none was quietly dropped.
     §3.6  two-level BVH                NOT STARTED, and the perf case is MEASURED
                                        not to justify starting (§3.6)
     §3.7  Polyhedron winding           FLIPPED ON, same re-baseline
-    §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off,
-                                       and it OWNS the residual interior notches
-                                       (~92%), which is now the open item
+    §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off.
+                                       It OWNS the residual interior notches (~92%),
+                                       which ship KNOWINGLY UNFIXED — see §0.5
     §6.6  one-mesh coverage cap        FLIPPED ON — the AA result, plus a gate bug
                                        found and fixed while qualifying it
     §6.6.2 capped occlusion write      FLIPPED ON — closes the claim-vs-occlusion
@@ -192,50 +195,41 @@ where it belongs; none was quietly dropped.
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
 
-1. **§6.3.2's relaxed run gate notches interior tilings, and the cause is
-   `_AA_MAX_RUN_SCAN = 16`.** A truncated scan's `E` is a lower bound on the
-   sheet's area, and the gate's `rU == _AA_MASK_ALL` arm consults it as though it
-   were the area, darkening an interior pixel by the unscanned remainder.
-   Replaying each notched pixel with the limit lifted recovers **244 of the 277**
-   notches on the two cases that carry them (§6.3.2 has the table and the two
-   candidate fixes). This is where to start; the rest of this item is the history
-   of getting there.
-
-   It owns ~92% of the residue this document twice blamed on the cap. Measured two ways that agree
-   (§6.6.2): by gate, the relaxed gate alone takes `cylfine` from 50 to 239
-   notches where the cap then adds 14; per pixel, disabling only the clip on a
-   notched pixel's own fragments recovers 14 of those 253. The cap's ceiling is
-   *identical* on notched and clean pixels, so it is not the lever. Start at
-   §6.3.2 and at a diced mesh's interior tiling; do not start at `frag_cap`. The
-   two `--verify` failures are unmoved by the occlusion fix for the same reason —
-   they are claim-side.
-2. **Build a traversal-step (or instruction) counter.** The single missing
+0. **The interior-notch limitation is CLOSED as a decision, not as a fix — see
+   §0.5.** Diagnosed to the line (`_AA_MAX_RUN_SCAN = 16`), costed, and
+   deliberately left in place: ~2 channel values typically, ~13 at the worst pixel
+   of deliberately pathological geometry, against a fix that is either a hot-path
+   loop bound or a withdrawal of the gate's silhouette win. **Do not reopen it
+   without first measuring the six `tests/full_renders` scenes**, which nobody has
+   done; §0.5 says how, and what result would change the decision. This entry
+   exists so nobody spends a day rediscovering §0.5.
+1. **Build a traversal-step (or instruction) counter.** The single missing
    instrument in this whole area, and the reason three separate items are stuck:
    §3.2's cost, §3.4's inherited "~20-25% fewer traversal steps", and §3.6's
    entire case all need it and none of them can be settled without it. A day's
    work against three multi-day questions.
-3. **§3.2's cost, on hardware that is not throttling.** Correctness is done and
+2. **§3.2's cost, on hardware that is not throttling.** Correctness is done and
    clean (§3.2/§4.7: zero cracks, no double blend, byte-identical on opaque
    geometry). Only the cost is open, and this machine cannot resolve it — the
    controls drift as much as the target kernels, and the flag is read at import so
    an in-process alternating A/B is impossible. Then §3.3's ray-path half.
-4. **§3.3, as two deletions with different owners.** Not one deletion gated on
+3. **§3.3, as two deletions with different owners.** Not one deletion gated on
    §3.2: `BARYCENTRIC_EPSILON` also has two ungated consumers in the raster
    front-end's own candidate acceptance, which `_tri_hit` never touches. §3.3 has
    the consumer table. Do not promise the per-ray `f32` until both have landed.
-5. **One weld-aware triangle builder, then flip §3.1.** Its stated risk is
+4. **One weld-aware triangle builder, then flip §3.1.** Its stated risk is
    closed (byte-identical on a static frame, textures included). What blocks it
    is that `grid_to_triangle_vertices` (the morph path) does not know about the
    gate `get_grid_to_triangle_indices` (the render path) applies, so a `Sphere`
    would morph from a different triangulation than it renders. Route both through
    one builder first; then it needs baselines, because it *does* move a moving PN
    scene (§3.1) even though a static frame cannot see it.
-6. **A purpose-built scene for §4.6.** All three `SHADOW_ANYHIT` modes are
+5. **A purpose-built scene for §4.6.** All three `SHADOW_ANYHIT` modes are
    byte-identical on the suite's only shadow scene, so the prediction is untested
    rather than confirmed. It needs a translucent stack whose edge hits sit within
    `DEPTH_TIE_EPSILON` of an opaque hit, and a >256-surface stack for the second
    cause (which is the peel depth and has nothing to do with identity).
-7. **§3.6 only if something changes.** Measured not to justify starting: the BVH
+6. **§3.6 only if something changes.** Measured not to justify starting: the BVH
    build it would amortize is ~1% of a shadowed render, and the instancing win it
    would unlock needs a workload with thousands of repeated meshes, which no
    scene in the repo has.
@@ -252,6 +246,103 @@ beats the bezier `Line` (§6.6.1); that `ONE_MESH` alone gives the relaxed gate
 (§6.6.1 — it did not, and that was a bug); that welding moves pixel baselines
 (§3.1 — byte-identical, textures included); and that the PN deletion shrank the
 compile surface (§4.4 — the deleted variant was never compiled).
+
+
+================================================================================
+0.5 KNOWN LIMITATION, SHIPPED AND DELIBERATELY NOT FIXED
+================================================================================
+
+**A diced mesh can lose up to ~5% of one interior pixel's coverage, and the
+default renderer ships that way.** This was diagnosed to the line, costed, and
+then left alone as a considered decision rather than an oversight — the fix is
+not worth its price at the sizes measured. Read this before "fixing" it.
+
+**WHAT IS WRONG.** The run scan sums one sheet's exact clipped areas to get `E`,
+the area that sheet covers in the pixel, and stops after `_AA_MAX_RUN_SCAN = 16`
+fragments (`raster_taichi.py`). If it stops early, `E` is a **partial sum — a
+lower bound on the sheet's area**. §6.3.2's relaxed gate then does
+
+    if rU == _AA_MASK_ALL:        # the scanned fragments own every sub-sample
+        run_corr = min(rE, 1.0)   # ... so scale the pixel's coverage by E
+
+On a SILHOUETTE pixel that is the intended fix: the sheet really does cover only
+`E` of the pixel. On an INTERIOR pixel the sheet covers all of it, and `E < 1`
+only because the scan quit early — so the pixel is scaled down by exactly the
+area the scan never summed.
+
+**WHEN IT FIRES.** Three conditions, all required:
+
+1. **Triangle geometry** — `Sphere`, `Cylinder`, `Cone`, `Torus`, `Surface`,
+   `Polyhedron`, imported glTF. Bezier circuits never enter this path, so `Text`,
+   `Tex` and the 2-D shapes are structurally immune. That is why
+   `manim_compat_and_plots` moves zero pixels through every flip in this file.
+2. **The pixel is INTERIOR** — wholly inside the surface, not on its outline.
+3. **More than 16 fragments of the SAME SHEET** (one surface, one facing) land in
+   that one pixel.
+
+Condition 3 is a facets-per-pixel question, not a tessellation question, and the
+harness holds a matched pair that says so: `Cylinder(radius=0.9,
+resolution=(256, 2))` notches **zero** pixels while `Cylinder(radius=0.045,
+resolution=(256, 2))` — identical tessellation, 20x thinner, ~9 px wide on
+screen — notches 253. Two ways a scene gets there: a finely tessellated object
+drawn small, or **the limb of any curved surface**, where facets foreshorten and
+crowd. The limb is why a large `Sphere` notches at all.
+
+**HOW BAD, measured `--res md` on CUDA** (`--notch-probe`):
+
+    case                              notched interior px    mean     worst
+    0.045 rod, resolution=(256, 2)      253 / 3546  (7.1%)   0.0090   0.0515
+    Sphere(192, 96)                      24 / 26480 (0.09%)  0.0018   0.0036
+    line-check cylinder                   4 / 10195          0.0010   0.0010
+    packed 4x4 (overlap)                  3 / 30531          0.0014   0.0017
+    the other seven harness cases         0                     -         -
+
+Seven of eleven cases are clean, and the one bad case was **built to break the
+coverage rule** rather than because anyone renders rods that way.
+
+The shortfall is a coverage error, so what shows is that fraction of the CONTRAST
+between object and background. Since §6.6.2 the pixel is energy-conserving, so it
+appears as background bleeding through the solid's interior rather than as
+darkening. On 8-bit against a high-contrast background that is **~2 channel
+values typically and ~13 at the worst pixel of the worst case** — the typical
+figure sits at the render suites' tolerance of 2, which is why no suite catches
+it.
+
+**IT IS NOT ENTIRELY THE GATE'S.** With no gate at all the rod already had 50
+notched pixels; the relaxed gate took it to 239 and the one-mesh cap added 14.
+The gate quadrupled a pre-existing effect rather than creating one.
+
+**WHAT WOULD FIX IT, and why neither was done.** Replaying each notched pixel
+with the scan limit lifted recovers 231 of 253 on the rod and 13 of 24 on the
+Sphere — so the limit is the mechanism, and there are two levers:
+
+* **Raise `_AA_MAX_RUN_SCAN`.** One constant. But it is a loop bound in the
+  megakernel's hot path, paid by every pixel that scans, and the cap exists
+  deliberately.
+* **Refuse to consult `E` when the scan hit its limit**, falling back to the
+  shipped `corr = 1` short-circuit. Cheap and principled — a truncated sum is not
+  an area — but it withdraws the gate's win from every long-run SILHOUETTE pixel,
+  and on the rod those are most of the frame (`capped` is 3011 of 3546 clean
+  interior pixels).
+
+Either needs a kernel recompile and a cost number, and cost is exactly what the
+machine this was measured on cannot resolve (§7.15). Against a worst case of ~13
+channel values on deliberately pathological geometry, that is not a good trade.
+
+**WHAT IS NOT MEASURED, said plainly.** Everything above is the synthetic
+harness. **Nobody has counted notched pixels in the six `tests/full_renders`
+scenes**, which are the only realistic scenes here. What is known about them is
+weaker: the worst-differing frames of `solids_and_camera` and
+`materials_and_lighting` were reviewed side by side at 12x amplification and show
+no notches, rims or interior speckle — but "looked and did not see it" is not
+"there are none" for a 2-channel effect. Those scenes carry `Sphere`, `Cylinder`,
+`Torus` and `Surface` at auto-chosen grid resolutions, so they satisfy conditions
+1 and 2, and every one of those shapes has a limb.
+
+**If you are picking this up, measure that first.** Point `--notch-probe` at the
+full-render scenes rather than the harness cases; roughly an hour, mostly render
+time. If real scenes show single-digit pixel counts, the standing decision —
+document it and leave it — is confirmed and no kernel change is warranted.
 
 
 ================================================================================
