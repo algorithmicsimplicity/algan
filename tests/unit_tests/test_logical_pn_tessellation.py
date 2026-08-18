@@ -856,8 +856,7 @@ def test_anisotropic_dice_can_be_switched_off():
 
     assert bool(
         (
-            uniform._logical_pn_across_levels
-            == uniform._logical_pn_subdivision_levels
+            uniform._logical_pn_across_levels == uniform._logical_pn_subdivision_levels
         ).all()
     )
     torch.testing.assert_close(
@@ -881,9 +880,7 @@ def test_geometry_slack_stops_the_search_at_the_surfaces_own_accuracy():
             triangle_collection=[mob.get_render_primitives()]
         )
         with SETTINGS.raytracing.experimental.override(**overrides):
-            primitive._dice_logical_pn(
-                _camera([-1.4], device=primitive.corners.device)
-            )
+            primitive._dice_logical_pn(_camera([-1.4], device=primitive.corners.device))
         return primitive
 
     strict = dice(pn_geometry_slack=False)

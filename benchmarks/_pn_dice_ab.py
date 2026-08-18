@@ -143,10 +143,8 @@ def reference_dice(self, camera):
             mean_patch_edge_length(source_corners) * self.geometry_slack_ratio,
             num_frames,
         )
-    levels, edge_levels, apex_levels, across_levels = (
-        self._required_subdivision_levels(
-            control_points, edge_controls, cam_o, sp, sb, output_height, False, slack
-        )
+    levels, edge_levels, apex_levels, across_levels = self._required_subdivision_levels(
+        control_points, edge_controls, cam_o, sp, sb, output_height, False, slack
     )
 
     counts = dice_triangle_count(levels, across_levels)

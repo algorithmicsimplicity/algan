@@ -719,9 +719,7 @@ def _build_anisotropic_pattern(along, across, apex, device, dtype):
             is_interior.to(device),
             edge_vertex_ids.to(device),
         ),
-        tuple(
-            across if edge == opposite_edge else along for edge in range(3)
-        ),
+        tuple(across if edge == opposite_edge else along for edge in range(3)),
     )
 
 
