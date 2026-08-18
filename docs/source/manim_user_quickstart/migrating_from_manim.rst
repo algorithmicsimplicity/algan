@@ -195,14 +195,19 @@ outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.
 
 .. note::
 
-    Manim's frame is 14.22 by 8 world units; Algan's default camera shows about
-    12.4 by 7. Anything that positions itself against Manim's frame therefore
-    lands outside Algan's view. ``Title`` is the one most people meet: it calls
-    Manim's ``to_edge(UP)`` and so renders clipped along the top. Move it down
-    about a unit, or scale it first, rather than reaching for
-    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` --
-    on a compatibility Mob with submobjects that measures the edge from the
-    backing object's own centre and pushes the Mob further off-screen.
+    Manim's frame is 14.22 by 8 world units; Algan's default camera shows
+    12.44 by 7. Anything that positions itself against Manim's frame therefore
+    lands somewhere Algan did not choose. ``Title`` is the one most people meet:
+    Manim's ``to_edge(UP)`` leaves a 0.5 gap below its own frame top, putting the
+    title's top at ``y = 3.5`` -- exactly Algan's top border. Nothing is cut off,
+    but it sits flush against the frame edge with no margin. ``.move(DOWN * 1)``
+    insets it.
+
+    Reach for that rather than
+    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge`,
+    which moves a Mob already touching the border *further* out: it takes its
+    inset direction from ``normalize(boundary - border)``, which is degenerate
+    when the boundary lies on the border, so float rounding picks the sign.
 
 For a compatible Manim vector mobject, wrap it in
 :class:`~algan.mobs.manim_mob.ManimMob`:

@@ -771,14 +771,20 @@ The text is typeset by LaTeX in text mode (so ``Title("Chapter 1")`` reads as
 written, no maths escaping needed) with a horizontal rule beneath it, and the
 whole thing is moved to the top of the frame.
 
-**The frame it moves to the top of is Manim's, not Algan's.** Manim's is 8 world
-units tall; Algan's default camera shows about 7, so a ``Title`` left where it
-puts itself is clipped along its top edge. Move it down about a unit, or scale
-it first. :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge`
-is the obvious fix and is the wrong one -- a compatibility Mob's ``location`` is
-the centre of the backing Mobject's own points rather than of the composite, so
-on a ``Title`` (whose rule is a submobject) the edge is measured from the wrong
-place and the text ends up further off-screen, not closer.
+**The frame it moves to the top of is Manim's, not Algan's, and it lands flush
+against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
+leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
+exactly where Algan's default camera puts its top border. Nothing is cut off,
+but the text touches the frame edge with no margin at all. ``.move(DOWN * 1)``
+insets it.
+
+:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` is the
+obvious way to inset it and does the opposite -- it pushes the title ``buffer``
+further out. That is not a ``Title`` quirk: the method takes its inset direction
+from ``normalize(boundary - border)``, and for a Mob whose boundary already lies
+*on* the border that difference is zero, so float rounding decides the sign.
+Here it resolves outward. A Mob that starts clearly outside the frame is pulled
+back in correctly; it is landing exactly on the border that is degenerate.
 
 The default rule is sized from Manim's frame too, at ``frame_width - 2``, which
 comes out just narrower than Algan's visible width. Pass
