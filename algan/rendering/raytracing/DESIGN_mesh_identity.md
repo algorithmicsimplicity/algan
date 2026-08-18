@@ -573,9 +573,19 @@ textured and normal-mapped closed surfaces, and it **does** move a moving PN sce
 It needs baselines after all — which, combined with the morph-path inconsistency
 below, is why it stays off.
 
-**AND IT STILL MUST NOT FLIP YET — flipping it on and running the whole suite
-found the real blocker, which is not about pixels.** Two tests fail, and they are
-not stale expectations:
+**THE BLOCKER BELOW IS NOW CLEARED; what remains is baselines.** The morph path
+asks `surface_weld_flags` for the same grid the render path asks about, so both
+build the same triangulation, and the `DotCloud` test derives its expected count
+from the builder instead of restating the unwelded formula. With
+`ALGAN_WELD_SURFACE_SEAMS=1` the whole unit suite is green on CUDA (1050 passed,
+89 skipped), including the two tests named below. The gate still ships OFF for
+the one reason left: it moves a moving PN scene, so flipping it needs both
+devices' baselines regenerated, and the CPU set cannot be regenerated here (§3.5).
+
+*The original diagnosis, kept because it names the class of defect:*
+
+**Flipping it on and running the whole suite found the real blocker, which was
+not about pixels.** Two tests failed, and they were not stale expectations:
 
 * `test_pn_mesh.test_surface_conversion_reproduces_its_logical_pn_primitive` —
   `convert_to_pn_soup(Sphere)` and `Sphere.get_render_primitives()` return
@@ -592,13 +602,21 @@ the weld on, a `Sphere` renders with one triangulation and morphs from another �
 a mesh that disagrees with itself.
 
 That is the same class of defect as §6.6.1's half-wired gate and §7.11's lesson:
-one question, two answerers. The fix is the same shape as §3.2's `_tri_hit` — put
-every consumer of the grid topology behind one weld-aware builder — and until that
-exists the gate stays off. The pixel evidence above stands and does not need
-redoing; what is missing is topological consistency, not more rendering.
+one question, two answerers.
 
-The `DotCloud` test is then a one-line consequence: derive its expected count from
-the same builder instead of restating the unwelded formula.
+**And the fix was smaller than this section predicted.** It called for routing
+every consumer behind "one weld-aware builder", the shape of §3.2's `_tri_hit`.
+There was no such refactor to do: `grid_to_triangle_vertices` already takes the
+weld flags, and the render path already passes them — the morph path simply
+called it without the argument and silently took the unwelded default. So the
+change is that `_grid_to_pn_soup` computes `surface_weld_flags(grid)` and passes
+it to all three gathers, which is what makes the two paths ask the same question
+rather than two questions. Worth carrying to the next item that looks like a
+refactor: check whether the shared function already has the parameter before
+designing one.
+
+The `DotCloud` test is the one-line consequence, done the same way: its expected
+count comes from the builder now, not from the unwelded `2*(W-1)*(H-1)`.
 
 3.2 Watertight ray/triangle intersection  [LANDED, correctness QUALIFIED,
     cost UNMEASURABLE here, stays off]
