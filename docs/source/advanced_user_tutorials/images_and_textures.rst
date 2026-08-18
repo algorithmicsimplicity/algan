@@ -150,6 +150,27 @@ inside the ray tracing kernel**, for both flat and curved (PN) triangles. A prop
 without a map keeps the ordinary per-vertex value, and maps of different resolutions
 are resampled to a common one.
 
+Wrapping around a closed surface
+--------------------------------
+
+On a surface that closes on itself -- a :class:`~.Sphere`, a :class:`~.Cylinder`
+and a :class:`~.Cone` close around ``u``, a :class:`~.Torus` around both -- the
+map **wraps**: the last column of texels is a neighbour of the first, and Algan
+blends across that meridian the same way it blends anywhere else. So the
+checkerboard above meets itself where the sphere comes back around, and a map
+whose two edges are meant to join (an equirectangular world map, a tiling
+pattern) joins seamlessly.
+
+Each texel column therefore spans exactly ``1 / W`` of the way around, not
+``1 / (W - 1)``: with a 16-wide map, column 0 is centred at the seam and column
+8 faces the other side, whichever direction the surface is spun. Algan works out
+which axes close from the geometry, so a surface of your own written with
+:class:`~.Surface` and a ``coord_function`` wraps too, without saying so.
+
+An **open** surface -- a flat plane, an :class:`~.ImageMob`, the pole-to-pole
+``v`` axis of a sphere -- has no far side to blend into, so its first and last
+texels sit exactly on its two edges and the edge value carries beyond them.
+
 Animating a texture
 -------------------
 
@@ -188,6 +209,11 @@ Glow maps
 ``glow_texture`` is the exception to the per-fragment rule: glow is consumed by the
 glow accumulator per *vertex*, so the map is baked down to the surface grid
 resolution. Raise ``grid_width`` / ``grid_height`` if you need more detail from it.
+
+That bake is also the exception to the wrapping above -- it lands the map's two
+edges on the same grid column of a closed surface, so a glow map whose edges do
+not already agree shows its seam. Make the first and last column of a
+``glow_texture`` match if you need it to wrap.
 
 Colouring a 2-D Shape
 =====================

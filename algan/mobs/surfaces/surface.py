@@ -354,6 +354,75 @@ def surface_weld_flags(grid):
     return (wrap_x, pole_lo, pole_hi)
 
 
+def surface_closed_axes(grid):
+    """Which parameter axes of a materialized grid close on themselves.
+
+    Returns ``(closed_u, closed_v)``: ``closed_u`` when column ``W-1``
+    coincides with column 0 (a surface of revolution's u-seam -- a
+    :class:`~.Sphere`, a :class:`~.Cylinder`, a :class:`~.Cone`), ``closed_v``
+    when row ``H-1`` coincides with row 0 (a :class:`~.Torus` closes on both).
+
+    This is :func:`surface_weld_flags`'s ``wrap_x`` test on both axes, but it
+    answers a different question -- how a *texture* must be sampled, not how
+    triangles are indexed -- so it is deliberately not gated on
+    ``ALGAN_WELD_SURFACE_SEAMS``: a closed surface's texture has to wrap
+    whether or not its seam vertices are shared.
+
+    Returns Python bools, so this synchronises with the device once per
+    textured primitive build. The result changes a tensor's *shape* (see
+    :func:`wrap_pad_texture`), which a device value cannot do.
+    """
+    if grid.dim() < 3:
+        return (False, False)
+    tol = _WELD_TOLERANCE
+    # A single-sample axis has one column playing both edges, which the test
+    # below cannot tell from a wraparound.
+    closed_u = grid.shape[-3] > 1 and bool(
+        (grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item()
+    )
+    closed_v = grid.shape[-2] > 1 and bool(
+        (grid[..., :, 0, :] - grid[..., :, -1, :]).abs().lt(tol).all().item()
+    )
+    return (closed_u, closed_v)
+
+
+def wrap_pad_texture(texture, closed_axes):
+    """Repeat a texture's first row/column at its far edge on closed axes.
+
+    The renderer addresses a ``[W, H]`` map as ``u * (W - 1)`` and clamps, so
+    texel 0 sits at ``u == 0`` and texel ``W-1`` at ``u == 1``. On a surface
+    whose u axis closes those are the *same place*, and the sampler has no way
+    to blend the last texel back into the first: the map lands on the surface
+    stretched by ``W / (W - 1)`` and cut by a hard seam wherever column 0
+    disagrees with column ``W-1``.
+
+    Appending a copy of column 0 as column ``W`` fixes both at once. Texel
+    ``i`` then sits at ``u == i / W``, so every column spans the same
+    ``1 / W`` of the way around, and the wrap cell interpolates column ``W-1``
+    into column 0 exactly as an interior cell interpolates its neighbours.
+
+    Parameters
+    ----------
+    texture
+        A texture map ``[T, W, H, C]`` (u along ``W``, v along ``H``), or None.
+    closed_axes
+        ``(closed_u, closed_v)`` from :func:`surface_closed_axes`.
+
+    Returns
+    -------
+    torch.Tensor
+        The padded map, or ``texture`` unchanged when neither axis closes.
+    """
+    if texture is None:
+        return None
+    closed_u, closed_v = closed_axes
+    if closed_u and texture.shape[-3] > 1:
+        texture = torch.cat((texture, texture[..., :1, :, :]), -3)
+    if closed_v and texture.shape[-2] > 1:
+        texture = torch.cat((texture, texture[..., :, :1, :]), -2)
+    return texture
+
+
 def grid_to_triangle_vertices(grid, weld=(False, False, False)):
     """Internal: gather a per-grid-point quantity into per-triangle-vertex form.
 
@@ -1098,6 +1167,13 @@ class Surface(Mob):
         the surface as it deforms. ``None`` means the surface is drawn from its
         per-vertex colours instead. Assigning a texture whose resolution differs from
         the current one detaches history, since the two cannot be interpolated.
+
+        On an axis where the surface closes on itself -- ``u`` on a
+        :class:`~algan.mobs.shapes_3d.Sphere`, both axes on a
+        :class:`~algan.mobs.shapes_3d.Torus` -- the image wraps: its last column of
+        texels neighbours its first, each column spanning ``1 / W`` of the way
+        around, so a map whose edges join draws no seam. On an open axis the first
+        and last texels sit on the two edges.
 
         Animation
         ---------
@@ -2662,6 +2738,13 @@ class Surface(Mob):
         batch sizer prices a 1774x887 image at a few kilobytes per frame and
         puts an entire video in a single batch.
 
+        A closed surface's map is wrap-padded (:func:`wrap_pad_texture`) on its
+        way to the renderer, which is a third copy, live while the premultiply
+        clones off it. Whether a surface closes is a property of its animated
+        geometry, so it is read off the previous primitive build -- the first
+        batch of a job prices a globe as if it were a plane, and the
+        out-of-render-memory retry is what covers that.
+
         Rows orphaned by :meth:`~algan.animatable_base.mob.Mob.detach_history`
         are materialized too but belong to no live Mob, so they are not
         attributed here; the animation memory fraction absorbs them.
@@ -2678,7 +2761,8 @@ class Surface(Mob):
         inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
-        return rows * texels * 4 * 2
+        copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
+        return rows * texels * 4 * copies
 
     def _packed_grid_count(self):
         """Number of independent grids concatenated into ``self.grid``.
@@ -2787,6 +2871,7 @@ class Surface(Mob):
 
         uvs = None
         texture_map = None
+        closed_axes = (False, False)
         material_texture_map = getattr(self, "material_texture", None)
         material_texture_flags = getattr(self, "material_texture_flags", 0)
         normal_texture_map = getattr(self, "normal_texture", None)
@@ -2810,17 +2895,29 @@ class Surface(Mob):
             if packed_grid_count is not None:
                 uvs = uvs.unsqueeze(0).expand(packed_grid_count, -1, -1).flatten(0, 1)
             uvs = uvs.unsqueeze(0)  # [1, num_triangles * 3, 2]
+            # u = 0 and u = 1 are the same place on a closed surface, so every
+            # map sampled against these uvs has to wrap there rather than
+            # clamp. wrap_pad_texture makes the clamping sampler do that.
+            closed_axes = surface_closed_axes(grid)
+            self._texture_is_wrap_padded = any(closed_axes)
+            material_texture_map = wrap_pad_texture(material_texture_map, closed_axes)
+            normal_texture_map = wrap_pad_texture(normal_texture_map, closed_axes)
         if has_color_texture:
             # Read the texels once, uncopied: this is the widest attribute in
             # the engine, and mult_opacity is out-of-place (Color.prep_set
             # clones), so the materialized state is never written through.
+            # Pad as a plain tensor, before mult_opacity, so the cat stays off
+            # Color's __torch_function__.
             texels = self._color_texture_uncopied()
             texture_map = (
-                texels.view(
-                    texels.shape[0],
-                    self.texture_height,
-                    self.texture_width,
-                    5,
+                wrap_pad_texture(
+                    texels.view(
+                        texels.shape[0],
+                        self.texture_height,
+                        self.texture_width,
+                        5,
+                    ),
+                    closed_axes,
                 )
                 .as_subclass(Color)
                 .mult_opacity(self.opacity.unsqueeze(-2))
