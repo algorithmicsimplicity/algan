@@ -79,6 +79,21 @@ def test_declines_under_a_test_runner(script, monkeypatch):
     assert dc.should_try(script) is False, "an imported pytest must be enough"
 
 
+def test_declines_a_dash_m_invocation(script, monkeypatch):
+    """``python -m pkg`` is not a scene script, and it looks like one.
+
+    ``__main__`` is then the package's own ``__main__.py``: it ends in .py and
+    exists on disk, so the path checks alone let it through. That handed
+    ``python -m sphinx`` -- whose conf.py imports algan -- to a render daemon,
+    and the documentation build ran inside it. Only a -m invocation gives
+    ``__main__`` a module spec.
+    """
+    _hide_test_runner(monkeypatch)
+    assert dc.should_try(script) is True  # the same module, minus the spec
+    script.__spec__ = object()
+    assert dc.should_try(script) is False
+
+
 def test_declines_without_a_main_script(monkeypatch):
     _hide_test_runner(monkeypatch)
     assert dc.should_try(_Main(None)) is False
@@ -290,3 +305,120 @@ def test_maybe_handoff_is_a_noop_without_a_daemon(tmp_path, monkeypatch):
     monkeypatch.setenv("ALGAN_HOME", str(tmp_path))
     monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("must not exit"))
     assert dc.maybe_handoff() is None
+
+
+def test_the_full_environment_is_shipped(tmp_path, monkeypatch):
+    """Without it a script reads the daemon's variables, not its caller's."""
+    monkeypatch.setenv("ALGAN_TEST_PROBE_VAR", "from-the-client")
+
+    def reply(stream):
+        dc.write_frame(stream, dc.FRAME_START)
+        dc.write_frame(stream, dc.FRAME_EXIT, struct.pack("!i", 0))
+
+    daemon = _FakeDaemon(reply)
+    dc.run_remote(daemon.state(), str(tmp_path / "s.py"), out=_Sink(), err=_Sink())
+    daemon.join()
+    assert daemon.request["env_full"]["ALGAN_TEST_PROBE_VAR"] == "from-the-client"
+
+
+# --------------------------------------------------------------------------
+# Unreachable vs refused: only one of them invalidates the registration
+# --------------------------------------------------------------------------
+
+
+def test_nothing_listening_reads_as_unreachable(tmp_path):
+    free = socket.socket()
+    free.bind(("127.0.0.1", 0))
+    port = free.getsockname()[1]
+    free.close()
+    with pytest.raises(dc.DaemonUnreachable):
+        dc.run_remote(
+            {"port": port, "token": "x"},
+            str(tmp_path / "s.py"),
+            out=_Sink(),
+            err=_Sink(),
+        )
+
+
+def test_a_refusal_is_not_unreachable(tmp_path):
+    """A daemon that answers and declines is alive; its registration stands."""
+
+    def reply(stream):
+        dc.write_frame(stream, dc.FRAME_REFUSE, "algan sources changed")
+
+    daemon = _FakeDaemon(reply)
+    with pytest.raises(dc.DaemonUnavailable) as caught:
+        dc.run_remote(daemon.state(), str(tmp_path / "s.py"), out=_Sink(), err=_Sink())
+    daemon.join()
+    assert not isinstance(caught.value, dc.DaemonUnreachable)
+
+
+# --------------------------------------------------------------------------
+# Auto-start
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALGAN_HOME", str(tmp_path))
+    return tmp_path
+
+
+def _no_spawn(monkeypatch):
+    monkeypatch.setattr(
+        dc, "_spawn_daemon", lambda: pytest.fail("must not start a daemon")
+    )
+
+
+def test_no_daemon_is_started_when_disabled(home, monkeypatch):
+    monkeypatch.setenv("ALGAN_AUTO_DAEMON", "0")
+    _no_spawn(monkeypatch)
+    assert dc._dispatch("scene.py") is None
+
+
+def test_no_daemon_is_started_under_a_test_runner(home, monkeypatch):
+    """should_try already refuses here, which is what keeps the suite clean."""
+    _no_spawn(monkeypatch)
+    monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("must not exit"))
+    assert dc.maybe_handoff() is None
+
+
+def test_a_dead_registration_is_removed_and_replaced(home, monkeypatch):
+    """A hard-killed daemon leaves its state file behind.
+
+    Left alone it would defeat auto-start forever: every later run finds a
+    state file, fails to connect, and falls back cold without ever starting a
+    replacement.
+    """
+    free = socket.socket()
+    free.bind(("127.0.0.1", 0))
+    port = free.getsockname()[1]
+    free.close()
+    state_file = home / "daemon.json"
+    state_file.write_text(
+        json.dumps({"port": port, "token": "dead", "pid": 999999}), encoding="utf-8"
+    )
+    monkeypatch.setenv("ALGAN_AUTO_DAEMON", "0")  # stop after the cleanup
+
+    assert dc._dispatch("scene.py") is None
+    assert not state_file.exists()
+
+
+def test_a_newer_registration_survives_the_cleanup(home):
+    """Only the daemon we actually failed to reach gets de-registered."""
+    state_file = home / "daemon.json"
+    state_file.write_text(
+        json.dumps({"port": 1, "token": "new", "pid": 2}), encoding="utf-8"
+    )
+    dc._clear_stale_state({"port": 1, "token": "old", "pid": 1})
+    assert state_file.exists()
+
+
+def test_the_daemon_log_is_trimmed_when_it_grows(home, monkeypatch):
+    monkeypatch.setenv("ALGAN_DAEMON_LOG_MAX_BYTES", "100")
+    log = home / "daemon.log"
+    log.write_bytes(b"x" * 500)
+    with dc._open_log() as handle:
+        handle.write(b"fresh\n")
+    assert log.read_bytes() == b"fresh\n"
+    assert (home / "daemon.log.old").read_bytes() == b"x" * 500

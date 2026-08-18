@@ -7,6 +7,11 @@ os.environ["ALGAN_ADV_OPT"] = "0"
 
 import torch
 
+# Benchmarks must never be measured inside a warm daemon: it keeps adaptive
+# renderer state (the memory model's batch-size fit) across runs, so one
+# benchmark would be timed against whatever ran before it.
+os.environ.setdefault("ALGAN_USE_DAEMON", "0")
+
 from algan import *
 from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
 from algan.utils.profiling_utils import profile_scene

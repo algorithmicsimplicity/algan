@@ -22,6 +22,11 @@ os.environ.setdefault("ALGAN_PROFILE_RUNS", "2")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Benchmarks must never be measured inside a warm daemon: it keeps adaptive
+# renderer state (the memory model's batch-size fit) across runs, so one
+# benchmark would be timed against whatever ran before it.
+os.environ.setdefault("ALGAN_USE_DAEMON", "0")
+
 from algan import (  # noqa: E402
     BLUE,
     GREEN,

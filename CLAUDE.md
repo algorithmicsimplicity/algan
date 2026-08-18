@@ -180,7 +180,7 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 
 ### Taichi gotchas (these cost real debugging time)
 - The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cache(taichi_kernels=True)`.
-- Never edit `*_taichi.py` while a render process or warm daemon is running: the JIT reads files at first launch and can compile half-edited code. Restart the daemon after changing any Algan source.
+- Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.
 - Keep Taichi debug mode off (`ALGAN_TI_DEBUG=1` opts in); debug mode makes the megakernels ~11x slower.
 - In kernels, use `ti.static(bool(x))` rather than `is not None` for template gates.

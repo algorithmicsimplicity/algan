@@ -41,6 +41,11 @@ import taichi as ti  # noqa: E402
 
 ti.init(arch=ti.cpu)
 
+# Benchmarks must never be measured inside a warm daemon: it keeps adaptive
+# renderer state (the memory model's batch-size fit) across runs, so one
+# benchmark would be timed against whatever ran before it.
+os.environ.setdefault("ALGAN_USE_DAEMON", "0")
+
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _halfplane_clip_area,
     _pixel_clip_area,
