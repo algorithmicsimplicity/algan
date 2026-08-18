@@ -117,10 +117,18 @@ def test_a_ray_missing_both_triangles_hits_neither():
     assert int(counts.sum()) == 0
 
 
-def test_the_gate_is_off_by_default():
-    """It changes the compiled kernel body, so it must not creep on silently."""
+def test_the_gate_is_on_by_default():
+    """It changes the compiled kernel body, so it must not creep either way.
+
+    This pinned OFF until the watertight test's correctness was qualified on CUDA
+    and its cost was shown to sit under the measuring machine's noise floor
+    (``DESIGN_mesh_identity.md`` ss3.2). It pins ON for the same reason it pinned
+    OFF: a default that decides which intersection routine ships should move only
+    when somebody means it, and flipping it moves rendered output on any scene
+    with a secondary ray.
+    """
     import os
 
     if "ALGAN_WATERTIGHT_TRI" in os.environ:
         pytest.skip("ALGAN_WATERTIGHT_TRI is set in this environment")
-    assert not _watertight()
+    assert _watertight()

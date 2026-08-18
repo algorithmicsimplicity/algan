@@ -138,7 +138,26 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # Import-time, not a live setting: it changes the compiled kernel body, so a
 # runtime toggle would silently reuse a cached kernel (the _AA_SAMPLES
 # cache-trap rule). Clear the Taichi cache when flipping it.
-WATERTIGHT_TRI = env_flag("ALGAN_WATERTIGHT_TRI", False)
+#
+# DEFAULT ON. Correctness was qualified on CUDA (ss3.2/ss4.7): zero enclosed
+# background pixels leaked on two scenes built to provoke a crack, no double
+# blend introduced, byte-identical on opaque geometry, and 2 pixels of 419904
+# differing on a translucent scene -- where both arms are already correct and
+# what differs is which neighbour owns the seam pixel.
+#
+# The cost was left unresolved for a while and the honest reading of the numbers
+# is that there is nothing to resolve. The measured deltas were +8.5% to +10.7%
+# on the kernels this flag can reach -- but ``raster_tri_count``, which it
+# CANNOT reach (the rasterizer has no _tri_hit), moved +8.6% in the same runs.
+# A control that moves with the target is ss7.15's definition of thermal drift
+# rather than a cost, so the flag is below this machine's noise floor and no
+# amount of re-running it here will say otherwise.
+#
+# Against that, the dilation is a known, if small, correctness defect: every
+# triangle is tested slightly WIDER than it is, so a ray that should miss can
+# hit. Trading an unmeasurable cost against a real defect is the trade taken
+# here.
+WATERTIGHT_TRI = env_flag("ALGAN_WATERTIGHT_TRI", True)
 
 
 @ti.func

@@ -174,10 +174,11 @@ where it belongs; none was quietly dropped.
 
     §3.1  weld surface seams/poles     STAYS OFF — pixel case proved, morph/render
                                        agreement FIXED; only baselines left (§3.1)
-    §3.2  watertight tri intersection  QUALIFIED on correctness, cost UNMEASURABLE
-                                       here; stays off, and §3.3 stays blocked
-    §3.3  delete the epsilons          BLOCKED, and it is TWO deletions not one —
-                                       the raster path has its own consumers (§3.3)
+    §3.2  watertight tri intersection  FLIPPED ON — cost is under the noise floor
+                                       here, and the dilation was a real defect
+    §3.3  delete the epsilons          NOW THE TOP ITEM — the ray half is a straight
+                                       removal, and the raster half is one refactor
+                                       (_raycast_pixel through _tri_hit), §3.3
     §3.4  median-split bezier BVH      MEASURED: byte-identical, no speed-up;
                                        recommendation is to leave it off
     §3.5  mesh identity                FLIPPED ON, both devices re-baselined
@@ -634,8 +635,7 @@ designing one.
 The `DotCloud` test is the one-line consequence, done the same way: its expected
 count comes from the builder now, not from the unwelded `2*(W-1)*(H-1)`.
 
-3.2 Watertight ray/triangle intersection  [LANDED, correctness QUALIFIED,
-    cost UNMEASURABLE here, stays off]
+3.2 Watertight ray/triangle intersection  [LANDED, DEFAULT ON]
 ------------------------------------------------------------------
 With seams welded and interior edges bit-identical, a watertight test
 (Woop–Benthin–Wald: ray-space transform, consistent edge-function signs, a
@@ -761,10 +761,44 @@ What would settle it, for whoever picks this up:
 * an instruction/traversal-step counter, which would also settle §3.4 and §3.6 and
   is the single highest-leverage instrument missing from this area.
 
-**So §3.2's correctness is qualified and its cost is not.** The default stays off,
-and §3.3 stays blocked — which is the conclusion §3.3 already reaches from the
-other direction: flipping now would promote an intersection routine whose cost
-nobody has measured to being the only one available.
+**FLIPPED ON.** Correctness was qualified (above) and the cost turned out not to
+be a cost. The measured deltas were +8.5% to +10.7% on the kernels this flag can
+reach — but `raster_tri_count`, which it CANNOT reach (the rasterizer has no
+`_tri_hit`), moved **+8.6% in the same runs**. A control that moves with the
+target is §7.15's definition of thermal drift rather than a cost, so the honest
+reading is that the flag sits under this machine's noise floor, and no amount of
+re-running it here will say otherwise. Against an unmeasurable cost stands a real
+if small defect: the dilation tests every triangle slightly WIDER than it is, so a
+ray that should miss can hit. That is the trade taken.
+
+**Rendered output moved, and both CUDA baseline sets were regenerated.** The
+movement is exactly where the mechanism predicts and nowhere else:
+
+    suite / scene            max|d|   worst-frame px>2      note
+    tests/fast                  35     1931 (0.46%)         metallic icosahedron
+    materials_and_lighting      42     5641 (2.02%)         shadow boundaries
+    solids_and_camera           47    18383 (6.59%)         diced PN surfaces
+    text_and_media              49     6153 (2.21%)
+    complex_hierarchy_become     0            0             unchanged
+    manim_compat_and_plots       0            0             unchanged (circuits)
+    shapes_and_timeline          0            0             unchanged
+
+Reviewed frame by frame before regenerating, not merely measured: the panels are
+visually indistinguishable, and the amplified difference lands on shadow
+boundaries and sphere silhouettes in `materials_and_lighting`, and on a fine
+dusting across the PN solids' interiors in `solids_and_camera` — which is what a
+finely diced surface looks like when edge ownership changes, because nearly every
+pixel there is close to some triangle edge. In `tests/fast` the split is cleanest:
+the title and the 2-D circuit row are **exactly zero** and every moved pixel is on
+the 3-D mesh row, 27 of them above 10. Circuits never call `_tri_hit`.
+
+Note what does the reaching: the raster front-end owns primary visibility, so this
+flag arrives through SECONDARY rays — the metallic icosahedron's reflection bounce
+in the fast scene, shadow rays in `materials_and_lighting`. A scene with neither
+does not move at all, which is three of the six full renders.
+
+**The CPU baseline sets are now stale for this as well as for §6.6**, and still
+cannot be regenerated here (§3.5).
 
 3.3 Delete the epsilon apparatus  [BLOCKED — not startable, see below]
 ------------------------------------------------------------------------
