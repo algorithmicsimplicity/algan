@@ -76,9 +76,134 @@ def make_manim_dir():
 
 
 class Tex(Mob):
-    """LaTeX text rendered as one packed batch of cubic bezier glyphs.
+    r"""LaTeX compiled to one packed batch of cubic bezier glyphs.
 
-    ``character_mobs`` provides lazy indexed views into the batch.
+    The string is typeset in LaTeX's **math mode**, so ``Tex("x^2")`` is a
+    squared x rather than the three literal characters. Pass ``latex=False`` for
+    prose, or use :class:`~algan.mobs.text.Text`, which is this class wired to a
+    Pango font renderer instead.
+
+    The glyphs are outlines, not bitmaps: the text stays sharp at any scale and
+    morphs into other 2-D shapes like any other bezier Mob. They arrive as a
+    single packed Mob rather than one Mob per character, which is what makes a
+    long string cheap. Index it to animate one glyph -- ``equation[3]`` is a
+    view sharing the batch's rows, so moving it moves that glyph of the
+    original, and it needs no spawning of its own. Several source strings become
+    several *segments*, addressable with :meth:`get_segment`, which is the usual
+    way to highlight one term of an equation.
+
+    :class:`~algan.mobs.manim_compat.MathTex` renders LaTeX too and is a
+    different object: it is the Manim-compatibility wrapper, for when a ported
+    script needs ``tex_to_color_map`` or Manim method delegation. This class is
+    the native one, and the only one with per-glyph indexing,
+    :meth:`get_segment` and :meth:`write`.
+
+    Animation
+    ---------
+    Constructing a ``Tex`` records nothing: LaTeX runs immediately and the Mob
+    joins the active Scene unspawned. :meth:`~algan.animatable_base.animatable.Animatable.spawn`
+    is what plays its entrance -- :meth:`on_create`, a diagonal fade running down
+    and to the right so the words arrive in reading order, lasting 1 second
+    regardless of the enclosing context. ``Tex(...).spawn(False)`` skips it, which
+    is what :meth:`write` wants.
+
+    Parameters
+    ----------
+    *tex_strings
+        One or more LaTeX sources. Each becomes a segment retrievable with
+        :meth:`get_segment`, and they are compiled as one document so a
+        ``\left`` in one string can close in the next. A single list or tuple is
+        unpacked, and no strings at all gives an empty ``Tex``.
+    arg_separator
+        Inserted between consecutive ``tex_strings`` in the compiled source (and
+        used to join them when ``latex=False``). Defaults to ``" "``, one space.
+    tex_environment
+        Name of the LaTeX environment to typeset in, such as ``"align*"`` or
+        ``"gather*"``. Defaults to ``None``, meaning Manim's own default of
+        ``align*``.
+    font_size
+        Glyph size in Manim's font-size units. The batch is always built at 48
+        and then scaled by ``font_size / 48``, so this is a scale factor in
+        disguise: ``48`` matches Manim's default text size and ``24`` is half of
+        it. Defaults to ``24``.
+    latex
+        Whether to typeset through LaTeX. ``False`` treats the strings as plain
+        text and routes them to Manim's Pango renderer instead -- an Algan
+        extension, and how :class:`~algan.mobs.text.Text` is built. Defaults to
+        ``True``.
+    pango_kwargs
+        Styling forwarded to the Pango renderer when ``latex=False``: ``font``,
+        ``weight``, ``slant``, ``line_spacing``, ``t2c``, ``gradient`` and the
+        rest of Manim's ``Text`` arguments. Ignored under LaTeX. Defaults to
+        ``None`` (no styling). Prefer :class:`~algan.mobs.text.Text`, which
+        exposes these as ordinary named arguments.
+    pango_color_map
+        Maps the hex strings in ``pango_kwargs`` back to the Algan
+        :class:`~algan.constants.color.Color` objects they came from, so glow
+        and opacity survive the round trip through Pango's SVG output (a hex
+        string cannot carry either). Defaults to ``None``. Set for you by
+        :class:`~algan.mobs.text.Text`.
+    sync_border_color
+        Whether a glyph coloured by Pango styling also gets that colour on its
+        border. Only has an effect when a border is actually drawn
+        (``border_width`` above 0). Defaults to ``True``; pass an explicit
+        ``border_color`` to keep one outline colour across styled glyphs.
+    **kwargs
+        Passed to :class:`~algan.animatable_base.mob.Mob` and to the packed
+        :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` -- notably
+        ``color`` (defaults to ``WHITE``), ``border_color``, ``border_width``
+        (defaults to ``0``, no outline), ``location`` and ``scene``. One extra
+        keyword is consumed here: ``preamble``, a string of LaTeX appended to
+        Manim's default preamble, for ``\usepackage`` lines a formula needs.
+
+    Attributes
+    ----------
+    character_mobs
+        Lazy per-glyph views into the packed batch, in typeset order. This is
+        what ``tex[i]`` and :meth:`write` animate.
+    tex_strings
+        The source strings as given, after list/tuple unpacking, as a tuple.
+    latex
+        Whether this text was typeset by LaTeX rather than by Pango.
+
+    Examples
+    --------
+    A formula, one segment per term, with the middle term picked out:
+
+    .. algan:: Example1Tex
+        :save_last_frame:
+
+        from algan import *
+
+        equation = Tex(r"e^{i\pi}", "+", "1", "=", "0", font_size=48).spawn()
+        equation.get_segment(2).color = YELLOW
+
+        Scene.save_video()
+
+    ``latex=False`` for prose, and a larger ``font_size``:
+
+    .. algan:: Example2Tex
+        :save_last_frame:
+
+        from algan import *
+
+        Tex("Not a formula", latex=False, font_size=48, color=BLUE).spawn()
+
+        Scene.save_video()
+
+    Individual glyphs are views, so animating one animates the original:
+
+    .. algan:: Example3Tex
+        :save_last_frame:
+
+        from algan import *
+
+        word = Tex("ALGAN", font_size=48).spawn()
+        with Sync():
+            word[0].move(UP * 0.3)
+            word[4].move(DOWN * 0.3)
+
+        Scene.save_video()
     """
 
     triangulated = False
@@ -95,22 +220,6 @@ class Tex(Mob):
         sync_border_color=True,
         **kwargs,
     ):
-        """Build TeX from one or more strings using Manim's public API.
-
-        ``latex`` is retained as an Algan extension: when false, the strings are
-        treated as plain text.  Manim's ``arg_separator`` and
-        ``tex_environment`` keyword arguments are accepted directly.
-
-        ``pango_kwargs`` (non-latex only) is forwarded to ``manim.Text`` so
-        Pango styling (font, weight, slant, t2c, gradient, ...) reaches the
-        glyph renderer.  Per-glyph fill colors produced by that styling are
-        read back off the manim submobjects and applied to the packed glyph
-        batch; ``pango_color_map`` maps hex strings back to the original algan
-        colors so glow/opacity survive the SVG round trip.  Glyphs left at
-        manim's default WHITE keep the algan base color.  ``sync_border_color``
-        copies each styled glyph's fill color to its border when a border is
-        drawn (disabled when the caller supplied an explicit border color).
-        """
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         make_manim_dir()
@@ -536,11 +645,94 @@ class Text(Tex):
     Parameters
     ----------
     text
-        The text to display.
+        The text to display. Cast to ``str``, and tabs are expanded to
+        ``tab_width`` spaces.
+    fill_opacity
+        Opacity of the glyph interiors, 0 for invisible and 1 for solid. Manim's
+        spelling of Algan's ``opacity``. Defaults to ``1.0``.
+    stroke_width
+        Width of the outline drawn around each glyph, in Manim's stroke units --
+        halved on the way in, because Algan's ``border_width`` is half of
+        Manim's for the same visual weight. Defaults to ``0``, no outline.
+    color
+        Colour of the glyphs, and of their outline if one is drawn. Accepts an
+        Algan :class:`~algan.constants.color.Color`, a named constant such as
+        ``BLUE``, or anything ``Color()`` accepts. Defaults to ``None``, meaning
+        Algan's default text colour (``WHITE``).
+    font_size
+        Glyph size in Manim's font-size units; the glyphs are built at 48 and
+        scaled by ``font_size / 48``. Defaults to ``48``, so plain ``Text`` comes
+        out twice the size of plain :class:`~algan.mobs.text.Tex`.
+    line_spacing
+        Distance between baselines of a multi-line string, in Pango's units.
+        Defaults to ``-1``, meaning Pango's own spacing for the font.
+    font
+        Font family name, as installed on the system. Defaults to ``""``,
+        meaning Pango's default family.
+    slant
+        ``"NORMAL"``, ``"ITALIC"`` or ``"OBLIQUE"``. Defaults to ``"NORMAL"``.
+    weight
+        A Pango weight name -- ``"THIN"``, ``"LIGHT"``, ``"NORMAL"``,
+        ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, and the rest.
+        Defaults to ``"NORMAL"``.
+    t2c
+        Text-to-colour: maps a substring to the colour its glyphs take. Colour
+        values may be Algan colours (glow and opacity survive), hex strings, or
+        named Manim colours. A value of pure white is indistinguishable from
+        unstyled text and falls back to the base colour. Defaults to ``None``.
+    t2f
+        Text-to-font: maps a substring to a font family. Defaults to ``None``.
+    t2g
+        Text-to-gradient: maps a substring to a tuple of colours to fade
+        between across it. Defaults to ``None``.
+    t2s
+        Text-to-slant: maps a substring to a slant name. Defaults to ``None``.
+    t2w
+        Text-to-weight: maps a substring to a weight name. Defaults to ``None``.
+    gradient
+        A tuple of colours faded across the whole string. Defaults to ``None``,
+        one flat colour.
+    tab_width
+        How many spaces a tab in ``text`` expands to. Defaults to ``4``.
+    warn_missing_font
+        Whether to log a warning when ``font`` is not installed. Defaults to
+        ``True``.
+    height
+        Scale the finished text uniformly so it is this tall, in world units.
+        Defaults to ``None``, its natural size for ``font_size``.
+    width
+        Scale the finished text uniformly so it is this wide, in world units.
+        Applied after ``height``, so passing both leaves the width matched and
+        the height wherever the aspect ratio puts it. Defaults to ``None``.
+    should_center
+        Whether to move the finished text to the world origin. Defaults to
+        ``True``; pass ``False`` to keep the position ``location`` gave it.
+    disable_ligatures
+        Whether to render each character separately rather than letting the font
+        combine pairs such as "fi". Slower, but it makes ``text[i]`` line up
+        with the i-th character. Defaults to ``False``.
+    use_svg_cache
+        Accepted for Manim parity and has no effect: Algan caches the glyph
+        geometry itself, keyed on the source, whatever this is set to. Defaults
+        to ``False``.
     **kwargs
-        Passed to :class:`~algan.mobs.text.Tex` -- notably ``font_size``, ``color``,
-        ``location``, and
-        the Pango styling arguments described above.
+        Passed to :class:`~algan.mobs.text.Tex` -- notably ``location``,
+        ``border_color``, ``scene`` and ``add_to_scene``.
+
+    Examples
+    --------
+    Plain prose, and the same words with one span coloured:
+
+    .. algan:: Example1Text
+        :save_last_frame:
+
+        from algan import *
+
+        Text("Hello, world", font_size=36).move(UP * 0.5).spawn()
+        Text("Hello, world", font_size=36,
+             t2c={"world": BLUE}).move(DOWN * 0.5).spawn()
+
+        Scene.save_video()
     """
 
     def __init__(
@@ -693,10 +885,58 @@ class TextTriangulated(TexTriangulated):
 
 
 class MarkupText(Text):
-    """Text accepting Manim/Pango markup syntax.
+    """Plain text from a Pango-markup source, with the markup stripped out.
 
-    Markup is stripped when the optional Pango renderer is unavailable; the
-    resulting textual content, entities, and line breaks are preserved.
+    Manim's markup syntax is accepted so a ported script keeps running, but the
+    tags never reach the glyph renderer: ``<br/>`` becomes a line break, HTML
+    entities are unescaped, and every other tag is deleted before the text is
+    typeset. This happens whether or not the optional Pango renderer is
+    available, so a ``<span foreground='red'>`` span comes out in the Mob's own
+    colour, not red. The source you passed is kept on ``original_text``.
+
+    To colour or restyle part of a string, use :class:`~algan.mobs.text.Text`'s
+    ``t2c`` / ``t2f`` / ``t2s`` / ``t2w`` / ``t2g`` arguments instead -- those do
+    reach the renderer.
+
+    Parameters
+    ----------
+    text
+        The marked-up source. Tags are stripped, ``<br/>`` becomes a newline and
+        entities such as ``&amp;`` are unescaped; what remains is typeset.
+    justify
+        Accepted for Manim parity and has no effect on the rendered text; it is
+        stored on the Mob as ``justify``. Defaults to ``False``.
+    fill_opacity, stroke_width, color, font_size, line_spacing
+        As :class:`~algan.mobs.text.Text`, with the same defaults.
+    font, slant, weight, gradient, disable_ligatures, warn_missing_font
+        As :class:`~algan.mobs.text.Text`, with the same defaults.
+    tab_width, height, width, should_center
+        As :class:`~algan.mobs.text.Text`, with the same defaults. All of these
+        are redeclared here only so this constructor's signature matches
+        Manim's.
+    **kwargs
+        Passed to :class:`~algan.mobs.text.Text`.
+
+    Attributes
+    ----------
+    original_text
+        The markup source exactly as given, before stripping.
+
+    Examples
+    --------
+    A markup string, and the ``Text`` spelling that actually colours the span:
+
+    .. algan:: Example1MarkupText
+        :save_last_frame:
+
+        from algan import *
+
+        MarkupText("<b>bold</b> markup is stripped",
+                   font_size=32).move(UP * 0.5).spawn()
+        Text("t2c is not", font_size=32,
+             t2c={"not": BLUE}).move(DOWN * 0.5).spawn()
+
+        Scene.save_video()
     """
 
     def __init__(
