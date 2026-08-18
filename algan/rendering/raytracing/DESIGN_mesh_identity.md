@@ -330,6 +330,15 @@ deliberately does not. Wrapping it would give the last cell column `u = 0` where
 the texture needs `u = 1`, running the map backwards across that column. The
 duplicate uv column exists precisely to carry that discontinuity.
 
+The *texture* is what has to be continuous across it, and that is a separate
+mechanism with a separate predicate. `surface_closed_axes` (`surface.py`) runs
+the same coincidence test on both axes, ungated — a closed surface's map wraps
+whether or not its seam vertices are shared — and `wrap_pad_texture` repeats
+column 0 at column `W`, so the sampler's `u * (W - 1)` clamp addresses a padded
+`W + 1` columns and interpolates the wrap cell exactly as it does an interior
+one. Both are needed: the uv column carries `u = 1` to the seam, the pad gives
+`u = 1` the same texels as `u = 0`.
+
 3.2 Watertight ray/triangle intersection  [LANDED, gated off]
 ------------------------------------------------------------------
 With seams welded and interior edges bit-identical, a watertight test
