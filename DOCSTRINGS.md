@@ -484,9 +484,10 @@ Algan-authored docstring from `_WRAPPER_DOCSTRINGS` in `algan/mobs/manim_compat.
 turned up while writing them: `MarkupText` strips its markup unconditionally rather than only when
 Pango is missing (its docstring claimed otherwise), and a `Title` places itself against *Manim's*
 frame, which puts its top at exactly Algan's top border — flush against the edge with no margin.
-Reaching for `move_to_edge` to inset it pushes it further out instead, because that method takes
-its inset direction from `normalize(boundary - border)` and that is degenerate for a boundary
-already lying on the border. Both are now stated where a reader will hit them.
+Both are now stated where a reader will hit them. Chasing the second one turned up a real bug in
+`move_to_edge`, since fixed: it took its inset direction from `normalize(boundary - border)`, which
+is degenerate for a boundary lying on the border and points the wrong way for a Mob already
+off-screen.
 
 Fix in this order, since it tracks what users hit first:
 

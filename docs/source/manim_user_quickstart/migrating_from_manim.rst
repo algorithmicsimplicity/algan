@@ -200,14 +200,10 @@ outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.
     lands somewhere Algan did not choose. ``Title`` is the one most people meet:
     Manim's ``to_edge(UP)`` leaves a 0.5 gap below its own frame top, putting the
     title's top at ``y = 3.5`` -- exactly Algan's top border. Nothing is cut off,
-    but it sits flush against the frame edge with no margin. ``.move(DOWN * 1)``
-    insets it.
-
-    Reach for that rather than
-    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge`,
-    which moves a Mob already touching the border *further* out: it takes its
-    inset direction from ``normalize(boundary - border)``, which is degenerate
-    when the boundary lies on the border, so float rounding picks the sign.
+    but it sits flush against the frame edge with no margin. Call
+    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+    inset it by Algan's usual buffer, or place it by hand with
+    ``.move(DOWN * 1)``.
 
 For a compatible Manim vector mobject, wrap it in
 :class:`~algan.mobs.manim_mob.ManimMob`:

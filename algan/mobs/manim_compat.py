@@ -775,16 +775,9 @@ whole thing is moved to the top of the frame.
 against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
 leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
 exactly where Algan's default camera puts its top border. Nothing is cut off,
-but the text touches the frame edge with no margin at all. ``.move(DOWN * 1)``
-insets it.
-
-:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` is the
-obvious way to inset it and does the opposite -- it pushes the title ``buffer``
-further out. That is not a ``Title`` quirk: the method takes its inset direction
-from ``normalize(boundary - border)``, and for a Mob whose boundary already lies
-*on* the border that difference is zero, so float rounding decides the sign.
-Here it resolves outward. A Mob that starts clearly outside the frame is pulled
-back in correctly; it is landing exactly on the border that is degenerate.
+but the text touches the frame edge with no margin at all. Call
+:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+inset it by the usual buffer, or ``.move(DOWN * 1)`` to place it by hand.
 
 The default rule is sized from Manim's frame too, at ``frame_width - 2``, which
 comes out just narrower than Algan's visible width. Pass

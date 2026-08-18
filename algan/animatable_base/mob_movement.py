@@ -653,8 +653,11 @@ class MobMovementMixin:
     def move_to_edge(self, edge: torch.Tensor, buffer: float | None = None) -> Mob:
         """Move the Mob against one edge of the screen.
 
-        The Mob's own boundary is what comes to rest ``buffer`` from the border,
-        so a large and a small shape both end up looking equally inset.
+        The Mob's own boundary is what comes to rest ``buffer`` *inside* the
+        border, so a large and a small shape both end up looking equally inset.
+        Where the Mob starts makes no difference: one that is already off-screen
+        past that edge is brought back in, and calling this twice leaves it where
+        the first call put it.
 
         Animation
         ---------
@@ -692,12 +695,16 @@ class MobMovementMixin:
         edge_point_on_screen = self.scene.camera.project_point_onto_screen_border(
             mob_boundary_point, normalized_edge
         )
-        # Calculate the final target location for the Mob, accounting for the buffer
-        target_location = (
-            edge_point_on_screen
-            + F.normalize(mob_boundary_point - edge_point_on_screen, p=2, dim=-1)
-            * buffer
-        )
+        # Step back from the border along the edge direction. The inset used to
+        # be taken as ``normalize(boundary - border) * buffer``, which reads the
+        # direction off the Mob's current position instead of off the edge that
+        # was asked for. The border is cast *from* the boundary along the edge,
+        # so that difference is antiparallel to the edge whenever the Mob is
+        # inside the frame -- but it flips for a Mob already outside (leaving it
+        # ``buffer`` outside rather than bringing it in), and it degenerates to
+        # zero for a boundary resting exactly on the border, where float noise
+        # then chose the sign. A Manim ``Title`` lands exactly there.
+        target_location = edge_point_on_screen - normalized_edge * buffer
         # Calculate the displacement needed and move the Mob
         displacement = target_location - mob_boundary_point
         self.move(displacement)
