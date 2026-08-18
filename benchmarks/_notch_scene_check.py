@@ -114,6 +114,21 @@ FULL_RENDERS = REPO / "tests" / "full_renders"
 _SHORTFALL_TOL = 1e-3
 
 
+def _carms():
+    return {
+        "n": 0,
+        "have": 0,
+        "ship": 0.0,
+        "r1": 0.0,
+        "r1w": 0.0,
+        "r2": 0.0,
+        "r2w": 0.0,
+        "over1": 0,
+        "shipover": 0,
+        "overideal": 0,
+    }
+
+
 class Stats:
     """One scene's counts. Every field is a population, not a sample."""
 
@@ -159,6 +174,8 @@ class Stats:
         self.c_over_sum = 0.0
         self.c_over_worst = 0.0
         self.c_over_n = 0
+        self.arm_full_c = _carms()
+        self.arm_part_c = _carms()
         # Later run starts and the partial-mask arm, both unscored by the
         # first-fragment/full-mask version of this probe.
         self.bez_led_notched = 0
@@ -417,44 +434,70 @@ def _probe_block(
             stats.partial_sum += float(d[moved].abs().sum())
             stats.partial_worst = max(stats.partial_worst, float(d.abs().max()))
 
-    # -- FIX (c), scored on the same fragment lists -----------------------
-    # The host already reduces every covered pixel's exact clipped areas by
-    # facing (float64 scatter_add, no budget) and packs max(front, back) into
-    # frag_cap for one-mesh pixels; the walk already loads it. So the kernel
-    # could read that where its own bounded scan came up short. Whether that is
-    # a good substitute is an empirical question about how close the CAP sits to
-    # the sheet's true untruncated sum on exactly the pixels that truncate --
-    # which is what this scores, against corr(e_full) as the ideal.
+    # -- FIX (c), both variants, both arms ---------------------------------
+    # The run's fragments partition the sheet's samples, so its total claim is
+    # min(E, 1) on either arm. The question for (c) is only how well a
+    # host-computed area stands in for the sheet's true untruncated E.
     #
-    # 2.0 is the "no ceiling" sentinel every non-one-mesh pixel keeps, so
-    # cap <= 1 is the availability test the kernel would use.
+    #   c1  frag_cap = max(front, back), already packed and already loaded by
+    #       the walk. Free, but it is the MESH's footprint, not this SHEET's
+    #       area, so it over-states wherever the two sheets disagree -- which is
+    #       exactly what a partial mask means (the sheet owns only some of the
+    #       pixel's samples).
+    #   c2  the sum over the fragment's OWN facing, which is what the host
+    #       already builds as front/back and throws away. Costs one more
+    #       per-fragment lane.
+    #
+    # Scored against min(e_full, 1) as the ideal, with the shipped error beside
+    # it so the residual is readable as a share of the defect it removes.
     cap0 = cap[j0]
-    have = truncated & full_arm & (cap0 <= 1.0)
-    stats.c_available += int(have.sum())
-    stats.c_unavailable += int((truncated & full_arm & ~have).sum())
-    if bool(have.any()):
-        ideal = corr(e_full)[have]
-        proposed = corr(cap0)[have]
-        shipped = corr(e_trunc)[have]
-        # Residual: how far the proposal still sits from the exact answer,
-        # against the shortfall it set out to remove.
-        resid = (ideal - proposed).abs()
-        stats.c_residual_sum += float(resid.sum())
-        stats.c_residual_worst = max(stats.c_residual_worst, float(resid.max()))
-        stats.c_fixed += int(
-            (
-                ((ideal - shipped).abs() > _SHORTFALL_TOL) & (resid <= _SHORTFALL_TOL)
-            ).sum()
-        )
-        # OVER-covering is the risk the cap carries and the shipped rule does
-        # not: max(front, back) can exceed the near sheet's own area at a
-        # grazing boundary, so score that direction separately.
-        over = (proposed - ideal).clamp_min(0.0)
-        big = over > _SHORTFALL_TOL
-        stats.c_over_n += int(big.sum())
-        if bool(big.any()):
-            stats.c_over_sum += float(over[big].sum())
-            stats.c_over_worst = max(stats.c_over_worst, float(over[big].max()))
+    u_full_all = torch.zeros(n_cov, dtype=torch.int64)
+    for t in range(int(runlen.max()) if int(runlen.numel()) else 0):
+        take = t < runlen
+        idx = torch.clamp(j0 + t, max=n_frag - 1)
+        u_full_all |= torch.where(take, msk[idx] & _AA_MASK_ALL, 0)
+    key = seg * 2 + face.to(torch.int64)
+    sums = torch.zeros(2 * n_cov, dtype=torch.float64)
+    sums.scatter_add_(0, key, cov)
+    own_sum = sums[torch.arange(n_cov) * 2 + face[j0].to(torch.int64)]
+
+    ideal = torch.clamp(e_full, max=1.0)
+    ship = torch.clamp(e_trunc, max=1.0)
+    c1 = torch.clamp(cap0, max=1.0)
+    c2 = torch.clamp(own_sum, max=1.0)
+    for arm, acc in (
+        (full_arm, stats.arm_full_c),
+        (~full_arm & ~donor_arm, stats.arm_part_c),
+    ):
+        sel = truncated & arm
+        if not bool(sel.any()):
+            continue
+        have = sel & (cap0 <= 1.0)
+        acc["n"] += int(sel.sum())
+        acc["have"] += int(have.sum())
+        acc["ship"] += float((ship - ideal).abs()[sel].sum())
+        if bool(have.any()):
+            r1 = (c1 - ideal).abs()[have]
+            r2 = (c2 - ideal).abs()[have]
+            acc["r1"] += float(r1.sum())
+            acc["r1w"] = max(acc["r1w"], float(r1.max()))
+            acc["r2"] += float(r2.sum())
+            acc["r2w"] = max(acc["r2w"], float(r2.max()))
+            # corr > 1 forces the write's clamp-and-redistribute path (v2 ss4.4).
+            # (c) uses the TRUNCATED sample union, so it concentrates the exact
+            # area on too few samples and can drive corr higher than the ideal
+            # would -- the one way it could be worse than what ships.
+            q = _popcount(u_trunc).to(torch.float64)[have] / _AA_NUM_SAMPLES
+            acc["over1"] += int(((c1[have] / q.clamp_min(1e-9)) > 1.0).sum())
+            acc["shipover"] += int(((ship[have] / q.clamp_min(1e-9)) > 1.0).sum())
+            # The IDEAL has the exact area AND the exact sample union, so its Q
+            # is larger and its corr smaller. (c) can only fix the area, so it
+            # concentrates an exact claim on a truncated sample set -- the total
+            # is right, the sub-pixel placement is not, and rule B redistributes
+            # the overflow. This counts how much of the corr>1 population is
+            # (c)'s own doing rather than intrinsic.
+            qf = _popcount(u_full_all).to(torch.float64)[have] / _AA_NUM_SAMPLES
+            acc["overideal"] += int(((ideal[have] / qf.clamp_min(1e-9)) > 1.0).sum())
 
     hit = truncated & full_arm & (shortfall > _SHORTFALL_TOL)
     if not bool(hit.any()):
@@ -742,6 +785,17 @@ def _report(rows):
             note.append(f"one-mesh {s.notched_one_mesh}/{s.notched}")
             note.append(f"worst px {s.worst_at}")
             note.append(f"{len(s.frames_with_notch)} frames carry one")
+        for label, a in (("full", s.arm_full_c), ("partial", s.arm_part_c)):
+            if not a["n"]:
+                continue
+            h = max(a["have"], 1)
+            note.append(
+                f"(c) {label} arm: {a['have']}/{a['n']} have a cap; shipped err "
+                f"{a['ship'] / a['n']:.4f} -> c1 {a['r1'] / h:.4f} (worst "
+                f"{a['r1w']:.4f}) / c2 {a['r2'] / h:.4f} (worst {a['r2w']:.4f}); "
+                f"corr>1 on {a['over1']} vs shipped {a['shipover']} vs ideal "
+                f"{a['overideal']}"
+            )
         if s.c_available or s.c_unavailable:
             n = s.c_available
             note.append(
