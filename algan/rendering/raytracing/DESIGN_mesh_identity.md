@@ -8,7 +8,9 @@ declared mesh identity. Written to be self-contained: a fresh session with only
 this file and the repo should be able to continue without reconstructing any of
 the reasoning.
 
-Reading order. §0 is the state of the branch and what to do next. **§0.5 is a
+Reading order. §0 is the state of the branch and what to do next, and **§0.1 is
+how to run everything and what this machine may and may not measure** — read it
+first if you are resuming from this file alone. **§0.5 is a
 known limitation that ships in the default renderer** — diagnosed, costed and
 deliberately unfixed, so read it before treating a diced mesh's interior pixel as
 a bug. §1–§2 are the problem and what shipped. §3 is the unstarted work with the anchors to do it. §4
@@ -53,7 +55,7 @@ Since merged to `master` (`9a23b46`), and the whole of §4 has now been run on
 cleared first). Both CUDA baseline sets are regenerated against the shipped
 defaults, and everything portable is green:
 
-    pytest -q tests/unit_tests tests/fast      1046 passed, 89 skipped
+    pytest -q tests/unit_tests tests/fast      1051 passed, 89 skipped
     pytest -q tests/full_renders                  7 passed
     ruff check --no-fix / ruff format --check   clean
 
@@ -177,8 +179,8 @@ where it belongs; none was quietly dropped.
     §3.2  watertight tri intersection  FLIPPED ON — cost is under the noise floor
                                        here, and the dilation was a real defect
     §3.3  delete the epsilons          NO LIVE EPSILON READ LEFT at shipped
-                                       defaults; what remains is retiring two
-                                       ti.static fallback arms (§3.3)
+                                       defaults; what remains are two ti.static
+                                       arms that are also the A/B levers (§3.3)
     §3.4  median-split bezier BVH      MEASURED: byte-identical, no speed-up;
                                        recommendation is to leave it off
     §3.5  mesh identity                FLIPPED ON, both devices re-baselined
@@ -233,10 +235,16 @@ list has been run; these are what running them produced.
    `_raycast_pixel` asks `_tri_hit`, and with `WATERTIGHT_TRI` on there is **no
    live `BARYCENTRIC_EPSILON` read left at shipped defaults** — all three
    survivors sit in `ti.static` arms that do not compile in (§3.3 has the table).
-   What remains is a product call: retire the non-analytic-AA triangle fallback
-   (`aa == 0`) and the non-watertight intersection arm, after which the constants,
-   the `edge_hit` bit and `seam_t` go together. Do not promise the per-ray `f32`
-   until both have, and re-check `memory_model` when `rs_sca` shrinks.
+   What remains is a call about two `ti.static` branches — and note before you
+   make it that **both are A/B levers, not dead weight**: `aa == 0` is the control
+   arm for every analytic-AA measurement in §6, and `_tri_hit`'s dilated arm is
+   the control for §3.2, whose cost is still unmeasured on non-throttling
+   hardware. Neither is a per-pixel fallback and neither is needed for
+   correctness (§3.3 says why, including for the overlapping-transparency case
+   that looks like it would need one). Deleting them buys the constants, the
+   `edge_hit` bit and `seam_t`; it costs the ability to measure. Do not promise
+   the per-ray `f32` until both have gone, and re-check `memory_model` when
+   `rs_sca` shrinks.
 4. **§3.1 now needs only baselines.** Both blockers are gone: the stated pixel
    risk was closed by measurement (byte-identical on a static frame, textures and
    normal maps included), and the topological one is fixed — the morph path asks
@@ -272,6 +280,89 @@ beats the bezier `Line` (§6.6.1); that `ONE_MESH` alone gives the relaxed gate
 (§6.6.1 — it did not, and that was a bug); that welding moves pixel baselines
 (§3.1 — byte-identical, textures included); and that the PN deletion shrank the
 compile surface (§4.4 — the deleted variant was never compiled).
+
+
+================================================================================
+0.1 STARTING A SESSION FROM THIS FILE ALONE
+================================================================================
+
+Everything needed to resume is here. `CLAUDE.md` is the repo-wide contract and
+still governs; this section is what is specific to *this* work.
+
+**Run everything through the venv.** `<venv-python>` below is
+`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` elsewhere, or just
+`uv run python`. The system Python has no taichi.
+
+    <venv-python> -m pytest -q tests/unit_tests tests/fast   # ~5-10 min, CI's paths
+    <venv-python> -m pytest -q tests/full_renders            # ~6-9 min, 6 dense scenes
+    <venv-python> -m ruff check --no-fix algan tests         # NEVER without --no-fix
+    <venv-python> -m ruff format --check algan tests
+
+Expected green at the tip of this work: **1051 passed, 89 skipped** and
+**7 passed**. If either is red before you change anything, find out why before
+building on it.
+
+**THE MACHINE THIS WAS MEASURED ON, and what that forbids.** A Windows box with a
+GTX 1050 (4 GB), driver 576.52, Taichi 1.7.4, torch 2.7.1+cu128.
+
+* **It owns the CUDA baselines and must never write the CPU ones.** Its CPU
+  render of `tests/fast` misses the committed CPU baseline by 30 channel values
+  on 43 of 45 frames *before any change in this work*, so regenerating from here
+  would replace a baseline CI reproduces with one it does not. §3.5 and §7.17.
+* **It throttles, so wall-clock A/B is not available.** A control kernel the
+  change cannot touch drifts as much as the target; §7.15 and §3.2 both record a
+  measurement destroyed this way. Prefer counts, byte-diffs and in-process
+  alternating A/B with an explicit control. If a number straddles 1.0 across two
+  orderings, it is room temperature.
+* **Cold Taichi compiles run 35-45 minutes** after `clear_cache(taichi_kernels=
+  True)`, and a new `ti.static` template VALUE (a new `aa_grp`, flipping
+  `WATERTIGHT_TRI`) is a new variant with its own cold compile. Budget for it.
+  Clear the cache before any kernel A/B: the offline cache does **not** invalidate
+  on `@ti.func` edits.
+* **One render process at a time.** Killed background renders orphan children
+  that keep output mp4s locked.
+* **4 GB is a real constraint.** 304 translucent screen-filling cubes exhaust it
+  on a single LD frame; shrink geometry on screen rather than reducing the count
+  when a scene needs depth.
+
+**THE HARNESSES, and the question each answers.** All take `--res md` or a
+quality name; all live in `benchmarks/`.
+
+    _aa_run_gate_check.py    coverage error, ink wobble, notches, --verify replay,
+                             --notch-probe (the ss6.3.2/ss6.6 instrument of record)
+    _aa_line_check.py        ink wobble along an edge over nine angles
+    _one_mesh_ab.py          cost of the one-mesh cap (ss6.6.3)
+    _one_mesh_dens_ab.py     cost + look of the capped occlusion write (ss6.6.2)
+    _watertight_check.py     cracks, double blend, pixel diff across ss3.2
+    _weld_check.py           ss3.1's weld, textured and normal-mapped arms
+    _bez_bvh_ab.py           ss3.4's bezier split ordering against a noise floor
+    _shadow_anyhit_check.py  ss4.6's three SHADOW_ANYHIT modes, with reach checks
+    _diff_frame.py           side-by-side worst frame of two videos (LOOK at this)
+    _video_diff.py           how far two videos moved, and over how many pixels
+
+**FIVE RULES THIS WORK KEEPS LEARNING THE HARD WAY.** Every one of them cost a
+wrong result recorded in this file:
+
+1. **A check must show it REACHES its case.** §4.6 produced "all three modes
+   agree" four times from scenes that had no shadow in them at all. Prove the
+   mechanism is live (render with the feature off and diff) before reading any
+   agreement.
+2. **Replay the same inputs with exactly ONE thing changed.** That is what
+   attributed the notches (§6.6.2) three times running; anything that changes the
+   emission cannot isolate the resolve.
+3. **Read which accumulator a metric scores.** §6.6.2 predicted an occlusion-side
+   fix would close claim-side symptoms. It could not have, and the prediction was
+   published before anyone checked.
+4. **A gate that "implies" another must be wired in one place.** §6.6.1: the
+   kernel and the host disagreed about the same question and it cost most of a
+   win.
+5. **Look at the frames before re-baselining.** `_diff_frame.py` exists for this.
+   "Measured 42 channel values" is not the same as knowing what moved.
+
+**WHERE TO START.** §0's priority list, top entry first. §0.5 is a shipped
+limitation you should read before treating a diced mesh's interior pixel as a
+bug. §6 is measured negative results — read it before building anything in the
+AA area, it will save a day.
 
 
 ================================================================================
@@ -875,10 +966,49 @@ three survivors sit in arms that do not compile in:
     _ss_pixel (raster_taichi:1124)    aa == 0                overwritten under aa
     _raycast_pixel (:1593)            aa == 0                read only in the else
 
-So §3.3's remaining deletion is not an epsilon question any more — it is retiring
-the non-analytic-AA triangle fallback and the non-watertight intersection arm.
-Both are `ti.static` branches, so it is mechanical once someone decides those
-fallbacks are done.
+So §3.3's remaining deletion is not an epsilon question any more — it is a
+question about two `ti.static` branches, and **"retire them" is the wrong framing
+for at least one of them.** Get the following right before planning that work,
+because the obvious objection to it is wrong and the real one is different.
+
+*`aa == 0` is NOT a per-pixel fallback for pixels analytic coverage cannot
+resolve.* It is a whole-batch compile-time value: `raster_pipeline` sets
+`aa_tri` from `rt_settings.analytic_aa_tri_active()` and the `tri_screen` column
+count, once, and every kernel in the batch is specialised on it. No pixel ever
+falls back to it at runtime.
+
+The runtime per-candidate fallback is a *different* mechanism and it is not going
+anywhere: `_ss_setup` returns `use_ss`, choosing `_ss_pixel` (screen-space, exact
+fixed-point fill rule) or `_raycast_pixel` (one ray per sub-pixel sample) for
+triangles that straddle the camera plane. **Both supply analytic coverage**, and
+`_raycast_pixel`'s docstring is explicit that under analytic coverage it does not
+report full coverage but answers the membership question directly.
+
+*And the hard case does not need `aa == 0` either.* Several partially transparent
+fragments from different meshes overlapping one pixel is exactly what the
+per-sample transmittance walk is for: each fragment attenuates only the samples
+its own mask owns, and `svis` carries the result front to back. Nothing in that
+requires the fragments to share a surface — the ONE-MESH rule (§6.6) is a special
+case layered on top precisely because the general case is already general, and it
+restricts itself to opaque single-surface pixels for that reason. What degrades
+on such a pixel is the run rule's *area* correction, not correctness: interleaved
+meshes give runs of length one, so `run_mode` stays 0 and the pixel is resolved by
+its exact sample masks alone — sample-quantized, but partitioned exactly and
+composited in order.
+
+*The real argument for keeping `aa == 0` is that it is the A/B lever.* Half the
+measurements in §6 exist because analytic coverage can be switched off and the
+same scene rendered both ways. Delete the branch and you delete the control arm
+of every future analytic-AA experiment, on a machine where controls are already
+the scarce thing (§7.15). That is a much better reason to keep it than
+correctness, and it points at a different decision: keep the toggle, delete only
+what is genuinely unreachable under it.
+
+*The non-watertight arm of `_tri_hit` is the same shape of question* and has the
+same answer: it is `WATERTIGHT_TRI`'s off arm, so deleting it deletes the ability
+to A/B §3.2 ever again. §3.2's cost is still unmeasured on hardware that does not
+throttle; deleting the control before anyone has measured it would close that
+door permanently.
 
 **What the refactor did NOT do, said plainly: it moved zero pixels.**
 `tests/unit_tests tests/fast` (1051 passed, 89 skipped) and `tests/full_renders`
