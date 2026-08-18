@@ -227,11 +227,15 @@ list has been run; these are what running them produced.
    devices' baselines — and the CPU set cannot be regenerated on the machine that
    owns the CUDA one (§3.5). That is the only thing standing between this gate
    and its default.
-5. **A purpose-built scene for §4.6.** All three `SHADOW_ANYHIT` modes are
-   byte-identical on the suite's only shadow scene, so the prediction is untested
-   rather than confirmed. It needs a translucent stack whose edge hits sit within
-   `DEPTH_TIE_EPSILON` of an opaque hit, and a >256-surface stack for the second
-   cause (which is the peel depth and has nothing to do with identity).
+5. **§4.6's case 1 still has no reach check.** The purpose-built scene exists
+   (`benchmarks/_shadow_anyhit_check.py`) and settles case 2: the 304-sheet stack
+   demonstrably reaches the peel limit and all three `SHADOW_ANYHIT` modes are
+   still byte-identical, so that documented disagreement does not appear from the
+   public API — plausibly because an opaque blocker is found through the
+   opaque-only BVH prepass, which is a hypothesis nobody has checked. Case 1's
+   scene renders and agrees, but nothing demonstrates it puts an opaque edge hit
+   within `DEPTH_TIE_EPSILON` of a translucent one, so its agreement means
+   nothing yet. Build that check before reading that column.
 6. **§3.6 only if something changes.** Measured not to justify starting: the BVH
    build it would amortize is ~1% of a shadowed render, and the instancing win it
    would unlock needs a workload with thousands of repeated meshes, which no
@@ -1350,6 +1354,35 @@ its result. `1035 passed, 89 skipped` on `pytest -q tests/unit_tests`.
     within `DEPTH_TIE_EPSILON` of an opaque hit (case 1), and a >256-surface
     translucent stack (case 2). Until such a scene exists, "the three modes agree"
     is a statement about the scene, not about the renderer.
+
+    **BUILT: `benchmarks/_shadow_anyhit_check.py`. Case 2 is reached, and the
+    three modes agree anyway.** The scene stacks 304 translucent sheets between an
+    off-axis light and an opaque blocker, and it demonstrably reaches the peel
+    limit — rendering the same scene 8 sheets deep instead of 304 moves `max|d|`
+    to 255, so the depth is doing something. With the case reached, all three
+    modes still produce the **identical sha256**. So the disagreement case 2
+    documents does not appear in the shipped configuration, and the docstring's
+    corner case is narrower than it reads, or unreachable from the public API.
+
+    The likely reason, **stated as a hypothesis and not measured**: an opaque
+    blocker is found through the opaque-only BVH prepass, which does not peel
+    translucent surfaces at all, so the peel depth never gates whether the
+    blocker is seen. Anyone continuing here should check that before building a
+    third scene.
+
+    **Case 1 is still untested, and its green result should not be read.** The
+    tie scene renders and all three modes agree on it, but nothing yet
+    demonstrates it puts an opaque edge hit within `DEPTH_TIE_EPSILON` of a
+    translucent one — there is no reach check for case 1 the way there is for
+    case 2. An agreement column from a scene that may reach nothing is exactly
+    the false negative this section already fell into once, so it is recorded as
+    unproven rather than as agreement.
+
+    **The first run of this harness was itself that false negative**, which is
+    why the reach check exists: the stack scene's light was directly overhead, so
+    its shadow fell on ground the camera sees edge-on at the horizon. Three modes
+    agreed, on a frame with no shadow in it. `_shadow_stack.png` in the first run
+    showed a fully lit floor and nobody would have noticed from the numbers.
 
 4.7 **Watertight test (§3.2), once built.** — **RUN; see §3.2 for the verdict.**
     `benchmarks/_watertight_check.py` covers the first two items. Note one setup
