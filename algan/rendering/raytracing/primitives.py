@@ -91,9 +91,7 @@ class _PatchChunk(NamedTuple):
     def of(cls, patches, frames, dedup):
         if not dedup:
             return cls(patches, frames, None, None)
-        unique_patches, inverse = torch.unique_consecutive(
-            patches, return_inverse=True
-        )
+        unique_patches, inverse = torch.unique_consecutive(patches, return_inverse=True)
         return cls(patches, frames, unique_patches, inverse)
 
     def rows_of(self, source, static):
@@ -1712,9 +1710,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # when it is past that frame's diced total. Stating it that way costs
         # one comparison over the grid, where marking the written rows costs a
         # fill plus an index_fill_ per chunk.
-        padding = torch.arange(max_triangles, device=device).unsqueeze(
-            0
-        ) >= counts.sum(1).unsqueeze(1)
+        frame_totals = counts.sum(1)
+        batch_columns = torch.arange(max_triangles, device=device)
+        padding = batch_columns >= frame_totals.unsqueeze(1)
 
         for level in levels.unique(sorted=True).tolist():
             level = int(level)
@@ -1815,9 +1813,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 for output, source in attribute_outputs:
                     _scatter_diced_rows(
                         output,
-                        chunk_rows.diced_attribute(
-                            source, vertex_uv, triangle_indices
-                        ),
+                        chunk_rows.diced_attribute(source, vertex_uv, triangle_indices),
                         targets,
                     )
 

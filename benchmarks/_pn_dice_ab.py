@@ -63,23 +63,41 @@ SCENARIOS = {
     # name: shape, how many copies batched into one primitive, frames in the
     # batch, camera radius, how far the camera orbits, and how far the mesh
     # deforms over the batch (0 = a mesh that holds still).
-    "static": {"shape": "sphere", "copies": 4, "frames": 16, "radius": 6.0,
-               "orbit": 0.0},
-    "orbit": {"shape": "sphere", "copies": 4, "frames": 32, "radius": 6.0,
-              "orbit": 0.6},
-    "near": {"shape": "sphere", "copies": 1, "frames": 24, "radius": 2.2,
-             "orbit": 0.4},
-    "torus": {"shape": "torus", "copies": 2, "frames": 16, "radius": 5.0,
-              "orbit": 0.5},
-    "cylinder": {"shape": "cylinder", "copies": 2, "frames": 16, "radius": 4.0,
-                 "orbit": 0.3},
-    "cone": {"shape": "cone", "copies": 2, "frames": 12, "radius": 3.0,
-             "orbit": 0.2},
+    "static": {
+        "shape": "sphere",
+        "copies": 4,
+        "frames": 16,
+        "radius": 6.0,
+        "orbit": 0.0,
+    },
+    "orbit": {
+        "shape": "sphere",
+        "copies": 4,
+        "frames": 32,
+        "radius": 6.0,
+        "orbit": 0.6,
+    },
+    "near": {"shape": "sphere", "copies": 1, "frames": 24, "radius": 2.2, "orbit": 0.4},
+    "torus": {"shape": "torus", "copies": 2, "frames": 16, "radius": 5.0, "orbit": 0.5},
+    "cylinder": {
+        "shape": "cylinder",
+        "copies": 2,
+        "frames": 16,
+        "radius": 4.0,
+        "orbit": 0.3,
+    },
+    "cone": {"shape": "cone", "copies": 2, "frames": 12, "radius": 3.0, "orbit": 0.2},
     # A genuinely deforming mesh: no frame shares another's geometry, so every
     # dedup in the fast arm has to disable itself and the two arms should land
     # on the same time as well as the same bytes.
-    "deforming": {"shape": "sphere", "copies": 2, "frames": 12, "radius": 5.0,
-                  "orbit": 0.3, "deform": 0.9},
+    "deforming": {
+        "shape": "sphere",
+        "copies": 2,
+        "frames": 12,
+        "radius": 5.0,
+        "orbit": 0.3,
+        "deform": 0.9,
+    },
 }
 
 
@@ -146,7 +164,9 @@ def reference_dice(self, camera):
             cols.unsqueeze(0).expand(num_frames, -1).contiguous(),
             right=True,
         ).clamp_max(num_patches - 1)
-        self._logical_pn_tri_obj = patch_source[patch_of_col].to(torch.int32).contiguous()
+        self._logical_pn_tri_obj = (
+            patch_source[patch_of_col].to(torch.int32).contiguous()
+        )
     else:
         self._logical_pn_tri_obj = torch.zeros(
             (num_frames, max_triangles), dtype=torch.int32, device=device
@@ -283,7 +303,9 @@ def build_primitive(shape, copies):
 
 def build_camera(frames, radius, orbit, screen_height=486):
     angle = torch.linspace(0.0, orbit, frames)
-    distance = radius * (1.0 + 0.3 * torch.linspace(0.0, 1.0, frames)) if orbit else radius
+    distance = (
+        radius * (1.0 + 0.3 * torch.linspace(0.0, 1.0, frames)) if orbit else radius
+    )
     origins = torch.stack(
         (
             distance * torch.sin(angle),
@@ -395,9 +417,7 @@ def run(name, spec, reps):
     dice_fast(primitive, camera)
     got = diced_arrays(primitive)
 
-    mismatches = [
-        key for key in expected if not bitwise_equal(got[key], expected[key])
-    ]
+    mismatches = [key for key in expected if not bitwise_equal(got[key], expected[key])]
     triangles = expected["corners"].shape[1]
 
     # Alternate the arms so a thermal drift lands on both.
