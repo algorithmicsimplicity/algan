@@ -674,6 +674,166 @@ class ManimCompatMob(ManimMob):
         return sorted(set(super().__dir__()) | set(dir(self.manim_mobject)))
 
 
+# Generated wrappers inherit their backing class's docstring, which is the right
+# default: Manim's prose describes arguments that really do work here. It is the
+# wrong answer for the LaTeX-bearing classes, whose Manim docstrings carry
+# ``.. manim::`` examples -- Manim scene code, executed and rendered into Algan's
+# own reference pages, teaching a script that will not run. Those get an
+# Algan-authored docstring instead. See DOCSTRINGS.md.
+_MATHTEX_DOC = """A LaTeX string typeset in math mode, wrapping Manim's ``MathTex``.
+
+Manim compiles the formula and builds its glyph outlines; Algan converts those
+to cubic bezier circuits and animates them on its own timeline. Manim's own
+arguments work as written -- ``tex_to_color_map`` and ``substrings_to_isolate``
+included -- and Manim methods Algan does not implement are delegated to the
+backing object.
+
+Reach for Algan's :class:`~algan.mobs.text.Tex` when you are not porting a
+script. The two produce the same outlines (``MathTex("x^2")`` matches
+``Tex("x^2", font_size=48)``, because Algan's ``Tex`` also builds at Manim's 48
+and then scales), but this one is a single Mob with no per-glyph views:
+``formula[0]`` raises :class:`TypeError`, and character indexing,
+:meth:`~algan.mobs.text.Tex.get_segment` and :meth:`~algan.mobs.text.Tex.write`
+all live on ``Tex`` instead.
+
+Animation
+---------
+Constructing one records nothing: LaTeX runs immediately and the Mob joins the
+active Scene unspawned. Call
+:meth:`~algan.animatable_base.animatable.Animatable.spawn` to make it appear.
+Everything after that -- ``formula.color = BLUE``, a move, a delegated Manim
+edit -- is recorded on the timeline like any other Mob's, over the current
+context's duration.
+
+Parameters
+----------
+*tex_strings
+    One or more LaTeX sources, joined by ``arg_separator`` and compiled as a
+    single document.
+arg_separator
+    Inserted between consecutive ``tex_strings`` in the compiled source.
+    Defaults to ``" "``, one space.
+substrings_to_isolate
+    Substrings to split the source on before compiling, so each ends up as its
+    own piece of the result. Defaults to ``None``, meaning no extra splitting
+    beyond what the separate ``tex_strings`` already give.
+tex_to_color_map
+    Maps a substring of the source to the colour its glyphs take; the substring
+    is isolated for you. Accepts Manim colours, hex strings, or Algan
+    :class:`~algan.constants.color.Color` values -- an Algan colour is converted
+    to hex on the way through Manim, so its glow and opacity are dropped and
+    have to be set on the Mob afterwards. Defaults to ``None``, one colour
+    throughout.
+tex_environment
+    Name of the LaTeX environment to typeset in, such as ``"gather*"``.
+    Defaults to ``"align*"``.
+**kwargs
+    Manim's remaining ``MathTex`` arguments -- notably ``font_size`` (defaults
+    to ``48``), ``color``, ``tex_template``, ``stroke_width`` and
+    ``should_center`` -- plus the Algan-only ``scene``, ``add_to_scene``,
+    ``glow`` and ``glow_radius``.
+
+Raises
+------
+:class:`ValueError`
+    If LaTeX fails to compile the source. The most common cause is
+    ``tex_to_color_map`` or ``substrings_to_isolate``: they split the source on
+    the literal substring, so a key that also occurs inside a control sequence
+    or a brace group cuts it in half. Colouring ``"n"`` in a formula containing
+    ``\\infty`` is enough to do it. Pick a key that stands alone, or pass the
+    pieces as separate ``tex_strings``.
+
+See Also
+--------
+:class:`~algan.mobs.text.Tex` : Algan's own LaTeX Mob, with per-glyph views,
+    segments and the hand-writing animation.
+
+Examples
+--------
+A formula, and one with two symbols picked out by ``tex_to_color_map``:
+
+.. algan:: Example1MathTex
+    :save_last_frame:
+
+    from algan import *
+
+    MathTex(r"\\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}",
+            font_size=36).move(UP * 0.5).spawn()
+    MathTex(r"a^2 + b^2 = c^2", font_size=36,
+            tex_to_color_map={"a": BLUE, "b": YELLOW}).move(DOWN * 0.5).spawn()
+
+    Scene.save_video()
+"""
+
+_TITLE_DOC = """An underlined heading, wrapping Manim's ``Title``.
+
+The text is typeset by LaTeX in text mode (so ``Title("Chapter 1")`` reads as
+written, no maths escaping needed) with a horizontal rule beneath it, and the
+whole thing is moved to the top of the frame.
+
+**The frame it moves to the top of is Manim's, not Algan's, and it lands flush
+against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
+leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
+exactly where Algan's default camera puts its top border. Nothing is cut off,
+but the text touches the frame edge with no margin at all. Call
+:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+inset it by the usual buffer, or ``.move(DOWN * 1)`` to place it by hand.
+
+The default rule is sized from Manim's frame too, at ``frame_width - 2``, which
+comes out just narrower than Algan's visible width. Pass
+``match_underline_width_to_text=True`` for a rule the width of the words.
+
+Animation
+---------
+Constructing one records nothing: LaTeX runs immediately and the Mob joins the
+active Scene unspawned. Call
+:meth:`~algan.animatable_base.animatable.Animatable.spawn` to make it appear;
+later changes are recorded on the timeline like any other Mob's.
+
+Parameters
+----------
+*text_parts
+    One or more strings, joined and typeset as a single line of text.
+include_underline
+    Whether to draw the rule beneath the text. Defaults to ``True``.
+match_underline_width_to_text
+    Whether the rule spans only the width of the text. Defaults to ``False``,
+    which spans Manim's frame width less 2 world units instead.
+underline_buff
+    Gap between the text and the rule, in world units. Defaults to ``0.25``
+    (Manim's ``MED_SMALL_BUFF``).
+**kwargs
+    Manim's remaining ``Tex`` arguments -- notably ``font_size`` (defaults to
+    ``48``), ``color`` and ``tex_template`` -- plus the Algan-only ``scene``,
+    ``add_to_scene``, ``glow`` and ``glow_radius``.
+
+Attributes
+----------
+underline
+    The rule Mob, present only when ``include_underline`` is true. Animate it
+    like any other Mob.
+
+Examples
+--------
+A title placed where Algan's camera can see all of it, over a shape:
+
+.. algan:: Example1Title
+    :save_last_frame:
+
+    from algan import *
+
+    Title("A Title", match_underline_width_to_text=True).move(DOWN * 1).spawn()
+    Circle(radius=0.8, color=BLUE).spawn()
+
+    Scene.save_video()
+"""
+
+_WRAPPER_DOCSTRINGS: dict[str, str] = {
+    "MathTex": _MATHTEX_DOC,
+    "Title": _TITLE_DOC,
+}
+
+
 def _make_manim_wrapper(name: str):
     manim_class = getattr(_manim, name)
     wrapper = type(
@@ -682,7 +842,7 @@ def _make_manim_wrapper(name: str):
         {
             "_manim_class": manim_class,
             "__module__": __name__,
-            "__doc__": manim_class.__doc__,
+            "__doc__": _WRAPPER_DOCSTRINGS.get(name, manim_class.__doc__),
         },
     )
     with contextlib.suppress(TypeError, ValueError):

@@ -149,9 +149,15 @@ A few Manim-parity surfaces keep Manim's radians on purpose. These take
 * ``Wiggle(rotation_angle=...)``.
 * The ``u_range`` / ``v_range`` parametric domains of :class:`~algan.mobs.shapes_3d.Sphere`,
   ``Cone``, ``Cylinder`` and ``Torus`` -- these are parameter intervals rather
-  than rotations. Note that only ``Cone``'s ``v_range`` and ``Torus``'s two
-  ranges actually restrict the geometry; ``Sphere`` and ``Cylinder`` accept
-  theirs for compatibility but always build the whole shape.
+  than rotations. All of them restrict the geometry, so a partial range builds a
+  partial shape: an open shell with uncapped cut edges, re-tessellated from
+  scratch rather than carved out of the whole shape's grid. Which parameter is
+  which follows Manim: ``Sphere``'s ``u_range`` is the azimuth and its
+  ``v_range`` runs pole to pole, while ``Cylinder``'s and ``Cone``'s ``v_range``
+  is the azimuth about the axis (the extent along the axis comes from
+  ``height``, as it does in Manim). The zero of each sweep is Algan's own seam
+  rather than Manim's, so a half shape comes out rotated relative to Manim's --
+  the docstrings say where each one starts.
 
 Every one of those is a *constructor argument* handed straight to Manim. No
 Algan **method** is among them, so there is no Mob anywhere whose ``rotate``
@@ -179,8 +185,28 @@ Text, TeX, and imported Manim mobjects
 ======================================
 
 Algan provides native :class:`~algan.mobs.text.Text` and
-:class:`~algan.mobs.text.Tex` mobs. For a compatible Manim vector mobject, wrap
-it in :class:`~algan.mobs.manim_mob.ManimMob`:
+:class:`~algan.mobs.text.Tex` mobs. ``MathTex`` and ``Title`` are *not* native:
+they are compatibility wrappers around Manim's classes, so they take Manim's
+arguments (``tex_to_color_map``, ``include_underline``) but are single Mobs with
+no per-glyph views -- ``formula[0]`` raises, and ``write()`` and ``get_segment()``
+live on :class:`~algan.mobs.text.Tex`. Where a script does not need Manim's own
+arguments, ``Tex`` is the better landing place, and it produces the same
+outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.
+
+.. note::
+
+    Manim's frame is 14.22 by 8 world units; Algan's default camera shows
+    12.44 by 7. Anything that positions itself against Manim's frame therefore
+    lands somewhere Algan did not choose. ``Title`` is the one most people meet:
+    Manim's ``to_edge(UP)`` leaves a 0.5 gap below its own frame top, putting the
+    title's top at ``y = 3.5`` -- exactly Algan's top border. Nothing is cut off,
+    but it sits flush against the frame edge with no margin. Call
+    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+    inset it by Algan's usual buffer, or place it by hand with
+    ``.move(DOWN * 1)``.
+
+For a compatible Manim vector mobject, wrap it in
+:class:`~algan.mobs.manim_mob.ManimMob`:
 
 .. algan-doc-check: skip -- needs diagram.svg, which does not ship with the docs
 
