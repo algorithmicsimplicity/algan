@@ -238,6 +238,45 @@ def evaluate_logical_pn(control_points, uv):
     )
 
 
+def evaluate_logical_pn_per_patch(control_points, uv):
+    """Evaluate cubic logical PN position patches, one ``uv`` per patch.
+
+    :func:`evaluate_logical_pn` evaluates every patch at every coordinate,
+    which is what dicing wants: one subdivision pattern shared by the whole
+    mesh. This instead pairs each patch with its own coordinate, for callers
+    that already know which patch a point falls in -- looking up where a texel
+    sits on the surface, say.
+
+    Parameters
+    ----------
+    control_points
+        Tensor ``[..., 10, 3]``.
+    uv
+        Tensor ``[..., 2]`` in the barycentric ``(u, v)`` domain, broadcasting
+        against ``control_points``' leading dimensions.
+
+    Returns
+    -------
+    Tensor
+        Shape ``[..., 3]``.
+    """
+    u = uv[..., :1]
+    v = uv[..., 1:]
+    w = 1.0 - u - v
+    return (
+        (w * w * w) * control_points[..., 0, :]
+        + (u * u * u) * control_points[..., 1, :]
+        + (v * v * v) * control_points[..., 2, :]
+        + (3.0 * w * w * u) * control_points[..., 3, :]
+        + (3.0 * w * u * u) * control_points[..., 4, :]
+        + (3.0 * u * u * v) * control_points[..., 5, :]
+        + (3.0 * u * v * v) * control_points[..., 6, :]
+        + (3.0 * w * v * v) * control_points[..., 7, :]
+        + (3.0 * w * w * v) * control_points[..., 8, :]
+        + (6.0 * w * u * v) * control_points[..., 9, :]
+    )
+
+
 def evaluate_logical_pn_normals(control_points, uv):
     """Evaluate and normalize quadratic logical PN normal patches."""
     extra_dims = uv.ndim - 1
