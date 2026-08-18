@@ -192,8 +192,16 @@ where it belongs; none was quietly dropped.
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
 
-1. **§6.3.2's relaxed run gate notches interior tilings, and it owns ~92% of the
-   residue this document twice blamed on the cap.** Measured two ways that agree
+1. **§6.3.2's relaxed run gate notches interior tilings, and the cause is
+   `_AA_MAX_RUN_SCAN = 16`.** A truncated scan's `E` is a lower bound on the
+   sheet's area, and the gate's `rU == _AA_MASK_ALL` arm consults it as though it
+   were the area, darkening an interior pixel by the unscanned remainder.
+   Replaying each notched pixel with the limit lifted recovers **244 of the 277**
+   notches on the two cases that carry them (§6.3.2 has the table and the two
+   candidate fixes). This is where to start; the rest of this item is the history
+   of getting there.
+
+   It owns ~92% of the residue this document twice blamed on the cap. Measured two ways that agree
    (§6.6.2): by gate, the relaxed gate alone takes `cylfine` from 50 to 239
    notches where the cap then adds 14; per pixel, disabling only the clip on a
    notched pixel's own fragments recovers 14 of those 253. The cap's ceiling is
@@ -1566,7 +1574,41 @@ mitigation still notches four of them (§6.6.2 has the table): a fine `Sphere`
 (overlap)` 0 -> 3. The flat quad and both plain `Cylinder`s are still zero in
 every arm, so the original measurement was right about the geometry it covered.
 **This is the open item**, and §6.6 inherited it by implying this gate — for a
-while the residue was recorded as the one-mesh cap's, which it is not. But with real donors in `E`, the coverage
+while the residue was recorded as the one-mesh cap's, which it is not.
+
+*DIAGNOSED: the residue is `_AA_MAX_RUN_SCAN`.* The scan sums at most 16
+consecutive fragments of a sheet. When it stops early, `E` is a **lower bound on
+the sheet's area, not the sheet's area** — and the relaxed gate's `rU ==
+_AA_MASK_ALL` arm then takes `run_corr = min(rE, 1.0)`, so an interior pixel
+whose sheet genuinely tiles it is darkened by exactly the unscanned remainder.
+Measured by replaying each notched pixel's own fragments with the scan limit
+lifted and nothing else changed (`--notch-probe`):
+
+    case                  notched   paints full unbounded   mean paint
+    line-check cylfine      253            231              0.99102 -> 0.99967
+    sphere (192x96)          24             13              0.99823 -> 0.99940
+    line-check cyl            4              0              0.99898 (unchanged)
+    packed 4x4 (overlap)      3              0              0.99865 (unchanged)
+
+So **244 of the 277 notches on the two cases that carry them are the scan
+limit**, and the remaining seven pixels across the two small cases are something
+else, still unattributed.
+
+*Do not read the verdict column to find them.* `_classify` returns the FIRST
+matching label and tests `union-full` before `capped`, so a pixel that is both
+reports as `union-full` — which is why the notched pixels look like a union-full
+population (189 of 253) while their mean run length is 24.22, well past the limit
+of 16. The verdict histogram sent this diagnosis down a wrong path once.
+
+*Two fixes, and the choice is not obvious.* (a) Raise the limit: it is one
+constant, but it is a loop bound in the megakernel's hot path and the cap exists
+deliberately. (b) Refuse to consult `E` when the scan hit its limit, falling back
+to the shipped `corr = 1` short-circuit — cheap and principled, since a truncated
+sum is not an area, but it also withdraws the gate's win from every long-run
+SILHOUETTE pixel, and on `cylfine` those are most of the frame (`capped` is 3011
+of 3546 clean interior pixels). Neither is free; (b) needs the silhouette
+population measured before it is chosen, and both need a kernel recompile and a
+cost measurement this box cannot resolve (§7.15). But with real donors in `E`, the coverage
 win shrinks — `Cylinder` 0.0260 → 0.0080 rather than → 0.0030 — and the metric
 §6 is actually about barely moves. Mean ink wobble over the nine non-degenerate
 angles, `--res md` CPU:

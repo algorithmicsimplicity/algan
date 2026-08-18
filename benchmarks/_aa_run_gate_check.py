@@ -474,12 +474,18 @@ def _popcount(m):
     return bin(m & _AA_MASK_ALL).count("1")
 
 
+#: The scan limit the replay uses. Normally the kernel's, but ``--notch-probe``
+#: raises it to ask what a LONGER scan would recover -- which is a question about
+#: the mechanism, answerable in Python, and does not cost a kernel recompile.
+RUN_SCAN_LIMIT = _AA_MAX_RUN_SCAN
+
+
 def _host_run_scan(j0, sids, faces, msks, covs, bez):
     """``_aa_run_scan`` on the host: ``(E, U, end)`` for the run at ``j0``."""
     sid0, face0 = sids[j0], faces[j0]
     n = len(sids)
     E, U, j, cnt = 0.0, 0, j0, 0
-    while j < n and cnt < _AA_MAX_RUN_SCAN:
+    while j < n and cnt < RUN_SCAN_LIMIT:
         if bez[j] or sids[j] != sid0 or faces[j] != face0:
             break
         E += covs[j]
@@ -1104,7 +1110,32 @@ def _measure(build, settings, capture=None):
                 # on notched pixels -- it is a Python walk per pixel.
                 notched = actual < 1.0 - _NOTCH_TOL
                 nocap = float("nan")
+                bigscan = float("nan")
                 if notched:
+                    # What would the pixel paint if the run scan had seen the
+                    # WHOLE sheet? If a truncated E is why corr < 1, an
+                    # unbounded scan restores the pixel; if it does not, E is
+                    # short for a reason the scan length cannot fix.
+                    global RUN_SCAN_LIMIT
+                    saved = RUN_SCAN_LIMIT
+                    RUN_SCAN_LIMIT = 1 << 30
+                    try:
+                        bigscan = _replay(
+                            sids,
+                            faces,
+                            ms,
+                            cs,
+                            bz,
+                            rule_b,
+                            consult_e=run_full,
+                            consult_full=run_full,
+                            mesh_cap=one_mesh,
+                            mesh_cap_gated=True,
+                            mesh_cap_dens=one_mesh_dens,
+                            caps=cps,
+                        )[0]
+                    finally:
+                        RUN_SCAN_LIMIT = saved
                     nocap = _replay(
                         sids,
                         faces,
@@ -1117,11 +1148,24 @@ def _measure(build, settings, capture=None):
                         mesh_cap=False,
                         caps=cps,
                     )[0]
+                # The run SCAN is capped at _AA_MAX_RUN_SCAN fragments, and a
+                # capped scan sums only that many exact areas -- so rE falls
+                # short of the sheet's true tiling and corr = min(rE, 1) darkens
+                # the pixel by precisely the unscanned remainder. The verdict
+                # already distinguishes that case ("capped"), and the longest
+                # consecutive same-sheet run is what decides it.
+                key0 = (sids[0], faces[0]) if sids else None
+                runlen = 0
+                while runlen < len(sids) and (sids[runlen], faces[runlen]) == key0:
+                    runlen += 1
                 NOTCH_RECORDS.append(
                     {
                         "px": px,
                         "py": py,
+                        "verdict": verdict,
+                        "runlen": runlen,
                         "nocap": nocap,
+                        "bigscan": bigscan,
                         "actual": actual,
                         "cap": cps[0] if cps else float("nan"),
                         "front": front,
@@ -1332,6 +1376,22 @@ def _notch_probe(cases, settings):
             f"{'':24s}   notched: |cap - paint| <= 2e-3 on {near}/{len(bad)}"
             f"   mean cap-paint {sum(gap) / len(gap):+.5f}"
         )
+        # IS THE SCAN CAP THE CAUSE? A "capped" verdict means the consecutive
+        # run outran _AA_MAX_RUN_SCAN, so E is short by the unscanned areas.
+        for label, rows in (("notched", bad), ("clean", good)):
+            if not rows:
+                continue
+            vd = {}
+            for r in rows:
+                vd[r["verdict"]] = vd.get(r["verdict"], 0) + 1
+            top = "  ".join(
+                f"{k}:{v}" for k, v in sorted(vd.items(), key=lambda kv: -kv[1])
+            )
+            print(
+                f"{'':24s}   {label:8s} run {sum(r['runlen'] for r in rows) / len(rows):5.2f}"
+                f"  verdicts {top}"
+            )
+
         # IS THE CAP THE CAUSE? Same fragment list, cap off, per notched pixel.
         off = [r["nocap"] for r in bad]
         full = sum(1 for v in off if v >= 1.0 - _NOTCH_TOL)
@@ -1339,6 +1399,12 @@ def _notch_probe(cases, settings):
             f"{'':24s}   notched, replayed with the cap OFF: paints full on "
             f"{full}/{len(bad)}, mean {sum(off) / len(off):.5f} "
             f"(with cap {sum(r['actual'] for r in bad) / len(bad):.5f})"
+        )
+        big = [r["bigscan"] for r in bad]
+        bfull = sum(1 for v in big if v >= 1.0 - _NOTCH_TOL)
+        print(
+            f"{'':24s}   notched, replayed with an UNBOUNDED run scan: paints "
+            f"full on {bfull}/{len(bad)}, mean {sum(big) / len(big):.5f}"
         )
 
 
