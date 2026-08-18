@@ -10,9 +10,11 @@ Two changes to [`algan/daemon.py`](algan/daemon.py) and
    stale code. This is a **correctness** change and the reason the document
    exists.
 2. **Auto-start.** When no daemon is running, an ordinary `python scene.py`
-   leaves one warmed behind it, so the *next* run starts in ~1s instead of
-   paying ~20s of Taichi kernel preparation. This is a **convenience** change
-   for users who are not editing the library.
+   starts one, runs itself on it, and leaves it warm, so every later run starts
+   in ~1s instead of paying ~20s of Taichi kernel preparation. This is a
+   **convenience** change for users who are not editing the library, and it
+   requires first closing the gap between "run on the daemon" and "run in your
+   own process" (§5).
 
 They compose: **auto-start + shutdown-on-stale = auto-restart**, with no
 supervisor process, no `os.execv`, and no new lifecycle machinery. The daemon
@@ -171,89 +173,174 @@ find no daemon and auto-start a second one, putting two heavy warm-ups on the
 GPU at once. Leaving the file in place means such a client connects, gets
 refused for staleness, and runs cold — correct, and sequential.
 
-### 4.1 The one case this does not cover
+### 4.1 Mid-run edits: an equivalence, not a gap
 
-A source edit that lands *while a run is executing* is not caught: the run was
-validated at handshake time and finishes on the code it started with. That is
-the same semantics as editing a file during a plain `python scene.py`, and the
-`*_taichi.py` JIT hazard (`CLAUDE.md`, `AGENTS_DETAILED.md:357`) is unchanged
-for that window. Document it; do not try to fix it. Fixing it would mean
-interrupting a render, which is worse than the problem.
+A source edit that lands *while a run is executing* is not caught, and that is
+correct rather than a residual hazard. Because the gate runs at **every** run
+launch — client handshake and the local Enter/socket paths alike — the
+following holds at the instant any run starts:
+
+> daemon-loaded sources == disk == what a fresh interpreter would load
+
+From that instant the two cases are identical. Already-imported modules are
+frozen either way; a module imported lazily after the edit picks up new source
+either way; and the Taichi JIT reads `*_taichi.py` at first launch of a kernel
+variant either way, which is the mixed-version hazard `CLAUDE.md` and
+`AGENTS_DETAILED.md:357` already warn about for plain `python scene.py`.
+
+So the claim to make in the docs is not "the daemon has one remaining stale
+window" but **"the daemon is exactly as safe as no daemon"**. Do not try to
+close it further: the only way to do so is to interrupt a render, which is
+worse than the problem.
 
 ---
 
-## 5. Auto-start
+## 5. Run parity: closing the gap between daemon and in-process runs
 
-`maybe_handoff` currently returns as soon as `read_state()` finds no state file
-([`daemon_client.py:290`](algan/daemon_client.py)). The question is what to do
-instead, and the answer is: **nothing, until the current run has finished.**
+Auto-start means a user's **first ever** run executes on the daemon. That is
+only acceptable if running on the daemon is indistinguishable from running in
+your own process. Today it is not, in four ways. Three are bugs worth fixing
+regardless of auto-start; the fourth is documented and left alone.
 
-Three options were considered:
+### 5.1 Output forwarding (the one that matters)
 
-| | Run 1 | Contention | Run 1 output |
-|---|---|---|---|
-| A. Spawn at import, run in-process | cold | **two heavy warm-ups at once** | normal |
-| B. Spawn at import, wait, hand off | cold | none | via the daemon protocol |
-| C. Spawn after the run finishes | cold | none | normal |
+`_ClientStream` ([`daemon.py:269`](algan/daemon.py)) replaces `sys.stdout` and
+`sys.stderr` at the *Python* level. Its `fileno()` deliberately reports the
+daemon console's descriptor, so anything writing to fd 1/2 directly — ffmpeg
+via moviepy, C extensions, torch warnings raised from C++ — lands in the
+daemon's terminal (a log file, once auto-started) and never reaches the user.
+The docstring calls this out as a known asymmetry.
 
-**Take C.** A duplicates ~20-27s of Taichi and Torch initialization across two
-processes simultaneously, which on a modest GPU risks an OOM during what is
-supposed to be a transparent convenience. B avoids that and is tempting, but it
-routes the very first run's output through `_ClientStream`, which carries a
-documented asymmetry ([`daemon.py:269`](algan/daemon.py)): Python-level output
-reaches the client, C-level and subprocess output — ffmpeg's, notably — does
-not. Making a user's *first ever* run behave differently from plain `python
-scene.py` is a bad trade for a few seconds.
+Fix it at the descriptor level. During a run:
 
-C keeps run 1 byte-for-byte the run it is today, spawns the daemon afterwards,
-and has it warm by the time a human has looked at their video and edited
-something. Runs 2+ are warm.
+1. `os.pipe()`, `os.dup2` the write end onto fds 1 and 2, and pump the read end
+   into `FRAME_STDOUT`/`FRAME_STDERR` frames from a reader thread.
+2. Point `sys.stdout`/`sys.stderr` at wrappers over those fds.
 
-### 5.1 Trigger
+That gives **one ordered channel** carrying Python-level, C-level and
+subprocess output together — which also fixes an ordering bug that exists
+today, where the two classes of output travel by different paths and cannot be
+interleaved correctly.
 
-Spawn from an `atexit` hook, gated on all of:
+Two details that are easy to get wrong:
+
+* **`isatty` must keep lying.** The current `_ClientStream.isatty()` reports the
+  *client's* tty-ness, shipped in the request as `isatty_out`/`isatty_err`. That
+  is what makes the tqdm progress bars in
+  [`render_loop.py:148`](algan/render_loop.py) render as progress bars. A pipe
+  is not a tty, so a naive redirect silently degrades them to one line per
+  update. The wrappers must override `isatty()` with the client's value, exactly
+  as today.
+* **Windows needs `SetStdHandle` as well as `dup2`.** Child processes inherit
+  their handles from `GetStdHandle(STD_OUTPUT_HANDLE)`, not from the CRT file
+  descriptor, so `os.dup2` alone captures Python but not ffmpeg. This is the one
+  genuinely platform-specific piece of the change.
+
+The daemon's own `_say` chatter is unaffected: `_CONSOLE` is captured at import
+([`daemon.py:110`](algan/daemon.py)) precisely so daemon output never enters a
+client's stream. That existing decision is what makes this fix clean.
+
+### 5.2 Environment variables
+
+Only the startup subset travels with a request
+([`daemon_client.py:231`](algan/daemon_client.py)), and it is compared, not
+applied. Everything else — `MY_OUTPUT_DIR=/tmp python scene.py` — is silently
+read from the **daemon's** environment instead of the caller's. That is a bug
+today and a serious one under auto-start.
+
+Ship the client's full `os.environ` in the request and swap it in for the
+duration of the run, restoring afterwards. This is the same pattern `execute`
+already applies to `sys.argv` and the working directory
+([`daemon.py:659-666`](algan/daemon.py)), so it fits the existing shape. The
+startup subset keeps its current behavior — refused on mismatch
+([`daemon.py:400`](algan/daemon.py)), because those are baked into Torch and
+Taichi at launch and cannot be adopted per run.
+
+### 5.3 stdin
+
+The daemon's stdin is its own Enter-to-re-render trigger
+([`daemon.py:462`](algan/daemon.py)), so a script calling `input()` would
+compete with the trigger thread for input. Connect the run's stdin to
+`DEVNULL` explicitly and document it. Scene scripts do not read stdin, and
+adding a client→daemon stdin channel to the protocol is not worth it for a case
+nobody has.
+
+### 5.4 `atexit`
+
+`runpy.run_path` does not run the script's `atexit` handlers — they would queue
+until the daemon itself exits. Document; do not emulate. A scene script whose
+output depends on `atexit` is already relying on interpreter shutdown, which a
+warm process legitimately does not perform.
+
+---
+
+## 6. Auto-start
+
+With §5 done, the first run can simply use the daemon it starts. `maybe_handoff`
+currently gives up as soon as `read_state()` returns None
+([`daemon_client.py:290`](algan/daemon_client.py)); instead it spawns a daemon,
+waits for it to publish its state file, and hands off.
+
+The rejected alternative was to run the first script in-process and spawn the
+daemon afterwards from an `atexit` hook. It keeps run 1 maximally normal, but it
+performs the ~20-27s of Torch and Taichi initialization **twice** — once in the
+script, once again in the background daemon — and the second one starts exactly
+when the user is most likely to launch their next run. Spawn-and-hand-off does
+the work once. Run 1's wall clock is the same either way, since the daemon does
+the same cold start the script would have done.
+
+### 6.1 Trigger and gating
+
+Spawn when all of:
 
 * `should_try()` is true — the existing conservative check
   ([`daemon_client.py:184`](algan/daemon_client.py)) that this is a plain
   `python foo.py` and not a REPL, notebook, `python -c`, or the daemon's own
-  child. Note it already returns False under pytest
+  child. It already returns False under pytest
   ([`daemon_client.py:200`](algan/daemon_client.py)), so **the test suite never
   auto-starts a daemon** — no new test isolation is required.
 * `ALGAN_AUTO_DAEMON` is on (default true).
-* `read_state()` still returns None — re-checked at exit, because another
-  process may have started one during this run.
-* **A render actually happened.** A module-level flag set by
-  `save_video`/`save_frame`. A script that imports algan and renders nothing
-  should not leave a GPU-resident process behind.
+* `read_state()` returns None.
 
-`atexit` does not run on `os._exit` or a hard crash, which is the right
-behavior: a script that died is not evidence anyone wants a daemon.
-
-### 5.2 Spawn mechanics
+### 6.2 Spawn mechanics
 
 `subprocess.Popen([sys.executable, "-m", "algan.daemon", "--idle-timeout", N])`,
 fully detached:
 
 * stdin `DEVNULL`; stdout/stderr to `$ALGAN_HOME/daemon.log` (append, truncated
-  when it exceeds a cap). The daemon's `_say` chatter has to go *somewhere*, and
-  a detached process has no terminal.
+  past a size cap). A detached process has no terminal, and `_say` has to go
+  somewhere.
 * POSIX: `start_new_session=True`. Windows: `DETACHED_PROCESS |
   CREATE_NEW_PROCESS_GROUP`.
-* `cwd=algan_home()`, so the daemon never holds a project directory open —
-  on Windows that would block deleting it. The daemon `os.chdir`s per run
-  anyway ([`daemon.py:663`](algan/daemon.py)).
-* Environment inherited as-is, so the startup-env values the daemon bakes in
-  match the process that spawned it. `ALGAN_DAEMON_CHILD` is explicitly cleared
-  in the child env (belt and braces — `should_try()` already refuses to reach
-  here from inside a daemon run).
+* `cwd=algan_home()`, so the daemon never holds a project directory open — on
+  Windows that blocks deleting it. The daemon `os.chdir`s per run anyway.
+* Environment inherited as-is, so the startup-env values it bakes in match the
+  spawning process and the immediately-following handoff cannot mismatch.
+  `ALGAN_DAEMON_CHILD` is explicitly cleared in the child env.
 
-### 5.3 Telling the user
+### 6.3 Waiting, and giving up
 
-One line to stderr, once, at spawn:
+Poll for the state file, then hand off as usual. Two bounds, because a first run
+must never hang on this:
+
+* **Readiness timeout** (`ALGAN_DAEMON_START_TIMEOUT`, default 60s). The daemon
+  publishes its state file only after Torch and Taichi are up, which is the
+  whole ~20-27s. On timeout, stop waiting and run in-process; the daemon is
+  still warming and will serve the *next* run.
+* **Spawn failure** — `Popen` raises, or the process exits immediately — falls
+  back to in-process silently, exactly as every other daemon failure does today.
+
+The worst case is therefore "first run took its normal cold time, plus up to the
+timeout, and then ran normally", never a hang.
+
+### 6.4 Telling the user
+
+One line to stderr at spawn:
 
 ```
-[algan] warmed a background render daemon for next time (log: ~/.algan/daemon.log,
-        exits after 30 min idle). Disable with ALGAN_AUTO_DAEMON=0.
+[algan] starting a background render daemon so later runs skip the ~20s
+        startup (log: ~/.algan/daemon.log, exits after 30 min idle).
+        Disable with ALGAN_AUTO_DAEMON=0.
 ```
 
 A background process holding a CUDA context that the user did not ask for and
@@ -261,7 +348,7 @@ cannot see is not acceptable; this line is part of the feature, not decoration.
 
 ---
 
-## 6. Two daemon-side fixes auto-start requires
+## 7. Two daemon-side fixes auto-start requires
 
 **A general daemon that cannot open its socket must exit.** `_start_socket`
 returns None when the port is taken ([`daemon.py:440`](algan/daemon.py)) and
@@ -282,7 +369,7 @@ daemon someone launched deliberately stays until told to quit.
 
 ---
 
-## 7. Environment variables
+## 8. Environment variables
 
 Three new names in `_RUNTIME_VARIABLES` in
 [`algan/environment.py`](algan/environment.py) (alphabetically, beside the
@@ -291,23 +378,25 @@ per `CLAUDE.md`:
 
 | Name | Default | Meaning |
 |---|---|---|
-| `ALGAN_AUTO_DAEMON` | `1` | Leave a warm daemon behind after a successful render. |
+| `ALGAN_AUTO_DAEMON` | `1` | Start a daemon when none is running. |
 | `ALGAN_DAEMON_IDLE_TIMEOUT` | `1800` | Seconds before an auto-started daemon exits. |
-| `ALGAN_DAEMON_STALE_CHECK` | `1` | Kill switch for the staleness gate. |
-
-`ALGAN_DAEMON_STALE_CHECK=0` is documented as **unsafe** — it re-enables exactly
-the silent-stale-render behavior this design removes. It exists only so that a
-misfiring hash check (a generated file appearing under `algan/`, a filesystem
-that cannot be read reliably) can be worked around without reverting, and its
-warning should say so.
+| `ALGAN_DAEMON_START_TIMEOUT` | `60` | Seconds to wait for a spawned daemon before running in-process. |
 
 These are runtime variables, not startup ones: they do not participate in
-`STARTUP_ENV` and a client whose value differs from the daemon's is not
-refused.
+`STARTUP_ENV` and a client whose value differs from the daemon's is not refused.
+
+**There is deliberately no kill switch for the staleness gate.** An earlier
+draft had `ALGAN_DAEMON_STALE_CHECK=0` as an escape hatch for a "misfiring"
+hash check. No such misfire could be constructed: nothing under `algan/`
+generates or rewrites `.py` files, and every failure mode that does exist —
+a file read while an editor is mid-save, a transient filesystem error — hashes
+*differently* and therefore over-restarts, costing one cold start and
+self-correcting on the next run. A switch whose only effect is to re-enable
+silent stale renders is worse than no switch.
 
 ---
 
-## 8. Tests
+## 9. Tests
 
 In `tests/unit_tests/test_daemon_client.py` (client half, stdlib-only, no GPU)
 and a new `tests/unit_tests/test_daemon_staleness.py`. All unmarked — these are
@@ -332,16 +421,30 @@ Gate and shutdown:
   in-flight run;
 * queued jobs at shutdown each receive a refusal (`_drop_pending`).
 
+Run parity (§5):
+* a subprocess writing to fd 1 during a run reaches the client, not just the
+  daemon console (spawn `python -c "import os; os.write(1, b'x')"` inside a
+  fake run and assert the bytes arrive as a `FRAME_STDOUT`);
+* Python-level and fd-level writes arrive **in issue order**, which is the
+  ordering bug the single-channel design fixes;
+* `sys.stdout.isatty()` inside a run reports the *client's* value, not the
+  pipe's, so tqdm still renders progress bars;
+* a client env var reaches the script's `os.environ`, and the daemon's own
+  environment is restored afterwards;
+* a startup-env var still refuses the run rather than being applied.
+
 Auto-start:
-* no spawn when `ALGAN_AUTO_DAEMON=0`, when `should_try()` is false, when a
-  state file already exists, or when no render occurred;
+* no spawn when `ALGAN_AUTO_DAEMON=0`, when `should_try()` is false, or when a
+  state file already exists;
 * spawn is detached and does not inherit `ALGAN_DAEMON_CHILD`;
+* readiness timeout expires → the run proceeds in-process rather than hanging;
+* spawn failure (`Popen` raises) → in-process fallback, no traceback;
 * a general daemon whose port is taken exits instead of idling;
 * the idle timeout fires and removes the state file.
 
 ---
 
-## 9. Documentation to update
+## 10. Documentation to update
 
 The current guidance tells people to do by hand what this makes automatic, so
 it changes rather than being extended:
@@ -349,8 +452,10 @@ it changes rather than being extended:
 * [`algan/daemon.py`](algan/daemon.py) module docstring — the "Limits: edits to
   algan itself require a daemon restart" paragraph.
 * [`algan/daemon_client.py`](algan/daemon_client.py) module docstring — the
-  auto-start path. Also **fix its startup figure**: it claims "~65 s of Taichi
-  kernel preparation" where `daemon.py:4` says "~10 s" and
+  auto-start path, and the `_ClientStream` asymmetry note in
+  [`daemon.py:269`](algan/daemon.py), which §5.1 makes obsolete. Also **fix the
+  startup figure**: the client docstring claims "~65 s of Taichi kernel
+  preparation" where `daemon.py:4` says "~10 s" and
   `DESIGN_frontend_trace_cache.md` measures ~20s. Three numbers, three places;
   measure once and make them agree.
 * `CLAUDE.md`, Taichi gotchas — "Restart the daemon after changing any Algan
@@ -360,32 +465,42 @@ it changes rather than being extended:
 
 ---
 
-## 10. Phases
+## 11. Phases
 
 | Phase | Deliverable |
 |---|---|
 | 1 | Content-hash digest replacing `_AlganSourceGuard`'s mtime map, with its tests. No behavior change yet — still warn-only. |
-| 2 | The handshake gate (§3) and shutdown ordering (§4). This is the correctness fix and is independently shippable; without §5 the daemon simply has to be relaunched by hand, as today. |
-| 3 | The two daemon-side fixes in §6 (socket-failure exit, idle timeout). |
-| 4 | Auto-start (§5), off by default behind `ALGAN_AUTO_DAEMON` until it has been exercised on Windows and Linux. |
-| 5 | Default on; docs in §9 updated. |
+| 2 | The handshake gate (§3) and shutdown ordering (§4). **The correctness fix, and independently shippable** — without the rest, a stale daemon shuts down and has to be relaunched by hand, which is still strictly better than rendering stale. |
+| 3 | Run parity (§5): fd-level output forwarding, per-run environment, stdin to `DEVNULL`. Each is a standalone bug fix and each improves the daemon for people already using it by hand. |
+| 4 | The two daemon-side fixes in §7 (socket-failure exit, idle timeout). |
+| 5 | Auto-start (§6), off by default behind `ALGAN_AUTO_DAEMON` until exercised on Windows and Linux. |
+| 6 | Default on; docs in §10 updated. |
 
-Phase 2 is the one that matters and does not depend on any of the others. If
-auto-start turns out to be more trouble than it is worth, phases 1-3 still
-leave the daemon safe to use during library development, which it is not today.
+Phases 2 and 3 both stand alone and neither depends on auto-start. If
+auto-start turns out to be more trouble than it is worth, phases 1-4 still
+leave the daemon safe to use during library development — which it is not
+today — and fix three real bugs for its existing users.
+
+Phase 3 is a hard prerequisite for phase 5: auto-start is what makes a user's
+*first* run land on the daemon, and shipping that before output and environment
+behave identically would turn two latent bugs into everyone's first impression.
 
 ---
 
-## 11. Hazards
+## 12. Hazards
 
 | Hazard | Mitigation |
 |---|---|
 | Stale render (the whole point) | Content-hash gate at the handshake, before `FRAME_START` (§3) |
-| Edit lands mid-run | Not caught; documented (§4.1). Interrupting a render is worse |
+| Edit lands mid-run | Out of scope by equivalence, not by omission: the daemon matches plain `python scene.py` exactly (§4.1) |
 | `*_taichi.py` edited under a live JIT | Unchanged for the mid-run window; the gate prevents *starting* a run after such an edit |
-| Two daemons warming at once | State file kept until exit (§4); spawn deferred to `atexit` (§5) |
-| Orphan GPU-resident process | Idle timeout (§6), one-line notice at spawn (§5.3), `ALGAN_AUTO_DAEMON=0` |
-| Daemon with no trigger and no work | Exit when the socket fails and there is no SCRIPT (§6) |
+| ffmpeg / C-level output vanishing into the daemon log | fd-level redirect with a pump thread (§5.1) |
+| tqdm progress bars degrading to one line per update | Wrappers override `isatty()` with the client's value (§5.1) |
+| Subprocess output escaping on Windows | `SetStdHandle` alongside `dup2` (§5.1) |
+| Script reading the daemon's env instead of the caller's | Full env shipped and swapped per run (§5.2) |
+| First run hanging on a daemon that never starts | Readiness timeout, then in-process fallback (§6.3) |
+| Orphan GPU-resident process | Idle timeout (§7), one-line notice at spawn (§6.4), `ALGAN_AUTO_DAEMON=0` |
+| Daemon with no trigger and no work | Exit when the socket fails and there is no SCRIPT (§7) |
 | Branch switches forcing pointless restarts | Content hashing, not mtime (§2) |
-| Spawn race between two finishing scripts | Loser fails to bind the port and now exits (§6); the state file is written only by the winner |
-| Test suite spawning daemons | `should_try()` already returns False under pytest (§5.1) |
+| Two daemons started at once | Loser fails to bind the port and now exits (§7); the state file is written only by the winner |
+| Test suite spawning daemons | `should_try()` already returns False under pytest (§6.1) |
