@@ -12,7 +12,7 @@ from algan.rendering.logical_pn import (
     evaluate_cubic_curve,
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
-    interpolate_patch_attribute,
+    interpolate_patch_vertex_attribute,
     logical_pn_control_points,
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
@@ -69,6 +69,61 @@ def _sample_tensor(values, device, dtype):
         cached = torch.tensor(values, device=device, dtype=dtype)
         _SAMPLE_TENSOR_CACHE[key] = cached
     return cached
+
+
+class _PatchChunk(NamedTuple):
+    """One chunk of the dice's ``(frame, patch)`` work list, deduped by patch.
+
+    The dice walks its selected pairs in PATCH-major order, so the frames that
+    dice a given patch at a given level are consecutive.  ``unique_patches``
+    then names each distinct patch once and ``inverse`` maps every row of the
+    chunk back to its entry, which is all a frame-invariant source needs to be
+    evaluated once and fanned out.  Both are ``None`` when nothing in this dice
+    is frame invariant, and every method falls back to the per-row path.
+    """
+
+    patches: torch.Tensor  # [K] long
+    frames: torch.Tensor  # [K] long
+    unique_patches: torch.Tensor | None  # [U] long, ascending
+    inverse: torch.Tensor | None  # [K] long into unique_patches
+
+    @classmethod
+    def of(cls, patches, frames, dedup):
+        if not dedup:
+            return cls(patches, frames, None, None)
+        unique_patches, inverse = torch.unique_consecutive(
+            patches, return_inverse=True
+        )
+        return cls(patches, frames, unique_patches, inverse)
+
+    def rows_of(self, source, static):
+        """This chunk's rows of ``source``, and whether they were deduped."""
+        if static and self.unique_patches is not None:
+            return source[0].index_select(0, self.unique_patches), True
+        return source[self.frames, self.patches], False
+
+    def fan_out(self, values, deduped):
+        """Expand per-distinct-patch ``values`` back to one row per pair."""
+        return values.index_select(0, self.inverse) if deduped else values
+
+    def diced_attribute(self, source, vertex_uv, triangle_indices):
+        """Interpolate a per-corner attribute onto this chunk's triangle soup.
+
+        Interpolating on the shared subdivision vertices and gathering through
+        ``triangle_indices`` is the same arithmetic on the same values as
+        interpolating at every microtriangle corner -- the corners *are* those
+        vertices -- over a sixth as many of them.
+
+        Deliberately NOT deduped, even where the attribute is frame invariant
+        and the rows are there for the taking: a barycentric blend of three
+        corner values is so cheap that fanning the result back out costs more
+        than evaluating it per row (measured 0.86x on a deforming mesh whose
+        colours were static). Only the patch evaluation is expensive enough for
+        the trade to pay.
+        """
+        values = source[self.frames, self.patches]
+        values = interpolate_patch_vertex_attribute(values, vertex_uv)
+        return values[:, triangle_indices]
 
 
 class _PNCriterionInputs(NamedTuple):
@@ -1053,7 +1108,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return torch.bitwise_left_shift(torch.ones_like(levels), 2 * levels)
 
     def _required_subdivision_levels(
-        self, control_points, edge_controls, cam_o, sp, sb, screen_height
+        self,
+        control_points,
+        edge_controls,
+        cam_o,
+        sp,
+        sb,
+        screen_height,
+        geometry_static=False,
     ):
         """Choose the crack-free logical PN levels of every patch and edge.
 
@@ -1078,6 +1140,11 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             front_sign,
             screen_height,
             kernel,
+            # The torch fallback re-evaluates a patch once per frame that is
+            # still searching; the kernel keeps its samples in registers and
+            # has nothing to share, so only the fallback wants the work list
+            # grouped for dedup.
+            geometry_static and kernel is None,
         )
         if edge_capped or patch_capped:
             warnings.warn(
@@ -1238,7 +1305,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return error
 
     def _required_patch_levels(
-        self, control_points, start, cam, front_sign, screen_height, kernel=None
+        self,
+        control_points,
+        start,
+        cam,
+        front_sign,
+        screen_height,
+        kernel=None,
+        share_patches=False,
     ):
         """Per-patch interior subdivision levels, shape ``[T, P]``.
 
@@ -1271,7 +1345,16 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         capped = torch.zeros((), dtype=torch.bool, device=levels.device)
 
         for level in range(int(levels.amin().item()), max_level + 1):
-            selected = (unresolved & (levels == level)).nonzero()
+            trying = unresolved & (levels == level)
+            # PATCH-major when the criterion can share a patch's evaluation
+            # between the frames still trying it (see ``_patch_flatness_error``);
+            # the rows are independent, so this only decides who lands in a
+            # chunk together.
+            selected = (
+                trying.t().contiguous().nonzero().flip(-1)
+                if share_patches
+                else trying.nonzero()
+            )
             if not selected.shape[0]:
                 if not bool(unresolved.any()):
                     break
@@ -1285,6 +1368,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 front_sign,
                 screen_height,
                 kernel,
+                share_patches,
             )
             failed = (error * self._flatness_safety_factor) > threshold
             if level == max_level:
@@ -1319,6 +1403,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         front_sign,
         screen_height,
         kernel=None,
+        share_patches=False,
     ):
         """Peak pixel deviation of each selected patch's level-``level`` dice,
         sampled at ``_flatness_sample_weights`` within every microtriangle.
@@ -1375,8 +1460,15 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         for start in range(0, selected.shape[0], chunk):
             rows = selected[start : start + chunk]
             frames, patches = rows[:, 0], rows[:, 1]
-            controls = control_points[frames, patches].unsqueeze(0)
-            evaluated = evaluate_logical_pn(controls, combined_uv)[0]
+            # What the criterion asks of the patch -- where its surface and its
+            # level-``level`` dice sit in space -- has nothing to do with the
+            # camera; only the projection that follows does. So a patch several
+            # frames are still trying at this level is evaluated once and its
+            # points fanned out, which is why ``_required_patch_levels`` hands
+            # the rows over patch-major (see ``share_patches``).
+            shared = _PatchChunk.of(patches, frames, share_patches)
+            controls, deduped = shared.rows_of(control_points, share_patches)
+            evaluated = evaluate_logical_pn(controls.unsqueeze(0), combined_uv)[0]
             vertices = evaluated[:, :num_vertices]
             # The sample points stay in their flat (microtriangle, sample)
             # order and the approximation is flattened to match, rather than
@@ -1387,8 +1479,8 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 "sk,pmkc->pmsc", weights, vertices[:, triangle_indices]
             )
             error[start : start + chunk] = self._guarded_pixel_error(
-                evaluated[:, num_vertices:],
-                approximated.flatten(1, 2),
+                shared.fan_out(evaluated[:, num_vertices:], deduped),
+                shared.fan_out(approximated.flatten(1, 2), deduped),
                 tuple(value.index_select(0, frames) for value in cam),
                 front_sign.index_select(0, frames),
                 screen_height,
@@ -1405,10 +1497,57 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             )
         return _expand_frames(value, num_frames)
 
+    @staticmethod
+    def _collapse_redundant_frames(value):
+        """Drop a source array's frame axis when every frame holds the same
+        values, returning ``(array, frame_invariant)``.
+
+        Materialization hands a mob's attributes back one row per frame even
+        when the mob does not move, so a *static* mesh arrives here as ``T``
+        byte-identical copies of one geometry.  Nothing downstream of this
+        method needs the copies: the control nets are a function of the source
+        alone, so building them ``T`` times produces ``T`` identical answers,
+        the criterion kernels then upload ``T`` copies of a net they index by
+        one frame, and the dice evaluates each patch once per frame to the same
+        point.  Collapsing here is what lets all three notice.
+
+        The test is an equality reduction over the source (cheap next to the
+        dice, which is quadratically larger), and it is deliberately
+        conservative: NaN never compares equal, so a mesh carrying one falls
+        back to the per-frame path rather than being silently unified.
+        """
+        if value is None:
+            return None, False
+        if value.shape[0] == 1 or value.stride(0) == 0:
+            return value[:1], True
+        # Frame 1 first: a mesh that really is deforming differs there, and
+        # that one comparison rejects it for a (T-1)th of what comparing the
+        # whole batch costs.
+        if not bool((value[1] == value[0]).all()):
+            return value, False
+        if value.shape[0] > 2 and not bool((value[2:] == value[:1]).all()):
+            return value, False
+        return value[:1], True
+
     def _dice_logical_pn(self, camera):
         num_frames = int(camera.ray_origin.shape[0])
         source_corners = self.corners.float()
         source_normals = self.normals.float()
+        # Corners and normals collapse together or not at all: a control net is
+        # built from both at once, so collapsing one of a pair would only
+        # broadcast straight back out (and the stacks inside
+        # ``logical_pn_normal_control_points`` mix collapsed and per-frame
+        # terms, which do not stack). Both invariant is also exactly the
+        # condition under which the dice may reuse a patch across frames.
+        collapsed_corners, geometry_static = self._collapse_redundant_frames(
+            source_corners
+        )
+        if geometry_static:
+            collapsed_normals, geometry_static = self._collapse_redundant_frames(
+                source_normals
+            )
+            if geometry_static:
+                source_corners, source_normals = collapsed_corners, collapsed_normals
         device = source_corners.device
         dtype = source_corners.dtype
         cam_o = _expand_frames(_flat_frames(camera.ray_origin, (3,)), num_frames).to(
@@ -1448,6 +1587,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             sp,
             sb,
             output_height,
+            geometry_static,
         )
 
         # Each frame packs its patches back to back at their own diced sizes;
@@ -1496,7 +1636,16 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 "logical PN patch/source mismatch: "
                 f"{patch_source.shape[0]} vs {num_patches} patches"
             )
-        if num_patches and max_triangles:
+        # Every patch of a single-surface mesh carries id 0, so the row -> patch
+        # -> surface resolution below has one possible answer. Short-circuit it:
+        # the searchsorted runs over the whole padded [T, max_triangles] grid,
+        # which on a dense mesh is the largest single allocation the dice makes
+        # outside the diced arrays themselves.
+        if self._logical_pn_tri_obj_n == 1:
+            self._logical_pn_tri_obj = torch.zeros(
+                (num_frames, max_triangles), dtype=torch.int32, device=device
+            )
+        elif num_patches and max_triangles:
             ends = counts.cumsum(1)
             cols = torch.arange(max_triangles, device=device)
             patch_of_col = torch.searchsorted(
@@ -1547,18 +1696,38 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         }
         diced_shader_params = [allocate(v) for v in shader_sources]
         diced_uvs = allocate(uv_source) if uv_source is not None else None
-        padding = torch.ones(
-            (num_frames, max_triangles),
-            dtype=torch.bool,
-            device=device,
-        )
+        # Every attribute the dice writes, paired with the source it reads.
+        # Attributes differ from one another only in width, so the loop below
+        # treats them as one list.
+        attribute_outputs = [(diced_colors, colors)]
+        attribute_outputs += [
+            (diced_surface_params[name], source)
+            for name, source in surface_sources.items()
+        ]
+        attribute_outputs += list(zip(diced_shader_params, shader_sources))
+        if diced_uvs is not None:
+            attribute_outputs.append((diced_uvs, uv_source))
+        # The rows a frame never writes are its tail: the frame's patches are
+        # packed back to back from column 0, so column c is padding exactly
+        # when it is past that frame's diced total. Stating it that way costs
+        # one comparison over the grid, where marking the written rows costs a
+        # fill plus an index_fill_ per chunk.
+        padding = torch.arange(max_triangles, device=device).unsqueeze(
+            0
+        ) >= counts.sum(1).unsqueeze(1)
 
         for level in levels.unique(sorted=True).tolist():
             level = int(level)
-            selected = (levels == level).nonzero()
+            # PATCH-major, not frame-major: ``nonzero`` on the transpose lists
+            # every frame of a patch consecutively, which is what lets the
+            # per-patch dedup below see its duplicates inside one chunk (a
+            # frame-major list puts a patch's frames a whole frame apart, so on
+            # any mesh wider than a chunk no two would ever share one). The
+            # writes are disjoint and ``index_copy_`` does not care about
+            # order, so the diced output is unchanged.
+            selected = (levels == level).t().contiguous().nonzero()
             vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
             triangle_indices = subdivision_triangle_indices(level, device=device)
-            corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
             boundary = subdivision_boundary_map(level, device=device)
             num_triangles = triangle_indices.shape[0]
             columns = torch.arange(num_triangles, device=device)
@@ -1566,27 +1735,48 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
             for start in range(0, selected.shape[0], chunk):
                 rows = selected[start : start + chunk]
-                frames, patches = rows[:, 0], rows[:, 1]
+                patches, frames = rows[:, 0], rows[:, 1]
                 edges = edge_levels[frames, patches]
+
+                # A patch's diced geometry depends on the patch and its level,
+                # never on the camera -- the camera only picks the level. So
+                # every frame that dices a patch at this level asks for exactly
+                # the same points, and where the source is frame invariant (a
+                # mesh that does not deform during the batch, which is most of
+                # them) the evaluation is one answer repeated once per frame.
+                # Evaluate it once per distinct patch and fan the rows out with
+                # a gather: one pass, against the twenty-odd a patch evaluation
+                # costs.
+                chunk_rows = _PatchChunk.of(patches, frames, geometry_static)
+
                 # The patch is evaluated once per shared subdivision vertex
                 # (each is a corner of up to six microtriangles), snapped onto
                 # its boundary polylines, and only then expanded to the
-                # triangle-soup layout the packed geometry wants.
+                # triangle-soup layout the packed geometry wants. The snap
+                # happens after the fan-out: it is a function of the boundary
+                # levels, which two frames dicing the same patch need not
+                # share.
+                controls, deduped = chunk_rows.rows_of(control_points, geometry_static)
                 positions = snap_boundary_values(
-                    evaluate_logical_pn(
-                        control_points[frames, patches].unsqueeze(0),
-                        vertex_uv,
-                    )[0],
+                    chunk_rows.fan_out(
+                        evaluate_logical_pn(controls.unsqueeze(0), vertex_uv)[0],
+                        deduped,
+                    ),
                     level,
                     edges,
                     boundary,
                 )
+                normal_controls, deduped = chunk_rows.rows_of(
+                    normal_control_points, geometry_static
+                )
                 vertex_normals = F.normalize(
                     snap_boundary_values(
-                        evaluate_logical_pn_normals(
-                            normal_control_points[frames, patches].unsqueeze(0),
-                            vertex_uv,
-                        )[0],
+                        chunk_rows.fan_out(
+                            evaluate_logical_pn_normals(
+                                normal_controls.unsqueeze(0), vertex_uv
+                            )[0],
+                            deduped,
+                        ),
                         level,
                         edges,
                         boundary,
@@ -1612,34 +1802,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 _scatter_diced_rows(
                     diced_normals, vertex_normals[:, triangle_indices], targets
                 )
-                _scatter_diced_rows(
-                    diced_colors,
-                    interpolate_patch_attribute(colors[frames, patches], corner_uv),
-                    targets,
-                )
-                for name, output in diced_surface_params.items():
+                for output, source in attribute_outputs:
                     _scatter_diced_rows(
                         output,
-                        interpolate_patch_attribute(
-                            surface_sources[name][frames, patches], corner_uv
+                        chunk_rows.diced_attribute(
+                            source, vertex_uv, triangle_indices
                         ),
                         targets,
                     )
-                for output, source in zip(diced_shader_params, shader_sources):
-                    _scatter_diced_rows(
-                        output,
-                        interpolate_patch_attribute(source[frames, patches], corner_uv),
-                        targets,
-                    )
-                if diced_uvs is not None:
-                    _scatter_diced_rows(
-                        diced_uvs,
-                        interpolate_patch_attribute(
-                            uv_source[frames, patches], corner_uv
-                        ),
-                        targets,
-                    )
-                padding.view(-1).index_fill_(0, targets, False)
 
         self.corners = diced_corners
         self.normals = diced_normals

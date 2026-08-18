@@ -10,6 +10,8 @@ from algan.mobs.shapes_3d import Cone, Cylinder, Sphere, Torus
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
+    interpolate_patch_attribute,
+    interpolate_patch_vertex_attribute,
     logical_pn_control_points,
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
@@ -475,6 +477,96 @@ def test_boundary_snap_is_a_no_op_when_the_levels_agree():
     snapped = snap_boundary_values(values, 2, levels, boundary)
     changed = (snapped != values).any(-1).any(-1)
     assert changed.tolist() == [False, False, True, False, False]
+
+
+def _materialized_per_frame(primitive, num_frames):
+    """Give ``primitive`` one source row per frame, as materialization does.
+
+    A mob that does not move still reaches the dice as ``num_frames``
+    byte-identical rows -- the ``[1, ...]`` sources these fixtures build
+    otherwise are not what a real render hands it.
+    """
+    for name in ("corners", "normals", "colors", *primitive._surface_params):
+        value = getattr(primitive, name, None)
+        if value is not None and value.shape[0] == 1:
+            setattr(
+                primitive, name, value.expand(num_frames, *value.shape[1:]).contiguous()
+            )
+    if primitive.uvs is not None and primitive.uvs.shape[0] == 1:
+        primitive.uvs = primitive.uvs.expand(
+            num_frames, *primitive.uvs.shape[1:]
+        ).contiguous()
+    primitive.shader_param_values = [
+        value.expand(num_frames, *value.shape[1:]).contiguous()
+        if value.shape[0] == 1
+        else value
+        for value in primitive.shader_param_values
+    ]
+    return primitive
+
+
+def test_vertex_attribute_interpolation_matches_the_per_corner_form():
+    # The dice interpolates attributes on the shared subdivision vertices and
+    # gathers them through the triangle indices, which is only sound because a
+    # microtriangle's corners ARE those vertices.
+    torch.manual_seed(0)
+    values = torch.randn(23, 3, 4)
+    for level in range(4):
+        corner_uv = subdivision_triangle_uvs(
+            level, device=values.device, dtype=values.dtype
+        )
+        vertex_uv = subdivision_vertex_uvs(
+            level, device=values.device, dtype=values.dtype
+        )
+        indices = subdivision_triangle_indices(level, device=values.device)
+        assert torch.equal(
+            interpolate_patch_vertex_attribute(values, vertex_uv)[:, indices],
+            interpolate_patch_attribute(values, corner_uv),
+        )
+
+
+def test_frame_invariant_sources_dice_to_the_same_values(monkeypatch):
+    # A mesh that does not move arrives as N identical source rows, and the
+    # dice collapses them: one control net instead of N, and one evaluation per
+    # distinct patch instead of one per (frame, patch). Nothing it writes may
+    # move as a result.
+    corners, normals = _curved_patch_inputs()
+    two_patches = (
+        torch.stack((corners, _shifted(corners, (0.0, 0.0, 240.0)))),
+        torch.stack((normals, normals)),
+    )
+    frames = [-30.0, -6.0, -3.0]
+
+    def fixture():
+        return _materialized_per_frame(
+            _logical_patches(*two_patches, render_tolerance=0.0005), len(frames)
+        )
+
+    shared, per_frame = fixture(), fixture()
+    with monkeypatch.context() as patch:
+        # Report every source as frame-varying: the pre-collapse code path.
+        patch.setattr(
+            LogicalPNTrianglePrimitive,
+            "_collapse_redundant_frames",
+            staticmethod(lambda value: (value, False)),
+        )
+        per_frame._dice_logical_pn(_camera(frames, device=per_frame.corners.device))
+    shared._dice_logical_pn(_camera(frames, device=shared.corners.device))
+
+    levels = shared._logical_pn_subdivision_levels
+    assert levels.unique().numel() > 1, (
+        "the fixture must dice its patches at more than one level"
+    )
+    assert shared._logical_pn_padding.any(), "the fixture must pad some frames"
+    for name in ("corners", "normals", "colors", *shared._surface_params):
+        assert torch.equal(getattr(shared, name), getattr(per_frame, name)), name
+    for name in (
+        "_logical_pn_padding",
+        "_logical_pn_subdivision_levels",
+        "_logical_pn_edge_levels",
+        "_logical_pn_tri_obj",
+    ):
+        assert torch.equal(getattr(shared, name), getattr(per_frame, name)), name
 
 
 def test_geometry_tolerance_is_absolute_at_construction_scale():

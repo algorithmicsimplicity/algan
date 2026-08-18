@@ -23,7 +23,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | --- | --- |
 | **T1** PN subdivision-level criterion | **shipped and confirmed end to end** -- 67.9 s -> 1.40 s |
 | **T2** Bezier chord-count search | **shipped and confirmed end to end** -- 18.4 s -> 0.89 s |
-| **T4** dice write-out (cheap half only) | **shipped** -- byte-exact, but only ~1.07x |
+| **T4** dice write-out | **shipped, and re-scoped by what it found** -- the dice ignored *temporal coherence*: a mesh that holds still is handed T identical source rows and diced T times. Collapsing them, deduping the patch evaluation and interpolating attributes on the shared vertices is **1.19-1.39x on the whole dice** (and 1.03x on a genuinely deforming mesh, which has nothing to share), so more than that on the write-out, which is 15-35% of the dice here. **Bit-identical**, and all six full-render scenes match their CPU baselines. The `allocate()` zero-fills the last revision nominated turn out to be **4%** of the write-out, not its expensive half. See T4 |
 | **P2** contiguous replay time-selector | **shipped** -- 1.62x on replay-time `get`/`modify` |
 | **P3** lazily-zeroed remat buffer | **shipped** -- 1.20x on `rematerialize_state_at_times` |
 | **P4** whole-scene per-batch scans | **shipped** -- honestly ~3.7 s of a ~500 s render (66x on the actor filter), not the 11.63 s first reported; see the correction under P4 |
@@ -224,8 +224,10 @@ already been wrapping correctly all along (it just predated the helper), and
 * A/B parity scripts for the shipped work, the kernel ones CUDA-only:
   `benchmarks/_pn_criterion_kernel_ab.py` (levels + shared-edge agreement +
   timing, static *and* moving meshes), `benchmarks/_bez_chord_kernel_ab.py`
-  (chord counts + timing), `benchmarks/_pn_dice_scatter_ab.py` (byte-equality of
-  every diced array), `benchmarks/_logical_pn_crack_check.py` (seam integrity),
+  (chord counts + timing), `benchmarks/_pn_dice_ab.py` (the dice against its
+  pre-temporal-coherence self: bit-equality of every diced array, plus
+  alternating in-process timing, on static / orbiting / deforming meshes),
+  `benchmarks/_logical_pn_crack_check.py` (seam integrity),
   `benchmarks/_p1_zerofill_ab.py` (the lazily-zeroed buffer, CPU),
   `benchmarks/_query_rowdedup_parity.py` (the endpoint row dedup, CPU: dense
   path == dedup path == brute force, with every branch -- fast path, break-even
@@ -567,19 +569,104 @@ large as the input and the bandwidth argument is weaker. Worth a
 `memory.scope`-level breakdown before committing. **Estimated** 47.1 s -> ~25 s
 (~2.7%), lower confidence.
 
-### T4. The dice write-out -- ~17 s (2.1%) -- **cheap half done, disappointing**
+### T4. The dice write-out -- **temporal coherence, shipped**
 
-> `_scatter_diced_rows` now folds (frame, column) into one flattened row index
-> and writes each output with a single `index_copy_` over `[T * M, ...]`
-> (`padding` with `index_fill_`). **Byte-identical** -- every diced array
-> compares equal on `benchmarks/_pn_dice_scatter_ab.py`.
+> The item was framed as "the write-out moves too many bytes", and both halves
+> of that framing were wrong. The dice's real problem was that **it recomputed
+> the same answer once per frame**: a patch's diced geometry is a function of
+> the patch and its level and *nothing else* -- the camera only picks the level
+> -- while materialization hands the dice one source row per frame whether or
+> not the mob moved. A still `Sphere` reaches it as T byte-identical copies
+> (measured on a two-mob scene: `corners` arrives `[4, 508, 3, 3]` with
+> `distinct_frames = 1`) and was diced T times over.
 >
-> But it is only **1.02-1.19x on the whole dice** (257 ms -> 239 ms across four
-> meshes), not the ~2x on the write-out the estimate below assumed. `index_put_`
-> was apparently not costing much more than `index_copy_` here. Kept -- it is
-> free and byte-exact -- but the remaining T4 estimate should be treated as
-> unproven, and the `allocate()` zero-fills (not the scatter) are the likelier
-> half of that 17 s.
+> Shipped, all **bit-identical** (`benchmarks/_pn_dice_ab.py` runs the
+> pre-change dice beside the current one in one process and compares every
+> diced array bit for bit -- corners, normals, colours, the surface and shader
+> parameters, uvs, the padding mask, both level arrays and the per-row surface
+> ids -- across static, orbiting, multi-level and deforming meshes):
+>
+> 1. **`_collapse_redundant_frames`.** Detect the identical rows (compare frame
+>    1 first, so a genuinely deforming mesh is rejected for a (T-1)th of the
+>    cost) and keep one. The three control-net builds --
+>    `logical_pn_control_points`, `logical_pn_normal_control_points`,
+>    `logical_pn_edge_control_points`, together ~25% of the write-out -- then
+>    run once instead of T times, and `_frame_broadcast_base` hands the
+>    criterion kernels a stride-0 net instead of T uploaded copies of one
+>    answer.
+> 2. **Per-patch dedup in the write-out.** The selected pairs are listed
+>    PATCH-major (`nonzero` on the transpose), so a patch's frames share a
+>    chunk; the patch and normal evaluations then run once per distinct patch
+>    and fan out with one `index_select`. Measured **9-20x** fewer evaluations
+>    than pairs under a fast orbit, and exactly T when the camera holds still.
+>    The boundary snap stays per row -- two frames dicing one patch need not
+>    agree on its boundary levels.
+> 3. **Attributes interpolate on the shared subdivision vertices**
+>    (`interpolate_patch_vertex_attribute`) and gather through
+>    `subdivision_triangle_indices` instead of being evaluated at every
+>    microtriangle corner: the corners *are* those vertices, so it is the same
+>    arithmetic over a sixth as many of them.
+>
+> The same dedup is applied to the **torch fallback** of the patch-flatness
+> criterion (`share_patches`), which re-evaluated a patch once per frame still
+> searching. Deliberately off on the kernel path, which keeps its samples in
+> registers and has nothing to share.
+>
+> **1.19-1.39x on the whole dice** across the six meshes that hold still while
+> the camera moves, and **1.03x** on the deforming one, which has nothing to
+> share and only pays the (short-circuited) invariance test. The dice on this
+> CPU-only machine is 65-85% level search, so the share that actually moved
+> improved by considerably more than the headline.
+>
+> Verified end to end: all six `tests/full_renders` scenes match their
+> committed **CPU** baselines here. That is a real check on this machine and not
+> a vacuous one -- re-baselining on it before the change rewrote every file
+> byte-identically, so the committed CPU set *is* this machine's output. CUDA is
+> unverified: this session has no GPU, and the criterion-kernel path
+> (`share_patches` off, stride-0 control nets) is only exercised there.
+
+#### Three things measured here that change what to do next
+
+* **The `allocate()` zero-fills are not the expensive half.** The previous
+  revision nominated them as where a fresh attempt should start. Measured:
+  `torch.zeros` is **4%** of the write-out on CPU (9.3 ms of 227 ms on a
+  32-frame, 1056-patch batch) and proportionally less on a device that memsets
+  at hundreds of GB/s. Filling only the padding *is* available -- the unwritten
+  rows are each frame's contiguous tail -- it is simply not worth the branch.
+  Do not spend the round there.
+* **Deduping the attribute interpolation is a net loss.** A barycentric blend
+  of three corner values is cheap enough that fanning the result back out costs
+  more than recomputing it per row: **0.86x** on a deforming mesh whose colours
+  were frame invariant. Only the patch evaluation -- a ten-term polynomial plus
+  a snap, twenty-odd passes -- is expensive enough for the trade to pay. That
+  asymmetry is the rule to carry: dedup buys nothing unless what it skips costs
+  more than a gather.
+* **Emitting a `[1, ...]` diced array is worth much less than it looks.** When
+  the levels *and* the edge levels come out frame-uniform (a still mesh, which
+  is common) the whole diced output is T identical copies, and the flat path
+  already accepts `[1, N]` geometry. But `scene_builder`'s
+  `_cat_collections` runs `_unify_time` over the primitives it concatenates, so
+  a single moving flat mesh anywhere in the scene expands the static one
+  straight back out at merge time. The saving is confined to the primitive's
+  own allocation and packing -- real, but not the T-fold win the shape
+  suggests, and it changes the primitive's output contract (three tests assert
+  a per-frame diced array). Left undone deliberately.
+
+#### Where the dice's remaining cost is
+
+On CPU it is **the level search, not the write-out**: 65-85% of
+`_dice_logical_pn` across the benchmark's meshes. The criterion is inherently
+expensive -- per level tried it evaluates each patch at `V + 13 * 4 ** L`
+parameters and perspective-projects *both* the exact and the approximated point
+sets, so it does ~26 projections per output triangle where the dice does ~1.5
+vertex evaluations. On CUDA that is T1's fused kernel and costs nothing. **The
+obvious next move for the CPU path is to let those same kernels run on Taichi's
+x64 backend** -- `pn_criterion_kernel_active` gates them on a CUDA *render
+device* today, and the "Taichi would stage every argument through VRAM"
+objection in that comment is about CUDA-arch Taichi against CPU torch tensors,
+not about a CPU-arch runtime. It is not free: `fast_math` flips borderline
+levels, so it would move the CPU baselines exactly as T1 moved the CUDA ones,
+and it needs the same deliberate re-baseline.
 
 #### Why it was a target (original measurement)
 
@@ -587,16 +674,11 @@ large as the input and the bandwidth argument is weaker. Worth a
 (3.1 s), `evaluate_logical_pn_normals` (1.0 s) and `snap_boundary_values`
 (0.4 s). Two costs were identified: the `allocate()` zero-fills
 (`[T, max_triangles, 3, D]` for corners, normals, colours and every
-surface/shader parameter) and the advanced-index scatters.
-
-**The scatter half is done and was worth little (above), so the remaining
-`~17 s -> ~8 s` estimate now rests entirely on the untested half: the
-`allocate()` zero-fills.** That is where a fresh attempt should start --
-`max_triangles` is the batch's *widest frame*, so every frame's buffer is padded
-to it and the surplus is zeroed for nothing. Sizing per frame, or filling only
-the padding rows, is the idea to test. Writing the dice as a kernel (the more
-expensive option originally sketched here) should wait until the zero-fill has
-been measured on its own.
+surface/shader parameter) and the advanced-index scatters. An earlier round
+folded (frame, column) into one flattened row index so each output is written
+with a single `index_copy_` over `[T * M, ...]`; that was byte-exact and worth
+**1.02-1.19x** on the whole dice, well under the ~2x it assumed. Neither
+identified cost was the real one.
 
 ### T5. Sparse-coverage host chain -- ~37.7 s of 95.5 s (~9.9%) -- **next**
 
@@ -1638,9 +1720,12 @@ every round has left alone.
    has risen across three re-profiles purely because prep keeps shrinking, so
    the two poles are nearly level again and the "prefer prep at equal size"
    advice is close to expiring.
-6. **T3** (5.6%), then **T4's remaining half** (the `allocate()` zero-fills --
-   small, its estimate unproven, and P3 suggests the same lazily-zeroed trick
-   may apply; fold it in whenever the dice is open anyway), then **T6** (1.7%).
+6. **T3** (5.6%), then **T6** (1.7%). **T4 is done** -- and its `allocate()`
+   zero-fills, which this list used to nominate, were measured at 4% of the
+   write-out and are not worth opening the dice for. What T4 left behind is a
+   *CPU-path* item, not a reference-scene one: the level search is 65-85% of
+   the dice without the criterion kernels, which are gated on a CUDA render
+   device. See T4.
 
 Ruled out this round: further search-count work in `_query_row_states` (P6:
 write-bound now), bloom as a Taichi kernel (measured far slower), and the

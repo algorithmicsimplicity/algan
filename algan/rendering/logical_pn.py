@@ -542,9 +542,31 @@ def interpolate_patch_attribute(values, triangle_uv):
     Attributes are linear in the barycentric coordinates, so this needs no
     boundary snapping: along a shared edge the interpolant depends only on the
     two endpoint values, which both patches hold in common.
+
+    The dice itself calls :func:`interpolate_patch_vertex_attribute`, which
+    evaluates a sixth as many points and gathers.  This is kept as the
+    definition that one is stated against: the equivalence test and the dice's
+    A/B reference arm (``benchmarks/_pn_dice_ab.py``) both compare to it, so it
+    is not dead code.
     """
     weights = triangle_uv_to_barycentric(triangle_uv)
     return torch.einsum("mak,pkc->pmac", weights, values)
+
+
+def interpolate_patch_vertex_attribute(values, vertex_uv):
+    """Interpolate per-corner patch attributes onto the *shared* dice vertices.
+
+    ``values`` is ``[K, 3, C]`` and ``vertex_uv`` is ``[V, 2]``; the result is
+    ``[K, V, C]``.  Gathering that through :func:`subdivision_triangle_indices`
+    reproduces :func:`interpolate_patch_attribute` exactly -- a microtriangle's
+    corners *are* these vertices, and :func:`subdivision_triangle_uvs` is
+    literally this vertex list gathered through those indices -- for a sixth of
+    the arithmetic, because a vertex is a corner of up to six microtriangles.
+    It is the attribute counterpart of what
+    :func:`subdivision_vertex_uvs` already does for positions.
+    """
+    weights = triangle_uv_to_barycentric(vertex_uv)
+    return torch.einsum("vk,pkc->pvc", weights, values)
 
 
 __all__ = [
@@ -554,6 +576,7 @@ __all__ = [
     "evaluate_logical_pn",
     "evaluate_logical_pn_normals",
     "interpolate_patch_attribute",
+    "interpolate_patch_vertex_attribute",
     "logical_pn_control_points",
     "logical_pn_edge_control_points",
     "logical_pn_normal_control_points",
