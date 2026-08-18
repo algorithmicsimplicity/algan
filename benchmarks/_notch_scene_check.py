@@ -97,6 +97,7 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_FULL_DUST,
     _AA_MASK_ALL,
     _AA_MAX_RUN_SCAN,
+    _AA_NUM_SAMPLES,
     _AA_ONE_MESH_BIT,
     _aa_run_full,
     _tri_run_mode,
@@ -158,6 +159,13 @@ class Stats:
         self.c_over_sum = 0.0
         self.c_over_worst = 0.0
         self.c_over_n = 0
+        # Later run starts and the partial-mask arm, both unscored by the
+        # first-fragment/full-mask version of this probe.
+        self.bez_led_notched = 0
+        self.partial_trunc = 0
+        self.partial_moved = 0
+        self.partial_sum = 0.0
+        self.partial_worst = 0.0
         self.baseline = "not checked"
 
     def add_shortfall(self, values, where):
@@ -241,6 +249,14 @@ def _probe_batch(coverage, merged, width, height, time_start, stats):
         )
 
 
+def _popcount(x):
+    """Population count of the low _AA_NUM_SAMPLES bits, elementwise."""
+    out = torch.zeros_like(x)
+    for b in range(_AA_NUM_SAMPLES):
+        out += (x >> b) & 1
+    return out
+
+
 def _all_same(sid, seg, n_cov):
     """Per pixel: do all its fragments carry one surface id? (the flag's test)"""
     lo = torch.full((n_cov,), 1 << 40, dtype=torch.int64)
@@ -312,9 +328,29 @@ def _probe_block(
             one_h = _all_same(sid_host, seg, n_cov)
             stats.row_mismatch_pixels += int((one_k != one_h).sum())
 
-    j0 = offs[:-1]
-    first_bez = is_bez[j0]
-    stats.first_is_bez += int(first_bez.sum())
+    # THE RUN START THE KERNEL WOULD SCAN, not merely the pixel's first
+    # fragment. The scan needs ``svis`` uniform, and a CIRCUIT fragment keeps it
+    # uniform: the resolve gives a bezier fragment ``slots`` of all ones, so it
+    # scales every sample by the same factor. A leading run of circuits
+    # therefore leaves the first triangle behind them scannable -- and scoring
+    # only ``offs[:-1]`` skipped that population entirely. It is not a corner:
+    # 96% of shapes_and_timeline's covered pixels lead with a circuit, 52% of
+    # text_and_media's and 27% of solids_and_camera's, so the earlier revision
+    # of this probe was blind to most of every scene and reported a zero for it.
+    #
+    # Uniformity breaks at the first PARTIAL mask (0 < popcount < N), which is
+    # the only fragment shape that writes different factors to different
+    # samples; an empty mask contributes no ink and a full one scales all
+    # samples alike. Runs starting past that point are not scored here.
+    big = torch.full((1,), n_frag, dtype=torch.int64)
+    nonbez_pos = torch.where(is_bez, big.expand(n_frag), torch.arange(n_frag))
+    j0 = torch.full((n_cov,), n_frag, dtype=torch.int64)
+    j0.scatter_reduce_(0, seg, nonbez_pos, reduce="amin", include_self=True)
+    no_tri = j0 >= n_frag
+    stats.first_is_bez += int(no_tri.sum())
+    j0 = torch.where(no_tri, offs[:-1], j0)
+    bez_led = (~no_tri) & (j0 > offs[:-1])
+    first_bez = no_tri
     runlen = run_len_of[run_id[j0]]
     runlen = torch.where(first_bez, torch.zeros_like(runlen), runlen)
     if int(runlen.numel()):
@@ -358,6 +394,28 @@ def _probe_block(
         )
 
     shortfall = corr(e_full) - corr(e_trunc)
+
+    # -- THE PARTIAL-MASK ARM ---------------------------------------------
+    # ``corr = min(E, 1) / Q`` when the run's masks do NOT cover every sample.
+    # Truncation corrupts both terms there, and the earlier revision scored only
+    # the full-mask arm -- yet the partial arm is the LARGER population (314,072
+    # truncated pixels against 106,283 in text_and_media), so "the notch" was
+    # never the whole cost of the limit.
+    partial_arm = truncated & ~full_arm & ~donor_arm
+    if bool(partial_arm.any()):
+        # In COVERAGE, not in corr. The run's fragments partition the sheet's
+        # samples, so summing their eff gives Q * corr = min(E, 1) whatever Q
+        # is -- the same quantity the full-mask arm loses, by the same formula.
+        # corr itself is a multiplier on the mask share and reaches 3.79 here
+        # purely because Q is small; quoting that as the error would be a unit
+        # mistake.
+        d = (torch.clamp(e_full, max=1.0) - torch.clamp(e_trunc, max=1.0))[partial_arm]
+        stats.partial_trunc += int(partial_arm.sum())
+        moved = d.abs() > _SHORTFALL_TOL
+        stats.partial_moved += int(moved.sum())
+        if bool(moved.any()):
+            stats.partial_sum += float(d[moved].abs().sum())
+            stats.partial_worst = max(stats.partial_worst, float(d.abs().max()))
 
     # -- FIX (c), scored on the same fragment lists -----------------------
     # The host already reduces every covered pixel's exact clipped areas by
@@ -414,6 +472,7 @@ def _probe_block(
     # An interior pixel is one whose sheet really does tile it: the UNBOUNDED
     # sum reaches 1. Where it does not, corr < 1 is partly intended and only the
     # truncated part of it is this defect.
+    stats.bez_led_notched += int(bez_led[idx].sum())
     interior = (1.0 - e_full[idx]).abs() <= _AA_FULL_DUST
     stats.notched_interior += int(interior.sum())
     if bool(interior.any()):
@@ -666,7 +725,15 @@ def _report(rows):
         if s.no_run_mode:
             note.append(f"{s.no_run_mode} batches with no run rule")
         if s.first_is_bez:
-            note.append(f"{s.first_is_bez} px lead with a circuit")
+            note.append(f"{s.first_is_bez} px hold no triangle")
+        if s.bez_led_notched:
+            note.append(f"{s.bez_led_notched} notched px are circuit-led")
+        if s.partial_trunc:
+            note.append(
+                f"partial arm: {s.partial_moved}/{s.partial_trunc} truncated move, "
+                f"mean {(s.partial_sum / s.partial_moved if s.partial_moved else 0):.4f}, "
+                f"worst {s.partial_worst:.4f}"
+            )
         if s.truncated:
             note.append(
                 f"arms full/partial/donor {s.arm_full}/{s.arm_partial}/{s.arm_donor}"
