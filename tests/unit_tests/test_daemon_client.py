@@ -79,6 +79,21 @@ def test_declines_under_a_test_runner(script, monkeypatch):
     assert dc.should_try(script) is False, "an imported pytest must be enough"
 
 
+def test_declines_a_dash_m_invocation(script, monkeypatch):
+    """``python -m pkg`` is not a scene script, and it looks like one.
+
+    ``__main__`` is then the package's own ``__main__.py``: it ends in .py and
+    exists on disk, so the path checks alone let it through. That handed
+    ``python -m sphinx`` -- whose conf.py imports algan -- to a render daemon,
+    and the documentation build ran inside it. Only a -m invocation gives
+    ``__main__`` a module spec.
+    """
+    _hide_test_runner(monkeypatch)
+    assert dc.should_try(script) is True  # the same module, minus the spec
+    script.__spec__ = object()
+    assert dc.should_try(script) is False
+
+
 def test_declines_without_a_main_script(monkeypatch):
     _hide_test_runner(monkeypatch)
     assert dc.should_try(_Main(None)) is False

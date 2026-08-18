@@ -232,6 +232,13 @@ def should_try(main_module=None):
     if "ipykernel" in sys.modules:
         return False
     main_module = main_module or sys.modules.get("__main__")
+    # ``python -m pkg`` is not a scene script, and it looks like one: __main__
+    # is then the package's own ``__main__.py``, which ends in .py and exists on
+    # disk. Left unchecked, ``python -m sphinx`` building these docs -- conf.py
+    # imports algan -- hands the *documentation build* to a render daemon. Under
+    # -m, and only under -m, __main__ carries a module spec.
+    if getattr(main_module, "__spec__", None) is not None:
+        return False
     path = getattr(main_module, "__file__", None)
     if not isinstance(path, str) or not path.endswith(".py"):
         return False
