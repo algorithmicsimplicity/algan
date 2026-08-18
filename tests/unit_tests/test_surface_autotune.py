@@ -4,7 +4,7 @@ import warnings
 import pytest
 import torch
 
-from algan.mobs.shapes_3d import Cylinder, Sphere
+from algan.mobs.shapes_3d import Cone, Cylinder, Sphere
 from algan.mobs.surfaces.surface import Surface
 
 
@@ -146,13 +146,27 @@ def test_a_finer_tolerance_buys_a_finer_grid(shape):
 
 
 def test_cylinder_autotune_rectangular():
-    # Test independent rectangular topology search.
-    cyl = Cylinder(geometry_tolerance=0.01, grid_aspect_ratio=None)
-    # The flat direction (v/height) should require minimal resolution (4)
-    assert cyl.grid_height == 4
-    # The curved direction (u/width) should require more resolution (> 4)
-    assert cyl.grid_width > 4
+    # Each axis is sized against its own contribution to the geometry error, so
+    # a cylinder pays for its curved axis alone.
+    cyl = Cylinder(geometry_tolerance=0.01)
+    # The flat direction (v/height) is straight, so one cell carries it.
+    assert cyl.grid_height == 2
+    # The curved direction (u/width) needs more than the floor.
+    assert cyl.grid_width > 2
     print(f"Cylinder rectangular auto-tuned to: {cyl.grid_width}x{cyl.grid_height}")
+
+
+def test_cone_sizes_its_ruled_axis_at_the_floor():
+    """A cone is straight along its slant, so that axis costs one cell.
+
+    It used to be tied to the azimuth by a fixed aspect ratio, which spent the
+    resolution on exactly the wrong axis.
+    """
+    cone = Cone(geometry_tolerance=0.01)
+
+    # ``u`` runs base -> tip along the slant; ``v`` is the azimuth.
+    assert cone.grid_width <= 4
+    assert cone.grid_height > cone.grid_width
 
 
 def test_manual_resolution_override():

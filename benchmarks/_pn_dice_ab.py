@@ -37,23 +37,25 @@ import torch.nn.functional as F  # noqa: E402
 
 from algan.mobs.shapes_3d import Cone, Cylinder, Sphere, Torus  # noqa: E402
 from algan.rendering.logical_pn import (  # noqa: E402
+    dice_pattern,
+    dice_triangle_count,
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
     interpolate_patch_attribute,
     logical_pn_control_points,
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
+    mean_patch_edge_length,
     snap_boundary_values,
-    subdivision_boundary_map,
-    subdivision_triangle_indices,
-    subdivision_triangle_uvs,
-    subdivision_vertex_uvs,
 )
 from algan.rendering.raytracing.primitives import (  # noqa: E402
     LogicalPNTrianglePrimitive,
     _scatter_diced_rows,
 )
-from algan.rendering.raytracing.settings import MESH_ID  # noqa: E402
+from algan.rendering.raytracing.settings import (  # noqa: E402
+    MESH_ID,
+    PN_GEOMETRY_SLACK,
+)
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
 
@@ -133,11 +135,19 @@ def reference_dice(self, camera):
         "logical PN edges",
     )
     output_height = getattr(camera, "output_screen_height", camera.screen_height)
-    levels, edge_levels = self._required_subdivision_levels(
-        control_points, edge_controls, cam_o, sp, sb, output_height
+    # Same criterion inputs as production: the arms differ in how the dice is
+    # written out, never in which dice the search picks.
+    slack = None
+    if PN_GEOMETRY_SLACK and self.geometry_slack_ratio > 0:
+        slack = _expand_frames(
+            mean_patch_edge_length(source_corners) * self.geometry_slack_ratio,
+            num_frames,
+        )
+    levels, edge_levels, apex_levels, across_levels = self._required_subdivision_levels(
+        control_points, edge_controls, cam_o, sp, sb, output_height, False, slack
     )
 
-    counts = self._triangle_counts(levels)
+    counts = dice_triangle_count(levels, across_levels)
     offsets = counts.cumsum(1) - counts
     max_triangles = int(counts.sum(1).amax().item()) if counts.numel() else 0
 
@@ -200,13 +210,26 @@ def reference_dice(self, camera):
     diced_uvs = allocate(uv_source) if uv_source is not None else None
     padding = torch.ones((num_frames, max_triangles), dtype=torch.bool, device=device)
 
-    for level in levels.unique(sorted=True).tolist():
-        level = int(level)
-        selected = (levels == level).nonzero()
-        vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
-        triangle_indices = subdivision_triangle_indices(level, device=device)
-        corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
-        boundary = subdivision_boundary_map(level, device=device)
+    # One group per dice shape, as production does: the reference arm's job is
+    # to reproduce the *write-out* the un-deduped code did, not to second-guess
+    # which dice the search chose.
+    shape_keys = (
+        levels * (self.max_subdivision_level + 1) + across_levels
+    ) * 3 + apex_levels
+    for key in shape_keys.unique(sorted=True).tolist():
+        key = int(key)
+        pattern = dice_pattern(
+            key // (3 * (self.max_subdivision_level + 1)),
+            (key // 3) % (self.max_subdivision_level + 1),
+            key % 3,
+            device=device,
+            dtype=dtype,
+        )
+        selected = (shape_keys == key).nonzero()
+        vertex_uv = pattern.vertex_uv
+        triangle_indices = pattern.triangle_indices
+        corner_uv = vertex_uv[triangle_indices]
+        boundary = pattern.boundary
         num_triangles = triangle_indices.shape[0]
         columns = torch.arange(num_triangles, device=device)
         chunk = max(1, int(self.max_scratch_triangles) // num_triangles)
@@ -219,7 +242,7 @@ def reference_dice(self, camera):
                 evaluate_logical_pn(
                     control_points[frames, patches].unsqueeze(0), vertex_uv
                 )[0],
-                level,
+                pattern.edge_levels,
                 edges,
                 boundary,
             )
@@ -228,7 +251,7 @@ def reference_dice(self, camera):
                     evaluate_logical_pn_normals(
                         normal_control_points[frames, patches].unsqueeze(0), vertex_uv
                     )[0],
-                    level,
+                    pattern.edge_levels,
                     edges,
                     boundary,
                 ),
@@ -282,6 +305,9 @@ def reference_dice(self, camera):
     self._logical_pn_padding = padding
     self._logical_pn_subdivision_levels = levels
     self._logical_pn_edge_levels = edge_levels
+    self._logical_pn_across_levels = across_levels
+    self._logical_pn_apex = apex_levels
+    self._logical_pn_triangle_counts = counts
 
 
 # --------------------------------------------------------------------------
@@ -375,6 +401,8 @@ def diced_arrays(primitive):
         "padding": primitive._logical_pn_padding,
         "levels": primitive._logical_pn_subdivision_levels,
         "edge_levels": primitive._logical_pn_edge_levels,
+        "across_levels": primitive._logical_pn_across_levels,
+        "apex": primitive._logical_pn_apex,
         "tri_obj": primitive._logical_pn_tri_obj,
     }
     for name in primitive._surface_params:

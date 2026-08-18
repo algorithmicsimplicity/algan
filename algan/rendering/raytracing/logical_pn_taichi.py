@@ -71,7 +71,17 @@ def _screen_pixels(point, cam_origin, screen_point, sx, sy, sz, half_height):
 
 @ti.func
 def _guarded_error(
-    exact, approximated, cam_origin, screen_point, sx, sy, sz, half_height, guard, sign
+    exact,
+    approximated,
+    cam_origin,
+    screen_point,
+    sx,
+    sy,
+    sz,
+    half_height,
+    guard,
+    sign,
+    slack,
 ):
     """Guarded projected pixel deviation between one pair of matching points.
 
@@ -79,6 +89,11 @@ def _guarded_error(
     both projections are clamped into the box before being compared, so
     geometry that has left the frame cannot drive the level up (see
     ``_guarded_pixel_error`` for why ``camera.orbit`` needs that).
+
+    ``slack`` is the world-space accuracy of the reference surface itself,
+    projected at the exact point's depth and subtracted from the deviation, so
+    the search stops where the reference stops being meaningful. Zero measures
+    against the PN patch exactly. Matches ``_guarded_pixel_error``.
     """
     e = _screen_pixels(exact, cam_origin, screen_point, sx, sy, sz, half_height)
     a = _screen_pixels(approximated, cam_origin, screen_point, sx, sy, sz, half_height)
@@ -89,7 +104,9 @@ def _guarded_error(
     if (e[2] * sign > _MIN_FRONT_DEPTH) and (a[2] * sign > _MIN_FRONT_DEPTH) and inside:
         dx = ti.min(ti.max(e[0], -guard), guard) - ti.min(ti.max(a[0], -guard), guard)
         dy = ti.min(ti.max(e[1], -guard), guard) - ti.min(ti.max(a[1], -guard), guard)
-        result = ti.sqrt(dx * dx + dy * dy)
+        screen_distance = (screen_point - cam_origin).dot(sz)
+        allowance = slack * ti.abs(screen_distance / e[2]) * half_height
+        result = ti.max(ti.sqrt(dx * dx + dy * dy) - allowance, 0.0)
     return result
 
 
@@ -180,6 +197,7 @@ def pn_patch_flatness_error(
     screen_point: ti.types.ndarray(),  # [T, 3] f32
     screen_basis: ti.types.ndarray(),  # [T, 3, 3] f32
     front_sign: ti.types.ndarray(),  # [T] f32
+    slack: ti.types.ndarray(),  # [T] f32 -- surface accuracy, 0 = measure exactly
     error: ti.types.ndarray(),  # [R] f32, pre-zeroed
     half_height: ti.f32,
     guard: ti.f32,
@@ -221,6 +239,7 @@ def pn_patch_flatness_error(
             [screen_basis[t, 2, 0], screen_basis[t, 2, 1], screen_basis[t, 2, 2]]
         )
         sign = front_sign[t]
+        allowance = slack[t]
 
         # The dice's own vertices: the flat stand-in this level is judged on is
         # the plane through these three points.
@@ -255,6 +274,7 @@ def pn_patch_flatness_error(
                     half_height,
                     guard,
                     sign,
+                    allowance,
                 ),
             )
         ti.atomic_max(error[r], worst)
@@ -395,6 +415,7 @@ def pn_edge_chord_error(
     screen_point: ti.types.ndarray(),  # [T, 3] f32
     screen_basis: ti.types.ndarray(),  # [T, 3, 3] f32
     front_sign: ti.types.ndarray(),  # [T] f32
+    slack: ti.types.ndarray(),  # [T] f32 -- surface accuracy, 0 = measure exactly
     error: ti.types.ndarray(),  # [A] f32, pre-zeroed
     num_patches: ti.i32,
     segments: ti.i32,
@@ -443,6 +464,7 @@ def pn_edge_chord_error(
             [screen_basis[t, 2, 0], screen_basis[t, 2, 1], screen_basis[t, 2, 2]]
         )
         sign = front_sign[t]
+        allowance = slack[t]
 
         low = _cubic_evaluate(controls, ti.cast(i, ti.f32) / steps)
         high = _cubic_evaluate(controls, ti.cast(i + 1, ti.f32) / steps)
@@ -465,6 +487,7 @@ def pn_edge_chord_error(
                     half_height,
                     guard,
                     sign,
+                    allowance,
                 ),
             )
         ti.atomic_max(error[a], worst)

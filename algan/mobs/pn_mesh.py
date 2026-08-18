@@ -26,6 +26,7 @@ class PNMesh(Mob):
         normals,
         *,
         render_tolerance=0.5,
+        geometry_slack_ratio=0.0,
         shader=None,
         shader_params=None,
         **kwargs,
@@ -49,6 +50,10 @@ class PNMesh(Mob):
             raise ValueError("render_tolerance must be finite")
         if self.render_tolerance <= 0:
             raise ValueError("render_tolerance must be greater than zero")
+        # A soup is its own logical surface unless it was converted from
+        # something that only approximates one, in which case the conversion
+        # passes that surface's accuracy on (see ``convert_to_pn_soup``).
+        self.geometry_slack_ratio = float(geometry_slack_ratio)
         self.is_primitive = True
 
         if shader is not None:
@@ -74,6 +79,7 @@ class PNMesh(Mob):
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             render_tolerance=self.render_tolerance,
+            geometry_slack_ratio=self.geometry_slack_ratio,
             **self.get_shader_params(),
         )
 

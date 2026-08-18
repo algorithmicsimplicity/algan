@@ -5,9 +5,12 @@ square, maps each through a coordinate function into 3-D space, and tiles the
 result with triangles. Every curved shape in Algan is one of these: a sphere is a
 :class:`Surface` whose coordinate function is a sphere.
 
-The grid resolution is chosen for you. ``geometry_tolerance`` bounds how far the
-PN-triangle approximation may stray from the analytic surface, and the search for
-a grid meeting it is cached per subclass and geometry configuration.
+The grid resolution is chosen for you, **one axis at a time**: ``geometry_tolerance``
+bounds how far the PN-triangle approximation may stray from the analytic surface,
+and the search sizes each parameter axis against its own contribution to that
+error, so an axis the surface is straight along (a cylinder's length, a cone's
+slant) costs the minimum however curved the other axis is. The search is cached
+per subclass and geometry configuration.
 ``render_tolerance`` then bounds the on-screen error when each PN triangle is
 diced into flat render triangles -- per triangle, per frame, so detail is spent
 only where the surface is near the camera.
@@ -48,6 +51,7 @@ from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     evaluate_logical_pn_per_patch,
     logical_pn_control_points,
+    mean_patch_edge_length,
 )
 from algan.utils.file_utils import get_image
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
@@ -676,8 +680,6 @@ class Surface(Mob):
         Height of the grid from which intrinsic coordinates are sampled.
     grid_width
         Width of the grid from which intrinsic coordinates are sampled.
-    grid_aspect_ratio
-        If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
     geometry_tolerance
         Maximum sampled world-space distance between the analytic surface and its
         PN-triangle approximation at construction time, in world units. It measures
@@ -697,7 +699,10 @@ class Surface(Mob):
         so detail spent where the surface is close to the camera is not spent on the
         rest of the mesh or on the frames where it is far away.
     min_grid_resolution, max_grid_resolution
-        Bounds for automatic grid sizing, measured in vertices per axis.
+        Bounds for automatic grid sizing, measured in vertices per axis. Default
+        to ``2`` and ``200``. The floor is two vertices -- one cell -- because a
+        surface that is straight along an axis needs no more than that, and the
+        search measures rather than assumes it.
     resolution_shrink_margin
         Deprecated compatibility argument. Logical PN topology is fixed at
         construction and is never resized during animation.
@@ -762,7 +767,6 @@ class Surface(Mob):
         normal_function=None,
         grid_height=None,
         grid_width=None,
-        grid_aspect_ratio=None,
         checkered_color=None,
         color_texture=None,
         reflectivity_texture=None,
@@ -773,7 +777,7 @@ class Surface(Mob):
         ignore_normals=False,
         geometry_tolerance=0.001,
         render_tolerance=0.001,
-        min_grid_resolution=4,
+        min_grid_resolution=2,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,
         *args,
@@ -883,7 +887,6 @@ class Surface(Mob):
         self._min_grid_resolution = int(min_grid_resolution)
         self._max_grid_resolution = int(max_grid_resolution)
         self._resolution_shrink_margin = float(resolution_shrink_margin)
-        self._grid_aspect_ratio = grid_aspect_ratio
         self._pending_auto_resolution = None
         self._resolution_update_in_progress = True
         if not np.isfinite(self._geometry_tolerance):
@@ -930,8 +933,6 @@ class Surface(Mob):
                 grid_width = grid_height
             if grid_height is None:
                 grid_height = grid_width
-            if grid_aspect_ratio is not None:
-                grid_height = int(grid_width * grid_aspect_ratio)
 
         self.grid_height, self.grid_width = grid_height, grid_width
 
@@ -966,6 +967,25 @@ class Surface(Mob):
 
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
+
+        # ``geometry_tolerance`` bounds a world-space distance measured on
+        # exactly this geometry, so remember it as a fraction of how big the
+        # geometry's patches were. A surface that is scaled (or deformed)
+        # afterwards can then carry the bound forward to the renderer instead of
+        # quoting a stale absolute length, and a PN soup converted from it
+        # arrives at the identical number from the identical triangles.
+        reference = float(
+            mean_patch_edge_length(
+                grid_to_triangle_vertices(
+                    unsquish(grid_points, -2, self.grid_height).reshape(
+                        -1, self.grid_width, self.grid_height, 3
+                    )
+                ).reshape(1, -1, 3, 3)
+            ).mean()
+        )
+        self._geometry_slack_ratio = (
+            self._geometry_tolerance / reference if reference > 0 else 0.0
+        )
 
         color = kwargs["color"] if "color" in kwargs else self.get_default_color()
         if checkered_color is None:
@@ -1893,39 +1913,14 @@ class Surface(Mob):
                     height = high
             return width, height
 
-        if self._grid_aspect_ratio is not None:
-            ratio = float(self._grid_aspect_ratio)
-            low, high = minimum, maximum
-            best_width = maximum
-            while low <= high:
-                width = (low + high) // 2
-                height = min(
-                    maximum,
-                    max(minimum, int(round(width * ratio))),
-                )
-                if acceptable(width, height):
-                    best_width = width
-                    high = width - 1
-                else:
-                    low = width + 1
-            result = (
-                best_width,
-                min(
-                    maximum,
-                    max(minimum, int(round(best_width * ratio))),
-                ),
-            )
-        else:
-            width = first_acceptable(maximum, vary_width=True)
-            height = first_acceptable(maximum, vary_width=False)
-            while not acceptable(width, height) and (
-                width < maximum or height < maximum
-            ):
-                if width < maximum:
-                    width = min(maximum, max(width + 1, int(width * 1.25)))
-                if height < maximum:
-                    height = min(maximum, max(height + 1, int(height * 1.25)))
-            result = trim(width, height)
+        width = first_acceptable(maximum, vary_width=True)
+        height = first_acceptable(maximum, vary_width=False)
+        while not acceptable(width, height) and (width < maximum or height < maximum):
+            if width < maximum:
+                width = min(maximum, max(width + 1, int(width * 1.25)))
+            if height < maximum:
+                height = min(maximum, max(height + 1, int(height * 1.25)))
+        result = trim(width, height)
 
         self._geometry_resolution_limit_reached = not acceptable(*result)
         if self._geometry_resolution_limit_reached:
@@ -1992,7 +1987,6 @@ class Surface(Mob):
             self._geometry_tolerance,
             self._min_grid_resolution,
             self._max_grid_resolution,
-            _freeze_resolution_cache_value(self._grid_aspect_ratio),
             str(self.location.device),
             str(self.location.dtype),
             _freeze_resolution_cache_value(self.u_range),
@@ -2059,22 +2053,6 @@ class Surface(Mob):
                 else:
                     low = middle + 1
             return best
-
-        if self._grid_aspect_ratio is not None:
-            ratio = float(self._grid_aspect_ratio)
-            low, high = minimum, maximum
-            best_width = maximum
-            while low <= high:
-                width = (low + high) // 2
-                height = min(maximum, max(minimum, int(round(width * ratio))))
-                if acceptable(width, height):
-                    best_width = width
-                    high = width - 1
-                else:
-                    low = width + 1
-            return best_width, min(
-                maximum, max(minimum, int(round(best_width * ratio)))
-            )
 
         width = first_acceptable(maximum, vary_width=True)
         height = first_acceptable(maximum, vary_width=False)
@@ -2957,6 +2935,7 @@ class Surface(Mob):
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
             render_tolerance=self._render_tolerance,
+            geometry_slack_ratio=self._geometry_slack_ratio,
             **{
                 k: expand_grid_to_verts(v)
                 for k, v in self.grid.get_shader_params().items()

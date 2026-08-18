@@ -36,6 +36,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P10** the batched surface build | **measured -- the top item.** `get_batch_of_primitives`' own time was never orchestration: **85.35 s (21.9%)** is `get_render_primitives_batched`, which **had no profiler hook**. With the hook added the stage's own time drops 23.8% -> **4.5%**. Inside it, 59.8% is `compute_grid_vertex_normals` and only 24.2% is the per-surface tail. See P10 |
 | **P11** pairwise triangle sides in `compute_grid_vertex_normals` | **shipped and confirmed end to end** -- **2.0-2.2x** on the function, **1.51x on the whole stage** (85.35 s / 21.9% -> 56.62 s / 15.8%), **bit-identical** (asserted on bit patterns, incl. NaN payloads and signed zeros). Removes an 8-copy stack, an 8-wide subtract, two stride-2 gathers and a length-4 reduction. See P11 |
 | **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
+| **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
 | **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
 | **T5** sparse-coverage host chain | the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
@@ -738,6 +739,76 @@ earlier round by hoisting them from per-chunk to per-batch. What remains is
 (`d`, `hit`, `rel`, two crosses, ...) to fill a `[F, N, 13]` table -- a clean
 one-kernel fusion. Small on this scene; grows with triangle count.
 **Estimated** 8.6 s -> ~3 s (~0.7%).
+
+### T7. Per-dimension dicing, and what the criterion may stop resolving (shipped)
+
+> **The cheapest microtriangle is the one the criterion never asks for.** T1 and
+> T4 made the level search and the dice write-out cheap. T7 is about the number
+> they were operating on: the dice was uniform in all three barycentric
+> directions, and it was measuring against a reference surface it had no right
+> to trust to the precision it was chasing.
+
+Two changes, both of which reduce the *count* rather than the cost per triangle,
+and a third that reduces the patch count they start from:
+
+1. **The dice is `(level, across level, apex)`.** `2 ** level` rows fanning from
+   one corner, each cut into at most `2 ** across` columns
+   (`logical_pn.dice_pattern`, `n * (m + 1) - m` microtriangles). Equal levels
+   reproduce the uniform barycentric grid *exactly* -- same vertices, same
+   triangle order -- so this can only remove triangles from a patch whose two
+   directions want different detail. The across level starts at the coarsest
+   boundary curve's own level and is measured by the same criterion as the
+   isotropic dice, so an anisotropic patch is one that passed, never one
+   inferred from its boundary. Crack-freeness is unchanged and now tested at
+   mesh scale (`test_a_whole_diced_mesh_stays_watertight_across_every_seam`,
+   which fails if the boundary snap is removed).
+2. **Both criteria stop at the logical surface's own accuracy.** They score the
+   flat dice against the PN patch, which is itself only `geometry_tolerance`
+   away from the analytic surface. Measured on one cylinder patch: a 31-triangle
+   strip sits 0.000768 world units from the analytic cylinder where the uniform
+   level-4 dice's 256 triangles sit 0.000782 from it -- both against a PN patch
+   0.000739 off. The 225 extra triangles resolve the PN patch's own error. The
+   searches now subtract that accuracy, projected per sample, from what they
+   measure (`PN_GEOMETRY_SLACK`). It is a world-space length, so it does nothing
+   for distant geometry and does its work in the close-ups where the counts
+   hurt.
+3. **`grid_aspect_ratio` is gone.** `Cylinder` and `Cone` tied their two grid
+   axes at `1/PI`, which bypassed the per-axis geometry search entirely. For the
+   cone it spent the resolution on exactly the wrong axis: 40 divisions along
+   the *ruled* slant and 13 around, where the free search picks 4 x 19 and meets
+   the same tolerance. `min_grid_resolution` now defaults to 2, since an axis a
+   surface is straight along needs one cell and the search measures that.
+
+Diced microtriangles for one frame, 1080p, camera 1.6 units back, default
+tolerances (`benchmarks`-style probe, CPU session):
+
+| shape | before | grid only | all three |
+| --- | --- | --- | --- |
+| cylinder r=0.3 h=8 | 1392 | 448 | **163** |
+| cylinder r=1 h=1 | 3898 | 976 | **188** |
+| cone | 9792 | 378 | **252** |
+| sphere | 8682 | 8682 | **3355** |
+| torus | 27075 | 27075 | **12562** |
+
+**What the across search costs.** It is not free: on the torus above (1218
+patches, one frame, torch path on a loaded CPU session) it took **988 ms of a
+4151 ms dice in 3 rounds**, evaluating 25 665 microtriangles across 26 criterion
+calls, to remove 21% of that mesh's triangles. Two things should make that
+cheaper and are untried: the prediction ought to land in one round rather than
+three, and the rounds launch one criterion per distinct `(along, across, apex)`
+group, which is launch-bound on small groups. On a CUDA device the fused
+criterion kernel carries this, so the shape of the cost is different -- measure
+there before tuning it.
+
+**What is not measured.** Everything else is triangle counts, not time: this
+landed on a CPU-only session, so what the smaller meshes are worth downstream
+(BVH build, traversal, shading, render memory) is unquantified. That wants a
+CUDA machine and the reference scene.
+
+**Output moves**, so every full-render baseline needs regenerating -- CPU and
+CUDA are separate committed sets and each belongs to the machine that made it.
+`tests/fast` is unaffected (no PN geometry), which is exactly the blind spot
+this document already warns about.
 
 ### Not worth a kernel
 

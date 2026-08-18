@@ -396,7 +396,6 @@ class Cone(Surface):
         self.u_min = u_min
         kwargs["checkerboard_colors"] = checkerboard_colors
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
-        kwargs.setdefault("grid_aspect_ratio", 1 / PI)
         super().__init__(*args, v_range=v_range, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
@@ -572,8 +571,6 @@ class Cylinder(Surface):
         self._height = height
         self.direction = cast_to_tensor(direction)
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
-        if "grid_aspect_ratio" not in kwargs and "grid_height" not in kwargs:
-            kwargs["grid_aspect_ratio"] = 1 / PI
         super().__init__(*args, v_range=v_range, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
