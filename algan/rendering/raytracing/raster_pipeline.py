@@ -1078,6 +1078,33 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     return layer_order.index_select(0, depth_order)
 
 
+def _tri_obj_row(pix, ppf, time_start, rows):
+    """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
+    ``pix``, which is the row the host has to read to ask the same question.
+
+    A fragment's key carries ``lp = (f - time_start) * ppf + p - tile_start``
+    (``raster_taichi._pair_pixel``), so the pixel index is CHUNK-relative; the
+    resolve turns it back into a frame with ``f = time_start + g // ppf`` and
+    indexes ``tri_obj[f % rows]``, which is BATCH-relative. Every other frame
+    derivation in this module adds ``time_start`` for exactly that reason
+    (``_window_pairs``'s ``f_abs``, the per-frame pair loops); the ONE-MESH
+    reduction did not, so on any chunk that did not start at frame 0 it asked a
+    different frame's surface map than the kernel it feeds.
+
+    Measured before the fix, and the reach is why this is an alignment rather
+    than a bug report: over all six ``tests/full_renders`` scenes and every
+    chunk starting past frame 0, **not one fragment's surface id moved** between
+    the two rows (``benchmarks/_notch_scene_check.py``). A diced primitive's
+    row -> SOURCE SURFACE map is frame-invariant whenever all its patches belong
+    to one surface, which every PN primitive in those scenes is, so the rows
+    differ only for a primitive carrying SEVERAL surfaces -- a packed-grid
+    ``Surface``, or several meshes batched into one primitive. The two
+    derivations must not be allowed to disagree while that is the only thing
+    standing between them and a wrong answer.
+    """
+    return ((pix // ppf) + time_start) % rows
+
+
 def prepare_sparse_raster_coverage(
     merged,
     tri_screen,
@@ -1498,7 +1525,7 @@ def prepare_sparse_raster_coverage(
         if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
             tri_obj = merged["tri_obj"]
             ppf = int(width) * int(height)
-            frame_of = (pix_s // ppf) % tri_obj.shape[0]
+            frame_of = _tri_obj_row(pix_s, ppf, int(time_start), tri_obj.shape[0])
             safe_ref = ref_s.clamp_min(0).to(torch.int64)
             sid = tri_obj[frame_of, safe_ref].to(torch.int64)
             # A bezier fragment has ref < 0 and no surface id; a pixel holding

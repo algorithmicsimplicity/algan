@@ -174,3 +174,26 @@ def test_no_grouping_without_analytic_aa_geometry(restore_aa):
         True, seam=True, run_full=True, one_mesh=True, one_mesh_dens=True
     )
     assert rp._aa_group(0, 0) == 0
+
+
+@pytest.mark.parametrize("time_start", [0, 1, 7, 15])
+def test_the_tri_obj_row_does_not_depend_on_where_the_chunk_starts(time_start):
+    """The one-mesh flag must read the frame the RESOLVE reads.
+
+    The same host/kernel-agreement failure as the rest of this module, one level
+    down. ``prepare_sparse_raster_coverage`` decides which pixels are
+    single-surface by grouping ``tri_obj`` ids, and ``tri_obj`` is per frame for
+    a diced logical-PN primitive. A fragment's compact pixel index is
+    CHUNK-relative; every kernel converts it back with ``f = time_start +
+    g // ppf`` before indexing. So the row is a property of the ABSOLUTE frame,
+    and asking for it must give the same answer however the render loop happened
+    to split the batch into chunks -- which is exactly what the reduction got
+    wrong by dropping ``time_start``.
+
+    Stated as that invariant rather than as a transcription of the kernel's
+    arithmetic, so it cannot pass by restating the code it guards.
+    """
+    ppf, rows = 100, 16
+    for f_abs in range(time_start, rows):
+        pix = (f_abs - time_start) * ppf + 7  # what the emission writes
+        assert rp._tri_obj_row(pix, ppf, time_start, rows) == f_abs % rows

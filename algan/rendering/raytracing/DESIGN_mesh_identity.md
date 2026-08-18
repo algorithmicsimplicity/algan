@@ -189,7 +189,8 @@ where it belongs; none was quietly dropped.
     §3.7  Polyhedron winding           FLIPPED ON, same re-baseline
     §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off.
                                        It OWNS the residual interior notches (~92%),
-                                       which ship KNOWINGLY UNFIXED — see §0.5
+                                       which ship KNOWINGLY UNFIXED — see §0.5,
+                                       now MEASURED on the six real scenes
     §6.6  one-mesh coverage cap        FLIPPED ON — the AA result, plus a gate bug
                                        found and fixed while qualifying it
     §6.6.2 capped occlusion write      FLIPPED ON — closes the claim-vs-occlusion
@@ -198,14 +199,27 @@ where it belongs; none was quietly dropped.
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
 
-0. **The interior-notch limitation is CLOSED as a decision, not as a fix — see
-   §0.5.** Diagnosed to the line (`_AA_MAX_RUN_SCAN = 16`), costed, and
-   deliberately left in place: ~2 channel values typically, ~13 at the worst pixel
-   of deliberately pathological geometry, against a fix that is either a hot-path
-   loop bound or a withdrawal of the gate's silhouette win. **Do not reopen it
-   without first measuring the six `tests/full_renders` scenes**, which nobody has
-   done; §0.5 says how, and what result would change the decision. This entry
-   exists so nobody spends a day rediscovering §0.5.
+0. **The interior-notch limitation is now MEASURED on the six real scenes, and
+   the decision needs restating rather than defending — see §0.5.** The previous
+   revision of this entry said the six `tests/full_renders` scenes had never been
+   counted and that single-digit counts would confirm the standing decision.
+   They are counted now (`benchmarks/_notch_scene_check.py`, CUDA, every frame,
+   each render byte-identical to its committed baseline first) and they are not
+   single-digit: **`text_and_media` notches ~550 interior pixels on each of 112
+   of its 182 frames**, `solids_and_camera` an order of magnitude fewer, and the
+   other four are clean. The per-pixel size is unchanged and small — ~1.7 channel
+   values typically, ~2.5 at the worst pixel, cross-calibrated at 8% of the
+   claim-side shortfall against `--notch-probe` on two harness cases that agree
+   to 0.1%. So it is **not rare, still small**: a low-amplitude coverage error
+   over most of an imported mesh's interior, sitting just under the suites'
+   tolerance, rather than the handful of pathological pixels §0.5 assumed.
+
+   Two consequences. The measurement moves §6.3.2's open choice — fix (b) was
+   blocked on the silhouette population it would give up, and on the real scene
+   that population is **5%** of the pixels it would fix, against more than 100%
+   on the harness case that blocked it. And the one thing left unmeasured is the direct
+   A/B: raise `_AA_MAX_RUN_SCAN`, re-render, diff. That costs a cold compile and
+   settles the benefit; the cost half stays unmeasurable here (§7.15).
 1. **Build a traversal-step (or instruction) counter.** It settles §3.4's
    inherited "~20-25% fewer traversal steps" and most of §3.6's case, and it is
    the right instrument for THIS machine: a step count is deterministic, so
@@ -298,7 +312,7 @@ still governs; this section is what is specific to *this* work.
     <venv-python> -m ruff check --no-fix algan tests         # NEVER without --no-fix
     <venv-python> -m ruff format --check algan tests
 
-Expected green at the tip of this work: **1051 passed, 89 skipped** and
+Expected green at the tip of this work: **1056 passed, 89 skipped** and
 **7 passed**. If either is red before you change anything, find out why before
 building on it.
 
@@ -330,6 +344,9 @@ quality name; all live in `benchmarks/`.
 
     _aa_run_gate_check.py    coverage error, ink wobble, notches, --verify replay,
                              --notch-probe (the ss6.3.2/ss6.6 instrument of record)
+    _notch_scene_check.py    ss0.5's mechanism in the SIX FULL-RENDER SCENES, which
+                             --notch-probe cannot reach; diffs its own render
+                             against the committed baseline before reporting
     _aa_line_check.py        ink wobble along an edge over nine angles
     _one_mesh_ab.py          cost of the one-mesh cap (ss6.6.3)
     _one_mesh_dens_ab.py     cost + look of the capped occlusion write (ss6.6.2)
@@ -373,6 +390,10 @@ AA area, it will save a day.
 default renderer ships that way.** This was diagnosed to the line, costed, and
 then left alone as a considered decision rather than an oversight — the fix is
 not worth its price at the sizes measured. Read this before "fixing" it.
+
+**The six real scenes have since been counted** (the last part of this section),
+and the size holds while "rare" does not: one of them carries it on most of an
+imported mesh's interior in most of its frames.
 
 **WHAT IS WRONG.** The run scan sums one sheet's exact clipped areas to get `E`,
 the area that sheet covers in the pixel, and stops after `_AA_MAX_RUN_SCAN = 16`
@@ -446,20 +467,99 @@ Either needs a kernel recompile and a cost number, and cost is exactly what the
 machine this was measured on cannot resolve (§7.15). Against a worst case of ~13
 channel values on deliberately pathological geometry, that is not a good trade.
 
-**WHAT IS NOT MEASURED, said plainly.** Everything above is the synthetic
-harness. **Nobody has counted notched pixels in the six `tests/full_renders`
-scenes**, which are the only realistic scenes here. What is known about them is
-weaker: the worst-differing frames of `solids_and_camera` and
-`materials_and_lighting` were reviewed side by side at 12x amplification and show
-no notches, rims or interior speckle — but "looked and did not see it" is not
-"there are none" for a 2-channel effect. Those scenes carry `Sphere`, `Cylinder`,
-`Torus` and `Surface` at auto-chosen grid resolutions, so they satisfy conditions
-1 and 2, and every one of those shapes has a limb.
+**NOW MEASURED IN THE SIX REAL SCENES, AND THE PREMISE OF THE DECISION ABOVE IS
+HALF WRONG.** The paragraph this replaces said that if real scenes showed
+single-digit pixel counts the standing decision was confirmed. They do not, and
+by four orders of magnitude in one scene. What survives is the *per-pixel*
+figure; what does not is "rare".
 
-**If you are picking this up, measure that first.** Point `--notch-probe` at the
-full-render scenes rather than the harness cases; roughly an hour, mostly render
-time. If real scenes show single-digit pixel counts, the standing decision —
-document it and leave it — is confirmed and no kernel change is warranted.
+`benchmarks/_notch_scene_check.py`, CUDA, `PREVIEW`, **every frame of every
+scene**, each render verified byte-identical to its own committed CUDA baseline
+before a single number was read (that check is in the harness because the first
+run of it was not: it had not registered the vendored fonts and came back
+205-232 channel values from the baselines, which is a different scene, not a
+drift):
+
+    scene                     covered px   truncated   NOTCHED   interior   mean   worst
+    complex_hierarchy_become   2,342,971          49         3          2  0.0131  0.0229
+    manim_compat_and_plots     3,270,906           0         0          0       -       -
+    materials_and_lighting    10,477,207           0         0          0       -       -
+    shapes_and_timeline       11,356,119         107         0          0       -       -
+    solids_and_camera          7,366,872       7,008     2,180      1,363  0.0302  0.1232
+    text_and_media             5,922,322     420,552   106,283    100,618  0.0849  0.1249
+
+`mean`/`worst` are over the INTERIOR pixels, in coverage. Frames carrying at
+least one: 3 of 75, 0, 0, 0, **70 of 239**, **112 of 182**. Longest same-sheet
+run: 56, 0, 16, 20, 76, 66.
+
+**Three scenes are clean and one of them says why.** `materials_and_lighting`
+scans 2.5M pixels and its longest run is **exactly 16** — it comes up to the cap
+across a whole dense shadowed scene and never past it. `shapes_and_timeline` and
+`manim_compat_and_plots` are circuits, which never enter this path at all.
+
+**The two that are not clean are the two with dense triangle meshes drawn
+small.** `text_and_media` carries an imported glTF model — condition 3 exactly,
+a finely tessellated object at a fraction of the screen — and it notches ~550
+interior pixels on each of 112 of its 182 frames. `solids_and_camera` is the
+predicted limb case, an order of magnitude smaller.
+
+**WHAT THE PROBE SCORES, and why it is not the same number as the table above
+it.** It replays the run scan with exactly ONE input changed — the scan limit —
+and reports `corr(limit=inf) - corr(limit=16)`: the coverage the sheet's first
+run loses purely because the scan stopped. That needs no material model and no
+exact reference, which is what lets it run on a real scene at all;
+`--notch-probe` cannot, because its reference drops any pixel holding two
+objects and its walk assumes matte opaque geometry (the harness's docstring says
+so at length). The price is that it measures the CLAIM, not the paint: what the
+pixel finally shows depends on how much of the shortfall the far sheet refills
+under the cap.
+
+**Both instruments on the same cases put that factor at 8%.** Run on the four
+harness cases §6.3.2 attributes, the new probe reproduces the old one's
+attribution exactly — nonzero on the two the unbounded-scan replay recovered,
+**zero** on the two it did not:
+
+    case                 --notch-probe (painted)   _notch_scene_check (claim)   ratio
+    line-check cylfine     253 px, mean 0.0090       402 px, mean 0.1113         8.1%
+    sphere (192x96)         24 px, mean 0.0018        29 px, mean 0.0226         8.0%
+    line-check cyl           4 px  (0 recovered)       0 px                         -
+    packed 4x4 (overlap)     3 px  (0 recovered)       0 px                         -
+
+Two independent points landing on 8.0% and 8.1% is a usable conversion, and it
+says the far-sheet refill takes back ~92% of the first run's shortfall. Applied
+to the real scenes: `text_and_media` ~0.007 of painted coverage typically and
+~0.010 at its worst pixel, i.e. **~1.7 channel values typically and ~2.5 at the
+worst pixel** against a maximally contrasting background. `solids_and_camera` is
+~0.6 and ~2.5.
+
+**So the honest restatement is: not rare, still small.** §0.5's per-pixel
+estimate ("~2 channel values typically") is confirmed on real scenes and was
+never the doubtful part. What was wrong is the picture of a handful of
+pathological pixels: on a scene with an imported mesh this is a low-amplitude
+coverage error spread over most of the mesh's interior in most frames, sitting
+just under the suites' tolerance of 2 — which is why no suite catches it and why
+looking at an amplified diff did not find it either.
+
+**AND IT MOVES §6.3.2's OPEN CHOICE.** Fix (b) — refuse to consult `E` when the
+scan hit its limit — was left unchosen because it withdraws the gate's win from
+long-run SILHOUETTE pixels, and on `cylfine` those are most of the frame. §6.3.2
+says that population had to be measured before (b) could be chosen. Measured, as
+the interior share of the truncated full-mask pixels:
+
+    cylfine (the harness case that blocked it)   402 interior of  849   47%
+    solids_and_camera                          1,363 interior of 2,180  63%
+    text_and_media                           100,618 interior of 106,283 **95%**
+
+On the scene that actually carries this, the silhouette population (b) would
+give up is **5% of the pixels it would fix**. The harness case was not
+representative of it.
+
+**WHAT IS STILL NOT MEASURED.** The 8% is a conversion from two harness points,
+not a measurement on these scenes. The one thing that would settle it is the
+direct A/B: raise `_AA_MAX_RUN_SCAN`, re-render the six scenes and diff. That
+costs a cold Taichi compile (§0.1) and it is the next step for anyone reopening
+this. It measures the BENEFIT only; the cost half stays unmeasurable on a
+throttling box (§7.15).
 
 
 ================================================================================
@@ -1999,7 +2099,12 @@ to the shipped `corr = 1` short-circuit — cheap and principled, since a trunca
 sum is not an area, but it also withdraws the gate's win from every long-run
 SILHOUETTE pixel, and on `cylfine` those are most of the frame (`capped` is 3011
 of 3546 clean interior pixels). Neither is free; (b) needs the silhouette
-population measured before it is chosen, and both need a kernel recompile and a
+population measured before it is chosen — **and it now is, on the scenes that
+carry this rather than on the harness case that blocked it: the interior share
+of the truncated full-mask pixels is 95% in `text_and_media` and 63% in
+`solids_and_camera`, against 47% on `cylfine` (§0.5). The population (b) would
+give up is 5% of the one it would fix on the real scene**, which is close to the
+opposite of what this paragraph assumed. Both still need a kernel recompile and a
 cost measurement this box cannot resolve (§7.15). But with real donors in `E`, the coverage
 win shrinks — `Cylinder` 0.0260 → 0.0080 rather than → 0.0030 — and the metric
 §6 is actually about barely moves. Mean ink wobble over the nine non-degenerate
@@ -2408,6 +2513,46 @@ and it should close the `--verify` failures too. It moves output, so it needs it
 own gate, its own baselines and a re-run of this harness plus `_aa_line_check`.
 
 Shipped ON; both CUDA baseline sets regenerated (§3.5).
+
+6.6.5 THE FLAG READ A DIFFERENT FRAME'S SURFACE MAP THAN THE KERNEL — latent
+----------------------------------------------------------------------------
+Found while writing `_notch_scene_check.py`, which has to compute a fragment's
+surface id the way the kernel does and so had to read both derivations.
+
+`tri_obj` is `[T, N]` for a diced logical-PN primitive — row → source surface,
+per frame, because the adaptive levels re-lay the rows every frame. A fragment's
+compact pixel index is CHUNK-relative (`_pair_pixel` writes `lp = (f -
+time_start) * ppf + p - tile_start`), and every kernel converts it back with
+`f = time_start + g // ppf` before indexing. The ONE-MESH reduction in
+`prepare_sparse_raster_coverage` did not: it used `pix_s // ppf` directly, so on
+**any chunk that does not start at frame 0** it grouped fragments by a different
+frame's surface map than the resolve it feeds. Every other frame derivation in
+that same file adds `time_start` (`_window_pairs`'s `f_abs`, both per-frame pair
+loops), which is what makes this a slip rather than a design.
+
+**Measured reach: zero.** Over all six `tests/full_renders` scenes — 41 to 78
+offset chunks each, five of the six carrying per-frame `tri_obj` — **not one
+fragment's surface id moves** between the two rows. The reason is worth writing
+down, because it is what bounds the defect: `_logical_pn_tri_obj` maps a row to
+the SOURCE SURFACE of the patch that owns it, and that map is frame-invariant
+whenever all of a primitive's patches belong to one surface. Every PN primitive
+in those scenes is one mesh. It takes a primitive carrying SEVERAL surfaces — a
+packed-grid `Surface`, or several meshes batched into one primitive — for the
+rows to differ at all. A purpose-built packed grid under a 512 MB override
+(`--row-split-demo`) chunked as intended and still moved nothing, so this is
+recorded as latent rather than as a bug anyone has seen bite.
+
+Fixed anyway, because the two derivations must not be allowed to disagree while
+"the ids happen to be equal" is the only thing between them and a wrong answer:
+`_tri_obj_row` is now the single place that answers the question, with
+`test_the_tri_obj_row_does_not_depend_on_where_the_chunk_starts` pinning the
+invariant (the row is a property of the ABSOLUTE frame, so it cannot depend on
+where the render loop split the batch). Output is unchanged, which the measured
+reach predicts and `tests/full_renders` confirms.
+
+§7.11's lesson generalizes past a gate: the same question asked in two languages
+needs one answer, and the host/kernel boundary is where this codebase keeps
+finding second ones.
 
 6.4 This interacts with §4.5
 -----------------------------
