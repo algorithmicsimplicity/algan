@@ -181,7 +181,9 @@ where it belongs; none was quietly dropped.
     §3.6  two-level BVH                NOT STARTED, and the perf case is MEASURED
                                        not to justify starting (§3.6)
     §3.7  Polyhedron winding           FLIPPED ON, same re-baseline
-    §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off
+    §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off,
+                                       and it OWNS the residual interior notches
+                                       (~92%), which is now the open item
     §6.6  one-mesh coverage cap        FLIPPED ON — the AA result, plus a gate bug
                                        found and fixed while qualifying it
     §6.6.2 capped occlusion write      FLIPPED ON — closes the claim-vs-occlusion
@@ -190,16 +192,15 @@ where it belongs; none was quietly dropped.
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
 
-1. **The cap's CLAIM-side shortfall (§6.6.2).** Its occlusion-side twin is now
-   fixed and shipped: scaling `dens` with `eff` took claim-vs-occlusion from 0.22
-   to float dust on all eleven cases. What that did **not** touch — and the
-   previous revision of this list wrongly predicted it would — is the shortfall
-   itself: an interior pixel the ceiling over-bites still paints below full (24 /
-   4 / 253 / 3 notches, unmoved to the digit), and the two `--verify` failures are
-   unmoved with it. Both are scored on the CLAIM, so the occlusion fix could not
-   have moved them. The open question is why the ceiling bites on an interior
-   pixel at all; the population is the same boundary fragments and §6.6.2 says
-   what is known.
+1. **§6.3.2's relaxed run gate notches interior tilings, and it owns ~92% of the
+   residue this document twice blamed on the cap.** Measured two ways that agree
+   (§6.6.2): by gate, the relaxed gate alone takes `cylfine` from 50 to 239
+   notches where the cap then adds 14; per pixel, disabling only the clip on a
+   notched pixel's own fragments recovers 14 of those 253. The cap's ceiling is
+   *identical* on notched and clean pixels, so it is not the lever. Start at
+   §6.3.2 and at a diced mesh's interior tiling; do not start at `frag_cap`. The
+   two `--verify` failures are unmoved by the occlusion fix for the same reason —
+   they are claim-side.
 2. **Build a traversal-step (or instruction) counter.** The single missing
    instrument in this whole area, and the reason three separate items are stuck:
    §3.2's cost, §3.4's inherited "~20-25% fewer traversal steps", and §3.6's
@@ -1557,7 +1558,15 @@ away.
 *The mitigation works but shrinks the win to nothing on the target case.*
 Requiring a fragment to own every sample **and** cover the pixel before it
 truncates (gated behind the same flag) lets the donors survive. Notches drop to
-0 on every `_aa_run_gate_check` case. But with real donors in `E`, the coverage
+0 on every `_aa_run_gate_check` case **that existed when this was written** —
+and that qualifier is load-bearing, because it does not hold for the cases added
+since. Re-measured on CUDA with `--notch-probe`, the relaxed gate WITH its
+mitigation still notches four of them (§6.6.2 has the table): a fine `Sphere`
+2 -> 22, `line-check cyl` 0 -> 4, `line-check cylfine` 50 -> 239, `packed 4x4
+(overlap)` 0 -> 3. The flat quad and both plain `Cylinder`s are still zero in
+every arm, so the original measurement was right about the geometry it covered.
+**This is the open item**, and §6.6 inherited it by implying this gate — for a
+while the residue was recorded as the one-mesh cap's, which it is not. But with real donors in `E`, the coverage
 win shrinks — `Cylinder` 0.0260 → 0.0080 rather than → 0.0030 — and the metric
 §6 is actually about barely moves. Mean ink wobble over the nine non-degenerate
 angles, `--res md` CPU:
@@ -1828,17 +1837,49 @@ sequence, and ink wobble reads rendered ink. All three are the CLAIM. This fix
 changes only the occlusion write, so it could not have moved any of them, and a
 minute spent reading the harness's own accumulators would have said so.
 
-**So the cap's claim-side shortfall is a separate open defect.** An interior
-pixel the ceiling over-bites still paints below full. What changed is only what
-that costs: it used to render too DARK (paint 0.95, hide 1.00) and now renders
-with the shortfall's worth of background showing through. Both are wrong; the
-second is at least energy-conserving. This was checked rather than argued —
-`benchmarks/_one_mesh_dens_ab.py` renders the arms over `DARKER_GRAY` **and**
-over `WHITE`, because a bright background is where bleed-through would be ugly,
-and the worst frames are visually indistinguishable with the difference confined
-to silhouettes and shadow edges (`max|d|` 43-66 over 1.4-3.1% of pixel-frames).
-Whoever picks the claim-side defect up: the population is the same boundary
-pixels, and the question is why the ceiling bites there at all.
+**AND THE NOTCHES ARE NOT THE CAP'S AT ALL — they are §6.3.2's relaxed run
+gate.** This section called them "the cap's claim-side shortfall" and that was
+also wrong; `--notch-probe` settled it two ways that agree.
+
+*Attribution by gate*, notches on INTERIOR pixels, `--res md`, CUDA (the seven
+cases not listed are zero in every arm):
+
+    case                  neither gate   relaxed gate ALONE   shipped (gate+cap)
+    sphere (192x96)         2/23629          22/26480             24/26480
+    line-check cyl          0/9050            4/10195              4/10195
+    line-check cylfine     50/3546          239/3546            253/3546
+    packed 4x4 (overlap)    0/28610           3/30531              3/30531
+
+The relaxed gate carries **~92%** of the increase and the cap ~8%. That is not
+new behaviour discovered here — §6.3.2 already recorded that the relaxed gate
+notches interior tilings — but it *is* a correction to who owns the residue,
+because `ONE_MESH` implies the gate and so inherited the blame for it.
+
+*Attribution per pixel*, holding the fragment list fixed: replay a notched
+pixel's own fragments with the clip disabled and nothing else changed. It
+recovers **14 of 253** on `cylfine`, **2 of 24** on the sphere, and **0 of 4** and
+**0 of 3** on the other two — the same 8%, arrived at independently. The mean
+barely moves (`cylfine` 0.99102 -> 0.99109, which is 0.8% of a 0.00898
+shortfall). The clip is a bystander.
+
+The two instruments matter separately: the gate table changes the EMISSION, so it
+cannot isolate the clip; the per-pixel replay holds emission fixed, so it can.
+Neither alone would have been conclusive.
+
+**So the open item is the relaxed gate's interior notches, not the cap's.** The
+ceiling is not the lever — on `cylfine` it is *identical* on notched and clean
+pixels (0.99972 both), which is the single cleanest statement of the negative
+result. Anyone picking this up starts at §6.3.2, on a diced mesh's interior
+tiling, and should not spend time on `frag_cap`.
+
+What the fix DID change is what the residue looks like: an over-bitten interior
+pixel used to render too DARK (paint 0.95, hide 1.00) and now shows that much
+background instead. Both are wrong; the second is at least energy-conserving.
+That was checked rather than argued — `benchmarks/_one_mesh_dens_ab.py` renders
+every arm over `DARKER_GRAY` **and** over `WHITE`, because a bright background is
+where bleed-through would be ugly, and the worst frames are visually
+indistinguishable with the difference confined to silhouettes and shadow edges
+(`max|d|` 43-66 over 1.4-3.1% of pixel-frames).
 
 **Determinism holds.** A/A byte-identical on all four arms, twice. That is not a
 formality here — §6.6.4 is a reproducibility bug in this same ceiling, found by a

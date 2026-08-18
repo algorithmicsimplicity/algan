@@ -1073,16 +1073,19 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 #
 # What it costs, so the trade is on the record: ~2-5% render time (the honest
 # figure is 1.038x, from a 35 s shadowed scene; the small scenes sit on the
-# fixed-overhead floor), and a CLAIM-side shortfall on PARTIALLY capped
-# fragments -- small interior notches, zero on seven of eleven cases, 24/23629 on
-# a fine Sphere, worst 253/3546 at mean 0.0090 on a deliberately pathological
-# 0.045-radius rod diced 256x. That shortfall is still open.
+# fixed-overhead floor).
 #
-# Its occlusion-side twin is NOT open any more: the cap used to clip eff while
-# the occlusion write kept the uncapped dens, and ANALYTIC_AA_ONE_MESH_DENS below
-# fixes that. Do not conflate the two, as ss6.6.2 once did -- the notches above
-# are unmoved by that fix and were never going to move, because they are counted
-# on the claim.
+# IT DOES NOT COST THE INTERIOR NOTCHES, though two earlier revisions of this
+# comment and of ss6.6.2 said it did. Measured by gate (--notch-probe): the
+# relaxed run gate this rule IMPLIES takes a pathological 0.045-radius rod diced
+# 256x from 50 to 239 notched interior pixels, and the cap then adds 14 -- ~92%
+# of the residue is ss6.3.2's gate, not the ceiling. Confirmed per pixel by
+# replaying a notched pixel's own fragments with only the clip disabled: it
+# recovers those same 14 of 253, and the ceiling is IDENTICAL on notched and
+# clean pixels. Do not debug frag_cap for this; see ss6.3.2.
+#
+# Its occlusion-side defect was real and is fixed: the cap used to clip eff while
+# the occlusion write kept the uncapped dens. ANALYTIC_AA_ONE_MESH_DENS below.
 #
 # DETERMINISM IS A REQUIREMENT OF THIS RULE, NOT AN INCIDENTAL PROPERTY. The
 # per-pixel ceiling feeds a threshold in the resolve, so the reduction that builds
@@ -1124,8 +1127,9 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 # WHAT IT DOES NOT FIX, because ss6.6.2 predicted it would: the residual interior
 # notches and the harness's two --verify failures are UNCHANGED, to the digit.
 # That is structural rather than surprising -- both are scored on `actual`/`effs`,
-# which are the CLAIM, and this changes only the occlusion write. So the cap's
-# claim-side shortfall is a separate open defect; see ss6.6.2.
+# which are the CLAIM, and this changes only the occlusion write. Those notches
+# then turned out not to be the cap's either: ~92% of them belong to ss6.3.2's
+# relaxed run gate, which this rule implies. See ss6.6.2 for both attributions.
 #
 # Cost is not resolvable on the machine that measured it. Alternating the arm
 # ORDER flips the ratio from 1.041x to 0.878x on the same 40 s shadowed scene,

@@ -766,6 +766,15 @@ _SHEET_TOL = 1e-3
 #: notch. Well above the exact-area arithmetic's float dust.
 _NOTCH_TOL = 1e-3
 
+#: Filled by ``_measure`` when ``--notch-probe`` is on: one record per INTERIOR
+#: pixel, so the notched ones can be read against un-notched controls from the
+#: same scene. ss6.6.2's open question is why the one-mesh ceiling bites on a
+#: pixel that is wholly inside a silhouette, and that is a question about the
+#: ceiling's INPUTS, not about the walk -- so the record carries the ceiling, the
+#: two sheets' exact-area sums that build it, and the fragment shape.
+NOTCH_RECORDS = []
+PROBE_NOTCHES = False
+
 
 def _exact_coverage(faces, msks, covs):
     """The pixel's TRUE coverage by the object's footprint, from exact areas.
@@ -1079,6 +1088,50 @@ def _measure(build, settings, capture=None):
             svis_stats.painted[(px, py)] = actual
             if ok and _SILH_LO < truth < _SILH_HI:
                 silhouettes.append((px, py, truth, actual, own))
+            if PROBE_NOTCHES and ok and truth >= _SILH_HI:
+                front = sum(c for f, c, z in zip(faces, cs, bz) if not z and f == 0)
+                back = sum(c for f, c, z in zip(faces, cs, bz) if not z and f == 1)
+                # DECLINED AREA IS NOT A DIAGNOSTIC HERE, and the first version
+                # of this probe learned it the hard way: on a one-mesh pixel the
+                # cap DELIBERATELY drives the far sheet's fragments to zero, so
+                # "area the walk declined" is ~1.0 on every pixel, clean ones
+                # included, and it "explained" a 0.0018 shortfall 777-fold.
+                #
+                # What separates the two hypotheses is a per-pixel A/B: replay
+                # the same fragment list with the cap OFF. If the pixel then
+                # paints full, the cap caused the notch; if it is still short,
+                # the shortfall is upstream and the cap is a bystander. Run only
+                # on notched pixels -- it is a Python walk per pixel.
+                notched = actual < 1.0 - _NOTCH_TOL
+                nocap = float("nan")
+                if notched:
+                    nocap = _replay(
+                        sids,
+                        faces,
+                        ms,
+                        cs,
+                        bz,
+                        rule_b,
+                        consult_e=run_full,
+                        consult_full=run_full,
+                        mesh_cap=False,
+                        caps=cps,
+                    )[0]
+                NOTCH_RECORDS.append(
+                    {
+                        "px": px,
+                        "py": py,
+                        "nocap": nocap,
+                        "actual": actual,
+                        "cap": cps[0] if cps else float("nan"),
+                        "front": front,
+                        "back": back,
+                        "nfrag": len(sids),
+                        "ntri": sum(1 for z in bz if not z),
+                        "one_mesh": bool(ms[0] & _AA_ONE_MESH_BIT) if ms else False,
+                        "notched": notched,
+                    }
+                )
             if capture and (px, py) in capture:
                 captured[(px, py)] = (effs, truth, actual, own)
             if verdict == "union-full":
@@ -1225,6 +1278,70 @@ def _mesh_ab(cases, settings):
         )
 
 
+def _notch_probe(cases, settings):
+    """ss6.6.2's open question: why does the ceiling bite INSIDE a silhouette?
+
+    The one-mesh ceiling is ``max(front, back)`` over the two sheets' exact
+    clipped areas. Well inside a silhouette both sheets tile the pixel, so both
+    sums should be 1 and the ceiling should never bite. Where the pixel is
+    painted below full, one of those premises is false -- and which one is a
+    property of the ceiling's INPUTS, so they are what this prints.
+
+    Un-notched interior pixels are printed beside the notched ones deliberately:
+    a statistic about broken pixels alone cannot say what is different about
+    them.
+    """
+    global PROBE_NOTCHES
+    for name, build in cases.items():
+        NOTCH_RECORDS.clear()
+        PROBE_NOTCHES = True
+        try:
+            _measure(build, settings)
+        finally:
+            PROBE_NOTCHES = False
+        rec = list(NOTCH_RECORDS)
+        if not rec:
+            continue
+        bad = [r for r in rec if r["notched"]]
+        good = [r for r in rec if not r["notched"]]
+        if not bad:
+            print(f"{name:24s} interior {len(rec):6d}   no notches")
+            continue
+
+        def col(rows, key):
+            vals = [r[key] for r in rows]
+            return sum(vals) / len(vals) if vals else float("nan")
+
+        print(f"{name:24s} interior {len(rec):6d}  notched {len(bad)}")
+        for label, rows in (("notched", bad), ("clean", good)):
+            if not rows:
+                continue
+            print(
+                f"{'':24s}   {label:8s} cap {col(rows, 'cap'):.5f}  "
+                f"front {col(rows, 'front'):.5f}  back {col(rows, 'back'):.5f}  "
+                f"paint {col(rows, 'actual'):.5f}  "
+                f"frags {col(rows, 'nfrag'):.2f} (tri {col(rows, 'ntri'):.2f})  "
+                f"one_mesh {sum(r['one_mesh'] for r in rows)}/{len(rows)}"
+            )
+        # Does the ceiling explain the shortfall? If cap tracks paint on the
+        # notched rows, the cap IS the mechanism; if paint sits below cap, the
+        # shortfall is upstream of the clip and the cap is a bystander.
+        gap = [r["cap"] - r["actual"] for r in bad]
+        near = sum(1 for g in gap if abs(g) <= 2e-3)
+        print(
+            f"{'':24s}   notched: |cap - paint| <= 2e-3 on {near}/{len(bad)}"
+            f"   mean cap-paint {sum(gap) / len(gap):+.5f}"
+        )
+        # IS THE CAP THE CAUSE? Same fragment list, cap off, per notched pixel.
+        off = [r["nocap"] for r in bad]
+        full = sum(1 for v in off if v >= 1.0 - _NOTCH_TOL)
+        print(
+            f"{'':24s}   notched, replayed with the cap OFF: paints full on "
+            f"{full}/{len(bad)}, mean {sum(off) / len(off):.5f} "
+            f"(with cap {sum(r['actual'] for r in bad) / len(bad):.5f})"
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--res", choices=sorted(RESOLUTIONS), default="md")
@@ -1235,6 +1352,12 @@ def main():
         help="difference painted coverage between ALGAN_MESH_ID=0 and =1 per "
         "pixel, which needs no reference and so sees the pixels _exact_coverage "
         "has to drop",
+    )
+    ap.add_argument(
+        "--notch-probe",
+        action="store_true",
+        help="report the one-mesh ceiling and its two sheet sums on INTERIOR "
+        "pixels, notched against un-notched, which is ss6.6.2's open question",
     )
     ap.add_argument(
         "--verify",
@@ -1256,6 +1379,10 @@ def main():
 
     if args.mesh_ab:
         _mesh_ab(cases, settings)
+        return
+
+    if args.notch_probe:
+        _notch_probe(cases, settings)
         return
 
     header = (
