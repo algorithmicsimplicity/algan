@@ -203,11 +203,24 @@ list has been run; these are what running them produced.
    without first measuring the six `tests/full_renders` scenes**, which nobody has
    done; §0.5 says how, and what result would change the decision. This entry
    exists so nobody spends a day rediscovering §0.5.
-1. **Build a traversal-step (or instruction) counter.** The single missing
-   instrument in this whole area, and the reason three separate items are stuck:
-   §3.2's cost, §3.4's inherited "~20-25% fewer traversal steps", and §3.6's
-   entire case all need it and none of them can be settled without it. A day's
-   work against three multi-day questions.
+1. **Build a traversal-step (or instruction) counter.** It settles §3.4's
+   inherited "~20-25% fewer traversal steps" and most of §3.6's case, and it is
+   the right instrument for THIS machine: a step count is deterministic, so
+   unlike wall-clock it does not dissolve into thermal drift (§7.15).
+
+   **It does not settle §3.2, though this list said it did.** §3.2 changes the
+   ray/triangle INTERSECTION TEST, not which nodes get visited — the same
+   traversal reaches the same leaves either way, so a step count is identical
+   across the arms by construction and prices nothing. §3.2's cost is a
+   time question and stays one.
+
+   Two ways to build it, and the cheap one is probably right: a `ti.static`-gated
+   counter in the kernels compiles out when off but costs a ~40 minute cold
+   recompile per iteration on this box, while a HOST replay of the walk over the
+   same STBVH arrays costs no recompile and is the pattern that worked three
+   times in §6.6.2 — replay the same thing with one input changed. A host walk
+   has to be validated against the kernel (the §6.6.2 replay had `--verify` for
+   exactly this) or it measures itself.
 2. **§3.2's cost, on hardware that is not throttling.** Correctness is done and
    clean (§3.2/§4.7: zero cracks, no double blend, byte-identical on opaque
    geometry). Only the cost is open, and this machine cannot resolve it — the
