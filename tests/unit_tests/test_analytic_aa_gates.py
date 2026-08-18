@@ -44,6 +44,8 @@ def restore_aa():
         rt_settings.ANALYTIC_AA_RUN_FULL,
         rt_settings.ANALYTIC_AA_ONE_MESH,
         rt_settings.ANALYTIC_AA_ONE_MESH_DENS,
+        rt_settings.ANALYTIC_AA_RUN_CAP,
+        rt_settings.ANALYTIC_AA_RUN_EXACT,
     )
     try:
         yield
@@ -54,16 +56,20 @@ def restore_aa():
             run_full=before[2],
             one_mesh=before[3],
             one_mesh_dens=before[4],
+            run_cap=before[5],
+            run_exact=before[6],
         )
 
 
-def _grp(run_full, one_mesh, one_mesh_dens=False):
+def _grp(run_full, one_mesh, one_mesh_dens=False, run_cap=False, run_exact=False):
     rt_settings.set_analytic_aa(
         True,
         seam=True,
         run_full=run_full,
         one_mesh=one_mesh,
         one_mesh_dens=one_mesh_dens,
+        run_cap=run_cap,
+        run_exact=run_exact,
     )
     return rp._aa_group(AA_BEZ, AA_TRI)
 
@@ -197,3 +203,51 @@ def test_the_tri_obj_row_does_not_depend_on_where_the_chunk_starts(time_start):
     for f_abs in range(time_start, rows):
         pix = (f_abs - time_start) * ppf + 7  # what the emission writes
         assert rp._tri_obj_row(pix, ppf, time_start, rows) == f_abs % rows
+
+
+def test_the_frag_cap_fallback_requires_the_cap_it_reads(restore_aa):
+    """ss6.8 substitutes ``frag_cap`` for a truncated run's area sum, so it is
+    meaningless where no cap was computed -- and the ladder cannot express it
+    without the one-mesh levels below it.
+    """
+    assert _grp(run_full=True, one_mesh=False, run_cap=True) == 2
+    assert _grp(run_full=True, one_mesh=True, one_mesh_dens=False, run_cap=True) == 3
+    assert _grp(run_full=True, one_mesh=True, one_mesh_dens=True, run_cap=True) == 5
+
+
+def test_exact_run_totals_sit_above_the_frag_cap_fallback(restore_aa):
+    """ss6.7 fixes the sample union and the extent as well as the area, so it
+    SUPERSEDES ss6.8 and must compile it out rather than run both.
+    """
+    from algan.rendering.raytracing.raster_taichi import _aa_run_cap, _aa_run_exact
+
+    grp = _grp(run_full=True, one_mesh=True, one_mesh_dens=True, run_exact=True)
+    assert grp == 6
+    assert _aa_run_exact(grp)
+    # The kernel gates ss6.8 on ``_aa_run_cap and not _aa_run_exact``, so both
+    # being true here is correct and the kernel is what resolves the overlap.
+    assert _aa_run_cap(grp)
+
+
+def test_the_dense_resolve_never_reaches_the_run_lanes(restore_aa):
+    """REGRESSION, and the expensive kind: silent wrong output, not a crash.
+
+    ss6.7's lanes are built by the SPARSE emission's segment reduction. The
+    dense resolve passes one-element dummies for them, and the kernel's read is
+    gated on ``aa_grp`` -- so a dense launch at 6 indexes a one-element array by
+    fragment index. It shipped that way (gated off) and it moved
+    ``shapes_and_timeline``'s fade-out frames by 31 channel values over 4,514
+    pixels, while the sparse batches holding every truncated run in the render
+    moved nothing at all.
+    """
+    from algan.rendering.raytracing.raster_taichi import _aa_run_exact
+
+    grp = _grp(run_full=True, one_mesh=True, one_mesh_dens=True, run_exact=True)
+    dense = rp._aa_group_dense(AA_BEZ, AA_TRI)
+    assert _aa_run_exact(grp), "the sparse path should take the exact totals"
+    assert not _aa_run_exact(dense), (
+        f"the dense resolve got aa_grp={dense}, which reads run lanes it was "
+        f"handed as one-element dummies"
+    )
+    # And it must not lose anything else on the way down.
+    assert dense == 5

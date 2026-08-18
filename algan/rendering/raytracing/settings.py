@@ -1163,6 +1163,32 @@ ANALYTIC_AA_ONE_MESH_DENS = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH_DENS", True)
 ANALYTIC_AA_RUN_EXACT = env_flag("ALGAN_ANALYTIC_AA_RUN_EXACT", False)
 
 
+# On a run the scan could not finish, take the FULL-MASK arm's area from
+# ``frag_cap`` rather than from the scan's partial sum
+# (DESIGN_mesh_identity.md ss6.8).
+#
+# The cheap half of what ANALYTIC_AA_RUN_EXACT does, needing no new lane and no
+# new host reduction. Where the truncated run's sample union is complete the
+# rule reduces to ``corr = min(E, 1)`` -- the mesh's total claim over the pixel
+# -- and the one-mesh reduction has already computed exactly that as the larger
+# of the two sheets' exact areas, which the walk already loads. Scored per
+# truncated pixel against the unbounded run sum over the six full-render
+# scenes: exact on every text_and_media pixel where the cap exists (89,117 of
+# 106,283), residual 0.0001 on solids_and_camera, and no ``corr > 1`` pixels
+# introduced -- impossible on this arm, where Q is 1.
+#
+# It cannot reach the other 15%: a pixel holding more than one mesh has no cap,
+# and keeps the shipped partial sum. Nor does it touch the PARTIAL-mask arm,
+# which is the larger half of the limit's cost and needs the sample union
+# fixed, not just the area -- only ANALYTIC_AA_RUN_EXACT does that.
+#
+# ON by default. It moves two of the six full-render scenes (solids_and_camera by
+# 54 channel values, text_and_media by 49), and the moved pixels are the diced
+# interiors the limit was notching -- reviewed with _diff_frame.py, CUDA
+# baselines regenerated.
+ANALYTIC_AA_RUN_CAP = env_flag("ALGAN_ANALYTIC_AA_RUN_CAP", True)
+
+
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
 # triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
 # A space-filling curve is cheap but packs spatially distant instances into the
@@ -1173,12 +1199,26 @@ ANALYTIC_AA_RUN_EXACT = env_flag("ALGAN_ANALYTIC_AA_RUN_EXACT", False)
 # intersections found is unchanged.
 #
 # Bezier was pinned to Morton because a circuit's seam de-duplication is
-# discovery-order sensitive, so the reorder moves output at the epsilon level.
-# That was one of two pinned types; PN was the other and no longer exists
-# (ss2.1), so this is the last one. Default off pending baselines: it is a
-# performance change with an epsilon-level output cost, not a correctness fix.
-# ALGAN_BVH_BUILD still overrides every geometry type at once.
-BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", False)
+# discovery-order sensitive, so the reorder was expected to move output at the
+# epsilon level. It does not: measured byte-identical against a zero
+# run-to-run floor (``_order_window_check.py``, and independently every one of
+# 51,200 rays returns the same primitive under both orderings).
+#
+# The inherited "~20-25% fewer traversal steps" is now MEASURED rather than
+# assumed (``_bvh_steps.py``, DESIGN_mesh_identity_open.md ssE/ssF): 3.300 ->
+# 2.302 sibling-block tests per ray on 35 circuits plus Text and Tex, a 30%
+# reduction, and 3.159 -> 2.219 on incoherent rays, so it is not an artifact of
+# primary-ray coherence. The same instrument reproduces the triangle tree's
+# already-known 25% (7.944 -> 5.960), which is what says the instrument is
+# measuring the tree rather than itself.
+#
+# READ THIS BEFORE CONCLUDING ANYTHING FROM THE FLAG. ``BVH_REFIT`` defaults
+# ON, and ``_build_accel``'s refit branch ignores ``builder`` outright, so at
+# shipped defaults NO STBVH is built for any geometry type and this flag --
+# like ``ALGAN_BVH_BUILD`` -- changes nothing at all. It governs the tree you
+# get with ``ALGAN_BVH_REFIT=0``, and that is the only configuration in which
+# either the win above or any A/B of it exists.
+BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", True)
 
 
 # Weld a closed surface grid's u-seam and its collapsed poles into SHARED
@@ -1222,22 +1262,19 @@ BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", False)
 # column u = 0 where the texture needs u = 1). A checkerboard is used rather than a
 # photo because a one-column uv error moves a hard edge and hides in a gradient.
 #
-# THE ACTUAL BLOCKER, found by flipping it on and running the full suite: the weld
-# is applied by get_grid_to_triangle_indices, which only the RENDER path calls.
-# The morph path builds its triangles with grid_to_triangle_vertices instead
-# (morph_conversions._grid_to_pn_soup), and that function knows nothing about the
-# gate -- so with the weld on, convert_to_pn_soup(Sphere) and
-# Sphere.get_render_primitives() disagree about the same sphere's triangulation.
-# test_pn_mesh.test_surface_conversion_reproduces_its_logical_pn_primitive asserts
-# they agree and fails; test_point_cloud_rendering also hard-codes the unwelded
-# 2*(W-1)*(H-1) count. So flipping this on ships a mesh that renders one way and
-# morphs another.
+# THE BLOCKER THAT HELD IT OFF IS CLOSED. It was that the weld is applied by
+# get_grid_to_triangle_indices, which only the RENDER path calls, while the morph
+# path built its triangles with grid_to_triangle_vertices
+# (morph_conversions._grid_to_pn_soup) and knew nothing about the gate -- so a
+# welded Sphere rendered one triangulation and morphed another. Both consumers now
+# ask ``surface_weld_flags`` for the same grid, the way ss3.2 routed both
+# intersection arms through _tri_hit, and the unit suite is green with the weld on.
 #
-# What flipping it needs, therefore, is not more pixel evidence -- that is done --
-# but making every consumer of the grid topology go through one weld-aware builder,
-# the way ss3.2 routed both intersection arms through _tri_hit. Until then the gate
-# stays off and the measurements above stand.
-WELD_SURFACE_SEAMS = env_flag("ALGAN_WELD_SURFACE_SEAMS", False)
+# What remained was only that it MOVES a moving PN scene, because the dice level is
+# chosen per patch per frame from projected size, so a different triangle list can
+# land on a different level. Those baselines are regenerated (CUDA), the frames
+# reviewed, and the gate is on.
+WELD_SURFACE_SEAMS = env_flag("ALGAN_WELD_SURFACE_SEAMS", True)
 
 
 def set_weld_surface_seams(enabled):
@@ -1376,6 +1413,7 @@ def set_analytic_aa(
     run_full=None,
     one_mesh=None,
     one_mesh_dens=None,
+    run_cap=None,
     run_exact=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
@@ -1383,7 +1421,7 @@ def set_analytic_aa(
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
     global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
     global ANALYTIC_AA_ONE_MESH, ANALYTIC_AA_ONE_MESH_DENS
-    global ANALYTIC_AA_RUN_EXACT
+    global ANALYTIC_AA_RUN_CAP, ANALYTIC_AA_RUN_EXACT
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
@@ -1396,6 +1434,8 @@ def set_analytic_aa(
         ANALYTIC_AA_ONE_MESH = bool(one_mesh)
     if one_mesh_dens is not None:
         ANALYTIC_AA_ONE_MESH_DENS = bool(one_mesh_dens)
+    if run_cap is not None:
+        ANALYTIC_AA_RUN_CAP = bool(run_cap)
     if run_exact is not None:
         ANALYTIC_AA_RUN_EXACT = bool(run_exact)
     if run_rule is not None:

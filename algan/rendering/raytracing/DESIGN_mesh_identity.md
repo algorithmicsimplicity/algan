@@ -2,7 +2,8 @@
 
 **Status: PARTLY LANDED. This file is the RECORD — what was built, measured and
 settled, and why every number is what it is.**
-**One limitation ships knowingly: §0.5.**
+**One limitation ships knowingly: §0.5 — but read §6.8 first, which removes its
+full-mask half and now ships on by default.**
 
 **If you are here to do work rather than to look something up, start with
 `DESIGN_mesh_identity_open.md`** — the queue of what is left, self-contained,
@@ -100,31 +101,44 @@ listed before the wins:
     ALGAN_POLYHEDRON_WINDING         ON       consistent face winding (§3.7)
     ALGAN_ANALYTIC_AA_ONE_MESH       ON       THE AA RESULT (§6.6), implies ↓
     ALGAN_ANALYTIC_AA_ONE_MESH_DENS  ON       the capped write's other half (§6.6.2)
-    ALGAN_ANALYTIC_AA_RUN_EXACT      off      exact run totals, no scan (§6.7)
+    ALGAN_ANALYTIC_AA_RUN_CAP        ON       frag_cap on a truncated run (§6.8)
+    ALGAN_ANALYTIC_AA_RUN_EXACT      off      exact run totals (§6.7, §6.7.2)
     ALGAN_ANALYTIC_AA_RUN_FULL       off      the relaxed run gate ALONE (§6.3.2)
-    ALGAN_WELD_SURFACE_SEAMS         off      shared seam/pole vertices (§3.1)
-    ALGAN_WATERTIGHT_TRI             off      Woop-Benthin-Wald (§3.2)
-    ALGAN_BEZ_BVH_SPLIT              off      median-split bezier BVH (§3.4)
+    ALGAN_WELD_SURFACE_SEAMS         ON       shared seam/pole vertices (§3.1)
+    ALGAN_WATERTIGHT_TRI             ON       Woop-Benthin-Wald (§3.2)
+    ALGAN_BEZ_BVH_SPLIT              ON       median-split bezier BVH (§3.4)
     ALGAN_ANALYTIC_AA_RUN_RULE       redist.  pre-existing (v2 §4.4)
 
-Four of the nine are on, and the four still off are off for stated reasons
-rather than for want of attention:
+Seven of the ten are on, and the two still off are off for stated reasons rather
+than for want of attention:
 
 * `ALGAN_ANALYTIC_AA_RUN_FULL` is **subsumed**, not pending: `ONE_MESH` implies it
-  (`aa_grp` 3 or 4, and `_aa_run_full` accepts anything from 2 up), so it only selects
-  the relaxed gate *without* the cap — a configuration kept for the harness.
-* `ALGAN_WATERTIGHT_TRI` is correctness-qualified and **cost-unqualified**: its cost
-  cannot be measured on a thermally throttled machine, and because the flag is read
-  at import an in-process alternating A/B is impossible. §3.2 says what would settle
-  it.
-* `ALGAN_BEZ_BVH_SPLIT` is byte-identical and shows **no** measurable speed-up, so
-  there is no evidence either way; §3.4 recommends leaving it off until something
-  counts traversal steps.
-* `ALGAN_WELD_SURFACE_SEAMS` has its *stated* risk closed (byte-identical on a
-  static frame, textures and normal maps included) and picked up two new ones on
-  the way: only the render path is weld-aware, so with it on a `Sphere` morphs
-  from a different triangulation than it renders; and it does move a moving PN
-  scene, so it needs baselines after all. §3.1.
+  (`aa_grp` 3 or higher, and `_aa_run_full` accepts anything from 2 up), so it only
+  selects the relaxed gate *without* the cap — a configuration kept for the harness.
+* `ALGAN_ANALYTIC_AA_RUN_EXACT` is confined, verified and still off: it makes
+  every truncated run exact and leaves complete runs bit-identical (§6.7.2), but
+  `shapes_and_timeline` moves by 31 channel values over 4,514 pixels for a reason
+  that is **not attributed** — the whole render holds 198 truncated runs over 197
+  pixel-frames, which cannot produce it. §0.1 rule 1 says do not flip it yet.
+
+And three that were off in the previous revision are now on:
+
+* `ALGAN_WATERTIGHT_TRI` is correctness-qualified and remains **cost-unqualified**
+  — its cost cannot be measured on a thermally throttled machine, and because the
+  flag is read at import an in-process alternating A/B is impossible. What is new
+  is that `_watertight_check.py` run on BOTH arms gives identical quality (0 cracks
+  each, identical ridge counts), so the dilated arm has nothing left to offer as a
+  default and its remaining value is as an A/B control.
+* `ALGAN_BEZ_BVH_SPLIT`: the inherited "~20-25% fewer traversal steps" is now
+  measured at **30%** (3.300 → 2.302 sibling-block tests per ray), byte-identical.
+  But read §3.4's note first: `BVH_REFIT` defaults ON and its build ignores
+  `builder`, so at shipped defaults **no STBVH is built at all** and this flag —
+  like `ALGAN_BVH_BUILD` — changes nothing. That is why `_bez_bvh_ab.py` measured
+  nothing: it was A/B-ing one render against itself.
+* `ALGAN_WELD_SURFACE_SEAMS`: both stated risks are closed (byte-identical on a
+  static frame with textures and normal maps; the morph path now asks
+  `surface_weld_flags` for the same grid the render path does), and the moving-PN
+  baselines it needed are regenerated on CUDA and reviewed. §3.1.
 
 **THE HEADLINE: the diced-mesh AA gap is largely closed, and one earlier claim
 about it was too strong.** `_aa_line_check` opened this whole line of work by
@@ -188,8 +202,9 @@ where it belongs; none was quietly dropped.
     §3.3  delete the epsilons          NO LIVE EPSILON READ LEFT at shipped
                                        defaults; what remains are two ti.static
                                        arms that are also the A/B levers (§3.3)
-    §3.4  median-split bezier BVH      MEASURED: byte-identical, no speed-up;
-                                       recommendation is to leave it off
+    §3.4  median-split bezier BVH      FLIPPED ON. 30% fewer traversal steps,
+                                       byte-identical -- but INERT at defaults
+                                       (BVH_REFIT builds no STBVH), see §3.4
     §3.5  mesh identity                FLIPPED ON, both devices re-baselined
     §3.6  two-level BVH                NOT STARTED, and the perf case is MEASURED
                                        not to justify starting (§3.6)
@@ -203,7 +218,12 @@ where it belongs; none was quietly dropped.
     §6.6.2 capped occlusion write      FLIPPED ON — closes the claim-vs-occlusion
                                        desync; the CLAIM-side shortfall stays open
     §6.7  exact run totals (no scan)   BUILT, OFF — host half verified on 49.6M
-                                       run starts; needs frames looked at (§6.7)
+                                       run starts; now CONFINED to truncated runs
+                                       (§6.7.2), its dense-path OOB read fixed
+                                       (§6.7.1), its precision question decided;
+                                       one unattributed scene move blocks it
+    §6.8  frag_cap on a truncated run  FLIPPED ON — exact on the full-mask arm
+                                       wherever a cap exists, no new lane (§6.8)
 
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
@@ -232,7 +252,18 @@ list has been run; these are what running them produced.
    both-devices re-baseline rather than a patch — **and most of that movement is
    not the notch**, because the limit bounds the run's EXTENT as well as its area
    sum. `shapes_and_timeline` has zero notched pixels and still moves 31.
-   Isolating the two effects needs a third arm and another cold compile.
+
+   **UPDATE — the full-mask half is now fixed and shipped (§6.8), and
+   `shapes_and_timeline`'s 31 is still not explained.** §6.8 takes the mesh's
+   own coverage ceiling instead of a truncated sum on the full-mask arm, which
+   is exact wherever a cap exists and costs no lane. What is left of §0.5 is the
+   PARTIAL-mask arm, which is the larger half in both population and magnitude
+   (mean 0.2762 over 314,072 truncated pixels in `text_and_media`) and needs the
+   sample union fixed, not just the area — only §6.7 does that, and it is held
+   off by that same unattributed move. `_notch_scene_check.py --all-runs` bounds
+   the population the scan limit can possibly reach in `shapes_and_timeline` at
+   **197 pixel-frames in the entire render**, against ~37,000 pixel-frames that
+   move; those two numbers cannot describe the same thing.
 
    **A third fix is now built and gated off: §6.7** takes the run's totals from
    a host segment reduction and deletes the kernel's scan entirely, which is the
@@ -281,16 +312,16 @@ list has been run; these are what running them produced.
    `edge_hit` bit and `seam_t`; it costs the ability to measure. Do not promise
    the per-ray `f32` until both have gone, and re-check `memory_model` when
    `rs_sca` shrinks.
-4. **§3.1 now needs only baselines.** Both blockers are gone: the stated pixel
-   risk was closed by measurement (byte-identical on a static frame, textures and
-   normal maps included), and the topological one is fixed — the morph path asks
-   `surface_weld_flags` for the same grid the render path asks about, so a
-   `Sphere` no longer morphs from a different triangulation than it renders. The
-   whole unit suite is green with `ALGAN_WELD_SURFACE_SEAMS=1`. What is left is
-   that it *does* move a moving PN scene, so flipping it regenerates both
-   devices' baselines — and the CPU set cannot be regenerated on the machine that
-   owns the CUDA one (§3.5). That is the only thing standing between this gate
-   and its default.
+4. **§3.1 is DONE and on by default.** Both blockers were already gone (the
+   stated pixel risk closed by measurement, byte-identical on a static frame with
+   textures and normal maps; the topological one fixed by routing the morph path
+   through `surface_weld_flags`), and the baselines it still needed have been
+   regenerated on CUDA and reviewed: `materials_and_lighting` moves 19 channel
+   values, concentrated in the bloom halo around its two glowing spheres — the
+   amplified-epsilon pattern, visually identical — and `solids_and_camera` moves
+   33, as interior speckle on the diced solids. `tests/fast` does not move at
+   all. The CPU set cannot be regenerated on the machine that owns the CUDA one
+   (§3.5), so it is now additionally stale; the open queue's §B carries that debt.
 5. **§4.6 is answered as far as an outside instrument can answer it.** Both
    purpose-built scenes now have live shadow paths and reach as far as pixels can
    show, and all three `SHADOW_ANYHIT` modes are byte-identical on both — so the
@@ -1221,19 +1252,40 @@ Net: §3.3 is **two** deletions with different owners, and `rs_sca` only shrinks
 by its f32 when both have landed. Plan it that way, or the "one f32 per ray"
 saving will be claimed and not delivered.
 
-3.4 Median-split STBVH for bezier circuits  [BUILT, MEASURED, stays off]
+3.4 Median-split STBVH for bezier circuits  [BUILT, MEASURED, default ON — and
+    inert at shipped defaults]
 --------------------------------------------------------------------
 Once resolution is order-independent, `stbvh.py:302`'s reason for pinning
 bezier to Morton is gone (PN, the other pinned type, no longer exists).
 
-**LANDED**, gated `ALGAN_BEZ_BVH_SPLIT`, default off, flipping the bezier
-default to `"split"` (both the main tree and the opaque one, or the two disagree
-about instance order). ~20-25% fewer traversal steps is the claim inherited from
-the triangle tree; **nothing here measured it**, because a traversal-step count
-needs the kernel profiler and this container has no GPU. Default off because a
-circuit's seam de-dup is discovery-order sensitive, so the reorder moves output
-at the epsilon level — it is a performance change with a pixel cost, and both
-halves need a CUDA machine to judge.
+**LANDED**, gated `ALGAN_BEZ_BVH_SPLIT`, flipping the bezier default to
+`"split"` (both the main tree and the opaque one, or the two disagree about
+instance order).
+
+**The inherited claim is now measured, and it holds.** `benchmarks/_bvh_steps.py`
+(see the open queue's §E) counts sibling-block tests per ray on 35 circuits plus
+`Text` and `Tex`, with `ALGAN_BVH_REFIT=0`:
+
+    ordering        groups/ray (primary)   groups/ray (incoherent)
+    morton                 3.300                  3.159
+    median split           2.302                  2.219
+
+30%, slightly better than the inherited 20-25%, and the same on incoherent rays
+so it is not a coherence artifact. Leaf slots and primitive tests are identical
+to four decimals, and every one of 51,200 rays returns the same primitive — the
+reorder changes cost, not answers. The feared epsilon-level output cost does not
+appear either: `_order_window_check.py` renders it byte-identical against a
+noise floor of zero.
+
+**READ THIS BEFORE CONCLUDING ANYTHING FROM THE FLAG.** `BVH_REFIT` defaults ON,
+and `_build_accel`'s refit branch ignores `builder` outright — its own docstring
+says so — so at shipped defaults **no STBVH is built for any geometry type** and
+this flag, like `ALGAN_BVH_BUILD`, changes nothing at all. It governs the tree
+you get with `ALGAN_BVH_REFIT=0`, and that is the only configuration in which
+either the win above or any A/B of it exists. `benchmarks/_bez_bvh_ab.py` did
+not know that, which is exactly why it reported byte-identity at wall 0.993x: it
+was comparing one render with itself. The default is flipped anyway — strictly
+better on the tree it governs, byte-identical, free today.
 
 Note there is **no remaining slot-order freeze to undo**: the "every patch keeps
 its slot" constraint was PN-specific and went with the PN merge block in
@@ -2816,6 +2868,129 @@ groups anything.
 The harness still gained an opaque `Cube` case (0 of 6 inward) as the
 *referenced* polyhedron, so that the polyhedron family is measurable with the
 gate off as well as on.
+
+
+6.7.1 THE DENSE RESOLVE WAS READING §6.7's LANES OUT OF BOUNDS — latent, shipped
+--------------------------------------------------------------------------------
+`raster_iteration_zero` — the DENSE resolve — passes one-element dummy arrays
+for `frag_run_e` / `frag_run_uw`, because the segment reduction that fills them
+is part of the SPARSE emission and does not exist there. The comment beside them
+said `_aa_run_exact` compiles the reads out.
+
+It does not. `_aa_run_exact` is a function of `aa_grp`, `aa_grp` came from
+`_aa_group`, and `_aa_group` answers a question about the *settings*, not about
+which path is launching. So with `ALGAN_ANALYTIC_AA_RUN_EXACT=1` the dense
+kernel compiled the reads in and indexed a one-element array by fragment index.
+
+**What it cost.** It is why `shapes_and_timeline` moved under the unconditional
+arm in a way nobody could attribute: its last twelve frames are its fade-out
+segment, which renders in its own batches, and those batches take the dense
+path. Meanwhile every batch the probe can see — the sparse ones, which hold all
+198 truncated runs in the render — moved nothing.
+
+**The fix is `_aa_group_dense`**, which caps the level at 5, and the point of it
+is where it lives: the level a path can express is a property of the PATH, so
+the cap belongs beside the launch and not inside the kernel. Capped at 5 rather
+than 4 because §6.8 needs only `frag_cap`, which the dense path does pass at
+full length — as the "no ceiling" sentinel, so the rule is inert there rather
+than wrong. `tests/unit_tests/test_analytic_aa_gates.py` pins it; the failure it
+guards against is silent wrong output, not a crash.
+
+This is §0.1 rule 4 again, and the fourth time: a question asked in two
+languages needs one answer.
+
+
+6.7.2 THE ARM IS NOW CONFINED TO TRUNCATED RUNS, WHICH IS WHAT MADE IT LEGIBLE
+--------------------------------------------------------------------------------
+As first built, the kernel read the host lanes at EVERY scanned run start. That
+replaces `E` even on runs the scan finished, where the host's float64 sum and
+the kernel's sequential f32 one differ in the last bits by construction. The
+cost of that was measured, and it is not small:
+
+**`materials_and_lighting` moved by 42 channel values over 28,854 pixels — 16%
+of a frame — on a video with ZERO truncated runs.** 0 of 4,740,970 scanned run
+starts over 179 frames; its longest run is exactly 16. Nothing there is the
+defect §6.7 exists to fix.
+
+Reading the lanes only where `_aa_run_scan` reports budget truncation makes that
+scene **byte-identical** and leaves every truncated run exact. The bounded loop
+stays (the confinement needs its truncation flag), so §6.7 no longer claims to
+delete work from the hot path — it adds two lanes and keeps the loop.
+
+**Three hypotheses were tested along the way and all three are wrong.** They are
+recorded because each is the kind of explanation that sounds sufficient:
+
+* *Bloom amplification.* `shapes_and_timeline` has no glow.
+* *Re-windowing.* The two lanes grow `discovery_bytes`, and that scene really
+  does go from 29 to 32 frame batches. But `--verify-lanes` — host reduction on,
+  kernel pinned to the shipped variant, so the ONLY thing changed is whether the
+  kernel reads them — renders byte-identical at 32 batches. Windowing is not it.
+* *The shadow-event decision.* §6.7's own note guessed that `E` deciding whether
+  a fragment emits a shadow event turned an ulp into a whole shadow ray, and
+  `materials_and_lighting` is the only scene with shadows. Rendered with
+  `shadows=False`, the unconditional arm still moves it by 42.
+
+**The `E` precision question is decided: keep float64.** `--precision` measures
+what the lane check could not — that check compares the host lane against the
+probe's own host reduction, so it is host-versus-host and blind to this. Against
+the kernel's actual sequential f32 sum, on `materials_and_lighting`: worst
+|E_host − E_kernel| **1.79e-07**, one ulp, over 4,740,970 scanned run starts,
+with **0** dust-band verdict flips and **0** runs where `corr` moves by more
+than 1e-4. Matching f32 sequential summation on the host would need a segmented
+f32 scan — `cumsum` — which is not reproducible on CUDA, so it would reintroduce
+precisely the non-determinism §6.6.4 paid to remove, on the quantity that feeds
+the discrete decisions. Accuracy and reproducibility point the same way.
+
+
+6.8 `frag_cap` AS A TRUNCATED RUN'S FULL-MASK AREA  [SHIPPED, default ON]
+--------------------------------------------------------------------------
+`ALGAN_ANALYTIC_AA_RUN_CAP`, `aa_grp = 5`. The cheap half of what §6.7 does,
+needing no new lane, no new host reduction and no new argument.
+
+On the FULL-MASK arm every sample in the pixel is owned by the run, so `Q == 1`
+and `corr = min(E, 1)` — the mesh's total claim over the pixel. The one-mesh
+reduction (§6.6) has already computed exactly that quantity as the larger of the
+two sheets' exact areas, and the walk already loads it for the cap clamp. Where
+the scan ran out of budget and a cap exists, take it.
+
+**Scored per truncated full-arm pixel against `corr(unbounded run sum)`**, with
+the gate ON so the probe scores the rule the walk actually runs:
+
+    scene                cap available   err on capped px   corr>1 introduced
+    text_and_media       89,117/106,283       0.0000             0
+    solids_and_camera     2,259/  2,661       0.0001             0
+    complex_hierarchy         2/      3       0.0005             0
+    shapes_and_timeline      45/     67       0.0000             0
+
+Exact on the scene carrying most of the defect, and `corr > 1` is impossible on
+this arm since `Q` is 1 — so it cannot push the write into the clamp-and-
+redistribute path. It does not reach the ~15% of truncated pixels holding more
+than one mesh (no cap exists), and it does not touch the partial-mask arm, which
+needs the sample union fixed and not merely the area.
+
+**THE TRUNCATION TEST IS THE SUBTLE PART.** `_aa_run_scan` had to report whether
+it stopped for BUDGET, and "the loop stopped with fragments left in the pixel"
+is the wrong test: a run of exactly `_AA_MAX_RUN_SCAN` that ends of its own
+accord leaves the loop in the same state as one that was cut short. It probes
+one fragment further with the loop's own three terminators and accumulates
+nothing. That is not a corner case — `materials_and_lighting`'s longest run is
+exactly 16, so the naive test would have replaced an EXACT `E` with an estimate
+on every one of its 4.7M scanned runs. The probe is paid only by runs that reach
+the budget, and compiles out entirely (`want_trunc`) when the rule is off, which
+is what keeps the shipped kernel byte-identical with the gate off.
+
+**Interaction with §6.7.** §6.7 fixes `U` and the extent as well, so it
+supersedes this; the kernel gates §6.8 on `_aa_run_cap and not _aa_run_exact` so
+the two can never both write `rE`. In the ladder §6.8 sits at 5 and §6.7 at 6.
+
+**Output.** Moves `solids_and_camera` by 54 channel values and `text_and_media`
+by 49. Reviewed frame by frame: fine interior speckle on diced and textured
+surfaces, no silhouette movement and no structural change. What it is doing is
+letting the near sheet's prefix claim the mesh's whole footprint, after which
+the one-mesh ceiling starves the uncorrected tail that used to paint on top of
+it — so the pixel's total ink is unchanged and its COLOUR mix is corrected. That
+is why the signed change is near-symmetric rather than a brightening, which is
+worth knowing before reading a mean-delta and concluding nothing happened.
 
 
 ================================================================================

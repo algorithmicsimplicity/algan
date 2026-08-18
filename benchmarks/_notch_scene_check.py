@@ -100,6 +100,7 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_MAX_RUN_SCAN,
     _AA_NUM_SAMPLES,
     _AA_ONE_MESH_BIT,
+    _aa_run_cap,
     _aa_run_full,
     _tri_run_mode,
 )
@@ -110,6 +111,38 @@ RESOLUTIONS = {"ld": LD, "md": MD, "hd": HD, "preview": PREVIEW}
 #: Set by --verify-lanes: check ss6.7's host-computed run lanes against this
 #: probe's own segment reduction.
 VERIFY_LANES = False
+
+#: Set by --all-runs: also score run starts BEYOND a pixel's first, which the
+#: walk reaches whenever the fragments before them left ``svis`` uniform. The
+#: first-run scope makes every other number here exact and material-free, and a
+#: LOWER bound; this is the matching upper bound, and the two together are what
+#: bracket a population the render moves (ssB.2).
+ALL_RUNS = False
+
+#: Set by --cap-pixels to a list: every (frame, pixel-in-frame) ss6.8's
+#: substitution changes, collected so a render A/B can be asked whether the
+#: pixels that MOVED are the pixels this predicted. A prediction that is made
+#: from the fragment arrays and only then compared is ss0.1 rule 2; scoring the
+#: two together after the fact is not.
+CAP_PIXELS = None
+
+#: Set by --precision: compare the run's exact-area sum as the HOST computes it
+#: (float64, rounded to f32 -- what ss6.7 ships) against the sum the KERNEL
+#: computes for itself (f32, sequential, in fragment order). The lane check
+#: compares host to host and therefore cannot see this at all; it is the one
+#: difference between the two arms on a scene with no truncated run, and it is
+#: ss6.7's open precision question.
+PRECISION = False
+
+#: Set by --batch-frames: report each batch's ``time_start`` beside the frame
+#: range its own pixel indices span.
+BATCH_FRAMES = False
+
+#: Set by --trunc-pixels to a list: every (frame, pixel-in-frame) holding a
+#: TRUNCATED run start, over all runs. The population any change to the scan
+#: limit can possibly reach -- so a render whose moved pixels are not in it
+#: moved for another reason (ssB.2).
+TRUNC_PIXELS = None
 
 FULL_RENDERS = REPO / "tests" / "full_renders"
 
@@ -124,6 +157,7 @@ def _carms():
         "n": 0,
         "have": 0,
         "ship": 0.0,
+        "shiphave": 0.0,
         "r1": 0.0,
         "r1w": 0.0,
         "r2": 0.0,
@@ -188,6 +222,20 @@ class Stats:
         self.partial_moved = 0
         self.partial_sum = 0.0
         self.partial_worst = 0.0
+        # --all-runs: the same truncation question asked of EVERY run start.
+        self.all_runs = 0
+        self.all_scanned = 0
+        self.all_trunc = 0
+        self.all_tail_frags = 0
+        self.all_trunc_pixels = 0
+        # --precision: host float64 vs kernel f32-sequential, per run start.
+        self.prec_runs = 0
+        self.prec_worst_e = 0.0
+        self.prec_worst_corr = 0.0
+        self.prec_dust_flips = 0
+        self.prec_clamp_flips = 0
+        self.prec_corr_over = 0
+        self.batch_windows = []
         self.baseline = "not checked"
         self.lane_checked = 0
         self.lane_bad_e = 0
@@ -250,6 +298,13 @@ def _probe_batch(coverage, merged, width, height, time_start, stats):
             stats.offset_chunks += 1
     stats.covered += n_cov
     stats.fragments += n_frag
+    if BATCH_FRAMES:
+        # What ``time_start`` actually indexes. Everything that maps a probe
+        # pixel back to a VIDEO frame depends on it, and getting it wrong turns
+        # a disjointness result into a coincidence.
+        stats.batch_windows.append(
+            (int(time_start), int(pix_all.min()) // ppf, int(pix_all.max()) // ppf)
+        )
     # ``bfrm``: frames in the LARGEST chunk, not the video's length -- time_start
     # is relative to the batch, which the render loop restarts per batch. The
     # video's length is on the baseline line.
@@ -390,6 +445,83 @@ def _probe_block(
     ends_by_run = torch.cumsum(run_len_of, 0)
     len_all = ends_by_run[run_id] - torch.arange(n_frag)
 
+    if ALL_RUNS:
+        # Every run start in the block, not merely each pixel's first. The gate
+        # is the kernel's own (partial mask, or a full mask under the relaxed
+        # ss6.3.2 admission); what is NOT modelled is whether ``svis`` is still
+        # uniform when the walk arrives, which is why this is an upper bound
+        # while the per-pixel columns are a lower one.
+        spos = is_start.nonzero(as_tuple=True)[0]
+        spos = spos[~is_bez[spos]]
+        if int(spos.numel()):
+            rlen_s = run_len_of[run_id[spos]]
+            m0 = msk[spos] & _AA_MASK_ALL
+            sc = m0 != _AA_MASK_ALL
+            if _aa_run_full(aa_grp):
+                sc = sc | (cov[spos] < 1.0 - _AA_FULL_DUST)
+            tr = sc & (rlen_s > _AA_MAX_RUN_SCAN)
+            stats.all_runs += int(spos.numel())
+            stats.all_scanned += int(sc.sum())
+            stats.all_trunc += int(tr.sum())
+            # Fragments PAST the budget. Raising the limit changes how these
+            # are treated (they stop starting a run of their own and come
+            # inside the corrected one), which the corr-only columns cannot
+            # see -- and the limit bounds the run's EXTENT as well as its sum.
+            stats.all_tail_frags += int((rlen_s[tr] - _AA_MAX_RUN_SCAN).sum())
+            if bool(tr.any()):
+                # Exact, not an over-count: runs never cross a pixel boundary
+                # and blocks are cut at one, so a pixel lies wholly in one
+                # block and cannot be counted twice.
+                hit_pix = torch.unique(pix[seg[spos[tr]]])
+                stats.all_trunc_pixels += int(hit_pix.numel())
+                if TRUNC_PIXELS is not None:
+                    TRUNC_PIXELS.append(
+                        (hit_pix // ppf + int(time_start), hit_pix % ppf)
+                    )
+
+    if PRECISION:
+        spos = is_start.nonzero(as_tuple=True)[0]
+        spos = spos[~is_bez[spos]]
+        if int(spos.numel()):
+            rlen_s = run_len_of[run_id[spos]]
+            m0 = msk[spos] & _AA_MASK_ALL
+            sc = m0 != _AA_MASK_ALL
+            if _aa_run_full(aa_grp):
+                sc = sc | (cov[spos] < 1.0 - _AA_FULL_DUST)
+            spos = spos[sc]
+            rlen_s = rlen_s[sc]
+            if int(spos.numel()):
+                k = torch.clamp(rlen_s, max=_AA_MAX_RUN_SCAN)
+                # The kernel's own loop: f32, added one fragment at a time in
+                # fragment order. Reproduced step by step rather than summed,
+                # because the ORDER is the whole question.
+                e32 = torch.zeros(spos.numel(), dtype=torch.float32)
+                cov32 = cov.to(torch.float32)
+                for t in range(_AA_MAX_RUN_SCAN):
+                    take = t < k
+                    idx = torch.clamp(spos + t, max=n_frag - 1)
+                    e32 = torch.where(take, e32 + cov32[idx], e32)
+                # The host's: float64 over the WHOLE run, rounded once to f32.
+                e64 = (e_run_all[spos]).to(torch.float32)
+                de = (e64.to(torch.float64) - e32.to(torch.float64)).abs()
+                stats.prec_runs += int(spos.numel())
+                stats.prec_worst_e = max(stats.prec_worst_e, float(de.max()))
+                # What the rule does with them. The dust band and the unit
+                # clamp are the two DISCRETE consumers; everything else scales
+                # continuously and cannot turn an ulp into a channel value.
+                d64 = (1.0 - e64.to(torch.float64)).abs() > _AA_FULL_DUST
+                d32 = (1.0 - e32.to(torch.float64)).abs() > _AA_FULL_DUST
+                stats.prec_dust_flips += int((d64 != d32).sum())
+                stats.prec_clamp_flips += int(
+                    ((e64 > 1.0) != (e32 > 1.0)).sum()
+                )
+                c64 = torch.where(d64, e64.to(torch.float64).clamp(max=1.0), 1.0)
+                c32 = torch.where(d32, e32.to(torch.float64).clamp(max=1.0), 1.0)
+                stats.prec_worst_corr = max(
+                    stats.prec_worst_corr, float((c64 - c32).abs().max())
+                )
+                stats.prec_corr_over += int(((c64 - c32).abs() > 1e-4).sum())
+
     j0 = torch.full((n_cov,), n_frag, dtype=torch.int64)
     j0.scatter_reduce_(0, seg, nonbez_pos, reduce="amin", include_self=True)
     no_tri = j0 >= n_frag
@@ -494,6 +626,25 @@ def _probe_block(
     ship = torch.clamp(e_trunc, max=1.0)
     c1 = torch.clamp(cap0, max=1.0)
     c2 = torch.clamp(own_sum, max=1.0)
+    # Once ss6.8 is compiled in, (c1) IS the shipped rule on the full-mask arm,
+    # so "shipped err" has to be scored against what the walk now does or the
+    # table keeps quoting a defect the gate already removed. Taken from the
+    # batch's own ``aa_grp`` rather than from the setting, so the probe cannot
+    # answer the question in a second language (ss0.1 rule 4).
+    cap_arm = _aa_run_cap(aa_grp)
+    cap_sel = truncated & full_arm & (cap0 <= 1.0)
+    if cap_arm:
+        ship = torch.where(cap_sel, c1, ship)
+        if CAP_PIXELS is not None and bool(cap_sel.any()):
+            # The pixels ss6.8 moves, for the render A/B to check its own moved
+            # set against. A prediction made from the fragment arrays alone,
+            # before any frame is compared.
+            changed = cap_sel & ((c1 - torch.clamp(e_trunc, max=1.0)).abs() > 1e-6)
+            if bool(changed.any()):
+                sel_pix = pix[changed.nonzero(as_tuple=True)[0]]
+                CAP_PIXELS.append(
+                    (sel_pix // ppf + int(time_start), sel_pix % ppf)
+                )
     for arm, acc in (
         (full_arm, stats.arm_full_c),
         (~full_arm & ~donor_arm, stats.arm_part_c),
@@ -505,6 +656,12 @@ def _probe_block(
         acc["n"] += int(sel.sum())
         acc["have"] += int(have.sum())
         acc["ship"] += float((ship - ideal).abs()[sel].sum())
+        # The same error restricted to the pixels a cap is available on, which
+        # is the population ss6.8 claims to make exact. Reported separately
+        # because the whole-arm number can only ever fall to the share the
+        # cap-less 15% carry, and a reader comparing it to zero would conclude
+        # the rule missed.
+        acc["shiphave"] += float((ship - ideal).abs()[have].sum())
         if bool(have.any()):
             r1 = (c1 - ideal).abs()[have]
             r2 = (c2 - ideal).abs()[have]
@@ -831,6 +988,26 @@ def _report(rows):
             note.append(
                 f"arms full/partial/donor {s.arm_full}/{s.arm_partial}/{s.arm_donor}"
             )
+        if s.batch_windows:
+            note.append(
+                "batch (time_start, rel frame lo..hi): "
+                + " ".join(f"({a},{b}..{c})" for a, b, c in s.batch_windows[:40])
+            )
+        if s.prec_runs:
+            note.append(
+                f"ss6.7 PRECISION: {s.prec_runs} scanned run starts, worst "
+                f"|E_host - E_kernel| {s.prec_worst_e:.2e}; dust-band verdict "
+                f"flips {s.prec_dust_flips}, unit-clamp flips "
+                f"{s.prec_clamp_flips}, |dcorr| > 1e-4 on {s.prec_corr_over} "
+                f"(worst {s.prec_worst_corr:.2e})"
+            )
+        if s.all_runs:
+            note.append(
+                f"ALL run starts: {s.all_trunc}/{s.all_scanned} scanned are "
+                f"truncated (of {s.all_runs} starts), over "
+                f"{s.all_trunc_pixels} distinct px, with "
+                f"{s.all_tail_frags} fragments past the budget"
+            )
         if s.notched:
             note.append(f"one-mesh {s.notched_one_mesh}/{s.notched}")
             note.append(f"worst px {s.worst_at}")
@@ -841,7 +1018,8 @@ def _report(rows):
             h = max(a["have"], 1)
             note.append(
                 f"(c) {label} arm: {a['have']}/{a['n']} have a cap; shipped err "
-                f"{a['ship'] / a['n']:.4f} -> c1 {a['r1'] / h:.4f} (worst "
+                f"{a['ship'] / a['n']:.4f} (on capped px "
+                f"{a['shiphave'] / h:.4f}) -> c1 {a['r1'] / h:.4f} (worst "
                 f"{a['r1w']:.4f}) / c2 {a['r2'] / h:.4f} (worst {a['r2w']:.4f}); "
                 f"corr>1 on {a['over1']} vs shipped {a['shipover']} vs ideal "
                 f"{a['overideal']}"
@@ -917,7 +1095,66 @@ def main():
         default=None,
         help="render only these scene times (seconds) instead of the whole video",
     )
+    ap.add_argument(
+        "--all-runs",
+        action="store_true",
+        help="also score run starts past a pixel's first -- the upper bound "
+        "that brackets what the first-run columns lower-bound",
+    )
+    ap.add_argument(
+        "--cap",
+        action="store_true",
+        help="turn ss6.8 on for this run, so the table scores the rule the "
+        "walk would then be running rather than the one it ships with",
+    )
+    ap.add_argument(
+        "--batch-frames",
+        action="store_true",
+        help="print each batch's time_start beside the frame range its pixel "
+        "indices span, which is what any probe-pixel-to-video-frame mapping "
+        "rests on",
+    )
+    ap.add_argument(
+        "--precision",
+        action="store_true",
+        help="compare the run sum the HOST computes (float64) against the one "
+        "the KERNEL computes (f32, sequential) -- ss6.7's open question, and "
+        "the only difference between the arms where nothing is truncated",
+    )
+    ap.add_argument(
+        "--trunc-pixels",
+        action="store_true",
+        help="with --all-runs and --cap-pixels, also record every pixel "
+        "holding a truncated run -- the whole population the scan limit can "
+        "reach",
+    )
+    ap.add_argument(
+        "--cap-pixels",
+        default=None,
+        metavar="NPZ",
+        help="with --cap, write every (frame, pixel) ss6.8's substitution "
+        "changes, as a PREDICTION for a render A/B to check its moved set "
+        "against",
+    )
     args = ap.parse_args()
+
+    if args.all_runs:
+        global ALL_RUNS
+        ALL_RUNS = True
+    if args.precision:
+        global PRECISION
+        PRECISION = True
+    if args.batch_frames:
+        global BATCH_FRAMES
+        BATCH_FRAMES = True
+    if args.cap:
+        rt_settings.set_analytic_aa(True, run_cap=True)
+    if args.cap_pixels:
+        global CAP_PIXELS
+        CAP_PIXELS = []
+    if args.trunc_pixels:
+        global TRUNC_PIXELS
+        TRUNC_PIXELS = []
 
     if args.verify_lanes:
         global VERIFY_LANES
@@ -933,6 +1170,46 @@ def main():
     print(f"run-scan cap = {_AA_MAX_RUN_SCAN}, dust = {_AA_FULL_DUST}")
     rows = []
     t0 = time.time()
+
+    predicted = {}
+
+    def _take_trunc_pixels(scene_name):
+        if TRUNC_PIXELS is None:
+            return
+        if TRUNC_PIXELS:
+            fr = torch.cat([a for a, _ in TRUNC_PIXELS]).to(torch.int64).cpu().numpy()
+            px = torch.cat([b for _, b in TRUNC_PIXELS]).to(torch.int64).cpu().numpy()
+            predicted[f"{scene_name}_trunc_frame"] = fr
+            predicted[f"{scene_name}_trunc_pix"] = px
+        TRUNC_PIXELS.clear()
+
+    def _take_cap_pixels(scene_name):
+        """Move this scene's predictions out of the module-level sink.
+
+        Kept per SCENE: a (frame, pixel) pair means nothing without knowing
+        which video's frame it indexes, and the six scenes have different
+        frame counts and resolutions.
+        """
+        if CAP_PIXELS is None:
+            return
+        if CAP_PIXELS:
+            fr = torch.cat([a for a, _ in CAP_PIXELS]).to(torch.int64).cpu().numpy()
+            px = torch.cat([b for _, b in CAP_PIXELS]).to(torch.int64).cpu().numpy()
+            predicted[f"{scene_name}_frame"] = fr
+            predicted[f"{scene_name}_pix"] = px
+        CAP_PIXELS.clear()
+
+    def _save_cap_pixels():
+        if not args.cap_pixels:
+            return
+        if not predicted:
+            print("no ss6.8 substitution changed a pixel; nothing written")
+            return
+        import numpy as np
+
+        np.savez_compressed(args.cap_pixels, **predicted)
+        total = sum(v.size for k, v in predicted.items() if k.endswith("_frame"))
+        print(f"wrote {total} predicted (frame, pixel) pairs to {args.cap_pixels}")
 
     if args.row_split_demo is not None:
         stats = Stats(f"packed grid @{args.row_split_demo}MB")
@@ -951,6 +1228,8 @@ def main():
         for name, build in cases.items():
             stats = Stats(name)
             _render_harness_case(build, stats, quality)
+            _take_cap_pixels(name)
+            _take_trunc_pixels(name)
             rows.append(stats)
             print(f"  {name}: {stats.notched} notched ({time.time() - t0:.0f}s)")
         print()
@@ -968,10 +1247,13 @@ def main():
         for path in paths:
             stats = Stats(path.stem)
             _render_full_render_scene(path, stats, quality, args.at)
+            _take_cap_pixels(path.stem)
+            _take_trunc_pixels(path.stem)
             rows.append(stats)
             print(f"  {path.stem}: {stats.notched} notched ({time.time() - t0:.0f}s)")
         print()
 
+    _save_cap_pixels()
     _report(rows)
 
 

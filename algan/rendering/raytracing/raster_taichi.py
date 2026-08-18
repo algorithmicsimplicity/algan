@@ -389,6 +389,30 @@ def _aa_one_mesh(aa_grp):
     return int(aa_grp) >= 3
 
 
+def _aa_run_cap(aa_grp):
+    """Whether a TRUNCATED run's full-mask arm takes its area from ``frag_cap``
+    instead of the scan's partial sum (aa_grp 5, DESIGN_mesh_identity.md ss6.8).
+
+    On that arm every sample is owned, so ``Q == 1`` and ``corr = min(E, 1)`` --
+    the mesh's total claim over the pixel, which is exactly what the one-mesh
+    reduction already packed into ``frag_cap`` (the larger of the two sheets'
+    exact areas) and the walk already loads for the cap clamp. A truncated
+    ``E`` is a strict under-count of that same quantity, so substituting the
+    ceiling costs no lane, no argument and no arithmetic beyond a predicate.
+
+    Only where a cap EXISTS: ``frag_cap`` is 2.0 on any pixel the host did not
+    certify as a single opaque surface, and a pixel holding two meshes has no
+    single footprint to stand in for the run. Those keep the shipped partial
+    sum. Restricted to the full-mask arm because it is the only one where the
+    cap and the wanted quantity are the same thing: with a partial union the
+    run owns some of the pixel's samples and the mesh's whole footprint
+    over-states it, and ``corr = min(E, 1) / Q`` would divide the over-statement
+    by a small Q. ``_aa_run_exact`` supersedes this entirely -- it fixes ``U``
+    and the extent as well -- and compiles it out.
+    """
+    return int(aa_grp) >= 5
+
+
 def _aa_run_exact(aa_grp):
     """Whether the run's exact-area sum, sample union and extent come from the
     HOST's segment reduction instead of ``_aa_run_scan``'s bounded forward walk
@@ -398,7 +422,7 @@ def _aa_run_exact(aa_grp):
     of ``corr = min(E, 1) / Q`` short on a longer run. A run is a segment of the
     CSR the host already owns, so the host can reduce it exactly at any length
     and the kernel reads the result in O(1) -- no lookahead, no budget."""
-    return int(aa_grp) >= 5
+    return int(aa_grp) >= 6
 
 
 def _aa_one_mesh_dens(aa_grp):
@@ -902,14 +926,16 @@ _AA_MAX_RUN_SCAN = 16
 @ti.func
 def _aa_run_scan(j0, nrun, start, sid0, face0, to_row,
                  frag_ref: ti.template(), frag_cov: ti.template(),
-                 frag_msk: ti.template(), tri_obj: ti.template()):
+                 frag_msk: ti.template(), tri_obj: ti.template(),
+                 want_trunc: ti.template()):
     """Scan the RUN starting at fragment ``j0``: consecutive triangle
-    fragments sharing (source surface, facing). Returns ``(E, U, end)`` --
-    the exact-area sum (sliver donors included), the union of sample masks
+    fragments sharing (source surface, facing). Returns ``(E, U, end, trunc)``
+    -- the exact-area sum (sliver donors included), the union of sample masks
     (disjoint within a sheet by the fill rule; OR is robust to mis-sorts),
-    and the exclusive end index. Index arithmetic plus coherent loads; the
-    z-winner (j == nrun), any circuit fragment, and any (sid, facing) change
-    terminate it.
+    the exclusive end index, and whether the walk stopped because it ran out
+    of BUDGET rather than because the run ended. Index arithmetic plus
+    coherent loads; the z-winner (j == nrun), any circuit fragment, and any
+    (sid, facing) change terminate it.
     """
     E = 0.0
     U = 0
@@ -932,7 +958,29 @@ def _aa_run_scan(j0, nrun, start, sid0, face0, to_row,
                 U |= mj & _AA_MASK_ALL
                 j += 1
                 cnt += 1
-    return E, U, j
+    # Whether the run CONTINUES past the budget, which (E, U, end) cannot say:
+    # a run of exactly _AA_MAX_RUN_SCAN that ends of its own accord leaves the
+    # loop in the same state as one that was cut short. Asking "did the loop
+    # stop with fragments left" would answer yes to both, and answering yes to
+    # a complete run would let ss6.8 replace an EXACT E with an estimate --
+    # which matters, since materials_and_lighting's longest run is exactly 16.
+    # So probe one fragment further with the loop's own three tests and
+    # accumulate nothing. Paid only by runs that reach the budget.
+    trunc = 0
+    if ti.static(want_trunc):
+        if going and (j < nrun):
+            rf = frag_ref[start + j]
+            more = rf >= 0
+            if more:
+                more = tri_obj[to_row, rf] == sid0
+            if more:
+                fj = 0
+                if (frag_msk[start + j] & _AA_BACKFACE_BIT) != 0:
+                    fj = 1
+                more = fj == face0
+            if more:
+                trunc = 1
+    return E, U, j, trunc
 
 
 @ti.func
@@ -3129,28 +3177,61 @@ def raster_shadow_event_build(
                                 if (frag_msk[idx]
                                         & _AA_BACKFACE_BIT) != 0:
                                     face0 = 1
-                                rE = 0.0
-                                rU = 0
-                                rj = 0
+                                rE, rU, rj, rtr = _aa_run_scan(
+                                    q - 1, nrun, start, sid0, face0,
+                                    to_row, frag_ref, frag_cov,
+                                    frag_msk, tri_obj,
+                                    ti.static(_aa_run_cap(aa_grp)
+                                              or _aa_run_exact(aa_grp)))
                                 if ti.static(_aa_run_exact(aa_grp)):
-                                    # ss6.7: the same three values, reduced on
-                                    # the host over the whole run. ``rest`` is a
+                                    # ss6.7: where the scan ran out of budget,
+                                    # take all three values from the host's
+                                    # segment reduction instead. ``rest`` is a
                                     # COUNT, not an index, so it survives the
                                     # slicing shade_sparse_raster_coverage does.
-                                    rE = frag_run_e[idx]
-                                    w = frag_run_uw[idx]
-                                    rU = w & _AA_MASK_ALL
-                                    rj = (q - 1) + (w >> 8)
-                                else:
-                                    rE, rU, rj = _aa_run_scan(
-                                        q - 1, nrun, start, sid0, face0,
-                                        to_row, frag_ref, frag_cov,
-                                        frag_msk, tri_obj)
+                                    #
+                                    # ONLY where it ran out, which is the whole
+                                    # design. Reading the lanes unconditionally
+                                    # also replaces E on every COMPLETE run,
+                                    # where the host's float64 sum and the
+                                    # kernel's sequential f32 one differ by an
+                                    # ulp -- and the resolve has discrete
+                                    # consumers downstream that turn an ulp of
+                                    # eff into channel values. Measured: 42
+                                    # channel values over 16% of a
+                                    # materials_and_lighting frame, on a video
+                                    # whose longest run is exactly 16 and which
+                                    # therefore has no truncated run to fix.
+                                    # Confining the read leaves every complete
+                                    # run bit-identical and still makes every
+                                    # truncated one exact.
+                                    if rtr != 0:
+                                        rE = frag_run_e[idx]
+                                        w = frag_run_uw[idx]
+                                        rU = w & _AA_MASK_ALL
+                                        rj = (q - 1) + (w >> 8)
                                 run_end = rj
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
                                     run_corr = 1.0
                                     if ti.static(_aa_run_full(aa_grp)):
+                                        if ti.static(_aa_run_cap(aa_grp)
+                                                     and not _aa_run_exact(
+                                                         aa_grp)):
+                                            # ss6.8. The scan ran out of budget,
+                                            # so rE is a strict under-count of
+                                            # the sheet's area -- and on THIS
+                                            # arm the quantity wanted is the
+                                            # mesh's claim over the pixel, which
+                                            # the host already reduced into
+                                            # frag_cap. 2.0 is its "no ceiling"
+                                            # sentinel, so <= 1 is the
+                                            # availability test. Compiled out
+                                            # under ss6.7, which has already put
+                                            # the EXACT sum in rE and would only
+                                            # be made worse by an estimate.
+                                            if rtr != 0 and frag_cap[idx] <= 1.0:
+                                                rE = frag_cap[idx]
                                         # Q == 1 on this arm, so corr = E/Q is
                                         # just E -- ss6.2's rule finally
                                         # reaching the pixels that needed it.
@@ -4129,28 +4210,61 @@ def raster_first_shade(
                                 if (frag_msk[idx]
                                         & _AA_BACKFACE_BIT) != 0:
                                     face0 = 1
-                                rE = 0.0
-                                rU = 0
-                                rj = 0
+                                rE, rU, rj, rtr = _aa_run_scan(
+                                    q - 1, nrun, start, sid0, face0,
+                                    to_row, frag_ref, frag_cov,
+                                    frag_msk, tri_obj,
+                                    ti.static(_aa_run_cap(aa_grp)
+                                              or _aa_run_exact(aa_grp)))
                                 if ti.static(_aa_run_exact(aa_grp)):
-                                    # ss6.7: the same three values, reduced on
-                                    # the host over the whole run. ``rest`` is a
+                                    # ss6.7: where the scan ran out of budget,
+                                    # take all three values from the host's
+                                    # segment reduction instead. ``rest`` is a
                                     # COUNT, not an index, so it survives the
                                     # slicing shade_sparse_raster_coverage does.
-                                    rE = frag_run_e[idx]
-                                    w = frag_run_uw[idx]
-                                    rU = w & _AA_MASK_ALL
-                                    rj = (q - 1) + (w >> 8)
-                                else:
-                                    rE, rU, rj = _aa_run_scan(
-                                        q - 1, nrun, start, sid0, face0,
-                                        to_row, frag_ref, frag_cov,
-                                        frag_msk, tri_obj)
+                                    #
+                                    # ONLY where it ran out, which is the whole
+                                    # design. Reading the lanes unconditionally
+                                    # also replaces E on every COMPLETE run,
+                                    # where the host's float64 sum and the
+                                    # kernel's sequential f32 one differ by an
+                                    # ulp -- and the resolve has discrete
+                                    # consumers downstream that turn an ulp of
+                                    # eff into channel values. Measured: 42
+                                    # channel values over 16% of a
+                                    # materials_and_lighting frame, on a video
+                                    # whose longest run is exactly 16 and which
+                                    # therefore has no truncated run to fix.
+                                    # Confining the read leaves every complete
+                                    # run bit-identical and still makes every
+                                    # truncated one exact.
+                                    if rtr != 0:
+                                        rE = frag_run_e[idx]
+                                        w = frag_run_uw[idx]
+                                        rU = w & _AA_MASK_ALL
+                                        rj = (q - 1) + (w >> 8)
                                 run_end = rj
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
                                     run_corr = 1.0
                                     if ti.static(_aa_run_full(aa_grp)):
+                                        if ti.static(_aa_run_cap(aa_grp)
+                                                     and not _aa_run_exact(
+                                                         aa_grp)):
+                                            # ss6.8. The scan ran out of budget,
+                                            # so rE is a strict under-count of
+                                            # the sheet's area -- and on THIS
+                                            # arm the quantity wanted is the
+                                            # mesh's claim over the pixel, which
+                                            # the host already reduced into
+                                            # frag_cap. 2.0 is its "no ceiling"
+                                            # sentinel, so <= 1 is the
+                                            # availability test. Compiled out
+                                            # under ss6.7, which has already put
+                                            # the EXACT sum in rE and would only
+                                            # be made worse by an estimate.
+                                            if rtr != 0 and frag_cap[idx] <= 1.0:
+                                                rE = frag_cap[idx]
                                         # Q == 1 on this arm, so corr = E/Q is
                                         # just E -- ss6.2's rule finally
                                         # reaching the pixels that needed it.

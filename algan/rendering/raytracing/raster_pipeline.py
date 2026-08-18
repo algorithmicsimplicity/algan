@@ -82,7 +82,13 @@ def _aa_group(aa_bez, aa_tri):
     0 no grouping, 1 seam grouping, 2 + the relaxed run-scan gate (ss6.3.2),
     3 + the one-mesh coverage cap (ss6.6, which implies 2), 4 + scaling a capped
     fragment's occlusion write with its claim (ss6.6.2, which requires 3),
-    5 + exact run totals from the host's segment reduction (ss6.7).
+    5 + ``frag_cap`` as a truncated run's full-mask area (ss6.8, which requires
+    the cap and therefore 3), 6 + exact run totals from the host's segment
+    reduction (ss6.7, which supersedes 5).
+
+    The ladder is a single integer, so a level inherits every level below it.
+    That is why ss6.8 sits at 5 rather than beside 4: it reads the ceiling the
+    one-mesh reduction builds, so it cannot be had without it anyway.
     """
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
@@ -91,9 +97,33 @@ def _aa_group(aa_bez, aa_tri):
         aa_grp = 3
         if rt_settings.ANALYTIC_AA_ONE_MESH_DENS:
             aa_grp = 4
+            if rt_settings.ANALYTIC_AA_RUN_CAP:
+                aa_grp = 5
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_EXACT:
-        aa_grp = 5
+        aa_grp = 6
     return aa_grp
+
+
+def _aa_group_dense(aa_bez, aa_tri):
+    """``aa_grp`` for the DENSE resolve, which has no run lanes to read.
+
+    ss6.7's exact totals come from a segment reduction over the CSR that only
+    the SPARSE emission builds, so the dense path passes one-element dummies
+    for ``frag_run_e`` / ``frag_run_uw``. The kernel's read is gated on
+    ``aa_grp``, not on which path launched it -- so a dense launch at
+    ``aa_grp == 6`` indexes a one-element array by fragment and reads whatever
+    the arena holds. That is not theoretical: it is what moved
+    ``shapes_and_timeline``'s last twelve frames (its fade-out segment takes
+    the dense path) by 31 channel values over 4,514 pixels, while the sparse
+    batches carrying the entire truncated population -- 197 pixel-frames in the
+    whole render -- moved nothing. Capping here answers the question in ONE
+    language: the level a path can express is a property of the path.
+
+    Capped at 5 rather than 4 because ss6.8 needs only ``frag_cap``, which the
+    dense path does pass at full length -- as the "no ceiling" sentinel, so the
+    rule is inert there rather than wrong.
+    """
+    return min(_aa_group(aa_bez, aa_tri), 5)
 
 
 def _aa_dump_request():
@@ -2241,7 +2271,8 @@ def raster_iteration_zero(
             + (2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode())
             + 4 * min(aa_tri - 1, 2)
         )
-    aa_grp = _aa_group(aa_bez, aa_tri)
+    # DENSE resolve: see _aa_group_dense for why this cannot be _aa_group.
+    aa_grp = _aa_group_dense(aa_bez, aa_tri)
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -2471,10 +2502,12 @@ def raster_iteration_zero(
         frag_cov = _arena_tensor(memory, (1,), torch.float32, 1.0)
         frag_msk = _arena_tensor(memory, (1,), torch.int32, AA_MASK_ALL)
         frag_cap = _arena_tensor(memory, (1,), torch.float32, 2.0)
-    # The dense path never takes ss6.7's exact run totals: its ``aa_grp`` comes
-    # from the same _aa_group, but the reduction that fills these is part of the
-    # sparse emission. One-element dummies, and _aa_run_exact compiles the reads
-    # out -- the same shape as frag_cap's sentinel above.
+    # The dense path never takes ss6.7's exact run totals: the reduction that
+    # fills these is part of the SPARSE emission. One-element dummies, which is
+    # safe only because ``_aa_group_dense`` caps the template below the level
+    # that reads them -- the earlier claim that "_aa_run_exact compiles the
+    # reads out" was false, since the gate is the group value and the group
+    # value did not know which path it was launching.
     frag_run_e = _arena_tensor(memory, (1,), torch.float32, 0.0)
     frag_run_uw = _arena_tensor(memory, (1,), torch.int32, 0)
 

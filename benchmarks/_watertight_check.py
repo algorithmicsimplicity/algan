@@ -22,11 +22,14 @@ edge. Measured as the count of interior pixels deviating from the median of thei
 3x3 neighbourhood by more than a threshold, at several alphas: a ridge is exactly
 a thin-line deviation, and a smooth shading gradient is not.
 
-**3. Register pressure.** ss4.7 asks for occupancy against the 21-25% resolve
-ceiling. Nsight does not support this machine's Pascal GPU (memory note "RT
-kernel occupancy diagnosis"), so the readable proxy is the traversal kernels'
-own **device time** -- if the ray-space transform's extra live state cost
-occupancy, the kernel got slower. Reported per kernel from Taichi's profiler.
+**3. Register pressure -- NOT MEASURED HERE, despite what this used to claim.**
+ss4.7 asks for occupancy against the 21-25% resolve ceiling; Nsight does not
+support this machine's Pascal GPU (memory note "RT kernel occupancy diagnosis"),
+and the per-kernel device times this docstring promised were never implemented --
+the JSON report has no such key and never did. Read the two sections below as
+what they are: a QUALITY comparison, not a cost one. The cost question is still
+open, and ssK's decision is written not to depend on it (both arms are
+compile-time dead at shipped defaults, so keeping them costs nothing).
 
 All of it runs with the **hybrid raster front-end off**, so primary visibility
 goes through the ray path this flag changes. With the front-end on (the default)
@@ -39,14 +42,22 @@ so one process exercises one arm. Run it twice, and give each arm its own Taichi
 cache -- the offline cache does not invalidate on ``@ti.func`` edits, and both
 arms compile the same *kernel*::
 
-    ALGAN_CACHE_DIR=<dir>/wt_off .venv/Scripts/python.exe benchmarks/_watertight_check.py off
-    ALGAN_WATERTIGHT_TRI=1 ALGAN_CACHE_DIR=<dir>/wt_on \
-        .venv/Scripts/python.exe benchmarks/_watertight_check.py on
+**The default is now True**, so it is the Moller-Trumbore arm that needs the env
+var, not the watertight one::
 
-Then diff the two reports. The crack counts must be zero in BOTH arms (the
-shipped arm's dilation is what keeps it there; a nonzero count in the watertight
-arm is a blocker), the ridge counts must not grow, and the kernel times must not
-regress.
+    ALGAN_CACHE_DIR=<dir>/wt_on .venv/Scripts/python.exe benchmarks/_watertight_check.py on
+    ALGAN_WATERTIGHT_TRI=0 ALGAN_CACHE_DIR=<dir>/wt_moller \
+        .venv/Scripts/python.exe benchmarks/_watertight_check.py moller
+
+Then diff the two reports. The crack counts must be zero in BOTH arms (a nonzero
+count in the watertight arm is a blocker) and the ridge counts must not grow.
+
+MEASURED on CUDA with exactly that pair: the arms are IDENTICAL on both items --
+0 cracks on grazing quads and on a diced Sphere in each, and the same ridge
+counts (114 / 0 / 0 at alpha 0.35 / 0.6 / 0.85, max deviation 9.0 in both). The
+dilation the Moller arm applies buys nothing here, so it has no remaining future
+as a candidate default; its value is as the A/B CONTROL for ss3.2, which is the
+argument for keeping it as a ``ti.static`` arm rather than deleting it (ssK).
 """
 
 import json
