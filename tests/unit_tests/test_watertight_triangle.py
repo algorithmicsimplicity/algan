@@ -132,3 +132,54 @@ def test_the_gate_is_on_by_default():
     if "ALGAN_WATERTIGHT_TRI" in os.environ:
         pytest.skip("ALGAN_WATERTIGHT_TRI is set in this environment")
     assert _watertight()
+
+
+def test_the_raycast_fallback_asks_tri_hit_rather_than_its_own_epsilon():
+    """REGRESSION, source-level: the straddler path must not re-inline the test.
+
+    ``_raycast_pixel`` in ``raster_taichi`` is the fallback for triangles that
+    straddle the camera plane, where screen-space projection is invalid and the
+    exact fixed-point fill rule ``_ss_pixel`` uses is therefore unavailable. It
+    answers set membership by casting one ray per sub-pixel sample, and it used
+    to do that with its own inline Moller-Trumbore dilated by
+    ``BARYCENTRIC_EPSILON`` -- which double-claims a sample lying on an edge two
+    straddling triangles share.
+
+    It asks ``_tri_hit`` now, so it inherits whichever intersection the ray path
+    ships, watertight included. The property that buys
+    (exactly one hit per shared edge) is pinned by the tests above; what this
+    pins is the WIRING, because that is what regresses: an inline copy of an
+    intersection test drifts from the shared one silently, which is the same
+    defect ``DESIGN_mesh_identity.md`` ss6.6.1 records for the analytic-AA gates
+    and ss3.2 records for the three call sites ``_tri_hit`` replaced.
+
+    Source-level for the reason ``test_environment`` audits ``os.environ`` use:
+    the property is "this function does not do it itself", which no amount of
+    calling it can demonstrate.
+    """
+    import ast
+    import inspect
+
+    from algan.rendering.raytracing import raster_taichi
+
+    tree = ast.parse(inspect.getsource(raster_taichi))
+    fn = next(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_raycast_pixel"
+        ),
+        None,
+    )
+    assert fn is not None, "_raycast_pixel not found; this test needs rewiring"
+
+    calls = {
+        n.func.id
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "_tri_hit" in calls, (
+        "_raycast_pixel must route its per-sample membership test through "
+        "_tri_hit, so the straddler path inherits the shipped intersection "
+        "instead of carrying a second copy of it"
+    )

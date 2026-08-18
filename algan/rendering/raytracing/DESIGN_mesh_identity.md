@@ -176,9 +176,9 @@ where it belongs; none was quietly dropped.
                                        agreement FIXED; only baselines left (§3.1)
     §3.2  watertight tri intersection  FLIPPED ON — cost is under the noise floor
                                        here, and the dilation was a real defect
-    §3.3  delete the epsilons          NOW THE TOP ITEM — the ray half is a straight
-                                       removal, and the raster half is one refactor
-                                       (_raycast_pixel through _tri_hit), §3.3
+    §3.3  delete the epsilons          NO LIVE EPSILON READ LEFT at shipped
+                                       defaults; what remains is retiring two
+                                       ti.static fallback arms (§3.3)
     §3.4  median-split bezier BVH      MEASURED: byte-identical, no speed-up;
                                        recommendation is to leave it off
     §3.5  mesh identity                FLIPPED ON, both devices re-baselined
@@ -222,15 +222,21 @@ list has been run; these are what running them produced.
    times in §6.6.2 — replay the same thing with one input changed. A host walk
    has to be validated against the kernel (the §6.6.2 replay had `--verify` for
    exactly this) or it measures itself.
-2. **§3.2's cost, on hardware that is not throttling.** Correctness is done and
-   clean (§3.2/§4.7: zero cracks, no double blend, byte-identical on opaque
-   geometry). Only the cost is open, and this machine cannot resolve it — the
-   controls drift as much as the target kernels, and the flag is read at import so
-   an in-process alternating A/B is impossible. Then §3.3's ray-path half.
-3. **§3.3, as two deletions with different owners.** Not one deletion gated on
-   §3.2: `BARYCENTRIC_EPSILON` also has two ungated consumers in the raster
-   front-end's own candidate acceptance, which `_tri_hit` never touches. §3.3 has
-   the consumer table. Do not promise the per-ray `f32` until both have landed.
+2. **§3.2 is DONE and ON by default.** The cost question was retired rather than
+   answered: the control kernel the flag cannot reach moved as much as the ones it
+   can (+8.6% against +8.5–10.7%), which is thermal drift by §7.15's own
+   criterion, so the cost sits under this machine's noise floor. Weighed against a
+   real defect — the dilation tests every triangle wider than it is — the flag was
+   flipped. Both CUDA baseline sets regenerated; the fast scene and three of six
+   full renders moved, all through SECONDARY rays.
+3. **§3.3 is now a fallback-retirement decision, not an epsilon problem.**
+   `_raycast_pixel` asks `_tri_hit`, and with `WATERTIGHT_TRI` on there is **no
+   live `BARYCENTRIC_EPSILON` read left at shipped defaults** — all three
+   survivors sit in `ti.static` arms that do not compile in (§3.3 has the table).
+   What remains is a product call: retire the non-analytic-AA triangle fallback
+   (`aa == 0`) and the non-watertight intersection arm, after which the constants,
+   the `edge_hit` bit and `seam_t` go together. Do not promise the per-ray `f32`
+   until both have, and re-check `memory_model` when `rs_sca` shrinks.
 4. **§3.1 now needs only baselines.** Both blockers are gone: the stated pixel
    risk was closed by measurement (byte-identical on a static frame, textures and
    normal maps included), and the topological one is fixed — the morph path asks
@@ -835,14 +841,55 @@ never touches. Grep before planning:
     TRIANGLE_EDGE_EPSILON+seam_t  raster_first_shade / shadow_event     ti.static(not aa_tri)
     seam_t (rs_sca[r, 3])         both paths                            with the above
 
-So flipping §3.2 unblocks the **ray-path** half and nothing else. The two
-ungated `BARYCENTRIC_EPSILON` reads in `raster_taichi` are the raster
-front-end's own candidate-acceptance test, live in the default primary-visibility
-path, and they are a *different mechanism*: the exact fixed-point sample
-partition downstream is what makes coverage watertight there, while this dilation
-decides which triangles are candidates at all. Removing it needs its own
-argument and its own measurement — the raster path has no `_tri_hit` and gets no
-benefit from Woop-Benthin-Wald.
+**THE TABLE ABOVE WAS WRONG ABOUT BOTH RASTER ROWS.** Read the code before
+planning from it:
+
+* **`_ss_pixel` (`raster_taichi.py:1124`) is DEAD at shipped defaults.** The
+  `accept` it builds from `BARYCENTRIC_EPSILON` is *immediately overwritten*
+  inside `if ti.static(aa)` by a conservative half-pixel-diagonal reject, and
+  never read in between. Coverage then comes from the exact int64 edge functions
+  and the top-left fill rule, whose own comment says the masks "partition the
+  pixel with no epsilon anywhere". It is live only when `aa == 0`.
+* **`_raycast_pixel` was not "candidate acceptance".** It is the fallback for
+  triangles that STRADDLE the camera plane, where screen-space projection is
+  invalid and the exact fill rule is therefore unavailable. It casts one ray per
+  sub-pixel sample — it *is* the ray path's test, reused because projection is
+  unavailable, inheriting the epsilon by construction rather than to match the
+  ray path's output. Its argument FOR the dilation was real: with a float test
+  and no exact tie-break, a sample on a shared edge must be erred one way, and
+  double-claiming is harmless (per-sample transmittance gives it to the nearer
+  fragment) where dropping it is a crack.
+
+**DONE: `_raycast_pixel` now asks `_tri_hit`.** It was inlining what `_tri_hit`
+does, so routing its per-sample membership test through the shared function makes
+the straddler path inherit whichever intersection the ray path ships — watertight
+included, which means no dilation, no duplicate and no crack rather than the
+"err toward double-claiming" trade. With `WATERTIGHT_TRI` off it is the same
+arithmetic in the same order as the code it replaced.
+
+**AND THAT LEAVES NO LIVE `BARYCENTRIC_EPSILON` READ AT SHIPPED DEFAULTS.** All
+three survivors sit in arms that do not compile in:
+
+    site                              live when              status
+    _tri_hit's Moller-Trumbore arm    WATERTIGHT_TRI off     off by default now
+    _ss_pixel (raster_taichi:1124)    aa == 0                overwritten under aa
+    _raycast_pixel (:1593)            aa == 0                read only in the else
+
+So §3.3's remaining deletion is not an epsilon question any more — it is retiring
+the non-analytic-AA triangle fallback and the non-watertight intersection arm.
+Both are `ti.static` branches, so it is mechanical once someone decides those
+fallbacks are done.
+
+**What the refactor did NOT do, said plainly: it moved zero pixels.**
+`tests/unit_tests tests/fast` (1051 passed, 89 skipped) and `tests/full_renders`
+(7 passed) are unchanged with it in. That is consistent with the fix being real
+but rare — it takes a sub-pixel sample landing on an edge shared by two triangles
+that BOTH straddle the camera plane — but consistency is not evidence. Nothing
+here demonstrates the double-claim occurring in an existing scene, so the
+end-to-end case is reasoned, not observed. The underlying property (exactly one
+hit per shared edge) is tested separately in `test_watertight_triangle.py`; the
+new test there pins the WIRING, since an inlined second copy of an intersection
+test is precisely what drifts.
 
 The raster path's `TRIANGLE_EDGE_EPSILON`/`seam_t` pair is easier: it compiles in
 only under `ti.static(not aa_tri)`, i.e. the non-analytic-AA fallback, so it

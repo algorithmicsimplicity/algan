@@ -77,6 +77,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _sample_circuit_color_blend,
     _shade_tri_hit,
     _shadow_occluded,
+    _tri_hit,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MID_DEFAULT,
@@ -1604,22 +1605,35 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                 ros, rds = _generate_ray(f, px, py, jx, jy, half_w, half_h,
                                          cam_origin, screen_point,
                                          pixel_basis_x, pixel_basis_y)
-                pvs = rds.cross(e2)
-                dets = e1.dot(pvs)
-                if ti.abs(dets) > 1e-12:
-                    ivs = 1.0 / dets
-                    tvs = ros - v0
-                    c1 = tvs.dot(pvs) * ivs
-                    qvs = tvs.cross(e1)
-                    c2 = rds.dot(qvs) * ivs
-                    if ((c1 >= -BARYCENTRIC_EPSILON)
-                            and (c2 >= -BARYCENTRIC_EPSILON)
-                            and (c1 + c2 <= 1.0 + BARYCENTRIC_EPSILON)
-                            and (e2.dot(qvs) * ivs > MIN_HIT_DISTANCE)):
-                        m |= 1 << k
-                        sox += ti.static(float(_AA_SAMPLES[k][0]))
-                        soy += ti.static(float(_AA_SAMPLES[k][1]))
-                        nsm += 1
+                # THE SAME INTERSECTION THE RAY PATH USES (ss3.3). This is a
+                # set-membership question -- is this sub-pixel sample inside
+                # this triangle -- and it used to be answered by an inline
+                # Moller-Trumbore dilated by BARYCENTRIC_EPSILON. The dilation
+                # was not a fudge: with a float test and no exact tie-break, a
+                # sample lying on an edge shared by two straddling triangles
+                # must be erred one way, and double-claiming is harmless here
+                # (per-sample transmittance gives the sample to the nearer
+                # fragment) while dropping it is a crack.
+                #
+                # _tri_hit answers it without needing to choose. Under
+                # WATERTIGHT_TRI the shared edge's function is computed from the
+                # same two projected vertices in both triangles and comes out as
+                # the exact negative, so exactly one neighbour accepts: no
+                # dilation, no duplicate, no crack. With the gate off this is
+                # bit-identical to the code it replaces -- the same dilated
+                # Moller-Trumbore with the same epsilon and the same three
+                # comparisons.
+                #
+                # The projected path (_ss_pixel) reaches the same place by a
+                # different route, its exact fixed-point fill rule; this one
+                # cannot use that, because the projection it would need is
+                # precisely what straddling the camera plane invalidates.
+                hit_s, _c1, _c2, ts = _tri_hit(ros, rds, v0, v1, v2)
+                if hit_s and (ts > MIN_HIT_DISTANCE):
+                    m |= 1 << k
+                    sox += ti.static(float(_AA_SAMPLES[k][0]))
+                    soy += ti.static(float(_AA_SAMPLES[k][1]))
+                    nsm += 1
             # Same rule as the projected path: a partially covering fragment is
             # re-cast through the CENTROID OF THE SAMPLES IT OWNS, so its depth
             # is a real intersection with the triangle rather than the centre
