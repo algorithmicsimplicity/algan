@@ -1,31 +1,46 @@
-r"""Thin client that hands a scene script to an already-running algan daemon.
+r"""Thin client that hands a scene script to an algan daemon, starting one if
+none is running.
 
-A fresh ``python scene.py`` pays ~7 s of library import plus ~65 s of Taichi
-kernel preparation before the first pixel renders. :mod:`algan.daemon` pays
-that once and keeps the process warm; this module is the half that lets an
-*ordinary* script use it without being launched any differently.
+A fresh ``python scene.py`` pays several seconds of library import plus ~20 s
+of Taichi kernel preparation before the first pixel renders, even with a warm
+offline cache. :mod:`algan.daemon` pays that once and keeps the process warm;
+this module is the half that lets an *ordinary* script use it without being
+launched any differently.
 
 The flow, from the script's point of view:
 
 1. ``import algan`` reaches :func:`maybe_handoff` before any heavy import.
-2. If no daemon is running -- no state file at ``$ALGAN_HOME/daemon.json`` --
-   the function returns immediately and the import proceeds as it always has.
-   This costs one ``os.path.isfile``, so scripts run by users who have never
-   launched a daemon are unaffected.
-3. Otherwise the client ships ``(cwd, script path, argv, startup env)`` to the
-   daemon, streams the run's stdout/stderr back to its own, and exits with the
-   daemon's exit code. The client never imports torch or taichi, so the whole
-   round trip is Python startup plus the render itself.
+2. If a daemon is running -- there is a state file at
+   ``$ALGAN_HOME/daemon.json`` -- the client ships
+   ``(cwd, script path, argv, environment)`` to it, streams the run's
+   stdout/stderr back to its own, and exits with the daemon's exit code. The
+   client never imports torch or taichi, so the whole round trip is Python
+   startup plus the render itself.
+3. If none is running, the client starts one in the background and waits for it
+   to come up (:func:`_autostart`), then hands off as above. The first run
+   therefore costs what it always did -- the daemon pays the same cold start
+   the script would have -- and every later run starts warm. Disable with
+   ``ALGAN_AUTO_DAEMON=0``.
 
-**Any problem falls back to a normal in-process run** -- a missing or stale
-state file, a refused handshake, a daemon that is not listening. The one thing
-that is *not* recoverable is a daemon that dies after the script has started
-executing: the script's side effects have already happened, so re-running it
-locally could duplicate them. That case reports an error and exits non-zero.
+**Any problem falls back to a normal in-process run** -- a refused handshake, a
+daemon that is not listening, a spawn that fails or is slow to come up. The one
+thing that is *not* recoverable is a daemon that dies after the script has
+started executing: the script's side effects have already happened, so
+re-running it locally could duplicate them. That case reports an error and
+exits non-zero.
 
-``ALGAN_USE_DAEMON=0`` disables the handoff even when a daemon is running.
+``ALGAN_USE_DAEMON=0`` disables the handoff even when a daemon is running, and
+``ALGAN_AUTO_DAEMON=0`` disables only the starting of new ones.
 ``ALGAN_DAEMON_CHILD=1`` is set by the daemon around its own execution of a
 script, and is what stops the handoff from recursing.
+
+A run on the daemon is meant to be indistinguishable from a run in its own
+process, since with auto-start even a first run lands there. What the daemon
+reproduces: ``sys.argv``, the working directory, the full environment, stdout
+and stderr including subprocess and C-level output, tty-ness of both streams,
+and the exit code. What it deliberately does not: ``stdin`` (connected to
+``os.devnull``; the daemon's own stdin is its re-render trigger) and ``atexit``
+handlers (``runpy`` does not run them, and a warm process never shuts down).
 
 Nothing heavier than the standard library and :mod:`algan.environment` (which
 is itself stdlib-only, and already imported by the time this module loads) may
@@ -42,17 +57,22 @@ import os
 import socket
 import struct
 import sys
+import time
 
 from algan.environment import (
     env_flag,
     env_float,
+    env_int,
     env_str,
     startup_environment_variables,
 )
 
 #: Bumped when the wire format changes. A client and daemon that disagree
 #: refuse each other rather than misparse, and the client falls back.
-PROTOCOL_VERSION = 1
+#:
+#: 2 -- the run request carries the client's full environment (``env_full``),
+#: which the daemon applies for the duration of the run.
+PROTOCOL_VERSION = 2
 
 #: Seconds to wait for the daemon's TCP accept. Short on purpose: a daemon
 #: that cannot answer promptly is not worth blocking a cold run for.
@@ -81,6 +101,16 @@ class DaemonUnavailable(Exception):
 
     Raised only while it is still safe to fall back -- that is, before the
     daemon reports that the script has started executing.
+    """
+
+
+class DaemonUnreachable(DaemonUnavailable):
+    """Nothing answered at the registered address.
+
+    Distinct from a daemon that answered and *refused*: this means the state
+    file names a process that is gone -- killed, crashed, or left behind by a
+    reboot -- so the registration is stale and should be replaced rather than
+    obeyed on every subsequent run.
     """
 
 
@@ -229,6 +259,12 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         "script": script,
         "argv": list(argv if argv is not None else sys.argv[1:]),
         "env": startup_env(),
+        # The whole environment, applied by the daemon for the duration of the
+        # run. Without it a script reads the *daemon's* environment, so
+        # ``MY_VAR=x python scene.py`` would silently see the daemon's value.
+        # Localhost-only, token-authenticated, and same-user, which is the same
+        # trust boundary the script path itself already crosses.
+        "env_full": dict(os.environ),
         "isatty_out": _isatty(sys.stdout),
         "isatty_err": _isatty(sys.stderr),
     }
@@ -237,7 +273,7 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
             ("127.0.0.1", int(state["port"])), CONNECT_TIMEOUT
         )
     except OSError as exc:
-        raise DaemonUnavailable(f"could not reach the daemon ({exc})") from exc
+        raise DaemonUnreachable(f"could not reach the daemon ({exc})") from exc
 
     started = False
     with sock:
@@ -258,7 +294,7 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
                         "script may have partially completed; re-run it "
                         "deliberately rather than assuming it did nothing."
                     )
-                raise DaemonUnavailable("the daemon closed the connection")
+                raise DaemonUnreachable("the daemon closed the connection")
             if kind == FRAME_REFUSE:
                 raise DaemonUnavailable(data.decode("utf-8", "replace"))
             if kind == FRAME_START:
@@ -277,8 +313,142 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
                 return code
 
 
+def log_path():
+    """Where an auto-started daemon's console output is appended."""
+    return os.path.join(algan_home(), "daemon.log")
+
+
+def _open_log():
+    """Open the daemon log for append, trimming it if it has grown large."""
+    path = log_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cap = env_int("ALGAN_DAEMON_LOG_MAX_BYTES", 4 * 1024 * 1024)
+    with contextlib.suppress(OSError):
+        if cap > 0 and os.path.getsize(path) > cap:
+            os.replace(path, path + ".old")
+    return open(path, "ab")
+
+
+def _spawn_daemon():
+    """Start a detached general daemon. Returns the Popen, or None on failure.
+
+    The child is fully detached: it must outlive this process, which is about
+    to hand it a script and exit.
+    """
+    import subprocess
+
+    idle = env_int("ALGAN_DAEMON_IDLE_TIMEOUT", 1800)
+    # The daemon inherits this environment, so the startup-only variables it
+    # bakes in match ours and the handoff that follows cannot mismatch.
+    # ALGAN_DAEMON_CHILD must not carry over: it would tell the new daemon's
+    # own ``import algan`` that it is somebody's child and must not serve.
+    env = dict(os.environ)
+    env.pop("ALGAN_DAEMON_CHILD", None)
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        log = _open_log()
+    except OSError:
+        return None
+    try:
+        with log:
+            return subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "algan.daemon",
+                    "--idle-timeout",
+                    str(idle),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                # Never hold the project directory open: on Windows that blocks
+                # deleting it. The daemon chdirs per run anyway.
+                cwd=algan_home(),
+                env=env,
+                **kwargs,
+            )
+    except (OSError, ValueError):
+        return None
+
+
+def _autostart():
+    """Start a daemon and wait for it to publish its state. May return None.
+
+    Returns the new daemon's state dict, or ``None`` if auto-start is disabled,
+    the spawn failed, or it did not come up inside the readiness timeout -- in
+    every one of those cases the caller simply runs in-process, and a daemon
+    that is merely slow will serve the *next* run.
+    """
+    if not env_flag("ALGAN_AUTO_DAEMON", True):
+        return None
+    os.makedirs(algan_home(), exist_ok=True)
+    proc = _spawn_daemon()
+    if proc is None:
+        return None
+    timeout = env_float("ALGAN_DAEMON_START_TIMEOUT", 60.0)
+    _warn(
+        "starting a background render daemon so later runs skip the startup "
+        f"cost (log: {log_path()}). Disable with ALGAN_AUTO_DAEMON=0."
+    )
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        state = read_state()
+        if state is not None:
+            return state
+        if proc.poll() is not None:  # died before publishing anything
+            _warn(f"the background daemon exited early; see {log_path()}")
+            return None
+        time.sleep(0.25)
+    _warn(
+        "the background daemon is still starting; running this script "
+        "in-process (it will serve the next run)"
+    )
+    return None
+
+
+def _clear_stale_state(state):
+    """Delete a state file that still names the daemon we failed to reach.
+
+    Guarded by the token so a daemon that registered in the meantime keeps its
+    file. Without this, one hard-killed daemon (SIGKILL, a crash, a reboot)
+    would leave a registration that every later run tries, fails, and falls
+    back from -- and auto-start would never fire, because a state file exists.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        current = read_state()
+        if current is not None and current.get("token") == state.get("token"):
+            os.remove(state_path())
+
+
+def _dispatch(script):
+    """Run ``script`` on a daemon. Returns its exit code, or None to run here."""
+    state = read_state()
+    if state is not None:
+        try:
+            return run_remote(state, script)
+        except DaemonUnreachable as exc:
+            _clear_stale_state(state)
+            _warn(f"removed a stale daemon registration ({exc})")
+        except DaemonUnavailable as exc:
+            _warn(f"not using the algan daemon: {exc}")
+            return None
+    state = _autostart()
+    if state is None:
+        return None
+    try:
+        return run_remote(state, script)
+    except DaemonUnavailable as exc:
+        _warn(f"not using the algan daemon: {exc}")
+        return None
+
+
 def maybe_handoff():
-    """Run this process's script on a live daemon. Does not return if it does.
+    """Run this process's script on a daemon. Does not return if it does.
 
     Called from ``algan/__init__.py`` before any heavy import. On success the
     process exits with the daemon's code; otherwise it returns and the import
@@ -287,18 +457,12 @@ def maybe_handoff():
     try:
         if not should_try():
             return
-        state = read_state()
-        if state is None:
-            return
         script = script_of()
     except Exception:  # never let the fast path break an ordinary import
         return
 
     try:
-        code = run_remote(state, script)
-    except DaemonUnavailable as exc:
-        _warn(f"not using the algan daemon: {exc}")
-        return
+        code = _dispatch(script)
     except DaemonRunFailed as exc:
         _warn(str(exc))
         _exit(1)
@@ -306,6 +470,8 @@ def maybe_handoff():
         _exit(130)
     except Exception as exc:  # noqa: BLE001 -- a broken client must not block work
         _warn(f"not using the algan daemon: {exc!r}")
+        return
+    if code is None:
         return
     _exit(code)
 

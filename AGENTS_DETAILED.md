@@ -354,8 +354,8 @@ Do not add process-global transcript or speech-generator state. When constructin
 Taichi kernel work has several repository-specific hazards:
 
 - The offline cache does not reliably invalidate when an imported `@ti.func` changes. Clear it before trustworthy A/B tests of kernel-source edits with `clear_cache(taichi_kernels=True)`.
-- Never edit `*_taichi.py` while a render process or warm daemon is running. The JIT can compile mixed old/new source.
-- Restart the render daemon after changing any Algan source; imported modules remain stale. Restart is mandatory after changing Taichi source.
+- Never edit `*_taichi.py` while a render is running. The JIT can compile mixed old/new source.
+- The render daemon restarts itself after any Algan source change: it fingerprints every `.py` under `algan/` at startup, re-checks at each run launch, and refuses the run and shuts down if anything differs, so the script runs in a fresh process with the edited code. No hand restart, but the cold start (and, for kernel edits, a full recompile) is still paid. See `DESIGN_daemon_lifecycle.md`.
 - Cold compilation can take minutes and separate renderer routes may compile separate megakernels.
 - `ALGAN_TI_DEBUG=1` is for debugging only and severely reduces performance.
 - Prefer `ti.static(bool(template_value))` for template gates rather than Python identity tests such as `is not None` inside kernel code.

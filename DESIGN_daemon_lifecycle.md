@@ -1,6 +1,9 @@
 # Algan — Daemon Lifecycle: Design Document
 
-Status: DESIGN ONLY. Nothing here is implemented.
+Status: **IMPLEMENTED** (all phases). Validated on Linux/CPU; the Windows and
+CUDA half is outstanding — see `HANDOFF_daemon_lifecycle.md` for what remains
+and how to run it. §13 records what implementation found that this plan did
+not anticipate.
 
 Two changes to [`algan/daemon.py`](algan/daemon.py) and
 [`algan/daemon_client.py`](algan/daemon_client.py):
@@ -504,3 +507,49 @@ behave identically would turn two latent bugs into everyone's first impression.
 | Branch switches forcing pointless restarts | Content hashing, not mtime (§2) |
 | Two daemons started at once | Loser fails to bind the port and now exits (§7); the state file is written only by the winner |
 | Test suite spawning daemons | `should_try()` already returns False under pytest (§6.1) |
+
+---
+
+## 13. What implementation found that this plan did not
+
+Three defects surfaced only once the pieces ran together. All three are
+consequences of the daemon becoming something that starts and stops *routinely*
+rather than being launched once by hand, which is the part of this design that
+had no precedent to reason from.
+
+**The port does not free instantly (`TIME_WAIT`).** `socketserver` does not set
+`SO_REUSEADDR`, so for roughly a minute after a daemon exits its port cannot be
+rebound. That was harmless when daemons were launched by hand and lived for
+days; it is fatal now that every source edit shuts one down, because the
+replacement started by the next run fails to bind and — thanks to §7's new exit
+— correctly exits, leaving no daemon at all for the rest of that minute, right
+in the middle of a burst of library edits. `_TriggerServer` sets the flag on
+POSIX only: on Windows `SO_REUSEADDR` instead permits two simultaneous binds,
+which would let two daemons both believe they were serving.
+
+**A hard-killed daemon poisoned auto-start permanently.** `SIGKILL`, a crash or
+a reboot leaves the state file behind, and the original design treated the
+file's existence as proof of a daemon. Every later run would find it, fail to
+connect, fall back cold, and never start a replacement — auto-start defeated
+forever by one stale file. `run_remote` now distinguishes *unreachable* from
+*refused* (`DaemonUnreachable`), and `_dispatch` clears a registration it could
+not reach, token-guarded so a daemon that registered in the meantime survives.
+A refusal is left alone: that daemon is alive and answering.
+
+**Output landed in the daemon's directory.** `output_root` and
+`output_filename` are resolved once, when the settings are constructed — in a
+daemon that is its own startup, where there is no user script — so every
+client's video went to the daemon's own directory named
+`algan_render_output.mp4` instead of beside the script under its stem. It
+predates this work (a hand-launched daemon has it too, masked by launching from
+the project directory) but auto-start's `cwd=algan_home()` made it systematic,
+and it is the most visible parity break there is: your video is not where you
+left your script. `path_settings` now exposes `output_root_for(script)` /
+`output_filename_for(script)`, which both the import-time defaults and the
+daemon call, so the two cannot drift; `execute` applies them per run, after the
+settings restore and before the script runs.
+
+The lesson worth carrying: §5 asked "what does a run on the daemon fail to
+reproduce?" and got three of four. The fourth was found by rendering a real
+scene and looking for the file. Enumerating divergences from the code is
+necessary and not sufficient.
