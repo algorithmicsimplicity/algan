@@ -205,8 +205,8 @@ list has been run; these are what running them produced.
    counted and that single-digit counts would confirm the standing decision.
    They are counted now (`benchmarks/_notch_scene_check.py`, CUDA, every frame,
    each render byte-identical to its committed baseline first) and they are not
-   single-digit: **`text_and_media` notches ~550 interior pixels on each of 112
-   of its 182 frames**, `solids_and_camera` an order of magnitude fewer, and the
+   single-digit: **`text_and_media` notches ~900 interior pixels on each of the
+   112 of its 182 frames that carry any**, `solids_and_camera` an order of magnitude fewer, and the
    other four are clean. The per-pixel size is unchanged and small — ~1.7 channel
    values typically, ~2.5 at the worst pixel, cross-calibrated at 8% of the
    claim-side shortfall against `--notch-probe` on two harness cases that agree
@@ -214,12 +214,17 @@ list has been run; these are what running them produced.
    over most of an imported mesh's interior, sitting just under the suites'
    tolerance, rather than the handful of pathological pixels §0.5 assumed.
 
-   Two consequences. The measurement moves §6.3.2's open choice — fix (b) was
-   blocked on the silhouette population it would give up, and on the real scene
-   that population is **5%** of the pixels it would fix, against more than 100%
-   on the harness case that blocked it. And the one thing left unmeasured is the direct
-   A/B: raise `_AA_MAX_RUN_SCAN`, re-render, diff. That costs a cold compile and
-   settles the benefit; the cost half stays unmeasurable here (§7.15).
+   Two consequences, both in §0.5. The measurement moves §6.3.2's open choice —
+   fix (b) was blocked on the silhouette population it would give up, and on the
+   real scene that population is **5%** of the pixels it would fix, against more
+   than 100% on the harness case that blocked it. And **fix (a) has now been
+   A/B'd** (`_AA_MAX_RUN_SCAN` 16 → 128, cold-compiled): it moves four of the six
+   scenes by 31-50 channel values over up to 10% of a frame, so it is a
+   both-devices re-baseline rather than a patch — **and most of that movement is
+   not the notch**, because the limit bounds the run's EXTENT as well as its area
+   sum. `shapes_and_timeline` has zero notched pixels and still moves 31.
+   Isolating the two effects needs a third arm and another cold compile.
+
 1. **Build a traversal-step (or instruction) counter.** It settles §3.4's
    inherited "~20-25% fewer traversal steps" and most of §3.6's case, and it is
    the right instrument for THIS machine: a step count is deterministic, so
@@ -357,7 +362,7 @@ quality name; all live in `benchmarks/`.
     _diff_frame.py           side-by-side worst frame of two videos (LOOK at this)
     _video_diff.py           how far two videos moved, and over how many pixels
 
-**FIVE RULES THIS WORK KEEPS LEARNING THE HARD WAY.** Every one of them cost a
+**SIX RULES THIS WORK KEEPS LEARNING THE HARD WAY.** Every one of them cost a
 wrong result recorded in this file:
 
 1. **A check must show it REACHES its case.** §4.6 produced "all three modes
@@ -375,6 +380,11 @@ wrong result recorded in this file:
    win.
 5. **Look at the frames before re-baselining.** `_diff_frame.py` exists for this.
    "Measured 42 channel values" is not the same as knowing what moved.
+6. **A harness that renders the full-render scenes must diff its own render
+   against the committed baseline.** Reproducing the suite's settings is not
+   enough — the vendored fonts are registered by `tests/conftest.py`, and a
+   script that skips it measures a scene 205-232 channel values away from the
+   one it names. §7.19.
 
 **WHERE TO START.** §0's priority list, top entry first. §0.5 is a shipped
 limitation you should read before treating a diced mesh's interior pixel as a
@@ -456,7 +466,8 @@ Sphere — so the limit is the mechanism, and there are two levers:
 
 * **Raise `_AA_MAX_RUN_SCAN`.** One constant. But it is a loop bound in the
   megakernel's hot path, paid by every pixel that scans, and the cap exists
-  deliberately.
+  deliberately. **Now A/B'd — see the end of this section: it moves four of the
+  six scenes by 31-50 channel values, and most of that is not the notch.**
 * **Refuse to consult `E` when the scan hit its limit**, falling back to the
   shipped `corr = 1` short-circuit. Cheap and principled — a truncated sum is not
   an area — but it withdraws the gate's win from every long-run SILHOUETTE pixel,
@@ -466,6 +477,8 @@ Sphere — so the limit is the mechanism, and there are two levers:
 Either needs a kernel recompile and a cost number, and cost is exactly what the
 machine this was measured on cannot resolve (§7.15). Against a worst case of ~13
 channel values on deliberately pathological geometry, that is not a good trade.
+(The pixel half of that recompile has since been paid for (a); the perf half has
+not, for either.)
 
 **NOW MEASURED IN THE SIX REAL SCENES, AND THE PREMISE OF THE DECISION ABOVE IS
 HALF WRONG.** The paragraph this replaces said that if real scenes showed
@@ -499,8 +512,8 @@ across a whole dense shadowed scene and never past it. `shapes_and_timeline` and
 
 **The two that are not clean are the two with dense triangle meshes drawn
 small.** `text_and_media` carries an imported glTF model — condition 3 exactly,
-a finely tessellated object at a fraction of the screen — and it notches ~550
-interior pixels on each of 112 of its 182 frames. `solids_and_camera` is the
+a finely tessellated object at a fraction of the screen — and it notches ~900
+interior pixels on each of the 112 of its 182 frames that carry any. `solids_and_camera` is the
 predicted limb case, an order of magnitude smaller.
 
 **WHAT THE PROBE SCORES, and why it is not the same number as the table above
@@ -532,6 +545,16 @@ to the real scenes: `text_and_media` ~0.007 of painted coverage typically and
 worst pixel** against a maximally contrasting background. `solids_and_camera` is
 ~0.6 and ~2.5.
 
+**One reason the 8% could be optimistic, stated because the A/B below is what
+settles it.** Both calibration points are MATTE. The refill that takes back 92%
+is the far sheet claiming the residue under the cap, and on a lit PBR material
+the walk can break before it gets there: `raster_first_shade` breaks out of the
+fragment loop when `refl_max >= cover_pass`, and on an interior pixel
+`cover_pass = 1 - alpha` is near zero, so any reflectivity at grazing incidence
+can end the walk with the shortfall still standing. `text_and_media`'s glTF model
+is exactly that material. So the conversion is a floor for a matte mesh and not
+necessarily one for a reflective one.
+
 **So the honest restatement is: not rare, still small.** §0.5's per-pixel
 estimate ("~2 channel values typically") is confirmed on real scenes and was
 never the doubtful part. What was wrong is the picture of a handful of
@@ -554,12 +577,64 @@ On the scene that actually carries this, the silhouette population (b) would
 give up is **5% of the pixels it would fix**. The harness case was not
 representative of it.
 
-**WHAT IS STILL NOT MEASURED.** The 8% is a conversion from two harness points,
-not a measurement on these scenes. The one thing that would settle it is the
-direct A/B: raise `_AA_MAX_RUN_SCAN`, re-render the six scenes and diff. That
-costs a cold Taichi compile (§0.1) and it is the next step for anyone reopening
-this. It measures the BENEFIT only; the cost half stays unmeasurable on a
-throttling box (§7.15).
+**THE A/B IS RUN, AND IT SAYS FIX (a) IS NOT A SMALL CHANGE.**
+`_AA_MAX_RUN_SCAN` raised 16 → 128, Taichi kernel cache wiped and cold-rebuilt,
+the six scenes re-rendered and diffed against the committed CUDA baselines. The
+arm reached its case, which is the first thing to check: `truncated` goes
+420,552 / 7,008 / 107 / 49 → **0 on every scene** (the longest run anywhere is
+76).
+
+    scene                     max|d|   worst frame        frames    mean px/frame
+    manim_compat_and_plots         0   byte-identical    0 of 171               0
+    materials_and_lighting         0   byte-identical    0 of 179               0
+    shapes_and_timeline           31    4,514 (1.6%)    12 of 301             119
+    complex_hierarchy_become      49    8,119 (2.9%)    61 of  75           4,826
+    text_and_media                49   28,172 (10.1%)  158 of 182           6,046
+    solids_and_camera             50   20,276 (7.3%)   224 of 239          12,113
+
+The two that do not move are exactly the two the probe said could not: pure
+circuits, and the scene whose longest run is exactly 16.
+
+**But this is NOT the notch's price, and reading it as one would be the fourth
+mistake of this kind in this document.** `shapes_and_timeline` has **zero**
+notched pixels and still moves 31 channel values over 4,514 of them. The limit
+bounds the run's EXTENT as well as its area sum: `run_end = rj` comes back from
+the same scan, so fragments past the 16th of a run sit outside the corrected run
+— and their own rescan cannot engage, because by then `svis` is no longer
+uniform and `uni_v` fails. They are painted uncorrected. Raising the limit
+brings them under the run's correction, which is a second, larger change riding
+on the same constant.
+
+So what the A/B settles is the shape of fix (a), not the size of the defect:
+
+* **(a) is a re-baseline, not a patch.** Four of six scenes move by 31-50
+  channel values over up to 10% of a frame — both device baseline sets, on a
+  CUDA machine, with the CPU set already in debt (§3.5).
+* **Most of that movement is not the notch.** The notch population is 106,283
+  pixels across `text_and_media`'s whole 182 frames; the diff touches 6,046
+  pixels per frame on average there. The rest is the extent effect.
+* **Nobody has shown the new frames are better.** More fragments receiving the
+  exact-area correction *should* be more accurate, and "should be" is precisely
+  what §6.3.2 and §6.6.2 each got wrong once. Deciding (a) needs
+  `_aa_line_check` and `_aa_run_gate_check` re-run in the raised arm, which
+  costs a second cold compile and was not done here.
+* **It does not validate the 8%.** The two arms differ by more than the notch,
+  so the claim-to-paint conversion above is still a conversion.
+
+**If you take this further, isolate the two effects first.** A variant that
+keeps `run_end` at 16 while letting `E` come from an unbounded sum measures the
+notch alone; the difference between that and this arm is the extent effect. Both
+need their own cold compile. And fix (b) — refuse to consult `E` on a truncated
+scan — is a third arm again, and the one whose case the interior/silhouette
+split above has just improved.
+
+*Method note, because it cost the shipped cache once already:*
+`clear_cache(taichi_kernels=True)` deletes the **whole** cache directory, Manim
+Tex geometry included, and the first render after that differs from every later
+one (§4.10) — which would land in the diff as if it were the change. Back up
+`~/.algan/cache/taichi`, remove only that, and restore it afterwards; the
+restore was verified here by re-rendering `solids_and_camera` and getting the
+committed baseline back byte for byte.
 
 
 ================================================================================
@@ -2094,7 +2169,8 @@ of 16. The verdict histogram sent this diagnosis down a wrong path once.
 
 *Two fixes, and the choice is not obvious.* (a) Raise the limit: it is one
 constant, but it is a loop bound in the megakernel's hot path and the cap exists
-deliberately. (b) Refuse to consult `E` when the scan hit its limit, falling back
+deliberately — **and §0.5's A/B now shows it is also not a small output change,
+because the limit bounds the run's EXTENT as well as its area sum**. (b) Refuse to consult `E` when the scan hit its limit, falling back
 to the shipped `corr = 1` short-circuit — cheap and principled, since a truncated
 sum is not an area, but it also withdraws the gate's win from every long-run
 SILHOUETTE pixel, and on `cylfine` those are most of the frame (`capped` is 3011
@@ -2900,3 +2976,32 @@ identical on a static frame including textures") rather than as a property of th
 change. And for anything touching geometry, the confirming run is
 `tests/full_renders`, because `--fast` deliberately contains no PN surface and
 therefore cannot see tessellation move at all.
+
+7.19 A harness that renders the full-render scenes must diff its own render
+------------------------------------------------------------------------------
+`_notch_scene_check.py` reproduced `tests/full_renders`' render environment
+carefully — `PREVIEW`, the same `available_memory_override`, the same working
+directory, `animate_fade_out=True` — and still rendered a different scene than
+the suite does, because the fixture that registers the vendored fonts lives in
+`tests/conftest.py` and a script does not run it. `Text` then resolves through
+whatever Pango offers on the host. Measured: **205-232 channel values from the
+committed baselines over 8-11% of every frame of all six scenes.** Nothing in
+the run looked wrong; the notch counts it produced were within a few percent of
+the correct ones, which is worse, because they were plausible.
+
+Two things follow, and the second is the general one:
+
+* Load `tests/conftest.py` by path rather than copying its ten lines, so the two
+  cannot drift.
+* **Diff the harness's own render against the committed baseline before reading
+  any number off it**, and print the result beside the numbers. It costs one
+  video decode. Every claim of the form "measured on the six full-render scenes"
+  is a claim about *those* scenes, and this is the only thing that checks it —
+  the same discipline as §0.1's rule 1, applied to the harness rather than to
+  the feature.
+
+Corollary for anyone A/B-ing a kernel constant on these scenes: `clear_cache(
+taichi_kernels=True)` takes the **Manim Tex geometry cache** with it, and the
+first render after that differs from every later one (§4.10). Back up and
+restore `~/.algan/cache/taichi` instead, or render twice per arm and keep the
+second.
