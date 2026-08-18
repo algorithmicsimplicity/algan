@@ -127,6 +127,48 @@ staggers an animation across a batch by where each element sits in space, and
 ``batch_mobs`` packs several Mobs into one batched Mob so they animate as a single
 recorded operation.
 
+Packing Many Objects Into One Mob
+=================================
+
+A scene with a thousand spheres does not need a thousand Mobs. Algan can hold
+them all in one packed Mob: one Scene actor, one set of timeline rows, and one
+``get_render_primitives`` call per frame batch instead of a thousand of each.
+This is how :class:`~algan.mobs.text.Text` holds its glyphs and how a point
+cloud holds its dots.
+
+There are two ways in, and the difference is *when* the packing happens:
+
+.. code-block:: python
+
+    from algan import *
+    import torch
+
+    centers = torch.rand(1000, 3) * 4 - 2
+
+    # Built packed: no per-sphere Mob is ever constructed.
+    spheres = Sphere.from_batches(centers, radius=0.1, color=BLUE).spawn()
+
+    spheres.move(UP)      # moves all thousand
+    spheres[7].move(UP)   # moves one -- a view sharing the pack's rows
+
+``from_batches`` is the one to reach for. It builds the packed geometry directly,
+so its cost barely grows with the member count; ``batch_mobs`` packs Mobs that
+already exist, so it saves the render-time cost but still pays to construct every
+member. Use ``batch_mobs`` when the members come from somewhere you do not
+control, and ``from_batches`` when you are creating them.
+
+Both give you the same thing: a Mob whose ``location`` carries one row per
+member, whose ``len()`` is the member count, and which you index for a view onto
+a single member. To give a class its own ``from_batches``, build its geometry for
+every member at once and then call ``pack_animatable_rows`` (for the packed Mob)
+and ``pack_member_rows`` (for a component like a vertex grid, where each member
+owns a block of rows) from ``algan.utils.mob_utils``.
+
+The one thing packing costs you is independent lifespans. A pack is a single Mob
+with a single ``[spawn, despawn)`` interval, so its members appear and disappear
+together. Stagger an entrance by animating opacity instead -- which is what
+``Tex.write()`` does across a page of glyphs.
+
 Adding a Render Primitive
 =========================
 

@@ -20,7 +20,6 @@ from algan.constants.spatial import ORIGIN
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Point
 from algan.mobs.shapes_3d import Dot3D
-from algan.utils.mob_utils import batch_mobs
 from algan.utils.tensor_utils import cast_to_tensor
 
 
@@ -121,22 +120,27 @@ class PMobject(Group):
     def _build_geometry(self, scene=None):
         if scene is None and hasattr(self, "scene"):
             scene = self.scene
-        dots = [
-            Dot3D(
-                point=point,
+        if len(self.points) == 0:
+            return None
+        if len(self.points) == 1:
+            return Dot3D(
+                point=self.points[0],
                 radius=self.point_radius,
                 resolution=None,
-                color=_rgba_to_color(rgba),
+                color=_rgba_to_color(self.rgbas[0]),
                 add_to_scene=False,
                 scene=scene,
             )
-            for point, rgba in zip(self.points, self.rgbas)
-        ]
-        if not dots:
-            return None
-        if len(dots) == 1:
-            return dots[0]
-        return batch_mobs(dots, add_to_scene=False)
+        # One packed Mob rather than one Dot3D per point: a cloud of N points
+        # costs one construction and one primitive build instead of N of each.
+        return Dot3D.from_batches(
+            self.points,
+            radius=self.point_radius,
+            resolution=None,
+            colors=self.rgbas,
+            add_to_scene=False,
+            scene=scene,
+        )
 
     def _rebuild_geometry(self):
         geometry = self._build_geometry()

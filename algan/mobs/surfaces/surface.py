@@ -32,7 +32,11 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.animation_timeline.animation_contexts import (
+    Off,
+    Sync,
+    active_scene_for_new_mob,
+)
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
 from algan.constants.spatial import OUT
@@ -45,13 +49,45 @@ from algan.rendering.logical_pn import (
     logical_pn_control_points,
 )
 from algan.utils.file_utils import get_image
+from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
+    cast_to_tensor,
     dot_product,
     squish,
     unsqueeze_left,
     unsquish,
 )
+
+
+def _as_member_colors(colors, count):
+    """Cast per-member colours to Algan's ``[N, 5]`` RGB+glow+opacity form.
+
+    Accepts RGB, RGBA or the full five channels, matching what
+    :class:`~algan.constants.color.Color` stores, so a point cloud's RGBA array
+    and a list of named colours both work.
+    """
+    colors = cast_to_tensor(colors).reshape(-1, cast_to_tensor(colors).shape[-1])
+    if len(colors) == 1 and count > 1:
+        colors = colors.expand(count, -1)
+    if len(colors) != count:
+        raise ValueError(
+            f"expected {count} colors to match {count} centers, got {len(colors)}"
+        )
+    channels = colors.shape[-1]
+    if channels == 5:
+        return colors.contiguous()
+    ones = torch.ones_like(colors[..., :1])
+    zeros = torch.zeros_like(colors[..., :1])
+    if channels == 4:
+        # RGBA: glow sits between the colour and the opacity.
+        return torch.cat((colors[..., :3], zeros, colors[..., 3:4]), -1).contiguous()
+    if channels == 3:
+        return torch.cat((colors, zeros, ones), -1).contiguous()
+    raise ValueError(
+        f"colors must have 3 (RGB), 4 (RGBA) or 5 channels, got {channels}"
+    )
+
 
 # Ceiling on the grid resolution ``wave_color`` will refine a surface to. A
 # tighter wave than this can afford is drawn as smoothly as the budget allows
@@ -906,6 +942,135 @@ class Surface(Mob):
         self.is_primitive = True
         self.ignore_wave_animations = True
         self._resolution_update_in_progress = False
+
+    @classmethod
+    def from_batches(cls, centers, *args, colors=None, **kwargs):
+        """Build many independently indexable surfaces without per-surface mobs.
+
+        One packed Mob covers every centre in ``centers``: it is a single Scene
+        actor whose vertex grids are concatenated into one tensor, so the whole
+        collection costs one construction and one
+        :meth:`get_render_primitives` call per frame batch rather than one each.
+        Index it (``spheres[3]``) for a view onto a single member, which shares
+        the pack's timeline rows.
+
+        Every member has the same shape, resolution and material -- only its
+        centre and colour vary. Anything else that differs needs separate Mobs.
+
+        Parameters
+        ----------
+        centers
+            World-space centre of each surface, shape ``(N, 3)`` in world units.
+            Any nested sequence is cast to a tensor and reshaped.
+        colors
+            Per-member colour, shape ``(N, 3)`` as RGB, ``(N, 4)`` as RGBA or
+            ``(N, 5)`` as Algan's RGB+glow+opacity. Defaults to None, giving
+            every member the ``color`` passed in ``kwargs``.
+        *args, **kwargs
+            Passed to the ordinary constructor, which builds one representative
+            member -- so ``radius``, ``resolution``, ``color`` and the texture
+            maps all mean what they usually do, and apply to the whole pack.
+
+        Returns
+        -------
+        :class:`~algan.mobs.surfaces.surface.Surface`
+            The packed Mob, of whichever subclass this was called on.
+
+        Animation
+        ---------
+        Not animated: this only constructs. Animating the pack moves every
+        member; animating ``pack[i]`` moves just that one. All members share one
+        lifespan, so they spawn and despawn together -- stagger an entrance with
+        opacity rather than with separate spawns.
+
+        Examples
+        --------
+        A lattice of spheres as one Mob:
+
+        .. algan:: Example1SurfaceFromBatches
+            :save_last_frame:
+
+            from algan import *
+            import torch
+
+            grid = torch.linspace(-2, 2, 6)
+            centers = torch.cartesian_prod(grid, grid, torch.zeros(1))
+            Sphere.from_batches(centers, radius=0.15, color=BLUE).spawn()
+
+            Scene.save_video()
+        """
+        centers = cast_to_tensor(centers).reshape(-1, 3)
+        count = len(centers)
+        if count == 0:
+            raise ValueError("from_batches requires at least one centre")
+
+        # One representative member through the ordinary constructor, at the
+        # first centre. The resolution search, colour grid, textures and
+        # materials are then exactly what a lone member would have got, and the
+        # packing below only widens rows -- which is what keeps a pack
+        # bit-identical to batch_mobs over separately constructed members.
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
+        kwargs["location"] = centers[:1]
+        # Construction is instantaneous by definition, and the packing below
+        # re-allocates timeline rows, which is only valid while the Mob's
+        # history is fresh. A subclass constructor that repositions itself
+        # (Dot3D calls move_to) would otherwise record an animation here.
+        with Off(
+            record_funcs=False,
+            record_attr_modifications=False,
+            animation_manager=kwargs["scene"].animation_manager,
+        ):
+            mob = cls(*args, **kwargs)
+
+        points_per_grid = mob.grid_width * mob.grid_height
+        # Rebuilt from the same expression __init__ uses, rather than by
+        # subtracting the representative's centre back off its grid, so member
+        # i's rows are bit-identical to a separately constructed member's.
+        relative_grid = squish(
+            mob.coord_function_active(mob.get_base_grid().clone()), -3, -2
+        )
+        grid_overrides = {
+            "location": (relative_grid.unsqueeze(-3) + centers.unsqueeze(-2)).reshape(
+                1, count * points_per_grid, 3
+            )
+        }
+        surface_overrides = {"location": centers.unsqueeze(0)}
+
+        if colors is not None:
+            if kwargs.get("checkered_color") is not None:
+                raise ValueError(
+                    "from_batches cannot combine per-member colors with a "
+                    "shared checkered_color"
+                )
+            if mob._has_color_texture:
+                raise ValueError(
+                    "from_batches cannot combine per-member colors with a "
+                    "color_texture, which the whole pack shares"
+                )
+            member_colors = _as_member_colors(colors, count)
+            grid_color = mob.grid.get_animated_attribute("color")
+            packed = (
+                grid_color.repeat(1, count, 1)
+                .contiguous()
+                .view(1, count, points_per_grid, grid_color.shape[-1])
+            )
+            # __init__ lays a grid out as alternating colour / checkered-colour
+            # rows. Substitute per-member values into that same layout instead
+            # of rebuilding it, so the two constructions cannot drift apart.
+            packed[:, :, ::2] = member_colors.view(1, count, 1, -1)
+            packed[:, :, 1::2] = member_colors.view(1, count, 1, -1)
+            grid_overrides["color"] = packed.view(1, count * points_per_grid, -1)
+            surface_overrides["color"] = member_colors.unsqueeze(0)
+
+        with Off(
+            record_funcs=False,
+            record_attr_modifications=False,
+            animation_manager=mob.animation_manager,
+        ):
+            pack_member_rows(mob.grid, count, points_per_grid, overrides=grid_overrides)
+            pack_animatable_rows(mob, count, overrides=surface_overrides)
+        return mob
 
     @property
     def geometry_tolerance(self):
