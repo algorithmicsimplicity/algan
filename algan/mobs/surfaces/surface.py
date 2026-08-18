@@ -46,6 +46,7 @@ from algan.geometry.geometry import (
 )
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
+    evaluate_logical_pn_per_patch,
     logical_pn_control_points,
 )
 from algan.utils.file_utils import get_image
@@ -112,6 +113,11 @@ _PROJECTION_BOX_CELLS = 2.0
 # walk the step back down costs one iteration per rejection. All scales are
 # evaluated in one batch instead, so each iteration lands on the best of them.
 _PROJECTION_SCALES = (1.0, 0.5, 0.25, 0.1, 0.03, 0.01)
+
+# How many texels ``Surface.get_texture_locations`` resolves at a time. Every
+# texel carries ten intermediate PN control points, so a 4K map evaluated in one
+# go would want gigabytes; this bounds it to tens of megabytes regardless.
+_TEXTURE_LOCATION_CHUNK_TEXELS = 1 << 18
 
 
 def _call_parametric_function(function, u, v):
@@ -3045,6 +3051,207 @@ class Surface(Mob):
             self._cached_base_grid = grid
             self._cached_base_grid_key = cache_key
         return self._cached_base_grid
+
+    def _surface_points_at(self, u, v, grid, normals):
+        """World positions of the parameter lattice ``u`` x ``v`` on the mesh.
+
+        ``u`` and ``v`` are 1-D tensors in ``[0, 1]``, ``grid`` is
+        ``[..., grid_width, grid_height, 3]`` and ``normals`` its vertex
+        normals; the result is ``[..., len(u), len(v), 3]``.
+
+        This reproduces what the renderer does with a UV coordinate, which is
+        the only reason it is not simply ``coord_function(uv)``: the kernel
+        interpolates the triangle corners' UVs barycentrically and the geometry
+        under them is the logical PN patch, so a point's position is that patch
+        evaluated at the barycentric coordinate -- not the analytic surface at
+        the same parameter. The two differ tangentially by a fixed fraction of
+        a grid cell (~12% on a stock Sphere), which is what would otherwise
+        scallop a colour boundary once the texture out-resolves the grid.
+        """
+        width, height = self.grid_width, self.grid_height
+        fu = (u.clamp(0, 1) * (width - 1)).view(-1, 1)
+        fv = (v.clamp(0, 1) * (height - 1)).view(1, -1)
+        i = fu.floor().clamp(0, width - 2)
+        j = fv.floor().clamp(0, height - 2)
+        s = fu - i
+        t = fv - j
+        i = i.long().expand(-1, v.shape[0])
+        j = j.long().expand(u.shape[0], -1)
+
+        # get_grid_to_triangle_indices splits every cell into t1 = (00, 01, 10)
+        # and t2 = (10, 01, 11); the diagonal between them is s + t == 1.
+        lower = (s + t) <= 1.0
+        pick = lower.unsqueeze(-1)
+
+        def corners_of(field):
+            return torch.stack(
+                (
+                    torch.where(pick, field[..., i, j, :], field[..., i + 1, j, :]),
+                    field[..., i, j + 1, :],
+                    torch.where(
+                        pick, field[..., i + 1, j, :], field[..., i + 1, j + 1, :]
+                    ),
+                ),
+                -2,
+            )
+
+        # Barycentric weights of (s, t) in whichever triangle contains it, in
+        # the (corner 1, corner 2) form the PN evaluator takes.
+        barycentric = torch.stack(
+            (
+                torch.where(lower, t, 1 - s),
+                torch.where(lower, s, s + t - 1),
+            ),
+            -1,
+        )
+        return evaluate_logical_pn_per_patch(
+            logical_pn_control_points(corners_of(grid), corners_of(normals)),
+            barycentric,
+        )
+
+    def get_texture_locations(
+        self, resolution: int | tuple[int, int] | None = None
+    ) -> torch.Tensor:
+        """Get where in the world each texel of this surface's texture maps sits.
+
+        Textures are addressed in the surface's own ``(u, v)`` coordinates, which
+        makes a map easy to write in terms of the surface's parameters and awkward
+        to write in terms of *space*. This is the bridge: it hands back the world
+        position of every texel, laid out exactly like a texture map, so a map can
+        be built from arithmetic on 3-D coordinates.
+
+        .. code-block:: python
+
+            xyz = surface.get_texture_locations()
+            surface.color_texture = WHITE.mult_opacity(xyz[..., 1:2])
+
+        The positions are read from the surface's current mesh, so they are right
+        whether the shape came from its coordinate function, from a deformation,
+        or from writing ``surface.grid.location`` yourself. They describe the
+        surface *now*: a texture is carried in ``(u, v)``, so colours derived from
+        world position travel with the surface when it later moves. Recompute them
+        in an :meth:`~algan.animatable_base.animatable.Animatable.add_updater`
+        callback for a texture that stays locked to world space.
+
+        Animation
+        ---------
+        A query, not a change: nothing is recorded and the surface is untouched.
+        The positions are those of the surface's current state, so call it after
+        the transforms you want reflected in it.
+
+        Parameters
+        ----------
+        resolution
+            Texel counts ``(W, H)`` along ``u`` and ``v``, or one int for a square
+            map. Defaults to ``None``, meaning the resolution of the surface's
+            current :attr:`color_texture`, or its grid resolution when it has no
+            texture yet. Pass the resolution explicitly to build a map for one of
+            the material texture arguments instead.
+
+        Returns
+        -------
+        torch.Tensor
+            World-space positions, shape ``[W, H, 3]`` -- the layout
+            :attr:`color_texture` takes, one row per texel of the map that will
+            be sampled there. Called where the surface's state spans several
+            frames (inside an updater), it keeps a leading frame axis,
+            ``[F, W, H, 3]``.
+
+        Raises
+        ------
+        ValueError
+            If this is a packed surface built by
+            :meth:`~algan.mobs.surfaces.surface.Surface.from_batches`, whose
+            members share one texture and therefore have no single answer; if the
+            grid has fewer than two points on an axis, so it has no triangles to
+            sit on; or if ``resolution`` is not positive on both axes.
+
+        See Also
+        --------
+        :meth:`~algan.mobs.surfaces.surface.Surface.get_base_grid`
+            The ``(u, v)`` domain these positions correspond to.
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function`
+            Colour the surface's vertices by ``(u, v)`` instead.
+
+        Examples
+        --------
+        Paint a sphere's northern half, cutting the boundary in world space
+        rather than along a parameter line:
+
+        .. algan:: Example1SurfaceGetTextureLocations
+            :save_last_frame:
+
+            from algan import *
+
+            globe = Sphere(radius=1.5)
+            height = globe.get_texture_locations((128, 128))[..., 1:2]
+            globe.color_texture = BLUE.mult_opacity((height > 0).float())
+            globe.spawn()
+
+            Scene.save_video()
+        """
+        if self._packed_grid_count() is not None:
+            raise ValueError(
+                "get_texture_locations is not defined for a packed surface: the "
+                "members built by from_batches share one texture, so a texel "
+                "has one position per member. Build the members separately to "
+                "texture them by world position."
+            )
+        if self.grid_width < 2 or self.grid_height < 2:
+            raise ValueError(
+                "get_texture_locations needs at least 2 grid points on each "
+                f"axis, got grid_width={self.grid_width}, "
+                f"grid_height={self.grid_height}"
+            )
+
+        if resolution is None:
+            if self._has_color_texture:
+                # texture_height / texture_width are the u / v axis lengths, in
+                # that order -- the names are inverted with respect to the
+                # public [W, H, 5] contract, the axes are not.
+                resolution = (self.texture_height, self.texture_width)
+            else:
+                resolution = (self.grid_width, self.grid_height)
+        if isinstance(resolution, (tuple, list)):
+            width, height = int(resolution[0]), int(resolution[1])
+        else:
+            width = height = int(resolution)
+        if width < 1 or height < 1:
+            raise ValueError(
+                f"resolution must be positive on both axes, got {(width, height)}"
+            )
+
+        grid = self._reshape_grid_for_render(self.grid.location)
+        # The renderer builds its PN patches from these same normals, and
+        # ignore_normals leaves it without any: zero normals collapse the patch
+        # onto the flat triangle, which is then exactly what is drawn.
+        normals = (
+            torch.zeros_like(grid)
+            if self.ignore_normals
+            else compute_grid_vertex_normals(grid)
+        )
+
+        # A closed axis is wrap-padded at render time, putting texel i at
+        # i / W rather than i / (W - 1) (see wrap_pad_texture).
+        closed_u, closed_v = surface_closed_axes(grid)
+        u = torch.arange(width, device=grid.device, dtype=grid.dtype) / (
+            width if closed_u and width > 1 else max(width - 1, 1)
+        )
+        v = torch.arange(height, device=grid.device, dtype=grid.dtype) / (
+            height if closed_v and height > 1 else max(height - 1, 1)
+        )
+
+        rows = max(1, _TEXTURE_LOCATION_CHUNK_TEXELS // height)
+        locations = torch.cat(
+            [
+                self._surface_points_at(u[start : start + rows], v, grid, normals)
+                for start in range(0, width, rows)
+            ],
+            -3,
+        )
+        # The grid carries a leading frame axis, which is a single frame in
+        # every case but a query made mid-materialization.
+        return locations[0] if locations.shape[0] == 1 else locations
 
     def set_shape_to(self, other_surface: Surface):
         """Changes this surface's shape to the shape defined by another surface's

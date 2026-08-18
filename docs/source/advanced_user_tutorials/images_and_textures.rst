@@ -171,6 +171,52 @@ An **open** surface -- a flat plane, an :class:`~.ImageMob`, the pole-to-pole
 ``v`` axis of a sphere -- has no far side to blend into, so its first and last
 texels sit exactly on its two edges and the edge value carries beyond them.
 
+Building a map from world positions
+-----------------------------------
+
+A texture is written in ``(u, v)``, which is the wrong language for a map whose
+content depends on *where the surface is*: "everything above the equator",
+"redder the further from the origin". :meth:`~algan.mobs.surfaces.surface.Surface.get_texture_locations`
+translates -- it hands back the world position of every texel, laid out exactly
+like the map itself, so the map can be written as arithmetic on 3-D coordinates:
+
+.. algan:: TexturesByWorldPosition
+    :save_last_frame:
+
+    from algan import *
+
+    globe = Sphere(radius=1.5)
+    xyz = globe.get_texture_locations((256, 256))
+    globe.color_texture = BLUE.mult_opacity((xyz[..., 1:2] > 0).float())
+    globe.spawn()
+
+    Scene.save_video()
+
+The positions come from the surface's **current mesh**, not from its coordinate
+function, so they are right for a shape that has been deformed, morphed with
+:meth:`~algan.mobs.surfaces.surface.Surface.set_shape_to`, or built by assigning
+``surface.grid.location`` directly. They also account for the wrapping above and
+for the curvature between grid vertices, which is what keeps a boundary like the
+one in that example straight rather than scalloped once the map out-resolves the
+grid.
+
+The ``resolution`` argument is what sizes a map that does not exist yet, as
+above. Leave it out once the surface has a ``color_texture`` and you get that
+texture's resolution; the material maps are constructor arguments, so size those
+from a surface of the same shape:
+
+.. code-block:: python
+
+    probe = Sphere(radius=1.5)
+    height = probe.get_texture_locations((128, 128))[..., 1:2]
+    sphere = Sphere(radius=1.5, roughness_texture=(height / 1.5).clamp(0, 1))
+
+Because a texture is carried in ``(u, v)``, colours derived this way travel with
+the surface when it later moves: they record where it *was* when you asked. Take
+the positions again inside an
+:meth:`~algan.animatable_base.animatable.Animatable.add_updater` callback for a
+texture that stays locked to world space.
+
 Animating a texture
 -------------------
 
