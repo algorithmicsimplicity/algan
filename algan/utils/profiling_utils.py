@@ -548,7 +548,10 @@ def install_pipeline_hooks():
             ("evaluate_logical_pn", "logical PN:     - evaluate patch"),
             ("evaluate_logical_pn_normals", "logical PN:     - evaluate normals"),
             ("snap_boundary_values", "logical PN:     - snap boundary"),
-            ("interpolate_patch_attribute", "logical PN:     - interpolate attrs"),
+            (
+                "interpolate_patch_vertex_attribute",
+                "logical PN:     - interpolate attrs",
+            ),
             ("subdivision_vertex_uvs", "logical PN:     - subdivision tables"),
             ("subdivision_triangle_indices", "logical PN:     - subdivision tables"),
             ("subdivision_triangle_uvs", "logical PN:     - subdivision tables"),
