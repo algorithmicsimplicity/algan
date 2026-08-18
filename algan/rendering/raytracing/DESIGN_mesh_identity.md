@@ -172,8 +172,8 @@ where it belongs; none was quietly dropped.
 
 **WHERE EVERY SECTION STANDS.**
 
-    §3.1  weld surface seams/poles     STAYS OFF — pixel case proved, but only the
-                                       render path is weld-aware (§3.1)
+    §3.1  weld surface seams/poles     STAYS OFF — pixel case proved, morph/render
+                                       agreement FIXED; only baselines left (§3.1)
     §3.2  watertight tri intersection  QUALIFIED on correctness, cost UNMEASURABLE
                                        here; stays off, and §3.3 stays blocked
     §3.3  delete the epsilons          BLOCKED, and it is TWO deletions not one —
@@ -217,13 +217,16 @@ list has been run; these are what running them produced.
    §3.2: `BARYCENTRIC_EPSILON` also has two ungated consumers in the raster
    front-end's own candidate acceptance, which `_tri_hit` never touches. §3.3 has
    the consumer table. Do not promise the per-ray `f32` until both have landed.
-4. **One weld-aware triangle builder, then flip §3.1.** Its stated risk is
-   closed (byte-identical on a static frame, textures included). What blocks it
-   is that `grid_to_triangle_vertices` (the morph path) does not know about the
-   gate `get_grid_to_triangle_indices` (the render path) applies, so a `Sphere`
-   would morph from a different triangulation than it renders. Route both through
-   one builder first; then it needs baselines, because it *does* move a moving PN
-   scene (§3.1) even though a static frame cannot see it.
+4. **§3.1 now needs only baselines.** Both blockers are gone: the stated pixel
+   risk was closed by measurement (byte-identical on a static frame, textures and
+   normal maps included), and the topological one is fixed — the morph path asks
+   `surface_weld_flags` for the same grid the render path asks about, so a
+   `Sphere` no longer morphs from a different triangulation than it renders. The
+   whole unit suite is green with `ALGAN_WELD_SURFACE_SEAMS=1`. What is left is
+   that it *does* move a moving PN scene, so flipping it regenerates both
+   devices' baselines — and the CPU set cannot be regenerated on the machine that
+   owns the CUDA one (§3.5). That is the only thing standing between this gate
+   and its default.
 5. **A purpose-built scene for §4.6.** All three `SHADOW_ANYHIT` modes are
    byte-identical on the suite's only shadow scene, so the prediction is untested
    rather than confirmed. It needs a translucent stack whose edge hits sit within

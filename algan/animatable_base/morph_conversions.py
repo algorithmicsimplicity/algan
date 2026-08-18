@@ -117,21 +117,34 @@ def _grid_to_pn_soup(surface, *, add_to_scene=False):
     from algan.mobs.surfaces.surface import (
         compute_grid_vertex_normals,
         grid_to_triangle_vertices,
+        surface_weld_flags,
     )
 
     grid = surface._reshape_grid_for_render(surface.grid.location)
-    corners = surface._flatten_packed_triangle_vertices(grid_to_triangle_vertices(grid))
+    # THE WELD FLAGS BELONG TO THE GRID, NOT TO THE CALLER. Both this path and
+    # Surface.get_render_primitives turn the same grid into triangles through
+    # grid_to_triangle_vertices, and the weld decides how many triangles that
+    # is -- a Sphere's two pole fans collapse and its u-seam does not. This path
+    # used to omit the argument and take the default, so with
+    # ALGAN_WELD_SURFACE_SEAMS on a Sphere MORPHED from one triangulation and
+    # RENDERED as another. Asking surface_weld_flags here is what keeps the two
+    # answers the same question. (Off by default, so this is inert until the
+    # gate flips; DESIGN_mesh_identity.md ss3.1.)
+    weld = surface_weld_flags(grid)
+    corners = surface._flatten_packed_triangle_vertices(
+        grid_to_triangle_vertices(grid, weld)
+    )
     if surface.ignore_normals:
         normals = torch.zeros_like(corners)
     else:
         normals = surface._flatten_packed_triangle_vertices(
-            grid_to_triangle_vertices(compute_grid_vertex_normals(grid))
+            grid_to_triangle_vertices(compute_grid_vertex_normals(grid), weld)
         )
 
     def gather(value):
         value = _expand_rows(value, surface.grid.location.shape[-2])
         return surface._flatten_packed_triangle_vertices(
-            grid_to_triangle_vertices(surface._reshape_grid_for_render(value))
+            grid_to_triangle_vertices(surface._reshape_grid_for_render(value), weld)
         )
 
     return PNMesh(

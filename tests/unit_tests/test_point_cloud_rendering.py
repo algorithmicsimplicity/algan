@@ -28,7 +28,11 @@ from algan import (
     Scene,
     TrueDot,
 )
-from algan.mobs.surfaces.surface import get_render_primitives_batched
+from algan.mobs.surfaces.surface import (
+    get_grid_to_triangle_indices,
+    get_render_primitives_batched,
+    surface_weld_flags,
+)
 
 BUILDERS = {
     "DotCloud": lambda **kwargs: DotCloud(
@@ -107,7 +111,20 @@ def test_dot_cloud_spheres_have_disconnected_triangle_topology(scene):
     geometry = cloud.children[0]
     primitive = cloud.get_render_primitives()[0]
     triangles = primitive.corners.reshape(-1, 3, 3)
-    triangles_per_sphere = 2 * (geometry.grid_width - 1) * (geometry.grid_height - 1)
+    # Derived from the builder rather than restated as 2*(W-1)*(H-1). That
+    # formula is the UNWELDED count, so it hard-codes an answer that
+    # ALGAN_WELD_SURFACE_SEAMS changes -- a Sphere's two pole fans are
+    # degenerate and the weld drops them. What this test is about is that each
+    # sphere's triangles stay disconnected from its neighbours', which is true
+    # either way; the count is a means to that, so it asks the same builder the
+    # renderer asked.
+    per_sphere_indices = get_grid_to_triangle_indices(
+        geometry.grid_width,
+        geometry.grid_height,
+        primitive.corners.device,
+        surface_weld_flags(geometry._reshape_grid_for_render(geometry.grid.location)),
+    )
+    triangles_per_sphere = len(per_sphere_indices) // 3
 
     assert len(triangles) == len(points) * triangles_per_sphere
 
