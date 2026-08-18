@@ -549,7 +549,27 @@ left your script. `path_settings` now exposes `output_root_for(script)` /
 daemon call, so the two cannot drift; `execute` applies them per run, after the
 settings restore and before the script runs.
 
+**`python -m` looked exactly like a scene script.** `should_try`
+([`daemon_client.py:184`](algan/daemon_client.py)) documents itself as accepting
+only a plain `python foo.py`, and names `-m` among the invocations that must
+never reach a daemon — but nothing checked for it. Under `-m` the `__main__`
+module is the *package's* own `__main__.py`, which ends in `.py` and exists on
+disk, so both path tests passed. CI caught it the only way it could: the docs
+build runs `python -m sphinx`, `docs/source/conf.py` imports algan, and the
+documentation build was handed to a render daemon. `__main__.__spec__` is set
+under `-m` and `None` for a script, which is the discriminator.
+
+This one is worth dwelling on, because it is the shape of the whole risk in
+§6. Handing off used to require someone to have launched a daemon deliberately,
+which made a false positive rare and its blast radius small. Auto-start made
+handoff the default, so every latent false positive in `should_try` became a
+default behaviour change for a class of programs nobody had considered. The
+same reasoning drove the benchmark opt-out: 19 scripts under `benchmarks/` are
+plain `python foo.py` that import algan, and measuring inside a warm daemon
+means measuring against the adaptive renderer state left by the previous run.
+
 The lesson worth carrying: §5 asked "what does a run on the daemon fail to
 reproduce?" and got three of four. The fourth was found by rendering a real
 scene and looking for the file. Enumerating divergences from the code is
-necessary and not sufficient.
+necessary and not sufficient — and the question §5 *should* also have asked is
+"which programs will now be handed to a daemon that were not before?"
