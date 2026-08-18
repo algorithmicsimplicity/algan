@@ -80,7 +80,7 @@ listed before the wins:
    mesh renders one way and morphs another. Found by flipping the gate and
    running the whole suite, not by rendering. §3.1; the gate stays off.
 
-**THE GATES, and what each is worth.** Eight switches now, all declared in
+**THE GATES, and what each is worth.** Nine switches now, all declared in
 `algan/environment.py` and surfaced on `SETTINGS.raytracing.experimental`.
 
     setting                          default  what it buys
@@ -88,17 +88,18 @@ listed before the wins:
     ALGAN_MESH_ID                    ON       per-mesh tri_obj (§2.2, §3.5)
     ALGAN_POLYHEDRON_WINDING         ON       consistent face winding (§3.7)
     ALGAN_ANALYTIC_AA_ONE_MESH       ON       THE AA RESULT (§6.6), implies ↓
+    ALGAN_ANALYTIC_AA_ONE_MESH_DENS  ON       the capped write's other half (§6.6.2)
     ALGAN_ANALYTIC_AA_RUN_FULL       off      the relaxed run gate ALONE (§6.3.2)
     ALGAN_WELD_SURFACE_SEAMS         off      shared seam/pole vertices (§3.1)
     ALGAN_WATERTIGHT_TRI             off      Woop-Benthin-Wald (§3.2)
     ALGAN_BEZ_BVH_SPLIT              off      median-split bezier BVH (§3.4)
     ALGAN_ANALYTIC_AA_RUN_RULE       redist.  pre-existing (v2 §4.4)
 
-Three of the eight are on, and the four still off are off for stated reasons
+Four of the nine are on, and the four still off are off for stated reasons
 rather than for want of attention:
 
 * `ALGAN_ANALYTIC_AA_RUN_FULL` is **subsumed**, not pending: `ONE_MESH` implies it
-  (`aa_grp = 3`, and `_aa_run_full` accepts 2 or 3), so the switch now only selects
+  (`aa_grp` 3 or 4, and `_aa_run_full` accepts anything from 2 up), so it only selects
   the relaxed gate *without* the cap — a configuration kept for the harness.
 * `ALGAN_WATERTIGHT_TRI` is correctness-qualified and **cost-unqualified**: its cost
   cannot be measured on a thermally throttled machine, and because the flag is read
@@ -183,19 +184,22 @@ where it belongs; none was quietly dropped.
     §6.3.2 relaxed AA run gate         SUBSUMED by §6.6; the switch alone stays off
     §6.6  one-mesh coverage cap        FLIPPED ON — the AA result, plus a gate bug
                                        found and fixed while qualifying it
+    §6.6.2 capped occlusion write      FLIPPED ON — closes the claim-vs-occlusion
+                                       desync; the CLAIM-side shortfall stays open
 
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
 
-1. **Finish the cap: scale `dens` with `eff` (§6.6.2).** This is the one known
-   defect inside a shipped default. The cap clips a fragment's CLAIM and leaves
-   its OCCLUSION write on the uncapped `dens`, so a partially capped fragment
-   hides more of the background than it paints — measured as a claim-vs-occlusion
-   gap up to 0.22 where the shipped arm sits at float dust. It is simultaneously
-   the residual interior notches and the two `--verify` failures, so one fix
-   should close three symptoms. §6.6.2 has the change, and the reasoning for why
-   the obvious objection to it does not apply. Needs a gate, both devices'
-   baselines, and a re-run of `_aa_run_gate_check` and `_aa_line_check`.
+1. **The cap's CLAIM-side shortfall (§6.6.2).** Its occlusion-side twin is now
+   fixed and shipped: scaling `dens` with `eff` took claim-vs-occlusion from 0.22
+   to float dust on all eleven cases. What that did **not** touch — and the
+   previous revision of this list wrongly predicted it would — is the shortfall
+   itself: an interior pixel the ceiling over-bites still paints below full (24 /
+   4 / 253 / 3 notches, unmoved to the digit), and the two `--verify` failures are
+   unmoved with it. Both are scored on the CLAIM, so the occlusion fix could not
+   have moved them. The open question is why the ceiling bites on an interior
+   pixel at all; the population is the same boundary fragments and §6.6.2 says
+   what is known.
 2. **Build a traversal-step (or instruction) counter.** The single missing
    instrument in this whole area, and the reason three separate items are stuck:
    §3.2's cost, §3.4's inherited "~20-25% fewer traversal steps", and §3.6's
@@ -231,12 +235,14 @@ Do **not** start by regrouping the run rule, by consulting `E` only inside the
 existing gate, by buying more samples, or by suppressing the far sheet. All four
 were built or measured here and none is the lever — §6.
 
-And do **not** repeat these four, each of which this document asserted and
-measurement refuted: that a `Cylinder` now beats the bezier `Line` (§6.6.1); that
-`ONE_MESH` alone gives the relaxed gate (§6.6.1 — it did not, and that was a bug);
-that welding moves pixel baselines (§3.1 — byte-identical, textures included); and
-that the PN deletion shrank the compile surface (§4.4 — the deleted variant was
-never compiled).
+And do **not** repeat these five, each of which this document asserted and
+measurement refuted: that scaling `dens` would also close the interior notches
+and the `--verify` failures (§6.6.2 — it closed neither, and could not have:
+both are claim-side and it changes the occlusion write); that a `Cylinder` now
+beats the bezier `Line` (§6.6.1); that `ONE_MESH` alone gives the relaxed gate
+(§6.6.1 — it did not, and that was a bug); that welding moves pixel baselines
+(§3.1 — byte-identical, textures included); and that the PN deletion shrank the
+compile surface (§4.4 — the deleted variant was never compiled).
 
 
 ================================================================================
@@ -1782,48 +1788,70 @@ is wrong; do not repeat it. Nothing here explains the CPU/CUDA gap on that one
 figure, and the two flat cases and `cyl_fine` all reproduce, so it is a single
 unexplained outlier rather than a systematic device difference.
 
-6.6.2 THE TWO OPEN ITEMS ARE ONE MECHANISM — diagnosed
--------------------------------------------------------
-The `--verify` failures and the residual interior notches are the same defect,
-and it is visible in three lines of the resolve.
+6.6.2 THE DESYNC IS FIXED — and it was ONE symptom, not three
+---------------------------------------------------------------
+**Shipped ON as `ALGAN_ANALYTIC_AA_ONE_MESH_DENS`.** The cap clipped a
+fragment's CLAIM and left its OCCLUSION write alone: in `raster_first_shade`,
+`alpha = mat_alpha * eff` uses the capped `eff` while `a_s = mat_alpha * dens` --
+the per-sample transmittance write -- used the **uncapped** `dens`. So a capped
+fragment hid more background than it painted, and the pixel lost that energy.
 
-The cap clips the CLAIM and leaves the OCCLUSION write alone. In
-`raster_first_shade`, `alpha = mat_alpha * eff` uses the capped `eff`, while
-`a_s = mat_alpha * dens` — the per-sample transmittance write — uses the
-**uncapped** `dens`. So a capped fragment hides more background than it paints,
-and the pixel loses energy.
+The fix is one line at each of the two clamp sites: scale `dens` by the same
+ratio the cap applied to `eff`. It rides as `aa_grp = 4`.
 
-Precisely which fragments, because it is narrower than it first looks and that is
-why the notch counts are small: a fragment clipped all the way to zero is
-harmless, since `eff <= MIN_ALPHA` `continue`s *before* the svis write, so it
-neither paints nor occludes. `ALGAN_AA_DUMP` shows exactly that — a far-sheet
-fragment well inside a silhouette comes back `eff-skip` with `eff=0.00000` and
-the sample transmittances unchanged across it. The desync is confined to
-**partially** capped fragments, i.e. boundary pixels where the ceiling bites but
-leaves room, which is also the population the notches live in.
+The obvious objection is that the far sheet is really there and really does
+occlude, so its write should stand. It should not. The near sheet's own `dens`
+already occludes everything the mesh covers, and the residue the far sheet was
+consuming stands for area OUTSIDE the mesh — occluding it twice is the same
+double-count on the occlusion side that §6.6 removes on the claim side.
 
-The harness measures it as its `claim-vs-occlusion` column,
-`|ink - (1 - mean(svis))|`:
+**MEASURED, CUDA, `_aa_run_gate_check --res md --verify 40`.** The desync is
+gone, completely and on every case:
 
-    arm        claim-vs-occlusion max, over the 11 cases
-    shipped    1.1e-16 .. 5.0e-16      (float dust: the two agree)
-    one-mesh   7.8e-06 .. 2.2e-01      (up to 22% of a pixel)
+    arm        claim-vs-occlusion, over the 11 cases
+    shipped    7.8e-06 .. 2.2e-01      (up to 22% of a pixel)
+    with fix   1.1e-16 .. 5.4e-16      (float dust — where NO cap sits)
 
-That single desync accounts for all three symptoms: the interior notches
-(darkening, worst 0.0515 on the fine rod), the `--verify` divergence (largest on
-a **sliver**, whose `dens = cov` is areal and therefore the biggest clip), and
-why `run_mode == 2` had to be excluded — it is the same bookkeeping, and there it
-was noticed.
+**AND THE OTHER TWO SYMPTOMS DID NOT MOVE, which refutes what this section used
+to say.** The previous revision claimed one mechanism behind three symptoms and
+that one fix would close all three. Measured:
 
-Notches, CUDA, off -> on (zero on the seven cases not listed):
+    symptom                     shipped              with fix
+    claim-vs-occlusion          7.8e-06 .. 2.2e-01   1.1e-16 .. 5.4e-16   FIXED
+    interior notches            24 / 4 / 253 / 3     24 / 4 / 253 / 3     unchanged
+    --verify failures           5, worst 9.6e-04     5, worst 9.6e-04     unchanged
+    ink wobble (9 angles)       .0042/.0052/.0124/.0429   identical       unchanged
 
-    sphere (192x96)        2/23629 -> 24/23629    mean 0.0018  worst 0.0036
-    line-check cyl              0/9050 -> 4/10195 mean 0.0010  worst 0.0010
-    line-check cylfine     50/3546 -> 253/3546    mean 0.0090  worst 0.0515
-    packed 4x4 (overlap)    0/28610 -> 3/30531    mean 0.0014  worst 0.0017
+The refutation is **structural, not bad luck**, which is why it should never have
+been predicted: `notched` is counted from `actual`, `--verify` diffs the `effs`
+sequence, and ink wobble reads rendered ink. All three are the CLAIM. This fix
+changes only the occlusion write, so it could not have moved any of them, and a
+minute spent reading the harness's own accumulators would have said so.
 
-Measured: fixing the truncation gate does **not** change these, which is what
-proves they are the cap's desync and not §6.3.2's truncation.
+**So the cap's claim-side shortfall is a separate open defect.** An interior
+pixel the ceiling over-bites still paints below full. What changed is only what
+that costs: it used to render too DARK (paint 0.95, hide 1.00) and now renders
+with the shortfall's worth of background showing through. Both are wrong; the
+second is at least energy-conserving. This was checked rather than argued —
+`benchmarks/_one_mesh_dens_ab.py` renders the arms over `DARKER_GRAY` **and**
+over `WHITE`, because a bright background is where bleed-through would be ugly,
+and the worst frames are visually indistinguishable with the difference confined
+to silhouettes and shadow edges (`max|d|` 43-66 over 1.4-3.1% of pixel-frames).
+Whoever picks the claim-side defect up: the population is the same boundary
+pixels, and the question is why the ceiling bites there at all.
+
+**Determinism holds.** A/A byte-identical on all four arms, twice. That is not a
+formality here — §6.6.4 is a reproducibility bug in this same ceiling, found by a
+freshly written baseline failing on the next render.
+
+**Cost: not resolvable on this machine, and the first number was wrong.** A fixed
+off,on,off,on ordering gave 1.022-1.054x. Alternating the ORDER on the same 40 s
+shadowed scene gave **0.878x** — the ON arm apparently faster, which added work
+cannot be. The two orderings straddle 1.0, so the measurement is thermal drift
+(§7.15, and the same trap that produced a uniform 8-16% bias once before) and the
+honest statement is "below this box's noise floor". Do not quote a percentage
+until something measures it on hardware that is not throttling.
+
 
 6.6.3 WHAT IT COSTS — measured, which nothing had done
 -------------------------------------------------------

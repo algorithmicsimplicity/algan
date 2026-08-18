@@ -1073,12 +1073,16 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 #
 # What it costs, so the trade is on the record: ~2-5% render time (the honest
 # figure is 1.038x, from a 35 s shadowed scene; the small scenes sit on the
-# fixed-overhead floor), and a claim-vs-occlusion inconsistency on PARTIALLY
-# capped fragments, because the cap clips eff while the occlusion write uses the
-# uncapped dens. That shows up as small interior notches -- zero on seven of
-# eleven cases, 24/23629 on a fine Sphere, worst 253/3546 at mean 0.0090 on a
-# deliberately pathological 0.045-radius rod diced 256x. ss6.6.2 has the fix that
-# follows (scale dens by the same ratio), which is not attempted yet.
+# fixed-overhead floor), and a CLAIM-side shortfall on PARTIALLY capped
+# fragments -- small interior notches, zero on seven of eleven cases, 24/23629 on
+# a fine Sphere, worst 253/3546 at mean 0.0090 on a deliberately pathological
+# 0.045-radius rod diced 256x. That shortfall is still open.
+#
+# Its occlusion-side twin is NOT open any more: the cap used to clip eff while
+# the occlusion write kept the uncapped dens, and ANALYTIC_AA_ONE_MESH_DENS below
+# fixes that. Do not conflate the two, as ss6.6.2 once did -- the notches above
+# are unmoved by that fix and were never going to move, because they are counted
+# on the claim.
 #
 # DETERMINISM IS A REQUIREMENT OF THIS RULE, NOT AN INCIDENTAL PROPERTY. The
 # per-pixel ceiling feeds a threshold in the resolve, so the reduction that builds
@@ -1088,6 +1092,47 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # ss6.6.4. If you change how the ceiling is computed, A/A the render (twice, same
 # settings, compare) before trusting any baseline.
 ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
+
+
+# Scale a capped fragment's OCCLUSION write by the same ratio the cap applied to
+# its CLAIM (DESIGN_mesh_identity.md ss6.6.2). Requires ANALYTIC_AA_ONE_MESH and
+# is inert without it; rides as aa_grp = 4.
+#
+# THE DEFECT IT FIXES. ANALYTIC_AA_ONE_MESH clips a fragment's eff against the
+# per-pixel ceiling, but the per-sample transmittance write is a_s = mat_alpha *
+# dens and dens was left uncapped -- so a PARTIALLY capped fragment hides more
+# background than it paints and the pixel loses energy. Fully capped fragments
+# are harmless (eff <= MIN_ALPHA continues before the svis write) and uncapped
+# ones are untouched, which is why the population is exactly the boundary pixels
+# where the ceiling bites but leaves room.
+#
+# The obvious objection is that the far sheet is really there and really does
+# occlude, so its occlusion write should stand. It should not: the near sheet's
+# own dens already occludes everything the mesh covers, and the residue the far
+# sheet was consuming stands for area OUTSIDE the mesh. Occluding it twice is
+# the same double-count on the occlusion side that the cap removes on the claim
+# side -- which is why the cap without this is half a fix rather than a
+# trade-off.
+#
+# DEFAULT ON. Measured on CUDA, _aa_run_gate_check --res md over its eleven
+# cases: claim-vs-occlusion (|ink - (1 - mean(svis))|, i.e. how much the pixel
+# hides beyond what it paints) falls from 7.8e-06..2.2e-01 to 1.1e-16..5.4e-16 --
+# float dust, which is where the arm with no cap at all sits. Rendered output
+# moves at silhouettes and shadow edges (max|d| 43-66 over 1.4-3.1% of pixel-
+# frames) and is visually indistinguishable; A/A is byte-identical on four arms.
+#
+# WHAT IT DOES NOT FIX, because ss6.6.2 predicted it would: the residual interior
+# notches and the harness's two --verify failures are UNCHANGED, to the digit.
+# That is structural rather than surprising -- both are scored on `actual`/`effs`,
+# which are the CLAIM, and this changes only the occlusion write. So the cap's
+# claim-side shortfall is a separate open defect; see ss6.6.2.
+#
+# Cost is not resolvable on the machine that measured it. Alternating the arm
+# ORDER flips the ratio from 1.041x to 0.878x on the same 40 s shadowed scene,
+# which straddles 1.0 -- so the honest statement is "below this box's noise
+# floor", not a number. Anything quoting a percentage here needs hardware that is
+# not thermally throttling.
+ANALYTIC_AA_ONE_MESH_DENS = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH_DENS", True)
 
 
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
@@ -1302,12 +1347,13 @@ def set_analytic_aa(
     run_rule=None,
     run_full=None,
     one_mesh=None,
+    one_mesh_dens=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
     global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
-    global ANALYTIC_AA_ONE_MESH
+    global ANALYTIC_AA_ONE_MESH, ANALYTIC_AA_ONE_MESH_DENS
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
@@ -1318,6 +1364,8 @@ def set_analytic_aa(
         ANALYTIC_AA_RUN_FULL = bool(run_full)
     if one_mesh is not None:
         ANALYTIC_AA_ONE_MESH = bool(one_mesh)
+    if one_mesh_dens is not None:
+        ANALYTIC_AA_ONE_MESH_DENS = bool(one_mesh_dens)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")

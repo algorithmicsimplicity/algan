@@ -43,41 +43,70 @@ def restore_aa():
         rt_settings.ANALYTIC_AA_SEAM,
         rt_settings.ANALYTIC_AA_RUN_FULL,
         rt_settings.ANALYTIC_AA_ONE_MESH,
+        rt_settings.ANALYTIC_AA_ONE_MESH_DENS,
     )
     try:
         yield
     finally:
         rt_settings.set_analytic_aa(
-            before[0], seam=before[1], run_full=before[2], one_mesh=before[3]
+            before[0],
+            seam=before[1],
+            run_full=before[2],
+            one_mesh=before[3],
+            one_mesh_dens=before[4],
         )
 
 
-def _grp(run_full, one_mesh):
-    rt_settings.set_analytic_aa(True, seam=True, run_full=run_full, one_mesh=one_mesh)
+def _grp(run_full, one_mesh, one_mesh_dens=False):
+    rt_settings.set_analytic_aa(
+        True,
+        seam=True,
+        run_full=run_full,
+        one_mesh=one_mesh,
+        one_mesh_dens=one_mesh_dens,
+    )
     return rp._aa_group(AA_BEZ, AA_TRI)
 
 
 @pytest.mark.parametrize(
-    ("run_full", "one_mesh", "expected"),
+    ("run_full", "one_mesh", "one_mesh_dens", "expected"),
     [
-        (False, False, 1),  # seam grouping only
-        (True, False, 2),  # + the relaxed run-scan gate
-        (False, True, 3),  # + the one-mesh cap, which IMPLIES the relaxed gate
-        (True, True, 3),  # 3 subsumes 2
+        (False, False, False, 1),  # seam grouping only
+        (True, False, False, 2),  # + the relaxed run-scan gate
+        (False, True, False, 3),  # + the one-mesh cap, which IMPLIES the relaxed gate
+        (True, True, False, 3),  # 3 subsumes 2
+        (False, True, True, 4),  # + the capped fragment's occlusion write (ss6.6.2)
+        (True, True, True, 4),  # 4 subsumes both
     ],
 )
 def test_aa_group_encodes_the_gate_combination(
-    run_full, one_mesh, expected, restore_aa
+    run_full, one_mesh, one_mesh_dens, expected, restore_aa
 ):
-    assert _grp(run_full, one_mesh) == expected
+    assert _grp(run_full, one_mesh, one_mesh_dens) == expected
+
+
+def test_the_dens_fix_requires_the_cap_it_corrects(restore_aa):
+    """ss6.6.2 corrects ss6.6's cap, so it is meaningless without it.
+
+    ``_aa_one_mesh_dens`` scales the ratio the CAP applied. With no cap there is
+    no ratio, and a gate that silently did something else would be worse than one
+    that does nothing.
+    """
+    assert _grp(run_full=True, one_mesh=False, one_mesh_dens=True) == 2
 
 
 @pytest.mark.parametrize(
-    ("run_full", "one_mesh"),
-    [(True, False), (False, True), (True, True)],
+    ("run_full", "one_mesh", "one_mesh_dens"),
+    [
+        (True, False, False),
+        (False, True, False),
+        (True, True, False),
+        (False, True, True),
+        (True, True, True),
+    ],
 )
 def test_every_gate_that_relaxes_the_scan_also_relaxes_the_truncation(
-    run_full, one_mesh, restore_aa
+    run_full, one_mesh, one_mesh_dens, restore_aa
 ):
     """REGRESSION. The kernel's relaxed scan requires the host's mitigation.
 
@@ -86,12 +115,12 @@ def test_every_gate_that_relaxes_the_scan_also_relaxes_the_truncation(
     looks plausible, and carries interior notches the coverage harness cannot see
     because it scores silhouette pixels only.
     """
-    grp = _grp(run_full, one_mesh)
+    grp = _grp(run_full, one_mesh, one_mesh_dens)
     from algan.rendering.raytracing.raster_taichi import _aa_run_full
 
     assert _aa_run_full(grp), (
-        f"run_full={run_full} one_mesh={one_mesh} gives aa_grp={grp}, which the "
-        "kernels do not treat as the relaxed gate"
+        f"run_full={run_full} one_mesh={one_mesh} one_mesh_dens={one_mesh_dens} "
+        f"gives aa_grp={grp}, which the kernels do not treat as the relaxed gate"
     )
 
 
@@ -133,11 +162,15 @@ def test_only_aa_group_reads_the_run_full_setting():
 
 def test_seam_grouping_off_disables_every_group_rule(restore_aa):
     """Both rules are subordinate to seam grouping, so 0 must stay 0."""
-    rt_settings.set_analytic_aa(True, seam=False, run_full=True, one_mesh=True)
+    rt_settings.set_analytic_aa(
+        True, seam=False, run_full=True, one_mesh=True, one_mesh_dens=True
+    )
     assert rp._aa_group(AA_BEZ, AA_TRI) == 0
 
 
 def test_no_grouping_without_analytic_aa_geometry(restore_aa):
     """Neither geometry arm analytic means there is nothing to group."""
-    rt_settings.set_analytic_aa(True, seam=True, run_full=True, one_mesh=True)
+    rt_settings.set_analytic_aa(
+        True, seam=True, run_full=True, one_mesh=True, one_mesh_dens=True
+    )
     assert rp._aa_group(0, 0) == 0

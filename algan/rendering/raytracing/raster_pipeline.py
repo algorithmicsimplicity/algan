@@ -80,13 +80,16 @@ def _aa_group(aa_bez, aa_tri):
     this and ``_aa_run_full`` so the question can only be answered once.
 
     0 no grouping, 1 seam grouping, 2 + the relaxed run-scan gate (ss6.3.2),
-    3 + the one-mesh coverage cap (ss6.6, which implies 2).
+    3 + the one-mesh coverage cap (ss6.6, which implies 2), 4 + scaling a capped
+    fragment's occlusion write with its claim (ss6.6.2, which requires 3).
     """
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
         aa_grp = 2
     if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
         aa_grp = 3
+        if rt_settings.ANALYTIC_AA_ONE_MESH_DENS:
+            aa_grp = 4
     return aa_grp
 
 

@@ -388,6 +388,25 @@ def _aa_one_mesh(aa_grp):
     return int(aa_grp) >= 3
 
 
+def _aa_one_mesh_dens(aa_grp):
+    """Whether a capped fragment's OCCLUSION write is scaled with its claim
+    (aa_grp 4, DESIGN_mesh_identity.md ss6.6.2).
+
+    :func:`_aa_one_mesh` clips ``eff``, which is the claim. The per-sample
+    transmittance write is ``a_s = mat_alpha * dens``, and ``dens`` is a
+    different quantity -- so a PARTIALLY capped fragment paints less while
+    hiding exactly as much as before, and the pixel loses that energy. This
+    scales ``dens`` by the same ratio the cap applied, which is the only ratio
+    that keeps ``ink`` and ``1 - mean(svis)`` agreeing.
+
+    Fully capped fragments never reach the write (``eff <= MIN_ALPHA``
+    ``continue``s first) and uncapped ones are untouched, so the population this
+    changes is exactly the boundary pixels where the ceiling bites but leaves
+    room -- which is also where ss6.6.2 measures the residual notches.
+    """
+    return int(aa_grp) >= 4
+
+
 def _aa_run_full(aa_grp):
     """Whether the run scan also admits a FULL-mask fragment that covers less
     than the whole pixel (DESIGN_mesh_identity.md ss6.3.2).
@@ -402,9 +421,10 @@ def _aa_run_full(aa_grp):
     silhouette and leaves the interior alone.
 
     Carried as ``aa_grp == 2``; every other ``ti.static(aa_grp)`` test in this
-    module is a truthiness test, so the value costs no kernel argument.
+    module is a truthiness test, so the value costs no kernel argument. 3 and 4
+    are the one-mesh rule, which implies this gate.
     """
-    return int(aa_grp) == 2 or int(aa_grp) == 3
+    return int(aa_grp) >= 2
 
 
 #: How far below 1 a full-mask fragment's exact area must sit before the run
@@ -3163,9 +3183,22 @@ def raster_shadow_event_build(
                     # adjusting run_pd desynchronizes that bookkeeping.
                     if (not is_bez) and (not from_z) and (run_mode != 2) \
                             and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0):
-                        room = frag_cap[idx] - mesh_ink
+                        room = ti.max(frag_cap[idx] - mesh_ink, 0.0)
                         if eff > room:
-                            eff = ti.max(room, 0.0)
+                            if ti.static(_aa_one_mesh_dens(aa_grp)):
+                                # ss6.6.2. The claim and the occlusion write
+                                # describe the same fragment, so they take the
+                                # same ratio; scaling one without the other is
+                                # what makes a capped fragment hide more than
+                                # it paints. Guarded rather than divided
+                                # blindly: eff can be 0 when the ceiling is
+                                # already spent, and 0/0 would put a NaN into
+                                # svis. Where room <= MIN_ALPHA the fragment
+                                # `continue`s below and dens is never read, so
+                                # the guard only ever covers a value the write
+                                # does not see.
+                                dens *= room / ti.max(eff, MIN_ALPHA)
+                            eff = room
                 if eff <= MIN_ALPHA:
                     if ti.static(dump):
                         if dmatch:
@@ -4140,9 +4173,22 @@ def raster_first_shade(
                     # adjusting run_pd desynchronizes that bookkeeping.
                     if (not is_bez) and (not from_z) and (run_mode != 2) \
                             and ((frag_msk[idx] & _AA_ONE_MESH_BIT) != 0):
-                        room = frag_cap[idx] - mesh_ink
+                        room = ti.max(frag_cap[idx] - mesh_ink, 0.0)
                         if eff > room:
-                            eff = ti.max(room, 0.0)
+                            if ti.static(_aa_one_mesh_dens(aa_grp)):
+                                # ss6.6.2. The claim and the occlusion write
+                                # describe the same fragment, so they take the
+                                # same ratio; scaling one without the other is
+                                # what makes a capped fragment hide more than
+                                # it paints. Guarded rather than divided
+                                # blindly: eff can be 0 when the ceiling is
+                                # already spent, and 0/0 would put a NaN into
+                                # svis. Where room <= MIN_ALPHA the fragment
+                                # `continue`s below and dens is never read, so
+                                # the guard only ever covers a value the write
+                                # does not see.
+                                dens *= room / ti.max(eff, MIN_ALPHA)
+                            eff = room
                 if eff <= MIN_ALPHA:
                     # Nothing still reaches the samples this fragment covers:
                     # something opaque in front of it already has them.

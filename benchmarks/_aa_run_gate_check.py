@@ -514,6 +514,7 @@ def _replay(
     one_sheet_gated=False,
     mesh_cap=False,
     mesh_cap_gated=False,
+    mesh_cap_dens=False,
     caps=None,
 ):
     """Walk one pixel's fragment list exactly as the resolve does.
@@ -718,9 +719,13 @@ def _replay(
             and run_mode != 2
             and ((not mesh_cap_gated) or (raw & _AA_ONE_MESH_BIT))
         ):
-            room = cap_target - mesh_ink
+            room = max(cap_target - mesh_ink, 0.0)
             if eff > room:
-                eff = max(room, 0.0)
+                # ss6.6.2: the kernel scales the occlusion write by the same
+                # ratio, so the replay must too or --verify compares two rules.
+                if mesh_cap_dens:
+                    dens *= room / max(eff, MIN_ALPHA)
+                eff = room
         if eff <= MIN_ALPHA:
             effs.append(0.0)
             continue
@@ -976,7 +981,8 @@ def _measure(build, settings, capture=None):
         # the shipped walk while the render does something else -- and --verify
         # would fail for a reason that is the harness's, not the renderer's.
         run_full = int(coverage["aa_grp"]) >= 2
-        one_mesh = int(coverage["aa_grp"]) == 3
+        one_mesh = int(coverage["aa_grp"]) >= 3
+        one_mesh_dens = int(coverage["aa_grp"]) >= 4
         n_cov = int(coverage["num_covered"])
         if n_cov <= 0:
             return coverage
@@ -1029,6 +1035,7 @@ def _measure(build, settings, capture=None):
                 consult_full=run_full,
                 mesh_cap=one_mesh,
                 mesh_cap_gated=True,
+                mesh_cap_dens=one_mesh_dens,
                 caps=cps,
             )
             ce, _occ_ce, _e = _replay(sids, faces, ms, cs, bz, rule_b, consult_e=True)
