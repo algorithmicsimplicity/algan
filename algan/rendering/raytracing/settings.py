@@ -1139,6 +1139,30 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 ANALYTIC_AA_ONE_MESH_DENS = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH_DENS", True)
 
 
+# Take the run's exact-area sum, sample union and extent from a HOST segment
+# reduction instead of the kernel's bounded forward scan
+# (DESIGN_mesh_identity.md ss6.7).
+#
+# ``_aa_run_scan`` walks at most ``_AA_MAX_RUN_SCAN = 16`` fragments, so on a
+# longer run it hands the rule a PARTIAL area sum and a PARTIAL sample union.
+# Both are segment reductions over the CSR the host already holds -- the same
+# shape as the one that builds ``frag_cap`` -- so the host can compute them
+# exactly, for a run of any length, and the kernel can read them in O(1) with no
+# lookahead loop at all. That makes the rule exact and REMOVES work from the
+# megakernel's hot path rather than adding it.
+#
+# The union is summed rather than OR-ed, which is exact because within one sheet
+# the fill rule PARTITIONS the pixel's sub-samples -- no sample is claimed twice
+# (``_analytic_aa_fillrule_check``: 0 double-claims over 256000 pixel tests).
+# Flag bits are masked off first; they live at bit 16 and up and would carry
+# into the sum.
+#
+# Default OFF pending the render A/B against a raised ``_AA_MAX_RUN_SCAN``,
+# which is the oracle: with the limit above the longest run in a scene the two
+# must agree.
+ANALYTIC_AA_RUN_EXACT = env_flag("ALGAN_ANALYTIC_AA_RUN_EXACT", False)
+
+
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
 # triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
 # A space-filling curve is cheap but packs spatially distant instances into the
@@ -1352,12 +1376,14 @@ def set_analytic_aa(
     run_full=None,
     one_mesh=None,
     one_mesh_dens=None,
+    run_exact=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
     global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
     global ANALYTIC_AA_ONE_MESH, ANALYTIC_AA_ONE_MESH_DENS
+    global ANALYTIC_AA_RUN_EXACT
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
@@ -1370,6 +1396,8 @@ def set_analytic_aa(
         ANALYTIC_AA_ONE_MESH = bool(one_mesh)
     if one_mesh_dens is not None:
         ANALYTIC_AA_ONE_MESH_DENS = bool(one_mesh_dens)
+    if run_exact is not None:
+        ANALYTIC_AA_RUN_EXACT = bool(run_exact)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")

@@ -85,7 +85,7 @@ listed before the wins:
    mesh renders one way and morphs another. Found by flipping the gate and
    running the whole suite, not by rendering. §3.1; the gate stays off.
 
-**THE GATES, and what each is worth.** Nine switches now, all declared in
+**THE GATES, and what each is worth.** Ten switches now, all declared in
 `algan/environment.py` and surfaced on `SETTINGS.raytracing.experimental`.
 
     setting                          default  what it buys
@@ -94,6 +94,7 @@ listed before the wins:
     ALGAN_POLYHEDRON_WINDING         ON       consistent face winding (§3.7)
     ALGAN_ANALYTIC_AA_ONE_MESH       ON       THE AA RESULT (§6.6), implies ↓
     ALGAN_ANALYTIC_AA_ONE_MESH_DENS  ON       the capped write's other half (§6.6.2)
+    ALGAN_ANALYTIC_AA_RUN_EXACT      off      exact run totals, no scan (§6.7)
     ALGAN_ANALYTIC_AA_RUN_FULL       off      the relaxed run gate ALONE (§6.3.2)
     ALGAN_WELD_SURFACE_SEAMS         off      shared seam/pole vertices (§3.1)
     ALGAN_WATERTIGHT_TRI             off      Woop-Benthin-Wald (§3.2)
@@ -195,6 +196,8 @@ where it belongs; none was quietly dropped.
                                        found and fixed while qualifying it
     §6.6.2 capped occlusion write      FLIPPED ON — closes the claim-vs-occlusion
                                        desync; the CLAIM-side shortfall stays open
+    §6.7  exact run totals (no scan)   BUILT, OFF — host half verified on 49.6M
+                                       run starts; needs frames looked at (§6.7)
 
 **WHAT IS LEFT, in priority order.** Every item in the previous revision of this
 list has been run; these are what running them produced.
@@ -224,6 +227,14 @@ list has been run; these are what running them produced.
    not the notch**, because the limit bounds the run's EXTENT as well as its area
    sum. `shapes_and_timeline` has zero notched pixels and still moves 31.
    Isolating the two effects needs a third arm and another cold compile.
+
+   **A third fix is now built and gated off: §6.7** takes the run's totals from
+   a host segment reduction and deletes the kernel's scan entirely, which is the
+   only one of the three that fixes the sample UNION as well as the area. Its
+   host half is verified exactly (49.6M run starts, zero mismatches) and it
+   reproduces the raised-limit render byte-for-byte on the scene carrying the
+   largest truncated population. It is not shippable yet — see §6.7's four
+   remaining items, starting with looking at the frames.
 
 1. **Build a traversal-step (or instruction) counter.** It settles §3.4's
    inherited "~20-25% fewer traversal steps" and most of §3.6's case, and it is
@@ -2629,6 +2640,110 @@ reach predicts and `tests/full_renders` confirms.
 §7.11's lesson generalizes past a gate: the same question asked in two languages
 needs one answer, and the host/kernel boundary is where this codebase keeps
 finding second ones.
+
+6.7 EXACT RUN TOTALS FROM A HOST SEGMENT REDUCTION  [BUILT, default OFF]
+-------------------------------------------------------------------------
+`ALGAN_ANALYTIC_AA_RUN_EXACT`, `aa_grp = 5`. The third answer to §0.5's
+limitation, and the one that subsumes the other two: instead of raising the scan
+budget (a) or refusing to use a truncated sum (b), take the run's totals from a
+segment reduction on the host and delete the kernel's forward scan.
+
+**Why it is a reduction at all.** `_aa_run_scan` accumulates three things over
+consecutive fragments sharing `(pixel, surface, facing)`, stopping at a circuit:
+the exact-area sum `E`, the sample union `U`, and the run's end. Those three
+terminators make a run a SEGMENT of the CSR the host already owns — the same
+structure it reduces to build `frag_cap`. So the host can compute all three
+exactly, at any run length, and the kernel reads them in O(1). This does not
+raise the limit, it removes the loop.
+
+Two lanes, because the argument count is not free (`raster_first_shade` already
+takes 47 ndarrays): `frag_run_e` (f32) and `frag_run_uw`, which packs the union
+in its low 8 bits and the fragments REMAINING in the run above them. Remaining,
+not an absolute index, so the per-slice views `shade_sparse_raster_coverage`
+takes stay valid.
+
+**THE HOST HALF IS VERIFIED, and the check found two bugs.**
+`_notch_scene_check.py --verify-lanes` turns the reduction on while pinning
+`_aa_group` below 5, so the host fills the lanes, the kernel still compiles the
+shipped variant, and the render stays byte-identical to its baseline — then it
+diffs the lanes against its own independently derived reduction. Over the six
+full-render scenes: **49,644,625 run starts, 0 bad E (worst 1.19e-07, an f32
+ulp), 0 bad U, 0 bad end.**
+
+It did not start there. Both bugs were in the union, and both were invisible
+until measured:
+
+* **Summing masks instead of OR-ing them is wrong here, and the design note that
+  proposed it said why without believing it.** Within one SHEET the fill rule
+  partitions the sub-samples, so a sum would be exact. But a run is consecutive
+  fragments sharing `(surface, facing)`, and a concave mesh can lay two
+  front-facing sheets next to each other in depth order; their masks overlap,
+  the sum passes 255, and it carried straight into the packed extent field.
+  Measured before the fix: 82,061 of `complex_hierarchy_become`'s 2.8M run
+  starts and 15,909 of `shapes_and_timeline`'s 11.8M. `_aa_run_scan` ORs, so
+  this must too.
+* **Then the PROBE was the one still summing**, and the disagreement went UP
+  (82,061 → 101,440) rather than away. Two instruments, one of them wrong, and
+  the second reading is what said which (§7.9).
+
+Both sides now OR one bit lane at a time. Eight scatter-adds against a reduction
+that already runs at ~1% of a render (§6.6.3).
+
+**THE KERNEL HALF REPRODUCES THE RAISED-LIMIT ANSWER ON THE SCENES THAT CARRY
+THE DEFECT, AND NOT EVERYWHERE.** The oracle was supposed to be exact: with
+`_AA_MAX_RUN_SCAN` above a scene's longest run, the budget cannot bind, so the
+two arms should agree. Rendered against each other:
+
+    scene                     max|d| vs the 128-limit arm   pixels/frame
+    complex_hierarchy_become        0  byte-identical                 0
+    manim_compat_and_plots          0  byte-identical                 0
+    text_and_media                  0  byte-identical                 0
+    shapes_and_timeline             6            <= 10 px, 1 frame of 301
+    solids_and_camera              18         <= 1,540 px, 65 of 239
+    materials_and_lighting         42        <= 28,854 px, 79 of 179
+
+`text_and_media` is the load-bearing row: it carries 420,552 truncated pixels,
+by far the largest population in this file, and the two arms are byte-identical
+there. Whatever the other three rows are, they are not the run reduction being
+wrong about truncation.
+
+**The oracle was a bad prediction, and the reason was written down before it was
+used.** The two arms accumulate `E` differently — the host sums in float64 and
+rounds to f32, the kernel sums f32 sequentially — so they differ in the last
+bits BY CONSTRUCTION. §6.6.4 is the same lesson: a float reduction that feeds a
+threshold is not a colour. Here `E` feeds `|1 - E| > _AA_FULL_DUST`, a division
+by `Q`, and `eff > MIN_ALPHA`, and on `materials_and_lighting` it also decides
+whether a fragment emits a SHADOW EVENT, which is discrete — a surface point
+gains or loses a shadow ray rather than shifting by an ulp. That scene is the
+only one with shadows and it is the largest disagreement; `solids_and_camera`
+has neither shadows nor glow and disagrees ten times less. Consistent, but not
+demonstrated — nobody has traced one of those pixels.
+
+So the honest statement: the reduction is exact and verified, the kernel reads
+it correctly where truncation is what matters, and the arm is **not** a
+byte-reproduction of raising the limit. It has to be judged on its own frames.
+
+**WHAT IS LEFT BEFORE IT COULD SHIP.**
+
+1. **Look at the frames.** Nothing in this section has done that (§0.1 rule 5).
+   `materials_and_lighting` moving 42 channel values over 10% of a frame needs
+   `_diff_frame.py` and an explanation, not a hypothesis.
+2. **Decide the `E` precision question deliberately.** Matching the kernel's f32
+   sequential sum would make the arms comparable but reintroduces the
+   non-reproducibility §6.6.4 removed; keeping float64 is more accurate and
+   permanently un-oracle-able. It is a real choice and this section does not
+   make it.
+3. **Cost.** Two f32/i32 lanes per fragment (8 B), accounted in
+   `discovery_bytes`, against a bounded loop deleted from two megakernels' hot
+   paths. It could be a speed-up; nothing here measured it, and this machine
+   cannot (§7.15).
+4. **Baselines.** It moves four of six scenes, so both device sets — and the CPU
+   set is the standing debt (§3.5).
+
+**Where it leaves (a), (b) and (c).** (c) — reuse `frag_cap` on the full-mask
+arm — is still the cheapest correct thing available and is exact there (§0.5).
+This supersedes it in scope rather than in kind: it is the same idea taken to
+both arms and to `U` as well as `E`, which is what (c) provably cannot reach.
 
 6.4 This interacts with §4.5
 -----------------------------

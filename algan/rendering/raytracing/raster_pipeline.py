@@ -81,7 +81,8 @@ def _aa_group(aa_bez, aa_tri):
 
     0 no grouping, 1 seam grouping, 2 + the relaxed run-scan gate (ss6.3.2),
     3 + the one-mesh coverage cap (ss6.6, which implies 2), 4 + scaling a capped
-    fragment's occlusion write with its claim (ss6.6.2, which requires 3).
+    fragment's occlusion write with its claim (ss6.6.2, which requires 3),
+    5 + exact run totals from the host's segment reduction (ss6.7).
     """
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
@@ -90,6 +91,8 @@ def _aa_group(aa_bez, aa_tri):
         aa_grp = 3
         if rt_settings.ANALYTIC_AA_ONE_MESH_DENS:
             aa_grp = 4
+    if aa_grp and rt_settings.ANALYTIC_AA_RUN_EXACT:
+        aa_grp = 5
     return aa_grp
 
 
@@ -1587,6 +1590,72 @@ def prepare_sparse_raster_coverage(
             )
             one_mesh_cap = (one_mesh, seg, cap_pix)
 
+        # -- EXACT RUN TOTALS (DESIGN_mesh_identity.md ss6.7) ----------------
+        # What ``_aa_run_scan`` walks forward for, computed here as a segment
+        # reduction instead. The kernel's scan stops after
+        # ``_AA_MAX_RUN_SCAN = 16`` fragments, so on a longer run it hands the
+        # rule a partial area sum AND a partial sample union; both terms of
+        # ``corr = min(E, 1) / Q`` are then wrong. A run is a maximal set of
+        # CONSECUTIVE fragments sharing (pixel, surface, facing) and broken by a
+        # circuit -- exactly the scan's three terminators -- which makes it a
+        # segment, and the host already owns the CSR that defines it.
+        #
+        # This does not merely raise the limit, it deletes the loop: the kernel
+        # reads E, U and the run's extent in O(1).
+        run_lanes = None
+        if rt_settings.ANALYTIC_AA_RUN_EXACT and num_frags:
+            tri_obj_r = merged["tri_obj"]
+            ppf_r = int(width) * int(height)
+            row_r = _tri_obj_row(pix_s, ppf_r, int(time_start), tri_obj_r.shape[0])
+            sid_r = tri_obj_r[row_r, ref_s.clamp_min(0).to(torch.int64)].to(torch.int64)
+            face_r = ((msk_s & AA_BACKFACE_BIT) != 0).to(torch.int64)
+            idx_r = torch.arange(num_frags, dtype=torch.int64, device=device)
+            # A circuit terminates a run and can never start one, so give each
+            # its own key: a shared sentinel would fuse two adjacent circuits
+            # into a single "run" that no consumer wants.
+            key_r = torch.where(ref_s >= 0, sid_r * 2 + face_r, -(idx_r + 2))
+            starts = torch.ones(num_frags, dtype=torch.bool, device=device)
+            if num_frags > 1:
+                starts[1:] = (key_r[1:] != key_r[:-1]) | (pix_s[1:] != pix_s[:-1])
+            run_id = torch.cumsum(starts.to(torch.int64), 0) - 1
+            n_runs = int(run_id[-1]) + 1
+            # FLOAT64 for the same reason frag_cap is (ss6.6.4): scatter_add_ is
+            # a float atomic whose order is not reproducible on CUDA, and this
+            # feeds a comparison, not a colour.
+            e_run = torch.zeros(n_runs, dtype=torch.float64, device=device)
+            e_run.scatter_add_(0, run_id, cov_s.to(torch.float64))
+            # A REAL OR, one bit lane at a time, and the cheap sum-as-OR trick
+            # is wrong here -- measured, not feared. Within one SHEET the fill
+            # rule partitions the sub-samples, so summing would be exact; but a
+            # run is consecutive fragments sharing (surface, facing), and a
+            # concave mesh can put two front-facing sheets next to each other in
+            # depth order. Their masks then overlap, the sum exceeds 255, and it
+            # carries straight into the packed extent below. Checked against an
+            # independent reduction over the six full-render scenes, summing
+            # corrupted 82,061 of complex_hierarchy_become's 2.8M run starts and
+            # 15,909 of shapes_and_timeline's 11.8M. ``_aa_run_scan`` ORs, so
+            # this must too or the two disagree exactly where geometry folds.
+            # The mask is taken first either way: the facing/sliver/one-mesh
+            # flags live at bit 16 and up.
+            msk_bits = (msk_s & AA_MASK_ALL).to(torch.int32)
+            u_run = torch.zeros(n_runs, dtype=torch.int32, device=device)
+            lane = torch.zeros(n_runs, dtype=torch.int32, device=device)
+            for bit in range(AA_MASK_ALL.bit_length()):
+                lane.zero_()
+                lane.scatter_add_(0, run_id, (msk_bits >> bit) & 1)
+                u_run |= (lane > 0).to(torch.int32) << bit
+            u_run = u_run.to(torch.int64)
+            lens = torch.bincount(run_id, minlength=n_runs)
+            ends = torch.cumsum(lens, 0)
+            # Per fragment: how many fragments remain in its run, so the kernel
+            # needs no absolute index. Packed with the union into one lane to
+            # keep the kernel's argument count down.
+            rest = ends.index_select(0, run_id) - idx_r
+            run_lanes = (
+                e_run.index_select(0, run_id).to(cov_s.dtype),
+                ((rest << 8) | u_run.index_select(0, run_id)).to(torch.int32),
+            )
+
         num_covered = int(covered.numel())
         # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
         # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
@@ -1597,6 +1666,15 @@ def prepare_sparse_raster_coverage(
                 one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
                 cap_s,
             )
+        # One-element dummies when the rule is off: a Taichi ndarray argument
+        # has to exist either way, and the kernel is specialised on the gate so
+        # it never reads them.
+        n_run_lane = num_frags if run_lanes is not None else 1
+        frag_run_e = _arena_tensor(memory, (n_run_lane,), torch.float32, persist=True)
+        frag_run_uw = _arena_tensor(memory, (n_run_lane,), torch.int32, persist=True)
+        if run_lanes is not None:
+            frag_run_e.copy_(run_lanes[0])
+            frag_run_uw.copy_(run_lanes[1])
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
         frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
@@ -1633,7 +1711,10 @@ def prepare_sparse_raster_coverage(
     # 4+4 B/covered) coexist in the arena at the copy. Amortized per output
     # frame so the render-chunk preflight sizes later chunks to fit it instead
     # of over-committing.
-    discovery_bytes = discovery_frags * 29 + num_frags * 28 + num_covered * 8
+    # 28 B/fragment of compact result, plus the exact-run lanes (f32 + i32)
+    # when they are live -- they are allocated persist=True beside the rest.
+    per_frag = 28 + (8 if rt_settings.ANALYTIC_AA_RUN_EXACT else 0)
+    discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
@@ -1645,6 +1726,8 @@ def prepare_sparse_raster_coverage(
         "frag_cov": frag_cov,
         "frag_msk": frag_msk,
         "frag_cap": frag_cap,
+        "frag_run_e": frag_run_e,
+        "frag_run_uw": frag_run_uw,
         "covered_idx": covered_idx,
         "run_offsets": run_offsets,
         "num_fragments": num_frags,
@@ -1730,6 +1813,16 @@ def shade_sparse_raster_coverage(
     frag_cov = coverage["frag_cov"][event_start:event_end]
     frag_msk = coverage["frag_msk"][event_start:event_end]
     frag_cap = coverage["frag_cap"][event_start:event_end]
+    # ss6.7's lanes carry a COUNT of the fragments left in the run, not an
+    # absolute index, so this slice does not invalidate them. When the rule is
+    # off they are one-element dummies and the kernel is compiled not to read
+    # them; slicing those would go out of bounds, so pass them whole.
+    exact_lanes = coverage["frag_run_e"].numel() > 1
+    frag_run_e = coverage["frag_run_e"]
+    frag_run_uw = coverage["frag_run_uw"]
+    if exact_lanes:
+        frag_run_e = frag_run_e[event_start:event_end]
+        frag_run_uw = frag_run_uw[event_start:event_end]
     # Pinned at emission (see prepare_sparse_raster_coverage) so the resolve can
     # never compile for a different mode than the fragments were written in.
     aa_bez = int(coverage.get("aa_bez", 0))
@@ -1787,6 +1880,8 @@ def shade_sparse_raster_coverage(
             frag_cov,
             frag_msk,
             frag_cap,
+            frag_run_e,
+            frag_run_uw,
             zbuf,
             tri_pos,
             tri_screen,
@@ -1904,6 +1999,8 @@ def shade_sparse_raster_coverage(
         frag_cov,
         frag_msk,
         frag_cap,
+        frag_run_e,
+        frag_run_uw,
         zbuf,
         merged["tri_pos"],
         tri_screen,
@@ -2374,6 +2471,12 @@ def raster_iteration_zero(
         frag_cov = _arena_tensor(memory, (1,), torch.float32, 1.0)
         frag_msk = _arena_tensor(memory, (1,), torch.int32, AA_MASK_ALL)
         frag_cap = _arena_tensor(memory, (1,), torch.float32, 2.0)
+    # The dense path never takes ss6.7's exact run totals: its ``aa_grp`` comes
+    # from the same _aa_group, but the reduction that fills these is part of the
+    # sparse emission. One-element dummies, and _aa_run_exact compiles the reads
+    # out -- the same shape as frag_cap's sentinel above.
+    frag_run_e = _arena_tensor(memory, (1,), torch.float32, 0.0)
+    frag_run_uw = _arena_tensor(memory, (1,), torch.int32, 0)
 
     # Covered-pixel-compacted resolve (RASTER_COVERED_SHADE). A pixel needs
     # shading iff it has a fragment (nrun > 0) or a z-prepass winner -- exactly
@@ -2429,6 +2532,8 @@ def raster_iteration_zero(
             frag_cov,
             frag_msk,
             frag_cap,
+            frag_run_e,
+            frag_run_uw,
             zbuf,
             tri_pos,
             tri_screen,
@@ -2546,6 +2651,8 @@ def raster_iteration_zero(
         frag_cov,
         frag_msk,
         frag_cap,
+        frag_run_e,
+        frag_run_uw,
         zbuf,
         merged["tri_pos"],
         tri_screen,

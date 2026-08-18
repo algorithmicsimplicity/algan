@@ -389,6 +389,18 @@ def _aa_one_mesh(aa_grp):
     return int(aa_grp) >= 3
 
 
+def _aa_run_exact(aa_grp):
+    """Whether the run's exact-area sum, sample union and extent come from the
+    HOST's segment reduction instead of ``_aa_run_scan``'s bounded forward walk
+    (DESIGN_mesh_identity.md ss6.7).
+
+    The scan stops after ``_AA_MAX_RUN_SCAN`` fragments, which leaves BOTH terms
+    of ``corr = min(E, 1) / Q`` short on a longer run. A run is a segment of the
+    CSR the host already owns, so the host can reduce it exactly at any length
+    and the kernel reads the result in O(1) -- no lookahead, no budget."""
+    return int(aa_grp) >= 5
+
+
 def _aa_one_mesh_dens(aa_grp):
     """Whether a capped fragment's OCCLUSION write is scaled with its claim
     (aa_grp 4, DESIGN_mesh_identity.md ss6.6.2).
@@ -2879,6 +2891,8 @@ def raster_shadow_event_build(
         frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
         frag_msk: ti.types.ndarray(),
         frag_cap: ti.types.ndarray(),
+        frag_run_e: ti.types.ndarray(),
+        frag_run_uw: ti.types.ndarray(),
         zbuf: ti.types.ndarray(),
         tri_pos: ti.types.ndarray(), tri_screen: ti.types.ndarray(),
         tri_norm: ti.types.ndarray(), tri_extra: ti.types.ndarray(),
@@ -3115,10 +3129,23 @@ def raster_shadow_event_build(
                                 if (frag_msk[idx]
                                         & _AA_BACKFACE_BIT) != 0:
                                     face0 = 1
-                                rE, rU, rj = _aa_run_scan(
-                                    q - 1, nrun, start, sid0, face0,
-                                    to_row, frag_ref, frag_cov,
-                                    frag_msk, tri_obj)
+                                rE = 0.0
+                                rU = 0
+                                rj = 0
+                                if ti.static(_aa_run_exact(aa_grp)):
+                                    # ss6.7: the same three values, reduced on
+                                    # the host over the whole run. ``rest`` is a
+                                    # COUNT, not an index, so it survives the
+                                    # slicing shade_sparse_raster_coverage does.
+                                    rE = frag_run_e[idx]
+                                    w = frag_run_uw[idx]
+                                    rU = w & _AA_MASK_ALL
+                                    rj = (q - 1) + (w >> 8)
+                                else:
+                                    rE, rU, rj = _aa_run_scan(
+                                        q - 1, nrun, start, sid0, face0,
+                                        to_row, frag_ref, frag_cov,
+                                        frag_msk, tri_obj)
                                 run_end = rj
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1
@@ -3683,6 +3710,8 @@ def raster_first_shade(
         frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
         frag_msk: ti.types.ndarray(),
         frag_cap: ti.types.ndarray(),
+        frag_run_e: ti.types.ndarray(),
+        frag_run_uw: ti.types.ndarray(),
         zbuf: ti.types.ndarray(),
         tri_pos: ti.types.ndarray(), tri_screen: ti.types.ndarray(),
         tri_norm: ti.types.ndarray(),
@@ -4100,10 +4129,23 @@ def raster_first_shade(
                                 if (frag_msk[idx]
                                         & _AA_BACKFACE_BIT) != 0:
                                     face0 = 1
-                                rE, rU, rj = _aa_run_scan(
-                                    q - 1, nrun, start, sid0, face0,
-                                    to_row, frag_ref, frag_cov,
-                                    frag_msk, tri_obj)
+                                rE = 0.0
+                                rU = 0
+                                rj = 0
+                                if ti.static(_aa_run_exact(aa_grp)):
+                                    # ss6.7: the same three values, reduced on
+                                    # the host over the whole run. ``rest`` is a
+                                    # COUNT, not an index, so it survives the
+                                    # slicing shade_sparse_raster_coverage does.
+                                    rE = frag_run_e[idx]
+                                    w = frag_run_uw[idx]
+                                    rU = w & _AA_MASK_ALL
+                                    rj = (q - 1) + (w >> 8)
+                                else:
+                                    rE, rU, rj = _aa_run_scan(
+                                        q - 1, nrun, start, sid0, face0,
+                                        to_row, frag_ref, frag_cov,
+                                        frag_msk, tri_obj)
                                 run_end = rj
                                 if rU == _AA_MASK_ALL:
                                     run_mode = 1

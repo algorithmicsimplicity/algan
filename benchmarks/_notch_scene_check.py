@@ -92,6 +92,7 @@ import torch  # noqa: E402
 
 from algan import HD, LD, MD, PREVIEW, SETTINGS, Off, Scene  # noqa: E402
 from algan.rendering.raytracing import raster_pipeline as rp  # noqa: E402
+from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_BACKFACE_BIT,
     _AA_FULL_DUST,
@@ -105,6 +106,10 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
 
 RESOLUTIONS = {"ld": LD, "md": MD, "hd": HD, "preview": PREVIEW}
+
+#: Set by --verify-lanes: check ss6.7's host-computed run lanes against this
+#: probe's own segment reduction.
+VERIFY_LANES = False
 
 FULL_RENDERS = REPO / "tests" / "full_renders"
 
@@ -184,6 +189,11 @@ class Stats:
         self.partial_sum = 0.0
         self.partial_worst = 0.0
         self.baseline = "not checked"
+        self.lane_checked = 0
+        self.lane_bad_e = 0
+        self.lane_bad_u = 0
+        self.lane_bad_end = 0
+        self.lane_worst_e = 0.0
 
     def add_shortfall(self, values, where):
         n = int(values.numel())
@@ -361,6 +371,25 @@ def _probe_block(
     # samples alike. Runs starting past that point are not scored here.
     big = torch.full((1,), n_frag, dtype=torch.int64)
     nonbez_pos = torch.where(is_bez, big.expand(n_frag), torch.arange(n_frag))
+    # Per-RUN reductions over the whole block, which is what the host lanes
+    # claim to be. Independent of the j0 path below on purpose.
+    e_by_run = torch.zeros(int(run_id[-1]) + 1, dtype=torch.float64)
+    e_by_run.scatter_add_(0, run_id, cov)
+    # A real OR per bit lane. Summing is NOT equivalent: a run is consecutive
+    # fragments sharing (surface, facing), and a concave mesh can lay two
+    # front-facing sheets next to each other in depth, whose masks then overlap.
+    # Measured on these scenes, that is 3.6% of complex_hierarchy_become's runs.
+    u_by_run = torch.zeros(int(run_id[-1]) + 1, dtype=torch.int64)
+    for bit in range(_AA_NUM_SAMPLES):
+        lane = torch.zeros_like(u_by_run)
+        lane.scatter_add_(0, run_id, (msk >> bit) & 1)
+        u_by_run |= (lane > 0).to(torch.int64) << bit
+    e_run_all = e_by_run[run_id]
+    u_run_all = u_by_run[run_id]
+    # ``rest`` is end - idx, so rebuild it the same way the host does.
+    ends_by_run = torch.cumsum(run_len_of, 0)
+    len_all = ends_by_run[run_id] - torch.arange(n_frag)
+
     j0 = torch.full((n_cov,), n_frag, dtype=torch.int64)
     j0.scatter_reduce_(0, seg, nonbez_pos, reduce="amin", include_self=True)
     no_tri = j0 >= n_frag
@@ -498,6 +527,27 @@ def _probe_block(
             # (c)'s own doing rather than intrinsic.
             qf = _popcount(u_full_all).to(torch.float64)[have] / _AA_NUM_SAMPLES
             acc["overideal"] += int(((ideal[have] / qf.clamp_min(1e-9)) > 1.0).sum())
+
+    # -- ss6.7's HOST LANES, checked against this probe's own reduction -----
+    # The lanes are built by a cumsum over a boundary flag in raster_pipeline;
+    # this probe builds runs from a bincount over an independently derived run
+    # id. Agreement on every run start is what says the host half is right, and
+    # it costs no kernel compile -- with _aa_group pinned below 5 the kernel
+    # still compiles the shipped variant and simply does not read them.
+    if VERIFY_LANES and coverage["frag_run_e"].numel() > 1:
+        lane_e = coverage["frag_run_e"][f0:f1].detach().to("cpu", torch.float64)
+        lane_w = coverage["frag_run_uw"][f0:f1].detach().to("cpu", torch.int64)
+        starts_only = is_start.clone()
+        de = (lane_e[starts_only] - e_run_all[starts_only]).abs()
+        du = (lane_w[starts_only] & _AA_MASK_ALL) != u_run_all[starts_only]
+        dl = (lane_w[starts_only] >> 8) != len_all[starts_only]
+        stats.lane_checked += int(starts_only.sum())
+        stats.lane_bad_e += int((de > 1e-6).sum())
+        stats.lane_bad_u += int(du.sum())
+        stats.lane_bad_end += int(dl.sum())
+        stats.lane_worst_e = max(
+            stats.lane_worst_e, float(de.max()) if de.numel() else 0.0
+        )
 
     hit = truncated & full_arm & (shortfall > _SHORTFALL_TOL)
     if not bool(hit.any()):
@@ -805,6 +855,12 @@ def _report(rows):
                 f"{s.c_residual_worst:.4f}; over-covers {s.c_over_n} px "
                 f"(worst {s.c_over_worst:.4f})"
             )
+        if s.lane_checked:
+            note.append(
+                f"ss6.7 lanes: {s.lane_checked} run starts checked, bad E "
+                f"{s.lane_bad_e} (worst {s.lane_worst_e:.2e}), bad U "
+                f"{s.lane_bad_u}, bad end {s.lane_bad_end}"
+            )
         note.append(s.baseline)
         note.append(f"longest run {s.run_max}")
         note.append(f"{s.batches} batches")
@@ -838,6 +894,12 @@ def main():
     )
     ap.add_argument("--res", choices=sorted(RESOLUTIONS), default=None)
     ap.add_argument(
+        "--verify-lanes",
+        action="store_true",
+        help="turn ss6.7's host reduction on and diff its lanes against this "
+        "probe's own, with the kernel still compiled for the shipped variant",
+    )
+    ap.add_argument(
         "--row-split-demo",
         nargs="?",
         type=int,
@@ -856,6 +918,17 @@ def main():
         help="render only these scene times (seconds) instead of the whole video",
     )
     args = ap.parse_args()
+
+    if args.verify_lanes:
+        global VERIFY_LANES
+        VERIFY_LANES = True
+        rt_settings.set_analytic_aa(True, run_exact=True)
+        # Pin the template BELOW the new variant so no kernel recompiles: the
+        # host still fills the lanes, the resolve still runs the shipped rule,
+        # and the render stays byte-identical to its baseline -- which is itself
+        # part of the check.
+        original_group = rp._aa_group
+        rp._aa_group = lambda *a, **k: min(original_group(*a, **k), 4)
 
     print(f"run-scan cap = {_AA_MAX_RUN_SCAN}, dust = {_AA_FULL_DUST}")
     rows = []
