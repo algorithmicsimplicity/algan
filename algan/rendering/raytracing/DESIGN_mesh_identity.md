@@ -1,7 +1,13 @@
 # Algan — Mesh Identity in the Triangle Renderer
 
-**Status: PARTLY LANDED. This file is the handoff document — start here.**
+**Status: PARTLY LANDED. This file is the RECORD — what was built, measured and
+settled, and why every number is what it is.**
 **One limitation ships knowingly: §0.5.**
+
+**If you are here to do work rather than to look something up, start with
+`DESIGN_mesh_identity_open.md`** — the queue of what is left, self-contained,
+with each item's how-to and what would settle it. It cites this file by section
+for the measurements rather than repeating them.
 
 Plan of record for replacing the renderer's epsilon-based seam heuristics with
 declared mesh identity. Written to be self-contained: a fresh session with only
