@@ -23,7 +23,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | --- | --- |
 | **T1** PN subdivision-level criterion | **shipped and confirmed end to end** -- 67.9 s -> 1.40 s |
 | **T2** Bezier chord-count search | **shipped and confirmed end to end** -- 18.4 s -> 0.89 s |
-| **T4** dice write-out | **shipped, and re-scoped by what it found** -- the dice ignored *temporal coherence*: a mesh that holds still is handed T identical source rows and diced T times. Collapsing them, deduping the patch evaluation and interpolating attributes on the shared vertices is **1.19-1.39x on the whole dice** (and 1.03x on a genuinely deforming mesh, which has nothing to share), so more than that on the write-out, which is 15-35% of the dice here. **Bit-identical**, and all six full-render scenes match their CPU baselines. The `allocate()` zero-fills the last revision nominated turn out to be **4%** of the write-out, not its expensive half. See T4 |
+| **T4** dice write-out | **shipped, and re-scoped by what it found** -- the dice ignored *temporal coherence*: a mesh that holds still is handed T identical source rows and diced T times. Collapsing them, deduping the patch evaluation and interpolating attributes on the shared vertices is **1.27-1.37x on the dice calls that can use it and 1.05-1.15x on the dice overall, measured inside real renders** -- because only 19-55% of a real scene's dice time has frame-invariant geometry. **Bit-identical**, and all six full-render scenes match their CPU baselines. Read the "how much of a real scene is static" measurement before extrapolating from a synthetic mesh. The `allocate()` zero-fills the last revision nominated turn out to be **4%** of the write-out, not its expensive half. See T4 |
 | **P2** contiguous replay time-selector | **shipped** -- 1.62x on replay-time `get`/`modify` |
 | **P3** lazily-zeroed remat buffer | **shipped** -- 1.20x on `rematerialize_state_at_times` |
 | **P4** whole-scene per-batch scans | **shipped** -- honestly ~3.7 s of a ~500 s render (66x on the actor filter), not the 11.63 s first reported; see the correction under P4 |
@@ -612,18 +612,47 @@ large as the input and the bandwidth argument is weaker. Worth a
 > searching. Deliberately off on the kernel path, which keeps its samples in
 > registers and has nothing to share.
 >
-> **1.19-1.39x on the whole dice** across the six meshes that hold still while
-> the camera moves, and **1.03x** on the deforming one, which has nothing to
-> share and only pays the (short-circuited) invariance test. The dice on this
-> CPU-only machine is 65-85% level search, so the share that actually moved
-> improved by considerably more than the headline.
->
 > Verified end to end: all six `tests/full_renders` scenes match their
 > committed **CPU** baselines here. That is a real check on this machine and not
 > a vacuous one -- re-baselining on it before the change rewrote every file
 > byte-identically, so the committed CPU set *is* this machine's output. CUDA is
 > unverified: this session has no GPU, and the criterion-kernel path
 > (`share_patches` off, stride-0 control nets) is only exercised there.
+
+#### How much it is worth, and why the synthetic number overstated it
+
+On isolated meshes `benchmarks/_pn_dice_ab.py` reports **1.13-1.33x** for a mesh
+that holds still while the camera moves. **Do not quote that as the render-level
+figure.** Measured *inside* a real render, by running both dice implementations
+on every call with the same inputs and alternating which goes first:
+
+| scene | dice calls | frame-invariant | deforming | whole dice |
+| --- | --- | --- | --- | --- |
+| `solids_and_camera` | 10 | **1.37x** (2 calls, 22% of dice time) | 0.98x | **1.05x** |
+| `materials_and_lighting` | 38 | **1.27x** (20 calls, 60%) | 1.01x | **1.15x** |
+| `complex_hierarchy_become` | 4 | -- (one 10 ms call) | 1.14x | **1.14x** |
+
+The gap is not a measurement artifact, it is the workload: **a mob's `corners`
+are world-space**, so "frame invariant" means the mob does not move *at all*
+during the batch, and a scene whose whole point is motion spends most of its
+dice time on meshes that do move. `solids_and_camera` has 2 of 10 calls static;
+`materials_and_lighting`, which animates the camera around mostly-parked
+spheres, has 20 of 38. Batches are large (101 and 138 frames here), so where it
+does fire the redundancy removed is correspondingly large.
+
+`_dice_logical_pn` was ~18% of `solids_and_camera`'s render, so 1.05x on the
+dice is ~1% of that render. On `materials_and_lighting` the dice is a bigger
+share and the saving is 2.9 s of 22.5 s.
+
+**And one thing this measurement caught that the synthetic benchmark hid.**
+Listing the work list patch-major is what lets the dedup see its duplicates,
+but it is not free: consecutive rows then write a whole frame apart in the
+output instead of in one run, and read their control points the same way. On
+the deforming half of `materials_and_lighting`'s calls -- which have nothing to
+dedup -- that cost **0.965x** while the isolated benchmark's deforming mesh
+reported a harmless 1.03x. Patch-major ordering is therefore gated on
+`geometry_static`, exactly as `share_patches` is in the search; with the gate
+the same calls measure 1.005x. A synthetic mesh was too small to show it.
 
 #### Three things measured here that change what to do next
 

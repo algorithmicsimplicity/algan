@@ -1718,14 +1718,24 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
         for level in levels.unique(sorted=True).tolist():
             level = int(level)
-            # PATCH-major, not frame-major: ``nonzero`` on the transpose lists
-            # every frame of a patch consecutively, which is what lets the
-            # per-patch dedup below see its duplicates inside one chunk (a
+            # PATCH-major *only where the dedup can use it*: ``nonzero`` on the
+            # transpose lists every frame of a patch consecutively, which is
+            # what lets the dedup below see its duplicates inside one chunk (a
             # frame-major list puts a patch's frames a whole frame apart, so on
-            # any mesh wider than a chunk no two would ever share one). The
-            # writes are disjoint and ``index_copy_`` does not care about
-            # order, so the diced output is unchanged.
-            selected = (levels == level).t().contiguous().nonzero()
+            # any mesh wider than a chunk no two would ever share one). It is
+            # not free -- consecutive rows then write a frame apart in the
+            # output instead of in one run, and read their control points the
+            # same way -- so a deforming mesh, which has nothing to dedup,
+            # stays frame-major and keeps its contiguous writes. Measured: 1.03x
+            # against 0.97x on the deforming half of a real scene's dice calls.
+            # The writes are disjoint and ``index_copy_`` does not care about
+            # order, so the diced output is the same either way.
+            trying = levels == level
+            selected = (
+                trying.t().contiguous().nonzero().flip(-1)
+                if geometry_static
+                else trying.nonzero()
+            )
             vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
             triangle_indices = subdivision_triangle_indices(level, device=device)
             boundary = subdivision_boundary_map(level, device=device)
@@ -1735,7 +1745,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
             for start in range(0, selected.shape[0], chunk):
                 rows = selected[start : start + chunk]
-                patches, frames = rows[:, 0], rows[:, 1]
+                frames, patches = rows[:, 0], rows[:, 1]
                 edges = edge_levels[frames, patches]
 
                 # A patch's diced geometry depends on the patch and its level,
