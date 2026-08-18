@@ -147,6 +147,17 @@ class Stats:
         self.offset_chunks = 0
         self.row_mismatch_frags = 0
         self.row_mismatch_pixels = 0
+        # Fix (c): use the host's own per-pixel exact-area sum (already packed
+        # into frag_cap for one-mesh pixels) where the scan truncated, instead
+        # of the truncated rE the kernel computes for itself.
+        self.c_available = 0
+        self.c_unavailable = 0
+        self.c_fixed = 0
+        self.c_residual_sum = 0.0
+        self.c_residual_worst = 0.0
+        self.c_over_sum = 0.0
+        self.c_over_worst = 0.0
+        self.c_over_n = 0
         self.baseline = "not checked"
 
     def add_shortfall(self, values, where):
@@ -247,6 +258,7 @@ def _probe_block(
     ref = coverage["frag_ref"][f0:f1].detach().to("cpu", torch.int64)
     cov = coverage["frag_cov"][f0:f1].detach().to("cpu", torch.float64)
     msk = coverage["frag_msk"][f0:f1].detach().to("cpu", torch.int64)
+    cap = coverage["frag_cap"][f0:f1].detach().to("cpu", torch.float64)
 
     counts = offs[1:] - offs[:-1]
     seg = torch.repeat_interleave(torch.arange(n_cov, dtype=torch.int64), counts)
@@ -346,6 +358,46 @@ def _probe_block(
         )
 
     shortfall = corr(e_full) - corr(e_trunc)
+
+    # -- FIX (c), scored on the same fragment lists -----------------------
+    # The host already reduces every covered pixel's exact clipped areas by
+    # facing (float64 scatter_add, no budget) and packs max(front, back) into
+    # frag_cap for one-mesh pixels; the walk already loads it. So the kernel
+    # could read that where its own bounded scan came up short. Whether that is
+    # a good substitute is an empirical question about how close the CAP sits to
+    # the sheet's true untruncated sum on exactly the pixels that truncate --
+    # which is what this scores, against corr(e_full) as the ideal.
+    #
+    # 2.0 is the "no ceiling" sentinel every non-one-mesh pixel keeps, so
+    # cap <= 1 is the availability test the kernel would use.
+    cap0 = cap[j0]
+    have = truncated & full_arm & (cap0 <= 1.0)
+    stats.c_available += int(have.sum())
+    stats.c_unavailable += int((truncated & full_arm & ~have).sum())
+    if bool(have.any()):
+        ideal = corr(e_full)[have]
+        proposed = corr(cap0)[have]
+        shipped = corr(e_trunc)[have]
+        # Residual: how far the proposal still sits from the exact answer,
+        # against the shortfall it set out to remove.
+        resid = (ideal - proposed).abs()
+        stats.c_residual_sum += float(resid.sum())
+        stats.c_residual_worst = max(stats.c_residual_worst, float(resid.max()))
+        stats.c_fixed += int(
+            (
+                ((ideal - shipped).abs() > _SHORTFALL_TOL) & (resid <= _SHORTFALL_TOL)
+            ).sum()
+        )
+        # OVER-covering is the risk the cap carries and the shipped rule does
+        # not: max(front, back) can exceed the near sheet's own area at a
+        # grazing boundary, so score that direction separately.
+        over = (proposed - ideal).clamp_min(0.0)
+        big = over > _SHORTFALL_TOL
+        stats.c_over_n += int(big.sum())
+        if bool(big.any()):
+            stats.c_over_sum += float(over[big].sum())
+            stats.c_over_worst = max(stats.c_over_worst, float(over[big].max()))
+
     hit = truncated & full_arm & (shortfall > _SHORTFALL_TOL)
     if not bool(hit.any()):
         return
@@ -623,6 +675,15 @@ def _report(rows):
             note.append(f"one-mesh {s.notched_one_mesh}/{s.notched}")
             note.append(f"worst px {s.worst_at}")
             note.append(f"{len(s.frames_with_notch)} frames carry one")
+        if s.c_available or s.c_unavailable:
+            n = s.c_available
+            note.append(
+                f"fix(c): cap available on {n}/{n + s.c_unavailable} truncated; "
+                f"lands within tol on {s.c_fixed}; mean residual "
+                f"{(s.c_residual_sum / n if n else 0):.4f}, worst "
+                f"{s.c_residual_worst:.4f}; over-covers {s.c_over_n} px "
+                f"(worst {s.c_over_worst:.4f})"
+            )
         note.append(s.baseline)
         note.append(f"longest run {s.run_max}")
         note.append(f"{s.batches} batches")
