@@ -35,6 +35,11 @@ def fresh_scene():
     SceneManager.reset()
 
 
+#: The grid a flat sheet is built at. A plane is exactly reproduced by its four
+#: corners, so the geometry search stops at one cell per axis.
+FLAT_SHEET_GRID = (2, 2)
+
+
 def flat_sheet(**kwargs):
     """A sheet whose shape needs only its four corners, spanning [-1, 1]^2."""
     return Surface(
@@ -301,12 +306,12 @@ def test_restore_waits_for_the_outermost_block_so_siblings_stay_visible():
     with Sync(run_time=6):
         with Seq(run_time=3):
             sheet.wave_color(PURE_BLUE, wave_length=0.5)
-        assert sheet.grid_height > 4
+        assert sheet.grid_height > FLAT_SHEET_GRID[1]
         with Seq(run_time=6):
             sheet.move(RIGHT * 2)
-        assert sheet.grid_height > 4
+        assert sheet.grid_height > FLAT_SHEET_GRID[1]
 
-    assert sheet.grid_height == 4
+    assert sheet.grid_height == FLAT_SHEET_GRID[1]
     # The restored surface picks up where the refined one left off, so it starts
     # where the move ended rather than back at the origin.
     assert sheet.grid.location.mean(-2)[..., 0].item() == pytest.approx(2.0, abs=1e-4)
@@ -441,7 +446,7 @@ def test_group_transform_recorded_before_a_restore_keeps_every_member_intact():
         original = [marker.basis.clone() for marker in markers]
         group = Group([sheet, *markers])
         group.scale(3.0)
-    assert (sheet.grid_width, sheet.grid_height) == (4, 4)
+    assert (sheet.grid_width, sheet.grid_height) == FLAT_SHEET_GRID
 
     timeline = sheet.scene.timeline_manager
     # Part way through the scale, where the corruption showed: both endpoints of
@@ -465,9 +470,10 @@ def test_group_transform_recorded_before_a_restore_keeps_every_member_intact():
 def test_top_level_wave_restores_immediately_after_itself():
     sheet = flat_sheet()
     sheet.wave_color(PURE_BLUE, wave_length=0.5)
-    assert (sheet.grid_width, sheet.grid_height) == (4, 4)
+    assert (sheet.grid_width, sheet.grid_height) == FLAT_SHEET_GRID
 
     timeline = sheet.scene.timeline_manager
     timeline.set_state_to_times(torch.linspace(0.0, 2.0, 9))
-    assert sheet.grid.location.shape == (9, 16, 3)
+    points = FLAT_SHEET_GRID[0] * FLAT_SHEET_GRID[1]
+    assert sheet.grid.location.shape == (9, points, 3)
     timeline.clear_buffers()

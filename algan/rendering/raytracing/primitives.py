@@ -9,6 +9,9 @@ import torch.nn.functional as F
 from algan.constants.color import Color
 from algan.environment import env_float
 from algan.rendering.logical_pn import (
+    OPPOSITE_EDGE,
+    dice_pattern,
+    dice_triangle_count,
     evaluate_cubic_curve,
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
@@ -16,11 +19,8 @@ from algan.rendering.logical_pn import (
     logical_pn_control_points,
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
+    mean_patch_edge_length,
     snap_boundary_values,
-    subdivision_boundary_map,
-    subdivision_triangle_indices,
-    subdivision_triangle_uvs,
-    subdivision_vertex_uvs,
 )
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
@@ -139,6 +139,7 @@ class _PNCriterionInputs(NamedTuple):
     screen_point: torch.Tensor  # [T, 3]
     screen_basis: torch.Tensor  # [T, 3, 3]
     front_sign: torch.Tensor  # [T]
+    slack: torch.Tensor  # [T], world-space accuracy of the surface; zeros = off
 
 
 def _frame_broadcast_base(value):
@@ -185,7 +186,9 @@ def _bezier_criterion_inputs(corners, cam_o, sp, sb):
     return (base, stride, cam_o.contiguous(), sp.contiguous(), sb.contiguous())
 
 
-def _pn_criterion_inputs(control_points, edge_controls, cam_o, sp, sb, front_sign):
+def _pn_criterion_inputs(
+    control_points, edge_controls, cam_o, sp, sb, front_sign, slack=None
+):
     """Kernel inputs for the level searches, or ``None`` to stay on torch.
 
     The kernels only run where projection already runs on the render thread
@@ -202,6 +205,11 @@ def _pn_criterion_inputs(control_points, edge_controls, cam_o, sp, sb, front_sig
         return None
     control_base, control_stride = _frame_broadcast_base(control_points)
     edge_base, edge_stride = _frame_broadcast_base(edge_controls)
+    # The kernels take the slack unconditionally; zeros are the "measure against
+    # the PN patch exactly" case, which keeps one kernel signature instead of a
+    # second compiled variant per template gate.
+    if slack is None:
+        slack = torch.zeros_like(front_sign)
     return _PNCriterionInputs(
         control_base,
         control_stride,
@@ -211,7 +219,13 @@ def _pn_criterion_inputs(control_points, edge_controls, cam_o, sp, sb, front_sig
         sp.contiguous(),
         sb.contiguous(),
         front_sign.contiguous(),
+        slack.to(front_sign.dtype).contiguous(),
     )
+
+
+# Inverse of ``OPPOSITE_EDGE``: the corner a dice fans from when its rows are
+# to run parallel to a given edge.
+_APEX_OF_EDGE = torch.tensor([OPPOSITE_EDGE.index(edge) for edge in range(3)])
 
 
 def _mesh_ids_from_collection(members, counts):
@@ -916,15 +930,21 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     The packed result follows the normal flat-triangle/STBVH path -- no curved
     patch primitive reaches the ray tracer or the STBVH.
 
-    **Every patch picks its own subdivision level, in every frame.**  A patch
-    that fills the screen costs what it needs and nothing else pays for it --
-    neither the other patches of the same mesh in that frame, nor the same patch
-    in the frames where it is small or off screen.  Only the padded width of the
-    output tensor is shared: each frame's patches are packed back to back, and
-    the batch is padded to the largest per-frame total (surplus rows are marked
-    invisible, exactly as before).
+    **Every patch picks its own dice, in every frame.**  A patch that fills the
+    screen costs what it needs and nothing else pays for it -- neither the other
+    patches of the same mesh in that frame, nor the same patch in the frames
+    where it is small or off screen.  Only the padded width of the output tensor
+    is shared: each frame's patches are packed back to back, and the batch is
+    padded to the largest per-frame total (surplus rows are marked invisible).
 
-    Independent per-patch levels would crack the mesh open along its seams, so
+    A dice is ``(level, across level, apex)``, not one level: ``2 ** level`` rows
+    fanning from the apex corner, each cut into at most ``2 ** across`` columns
+    (:func:`~algan.rendering.logical_pn.dice_pattern`).  Equal levels *are* the
+    uniform barycentric grid, so this only ever removes microtriangles from a
+    patch whose two directions want different detail -- anything developable,
+    where the flat direction would otherwise pay whatever the curved one costs.
+
+    Independent per-patch dices would crack the mesh open along its seams, so
     the level of a patch's three boundary curves is decided separately from its
     interior:
 
@@ -935,19 +955,34 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
       both neighbours reach a bit-identical answer without any adjacency
       information.
     * A patch's own level is at least the largest of its three boundary levels,
-      and is then raised until its interior is flat enough.
-    * Where the interior level exceeds a boundary level, the boundary vertices
-      of the finer grid are snapped back onto the coarser boundary polyline
+      and is then raised until its interior is flat enough.  Its rows are then
+      laid parallel to its *coarsest* boundary curve and the dice is coarsened
+      across them for as long as the same criterion still passes, so an
+      anisotropic patch is one the criterion has measured, never one inferred
+      from its boundary.
+    * Where the dice's level on an edge exceeds that edge's own, the boundary
+      vertices are snapped back onto the coarser boundary polyline
       (:func:`~algan.rendering.logical_pn.snap_boundary_values`).  Levels are
-      powers of two, so the coarse polyline's knots are always vertices of the
-      finer grid and the snapped boundary reproduces it exactly: the seam is
-      watertight whatever the two neighbours chose.
+      powers of two and the dice's knots along any one edge are evenly spaced,
+      so the coarse polyline's knots are always vertices of the dice and the
+      snapped boundary reproduces it exactly: the seam is watertight whatever
+      the two neighbours chose.
 
     The tolerance guarantee is therefore stated per component: the diced
     boundary lands within ``render_tolerance`` of the true boundary curve and
     the diced interior within ``render_tolerance`` of the true patch, both in
     output pixels.  In the band of microtriangles touching a snapped boundary
     the two displacements can add, for a worst case of twice the tolerance.
+
+    Both criteria measure against the *logical PN patch*, which is itself only
+    an approximation of the surface the author asked for.  Where the mesh
+    declares how good an approximation (``geometry_slack_ratio``, which a
+    :class:`~algan.mobs.surfaces.surface.Surface` sets from its
+    ``geometry_tolerance``), that much deviation is subtracted from what the
+    searches measure: detail finer than the reference surface's own accuracy is
+    the reference's error, not the surface's, and resolving it buys nothing.
+    The guarantee then carries the accuracy of the logical surface as a second
+    term, which is the bound the render already inherits from construction.
     """
 
     max_subdivision_level = 8
@@ -1002,7 +1037,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     _edge_sample_parameters = (0.25, 0.5, 0.75)
     _flatness_safety_factor = 1.25
 
-    def __init__(self, *args, render_tolerance=0.5, **kwargs):
+    def __init__(self, *args, render_tolerance=0.5, geometry_slack_ratio=0.0, **kwargs):
         collection = kwargs.get("triangle_collection")
         if collection is not None:
             tolerances = [
@@ -1010,8 +1045,16 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 for p in collection
             ]
             render_tolerance = min(tolerances)
+            # The merged primitive is judged by one criterion, so the least
+            # slack any member declares is the only value that cannot over-relax
+            # another. A member that declares none (a hand-built patch soup is
+            # its own surface, exactly) therefore pins the batch to zero.
+            geometry_slack_ratio = min(
+                float(getattr(p, "geometry_slack_ratio", 0.0)) for p in collection
+            )
         super().__init__(*args, **kwargs)
         self.render_tolerance = float(render_tolerance)
+        self.geometry_slack_ratio = float(geometry_slack_ratio)
         if not torch.isfinite(torch.tensor(self.render_tolerance)):
             raise ValueError("render_tolerance must be finite")
         if self.render_tolerance <= 0:
@@ -1025,7 +1068,13 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
     @staticmethod
     def _project_to_output_pixels(points, cam_o, sp, sb, screen_height):
-        """Perspective-project ``[T, ... ,3]`` points into output pixels."""
+        """Perspective-project ``[T, ... ,3]`` points into output pixels.
+
+        Returns the pixels, each point's depth, and the pixels-per-world-unit
+        scale there -- the last so a caller holding a world-space length (the
+        surface's own accuracy) can say what it is worth on screen at that
+        point.
+        """
         extra = points.ndim - 2
         camera_shape = (-1,) + (1,) * extra + (3,)
         camera_origin = cam_o.view(camera_shape)
@@ -1047,13 +1096,26 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             ),
             dim=-1,
         )
-        return pixels * (float(screen_height) / 2.0), depth.squeeze(-1)
+        half_height = float(screen_height) / 2.0
+        depth = depth.squeeze(-1)
+        scale = (screen_distance.squeeze(-1) / depth).abs() * half_height
+        return pixels * half_height, depth, scale
 
-    def _guarded_pixel_error(self, exact, approximated, cam, front_sign, screen_height):
+    def _guarded_pixel_error(
+        self, exact, approximated, cam, front_sign, screen_height, slack=None
+    ):
         """Guarded projected pixel deviation between matching point sets.
 
-        ``exact`` and ``approximated`` are ``[K, ..., 3]``; ``cam`` and
-        ``front_sign`` carry one camera row per leading element.
+        ``exact`` and ``approximated`` are ``[K, ..., 3]``; ``cam``,
+        ``front_sign`` and ``slack`` carry one row per leading element.
+
+        ``slack`` is the world-space distance the *reference* surface is itself
+        uncertain by -- the logical PN patch's own accuracy, which is
+        ``geometry_tolerance`` carried forward to render time. It is projected
+        at each sample's own depth and subtracted from the deviation measured
+        there, so neither search resolves detail the reference does not have
+        (see ``rt_settings.PN_GEOMETRY_SLACK``). ``None`` measures against the PN
+        patch exactly.
 
         The stopping criterion these errors feed is a *primary visibility* one:
         keep subdividing until the flat stand-in lands within
@@ -1079,15 +1141,18 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         front half, whose near-plane projection is genuinely large.
         """
         guard = self.screen_guard_factor * float(screen_height)
-        exact_pixels, exact_depth = self._project_to_output_pixels(
+        exact_pixels, exact_depth, exact_scale = self._project_to_output_pixels(
             exact, *cam, screen_height
         )
-        approximated_pixels, approximated_depth = self._project_to_output_pixels(
+        approximated_pixels, approximated_depth, _ = self._project_to_output_pixels(
             approximated, *cam, screen_height
         )
         error = (
             exact_pixels.clamp(-guard, guard) - approximated_pixels.clamp(-guard, guard)
         ).norm(dim=-1)
+        if slack is not None:
+            allowance = slack.view(-1, *((1,) * (error.ndim - 1))) * exact_scale
+            error = (error - allowance).clamp_min(0)
         sign = front_sign.view(-1, *((1,) * (error.ndim - 1)))
         usable = (
             torch.isfinite(error)
@@ -1102,7 +1167,16 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
     @staticmethod
     def _triangle_counts(levels):
-        """``4 ** levels``, the diced triangle count of each patch."""
+        """``4 ** levels``, a patch's diced triangle count at a uniform dice.
+
+        The frame budget is enforced *during* the level searches, before either
+        knows whether the patch will be allowed a coarser across level, so this
+        is what they bound themselves with: an upper bound on the count they
+        will actually emit (``dice_triangle_count``, which equals this when the
+        two levels agree and is smaller otherwise). Bounding by the larger
+        figure can only refuse a promotion the frame could have afforded, never
+        admit one it could not.
+        """
         return torch.bitwise_left_shift(torch.ones_like(levels), 2 * levels)
 
     def _required_subdivision_levels(
@@ -1114,22 +1188,28 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         sb,
         screen_height,
         geometry_static=False,
+        slack=None,
     ):
         """Choose the crack-free logical PN levels of every patch and edge.
 
         Returns per-patch interior levels ``[T, P]`` and per-edge boundary
         levels ``[T, P, 3]``, both of which vary freely from patch to patch and
         from frame to frame.
+
+        ``slack`` is the per-frame world-space accuracy of the logical surface
+        itself; see :meth:`_guarded_pixel_error`. It is a property of the frame,
+        not of the patch or the edge, so the two copies of a shared boundary
+        curve are handed the same value and still reach the same level.
         """
         # Which side of the camera plane is in front: the screen plane's own
         # side, exactly as the renderer's front test decides it.
         front_sign = torch.sign(((sp - cam_o) * sb[:, 2]).sum(-1))
         cam = (cam_o, sp, sb)
         kernel = _pn_criterion_inputs(
-            control_points, edge_controls, cam_o, sp, sb, front_sign
+            control_points, edge_controls, cam_o, sp, sb, front_sign, slack
         )
         edge_levels, edge_capped = self._required_edge_levels(
-            edge_controls, cam, front_sign, screen_height, kernel
+            edge_controls, cam, front_sign, screen_height, kernel, slack
         )
         levels, patch_capped = self._required_patch_levels(
             control_points,
@@ -1143,6 +1223,17 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # has nothing to share, so only the fallback wants the work list
             # grouped for dedup.
             geometry_static and kernel is None,
+            slack,
+        )
+        apex, across = self._coarsest_across_levels(
+            control_points,
+            levels,
+            edge_levels,
+            cam,
+            front_sign,
+            screen_height,
+            kernel,
+            slack,
         )
         if edge_capped or patch_capped:
             warnings.warn(
@@ -1151,10 +1242,130 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 RuntimeWarning,
                 stacklevel=3,
             )
-        return levels, edge_levels
+        return levels, edge_levels, apex, across
+
+    def _coarsest_across_levels(
+        self,
+        control_points,
+        levels,
+        edge_levels,
+        cam,
+        front_sign,
+        screen_height,
+        kernel=None,
+        slack=None,
+    ):
+        """Choose each patch's dice apex and across level, ``[T, P]`` each.
+
+        The interior level from :meth:`_required_patch_levels` says how finely
+        the patch has to be cut in its *worst* direction. Cutting the other
+        direction that finely is what a uniform grid does and what this undoes:
+        the rows run parallel to the patch's coarsest boundary curve, and the
+        dice is cut across them only as far as its own measured error demands.
+
+        The starting point is the coarsest dice the seam allows -- that boundary
+        curve's own level, since the dice must reproduce its polyline -- and the
+        answer is always one the criterion has actually passed at, never one
+        inferred from the boundary. A patch that gains nothing keeps the uniform
+        grid it already resolved at, at no extra cost: the first probe's error
+        predicts how far it would have to be refined, and a prediction that
+        reaches the interior level ends the search there.
+        """
+        floor = edge_levels.gather(-1, edge_levels.argmin(-1, keepdim=True)).squeeze(-1)
+        apex = _APEX_OF_EDGE.to(edge_levels.device)[edge_levels.argmin(-1)]
+        across = levels.clone()
+        if not rt_settings.PN_ANISOTROPIC_DICE or not levels.numel():
+            return apex, across
+
+        max_level = int(self.max_subdivision_level)
+        threshold = self.render_tolerance * float(screen_height)
+        candidate = floor.clone()
+        # A patch whose coarsest boundary is already as fine as its interior has
+        # nothing to coarsen; everything else starts at that boundary's level.
+        searching = candidate < levels
+
+        for _ in range(max_level + 1):
+            if not bool(searching.any()):
+                break
+            error = self._grouped_pattern_error(
+                control_points,
+                levels,
+                candidate,
+                apex,
+                searching,
+                cam,
+                front_sign,
+                screen_height,
+                kernel,
+                slack,
+            )
+            passed = (error * self._flatness_safety_factor) <= threshold
+            across = torch.where(searching & passed, candidate, across)
+            # Error falls as the square of the column count, so one measurement
+            # says how many doublings are still missing. Overshooting to the
+            # interior level costs nothing to check: that dice is the uniform
+            # one, which has already passed.
+            deficit = (
+                error * self._flatness_safety_factor / max(threshold, 1e-30)
+            ).clamp_min(1.0)
+            steps = torch.ceil(torch.log2(deficit.sqrt())).to(candidate.dtype)
+            candidate = torch.where(passed, candidate, candidate + steps.clamp_min(1))
+            searching = searching & ~passed & (candidate < levels)
+        return apex, across
+
+    def _grouped_pattern_error(
+        self,
+        control_points,
+        levels,
+        across,
+        apex,
+        selected_mask,
+        cam,
+        front_sign,
+        screen_height,
+        kernel=None,
+        slack=None,
+    ):
+        """Flatness error of one candidate dice per patch, ``[T, P]``.
+
+        Patches sharing a dice shape are measured together -- there are at most
+        a few dozen shapes in a frame -- so this is the same batched criterion
+        the level ladder runs, once per distinct ``(along, across, apex)``.
+        """
+        device = control_points.device
+        dtype = control_points.dtype
+        error = torch.zeros_like(levels, dtype=dtype)
+        keys = (levels * (self.max_subdivision_level + 1) + across) * 3 + apex
+        for key in torch.unique(keys[selected_mask]).tolist():
+            group = selected_mask & (keys == key)
+            selected = group.nonzero()
+            if not selected.shape[0]:
+                continue
+            apex_of_key = int(key % 3)
+            across_of_key = int((key // 3) % (self.max_subdivision_level + 1))
+            along_of_key = int(key // (3 * (self.max_subdivision_level + 1)))
+            group_error = self._patch_flatness_error(
+                control_points,
+                selected,
+                dice_pattern(
+                    along_of_key,
+                    across_of_key,
+                    apex_of_key,
+                    device=device,
+                    dtype=dtype,
+                ),
+                cam,
+                front_sign,
+                screen_height,
+                kernel,
+                False,
+                slack,
+            )
+            error[selected[:, 0], selected[:, 1]] = group_error
+        return error
 
     def _required_edge_levels(
-        self, edge_controls, cam, front_sign, screen_height, kernel=None
+        self, edge_controls, cam, front_sign, screen_height, kernel=None, slack=None
     ):
         """Per-boundary-curve subdivision levels, shape ``[T, P, 3]``.
 
@@ -1196,6 +1407,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 samples,
                 screen_height,
                 kernel,
+                slack,
             )
             candidates = active[(error * self._flatness_safety_factor) > threshold]
             if candidates.numel() == 0:
@@ -1231,6 +1443,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         samples,
         screen_height,
         kernel=None,
+        slack=None,
     ):
         """Peak pixel deviation of each active curve from its chord polyline.
 
@@ -1257,6 +1470,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     kernel.screen_point,
                     kernel.screen_basis,
                     kernel.front_sign,
+                    kernel.slack,
                     error,
                     num_patches,
                     segments,
@@ -1299,6 +1513,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 tuple(value.index_select(0, frames) for value in cam),
                 front_sign.index_select(0, frames),
                 screen_height,
+                None if slack is None else slack.index_select(0, frames),
             ).amax(dim=(1, 2))
         return error
 
@@ -1311,6 +1526,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         screen_height,
         kernel=None,
         share_patches=False,
+        slack=None,
     ):
         """Per-patch interior subdivision levels, shape ``[T, P]``.
 
@@ -1333,6 +1549,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         max_level = int(self.max_subdivision_level)
         budget = max(1, int(self.max_diced_triangles))
         threshold = self.render_tolerance * float(screen_height)
+        dtype = control_points.dtype
         levels = start.clone()
         if levels.numel() == 0:
             return levels, False
@@ -1361,12 +1578,13 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             error = self._patch_flatness_error(
                 control_points,
                 selected,
-                level,
+                dice_pattern(level, level, 0, device=levels.device, dtype=dtype),
                 cam,
                 front_sign,
                 screen_height,
                 kernel,
                 share_patches,
+                slack,
             )
             failed = (error * self._flatness_safety_factor) > threshold
             if level == max_level:
@@ -1396,21 +1614,27 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self,
         control_points,
         selected,
-        level,
+        pattern,
         cam,
         front_sign,
         screen_height,
         kernel=None,
         share_patches=False,
+        slack=None,
     ):
-        """Peak pixel deviation of each selected patch's level-``level`` dice,
+        """Peak pixel deviation of each selected patch's dice under ``pattern``,
         sampled at ``_flatness_sample_weights`` within every microtriangle.
+
+        The criterion knows nothing about the shape of the dice beyond the list
+        of microtriangles ``pattern`` hands it, which is what lets an
+        anisotropic candidate be judged by exactly the arithmetic that judged
+        the uniform one.
         """
         device = control_points.device
         dtype = control_points.dtype
-        vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
-        triangle_indices = subdivision_triangle_indices(level, device=device)
-        corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
+        vertex_uv = pattern.vertex_uv
+        triangle_indices = pattern.triangle_indices
+        corner_uv = vertex_uv[triangle_indices]
         weights = _sample_tensor(self._flatness_sample_weights, device, dtype)
         if kernel is not None:
             # The kernel evaluates the patch at each microtriangle's own corners
@@ -1427,12 +1651,13 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     # ``nonzero`` hands back a transposed view on CUDA, which a
                     # Taichi ndarray cannot take.
                     selected.to(torch.int32).contiguous(),
-                    corner_uv,
+                    corner_uv.contiguous(),
                     weights,
                     kernel.cam_origin,
                     kernel.screen_point,
                     kernel.screen_basis,
                     kernel.front_sign,
+                    kernel.slack,
                     error,
                     float(screen_height) / 2.0,
                     self.screen_guard_factor * float(screen_height),
@@ -1482,6 +1707,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 tuple(value.index_select(0, frames) for value in cam),
                 front_sign.index_select(0, frames),
                 screen_height,
+                None if slack is None else slack.index_select(0, frames),
             ).amax(dim=1)
         return error
 
@@ -1578,21 +1804,33 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             "logical PN edges",
         )
         output_height = getattr(camera, "output_screen_height", camera.screen_height)
-        levels, edge_levels = self._required_subdivision_levels(
-            control_points,
-            edge_controls,
-            cam_o,
-            sp,
-            sb,
-            output_height,
-            geometry_static,
+        # How far this mesh's logical surface may itself be from the surface it
+        # approximates, in world units, at the size it is being rendered at.
+        # The level searches subtract its projection from what they measure.
+        slack = None
+        if rt_settings.PN_GEOMETRY_SLACK and self.geometry_slack_ratio > 0:
+            slack = _expand_frames(
+                mean_patch_edge_length(source_corners) * self.geometry_slack_ratio,
+                num_frames,
+            )
+        levels, edge_levels, apex_levels, across_levels = (
+            self._required_subdivision_levels(
+                control_points,
+                edge_controls,
+                cam_o,
+                sp,
+                sb,
+                output_height,
+                geometry_static,
+                slack,
+            )
         )
 
         # Each frame packs its patches back to back at their own diced sizes;
         # only the batch's widest frame sets the padded width. A frame that
         # needs a fraction of the detail no longer pays for the frame that
         # needs the most, and neither does a patch for its neighbours.
-        counts = self._triangle_counts(levels)
+        counts = dice_triangle_count(levels, across_levels)
         offsets = counts.cumsum(1) - counts
         max_triangles = int(counts.sum(1).amax().item()) if counts.numel() else 0
 
@@ -1714,8 +1952,21 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         batch_columns = torch.arange(max_triangles, device=device)
         padding = batch_columns >= frame_totals.unsqueeze(1)
 
-        for level in levels.unique(sorted=True).tolist():
-            level = int(level)
+        # One group per distinct dice shape, not per level: two patches at the
+        # same interior level dice differently when one of them was allowed to
+        # stay coarse across (see ``_coarsest_across_levels``).
+        shape_keys = (
+            levels * (self.max_subdivision_level + 1) + across_levels
+        ) * 3 + apex_levels
+        for key in shape_keys.unique(sorted=True).tolist():
+            key = int(key)
+            pattern = dice_pattern(
+                key // (3 * (self.max_subdivision_level + 1)),
+                (key // 3) % (self.max_subdivision_level + 1),
+                key % 3,
+                device=device,
+                dtype=dtype,
+            )
             # PATCH-major *only where the dedup can use it*: ``nonzero`` on the
             # transpose lists every frame of a patch consecutively, which is
             # what lets the dedup below see its duplicates inside one chunk (a
@@ -1728,15 +1979,15 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             # against 0.97x on the deforming half of a real scene's dice calls.
             # The writes are disjoint and ``index_copy_`` does not care about
             # order, so the diced output is the same either way.
-            trying = levels == level
+            trying = shape_keys == key
             selected = (
                 trying.t().contiguous().nonzero().flip(-1)
                 if geometry_static
                 else trying.nonzero()
             )
-            vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
-            triangle_indices = subdivision_triangle_indices(level, device=device)
-            boundary = subdivision_boundary_map(level, device=device)
+            vertex_uv = pattern.vertex_uv
+            triangle_indices = pattern.triangle_indices
+            boundary = pattern.boundary
             num_triangles = triangle_indices.shape[0]
             columns = torch.arange(num_triangles, device=device)
             chunk = max(1, int(self.max_scratch_triangles) // num_triangles)
@@ -1770,7 +2021,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                         evaluate_logical_pn(controls.unsqueeze(0), vertex_uv)[0],
                         deduped,
                     ),
-                    level,
+                    pattern.edge_levels,
                     edges,
                     boundary,
                 )
@@ -1785,7 +2036,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                             )[0],
                             deduped,
                         ),
-                        level,
+                        pattern.edge_levels,
                         edges,
                         boundary,
                     ),
@@ -1827,6 +2078,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self._logical_pn_padding = padding
         self._logical_pn_subdivision_levels = levels
         self._logical_pn_edge_levels = edge_levels
+        self._logical_pn_across_levels = across_levels
+        self._logical_pn_apex = apex_levels
+        self._logical_pn_triangle_counts = counts
 
     def project_to_screen(self, camera, light_sources):
         self._dice_logical_pn(camera)
