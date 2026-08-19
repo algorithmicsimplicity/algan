@@ -1,9 +1,11 @@
 # Algan — the sheet resolve: analytic AA as data, not control flow
 
 **STATUS: BUILT AND SHIPPED (2026-08-19), same day as the decision.** The
-sheet resolve is the default renderer for every batch it accepts; the
-committed baselines (all four sets) were regenerated once under it, frames
-reviewed. Each phase's record lives inline in §8, and every deviation from
+sheet resolve is the default renderer for every batch it accepts; both CUDA
+baseline sets were regenerated once under it on the box that owns them,
+frames reviewed. The CPU sets are deliberately still the old epoch: they are
+regenerated on the CI machine (owner's decision, 2026-08-19), and until then
+`tests/full_renders` and the fast pixel compare are only meaningful on CUDA. Each phase's record lives inline in §8, and every deviation from
 the plan is annotated where the plan states the original intent — the two
 that matter: the one-mesh ceiling SURVIVES as sheet data (§7's subsumption
 claim was refuted by measurement), and P7's slot rework is DEFERRED because

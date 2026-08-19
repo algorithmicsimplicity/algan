@@ -124,7 +124,8 @@ Z_SENTINEL = 0x7FFFFFFFFFFFFFFF
 _AA_FILTER_RADIUS = 0.7071067811865476
 
 # A fragment whose analytic coverage is at least this is treated as covering the
-# whole pixel: it may occupy the opaque z-prepass and truncate a sorted run.
+# whole pixel: a materially opaque fragment at this coverage (with a full sample
+# mask) ends its pixel's kept fragment prefix at emission (opaque truncation).
 AA_FULL_COVERAGE = 1.0 - 1e-6
 
 # Mask word layout: bits 0..N-1 the sample set, then the flags below, which sit
@@ -1915,10 +1916,10 @@ def raster_tri_count(
         pair_accept: ti.types.ndarray()):
     """Count surviving nonzero-alpha transparent triangle fragments.
 
-    ``partial_only`` (analytic coverage only): emit just the partially covered
-    fragments, so the host can run this pass over the proven-opaque candidates
-    as well -- their fully covered pixels already sit in the z-prepass and only
-    their silhouette pixels need to blend.
+    ``partial_only`` (compile-time, analytic coverage only): emit just the
+    partially covered fragments. No live call site instantiates it (the
+    deleted dense path used it to skip pixels its opaque z-prepass already
+    owned); the sparse emission always passes 0, as it does for ``z_cull``.
 
     ``pair_accept[p]`` records the per-pixel acceptance decisions as a bitmask
     (bit ``j`` = chunk pixel ``j`` survived; ``RASTER_CHUNK`` is 32, one i32).
@@ -1949,9 +1950,9 @@ def raster_tri_count(
                 keep = True
                 if ti.static(partial_only):
                     if ti.static(_tri_run(aa)):
-                        # Mirror of raster_tri_z's sampled-claim keying: only
-                        # full-MASK fragments sit in the prepass, so only they
-                        # are excluded here.
+                        # Under the run rule "fully covered" is keyed by the
+                        # sample MASK (a full-mask fragment claims the whole
+                        # pixel), so only full-mask fragments are excluded.
                         keep = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
                     else:
                         keep = cov < AA_FULL_COVERAGE
@@ -2054,10 +2055,9 @@ def raster_bez_count(
     """Count surviving nonzero-alpha translucent circuit fragments.
 
     ``partial_only`` (compile-time, analytic coverage only): emit ONLY the
-    partially covered fragments.  The host uses it to run this pass over the
-    proven-opaque candidate pairs as well -- their fully covered pixels are
-    already in the z-prepass, and their silhouette pixels are exactly the ones
-    that need to blend.
+    partially covered fragments. No live call site instantiates it (the
+    deleted dense path used it alongside its opaque z-prepass); the sparse
+    emission always passes 0, as it does for ``z_cull``.
 
     ``pair_accept[p]`` records the per-pixel acceptance bits the write pass
     replays (see :func:`raster_tri_count`).
