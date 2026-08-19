@@ -1,5 +1,50 @@
 # Sheet resolve — session worklog (delete before final merge)
 
+## ============ HAND-OFF: RESUME HERE (2026-08-19, session end) ============
+Phases 0–4 are BUILT, FLIPPED and BASELINED (commit cad055e "default ON" +
+both CUDA sets; CPU sets intentionally stale — USER regenerates on the CI
+machine). The WALK-DELETION pass is MID-FLIGHT and committed as WIP in this
+very commit: raster_taichi.py (walk kernels/funcs deleted, −2254 lines,
+compiles) and raster_pipeline.py (dense path + walk shade tail + run-lanes
+reduction + _aa_group_dense deleted, imports fixed, compiles). Defaults are
+UNAFFECTED so far (deleted code was unreachable at defaults post-flip), but
+NON-default fallbacks are broken until the tracer rewrite lands.
+
+REMAINING STEPS, in order (inventory + rationale in "DELETION INVENTORY"
+below; design record in DESIGN_sheet_resolve.md §8 Phase 4):
+1. tracer.py: rewrite the route — use_raster must ALSO require sheet_route
+   and RASTER_SPARSE_COVERAGE/raster_prefill/RASTER_COVERED_SHADE;
+   sparse_coverage := use_raster; DELETE run_tile's `if use_raster:` block
+   (it called the deleted raster_iteration_zero) + tile_empty/covered
+   composite plumbing; relax sheet_route's transparent-background exclusion
+   to (not transparent_background or env_map is None).
+2. raster_pipeline.py: make shade_sparse_raster_coverage REQUIRE
+   coverage["sheets"] (raise, don't fall through — nothing else exists);
+   prepare: pass/force require_sheets semantics; check leftover `run_lanes
+   = None` residue + the stale `_tri_run_mode` comment (~line 1287).
+3. settings.py + algan/environment.py + algan/settings/raytracing_settings
+   .py: remove ANALYTIC_AA_RUN_EXACT / ANALYTIC_AA_RUN_CAP /
+   ANALYTIC_AA_ONE_MESH_DENS (globals, setters, rows, env names). KEEP
+   ANALYTIC_AA_ONE_MESH (host cap reduction feeds sheet_cap) and
+   ANALYTIC_AA_RUN_FULL (emission truncation semantics sheets rely on).
+4. tests/unit_tests/test_analytic_aa_gates.py: prune assertions about the
+   deleted ladder rungs/_aa_group_dense; keep emission-side pins.
+5. VALIDATE: `pytest -q tests/unit_tests tests/fast` (fast must be
+   BYTE-IDENTICAL vs the fresh CUDA baseline — the deleted code is dead at
+   defaults) + one full-render scene + `pytest -q --fast`; ruff --no-fix +
+   format --check on touched non-taichi files. Known/OK: pre-existing
+   test_geometry_slack failure (user: don't worry about it).
+6. Docs: CLAUDE.md rendering-pipeline paragraph (describe: emission →
+   host sheet compaction (sheets.py) → sheet_resolve_taichi one-body
+   resolve/event/shade modes; classic wavefront is the fallback for aa-off/
+   transparent+env/SPP>1); then DELETE this worklog; final commit.
+7. AFTER deletion (queue, from the design): §H nested IOR + §I self-shadow
+   by identity on sheet records; CPU baselines on the CI box (user).
+TRAPS for the next session: never edit *_taichi.py during a render; disable
+the daemon in BOTH arms of any env-var A/B; ruff never without --no-fix and
+never name *_taichi.py on its command line; one render process at a time.
+## =======================================================================
+
 Working file for the sheet-resolve implementation session started 2026-08-19.
 `DESIGN_sheet_resolve.md` is the plan of record; this file tracks execution
 state so the session can resume from summarized context. Keep it terse and
