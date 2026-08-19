@@ -172,6 +172,8 @@ def test_full_render_scene(
             video_settings=PREVIEW,
             overwrite=True,
             animate_fade_out=True,
+            codec="libx264rgb",
+            ffmpeg_params=["-crf", "0", "-preset", "fast"],
         )
 
     assert result.rendered

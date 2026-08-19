@@ -110,6 +110,8 @@ def test_the_fast_scene_renders_and_matches_its_baseline(
             video_settings=PREVIEW,
             overwrite=True,
             animate_fade_out=True,
+            codec="libx264rgb",
+            ffmpeg_params=["-crf", "0", "-preset", "fast"],
         )
 
     assert result.rendered
