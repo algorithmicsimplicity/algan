@@ -1,17 +1,18 @@
 """Host orchestration for the deterministic hybrid raster front-end.
 
-The frontend operates on the current wavefront *linear ray tile* (normally one
-or more row bands), not on fixed square GPU tiles.  Each primitive is split into
-``RASTER_CHUNK``-sized candidate chunks, exact hits are emitted, and the
-surviving fragment records are ordered by the classic deterministic
-``(depth-bin, descending layer)`` relation.  Future work should benchmark a
-true square screen-tile/bin architecture for better projection reuse and cache
-locality.
+The frontend emits exact primary coverage for the whole prepared frame window
+at once (not per GPU tile): each primitive is split into ``RASTER_CHUNK``-sized
+candidate chunks, exact hits are emitted, the surviving fragment records are
+ordered by the classic deterministic ``(depth-bin, descending layer)``
+relation, and ``sheets.compact_sheets`` aggregates them into the per-pixel
+sheet records the resolve kernel consumes (DESIGN_sheet_resolve.md).  Future
+work should benchmark a true square screen-tile/bin architecture for better
+projection reuse and cache locality.
 
 Large transient arrays are allocated from ``ManualMemory`` so failed raster
-attempts can restore the arena pointer and retry a smaller primary tile.  Torch
-sort/index scratch remains allocator-owned because PyTorch's radix sort cannot
-write directly into an arena view.
+attempts can restore the arena pointer and retry a smaller primary slice.
+Torch sort/index scratch remains allocator-owned because PyTorch's radix sort
+cannot write directly into an arena view.
 """
 
 from __future__ import annotations
@@ -62,44 +63,34 @@ LAST_AA_DUMP = {}
 
 
 def _aa_group(aa_bez, aa_tri):
-    """The resolve's ``aa_grp`` template value for this batch.
+    """The emission's ``aa_grp`` value for this batch.
 
-    One definition, because three places have to agree about it: the two
-    kernel-launch sites here, and the emission truncation below whose mitigation
-    the relaxed run gate *requires*. It drifted once -- ``ANALYTIC_AA_ONE_MESH``
-    set ``aa_grp = 3``, which ``_aa_run_full`` treats as the relaxed gate, while
-    the truncation still tested ``ANALYTIC_AA_RUN_FULL`` alone and therefore
-    withheld the mitigation. That combination runs the relaxed scan over
-    fragment lists whose area donors were already discarded, which is exactly
-    the interior notch ss6.3.2 documents; measured on CUDA, it cost a flat quad
-    -8% of ink wobble where wiring both gave -63%. Route every reader through
-    this and ``_aa_run_full`` so the question can only be answered once.
+    One definition, because the emission truncation below and the historical
+    kernel readers had to agree about it, and they drifted once --
+    ``ANALYTIC_AA_ONE_MESH`` set ``aa_grp = 3``, which ``_aa_run_full`` treats
+    as the relaxed gate, while the truncation still tested
+    ``ANALYTIC_AA_RUN_FULL`` alone and therefore withheld the mitigation. That
+    combination truncates fragment lists whose area donors the relaxed
+    semantics require, which is exactly the interior notch ss6.3.2 documents;
+    measured on CUDA, it cost a flat quad -8% of ink wobble where wiring both
+    gave -63%. Route every reader through this and ``_aa_run_full`` so the
+    question can only be answered once.
 
-    0 no grouping, 1 seam grouping, 2 + the relaxed run-scan gate (ss6.3.2),
-    3 + the one-mesh coverage cap (ss6.6, which implies 2), 4 + scaling a capped
-    fragment's occlusion write with its claim (ss6.6.2, which requires 3),
-    5 + ``frag_cap`` as a truncated run's full-mask area (ss6.8, which requires
-    the cap and therefore 3), 6 + exact run totals from the host's segment
-    reduction (ss6.7, which supersedes 5).
-
-    The ladder is a single integer, so a level inherits every level below it.
-    That is why ss6.8 sits at 5 rather than beside 4: it reads the ceiling the
-    one-mesh reduction builds, so it cannot be had without it anyway.
+    0 no grouping, 1 seam grouping, 2 + the relaxed emission-truncation gate
+    (ss6.3.2), 3 + the one-mesh coverage ceiling (ss6.6, which implies 2 --
+    the ceiling is only worth reading once the relaxed gate keeps its area
+    donors). The ladder is a single integer, so a level inherits every level
+    below it. The fragment walk's higher rungs (occlusion-write scaling, run
+    caps, exact run lanes) are gone with the walk: the sheet resolve's
+    per-sheet claim arithmetic subsumes them (DESIGN_sheet_resolve.md ss7),
+    and its only emission-side dependency is the truncation gate here.
     """
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
         aa_grp = 2
     if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
         aa_grp = 3
-        if rt_settings.ANALYTIC_AA_ONE_MESH_DENS:
-            aa_grp = 4
-            if rt_settings.ANALYTIC_AA_RUN_CAP:
-                aa_grp = 5
-    if False:  # ANALYTIC_AA_RUN_EXACT retired with the fragment walk
-        aa_grp = 6
     return aa_grp
-
-
 
 
 def _aa_dump_request():
@@ -1133,22 +1124,21 @@ def prepare_sparse_raster_coverage(
     half_w,
     half_h,
     layer_offset_triangles,
-    sheet_resolve=False,
-    require_sheets=False,
     env_in_composite=False,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
-    Unlike :func:`raster_iteration_zero`, this never allocates a tile-pixel
-    z-buffer, CSR table, coverage mask, or ray state.  Candidate bboxes launch
-    exact intersection COUNT/WRITE passes; the resulting hit records are
-    ordered in sparse hit space, then truncated after each pixel's first
-    proven-opaque hit.  The persistent result is allocated from the arena's
-    reverse pointer so forward coverage-sized wavefront state can coexist with
-    it and be reset independently.
+    No tile-pixel z-buffer, coverage mask, or ray state is allocated.
+    Candidate bboxes launch exact intersection COUNT/WRITE passes; the
+    resulting hit records are ordered in sparse hit space, truncated after
+    each pixel's first proven-opaque hit, then compacted into per-pixel
+    sheets (DESIGN_sheet_resolve.md) for the resolve.  The persistent result
+    is allocated from the arena's reverse pointer so forward coverage-sized
+    wavefront state can coexist with it and be reset independently.
 
-    Returns ``None`` when no exact pixel is covered, otherwise a dict containing
-    compact ``frag_*``, ``covered_idx``, and ``run_offsets`` arrays.
+    Returns ``None`` when no exact pixel is covered, otherwise a dict
+    containing compact ``frag_*``, ``covered_idx`` and ``run_offsets``
+    arrays plus the ``sheet_*`` arrays the resolve consumes.
 
     Under analytic circuit coverage the per-fragment ``frag_cov`` lane carries
     the fraction of the pixel square each circuit fragment covers, and the
@@ -1255,9 +1245,11 @@ def prepare_sparse_raster_coverage(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 3/4 select the RUN-CORRECTED representation under rule A (clamp) /
-    # B (redistribute) for corr > 1 (DESIGN_analytic_aa_v2.md ss4.4; see
-    # _tri_run_mode). Value 2 belonged to the deleted cells accounting.
+    # 3/4 select the RUN-CORRECTED representation for corr > 1 under rule A
+    # (clamp) / B (redistribute) (DESIGN_analytic_aa_v2.md ss4.4). Both map to
+    # the same emission representation (raster_taichi._tri_repr == 2); the
+    # rule itself now lives in the sheet resolve's per-sheet redistribution.
+    # Value 2 belonged to the deleted cells accounting.
     if aa_tri and rt_settings.ANALYTIC_AA_RUN:
         aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
     # The sample-less-triangle policy rides along in the value the GEOMETRY
@@ -1277,25 +1269,18 @@ def prepare_sparse_raster_coverage(
             + 4 * min(aa_tri - 1, 2)
         )
     aa_grp = _aa_group(aa_bez, aa_tri)
-    # The sheet resolve (DESIGN_sheet_resolve.md) consumes EXACT areas, so it
-    # engages only when every geometry kind present emits them: triangles need
-    # the run representation (aa_tri >= 3), circuits their SDF coverage. The
-    # caller already gated on shadows and the sparse route; this is the
-    # emission-side half of the same decision, pinned into the returned dict
-    # so the resolve can never disagree with what was compacted.
-    sheets_wanted = bool(sheet_resolve) and (
-        (not has_tri or aa_tri >= 3) and (not has_bez or aa_bez > 0)
-    )
-    if require_sheets and not sheets_wanted:
-        # The tracer relaxed the sparse gate (env map / in-kernel tonemap) on
-        # the promise that the sheet resolve serves this batch; rendering it
-        # through the fragment walk here would silently paint the wrong
-        # background. A loud mismatch beats a quiet wrong frame — same
-        # precedent as the analytic-raster/use_raster check in tracer.py.
+    # The sheet resolve (DESIGN_sheet_resolve.md) consumes EXACT areas, so
+    # every geometry kind present must emit them: triangles need the run
+    # representation (aa_tri >= 3), circuits their SDF coverage. The route
+    # decision (analytic_raster_route_active) promises exactly this; there is
+    # no other resolve to fall back to, so an emission-side disagreement is a
+    # bug to surface, not a fallback to take — the same precedent as the
+    # analytic-raster/use_raster check in tracer.py.
+    if (has_tri and aa_tri < 3) or (has_bez and aa_bez <= 0):
         raise RuntimeError(
-            "The sheet resolve was required for this batch (env map or "
-            "in-kernel tonemap on the sparse route) but the emission cannot "
-            "produce sheets under the current analytic-AA settings."
+            "The sparse route is served by the sheet resolve, but the "
+            "emission cannot produce sheets under the current analytic-AA "
+            "settings (the route decision and the emission disagree)."
         )
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -1481,11 +1466,11 @@ def prepare_sparse_raster_coverage(
             if aa_tri >= 3:
                 full_s = (msk_s & AA_MASK_ALL) == AA_MASK_ALL
                 if _aa_run_full(aa_grp):
-                    # ss6.3.2 needs the run scan to SEE its sheet's area donors,
+                    # ss6.3.2 needs the sheet claims to SEE their area donors,
                     # and this truncation is what hides them: a full-mask
                     # fragment cuts its pixel's prefix right there, so the
                     # empty-mask donors that complete its sheet's tiling never
-                    # reach the resolve. The run then sums E over the one
+                    # reach the compaction. The sheet then sums E over the one
                     # fragment it can see and darkens the pixel by (1 - E) --
                     # correct at a silhouette, a NOTCH in an interior tiling,
                     # and indistinguishable after the cut. Measured before this
@@ -1626,20 +1611,6 @@ def prepare_sparse_raster_coverage(
             )
             one_mesh_cap = (one_mesh, seg, cap_pix)
 
-        # -- EXACT RUN TOTALS (DESIGN_mesh_identity.md ss6.7) ----------------
-        # What ``_aa_run_scan`` walks forward for, computed here as a segment
-        # reduction instead. The kernel's scan stops after
-        # ``_AA_MAX_RUN_SCAN = 16`` fragments, so on a longer run it hands the
-        # rule a partial area sum AND a partial sample union; both terms of
-        # ``corr = min(E, 1) / Q`` are then wrong. A run is a maximal set of
-        # CONSECUTIVE fragments sharing (pixel, surface, facing) and broken by a
-        # circuit -- exactly the scan's three terminators -- which makes it a
-        # segment, and the host already owns the CSR that defines it.
-        #
-        # This does not merely raise the limit, it deletes the loop: the kernel
-        # reads E, U and the run's extent in O(1).
-        run_lanes = None
-
         num_covered = int(covered.numel())
         # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
         # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
@@ -1674,63 +1645,61 @@ def prepare_sparse_raster_coverage(
         # composites a few depth-sorted sheets per pixel instead of walking
         # the raw fragment list. Intermediates are allocator-owned (like the
         # torch sort scratch above); only the final sheet arrays persist.
-        sheet_data = None
-        if sheets_wanted:
-            from algan.rendering.raytracing.sheets import compact_sheets
+        from algan.rendering.raytracing.sheets import compact_sheets
 
-            stream = compact_sheets(
-                {
-                    "frag_key": frag_key,
-                    "frag_ref": frag_ref,
-                    "frag_ab": frag_ab,
-                    "frag_cov": frag_cov,
-                    "frag_msk": frag_msk,
-                    "frag_cap": frag_cap,
-                    "covered_idx": covered_idx,
-                    "run_offsets": run_offsets,
-                    "num_fragments": num_frags,
-                    "num_covered": num_covered,
-                },
-                merged,
-                cam_origin,
-                pixel_world_scale,
-                int(time_start),
-                int(width),
-                int(height),
-                band_rule="prim",
-                band_c=2.0,
-                tri_screen=tri_screen,
-            )
-            ns = int(stream["num_sheets"])
-            sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
-            sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-            sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
-            sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-            sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-            sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-            sheet_offsets = _arena_tensor(
-                memory, (num_covered + 1,), torch.int32, persist=True
-            )
-            sheet_key.copy_(stream["sheet_key"])
-            sheet_ref.copy_(stream["sheet_ref"])
-            sheet_ab.copy_(stream["sheet_ab"])
-            sheet_cov.copy_(stream["sheet_cov"])
-            sheet_msk.copy_(stream["sheet_msk"])
-            sheet_cap_t.copy_(stream["sheet_cap"])
-            sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
-            sheet_data = {
-                "sheet_key": sheet_key,
-                "sheet_ref": sheet_ref,
-                "sheet_ab": sheet_ab,
-                "sheet_cov": sheet_cov,
-                "sheet_msk": sheet_msk,
-                "sheet_cap": sheet_cap_t,
-                "sheet_offsets": sheet_offsets,
-                "num_sheets": ns,
-                # Pinned with the emission like aa_*: the resolve's env
-                # handling must match the frame buffer this batch prefilled.
-                "env_in_composite": bool(env_in_composite),
-            }
+        stream = compact_sheets(
+            {
+                "frag_key": frag_key,
+                "frag_ref": frag_ref,
+                "frag_ab": frag_ab,
+                "frag_cov": frag_cov,
+                "frag_msk": frag_msk,
+                "frag_cap": frag_cap,
+                "covered_idx": covered_idx,
+                "run_offsets": run_offsets,
+                "num_fragments": num_frags,
+                "num_covered": num_covered,
+            },
+            merged,
+            cam_origin,
+            pixel_world_scale,
+            int(time_start),
+            int(width),
+            int(height),
+            band_rule="prim",
+            band_c=2.0,
+            tri_screen=tri_screen,
+        )
+        ns = int(stream["num_sheets"])
+        sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
+        sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+        sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
+        sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+        sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+        sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+        sheet_offsets = _arena_tensor(
+            memory, (num_covered + 1,), torch.int32, persist=True
+        )
+        sheet_key.copy_(stream["sheet_key"])
+        sheet_ref.copy_(stream["sheet_ref"])
+        sheet_ab.copy_(stream["sheet_ab"])
+        sheet_cov.copy_(stream["sheet_cov"])
+        sheet_msk.copy_(stream["sheet_msk"])
+        sheet_cap_t.copy_(stream["sheet_cap"])
+        sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+        sheet_data = {
+            "sheet_key": sheet_key,
+            "sheet_ref": sheet_ref,
+            "sheet_ab": sheet_ab,
+            "sheet_cov": sheet_cov,
+            "sheet_msk": sheet_msk,
+            "sheet_cap": sheet_cap_t,
+            "sheet_offsets": sheet_offsets,
+            "num_sheets": ns,
+            # Pinned with the emission like aa_*: the resolve's env
+            # handling must match the frame buffer this batch prefilled.
+            "env_in_composite": bool(env_in_composite),
+        }
 
         # Recorded for calibration: the fragment/covered counts are this
         # scope's value-dependent drivers and are only known once the COUNT
@@ -1749,14 +1718,12 @@ def prepare_sparse_raster_coverage(
     # 4+4 B/covered) coexist in the arena at the copy. Amortized per output
     # frame so the render-chunk preflight sizes later chunks to fit it instead
     # of over-committing.
-    # 28 B/fragment of compact result, plus the exact-run lanes (f32 + i32)
-    # when they are live -- they are allocated persist=True beside the rest.
+    # 28 B/fragment of compact result, plus 32 B of persistent sheet record +
+    # the sheet CSR. The torch-side sort and scatter intermediates are
+    # allocator-owned, like the fragment sort's.
     per_frag = 28
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
-    if sheet_data is not None:
-        # 32 B of persistent sheet record + the CSR. The torch-side sort and
-        # scatter intermediates are allocator-owned, like the fragment sort's.
-        discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
+    discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
@@ -1778,9 +1745,8 @@ def prepare_sparse_raster_coverage(
         "aa_tri": aa_tri,
         "aa_grp": aa_grp,
     }
-    if sheet_data is not None:
-        result.update(sheet_data)
-        result["sheets"] = True
+    result.update(sheet_data)
+    result["sheets"] = True
     return result
 
 
@@ -1840,224 +1806,224 @@ def shade_sparse_raster_coverage(
     num_covered = c1 - c0
     covered_idx = coverage["covered_idx"][c0:c1]
 
-    if coverage.get("sheets"):
-        # THE SHEET RESOLVE (DESIGN_sheet_resolve.md). The emission compacted
-        # this window's fragments into per-pixel sheets; composite and shade
-        # those instead of walking the raw fragment list. Same slicing
-        # discipline as the fragment path below, same ray-state contract.
-        # Shadows run as two launches of the SAME kernel body: mode 1 walks
-        # the transport and writes one candidate event per accepted lit
-        # triangle sheet (event identity = sheet index, no atomics), the
-        # host compacts + traces them, and mode 2 shades reading the traced
-        # visibility. Shadow-free batches take mode 0 in one launch.
-        from algan.rendering.raytracing.sheet_resolve_taichi import (
-            sheet_resolve_shade,
+    if not coverage.get("sheets"):
+        # The sheet compaction is the only resolve since the fragment walk's
+        # deletion; a sparse coverage dict without sheet records means the
+        # emission and this call disagree about the route. Fail loudly
+        # rather than paint nothing.
+        raise RuntimeError(
+            "Sparse raster coverage reached the resolve without sheet "
+            "records; the fragment walk that consumed raw fragment lists "
+            "is deleted."
         )
+    # THE SHEET RESOLVE (DESIGN_sheet_resolve.md). The emission compacted
+    # this window's fragments into per-pixel sheets; composite and shade
+    # those instead of walking the raw fragment list.
+    # Shadows run as two launches of the SAME kernel body: mode 1 walks
+    # the transport and writes one candidate event per accepted lit
+    # triangle sheet (event identity = sheet index, no atomics), the
+    # host compacts + traces them, and mode 2 shades reading the traced
+    # visibility. Shadow-free batches take mode 0 in one launch.
+    from algan.rendering.raytracing.sheet_resolve_taichi import (
+        sheet_resolve_shade,
+    )
 
-        so_host = coverage.get("sheet_offsets_host")
-        if so_host is None:
-            so_host = coverage["sheet_offsets"].cpu()
-            coverage["sheet_offsets_host"] = so_host
-        s_start = int(so_host[c0])
-        s_end = int(so_host[c1])
-        sheet_offsets = _arena_tensor(memory, (num_covered + 1,), torch.int32)
-        torch.sub(
-            coverage["sheet_offsets"][c0 : c1 + 1], s_start, out=sheet_offsets
+    so_host = coverage.get("sheet_offsets_host")
+    if so_host is None:
+        so_host = coverage["sheet_offsets"].cpu()
+        coverage["sheet_offsets_host"] = so_host
+    s_start = int(so_host[c0])
+    s_end = int(so_host[c1])
+    sheet_offsets = _arena_tensor(memory, (num_covered + 1,), torch.int32)
+    torch.sub(coverage["sheet_offsets"][c0 : c1 + 1], s_start, out=sheet_offsets)
+    (rs_ro, rs_rd, rs_acc, rs_sca, rs_int, *_stubs) = state
+    sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
+    dump_req = _aa_dump_request()
+    sdump = (
+        _aa_dump_buffer(dump_req, covered_idx.device)
+        if dump_req
+        else _aa_dump_arg(covered_idx.device)
+    )
+    num_slice_sheets = s_end - s_start
+    pre_args = (
+        num_covered,
+        sheet_offsets,
+        coverage["sheet_key"][s_start:s_end],
+        coverage["sheet_ref"][s_start:s_end],
+        coverage["sheet_ab"][s_start:s_end],
+        coverage["sheet_cov"][s_start:s_end],
+        coverage["sheet_msk"][s_start:s_end],
+        coverage["sheet_cap"][s_start:s_end],
+        merged["tri_pos"],
+        merged["tri_norm"],
+        merged["tri_extra"],
+        merged["tri_colors"],
+        merged["tri_uvs"],
+        merged["tri_tex_meta"],
+        merged["textures"],
+        int(merged["num_colored_triangles"]),
+        col_row_arr,
+        merged["tri_mat_id"],
+        merged["tri_mat"],
+        merged["circuit_meta"],
+        merged["circuit_colors"],
+        merged["circuit_border_colors"],
+        light_pos,
+        light_col,
+        int(num_lights),
+        layer_offsets,
+        int(frag_flag),
+        frag_pipelines,
+        int(tri_pids),
+        int(refraction_flag),
+        int(skip_unlit_normal),
+        1 if int(merged.get("num_circuits", 0)) > 0 else 0,
+        sec_aa,
+        float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
+        int(rt_settings.glossy_reflection_mode()),
+        1 if coverage.get("env_in_composite") else 0,
+    )
+    post_args = (
+        covered_idx,
+        int(time_start),
+        int(width),
+        int(height),
+        cam_origin,
+        screen_point,
+        pixel_basis_x,
+        pixel_basis_y,
+        gen_meta,
+        rs_ro,
+        rs_rd,
+        rs_acc,
+        rs_sca,
+        rs_int,
+        rs_pix,
+        pix_accum,
+        rs_alloc,
+        1 if dump_req else 0,
+        sdump,
+    )
+    dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
+    dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
+    dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
+    dummy_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
+    if shadow_flag:
+        S = max(1, num_slice_sheets)
+        sheet_accept = _arena_tensor(memory, (S,), torch.int32, 0)
+        event_pos = _arena_tensor(memory, (S, 3), torch.float32)
+        event_snrm = _arena_tensor(memory, (S, 3), torch.float32)
+        event_fnrm = _arena_tensor(memory, (S, 3), torch.float32)
+        event_frame = _arena_tensor(memory, (S,), torch.int32, 0)
+        event_msk = _arena_tensor(memory, (S,), torch.int32, 0xF)
+        event_dp = _arena_tensor(memory, (S if sec_aa > 1 else 1, 6), torch.float32)
+        sheet_event_id = _arena_tensor(memory, (S,), torch.int32, -1)
+        sheet_resolve_shade(
+            *pre_args,
+            1,
+            sheet_accept,
+            event_pos,
+            event_snrm,
+            event_fnrm,
+            event_frame,
+            event_msk,
+            event_dp,
+            sheet_event_id,
+            dummy_vis,
+            *post_args,
         )
-        (rs_ro, rs_rd, rs_acc, rs_sca, rs_int, *_stubs) = state
-        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
-        dump_req = _aa_dump_request()
-        sdump = (
-            _aa_dump_buffer(dump_req, covered_idx.device)
-            if dump_req
-            else _aa_dump_arg(covered_idx.device)
+        acc_idx = sheet_accept[:num_slice_sheets].nonzero(as_tuple=True)[0]
+        num_events = int(acc_idx.numel())
+        shadow_vis = _arena_tensor(
+            memory,
+            (max(1, num_events), max(1, int(num_lights))),
+            torch.float32,
+            1.0,
         )
-        num_slice_sheets = s_end - s_start
-        pre_args = (
-            num_covered,
-            sheet_offsets,
-            coverage["sheet_key"][s_start:s_end],
-            coverage["sheet_ref"][s_start:s_end],
-            coverage["sheet_ab"][s_start:s_end],
-            coverage["sheet_cov"][s_start:s_end],
-            coverage["sheet_msk"][s_start:s_end],
-            coverage["sheet_cap"][s_start:s_end],
-            merged["tri_pos"],
-            merged["tri_norm"],
-            merged["tri_extra"],
-            merged["tri_colors"],
-            merged["tri_uvs"],
-            merged["tri_tex_meta"],
-            merged["textures"],
-            int(merged["num_colored_triangles"]),
-            col_row_arr,
-            merged["tri_mat_id"],
-            merged["tri_mat"],
-            merged["circuit_meta"],
-            merged["circuit_colors"],
-            merged["circuit_border_colors"],
-            light_pos,
-            light_col,
-            int(num_lights),
-            layer_offsets,
-            int(frag_flag),
-            frag_pipelines,
-            int(tri_pids),
-            int(refraction_flag),
-            int(skip_unlit_normal),
-            1 if int(merged.get("num_circuits", 0)) > 0 else 0,
-            sec_aa,
-            float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
-            int(rt_settings.glossy_reflection_mode()),
-            1 if coverage.get("env_in_composite") else 0,
-        )
-        post_args = (
-            covered_idx,
-            int(time_start),
-            int(width),
-            int(height),
-            cam_origin,
-            screen_point,
-            pixel_basis_x,
-            pixel_basis_y,
-            gen_meta,
-            rs_ro,
-            rs_rd,
-            rs_acc,
-            rs_sca,
-            rs_int,
-            rs_pix,
-            pix_accum,
-            rs_alloc,
-            1 if dump_req else 0,
-            sdump,
-        )
-        dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
-        dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
-        dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
-        dummy_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
-        if shadow_flag:
-            S = max(1, num_slice_sheets)
-            sheet_accept = _arena_tensor(memory, (S,), torch.int32, 0)
-            event_pos = _arena_tensor(memory, (S, 3), torch.float32)
-            event_snrm = _arena_tensor(memory, (S, 3), torch.float32)
-            event_fnrm = _arena_tensor(memory, (S, 3), torch.float32)
-            event_frame = _arena_tensor(memory, (S,), torch.int32, 0)
-            event_msk = _arena_tensor(memory, (S,), torch.int32, 0xF)
-            event_dp = _arena_tensor(
-                memory, (S if sec_aa > 1 else 1, 6), torch.float32
-            )
-            sheet_event_id = _arena_tensor(memory, (S,), torch.int32, -1)
-            sheet_resolve_shade(
-                *pre_args,
-                1,
-                sheet_accept,
-                event_pos,
-                event_snrm,
-                event_fnrm,
-                event_frame,
-                event_msk,
-                event_dp,
-                sheet_event_id,
-                dummy_vis,
-                *post_args,
-            )
-            acc_idx = sheet_accept[:num_slice_sheets].nonzero(as_tuple=True)[0]
-            num_events = int(acc_idx.numel())
-            shadow_vis = _arena_tensor(
-                memory,
-                (max(1, num_events), max(1, int(num_lights))),
-                torch.float32,
-                1.0,
-            )
-            if num_events:
-                sheet_event_id[:num_slice_sheets].scatter_(
-                    0,
-                    acc_idx,
-                    torch.arange(
-                        num_events, dtype=torch.int32, device=acc_idx.device
-                    ),
-                )
-                ev_pos = event_pos.index_select(0, acc_idx)
-                ev_snrm = event_snrm.index_select(0, acc_idx)
-                ev_fnrm = event_fnrm.index_select(0, acc_idx)
-                ev_frame = event_frame.index_select(0, acc_idx)
-                ev_msk = event_msk.index_select(0, acc_idx)
-                ev_dp = (
-                    event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
-                )
-                from algan.rendering.raytracing.refit_bvh import RefitBVH
-
-                raster_shadow_trace(
-                    num_events,
-                    ev_pos,
-                    ev_snrm,
-                    ev_fnrm,
-                    ev_frame,
-                    ev_msk,
-                    t_bvh.blocks,
-                    t_bvh.node_miss,
-                    t_bvh.leaf_prim,
-                    t_bvh.leaf_tspan,
-                    int(t_bvh.first_leaf),
-                    merged["tri_pos"],
-                    merged["tri_colors"],
-                    merged["tri_uvs"],
-                    merged["tri_tex_meta"],
-                    merged["textures"],
-                    int(merged["num_colored_triangles"]),
-                    bez_bvh.blocks,
-                    bez_bvh.node_miss,
-                    bez_bvh.leaf_prim,
-                    bez_bvh.leaf_tspan,
-                    int(bez_bvh.first_leaf),
-                    merged["circuit_meta"],
-                    merged["circuit_colors"],
-                    merged["circuit_border_colors"],
-                    merged["edges_2d"],
-                    merged["edge_accel"],
-                    light_pos,
-                    light_col,
-                    int(num_lights),
-                    pixel_world_scale,
-                    float(layer_offset_triangles),
-                    1 if isinstance(t_bvh, RefitBVH) else 0,
-                    1 if int(merged.get("num_triangles", 0)) > 0 else 0,
-                    1 if int(merged.get("num_circuits", 0)) > 0 else 0,
-                    ev_dp,
-                    sec_aa,
-                    shadow_vis,
-                    int(shadow_flag),
-                )
-            sheet_resolve_shade(
-                *pre_args,
-                2,
-                sheet_accept,
-                event_pos,
-                event_snrm,
-                event_fnrm,
-                event_frame,
-                event_msk,
-                event_dp,
-                sheet_event_id,
-                shadow_vis,
-                *post_args,
-            )
-        else:
-            sheet_resolve_shade(
-                *pre_args,
+        if num_events:
+            sheet_event_id[:num_slice_sheets].scatter_(
                 0,
-                dummy_i,
-                dummy_f3,
-                dummy_f3,
-                dummy_f3,
-                dummy_i,
-                dummy_i,
-                dummy_f6,
-                dummy_i,
-                dummy_vis,
-                *post_args,
+                acc_idx,
+                torch.arange(num_events, dtype=torch.int32, device=acc_idx.device),
             )
-        if dump_req:
-            _aa_dump_emit("sheet-resolve", sdump)
-        return covered_idx
+            ev_pos = event_pos.index_select(0, acc_idx)
+            ev_snrm = event_snrm.index_select(0, acc_idx)
+            ev_fnrm = event_fnrm.index_select(0, acc_idx)
+            ev_frame = event_frame.index_select(0, acc_idx)
+            ev_msk = event_msk.index_select(0, acc_idx)
+            ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
+            from algan.rendering.raytracing.refit_bvh import RefitBVH
+
+            raster_shadow_trace(
+                num_events,
+                ev_pos,
+                ev_snrm,
+                ev_fnrm,
+                ev_frame,
+                ev_msk,
+                t_bvh.blocks,
+                t_bvh.node_miss,
+                t_bvh.leaf_prim,
+                t_bvh.leaf_tspan,
+                int(t_bvh.first_leaf),
+                merged["tri_pos"],
+                merged["tri_colors"],
+                merged["tri_uvs"],
+                merged["tri_tex_meta"],
+                merged["textures"],
+                int(merged["num_colored_triangles"]),
+                bez_bvh.blocks,
+                bez_bvh.node_miss,
+                bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan,
+                int(bez_bvh.first_leaf),
+                merged["circuit_meta"],
+                merged["circuit_colors"],
+                merged["circuit_border_colors"],
+                merged["edges_2d"],
+                merged["edge_accel"],
+                light_pos,
+                light_col,
+                int(num_lights),
+                pixel_world_scale,
+                float(layer_offset_triangles),
+                1 if isinstance(t_bvh, RefitBVH) else 0,
+                1 if int(merged.get("num_triangles", 0)) > 0 else 0,
+                1 if int(merged.get("num_circuits", 0)) > 0 else 0,
+                ev_dp,
+                sec_aa,
+                shadow_vis,
+                int(shadow_flag),
+            )
+        sheet_resolve_shade(
+            *pre_args,
+            2,
+            sheet_accept,
+            event_pos,
+            event_snrm,
+            event_fnrm,
+            event_frame,
+            event_msk,
+            event_dp,
+            sheet_event_id,
+            shadow_vis,
+            *post_args,
+        )
+    else:
+        sheet_resolve_shade(
+            *pre_args,
+            0,
+            dummy_i,
+            dummy_f3,
+            dummy_f3,
+            dummy_f3,
+            dummy_i,
+            dummy_i,
+            dummy_f6,
+            dummy_i,
+            dummy_vis,
+            *post_args,
+        )
+    if dump_req:
+        _aa_dump_emit("sheet-resolve", sdump)
+    return covered_idx

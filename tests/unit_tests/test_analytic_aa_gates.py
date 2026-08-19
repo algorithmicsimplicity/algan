@@ -1,22 +1,25 @@
-"""The analytic-AA group value, and the host/kernel agreement it encodes.
+"""The analytic-AA group value, and the host agreement it encodes.
 
-``aa_grp`` is the resolve's grouping template. Three readers have to agree about
-it, and they are not all in the same language: the two kernel-launch sites in
-``raster_pipeline`` pass it to Taichi, the kernels test it through
-``_aa_run_full`` / ``_aa_one_mesh``, and the host's **emission truncation** has
-to apply the relaxed gate's mitigation whenever the kernels take the relaxed
-gate.
+``aa_grp`` is the emission's grouping value. Its readers have to agree about
+it, and historically they were not all in the same language: kernels tested it
+through ``_aa_run_full``, and the host's **emission truncation** has to apply
+the relaxed gate's mitigation whenever a reader takes the relaxed gate.
 
 They drifted, which is why this file exists. ``ANALYTIC_AA_ONE_MESH`` sets
 ``aa_grp = 3``, and ``_aa_run_full`` treats 3 as the relaxed gate (the one-mesh
 rule needs it: the near sheet's exact area is only worth reading once the gate
 lets it be read). But the truncation tested ``ANALYTIC_AA_RUN_FULL`` alone, so
-with ONE_MESH on and RUN_FULL off the kernel ran the relaxed scan over fragment
+with ONE_MESH on and RUN_FULL off the relaxed semantics ran over fragment
 lists whose empty-mask **area donors had already been discarded** -- the exact
 configuration ``DESIGN_mesh_identity.md`` ss6.3.2 measured as an interior notch,
 and the one ss6.6 documents as the shipping shape of the rule. Measured on CUDA
 before the fix: a flat quad's ink wobble improved 8% where wiring both gates gave
 63%, and a default ``Cylinder`` 47% where both gave 78%.
+
+The fragment walk's higher ladder rungs (occlusion-write scaling, run caps,
+exact run lanes) are deleted with the walk (DESIGN_sheet_resolve.md ss7); the
+sheet resolve's per-sheet claim arithmetic subsumes them, and its only
+emission-side dependency is the truncation gate pinned here.
 
 Pure settings/predicate assertions -- no render, no Taichi kernel launch -- so
 this is cheap. It is NOT marked ``fast``: it breaks when the analytic-AA gating
@@ -43,9 +46,6 @@ def restore_aa():
         rt_settings.ANALYTIC_AA_SEAM,
         rt_settings.ANALYTIC_AA_RUN_FULL,
         rt_settings.ANALYTIC_AA_ONE_MESH,
-        rt_settings.ANALYTIC_AA_ONE_MESH_DENS,
-        rt_settings.ANALYTIC_AA_RUN_CAP,
-        rt_settings.ANALYTIC_AA_RUN_EXACT,
     )
     try:
         yield
@@ -55,78 +55,58 @@ def restore_aa():
             seam=before[1],
             run_full=before[2],
             one_mesh=before[3],
-            one_mesh_dens=before[4],
-            run_cap=before[5],
-            run_exact=before[6],
         )
 
 
-def _grp(run_full, one_mesh, one_mesh_dens=False, run_cap=False, run_exact=False):
+def _grp(run_full, one_mesh):
     rt_settings.set_analytic_aa(
         True,
         seam=True,
         run_full=run_full,
         one_mesh=one_mesh,
-        one_mesh_dens=one_mesh_dens,
-        run_cap=run_cap,
-        run_exact=run_exact,
     )
     return rp._aa_group(AA_BEZ, AA_TRI)
 
 
 @pytest.mark.parametrize(
-    ("run_full", "one_mesh", "one_mesh_dens", "expected"),
+    ("run_full", "one_mesh", "expected"),
     [
-        (False, False, False, 1),  # seam grouping only
-        (True, False, False, 2),  # + the relaxed run-scan gate
-        (False, True, False, 3),  # + the one-mesh cap, which IMPLIES the relaxed gate
-        (True, True, False, 3),  # 3 subsumes 2
-        (False, True, True, 4),  # + the capped fragment's occlusion write (ss6.6.2)
-        (True, True, True, 4),  # 4 subsumes both
+        (False, False, 1),  # seam grouping only
+        (True, False, 2),  # + the relaxed truncation gate
+        (False, True, 3),  # + the one-mesh ceiling, which IMPLIES the relaxed gate
+        (True, True, 3),  # 3 subsumes 2
     ],
 )
 def test_aa_group_encodes_the_gate_combination(
-    run_full, one_mesh, one_mesh_dens, expected, restore_aa
+    run_full, one_mesh, expected, restore_aa
 ):
-    assert _grp(run_full, one_mesh, one_mesh_dens) == expected
-
-
-def test_the_dens_fix_requires_the_cap_it_corrects(restore_aa):
-    """ss6.6.2 corrects ss6.6's cap, so it is meaningless without it.
-
-    ``_aa_one_mesh_dens`` scales the ratio the CAP applied. With no cap there is
-    no ratio, and a gate that silently did something else would be worse than one
-    that does nothing.
-    """
-    assert _grp(run_full=True, one_mesh=False, one_mesh_dens=True) == 2
+    assert _grp(run_full, one_mesh) == expected
 
 
 @pytest.mark.parametrize(
-    ("run_full", "one_mesh", "one_mesh_dens"),
+    ("run_full", "one_mesh"),
     [
-        (True, False, False),
-        (False, True, False),
-        (True, True, False),
-        (False, True, True),
-        (True, True, True),
+        (True, False),
+        (False, True),
+        (True, True),
     ],
 )
-def test_every_gate_that_relaxes_the_scan_also_relaxes_the_truncation(
-    run_full, one_mesh, one_mesh_dens, restore_aa
+def test_every_gate_that_relaxes_the_semantics_also_relaxes_the_truncation(
+    run_full, one_mesh, restore_aa
 ):
-    """REGRESSION. The kernel's relaxed scan requires the host's mitigation.
+    """REGRESSION. The relaxed semantics require the truncation's mitigation.
 
-    ``_aa_run_full`` is what the kernels test, so it is also what the emission
+    ``_aa_run_full`` is what the readers test, so it is also what the emission
     truncation must test. The failure this pins is silent: output is produced,
     looks plausible, and carries interior notches the coverage harness cannot see
     because it scores silhouette pixels only.
     """
-    grp = _grp(run_full, one_mesh, one_mesh_dens)
+    grp = _grp(run_full, one_mesh)
     from algan.rendering.raytracing.raster_taichi import _aa_run_full
 
     assert _aa_run_full(grp), (
-        f"run_full={run_full} one_mesh={one_mesh} one_mesh_dens={one_mesh_dens} "
-        f"gives aa_grp={grp}, which the kernels do not treat as the relaxed gate"
+        f"run_full={run_full} one_mesh={one_mesh} "
+        f"gives aa_grp={grp}, which readers do not treat as the relaxed gate"
     )
 
 
@@ -160,25 +140,21 @@ def test_only_aa_group_reads_the_run_full_setting():
             ):
                 offenders.append(f"{node.name}:{inner.lineno}")
     assert not offenders, (
-        "ANALYTIC_AA_RUN_FULL must only be read by _aa_group, so the host and "
-        "the kernels cannot disagree about whether the relaxed run gate is "
-        f"active; also read by {offenders}"
+        "ANALYTIC_AA_RUN_FULL must only be read by _aa_group, so the emission "
+        "truncation and every other reader cannot disagree about whether the "
+        f"relaxed gate is active; also read by {offenders}"
     )
 
 
 def test_seam_grouping_off_disables_every_group_rule(restore_aa):
     """Both rules are subordinate to seam grouping, so 0 must stay 0."""
-    rt_settings.set_analytic_aa(
-        True, seam=False, run_full=True, one_mesh=True, one_mesh_dens=True
-    )
+    rt_settings.set_analytic_aa(True, seam=False, run_full=True, one_mesh=True)
     assert rp._aa_group(AA_BEZ, AA_TRI) == 0
 
 
 def test_no_grouping_without_analytic_aa_geometry(restore_aa):
     """Neither geometry arm analytic means there is nothing to group."""
-    rt_settings.set_analytic_aa(
-        True, seam=True, run_full=True, one_mesh=True, one_mesh_dens=True
-    )
+    rt_settings.set_analytic_aa(True, seam=True, run_full=True, one_mesh=True)
     assert rp._aa_group(0, 0) == 0
 
 
@@ -203,51 +179,3 @@ def test_the_tri_obj_row_does_not_depend_on_where_the_chunk_starts(time_start):
     for f_abs in range(time_start, rows):
         pix = (f_abs - time_start) * ppf + 7  # what the emission writes
         assert rp._tri_obj_row(pix, ppf, time_start, rows) == f_abs % rows
-
-
-def test_the_frag_cap_fallback_requires_the_cap_it_reads(restore_aa):
-    """ss6.8 substitutes ``frag_cap`` for a truncated run's area sum, so it is
-    meaningless where no cap was computed -- and the ladder cannot express it
-    without the one-mesh levels below it.
-    """
-    assert _grp(run_full=True, one_mesh=False, run_cap=True) == 2
-    assert _grp(run_full=True, one_mesh=True, one_mesh_dens=False, run_cap=True) == 3
-    assert _grp(run_full=True, one_mesh=True, one_mesh_dens=True, run_cap=True) == 5
-
-
-def test_exact_run_totals_sit_above_the_frag_cap_fallback(restore_aa):
-    """ss6.7 fixes the sample union and the extent as well as the area, so it
-    SUPERSEDES ss6.8 and must compile it out rather than run both.
-    """
-    from algan.rendering.raytracing.raster_taichi import _aa_run_cap, _aa_run_exact
-
-    grp = _grp(run_full=True, one_mesh=True, one_mesh_dens=True, run_exact=True)
-    assert grp == 6
-    assert _aa_run_exact(grp)
-    # The kernel gates ss6.8 on ``_aa_run_cap and not _aa_run_exact``, so both
-    # being true here is correct and the kernel is what resolves the overlap.
-    assert _aa_run_cap(grp)
-
-
-def test_the_dense_resolve_never_reaches_the_run_lanes(restore_aa):
-    """REGRESSION, and the expensive kind: silent wrong output, not a crash.
-
-    ss6.7's lanes are built by the SPARSE emission's segment reduction. The
-    dense resolve passes one-element dummies for them, and the kernel's read is
-    gated on ``aa_grp`` -- so a dense launch at 6 indexes a one-element array by
-    fragment index. It shipped that way (gated off) and it moved
-    ``shapes_and_timeline``'s fade-out frames by 31 channel values over 4,514
-    pixels, while the sparse batches holding every truncated run in the render
-    moved nothing at all.
-    """
-    from algan.rendering.raytracing.raster_taichi import _aa_run_exact
-
-    grp = _grp(run_full=True, one_mesh=True, one_mesh_dens=True, run_exact=True)
-    dense = rp._aa_group_dense(AA_BEZ, AA_TRI)
-    assert _aa_run_exact(grp), "the sparse path should take the exact totals"
-    assert not _aa_run_exact(dense), (
-        f"the dense resolve got aa_grp={dense}, which reads run lanes it was "
-        f"handed as one-element dummies"
-    )
-    # And it must not lose anything else on the way down.
-    assert dense == 5

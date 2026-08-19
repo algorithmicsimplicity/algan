@@ -223,11 +223,12 @@ WF_SKIP_UNLIT_NORMAL = env_flag("ALGAN_WF_SKIP_UNLIT_NORMAL", True)
 # Costs one Taichi kernel variant per distinct (tri, pn) material combination.
 #
 # Measured (kernel-profiler device time, benchmarks/_frag_pid_gate_profile.py):
-# 1.4x on ``raster_first_shade`` for a scene mixing several materials, and
-# NOTHING for a single-material scene or for ``wavefront_shade`` -- only the
-# raster resolve sits close enough to its occupancy cliff for the dropped
-# stages to matter. Hence experimental and off by default rather than on:
-# ALGAN_FRAG_PID_GATE=1 opts in.
+# 1.4x on the raster resolve for a scene mixing several materials (measured on
+# the fragment walk, the sheet resolve's predecessor), and NOTHING for a
+# single-material scene or for ``wavefront_shade`` -- only the raster resolve
+# sits close enough to its occupancy cliff for the dropped stages to matter.
+# Hence experimental and off by default rather than on: ALGAN_FRAG_PID_GATE=1
+# opts in.
 FRAG_PID_GATE = env_flag("ALGAN_FRAG_PID_GATE", False)
 
 
@@ -739,19 +740,12 @@ def set_raster_straddle_clip(enabled):
     RASTER_STRADDLE_CLIP = bool(enabled)
 
 
-# Empty-pixel fast path of the raster resolve: the host pre-fills every
-# primary's committed state with the retired-empty result (pix_accum row
-# [0,0,0,0, 1,1,1] -- zero colour, full leftover background weight -- with
-# the pool already pre-marked DONE), so ``raster_first_shade`` threads whose
-# pixel has no fragments and no z-prepass winner exit before ray generation
-# with zero writes, and worked pixels *store* their leftover weight instead
-# of atomically accumulating it onto a zero base.  A tile with no candidate
-# pairs at all additionally skips the resolve (and shadow-event) launches
-# entirely.  Empty screen regions previously paid ~15 ms/tile of per-pixel
-# state writes.  Byte-identical (same values, different write path);
-# validated by benchmarks/_raster_empty_skip_parity.py.  Kill-switch / A-B
-# hook; read once per render batch so the host fill and the kernel template
-# always agree.
+# Empty-pixel fast path of the raster resolve: the prefilled frame buffer IS
+# the committed state of an uncovered pixel, so the sparse route touches only
+# covered pixels and empty screen regions cost nothing.  The sheet route is
+# built on that identity, so this flag is one of its preconditions
+# (analytic_raster_route_active): switching it off routes the batch to the
+# classic supersampled wavefront.  Kill-switch / A-B hook.
 RASTER_EMPTY_SKIP = env_flag("ALGAN_RASTER_EMPTY_SKIP", True)
 
 
@@ -783,18 +777,15 @@ def set_raster_pair_flags(enabled):
     RASTER_PAIR_FLAGS = bool(enabled)
 
 
-# Covered-pixel-compacted resolve: the rasterizer already visits only the
-# pixels a primitive covers (its z-prepass sets a z-winner, its count emits
-# surviving fragments), so the set of pixels the resolve must actually shade
-# -- ``(fragments > 0) OR (z-winner)`` -- is a compact list built from those
-# per-pixel products.  ``raster_first_shade`` then launches one thread per
-# COVERED pixel instead of one per tile pixel that early-outs, turning the
-# resolve from O(tile pixels) into O(covered pixels).  Empty pixels keep the
-# host's retired-empty pre-fill untouched (so this requires RASTER_EMPTY_SKIP
-# and is disabled under an environment map, where empty pixels still sample
-# the sky in the resolve).  Byte-identical: the covered list is the ascending
-# nonzero order, so covered pixels are shaded in their original relative order
-# and skipped pixels do exactly what their early-out did (nothing).
+# Covered-pixel-compacted resolve: the emission already knows exactly which
+# pixels hold fragments, so the resolve launches one thread per COVERED pixel
+# instead of one per screen pixel that early-outs, turning the resolve from
+# O(screen pixels) into O(covered pixels).  Empty pixels keep the frame
+# buffer's prefill untouched (so this requires RASTER_EMPTY_SKIP; an
+# environment map is served by prefilling the map itself per pixel in
+# render_chunk).  A precondition of the sheet route
+# (analytic_raster_route_active): off routes the batch to the classic
+# supersampled wavefront.
 RASTER_COVERED_SHADE = env_flag("ALGAN_RASTER_COVERED_SHADE", True)
 
 
@@ -806,18 +797,15 @@ def set_raster_covered_shade(enabled):
     RASTER_COVERED_SHADE = bool(enabled)
 
 
-# Fully sparse primary-raster lifecycle.  The classic hybrid front-end used
-# conservative candidate bboxes for geometry work, but allocated/initialized
-# wavefront state, z/run buffers, accumulators, and a compaction scan for every
-# pixel in the enclosing linear wavefront tile.  This path first emits exact
-# hit records for every candidate, sorts/culls them in sparse hit space, and
-# allocates every downstream structure for the unique covered pixels only.
-#
-# It requires the retired-empty/background identity used by
-# RASTER_EMPTY_SKIP, covered-pixel resolve semantics, post-process tonemapping,
-# and no environment map.  When an environment map is present every primary
-# pixel genuinely samples the sky, so full-screen state is coverage work rather
-# than empty overhead and the dense path remains correct.
+# Fully sparse primary-raster lifecycle: emit exact hit records for every
+# candidate, sort/cull them in sparse hit space, and allocate every downstream
+# structure for the unique covered pixels only.  It requires the
+# retired-empty/background identity used by RASTER_EMPTY_SKIP and the
+# covered-pixel resolve semantics; environment maps and in-kernel tonemapping
+# are served on this route by the env prefill and the composite/uncovered
+# finalize (DESIGN_sheet_resolve.md §5).  A precondition of the sheet route
+# (analytic_raster_route_active): off routes the batch to the classic
+# supersampled wavefront.
 RASTER_SPARSE_COVERAGE = env_flag("ALGAN_RASTER_SPARSE_COVERAGE", True)
 
 
@@ -829,17 +817,19 @@ def set_raster_sparse_coverage(enabled):
 
 # The sheet resolve (DESIGN_sheet_resolve.md): the sparse emission's fragment
 # stream is compacted into per-pixel SHEETS -- maximal same-surface regions,
-# keyed (pixel, mesh, facing, depth band), carrying exact area and unioned
-# sample masks -- and the resolve composites the few depth-sorted sheets per
-# pixel instead of walking the raw fragment list. Shading is evaluated once
-# per sheet, aggregation happens before the kernel with no lookahead budget,
-# and the run-scan/one-mesh-cap machinery does not execute.
+# keyed (pixel, mesh, facing, depth band, conflict rank), carrying exact area
+# and unioned sample masks -- and the resolve composites the few depth-sorted
+# sheets per pixel instead of walking a raw fragment list. Shading is
+# evaluated once per sheet and aggregation happens before the kernel with no
+# lookahead budget.
 #
-# Default ON (the Phase-4 flip): the sheet resolve is the shipped resolve for
-# every batch it accepts — analytic AA active for the geometry present,
-# deterministic single-sample rendering, opaque background — shadows, env
-# maps and non-default tonemaps included. A batch it does not accept keeps
-# the fragment walk (aa off, transparent background); OFF is the A/B lever.
+# Default ON (the Phase-4 flip), and the ONLY resolve for analytic coverage:
+# the fragment walk it replaced is deleted. It serves every batch the route
+# accepts — analytic AA active for the geometry present, deterministic
+# single-sample rendering, transparent background only without an env map —
+# shadows, env maps and non-default tonemaps included. A batch the route does
+# not accept, or this flag OFF, renders through the classic supersampled
+# wavefront (DESIGN_sheet_resolve.md §5's stated fallback).
 SHEET_RESOLVE = env_flag("ALGAN_SHEET_RESOLVE", True)
 
 
@@ -1019,8 +1009,8 @@ ANALYTIC_AA_RUN_RULE = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 #
 # An interior full-mask fragment has ``cov`` within float dust of 1, so the gate
 # relaxes to "partial mask OR (full mask AND cov < 1 - dust)": the hot path is
-# untouched and exactly the silhouette pixels are admitted. The scan's
-# ``rU == _AA_MASK_ALL`` arm then takes ``corr = E`` (Q == 1 there) instead of
+# untouched and exactly the silhouette pixels are admitted. A full-union
+# sheet then takes ``corr = min(area, 1)`` (Q == 1 there) instead of
 # short-circuiting to 1, with the same dust band keeping a genuine interior
 # tiling bit-identical.
 #
@@ -1079,12 +1069,12 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # nothing.
 #
 # IMPLIES ANALYTIC_AA_RUN_FULL, and that implication is wired in exactly one
-# place: raster_pipeline._aa_group returns aa_grp = 3, and every reader -- both
-# kernel-launch sites AND the host's emission truncation -- asks _aa_run_full(),
-# which accepts 2 or 3. It was once wired only on the kernel side, so the relaxed
-# scan ran over fragment lists whose area donors the truncation had already
-# discarded; that cost a flat quad -8% of ink wobble where correct wiring gives
-# -63%. tests/unit_tests/test_analytic_aa_gates.py pins it.
+# place: raster_pipeline._aa_group returns aa_grp = 3, and every reader asks
+# _aa_run_full(), which accepts 2 or 3. It was once wired only on the kernel
+# side, so the relaxed semantics ran over fragment lists whose area donors the
+# truncation had already discarded; that cost a flat quad -8% of ink wobble
+# where correct wiring gives -63%.
+# tests/unit_tests/test_analytic_aa_gates.py pins it.
 #
 # DEFAULT ON. Measured on CUDA (DESIGN_mesh_identity.md ss6.6.1-3): coverage error
 # against an exact analytic reference falls 70-100% on all eleven harness cases,
@@ -1106,8 +1096,10 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # recovers those same 14 of 253, and the ceiling is IDENTICAL on notched and
 # clean pixels. Do not debug frag_cap for this; see ss6.3.2.
 #
-# Its occlusion-side defect was real and is fixed: the cap used to clip eff while
-# the occlusion write kept the uncapped dens. ANALYTIC_AA_ONE_MESH_DENS below.
+# Its occlusion-side defect was real and is fixed: the fragment walk's cap used
+# to clip eff while the occlusion write kept the uncapped dens; the sheet
+# resolve scales a capped sheet's occlusion with its claim as part of the claim
+# arithmetic itself (DESIGN_sheet_resolve.md), so there is no separate toggle.
 #
 # DETERMINISM IS A REQUIREMENT OF THIS RULE, NOT AN INCIDENTAL PROPERTY. The
 # per-pixel ceiling feeds a threshold in the resolve, so the reduction that builds
@@ -1117,106 +1109,6 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # ss6.6.4. If you change how the ceiling is computed, A/A the render (twice, same
 # settings, compare) before trusting any baseline.
 ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
-
-
-# Scale a capped fragment's OCCLUSION write by the same ratio the cap applied to
-# its CLAIM (DESIGN_mesh_identity.md ss6.6.2). Requires ANALYTIC_AA_ONE_MESH and
-# is inert without it; rides as aa_grp = 4.
-#
-# THE DEFECT IT FIXES. ANALYTIC_AA_ONE_MESH clips a fragment's eff against the
-# per-pixel ceiling, but the per-sample transmittance write is a_s = mat_alpha *
-# dens and dens was left uncapped -- so a PARTIALLY capped fragment hides more
-# background than it paints and the pixel loses energy. Fully capped fragments
-# are harmless (eff <= MIN_ALPHA continues before the svis write) and uncapped
-# ones are untouched, which is why the population is exactly the boundary pixels
-# where the ceiling bites but leaves room.
-#
-# The obvious objection is that the far sheet is really there and really does
-# occlude, so its occlusion write should stand. It should not: the near sheet's
-# own dens already occludes everything the mesh covers, and the residue the far
-# sheet was consuming stands for area OUTSIDE the mesh. Occluding it twice is
-# the same double-count on the occlusion side that the cap removes on the claim
-# side -- which is why the cap without this is half a fix rather than a
-# trade-off.
-#
-# DEFAULT ON. Measured on CUDA, _aa_run_gate_check --res md over its eleven
-# cases: claim-vs-occlusion (|ink - (1 - mean(svis))|, i.e. how much the pixel
-# hides beyond what it paints) falls from 7.8e-06..2.2e-01 to 1.1e-16..5.4e-16 --
-# float dust, which is where the arm with no cap at all sits. Rendered output
-# moves at silhouettes and shadow edges (max|d| 43-66 over 1.4-3.1% of pixel-
-# frames) and is visually indistinguishable; A/A is byte-identical on four arms.
-#
-# WHAT IT DOES NOT FIX, because ss6.6.2 predicted it would: the residual interior
-# notches and the harness's two --verify failures are UNCHANGED, to the digit.
-# That is structural rather than surprising -- both are scored on `actual`/`effs`,
-# which are the CLAIM, and this changes only the occlusion write. Those notches
-# then turned out not to be the cap's either: ~92% of them belong to ss6.3.2's
-# relaxed run gate, which this rule implies. See ss6.6.2 for both attributions.
-#
-# Cost is not resolvable on the machine that measured it. Alternating the arm
-# ORDER flips the ratio from 1.041x to 0.878x on the same 40 s shadowed scene,
-# which straddles 1.0 -- so the honest statement is "below this box's noise
-# floor", not a number. Anything quoting a percentage here needs hardware that is
-# not thermally throttling.
-ANALYTIC_AA_ONE_MESH_DENS = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH_DENS", True)
-
-
-# Take a TRUNCATED run's exact-area sum, sample union and extent from a HOST
-# segment reduction instead of the kernel's bounded forward scan
-# (DESIGN_mesh_identity.md ss6.7, ss6.7.2).
-#
-# ``_aa_run_scan`` walks at most ``_AA_MAX_RUN_SCAN = 16`` fragments, so on a
-# longer run it hands the rule a PARTIAL area sum and a PARTIAL sample union.
-# Both are segment reductions over the CSR the host already holds -- the same
-# shape as the one that builds ``frag_cap`` -- computed on the render device in
-# float64 and rounded to f32 (ss6.6.4's reproducibility pattern), and read by
-# the kernel in O(1). The union is a real OR, one bit lane at a time: summing
-# was measured to corrupt 82,061 run starts where a concave mesh lays two
-# same-facing sheets adjacently (ss6.7).
-#
-# The kernel consults the lanes ONLY where the scan reports budget truncation
-# (ss6.7.2). A complete run keeps the kernel's own sequential-f32 sum, which is
-# what keeps scenes with no truncated run byte-identical: read unconditionally,
-# the host's correctly-rounded sum differs from the kernel's by an ulp, and the
-# resolve's discrete consumers turned that into 42 channel values over 16% of a
-# materials_and_lighting frame. The bounded scan therefore STAYS (the
-# confinement needs its truncation verdict, and only the scan can reproduce the
-# shipped arithmetic on complete runs); this rule adds two lanes per fragment
-# (8 B, accounted in discovery_bytes) and deletes nothing.
-#
-# Default OFF for the remaining flip work only (DESIGN_mesh_identity_open.md
-# ssC.4: cost, and the moved scenes' baselines). Its output move is attributed:
-# it changes exactly the engaged truncated runs -- shapes_and_timeline's
-# once-mysterious fade-out move is 18 lossless pixel-frames of that population,
-# inflated ~2,000x by the H.264 decode the suite comparisons read
-# (DESIGN_mesh_identity.md ss6.7.3).
-ANALYTIC_AA_RUN_EXACT = env_flag("ALGAN_ANALYTIC_AA_RUN_EXACT", False)
-
-
-# On a run the scan could not finish, take the FULL-MASK arm's area from
-# ``frag_cap`` rather than from the scan's partial sum
-# (DESIGN_mesh_identity.md ss6.8).
-#
-# The cheap half of what ANALYTIC_AA_RUN_EXACT does, needing no new lane and no
-# new host reduction. Where the truncated run's sample union is complete the
-# rule reduces to ``corr = min(E, 1)`` -- the mesh's total claim over the pixel
-# -- and the one-mesh reduction has already computed exactly that as the larger
-# of the two sheets' exact areas, which the walk already loads. Scored per
-# truncated pixel against the unbounded run sum over the six full-render
-# scenes: exact on every text_and_media pixel where the cap exists (89,117 of
-# 106,283), residual 0.0001 on solids_and_camera, and no ``corr > 1`` pixels
-# introduced -- impossible on this arm, where Q is 1.
-#
-# It cannot reach the other 15%: a pixel holding more than one mesh has no cap,
-# and keeps the shipped partial sum. Nor does it touch the PARTIAL-mask arm,
-# which is the larger half of the limit's cost and needs the sample union
-# fixed, not just the area -- only ANALYTIC_AA_RUN_EXACT does that.
-#
-# ON by default. It moves two of the six full-render scenes (solids_and_camera by
-# 54 channel values, text_and_media by 49), and the moved pixels are the diced
-# interiors the limit was notching -- reviewed with _diff_frame.py, CUDA
-# baselines regenerated.
-ANALYTIC_AA_RUN_CAP = env_flag("ALGAN_ANALYTIC_AA_RUN_CAP", True)
 
 
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
@@ -1442,16 +1334,12 @@ def set_analytic_aa(
     run_rule=None,
     run_full=None,
     one_mesh=None,
-    one_mesh_dens=None,
-    run_cap=None,
-    run_exact=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
     global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
-    global ANALYTIC_AA_ONE_MESH, ANALYTIC_AA_ONE_MESH_DENS
-    global ANALYTIC_AA_RUN_CAP, ANALYTIC_AA_RUN_EXACT
+    global ANALYTIC_AA_ONE_MESH
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
@@ -1462,12 +1350,6 @@ def set_analytic_aa(
         ANALYTIC_AA_RUN_FULL = bool(run_full)
     if one_mesh is not None:
         ANALYTIC_AA_ONE_MESH = bool(one_mesh)
-    if one_mesh_dens is not None:
-        ANALYTIC_AA_ONE_MESH_DENS = bool(one_mesh_dens)
-    if run_cap is not None:
-        ANALYTIC_AA_RUN_CAP = bool(run_cap)
-    if run_exact is not None:
-        ANALYTIC_AA_RUN_EXACT = bool(run_exact)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")

@@ -1947,8 +1947,8 @@ def wavefront_shade(
         first_iter: ti.template(),
         # Sparse raster coverage: the ray's accumulator row is the compact
         # covered-pixel index in ``rs_int[:, 4]`` while ``rs_pix`` keeps the
-        # real window-local pixel for frame/ray addressing (matching
-        # raster_first_shade's ``compact``). Compile-time, so the classic
+        # real window-local pixel for frame/ray addressing (matching the
+        # sheet resolve's contract). Compile-time, so the classic
         # dense path compiles the extra state out entirely -- and unlike the
         # ndarray shape it probed before, a template is actually a compile-time
         # constant (``ti.static`` rejects an ndarray ``.shape`` expression).

@@ -383,6 +383,7 @@ def analytic_raster_route_active(
     environment_map=None,
     near_clip=0.0,
     far_clip=0.0,
+    transparent_background=False,
 ):
     """Whether this batch can use analytic coverage at output resolution.
 
@@ -390,11 +391,26 @@ def analytic_raster_route_active(
     and rendering.  A requested supersample level is therefore retained for
     every route that the raster frontend cannot honor; only a batch whose
     complete primary geometry has analytic coverage selects AA=1.
+
+    Analytic coverage is resolved by the sheet route and nothing else
+    (DESIGN_sheet_resolve.md; the fragment walk that once served it is
+    deleted), so the sheet resolve's own preconditions are route vetoes here:
+    with any of them off the batch falls back to the classic wavefront at the
+    requested supersample level.  A transparent background composites fine
+    from sheet leftover weight, but not together with an environment map
+    (the env prefill would fill the alpha the background owes), so that one
+    combination also falls back.
     """
     if (
         int(rt_settings.SAMPLES_PER_PIXEL) > 1
         or not rt_settings.HYBRID_RASTER
         or not rt_settings.ANALYTIC_AA
+        or not rt_settings.SHEET_RESOLVE
+        or not rt_settings.ANALYTIC_AA_RUN
+        or not rt_settings.RASTER_SPARSE_COVERAGE
+        or not rt_settings.RASTER_EMPTY_SKIP
+        or not rt_settings.RASTER_COVERED_SHADE
+        or (transparent_background and environment_map is not None)
         or merged.get("tri_frame_valid") is None
         or merged.get("textured_active")
         or float(near_clip) > 0.0
@@ -464,6 +480,7 @@ def effective_anti_alias_level(
     environment_map=None,
     near_clip=0.0,
     far_clip=0.0,
+    transparent_background=False,
 ):
     """Return 1 for analytic raster, otherwise the requested AA setting."""
     requested = max(1, int(requested))
@@ -473,6 +490,7 @@ def effective_anti_alias_level(
         environment_map=environment_map,
         near_clip=near_clip,
         far_clip=far_clip,
+        transparent_background=transparent_background,
     ):
         return 1
     return requested
@@ -862,7 +880,7 @@ def _build_raster_tables(
             persist=True,
         )
         # Live reads (settings convention): each kill-switch falls back to
-        # the per-(tile, frame) pair emission inside raster_iteration_zero.
+        # the per-frame pair emission inside prepare_sparse_raster_coverage.
         if (
             rt_settings.RASTER_TRI_PRECOMPUTE
             and int(merged.get("num_triangles", 0)) > 0
@@ -999,6 +1017,7 @@ def render_batch_raytraced(
         environment_map=env_map,
         near_clip=near_clip,
         far_clip=far_clip,
+        transparent_background=transparent_background,
     )
     aa = 1 if analytic_raster else max(1, int(anti_alias_level))
 
@@ -1175,17 +1194,14 @@ def render_batch_raytraced(
     # emission's compaction all answer the same question (the host/kernel
     # dual-language rule). Shadows are served by the route itself since
     # Phase 4a — the resolve kernel's event pass builds the shadow queue
-    # from sheet records, so no second walk exists. analytic_raster carries
-    # the AA-active-for-present-geometry facts the emission's own sheet gate
-    # re-checks (and prepare raises on a disagreement when the route was
-    # load-bearing for env/tonemap).
-    sheet_route = bool(
-        rt_settings.SHEET_RESOLVE
-        and analytic_raster
-        and rt_settings.ANALYTIC_AA_RUN
-        and samples <= 1
-        and not transparent_background
-    )
+    # from sheet records, so no second walk exists. The sheet resolve is
+    # the ONLY resolve for analytic coverage (the fragment walk is deleted),
+    # so its preconditions — SHEET_RESOLVE, ANALYTIC_AA_RUN, the sparse
+    # toggles, samples <= 1, transparent background only without an env map
+    # — all live inside analytic_raster_route_active, and the route IS the
+    # analytic-raster decision. prepare_sparse_raster_coverage still raises
+    # on an emission-side disagreement rather than painting a wrong frame.
+    sheet_route = analytic_raster
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
     # kernel specialization unchanged (see shading_taichi._run_frag_pipeline).
@@ -1477,7 +1493,6 @@ def render_batch_raytraced(
                             near_clip=near_clip,
                             far_clip=far_clip,
                             analytic_raster=analytic_raster,
-                            sheet_route=sheet_route,
                         )
             frames = out.view(end - start, height, width, C_out)
             # Post-processing launches Taichi kernels (the tonemap in particular)
@@ -1558,8 +1573,6 @@ def _run_wavefront_tiles(
     auto_extra_primary_bytes=0,
     auto_fixed_bytes=0,
     gen_fused=False,
-    raster=False,
-    raster_prefill=False,
     global_hits=True,
     analytic_raster=False,
 ):
@@ -1580,11 +1593,9 @@ def _run_wavefront_tiles(
     t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
-    # Post-process tonemapping (t_val == 3): the composite writes linear HDR
-    # and is a no-op on empty pixels, so a whole-empty raster tile needs no
-    # composite launch and a partially-covered one composites over just its
-    # covered pixels. Placeholder covered list for the non-compacted calls.
-    post_tonemap = t_val == 3
+    # Placeholder covered list: the composite kernel keeps its covered-compact
+    # arguments (the sparse sheet route uses its own composite), but every
+    # tile here runs the full non-compacted pass.
     covered_dummy = torch.zeros(1, dtype=i32, device=out.device)
     aa = max(1, int(aa_level))
     do_aa = aa > 1
@@ -1604,15 +1615,6 @@ def _run_wavefront_tiles(
         int_init = torch.tensor(
             [int(max_bounces), 0, 0, 0], dtype=i32, device=out.device
         )
-    if raster and raster_prefill:
-        # Retired-empty pre-fill (RASTER_EMPTY_SKIP): zero colour + full
-        # leftover background weight. With the pool pre-marked DONE this IS
-        # the committed state of an empty pixel, so raster_first_shade
-        # threads with nothing to shade exit without writing anything.
-        pix_init = torch.tensor(
-            [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=f32, device=out.device
-        )
-
     aa_accum = None
     if do_aa:
         aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
@@ -1692,22 +1694,7 @@ def _run_wavefront_tiles(
                             rs_kf,
                         ) = state
 
-                        if raster:
-                            # Hybrid raster front-end: no generate pass.
-                            # Primary slots are written (or retired) by
-                            # raster_first_shade; pre-mark every pool slot
-                            # DONE (status 1) so the post-raster full-pool
-                            # compaction sees only the continuations the
-                            # raster actually spawned, and seed the shared
-                            # allocator past the primary slots.
-                            if raster_prefill:
-                                pix_accum.copy_(pix_init)
-                            else:
-                                pix_accum.zero_()
-                            rs_int[:, 2].fill_(1)
-                            rs_alloc.zero_()
-                            rs_alloc[0] = attempt_primary
-                        elif gen_fused:
+                        if gen_fused:
                             pix_accum.zero_()
                             rs_alloc.zero_()
                         else:
@@ -1757,7 +1744,7 @@ def _run_wavefront_tiles(
                                 rs_alloc,
                             )
 
-                        _res = run_tile(
+                        run_tile(
                             tile_start,
                             attempt_primary,
                             pool,
@@ -1766,48 +1753,9 @@ def _run_wavefront_tiles(
                             pix_accum,
                             rs_alloc,
                         )
-                        # The general raster run_tile returns (tile_empty,
-                        # covered_idx, num_covered); the legacy orchestrators
-                        # return None (never raster, never empty/compacted).
-                        if isinstance(_res, tuple):
-                            tile_empty, tile_covered_idx, tile_num_covered = _res
-                        else:
-                            tile_empty = bool(_res)
-                            tile_covered_idx, tile_num_covered = None, 0
-                    except (InsufficientMemoryException, RuntimeError) as exc:
-                        # Taichi launches OOM as a bare RuntimeError from their
-                        # own allocator; treat those as OOM, re-raise real ones.
-                        if not isinstance(
-                            exc, InsufficientMemoryException
-                        ) and not is_cuda_oom(exc):
-                            raise
+                    except (InsufficientMemoryException, RuntimeError):
                         memory.set_pointers(state_ptrs)
-                        if not raster:
-                            raise
-                        # Raster scratch (fragment records, sort scratch, the
-                        # sparse shadow-event queue) scales with the tile's
-                        # fragment volume, which the up-front tile sizing
-                        # cannot know. Retry the tile with half the primaries
-                        # rather than discarding the whole frame window.
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Raster scratch did not fit for a single "
-                                "pixel. Lower the resolution or transparency "
-                                "complexity."
-                            ) from exc
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        logger.log(
-                            PERF,
-                            "Hybrid raster tile did not fit for "
-                            f"{tile_start}:{tile_start + attempt_primary}; "
-                            f"retrying with {next_primary} primaries",
-                        )
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        continue
+                        raise
 
                     overflow = pool_ratio > 1 and int(rs_alloc[1].item()) != 0
                     if overflow:
@@ -1845,18 +1793,7 @@ def _run_wavefront_tiles(
                             out,
                             aa_accum,
                         )
-                    elif post_tonemap and tile_empty:
-                        # Linear composite is a no-op on empty pixels and the
-                        # whole tile is empty, so ``out`` already holds the
-                        # pre-filled background -- skip the launch entirely.
-                        pass
                     else:
-                        # Compact over the covered pixels when the linear
-                        # composite makes empty pixels no-ops (post-tonemap
-                        # and a covered list is available); otherwise the full
-                        # pass, using the lean ``empty`` variant for a
-                        # whole-empty tile under in-composite tonemapping.
-                        use_cc = post_tonemap and tile_covered_idx is not None
                         wf_composite_accum(
                             int(time_start),
                             int(width),
@@ -1866,10 +1803,10 @@ def _run_wavefront_tiles(
                             pix_accum,
                             t_val,
                             float(rt_settings.TONEMAP_EXPOSURE),
-                            0 if use_cc else (1 if tile_empty else 0),
-                            1 if use_cc else 0,
-                            tile_covered_idx if use_cc else covered_dummy,
-                            int(tile_num_covered) if use_cc else 0,
+                            0,
+                            0,
+                            covered_dummy,
+                            0,
                             out,
                         )
                     memory.set_pointers(state_ptrs)
@@ -1925,7 +1862,6 @@ def raytrace_render_wavefront(
     near_clip=0.0,
     far_clip=0.0,
     analytic_raster=False,
-    sheet_route=False,
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
@@ -2139,14 +2075,18 @@ def raytrace_render_wavefront(
     # separate funcs -- a mesh scene's flat triangles and its PN patches each
     # get their own gate.
     tri_pids = _frag_pid_mask(merged, "tri", has_tri)
-    # Hybrid raster front-end: replace iteration zero with an opaque typed
-    # visibility buffer plus ordered transparent fragment runs. PN patches are
-    # conservatively routed to the classic path without altering their geometry.
-    # Primary hard and soft shadows use the exact sparse event queue. Non-zero
-    # emitter radii are sampled with the same deterministic golden-angle fan as
-    # the classic wavefront path.
+    # Hybrid raster front-end: primary visibility resolved by the sheet route
+    # (DESIGN_sheet_resolve.md) — the sparse emission compacts exact analytic
+    # coverage into per-pixel sheets and one kernel resolves, builds shadow
+    # events for, and shades them; only bounced continuations enter the
+    # classic wavefront loop. PN patches are conservatively routed to the
+    # classic path without altering their geometry. This re-derives the route
+    # from the live toggles and the merged batch facts so drift against the
+    # allocation-time decision (analytic_raster, which IS the sheet route) is
+    # caught below rather than rendered wrong.
     use_raster = (
         rt_settings.HYBRID_RASTER
+        and analytic_raster
         and merged.get("tri_frame_valid") is not None
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
         and not merged.get("textured_active")
@@ -2154,35 +2094,21 @@ def raytrace_render_wavefront(
         and len(frag_scatters) == 0
         and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
+        and rt_settings.RASTER_SPARSE_COVERAGE
+        and rt_settings.RASTER_EMPTY_SKIP
+        and rt_settings.RASTER_COVERED_SHADE
     )
     if analytic_raster and not use_raster:
         raise RuntimeError(
             "Analytic raster AA was selected before allocation, but the "
             "wavefront route rejected the batch."
         )
-    # Empty-pixel fast path (settings.RASTER_EMPTY_SKIP): read ONCE per batch
-    # so the host's retired-empty pix_accum pre-fill in _run_wavefront_tiles
-    # and raster_first_shade's compile-time ``prefill`` template can never
-    # disagree mid-render. An environment map disables the whole-tile resolve
-    # skip (every empty pixel still samples the map) but keeps the pre-fill.
-    raster_prefill = bool(use_raster and rt_settings.RASTER_EMPTY_SKIP)
     env_active = env_meta is not None and int(env_meta[1]) > 0
-    # The env/tonemap conditions die under the sheet route
-    # (DESIGN_sheet_resolve.md §5): the frame buffer is the background stage
-    # (env prefilled per pixel in render_chunk), the resolve stays linear,
-    # and an in-kernel tonemap moves to the composite + the uncovered-pixel
-    # finalize. Off the sheet route the historical gate stands.
-    sheet_unify = bool(sheet_route and use_raster)
-    sparse_coverage = bool(
-        use_raster
-        and rt_settings.RASTER_SPARSE_COVERAGE
-        and raster_prefill
-        and rt_settings.RASTER_COVERED_SHADE
-        and (
-            (not env_active and _get_tonemap_t_val() == 3)
-            or sheet_unify
-        )
-    )
+    # The sheet route is the only raster resolve (the dense fragment walk is
+    # deleted): env-mapped batches prefill the frame buffer in render_chunk,
+    # the resolve stays linear, and an in-kernel tonemap runs in the
+    # composite + the uncovered-pixel finalize (DESIGN_sheet_resolve.md §5).
+    sparse_coverage = use_raster
 
     # Fused primary-ray generation (settings.WF_GEN_FUSED): the tile's first
     # traverse generates its rays in-kernel and the first shade uses the
@@ -2205,9 +2131,10 @@ def raytrace_render_wavefront(
 
     if merged.get("bvh_deferred") and (shadow_flag != 0 or not use_raster):
         # Runtime routing needs the trees after all: primary shadows trace
-        # them inside iteration zero, and a batch that fell back to classic
-        # primary traversal (near clip, in-place AA, flipped toggles, ...)
-        # walks them for every primary ray.
+        # them from the sheet resolve's event queue (raster_shadow_trace),
+        # and a batch that fell back to classic primary traversal (near
+        # clip, in-place AA, flipped toggles, ...) walks them for every
+        # primary ray.
         _ensure_bvhs()
 
     gen_fused = (
@@ -2483,16 +2410,7 @@ def raytrace_render_wavefront(
                 half_screen_w,
                 half_screen_h,
                 layer_offset_triangles,
-                # The sheet resolve replaces the fragment walk for this
-                # window (DESIGN_sheet_resolve.md), shadow-event build
-                # included (the resolve kernel's own event pass).
-                sheet_resolve=sheet_route,
-                # env/tonemap batches only reached the sparse route on the
-                # sheet promise, so a compaction refusal there is a bug to
-                # surface, not a fallback to take.
-                require_sheets=sheet_route
-                and (env_active or _get_tonemap_t_val() != 3),
-                env_in_composite=bool(env_active and sheet_route),
+                env_in_composite=env_active,
             )
             t_val_sparse = _get_tonemap_t_val()
             if t_val_sparse != 3:
@@ -2734,88 +2652,11 @@ def raytrace_render_wavefront(
             rs_kf,
         ) = state
         # One-element placeholder for the classic shade kernel's legacy
-        # deferred-visibility argument. Raster primary shadows use their own
-        # compact sparse any-hit event queue inside iteration zero.
+        # deferred-visibility argument.
         rs_vis = memory.get_tensor((1,), i32)
         compactor = _ArenaRayCompactor(memory, pool, i32)
         it = 0
-        # True when the raster front-end took its whole-tile empty early-out,
-        # leaving pix_accum at the untouched retired-empty constant so the
-        # composite can skip the pix_accum read (see wf_composite_accum
-        # ``empty``). ``covered_idx``/``num_covered`` carry the resolve's
-        # compact covered-pixel list so the composite can compact too (mode 3).
-        # Non-raster paths leave these at the defaults.
-        tile_empty = False
-        covered_idx = None
-        num_covered = 0
-        if use_raster:
-            # Iteration 0 via the raster front-end: primary visibility is
-            # resolved and shaded in full (straight-ray transparency capped
-            # only by MAX_SURFACES_PER_RAY); only bounced continuations enter
-            # the classic loop below. Raster scratch (z-buffer, fragment
-            # records, CSR runs and the sparse shadow-event queue) is
-            # phase-local: the temporary arena scope releases it before the
-            # bounce loop's per-iteration surface-event batches are allocated.
-            from algan.rendering.raytracing.raster_pipeline import raster_iteration_zero
-
-            with memory.temp():
-                tile_empty, covered_idx, num_covered = raster_iteration_zero(
-                    merged,
-                    tri_screen,
-                    tri_bounds,
-                    bez_bounds,
-                    memory,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    pixel_world_scale,
-                    layer_offsets_t,
-                    gen_meta,
-                    light_pos,
-                    light_col,
-                    num_lights,
-                    col_row_arr,
-                    frag_flag,
-                    frag_pipelines,
-                    int(tri_pids),
-                    int(rt_settings.WF_SKIP_UNLIT_NORMAL),
-                    refraction_flag,
-                    time_start,
-                    width,
-                    height,
-                    half_screen_w,
-                    half_screen_h,
-                    tile_start,
-                    tn_primary,
-                    state,
-                    rs_pix,
-                    pix_accum,
-                    rs_alloc,
-                    shadow_flag,
-                    t_bvh,
-                    bez_bvh,
-                    layer_offset_triangles,
-                    max_bounces,
-                    prefill=1 if raster_prefill else 0,
-                    env_active=1 if env_active else 0,
-                )
-            # A continuation-pool overflow is detected and retried by the tile
-            # host (with half as many primaries); skip the bounce loop for the
-            # doomed attempt.
-            if pool_ratio > 1 and int(rs_alloc[1].item()) != 0:
-                return False, None, 0
-            active = compactor.select(
-                rs_int, 0, source=compactor.current, scan_pool=True
-            )
-            if active.numel() > 0 and merged.get("bvh_deferred"):
-                # A continuation actually spawned (a reflective/refractive
-                # surface the merge-time deferral analysis missed): build the
-                # deferred trees before the bounce loop traverses them.
-                _ensure_bvhs()
-            it = 1
-        else:
-            active = compactor.initial(tn_primary)
+        active = compactor.initial(tn_primary)
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())
             # Fused generation: the tile's first iteration generates rays in
@@ -2957,9 +2798,6 @@ def raytrace_render_wavefront(
                 scan_pool=(pool_ratio != 1 or not rt_settings.WF_COMPACT_ACTIVE_ONLY),
             )
             it += 1
-        # A tile that spawned any continuation ran the resolve, so it is not
-        # empty; ``tile_empty`` stays true only for the whole-tile early-out.
-        return tile_empty, covered_idx, num_covered
 
     _run_wavefront_tiles(
         memory,
@@ -2984,8 +2822,6 @@ def raytrace_render_wavefront(
         # rs_vis placeholder + the compactor's output-count word.
         auto_fixed_bytes=2 * torch.int32.itemsize,
         gen_fused=gen_fused,
-        raster=use_raster,
-        raster_prefill=raster_prefill,
         global_hits=False,
         analytic_raster=analytic_raster,
     )

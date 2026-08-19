@@ -1,13 +1,15 @@
 # Algan Raytracer v2 — Hybrid Rasterization Front-End: Design Document
 
-Status: in progress. The front-end (raster primary visibility, exact sparse
-shadow queue, classic-exact fragment ordering) is built and validated behind
-an opt-in toggle (`ALGAN_HYBRID_RASTER`, default OFF) while the classic
-deterministic wavefront remains the default renderer. The secondary-ray
-K-buffer removal (§7) is live on the DEFAULT path. This document explains the
-current implementation, the reasoning behind each design decision, the
-benchmark results that drove those decisions, and the planned future work
-ranked by expected improvement (§13).
+Status: HISTORICAL RECORD (2026-08-19). The front-end shipped, became the
+default, and its per-pixel fragment-walk resolve (`raster_first_shade`,
+`raster_shadow_event_build`, the z-prepass and run machinery this document
+specifies) was later REPLACED by the sheet resolve and deleted — see
+`DESIGN_sheet_resolve.md`, which is the plan of record for the resolve. The
+emission side described here (exact COUNT/WRITE fragment streams, sparse
+covered-pixel lifecycle, classic-exact fragment ordering) is still the
+shipped architecture and this document remains its design record; the
+resolve sections describe the deleted predecessor. The secondary-ray
+K-buffer removal (§7) is live on the default path.
 
 History note: the front-end was built in three pushes on 2026-07-18
 (`fa7afd4` prototype → `f40cf76` feature-complete front-end → `61d177f`

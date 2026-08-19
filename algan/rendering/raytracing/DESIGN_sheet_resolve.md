@@ -655,6 +655,26 @@ AA on/off; and the fade-out/despawn scenario that closed the old design
 (`shapes_and_timeline`'s dot clouds) rendering with no engagement-dependent
 behavior — its truncated-run population simply ceases to exist as a concept.
 
+**Phase 4 DELETION DONE (2026-08-19).** The fragment walk and its machinery
+are gone: `raster_first_shade`, `raster_shadow_event_build`, the z-prepass
+kernels, the run scan (`_aa_run_scan`, `_AA_MAX_RUN_SCAN`), the run lanes and
+their host reduction, `raster_iteration_zero` and the dense tile plumbing in
+`_run_wavefront_tiles` (retired-empty pix_accum prefill, tile-empty/covered
+composite modes), and the settings `ANALYTIC_AA_RUN_EXACT` /
+`ANALYTIC_AA_RUN_CAP` / `ANALYTIC_AA_ONE_MESH_DENS` (their semantics are
+inherent in per-sheet claim arithmetic). The route collapsed with it:
+`analytic_raster_route_active` now carries every sheet-route precondition
+(SHEET_RESOLVE, ANALYTIC_AA_RUN, the three sparse toggles, and the
+transparent-background relaxation — allowed except combined with an env map,
+§5's fallback), so `sheet_route == analytic_raster`, `sparse_coverage ==
+use_raster`, and the raise pair (tracer's route check, prepare's emission
+check, the resolve's sheets check) guards drift. KEPT, per the inventory: the
+emission kernels and their exact-area lane, `_aa_group`/`_aa_run_full`
+(emission truncation), `ANALYTIC_AA_ONE_MESH` + the host cap reduction
+(feeds `sheet_cap`), `ANALYTIC_AA_RUN_FULL`, and `raster_shadow_trace`.
+Byte-identical at defaults (deleted code was unreachable post-flip),
+validated against the fresh CUDA baselines.
+
 
 ================================================================================
 9. RELATION TO THE OLD QUEUES

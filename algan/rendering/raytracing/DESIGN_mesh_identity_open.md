@@ -151,8 +151,15 @@ set and passes.
 
 
 ================================================================================
-C. THE RUN-SCAN LIMIT — largely closed
+C. THE RUN-SCAN LIMIT — CLOSED by the sheet resolve (2026-08-19)
 ================================================================================
+
+**Closed for good:** the sheet resolve (`DESIGN_sheet_resolve.md`) aggregates
+each sheet's exact area and sample union on the host with no budget, so the
+limit this section is about ceased to exist as a concept. The scan, the run
+lanes, and the C.1/C.3 settings (`ALGAN_ANALYTIC_AA_RUN_CAP`,
+`ALGAN_ANALYTIC_AA_RUN_EXACT`) were deleted with the fragment walk. What
+follows is the record of the limit and its interim mitigations.
 
 **The mechanism.** `_aa_run_scan` (`raster_taichi.py`) walks at most
 `_AA_MAX_RUN_SCAN = 16` consecutive fragments of one sheet, returning the exact-

@@ -2,21 +2,19 @@
 
 The frontend replaces the first classic wavefront iteration for flat triangles
 and Bezier circuits.  Primitive/chunk pairs enumerate candidate pixels, exact
-intersection tests reject bbox misses, a typed opaque visibility buffer removes
-hidden work, and compact transparent fragment records are ordered by the same
-transitive ``(depth bin, descending layer)`` relation as the classic tracer.
-One thread then resolves each pixel's ordered straight-ray list serially.
+intersection tests reject bbox misses, and compact fragment records are
+ordered by the same transitive ``(depth bin, descending layer)`` relation as
+the classic tracer.  The host then compacts them into per-pixel sheets
+(``sheets.compact_sheets``) and one kernel resolves, builds shadow events for,
+and shades those (``sheet_resolve_taichi.sheet_resolve_shade``).
 
 Important implementation properties:
 
 * Triangle projection data is precomputed once per frame/primitive by
   :func:`raster_pipeline.precompute_triangle_projection`.  Straddling cases use
   exact per-pixel ray casting.
-* Proven-opaque triangles and Bezier circuits share a typed int64 visibility
-  buffer.  The packed key contains depth bin and inverted layer, so coplanar
-  layer semantics are respected before transparent culling.
-* Transparent triangle/circuit COUNT and WRITE kernels fetch sampled alpha and
-  discard alpha-zero texels before sorting.  Records contain only exact-distance
+* Triangle/circuit COUNT and WRITE kernels fetch sampled alpha and discard
+  alpha-zero texels before sorting.  Records contain only exact-distance
   key, typed primitive reference (including the circuit border/fill blend
   weight), two intersection parameters, and an analytic coverage lane.
 * Analytic anti-aliasing (``ALGAN_ANALYTIC_AA``, see DESIGN_analytic_aa.md):
@@ -27,23 +25,18 @@ Important implementation properties:
   ``anti_alias_level = 1`` instead of all-or-nothing.  The coverage lane is
   host-pre-filled to 1.0 and written by the circuit kernels and -- under
   ``ANALYTIC_AA_TRI`` -- by ``raster_tri_write`` too, which carries each
-  triangle fragment's exact clipped area for the run rule.
-* :func:`raster_shadow_event_build` performs the same ordered transport/seam
-  decisions as final resolve and emits only accepted triangle lighting events.
-  :func:`raster_shadow_trace` traces that separate sparse any-hit queue and
-  stores one visibility value per event/light, with no fixed fragment-slot or
-  packed-light limit. Point/spot emitter radii and directional angular radii
-  use the same deterministic golden-angle fan as the classic wavefront path.
-* :func:`raster_first_shade` resolves at most ``MAX_SURFACES_PER_RAY`` accepted
-  primary surfaces, commits retired pixels, and writes reflection/refraction
-  continuations to the compact primary queue.  The host later copies only
-  surviving continuations into the classic secondary-wavefront state.
+  triangle fragment's exact clipped area for the sheet claims.
+* :func:`raster_shadow_trace` traces the sheet resolve's sparse any-hit event
+  queue and stores one visibility value per event/light, with no fixed
+  fragment-slot or packed-light limit. Point/spot emitter radii and
+  directional angular radii use the same deterministic golden-angle fan as
+  the classic wavefront path.
 
-The current host tile is a contiguous linear ray range, usually a row band,
-not a fixed square raster tile.  Each pair covers up to ``RASTER_CHUNK`` pixels.
-Future work should benchmark square block bins and candidate-parallel block
-kernels. PN patches, custom scatter, near clipping, and in-place supersampling
-still route to the classic frontend without changing geometry construction.
+Emission covers the whole prepared frame window at once; each pair covers up
+to ``RASTER_CHUNK`` pixels.  Future work should benchmark square block bins
+and candidate-parallel block kernels. PN patches, custom scatter, near
+clipping, and in-place supersampling still route to the classic frontend
+without changing geometry construction.
 """
 import taichi as ti
 
@@ -364,21 +357,21 @@ def _sliver_mode(aa):
 
 
 def _aa_run_full(aa_grp):
-    """Whether the run scan also admits a FULL-mask fragment that covers less
+    """Whether the relaxed gate admits a FULL-mask fragment that covers less
     than the whole pixel (DESIGN_mesh_identity.md ss6.3.2).
 
-    v2 ss4.2 gates the lookahead on a PARTIAL mask so the interior hot path --
-    one full-mask fragment per pixel -- never pays for a scan. A diced mesh's
-    silhouette also produces full-mask fragments, though: one triangle owning
-    all eight sub-pixel samples while covering a fraction of the pixel's area.
-    Those are painted at 1.0 with their exact area unread, and on a fine Sphere
-    they are 52% of the silhouette pixels. An interior fragment's ``cov`` is
-    within dust of 1, so admitting ``cov < 1 - dust`` picks up exactly the
-    silhouette and leaves the interior alone.
+    A diced mesh's silhouette produces full-mask fragments: one triangle
+    owning all eight sub-pixel samples while covering a fraction of the
+    pixel's area. Without the gate those are painted at 1.0 with their exact
+    area unread, and on a fine Sphere they are 52% of the silhouette pixels.
+    An interior fragment's ``cov`` is within dust of 1, so admitting
+    ``cov < 1 - dust`` picks up exactly the silhouette and leaves the
+    interior alone. Its one surviving reader is the emission truncation in
+    ``prepare_sparse_raster_coverage``, which must keep a sheet's area donors
+    in the stream whenever the relaxed semantics will read them.
 
-    Carried as ``aa_grp == 2``; every other ``ti.static(aa_grp)`` test in this
-    module is a truthiness test, so the value costs no kernel argument. 3 and 4
-    are the one-mesh rule, which implies this gate.
+    Carried as ``aa_grp == 2``; 3 is the one-mesh rule, which implies this
+    gate.
     """
     return int(aa_grp) >= 2
 
@@ -1134,15 +1127,15 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                     # the keep decisions key on it in count and write alike,
                     # and only the WRITE kernel -- after its keep/z/alpha
                     # culls, on actually-stored fragments -- computes the
-                    # exact lane (_run_exact_cov; clipping per CANDIDATE here
-                    # cost count +36% / write +42% device on the meshes A/B).
+                    # exact lane (clipping per CANDIDATE here cost count +36%
+                    # / write +42% device on the meshes A/B).
                     # Sample-less DONORS are the exception: their acceptance
                     # IS "exact area > 0", so both kernels clip them, behind
                     # the one-sided oriented reject.
                     # the mask, fill rule and owned-sample centroid stay
                     # exactly as shipped -- ownership and occlusion never
                     # change -- while frag_cov carries the EXACT clipped area
-                    # for the resolve's run scan to sum.
+                    # for the sheet compaction to sum.
                     #
                     #   * A FULL mask whose edges all clear the half-diagonal
                     #     is exactly 1.0 with no clip at all (the hot path);
@@ -1178,7 +1171,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                                     c = 1.0
                         elif (m != 0) and ti.static(store_exact):
                             # Exact area of (triangle n pixel), stored for the
-                            # run scan, cheapest-first: a microtriangle FULLY
+                            # sheet claims, cheapest-first: a microtriangle FULLY
                             # INSIDE the square (the sub-pixel-diced majority)
                             # is a bare shoelace; a fragment cut by ONE edge
                             # with the other two clear (the big-triangle
@@ -1623,7 +1616,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
     -- exact for a straight boundary crossing the pixel, which after flattening
     every boundary is.  The band form fades a sub-pixel-wide stroke by its width
     instead of dilating it, and both forms reach exactly 1 half a pixel inside,
-    which is what lets the opaque z-prepass keep culling (``raster_bez_z``).
+    which is what lets the emission's opaque truncation keep culling.
 
     A filled circuit's border is an INNER boundary at ``d = border_w`` cutting
     the same drawn region in two (:func:`_circuit_point_region`), so it needs its

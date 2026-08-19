@@ -8,8 +8,8 @@ none of the fragment walk's machinery exists here: no run scan and no budget,
 no seam de-duplication, no one-mesh cap or ink accounting, no engagement gate.
 What remains is the per-sheet claim/occlusion arithmetic and the material
 four-way split (shade / reflect / transmit / miss) with its continuations,
-which are ``raster_first_shade``'s -- deliberately, since Phase 4 deletes that
-kernel and this one becomes the only copy.
+inherited from the fragment walk's ``raster_first_shade`` -- deleted in
+Phase 4, so this kernel is the only copy.
 
 Per-sheet semantics (kept in lockstep with ``sheets.resolve_pixel_reference``,
 the sequential oracle, and pinned by the parity harness):

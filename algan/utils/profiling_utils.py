@@ -468,12 +468,9 @@ def install_pipeline_hooks():
         "get_render_primitives",
         "BezierCircuitCubic.get_render_primitives",
     )
-    _try_wrap(rpl, "raster_iteration_zero", "rasterizing")
-    # The sparse-coverage lifecycle (default route whenever the raster
-    # front-end and post-process tonemapping are both on) never goes through
-    # raster_iteration_zero, so without these its cost landed unattributed in
-    # "wavefront_loop excl". tracer imports both names *inside* the render
-    # function, so wrapping the module attribute is enough.
+    # The sparse-coverage lifecycle (the sheet route). tracer imports both
+    # names *inside* the render function, so wrapping the module attribute is
+    # enough.
     _try_wrap(rpl, "prepare_sparse_raster_coverage", "raster: sparse discovery")
     _try_wrap(rpl, "shade_sparse_raster_coverage", "raster: sparse resolve")
     _try_wrap(

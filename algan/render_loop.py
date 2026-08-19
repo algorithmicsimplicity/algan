@@ -1042,6 +1042,7 @@ class RenderLoopMixin:
             environment_map=env_map,
             near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
             far_clip=float(getattr(self.camera, "far", 0.0) or 0.0),
+            transparent_background=transparent_background,
         )
         render_height = self.num_pixels_screen_height * aa
         render_width = self.num_pixels_screen_width * aa
@@ -1321,6 +1322,7 @@ class RenderLoopMixin:
                 environment_map=env_map,
                 near_clip=float(getattr(camera, "near", 0.0) or 0.0),
                 far_clip=float(getattr(camera, "far", 0.0) or 0.0),
+                transparent_background=transparent_background,
             )
             render_height = self.num_pixels_screen_height * aa
             render_width = self.num_pixels_screen_width * aa
