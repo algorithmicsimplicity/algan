@@ -32,7 +32,7 @@ from algan.scene_manager import SceneManager
 
 HERE = Path(__file__).resolve().parent
 SCENES_DIR = HERE / "scenes"
-OUTPUT_DIR = HERE / "algan_outputs"
+OUTPUT_DIR = HERE / "algan_outputs2"
 CACHE_DIR = HERE / "algan_cache"
 ERRORS_DIR = HERE / "output_errors"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

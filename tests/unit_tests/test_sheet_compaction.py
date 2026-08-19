@@ -8,6 +8,7 @@ fragment, ordering, and the CSR.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from algan.rendering.raytracing.raster_taichi import (
@@ -27,13 +28,14 @@ def _key(pix, t):
     return (int(pix) << 32) | (tb & 0xFFFFFFFF)
 
 
-def _coverage(frags, num_tris=8):
+def _coverage(frags, num_tris=8, tri_norm=None):
     """Build a coverage dict + merged scene from ``(pix, t, ref, cov, msk)``
     rows (already in (pixel, depth) order, like the emission's).
 
     Triangles are placed flat-on at depth ``t`` with a small extent so the
     ``prim`` band rule sees a tiny per-fragment scale; the camera sits at the
-    origin looking down +z.
+    origin looking down +z. ``tri_norm`` optionally supplies the per-triangle
+    vertex normals ``[1, num_tris, 9]`` the shade-split class reads.
     """
     n = len(frags)
     pix = torch.tensor([f[0] for f in frags], dtype=torch.int64)
@@ -66,13 +68,15 @@ def _coverage(frags, num_tris=8):
         z = 1.0 + 0.001 * r
         tp[0, r] = torch.tensor([0.0, 0, z, 0.05, 0, z, 0, 0.05, z])
     merged = {"tri_obj": tri_obj, "tri_pos": tp}
+    if tri_norm is not None:
+        merged["tri_norm"] = tri_norm
     cam = torch.zeros(1, 3)
     pws = torch.full((1,), 1e-3)
     return coverage, merged, cam, pws
 
 
-def _compact(frags, band_rule="prim", band_c=4.0):
-    coverage, merged, cam, pws = _coverage(frags)
+def _compact(frags, band_rule="prim", band_c=4.0, shade_split=False, tri_norm=None):
+    coverage, merged, cam, pws = _coverage(frags, tri_norm=tri_norm)
     return compact_sheets(
         coverage,
         merged,
@@ -83,6 +87,7 @@ def _compact(frags, band_rule="prim", band_c=4.0):
         height=4,
         band_rule=band_rule,
         band_c=band_c,
+        shade_split=shade_split,
     )
 
 
@@ -341,17 +346,113 @@ def test_oracle_one_mesh_ceiling_stops_the_far_sheet_reclaim():
     covs = [0.25, 0.25]
     msks = [ONE_MESH | 0b0111, ONE_MESH | BACKFACE | 0b0111]
     free, _T = resolve_pixel_reference(covs, msks, [False, False])
-    capped, _T2 = resolve_pixel_reference(
-        covs, msks, [False, False], caps=[0.25, 0.25]
-    )
+    capped, _T2 = resolve_pixel_reference(covs, msks, [False, False], caps=[0.25, 0.25])
     assert free[1] > 0.0  # the re-claim exists uncapped
     assert abs(capped[0] - 0.25) < 1e-12
     assert capped[1] == 0.0  # the ceiling leaves the far sheet no room
     # A ceiling of 2.0 is the "no ceiling" sentinel and must change nothing.
-    sentinel, _T3 = resolve_pixel_reference(
-        covs, msks, [False, False], caps=[2.0, 2.0]
-    )
+    sentinel, _T3 = resolve_pixel_reference(covs, msks, [False, False], caps=[2.0, 2.0])
     assert sentinel == free
+
+
+def _norms(rows):
+    """[1, 8, 9] vertex-normal table from per-triangle ``(n0, n1, n2)``."""
+    tn = torch.zeros(1, 8, 9)
+    for r, (n0, n1, n2) in rows.items():
+        tn[0, r] = torch.tensor([*n0, *n1, *n2], dtype=torch.float32)
+    return tn
+
+
+def test_shade_split_separates_flat_faces_at_a_crease():
+    # Two flat-shaded triangles of ONE surface tiling a pixel with a hard
+    # normal discontinuity (a cube edge). Fused, the resolve shades the whole
+    # pixel at the dominant face; split, each face is a sibling sheet shading
+    # with its own normal -- the interior-edge AA case.
+    frags = [
+        (3, 1.0, 0, 0.4, 0b00001111),
+        (3, 1.0001, 1, 0.6, 0b11110000),
+    ]
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x)})
+    fused = _compact(frags, tri_norm=tn)
+    assert fused["num_sheets"] == 1
+    split = _compact(frags, shade_split=True, tri_norm=tn)
+    assert split["num_sheets"] == 2
+    assert not bool(split["sheet_fused"].any())
+    # Siblings keep their own exact areas and shading references.
+    assert sorted(split["sheet_cov"].tolist()) == [
+        pytest.approx(0.4),
+        pytest.approx(0.6),
+    ]
+    assert sorted(split["sheet_ref"].tolist()) == [0, 1]
+
+
+def test_shade_split_uses_the_geometric_normal_for_zero_vertex_normals():
+    # The Polyhedron family authors NO vertex normals (all zero); the shade
+    # kernel substitutes the geometric cross-product normal, so the class
+    # must too. The helper's flat-on triangles share the geometric normal
+    # +z, so a crease has to come from reshaping one of them.
+    frags = [
+        (3, 1.0, 0, 0.4, 0b00001111),
+        (3, 1.0001, 1, 0.6, 0b11110000),
+    ]
+    zeros = (0.0, 0.0, 0.0)
+    tn = _norms({0: (zeros, zeros, zeros), 1: (zeros, zeros, zeros)})
+    coverage, merged, cam, pws = _coverage(frags, tri_norm=tn)
+    # Tilt triangle 1 so its geometric normal leaves +z.
+    merged["tri_pos"][0, 1] = torch.tensor([0.0, 0, 1.0, 0.05, 0, 1.05, 0, 0.05, 1.0])
+    kw = {"time_start": 0, "width": 4, "height": 4, "band_rule": "facing"}
+    fused = compact_sheets(coverage, merged, cam, pws, **kw)
+    assert fused["num_sheets"] == 1
+    split = compact_sheets(coverage, merged, cam, pws, shade_split=True, **kw)
+    assert split["num_sheets"] == 2
+    # And two COPLANAR zero-normal triangles (one planar face) stay one sheet.
+    tn0 = _norms({0: (zeros, zeros, zeros), 1: (zeros, zeros, zeros)})
+    same = _compact(frags, shade_split=True, tri_norm=tn0)
+    assert same["num_sheets"] == 1
+
+
+def test_shade_split_keeps_smooth_triangles_in_one_sheet():
+    # Vertex normals VARY across each triangle (diced curved geometry):
+    # class 0 everywhere, so the toggle must not change the compaction.
+    frags = [
+        (3, 1.0, 0, 0.4, 0b00001111),
+        (3, 1.0001, 1, 0.6, 0b11110000),
+    ]
+    z = (0.0, 0.0, 1.0)
+    tilt_a = (0.0995, 0.0, 0.995)
+    tilt_b = (0.0, 0.0995, 0.995)
+    tn = _norms({0: (z, tilt_a, tilt_b), 1: (tilt_a, z, tilt_b)})
+    for flag in (False, True):
+        out = _compact(frags, shade_split=flag, tri_norm=tn)
+        assert out["num_sheets"] == 1, flag
+        assert int(out["sheet_ref"][0]) == 1, flag
+
+
+def test_shade_split_without_normals_table_is_inert():
+    # A merged scene with no tri_norm cannot classify: the split must not
+    # invent classes (everything stays class 0 / grouped as before).
+    frags = [
+        (3, 1.0, 0, 0.4, 0b00001111),
+        (3, 1.0001, 1, 0.6, 0b11110000),
+    ]
+    out = _compact(frags, shade_split=True)
+    assert out["num_sheets"] == 1
+
+
+def test_sheet_shade_split_setting_reaches_the_live_module():
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.SHEET_SHADE_SPLIT
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_shade_split=True)
+        assert rt.SHEET_SHADE_SPLIT is True
+        SETTINGS.raytracing.experimental.set(sheet_shade_split=False)
+        assert rt.SHEET_SHADE_SPLIT is False
+    finally:
+        rt.SHEET_SHADE_SPLIT = old
 
 
 def test_sheet_resolve_setting_reaches_the_live_module():

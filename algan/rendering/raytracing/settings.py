@@ -839,6 +839,37 @@ def set_sheet_resolve(enabled):
     SHEET_RESOLVE = bool(enabled)
 
 
+# Shading-discontinuity split in sheet compaction (sheets._shade_class). The
+# resolve shades ONCE per sheet at its dominant fragment, which is licensed
+# exactly where shading varies smoothly across the sheet -- and a hard crease
+# (two flat-shaded faces of one solid meeting inside a pixel: same mesh id,
+# same facing, no depth gap) violates that, so the fused sheet takes the
+# dominant face's color for the whole pixel and every interior
+# (non-silhouette) edge of a lit flat-shaded mesh renders winner-take-all
+# jagged where the fragment walk used to blend per fragment. With this on,
+# compaction keys triangle groups additionally by a SHADING CLASS -- a
+# flat-shaded triangle's quantized unit face normal (declared, or the
+# geometric fallback the shade kernel substitutes for all-zero vertex
+# normals), class 0 for smooth-shaded triangles -- so crease faces become
+# SIBLING sheets of one band (disjoint exact areas, additive compositing,
+# DESIGN_sheet_resolve.md §4.4) and each shades with its own normal. That is
+# the old per-fragment area-weighted blend across interior edges, paid only
+# at crease pixels; smooth (diced PN) geometry compacts exactly as before.
+#
+# Default OFF pending measurement and the baseline decision: ON moves every
+# lit crease edge (toward the pre-sheet fragment-walk appearance), which is a
+# re-baseline of the scenes that carry flat-shaded solids.
+SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
+
+
+def set_sheet_shade_split(enabled):
+    """Toggle the crease shading-class split in sheet compaction (see
+    ``SHEET_SHADE_SPLIT``). Takes effect at the next batch's emission.
+    """
+    global SHEET_SHADE_SPLIT
+    SHEET_SHADE_SPLIT = bool(enabled)
+
+
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
 # ``anti_alias_level`` times the output resolution and box-filtering back down
 # (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE

@@ -1,13 +1,14 @@
 """Sheet compaction: the fragment stream aggregated into per-pixel sheets.
 
 ``DESIGN_sheet_resolve.md`` P1 + P2. A **sheet** is a maximal same-surface
-region within one pixel — keyed ``(pixel, mesh id, facing, depth band)``, with
-each bezier circuit fragment standing alone (circuits never group; their
-border/fill blend is already packed per fragment). The compaction turns the
-emission's depth-sorted fragment stream into the sheet stream: exact area as a
-sum over the sheet's fragments, the union of sub-pixel sample masks, the
-nearest fragment's depth, and a dominant (largest-area) fragment as the
-shading reference.
+region within one pixel — keyed ``(pixel, mesh id, facing, depth band)`` and,
+under ``SHEET_SHADE_SPLIT``, the flat-face shading class (see
+``compact_sheets``) — with each bezier circuit fragment standing alone
+(circuits never group; their border/fill blend is already packed per
+fragment). The compaction turns the emission's depth-sorted fragment stream
+into the sheet stream: exact area as a sum over the sheet's fragments, the
+union of sub-pixel sample masks, the nearest fragment's depth, and a dominant
+(largest-area) fragment as the shading reference.
 
 Everything here is a sort plus a segmented reduction — no bounded lookahead,
 no per-thread walk, and no budget, which is the point: the ``_AA_MAX_RUN_SCAN``
@@ -76,6 +77,17 @@ from algan.rendering.raytracing.raster_taichi import (
 
 #: Band rules this module implements. "facing" is the no-depth-split fallback.
 BAND_RULES = ("facing", "prim")
+
+#: Shading-class quantization (``shade_split``): a flat face's unit normal is
+#: rounded to this many bins per component (~0.9 degrees). Mis-binning can only
+#: ever SPLIT two near-parallel faces -- the benign direction, their shading is
+#: near-identical -- never fuse a crease coarser than one bin.
+SHADE_CLASS_QUANT = 64
+
+#: Group-key stride reserving the low bits for the shading class. A packed
+#: class is three (2 * SHADE_CLASS_QUANT + 1 <= 129)-valued components in 8
+#: bits each, plus one to keep 0 as "smooth": < 2**25.
+_SHADE_CLASS_BASE = 1 << 25
 
 #: Interior-tiling dust band, shared with the kernels: a full-union sheet whose
 #: exact area is within this of 1 composites at exactly 1, so a genuine tiling
@@ -214,6 +226,46 @@ def _rows(arr, frame_rel, time_start):
     return (frame_rel + int(time_start)) % arr.shape[0]
 
 
+def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
+    """Per-fragment shading class for ``shade_split`` (see ``compact_sheets``).
+
+    Returns int64 in ``[0, _SHADE_CLASS_BASE)``: 0 for smooth-shaded
+    triangles (and anything the rule cannot classify), ``1 + packed quantized
+    unit face normal`` for flat-shaded ones. The flat test mirrors the shade
+    kernel's ``_triangle_normal`` exactly: a triangle shades FLAT when its
+    three vertex normals are equal (declared flat) or all degenerate (the
+    kernel then substitutes the geometric cross-product normal).
+    """
+    n = safe_ref.numel()
+    device = safe_ref.device
+    cls = torch.zeros(n, dtype=torch.int64, device=device)
+    tri_norm = merged.get("tri_norm")
+    tri_pos = merged.get("tri_pos")
+    if tri_norm is None or tri_pos is None or not bool(is_tri.any()):
+        return cls
+    nrm = tri_norm[_rows(tri_norm, frame_rel, time_start), safe_ref].view(-1, 3, 3)
+    mag = nrm.norm(dim=2)
+    unit = nrm / mag.unsqueeze(2).clamp_min(1e-12)
+    spread = (unit - unit[:, :1]).abs().amax(dim=(1, 2))
+    declared_flat = (mag.amin(dim=1) > 1e-6) & (spread < 1e-6)
+    # All-degenerate vertex normals: the kernel falls back to the geometric
+    # normal, so the class does too (the Polyhedron family authors none).
+    geometric_flat = mag.amax(dim=1) < 1e-6
+    v = tri_pos[_rows(tri_pos, frame_rel, time_start), safe_ref]
+    gn = torch.cross(v[:, 3:6] - v[:, 0:3], v[:, 6:9] - v[:, 0:3], dim=1)
+    gn = gn / gn.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    face_n = torch.where(geometric_flat.unsqueeze(1), gn, unit[:, 0])
+    q = (
+        torch.round(face_n * float(SHADE_CLASS_QUANT))
+        .to(torch.int64)
+        .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
+        + SHADE_CLASS_QUANT
+    )
+    packed = (q[:, 0] << 16) | (q[:, 1] << 8) | q[:, 2]
+    flat = is_tri & (declared_flat | geometric_flat)
+    return torch.where(flat, packed + 1, cls)
+
+
 def compact_sheets(
     coverage,
     merged,
@@ -226,6 +278,7 @@ def compact_sheets(
     band_rule="prim",
     band_c=4.0,
     tri_screen=None,
+    shade_split=False,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -234,6 +287,29 @@ def compact_sheets(
     per-pixel CSR), ``merged`` the batch's merged scene, ``cam_origin`` /
     ``pixel_world_scale`` the per-frame camera rows the band rule's relative
     scale reads.
+
+    ``shade_split`` (``SHEET_SHADE_SPLIT``) adds a SHADING CLASS to the
+    triangle group key, so a sheet never spans a hard shading discontinuity.
+    The resolve shades ONCE per sheet at its dominant fragment, which is
+    licensed exactly where shading varies smoothly across the sheet; a crease
+    -- two flat-shaded faces of one solid meeting inside a pixel -- violates
+    that, and the fused sheet takes the dominant face's color for the whole
+    pixel, un-antialiasing every interior (non-silhouette) edge. The class:
+
+    * a FLAT-shaded triangle takes its quantized unit face normal -- either
+      declared (three equal vertex normals, the replication every flat mesh
+      stores) or implicit (all-zero vertex normals, where the shade kernel's
+      ``_triangle_normal`` falls back to the geometric cross product -- the
+      ``Polyhedron`` family);
+    * a SMOOTH-shaded triangle (varying vertex normals, diced PN geometry)
+      takes class 0, so curved meshes compact exactly as before.
+
+    Faces meeting at a crease then compact into sibling sheets of one band
+    (disjoint exact areas, additive compositing -- DESIGN_sheet_resolve.md
+    §4.4), each shading with its own normal: the area-weighted blend across
+    interior edges, paid only at crease pixels. Off, the group key is
+    unchanged and the output is bit-identical to before the parameter
+    existed.
 
     Returns a dict of per-sheet arrays, ordered by ``(pixel, classic order of
     the sheet's nearest fragment)`` so a walk over them front-to-back matches
@@ -294,10 +370,16 @@ def compact_sheets(
     sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
     facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
     positions = torch.arange(n, dtype=torch.int64, device=device)
-    # Triangles group by (surface, facing); every bezier fragment is its own
-    # group (negative, unique — a shared sentinel would fuse adjacent
+    # Triangles group by (surface, facing) -- plus, under ``shade_split``, the
+    # flat-face shading class (see the docstring); every bezier fragment is
+    # its own group (negative, unique — a shared sentinel would fuse adjacent
     # circuits into one "sheet" no consumer wants).
-    gkey = torch.where(is_tri, sid * 2 + facing, -(positions + 2))
+    tkey = sid * 2 + facing
+    if shade_split:
+        tkey = tkey * _SHADE_CLASS_BASE + _shade_class(
+            merged, frame_rel, time_start, safe_ref, is_tri
+        )
+    gkey = torch.where(is_tri, tkey, -(positions + 2))
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
     order = _lexsort(pix, gkey, t)

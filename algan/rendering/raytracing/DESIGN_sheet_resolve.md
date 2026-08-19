@@ -308,6 +308,21 @@ by material pipeline id, which is the dispatch coherence the old
 sorted-material experiment wanted and could not afford per fragment
 (memory: sorted dispatch was 1.5–2.2x SLOWER at fragment granularity).
 
+**MEASURED GAP (2026-08-19, found post-flip): the license does not extend
+across a hard crease.** Two flat-shaded faces of one solid meeting inside a
+pixel share every component of the sheet key (same mesh, same facing, no
+depth gap, masks partition), so they fuse and the pixel takes the DOMINANT
+face's color outright — a winner-take-all staircase along every interior
+(non-silhouette) edge of a lit flat-shaded mesh, where the fragment walk
+blended per fragment by exact area (visible as jagged interior edges on
+`solids_and_camera`'s Platonic solids against the pre-sheet CPU baselines).
+The fix is `SHEET_SHADE_SPLIT` (§10.5): a SHADING CLASS in the compaction's
+group key — a flat-shaded triangle's quantized unit face normal (declared,
+or the geometric fallback `_triangle_normal` substitutes for all-zero vertex
+normals, the Polyhedron family), class 0 for smooth-shaded triangles — so
+crease faces become §4.4 siblings and each shades with its own normal.
+Smooth diced geometry keeps class 0: the shading-shrink win is untouched.
+
 4.8 Tonemap out of the resolve
 -------------------------------
 P6 writes linear HDR. Tonemapping (and bloom, FXAA, anything spatial) is
@@ -704,3 +719,48 @@ untouched by this design; revisit after Phase 4 on their own merits.
      one, provided the tree order is fixed.
 10.5 Whether any material class measurably needs multi-sample sheet shading
      (§4.7) beyond the dominant fragment.
+
+     **ANSWERED (2026-08-19): it is not a material-class question but a
+     normal-discontinuity one, and the remedy is a finer sheet key, not
+     multi-sample shading.** Interior crease edges of lit flat-shaded meshes
+     lost their AA to single-point sheet shading (§4.7's measured-gap note).
+     Built as `ALGAN_SHEET_SHADE_SPLIT` /
+     `SETTINGS.raytracing.experimental.sheet_shade_split`, DEFAULT OFF:
+     `sheets._shade_class` adds a flat-face shading class to the group key
+     (quantized unit face normal, 64 bins/component; class 0 for smooth
+     triangles; the zero-normal geometric fallback mirrored from
+     `_triangle_normal`), splitting crease pixels into §4.4 siblings that
+     shade separately and blend by exact area. Measured
+     (`benchmarks/_sheet_shade_split_check.py`, CUDA, LD, daemon-free,
+     linear output):
+
+     * Lit Icosahedron: +1131 sheets (27,503 fragments), 983 px moved,
+       worst |d| 98, movement confined to the solid — the OFF panel shows
+       the facet-edge staircase, the ON panel clean blends, silhouettes
+       identical. A/A byte-identical in both arms.
+     * Tent (one mob, two planar faces, 3° screen-slope ridge): edge-position
+       wobble 0.149 → 0.086 px RMS. Instructive detail: 197 of 242 crease
+       pixels were ALREADY two sheets in the OFF arm — the emission dilates
+       coverage across shared edges, so fold fragments' masks conflict and
+       the rank key splits them (their areas sum past 1: 0.529 + 0.578 on a
+       probed pixel). The class split fixes the 45 genuinely fused ones and
+       makes the split independent of where a sample happens to land in the
+       overlap band.
+     * `_aa_line_check --res md`, both arms daemon-free: identical to four
+       decimals on every case (bezier, flat quad, both cylinders) — the
+       line scenes carry no hard crease, and smooth geometry is class 0 by
+       construction. No ink-wobble regression.
+     * Flag off is bit-identical by construction (the class multiplies into
+       the group key only inside the `shade_split` branch); `pytest -q
+       --fast` 213 passed including the pixel-compared render against the
+       committed CUDA baseline, and the compaction unit suite pins the
+       crease/smooth/coplanar/zero-normal class semantics.
+
+     Flipping the default moves every lit crease edge (toward the pre-sheet
+     fragment-walk appearance) and is therefore a re-baseline of the scenes
+     carrying flat-shaded solids; it should ride the next planned
+     re-baseline. Residual after the split, quantified by the tent's
+     0.086 px (not 0.02): the seam-overlap dilation means sibling areas are
+     not an exact partition, and a `corr > 1` sibling's rule-B residue
+     lands on its co-sibling's samples — bounded, sub-pixel, and a property
+     of the emission's seam handling rather than of this split.
