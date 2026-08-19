@@ -423,6 +423,46 @@ sheet lists. Score against the current system on `_aa_run_gate_check`
 This phase decides the band rule (§4.2) and measures the sort/scan cost
 (§6.4) before anything is deleted.
 
+**BUILT AND MEASURED (2026-08-19).** `sheets.compact_sheets` (host torch:
+three stable argsorts + segmented reductions, areas f64-accumulated and
+rounded per §6.6.4's measured pattern; the §10.4 kernel-scan question stays
+open for the shipping path). `_aa_run_gate_check --sheets` feeds one
+synthesized fragment per sheet through the verified replay of the existing
+walk; a torus (concave fold) case was added. Results at md on CUDA
+(`benchmarks/_sheet_phase1_md.log`):
+
+* **Coverage error ties or improves on every case**: the line-check rod
+  0.0050 → 0.0011 (−78%), sphere 0.0057 → 0.0040, torus 0.0065 → 0.0048,
+  every flat case ties exactly. `on-lattice` collapses to ~0 everywhere,
+  and shipped `split`/`capped` populations cease to exist.
+* **Interior notch depth drops 7.5x** on the rod (253 @ mean 0.0090 →
+  339 @ 0.0012). The higher *count* is the notch counter's 1e-3 threshold
+  on pixels whose TRUE coverage is 0.999x: the sheets paint the exact area
+  where the walk rounded to 1.0 — verified per pixel (truth 0.99920,
+  sheet 0.99875, walk 0.99966).
+* **The band rule (§4.2/§10.1) is DECIDED: `prim`, c = 2** — split where
+  the depth gap exceeds 2x the two fragments' own scales (triangle
+  camera-distance extent + one pixel's world size at that depth; no
+  absolute constant). All four candidate rules are output-
+  indistinguishable on every case (identical painted deviation even on
+  the reference-dropped fold pixels), so the decision rests on §6.2's
+  asymmetry: fusing over-claims, splitting is benign, and c = 2 fuses
+  least (torus fold: 686 vs 1773 for facing-only) with zero false splits
+  on every non-fold case. Fold-tangency fusion is IRREDUCIBLE for any
+  gap rule — projection stops being injective at a fold — so the fusion
+  detector's baseline is nonzero on curved geometry by nature.
+* **The six real scenes** (`_sheet_scene_stats.py`, streams certified by
+  a byte-identical lossless render against the committed CUDA baseline):
+  S/F compaction ratio 0.39 (text_and_media, the glTF scene — a 2.6x
+  shading shrink) to 1.00 (manim_compat, pure circuits); **max sheets
+  per pixel is 6** across all six scenes against the design's K = 24,
+  overflow population zero. Host compaction cost ~50 ms per ~300k-
+  fragment batch (~2–3% of these renders' wall) — indicative only; §6.4's
+  real gate is Phase 2's A/B.
+* `_aa_line_check`'s ink-wobble gate needs a real render path and moves
+  to Phase 2's checklist; the line-check cases' coverage columns above
+  are its Phase-1 proxy.
+
 **Phase 2 — the sheet resolve behind a flag.** P3–P6 as the scan pipeline,
 with the sequential reference implementation (§2's oracle) beside it and a
 parity harness between them. The old walk remains the default.

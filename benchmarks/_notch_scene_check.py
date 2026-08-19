@@ -872,11 +872,18 @@ def _render_full_render_scene(path, stats, quality, at):
                         overwrite=True,
                     )
                 else:
+                    # Lossless, because the suite is (test_full_renders.py
+                    # since 0a70a73): the baseline diff below is the reach
+                    # check, and a lossy render against a lossless baseline
+                    # reads the CODEC as a 113-151 channel-value miss on
+                    # every scene.
                     scene.save_video(
                         str(out / f"{path.stem}.mp4"),
                         video_settings=quality,
                         overwrite=True,
                         animate_fade_out=True,
+                        codec="libx264rgb",
+                        ffmpeg_params=["-crf", "0", "-preset", "fast"],
                     )
         if not at and quality is PREVIEW:
             _against_baseline(out / f"{path.stem}.mp4", stats)
