@@ -165,6 +165,19 @@ Overlapping edits to the same timeline rows are replayed in execution order usin
 
 Parent changes normally propagate to descendants through batched timeline row operations. The canonical hierarchy is `children`/`components`; `Group.mobs` is an alias of `children`. Keep hierarchy operations Scene-homogeneous and cycle-safe.
 
+### Packed mobs
+
+One Mob can stand for many logical objects. Its animatable attributes carry one row per member, its components carry a block of rows per member, and `parent_batch_sizes` maps between the two. `Mob.__getitem__` slices that map to produce a **view** sharing the pack's id, rows and lifespan; `BatchedMobViewSequence` presents those views as a sequence.
+
+Two ways in, differing only in when the packing happens. `from_batches` on a class that can build its geometry for many objects at once (`BezierCircuitCubic`, `Surface`) never constructs the per-member Mobs; `batch_mobs` packs Mobs that already exist. Both are built on `pack_animatable_rows` (the pack itself, one row per member) and `pack_member_rows` (a component, a block of rows per member) in `algan/utils/mob_utils.py`, and both write through `_setattr_and_rebatch_without_record`, so they are valid only on fresh history.
+
+Two invariants are easy to break and hard to see:
+
+- A recursive write covers the whole subtree, so a value expressed per member must be distributed over each descendant's rows first (`Mob._distribute_over_packed_subtree`). Without it a packed Mob cannot be moved at all.
+- The subtree is addressed in **buffer** order, not descendant order — `RowRanges.from_runs` sorts and coalesces the runs. A distribution built in descendant order still matches on row count and silently gives every member a neighbour's value.
+
+Members share one lifespan, because they share one id. Staggered entrances go through opacity, which is what `Tex.write()` does.
+
 Renderable mobs implement `get_render_primitives()`. The primary geometry families consumed by the renderer are:
 
 - flat triangle primitives;
@@ -354,8 +367,8 @@ Do not add process-global transcript or speech-generator state. When constructin
 Taichi kernel work has several repository-specific hazards:
 
 - The offline cache does not reliably invalidate when an imported `@ti.func` changes. Clear it before trustworthy A/B tests of kernel-source edits with `clear_cache(taichi_kernels=True)`.
-- Never edit `*_taichi.py` while a render process or warm daemon is running. The JIT can compile mixed old/new source.
-- Restart the render daemon after changing any Algan source; imported modules remain stale. Restart is mandatory after changing Taichi source.
+- Never edit `*_taichi.py` while a render is running. The JIT can compile mixed old/new source.
+- The render daemon restarts itself after any Algan source change: it fingerprints every `.py` under `algan/` at startup, re-checks at each run launch, and refuses the run and shuts down if anything differs, so the script runs in a fresh process with the edited code. No hand restart, but the cold start (and, for kernel edits, a full recompile) is still paid. See `DESIGN_daemon_lifecycle.md`.
 - Cold compilation can take minutes and separate renderer routes may compile separate megakernels.
 - `ALGAN_TI_DEBUG=1` is for debugging only and severely reduces performance.
 - Prefer `ti.static(bool(template_value))` for template gates rather than Python identity tests such as `is not None` inside kernel code.

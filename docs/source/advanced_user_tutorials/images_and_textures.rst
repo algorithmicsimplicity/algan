@@ -150,6 +150,73 @@ inside the ray tracing kernel**, for both flat and curved (PN) triangles. A prop
 without a map keeps the ordinary per-vertex value, and maps of different resolutions
 are resampled to a common one.
 
+Wrapping around a closed surface
+--------------------------------
+
+On a surface that closes on itself -- a :class:`~.Sphere`, a :class:`~.Cylinder`
+and a :class:`~.Cone` close around ``u``, a :class:`~.Torus` around both -- the
+map **wraps**: the last column of texels is a neighbour of the first, and Algan
+blends across that meridian the same way it blends anywhere else. So the
+checkerboard above meets itself where the sphere comes back around, and a map
+whose two edges are meant to join (an equirectangular world map, a tiling
+pattern) joins seamlessly.
+
+Each texel column therefore spans exactly ``1 / W`` of the way around, not
+``1 / (W - 1)``: with a 16-wide map, column 0 is centred at the seam and column
+8 faces the other side, whichever direction the surface is spun. Algan works out
+which axes close from the geometry, so a surface of your own written with
+:class:`~.Surface` and a ``coord_function`` wraps too, without saying so.
+
+An **open** surface -- a flat plane, an :class:`~.ImageMob`, the pole-to-pole
+``v`` axis of a sphere -- has no far side to blend into, so its first and last
+texels sit exactly on its two edges and the edge value carries beyond them.
+
+Building a map from world positions
+-----------------------------------
+
+A texture is written in ``(u, v)``, which is the wrong language for a map whose
+content depends on *where the surface is*: "everything above the equator",
+"redder the further from the origin". :meth:`~algan.mobs.surfaces.surface.Surface.get_texture_locations`
+translates -- it hands back the world position of every texel, laid out exactly
+like the map itself, so the map can be written as arithmetic on 3-D coordinates:
+
+.. algan:: TexturesByWorldPosition
+    :save_last_frame:
+
+    from algan import *
+
+    globe = Sphere(radius=1.5)
+    xyz = globe.get_texture_locations((256, 256))
+    globe.color_texture = BLUE.mult_opacity((xyz[..., 1:2] > 0).float())
+    globe.spawn()
+
+    Scene.save_video()
+
+The positions come from the surface's **current mesh**, not from its coordinate
+function, so they are right for a shape that has been deformed, morphed with
+:meth:`~algan.mobs.surfaces.surface.Surface.set_shape_to`, or built by assigning
+``surface.grid.location`` directly. They also account for the wrapping above and
+for the curvature between grid vertices, which is what keeps a boundary like the
+one in that example straight rather than scalloped once the map out-resolves the
+grid.
+
+The ``resolution`` argument is what sizes a map that does not exist yet, as
+above. Leave it out once the surface has a ``color_texture`` and you get that
+texture's resolution; the material maps are constructor arguments, so size those
+from a surface of the same shape:
+
+.. code-block:: python
+
+    probe = Sphere(radius=1.5)
+    height = probe.get_texture_locations((128, 128))[..., 1:2]
+    sphere = Sphere(radius=1.5, roughness_texture=(height / 1.5).clamp(0, 1))
+
+Because a texture is carried in ``(u, v)``, colours derived this way travel with
+the surface when it later moves: they record where it *was* when you asked. Take
+the positions again inside an
+:meth:`~algan.animatable_base.animatable.Animatable.add_updater` callback for a
+texture that stays locked to world space.
+
 Animating a texture
 -------------------
 
@@ -188,6 +255,11 @@ Glow maps
 ``glow_texture`` is the exception to the per-fragment rule: glow is consumed by the
 glow accumulator per *vertex*, so the map is baked down to the surface grid
 resolution. Raise ``grid_width`` / ``grid_height`` if you need more detail from it.
+
+That bake is also the exception to the wrapping above -- it lands the map's two
+edges on the same grid column of a closed surface, so a glow map whose edges do
+not already agree shows its seam. Make the first and last column of a
+``glow_texture`` match if you need it to wrap.
 
 Colouring a 2-D Shape
 =====================

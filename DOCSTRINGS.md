@@ -467,16 +467,27 @@ no docstring at all**, and nearly all of those are nested helper closures (`wrap
 is documented. Of the docstrings that exist, the most common remaining defect is an unstated
 default, followed by missing units and missing `Animation` semantics.
 
-Steps 1 and 2 below are done, and step 3's **shape** half is now done too: every 2-D and 3-D shape
-class in the gallery carries a `Parameters` section with defaults, units and an example, including
-the `u_range` / `v_range` domains §4.3 calls out. Documenting those turned up an API defect worth
-knowing about — `Sphere`'s `u_range`/`v_range` and `Cylinder`'s `v_range` are accepted and stored
-but never read by their `coord_function`, so a partial range silently builds a whole shape. The
-docstrings say so; the code is unchanged, because making them functional moves rendered output.
+Steps 1 and 2 below are done, and step 3 is now done in both halves. Every 2-D and 3-D shape class
+in the gallery carries a `Parameters` section with defaults, units and an example, including the
+`u_range` / `v_range` domains §4.3 calls out. Documenting those turned up an API defect —
+`Sphere`'s `u_range`/`v_range` and `Cylinder`'s `v_range` were accepted and stored but never read
+by their `coord_function`, so a partial range silently built a whole shape. That is fixed: the
+ranges are folded into the endpoints of the existing interpolation, so the default domains
+reproduce the previous vertices bit for bit and no baseline moved.
 
-The outstanding work in step 3 is the **text** constructors: `Tex`, `MathTex` and `Title` still
-put their constructor prose in `__init__` rather than the class docstring (§10) and none of the
-three has a `Parameters` section.
+The **text** constructors are done too. `Tex`'s constructor prose moved out of `__init__` into the
+class docstring (§10), and `Tex`, `Text` and `MarkupText` each document every parameter in their
+signature with its default. `MathTex` and `Title` are generated Manim-compatibility wrappers and
+used to inherit Manim's class docstring verbatim, which put a `.. manim::` block — a Manim scene,
+executed and rendered into Algan's own reference pages — on an Algan page; they now carry an
+Algan-authored docstring from `_WRAPPER_DOCSTRINGS` in `algan/mobs/manim_compat.py`. Two things
+turned up while writing them: `MarkupText` strips its markup unconditionally rather than only when
+Pango is missing (its docstring claimed otherwise), and a `Title` places itself against *Manim's*
+frame, which puts its top at exactly Algan's top border — flush against the edge with no margin.
+Both are now stated where a reader will hit them. Chasing the second one turned up a real bug in
+`move_to_edge`, since fixed: it took its inset direction from `normalize(boundary - border)`, which
+is degenerate for a boundary lying on the border and points the wrong way for a Mob already
+off-screen.
 
 Fix in this order, since it tracks what users hit first:
 

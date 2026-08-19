@@ -8,11 +8,18 @@ import torch
 from algan.constants.color import BLUE
 from algan.mobs.shapes_3d import Cone, Cylinder, Sphere, Torus
 from algan.rendering.logical_pn import (
+    EDGE_CORNERS,
+    OPPOSITE_EDGE,
+    dice_pattern,
+    dice_triangle_count,
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
+    interpolate_patch_attribute,
+    interpolate_patch_vertex_attribute,
     logical_pn_control_points,
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
+    mean_patch_edge_length,
     snap_boundary_values,
     subdivision_boundary_map,
     subdivision_triangle_indices,
@@ -24,6 +31,7 @@ from algan.rendering.raytracing.primitives import (
     RayTracedTrianglePrimitive,
 )
 from algan.scene_manager import SceneManager
+from algan.settings import SETTINGS
 from algan.utils.memory_utils import ManualMemory
 
 
@@ -150,8 +158,10 @@ def test_camera_distance_selects_per_frame_subdivision_and_batch_padding():
     primitive._dice_logical_pn(camera)
 
     (far_level,), (close_level,) = primitive._logical_pn_subdivision_levels.tolist()
+    counts = primitive._logical_pn_triangle_counts
     assert close_level > far_level
-    assert primitive.corners.shape[1] == 4**close_level
+    # The batch is padded to its widest frame and no wider.
+    assert primitive.corners.shape[1] == int(counts.sum(1).amax())
     assert primitive._logical_pn_padding[0].sum() > 0
     assert primitive._logical_pn_padding[1].sum() == 0
 
@@ -199,27 +209,31 @@ def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
         camera.screen_point.reshape(1, 3),
         camera.screen_basis,
     )
-    levels, edge_levels = _levels_for(primitive, camera)
-    level = int(levels[0, 0])
+    levels, edge_levels, apex, across = _levels_for(primitive, camera)
+    pattern = dice_pattern(
+        int(levels[0, 0]),
+        int(across[0, 0]),
+        int(apex[0, 0]),
+        device=device,
+        dtype=dtype,
+    )
 
     # Re-measure the chosen dice against a far denser sample set than the level
     # search uses, both as the interior approximation alone and as the geometry
-    # the renderer actually emits (boundary snapping included).
-    triangle_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
-    triangle_indices = subdivision_triangle_indices(level, device=device)
-    interior = evaluate_logical_pn(
-        position_controls,
-        subdivision_vertex_uvs(level, device=device, dtype=dtype),
-    )[0]
+    # the renderer actually emits (boundary snapping included). Whatever shape
+    # the search settled on -- uniform or anisotropic -- is what is measured.
+    triangle_indices = pattern.triangle_indices
+    triangle_uv = pattern.vertex_uv[triangle_indices]
+    interior = evaluate_logical_pn(position_controls, pattern.vertex_uv)[0]
     emitted = snap_boundary_values(
         interior,
-        level,
+        pattern.edge_levels,
         edge_levels[0],
-        subdivision_boundary_map(level, device=device),
+        pattern.boundary,
     )
     sample_weights = _dense_sample_weights(16, device, dtype)
     sample_uv = torch.einsum("sk,mka->msa", sample_weights, triangle_uv)
-    exact_pixels, _ = primitive._project_to_output_pixels(
+    exact_pixels, _, _ = primitive._project_to_output_pixels(
         evaluate_logical_pn(position_controls, sample_uv),
         *cam,
         camera.output_screen_height,
@@ -229,7 +243,7 @@ def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
         approximated = torch.einsum(
             "sk,pmkc->pmsc", sample_weights, vertices[:, triangle_indices]
         ).unsqueeze(0)
-        approximated_pixels, _ = primitive._project_to_output_pixels(
+        approximated_pixels, _, _ = primitive._project_to_output_pixels(
             approximated, *cam, camera.output_screen_height
         )
         return (exact_pixels - approximated_pixels).norm(dim=-1).max()
@@ -242,7 +256,7 @@ def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
 
 
 def _levels_for(primitive, camera):
-    """The (patch, edge) levels the primitive would dice this camera at."""
+    """The (patch, edge, apex, across) levels the primitive would dice at."""
     # _dice_logical_pn broadcasts the source geometry across the camera's
     # frames before the level search sees it.
     frames = camera.ray_origin.shape[0]
@@ -379,9 +393,10 @@ def test_patches_in_one_frame_choose_their_own_subdivision_levels():
     primitive._dice_logical_pn(camera)
 
     near, far = primitive._logical_pn_subdivision_levels[0].tolist()
+    near_count, far_count = primitive._logical_pn_triangle_counts[0].tolist()
     assert near > far, "the near patch must be diced more finely"
-    assert primitive.corners.shape[1] == 4**near + 4**far
-    assert primitive.corners.shape[1] < 2 * 4**near
+    assert primitive.corners.shape[1] == near_count + far_count
+    assert primitive.corners.shape[1] < 2 * near_count
 
 
 def test_shared_edge_controls_do_not_depend_on_patch_orientation():
@@ -441,20 +456,25 @@ def test_adjacent_patches_stay_watertight_at_different_levels():
 
     levels = primitive._logical_pn_subdivision_levels[0].tolist()
     edge_levels = primitive._logical_pn_edge_levels[0]
+    apex = primitive._logical_pn_apex[0].tolist()
+    across = primitive._logical_pn_across_levels[0].tolist()
     assert levels[0] != levels[1], "test needs the two patches to disagree"
     # Both patches must have derived the same level for the curve they share.
     assert int(edge_levels[0, 0]) == int(edge_levels[1, 0])
 
     # These patches are built so the shared curve is the whole of y == 0 and
     # nothing else in either patch touches it.
-    counts = [4**level for level in levels]
+    counts = primitive._logical_pn_triangle_counts[0].tolist()
     blocks = (
         primitive.corners[0, : counts[0]].reshape(-1, 3),
         primitive.corners[0, counts[0] : counts[0] + counts[1]].reshape(-1, 3),
     )
     seams = [block[block[:, 1].abs() < 1e-6] for block in blocks]
-    for seam, level in zip(seams, levels):
-        assert seam.unique(dim=0).shape[0] == 2**level + 1
+    # Each patch cuts the shared curve at its own dice's level for that edge --
+    # which is the across level when its rows run parallel to the seam.
+    for seam, level, patch_apex, patch_across in zip(seams, levels, apex, across):
+        seam_level = patch_across if OPPOSITE_EDGE[patch_apex] == 0 else level
+        assert seam.unique(dim=0).shape[0] == 2**seam_level + 1
 
     # Both patches must have laid their seam vertices on the *same* polyline;
     # any disagreement is a crack the background shows through.
@@ -475,6 +495,96 @@ def test_boundary_snap_is_a_no_op_when_the_levels_agree():
     snapped = snap_boundary_values(values, 2, levels, boundary)
     changed = (snapped != values).any(-1).any(-1)
     assert changed.tolist() == [False, False, True, False, False]
+
+
+def _materialized_per_frame(primitive, num_frames):
+    """Give ``primitive`` one source row per frame, as materialization does.
+
+    A mob that does not move still reaches the dice as ``num_frames``
+    byte-identical rows -- the ``[1, ...]`` sources these fixtures build
+    otherwise are not what a real render hands it.
+    """
+    for name in ("corners", "normals", "colors", *primitive._surface_params):
+        value = getattr(primitive, name, None)
+        if value is not None and value.shape[0] == 1:
+            setattr(
+                primitive, name, value.expand(num_frames, *value.shape[1:]).contiguous()
+            )
+    if primitive.uvs is not None and primitive.uvs.shape[0] == 1:
+        primitive.uvs = primitive.uvs.expand(
+            num_frames, *primitive.uvs.shape[1:]
+        ).contiguous()
+    primitive.shader_param_values = [
+        value.expand(num_frames, *value.shape[1:]).contiguous()
+        if value.shape[0] == 1
+        else value
+        for value in primitive.shader_param_values
+    ]
+    return primitive
+
+
+def test_vertex_attribute_interpolation_matches_the_per_corner_form():
+    # The dice interpolates attributes on the shared subdivision vertices and
+    # gathers them through the triangle indices, which is only sound because a
+    # microtriangle's corners ARE those vertices.
+    torch.manual_seed(0)
+    values = torch.randn(23, 3, 4)
+    for level in range(4):
+        corner_uv = subdivision_triangle_uvs(
+            level, device=values.device, dtype=values.dtype
+        )
+        vertex_uv = subdivision_vertex_uvs(
+            level, device=values.device, dtype=values.dtype
+        )
+        indices = subdivision_triangle_indices(level, device=values.device)
+        assert torch.equal(
+            interpolate_patch_vertex_attribute(values, vertex_uv)[:, indices],
+            interpolate_patch_attribute(values, corner_uv),
+        )
+
+
+def test_frame_invariant_sources_dice_to_the_same_values(monkeypatch):
+    # A mesh that does not move arrives as N identical source rows, and the
+    # dice collapses them: one control net instead of N, and one evaluation per
+    # distinct patch instead of one per (frame, patch). Nothing it writes may
+    # move as a result.
+    corners, normals = _curved_patch_inputs()
+    two_patches = (
+        torch.stack((corners, _shifted(corners, (0.0, 0.0, 240.0)))),
+        torch.stack((normals, normals)),
+    )
+    frames = [-30.0, -6.0, -3.0]
+
+    def fixture():
+        return _materialized_per_frame(
+            _logical_patches(*two_patches, render_tolerance=0.0005), len(frames)
+        )
+
+    shared, per_frame = fixture(), fixture()
+    with monkeypatch.context() as patch:
+        # Report every source as frame-varying: the pre-collapse code path.
+        patch.setattr(
+            LogicalPNTrianglePrimitive,
+            "_collapse_redundant_frames",
+            staticmethod(lambda value: (value, False)),
+        )
+        per_frame._dice_logical_pn(_camera(frames, device=per_frame.corners.device))
+    shared._dice_logical_pn(_camera(frames, device=shared.corners.device))
+
+    levels = shared._logical_pn_subdivision_levels
+    assert levels.unique().numel() > 1, (
+        "the fixture must dice its patches at more than one level"
+    )
+    assert shared._logical_pn_padding.any(), "the fixture must pad some frames"
+    for name in ("corners", "normals", "colors", *shared._surface_params):
+        assert torch.equal(getattr(shared, name), getattr(per_frame, name)), name
+    for name in (
+        "_logical_pn_padding",
+        "_logical_pn_subdivision_levels",
+        "_logical_pn_edge_levels",
+        "_logical_pn_tri_obj",
+    ):
+        assert torch.equal(getattr(shared, name), getattr(per_frame, name)), name
 
 
 def test_geometry_tolerance_is_absolute_at_construction_scale():
@@ -540,7 +650,9 @@ def test_default_sphere_uses_compact_geometry_accurate_logical_topology():
     ("shape_type", "vertex_limit"),
     [
         pytest.param(Cylinder, 100, id="cylinder"),
-        pytest.param(Cone, 800, id="cone"),
+        # A cone is straight along its slant, so it pays for its azimuth alone.
+        # It used to tie the two axes together and spend 520 vertices here.
+        pytest.param(Cone, 200, id="cone"),
         pytest.param(Torus, 1000, id="torus"),
     ],
 )
@@ -568,3 +680,242 @@ def test_surface_builds_new_logical_pn_primitive_with_both_tolerances():
     assert sphere.geometry_tolerance == 0.04
     assert sphere.render_tolerance == 0.75
     assert primitive.render_tolerance == 0.75
+
+
+# --- per-dimension dicing ---------------------------------------------------
+
+
+@pytest.mark.parametrize("level", [0, 1, 2, 3, 4])
+def test_dice_pattern_reproduces_the_uniform_grid_when_both_levels_agree(level):
+    """A patch that wants the same detail both ways dices as it always has."""
+    device = torch.device("cpu")
+    pattern = dice_pattern(level, level, 0, device=device, dtype=torch.float32)
+
+    torch.testing.assert_close(
+        pattern.vertex_uv[pattern.triangle_indices],
+        subdivision_triangle_uvs(level, device=device, dtype=torch.float32),
+        rtol=0,
+        atol=0,
+    )
+    assert pattern.edge_levels == (level, level, level)
+
+
+@pytest.mark.parametrize(
+    ("along", "across"), [(3, 0), (3, 1), (4, 0), (4, 2), (5, 3), (6, 1)]
+)
+@pytest.mark.parametrize("apex", [0, 1, 2])
+def test_anisotropic_dice_cuts_each_edge_at_its_own_level(along, across, apex):
+    device = torch.device("cpu")
+    pattern = dice_pattern(along, across, apex, device=device, dtype=torch.float32)
+    uv = pattern.vertex_uv
+    barycentric = torch.cat((1.0 - uv.sum(-1, keepdim=True), uv), -1)
+
+    for edge, corners in enumerate(EDGE_CORNERS):
+        opposite_corner = 3 - sum(corners)
+        on_edge = barycentric[:, opposite_corner].abs() < 1e-6
+        expected = across if edge == OPPOSITE_EDGE[apex] else along
+        assert int(on_edge.sum()) - 1 == 2**expected
+        assert pattern.edge_levels[edge] == expected
+
+    # Every microtriangle keeps the uniform grid's winding, and together they
+    # tile the patch exactly once (cross products sum to the unit triangle's).
+    a, b, c = uv[pattern.triangle_indices].unbind(1)
+    cross = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (
+        c[:, 0] - a[:, 0]
+    )
+    assert bool((cross > 0).all())
+    torch.testing.assert_close(cross.sum(), torch.tensor(1.0), rtol=0, atol=1e-5)
+    assert pattern.triangle_count == int(
+        dice_triangle_count(torch.tensor(along), torch.tensor(across))
+    )
+    assert pattern.triangle_count < 4**along
+
+
+def _patch_boundary_points(primitive, source_corners, source_normals, patch, edge):
+    """The points one patch emits along one of its edges, in edge order."""
+    device = source_corners.device
+    dtype = source_corners.dtype
+    pattern = dice_pattern(
+        int(primitive._logical_pn_subdivision_levels[0, patch]),
+        int(primitive._logical_pn_across_levels[0, patch]),
+        int(primitive._logical_pn_apex[0, patch]),
+        device=device,
+        dtype=dtype,
+    )
+    controls = logical_pn_control_points(
+        source_corners[patch : patch + 1], source_normals[patch : patch + 1]
+    )
+    snapped = snap_boundary_values(
+        evaluate_logical_pn(controls.unsqueeze(0), pattern.vertex_uv)[0],
+        pattern.edge_levels,
+        primitive._logical_pn_edge_levels[0, patch : patch + 1],
+        pattern.boundary,
+    )[0]
+    ids = pattern.boundary.edge_vertex_ids[edge, : (1 << pattern.edge_levels[edge]) + 1]
+    return snapped[ids]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [lambda: Cylinder(radius=0.5, height=2.0), Sphere],
+    ids=["cylinder", "sphere"],
+)
+def test_a_whole_diced_mesh_stays_watertight_across_every_seam(build):
+    """Every edge two patches share is the same polyline seen from both sides.
+
+    The per-dimension dice hands neighbouring patches genuinely different
+    tessellations -- different levels, different row directions, different
+    numbers of knots on the curve they share -- so this walks a real mesh and
+    checks each seam from both sides rather than trusting the construction.
+    """
+    mob = build()
+    primitive = LogicalPNTrianglePrimitive(
+        triangle_collection=[mob.get_render_primitives()]
+    )
+    source_corners = primitive.corners.reshape(-1, 3, 3).clone()
+    source_normals = primitive.normals.reshape(-1, 3, 3).clone()
+    primitive._dice_logical_pn(_camera([-2.5], device=source_corners.device))
+
+    # Two patches are neighbours when they name the same pair of corners.
+    seams = {}
+    keys = (source_corners * 1e5).round().to(torch.int64)
+    for patch in range(source_corners.shape[0]):
+        for edge, (first, second) in enumerate(EDGE_CORNERS):
+            key = tuple(
+                sorted(
+                    (
+                        tuple(keys[patch, first].tolist()),
+                        tuple(keys[patch, second].tolist()),
+                    )
+                )
+            )
+            seams.setdefault(key, []).append((patch, edge))
+
+    shared = [sides for sides in seams.values() if len(sides) == 2]
+    assert len(shared) > 20, "the mesh should have plenty of interior seams"
+
+    def emitted_level(patch, edge):
+        apex = int(primitive._logical_pn_apex[0, patch])
+        if OPPOSITE_EDGE[apex] == edge:
+            return int(primitive._logical_pn_across_levels[0, patch])
+        return int(primitive._logical_pn_subdivision_levels[0, patch])
+
+    cracks = 0
+    uneven = 0
+    for (patch_a, edge_a), (patch_b, edge_b) in shared:
+        points_a = _patch_boundary_points(
+            primitive, source_corners, source_normals, patch_a, edge_a
+        )
+        points_b = _patch_boundary_points(
+            primitive, source_corners, source_normals, patch_b, edge_b
+        )
+        gap = max(
+            float(_distance_to_polyline(points_a, points_b).max()),
+            float(_distance_to_polyline(points_b, points_a).max()),
+        )
+        cracks += gap > 1e-5
+        uneven += emitted_level(patch_a, edge_a) != emitted_level(patch_b, edge_b)
+    assert cracks == 0
+    # Keep the check honest: a mesh whose neighbours all happened to agree
+    # would pass this without exercising the snap at all.
+    assert uneven > 0
+
+
+def test_a_developable_surface_dices_along_its_curved_direction_only():
+    """A cylinder is straight along its axis, so the dice stays coarse there."""
+    mob = Cylinder(radius=0.3, height=8.0)
+    primitive = LogicalPNTrianglePrimitive(
+        triangle_collection=[mob.get_render_primitives()]
+    )
+
+    primitive._dice_logical_pn(_camera([-2.0], device=primitive.corners.device))
+
+    levels = primitive._logical_pn_subdivision_levels[0]
+    across = primitive._logical_pn_across_levels[0]
+    counts = primitive._logical_pn_triangle_counts[0]
+    assert bool((across <= levels).all())
+    assert int((across < levels).sum()) > levels.numel() // 2
+    # ...and the saving is real: strictly fewer microtriangles than the uniform
+    # dice at the level the interior actually needs.
+    assert int(counts.sum()) < int((4**levels).sum())
+
+
+def test_anisotropic_dice_can_be_switched_off():
+    mob = Cylinder(radius=0.3, height=8.0)
+
+    def dice():
+        primitive = LogicalPNTrianglePrimitive(
+            triangle_collection=[mob.get_render_primitives()]
+        )
+        primitive._dice_logical_pn(_camera([-2.0], device=primitive.corners.device))
+        return primitive
+
+    with SETTINGS.raytracing.experimental.override(pn_anisotropic_dice=False):
+        uniform = dice()
+    anisotropic = dice()
+
+    assert bool(
+        (
+            uniform._logical_pn_across_levels == uniform._logical_pn_subdivision_levels
+        ).all()
+    )
+    torch.testing.assert_close(
+        uniform._logical_pn_triangle_counts,
+        4**uniform._logical_pn_subdivision_levels,
+    )
+    assert int(anisotropic._logical_pn_triangle_counts.sum()) < int(
+        uniform._logical_pn_triangle_counts.sum()
+    )
+
+
+# --- stopping at the logical surface's own accuracy --------------------------
+
+
+def test_geometry_slack_stops_the_search_at_the_surfaces_own_accuracy():
+    """The dice does not resolve detail the PN patch itself does not have."""
+    mob = Sphere(radius=0.8)
+
+    def dice(**overrides):
+        primitive = LogicalPNTrianglePrimitive(
+            triangle_collection=[mob.get_render_primitives()]
+        )
+        with SETTINGS.raytracing.experimental.override(**overrides):
+            primitive._dice_logical_pn(_camera([-1.4], device=primitive.corners.device))
+        return primitive
+
+    strict = dice(pn_geometry_slack=False)
+    relaxed = dice()
+
+    assert mob._geometry_slack_ratio > 0
+    assert bool(
+        (
+            relaxed._logical_pn_subdivision_levels
+            <= strict._logical_pn_subdivision_levels
+        ).all()
+    )
+    assert int(relaxed._logical_pn_triangle_counts.sum()) < int(
+        strict._logical_pn_triangle_counts.sum()
+    )
+
+
+def test_a_patch_soup_is_its_own_surface_and_gets_no_slack():
+    corners, normals = _curved_patch_inputs()
+
+    primitive = _logical_patch(corners, normals)
+
+    assert primitive.geometry_slack_ratio == 0.0
+
+
+def test_geometry_slack_follows_a_scaled_surface():
+    """The accuracy is a world-space length, so it scales with the mob."""
+    mob = Sphere(radius=0.8)
+    primitive = LogicalPNTrianglePrimitive(
+        triangle_collection=[mob.get_render_primitives()]
+    )
+    corners = primitive.corners
+
+    full = mean_patch_edge_length(corners) * primitive.geometry_slack_ratio
+    tenth = mean_patch_edge_length(corners * 0.1) * primitive.geometry_slack_ratio
+
+    torch.testing.assert_close(full, mob.geometry_tolerance * torch.ones_like(full))
+    torch.testing.assert_close(tenth, full * 0.1)

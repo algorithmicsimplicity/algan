@@ -39,26 +39,37 @@ def _main_script_path():
         return None
 
 
-def _default_output_root():
+def output_root_for(script):
     """Directory the script lives in, falling back to the working directory.
 
     ``sys.path[0]`` used to fill this role, but it is the script's directory
     only under ``python script.py``; under ``-m`` or ``-c`` it is the working
     directory or empty, which silently moved everyone's output.
+
+    Takes the script explicitly so that the render daemon can compute what a
+    fresh process running *that* script would have used: the daemon resolves
+    these defaults once at its own startup, where there is no user script at
+    all, and would otherwise write every client's video into its own directory.
     """
-    script = _main_script_path()
     if script is None:
         return os.getcwd()
     return os.path.dirname(script)
 
 
-def _default_output_filename():
+def output_filename_for(script):
     """Name renders get when no path is passed: the script's own name."""
-    script = _main_script_path()
     if script is None:
         return "algan_render_output"
     stem = os.path.splitext(os.path.basename(script))[0]
     return stem or "algan_render_output"
+
+
+def _default_output_root():
+    return output_root_for(_main_script_path())
+
+
+def _default_output_filename():
+    return output_filename_for(_main_script_path())
 
 
 @dataclass

@@ -1013,6 +1013,15 @@ the expected signature of removing a 1e-4 barycentric dilation. With the hybrid
 raster on (the default), the same scene is byte-identical, because primary
 visibility never touches this code.
 
+The *texture* is what has to be continuous across it, and that is a separate
+mechanism with a separate predicate. `surface_closed_axes` (`surface.py`) runs
+the same coincidence test on both axes, ungated — a closed surface's map wraps
+whether or not its seam vertices are shared — and `wrap_pad_texture` repeats
+column 0 at column `W`, so the sampler's `u * (W - 1)` clamp addresses a padded
+`W + 1` columns and interpolates the wrap cell exactly as it does an interior
+one. Both are needed: the uv column carries `u = 1` to the seam, the pad gives
+`u = 1` the same texels as `u = 0`.
+
 **§4.7 IS NOW RUN ON CUDA, AND THE CORRECTNESS HALF PASSES CLEANLY.**
 `benchmarks/_watertight_check.py`, `--res ld`, hybrid raster **off** so all
 primary visibility goes through `_tri_hit`:

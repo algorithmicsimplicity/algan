@@ -203,20 +203,30 @@ class Sphere(Surface):
         both. Manim counts patches and Algan counts sampled vertices, so each value
         is used as ``grid_width``/``grid_height`` plus one. Defaults to ``None``,
         meaning Algan sizes the grid itself from ``geometry_tolerance``.
-    u_range, v_range
-        Parametric domain, in radians, accepted for Manim compatibility.
-
-        .. note::
-
-            These are stored but do **not** currently change the sphere's geometry:
-            :meth:`coord_function` always sweeps a full longitude/latitude grid, so
-            a partial range still builds a whole sphere. Build a partial sphere with
-            :class:`~algan.mobs.surfaces.surface.Surface` and your own coordinate
-            function instead. Defaults to ``(0, 2 * pi)`` and ``(0, pi)``.
+    u_range
+        Azimuthal sweep around the sphere's own up axis, **in radians** -- a
+        Manim-parity domain, which is why it contradicts Algan's usual degrees.
+        The sweep starts at the sphere's ``LEFT`` and turns through ``OUT``,
+        ``RIGHT`` and ``IN``, so ``(0, PI)`` builds the ``OUT`` half -- the one
+        facing the camera. Defaults to ``(0, 2 * PI)``, all the way round.
+    v_range
+        Pole-to-pole sweep, **in radians** and Manim-parity for the same reason:
+        ``0`` is the ``DOWN`` pole and ``PI`` the ``UP`` one. ``(0, PI / 2)``
+        builds the bottom hemisphere, ``(PI / 4, 3 * PI / 4)`` a band around the
+        equator. Defaults to ``(0, PI)``, pole to pole.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
         ``color``, ``checkered_color``, ``grid_width``/``grid_height`` and the
         texture maps.
+
+    Notes
+    -----
+    A partial ``u_range`` or ``v_range`` builds an open shell. The cut edges are
+    not capped, so the inside of the surface shows through them, and the shape
+    is re-tessellated from scratch rather than carved out of the whole sphere's
+    grid. The tessellation search only promises ``geometry_tolerance``, and a
+    sweep that still reaches a pole needs a finer grid there than a closed
+    sphere does -- so a partial sphere is not automatically the cheaper one.
 
     Examples
     --------
@@ -228,6 +238,19 @@ class Sphere(Surface):
         from algan import *
 
         Sphere(radius=0.8, color=BLUE).spawn()
+
+        Scene.save_video()
+
+    A hemisphere, and a band around the equator:
+
+    .. algan:: Example2Sphere
+        :save_last_frame:
+
+        from algan import *
+
+        Sphere(radius=0.7, v_range=(0, PI / 2), color=BLUE).move(LEFT * 0.9).spawn()
+        Sphere(radius=0.7, v_range=(PI / 3, 2 * PI / 3),
+               color=YELLOW).move(RIGHT * 0.9).spawn()
 
         Scene.save_video()
     """
@@ -252,11 +275,20 @@ class Sphere(Surface):
     def coord_function(self, coords_2d):
         # Keep the original Algan sampling orientation.  Although a sphere is
         # rotationally symmetric, rotating its latitude/longitude grid changes
-        # triangle placement, normals, and therefore pixel output.
+        # triangle placement, normals, and therefore pixel output.  That is why
+        # the parametric ranges are folded into the endpoints of the existing
+        # interpolation rather than applied on top of it: at the default domain
+        # the two endpoints come out as -pi/+pi and -pi/2/+pi/2 exactly, so the
+        # arithmetic below is bit-for-bit what it was before the ranges were
+        # honoured, and only a non-default range moves a vertex.
         x = coords_2d[..., 0]
         y = coords_2d[..., 1]
-        longitude = -torch.pi * (1 - x) + x * torch.pi
-        latitude = -torch.pi * 0.5 * (1 - y) + y * torch.pi * 0.5
+        longitude_start = -torch.pi + self.u_range[0]
+        longitude_end = -torch.pi + self.u_range[1]
+        latitude_start = -torch.pi * 0.5 + self.v_range[0]
+        latitude_end = -torch.pi * 0.5 + self.v_range[1]
+        longitude = longitude_start * (1 - x) + x * longitude_end
+        latitude = latitude_start * (1 - y) + y * latitude_end
         coords_3d = torch.stack(
             (
                 torch.cos(latitude) * torch.cos(longitude),
@@ -364,7 +396,6 @@ class Cone(Surface):
         self.u_min = u_min
         kwargs["checkerboard_colors"] = checkerboard_colors
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
-        kwargs.setdefault("grid_aspect_ratio", 1 / PI)
         super().__init__(*args, v_range=v_range, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
@@ -463,16 +494,17 @@ class Cylinder(Surface):
         Axis the cylinder runs along, shape ``(*, 3)``; it need not be normalized.
         Defaults to ``UP`` (the +y axis).
     v_range
-        Parametric domain, in radians, accepted for Manim compatibility.
-
-        .. note::
-
-            Stored but not currently used by :meth:`coord_function`, which always
-            sweeps the full circle, so a partial range still builds a whole
-            cylinder. Defaults to ``(0, 2 * pi)``.
+        Azimuthal sweep around the cylinder's axis, **in radians** -- a
+        Manim-parity domain, which is why it contradicts Algan's usual degrees.
+        The sweep starts on the side the cylinder's forward direction points at
+        (``IN``, for the default ``direction=UP``) and turns toward its left, so
+        ``(0, PI)`` builds the ``LEFT`` half of the tube. Defaults to
+        ``(0, 2 * PI)``, the closed tube. The extent *along* the axis comes from
+        ``height``, which is where Manim also gets its ``u_range`` from.
     show_ends
         Whether to cap both ends with filled circles. Defaults to ``False``: the
-        tube is open at both ends.
+        tube is open at both ends. The caps are whole circles even when
+        ``v_range`` is partial, matching Manim.
     resolution
         Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
         both; each value becomes ``grid_width``/``grid_height`` plus one, since
@@ -484,6 +516,14 @@ class Cylinder(Surface):
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
 
+    Notes
+    -----
+    A partial ``v_range`` builds an open half-pipe, not a solid: the cut runs
+    the length of the tube and the inside of the surface shows through it. The
+    shape is re-tessellated from scratch, and since the tessellation search only
+    promises ``geometry_tolerance``, a partial sweep can end up with a denser
+    grid than the closed tube.
+
     Examples
     --------
     A capped cylinder lying along the screen's x axis:
@@ -494,6 +534,20 @@ class Cylinder(Surface):
         from algan import *
 
         Cylinder(radius=0.4, height=1.6, direction=RIGHT, show_ends=True).spawn()
+
+        Scene.save_video()
+
+    Half a tube, cut along its length and turned so the shell faces the camera
+    (unrotated, the cut runs straight through the line of sight and the half
+    reads as a flat panel):
+
+    .. algan:: Example2Cylinder
+        :save_last_frame:
+
+        from algan import *
+
+        Cylinder(radius=0.7, height=1.4, v_range=(0, PI),
+                 color=BLUE).rotate(-90, UP).spawn()
 
         Scene.save_video()
     """
@@ -517,8 +571,6 @@ class Cylinder(Surface):
         self._height = height
         self.direction = cast_to_tensor(direction)
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
-        if "grid_aspect_ratio" not in kwargs and "grid_height" not in kwargs:
-            kwargs["grid_aspect_ratio"] = 1 / PI
         super().__init__(*args, v_range=v_range, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
@@ -547,12 +599,17 @@ class Cylinder(Surface):
 
     def coord_function(self, uv):
         uv[..., 1:] /= uv[..., 1:].amax()
-        u = -uv[..., :1]
+        # ``v_range`` is Manim's azimuthal domain, but Algan's grid carries the
+        # azimuth on the *first* uv component and the axial parameter on the
+        # second, so the sweep is applied to ``uv[..., :1]``.  Written as one
+        # negated product so that the default (0, 2*pi) reduces to the previous
+        # ``-uv * pi * 2`` bit for bit: only a partial sweep moves a vertex.
+        u = -(self.v_range[0] + uv[..., :1] * (self.v_range[1] - self.v_range[0]))
         v = uv[..., 1:]
         return (
-            (u * torch.pi * 2).sin() * self.radius * self.get_right_basis()
+            u.sin() * self.radius * self.get_right_basis()
             + (v - 0.5) * self.height * self.get_upwards_basis()
-            + (u * torch.pi * 2).cos() * self.radius * self.get_forward_basis()
+            + u.cos() * self.radius * self.get_forward_basis()
         )
 
     def normal_function(self, uv):

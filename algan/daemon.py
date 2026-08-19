@@ -1,23 +1,27 @@
 r"""Warm-process render daemon: re-run a scene script without paying startup.
 
-Every fresh ``python scene.py`` pays ~8 s of library import plus ~10 s of
-Taichi kernel preparation before the first pixel renders. This daemon pays
-them once: it keeps the process (and Taichi's in-process kernel cache) alive
-and re-executes the scene script on demand, so from the second render on the
-only cost is the render itself.
+Every fresh ``python scene.py`` pays several seconds of library import plus
+~20 s of Taichi kernel preparation before the first pixel renders, even with a
+warm offline cache. This daemon pays them once: it keeps the process (and
+Taichi's in-process kernel cache) alive and re-executes the scene script on
+demand, so from the second render on the only cost is the render itself.
 
 Usage::
 
     .venv/Scripts/python.exe -m algan.daemon               # general daemon
     .venv/Scripts/python.exe -m algan.daemon scene.py [options] [-- script args]
 
+**Launching one by hand is optional.** An ordinary ``python scene.py`` starts a
+general daemon itself when none is running, runs on it, and leaves it warm for
+the next script (see :mod:`algan.daemon_client`; ``ALGAN_AUTO_DAEMON=0``
+disables it, ``ALGAN_USE_DAEMON=0`` disables the daemon entirely). Launch one
+by hand when you want it in a terminal you can watch, or want Enter-to-re-render.
+
 **General mode (no SCRIPT) is the one to leave running.** The daemon publishes
 a state file at ``$ALGAN_HOME/daemon.json`` and then serves whatever scripts
 come to it: every subsequent ``python any_scene.py`` notices the state file
-during ``import algan`` and hands itself over (see :mod:`algan.daemon_client`),
-so scripts are launched exactly as they always were and simply start rendering
-in ~1 s. Launch it once, forget about it. With no daemon running, or with
-``ALGAN_USE_DAEMON=0``, scripts run in their own process exactly as before.
+during ``import algan`` and hands itself over, so scripts are launched exactly
+as they always were and simply start rendering in ~1 s.
 
 Concurrent scripts are **queued and run one at a time**, in arrival order --
 which is also what this project needs on Windows, where two live render
@@ -50,12 +54,25 @@ Between runs the daemon restores a clean slate:
   daemon prints what it evicted). Modules imported from elsewhere are NOT
   reloaded.
 
-Limits: edits to algan itself require a daemon restart -- already-imported
-modules stay stale, and editing ``*_taichi.py`` kernel sources under a live
-Taichi JIT can compile mixed-version kernels (the daemon warns when it sees
-algan sources change). Keep to one rendering process at a time on Windows.
+**Edits to algan itself are handled, not merely warned about.** The daemon
+fingerprints every algan source file at startup and re-checks at every run
+launch; if anything changed it refuses the run and shuts down, so the script
+executes in a fresh process that loads the edited code. A new daemon starts on
+the next run. This costs a cold start -- that is what editing the library has
+always cost -- but it can no longer render with stale modules or compile
+mixed-version kernels from a half-edited ``*_taichi.py``. An edit that lands
+*during* a run is not caught, exactly as it is not caught for a plain ``python
+scene.py``. Keep to one rendering process at a time on Windows.
 
-Two more that are specific to serving other processes:
+A run served here is meant to be indistinguishable from one in its own
+process: ``sys.argv``, the working directory, the caller's full environment,
+stdout/stderr at the descriptor level (so ffmpeg and other subprocesses reach
+the caller) and their tty-ness are all reproduced. ``stdin`` is not -- it is
+connected to ``os.devnull``, because the daemon's own stdin is its re-render
+trigger -- and ``atexit`` handlers do not run, because ``runpy`` does not run
+them and a warm process never shuts down.
+
+Two more limits that are specific to serving other processes:
 
 * **Startup-only settings cannot be adopted from a client.**
   ``ALGAN_RENDER_DEVICE`` and friends are read while Torch/Taichi initialise,
@@ -72,7 +89,10 @@ from __future__ import annotations
 
 import _thread
 import argparse
+import codecs
 import contextlib
+import hashlib
+import io
 import json
 import os
 import queue
@@ -99,14 +119,41 @@ from algan import SceneManager
 from algan import daemon_client as _dc
 from algan.environment import env_int
 from algan.settings import SETTINGS
+from algan.settings.path_settings import output_filename_for, output_root_for
 
 DEFAULT_PORT = env_int("ALGAN_DAEMON_PORT", 46711)
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
 
-# The daemon's own console, captured before any run can redirect sys.stdout to
-# a client socket. Daemon chatter always lands here, never in a client's
-# output stream.
-_CONSOLE = sys.stdout
+
+def _capture_console():
+    """A stream on the daemon's real stdout, immune to per-run redirection.
+
+    A run replaces file descriptor 1 with a pipe (see :func:`_run_context`), so
+    a console captured as plain ``sys.stdout`` would start writing *into* that
+    pipe -- daemon chatter would leak into the client's output, and the pump
+    thread echoing to the console would feed itself. Duplicating the descriptor
+    first gives a handle on the real terminal that no later ``dup2`` can move.
+    """
+    try:
+        fd = os.dup(sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        return sys.stdout  # not a real file (pytest capture, pythonw): as-is
+    try:
+        return open(
+            fd,
+            "w",
+            buffering=1,
+            encoding=getattr(sys.stdout, "encoding", None) or "utf-8",
+            errors="replace",
+        )
+    except OSError:
+        os.close(fd)
+        return sys.stdout
+
+
+# The daemon's own console, captured before any run can redirect stdout to a
+# client socket. Daemon chatter always lands here, never in a client's stream.
+_CONSOLE = _capture_console()
 
 
 def _say(msg):
@@ -144,44 +191,74 @@ class _SettingsSnapshot:
         vars(KERNEL_REGISTRY).update(self._kernel)
 
 
-class _AlganSourceGuard:
-    """Warn when algan's own sources change under a live daemon."""
+class _SourceDigest:
+    """Content fingerprint of every algan source file.
 
-    def __init__(self):
-        self._mtimes = {}
-        for dirpath, dirnames, filenames in os.walk(_ALGAN_DIR):
-            dirnames[:] = [
-                d for d in dirnames if d not in ("external_libraries", "__pycache__")
-            ]
-            for fn in filenames:
-                if fn.endswith(".py"):
-                    path = os.path.join(dirpath, fn)
-                    with contextlib.suppress(OSError):
-                        self._mtimes[path] = os.stat(path).st_mtime_ns
+    The daemon's loaded modules are frozen at import; if the files on disk no
+    longer match them, a run served here would render with code that is not
+    what a fresh interpreter would load. :meth:`changed_since` is what the
+    daemon checks at every run launch to refuse exactly that (see
+    ``DESIGN_daemon_lifecycle.md``).
 
-    def warn_if_changed(self):
-        changed = []
-        for path, mtime in self._mtimes.items():
-            try:
-                if os.stat(path).st_mtime_ns != mtime:
-                    changed.append(path)
-            except OSError:
-                changed.append(path)
-        if not changed:
-            return
-        shown = ", ".join(os.path.relpath(p, _ALGAN_DIR) for p in changed[:5])
-        more = f" (+{len(changed) - 5} more)" if len(changed) > 5 else ""
-        _say(f"WARNING: algan sources changed since startup: {shown}{more}")
-        _say(
-            "WARNING: imported algan modules are stale -- restart the "
-            "daemon to pick these up."
+    Content is hashed rather than stat'd, for two reasons. A gate must never
+    *miss* an edit, and mtime can be preserved across one. And ``git
+    checkout`` / ``stash`` / ``rebase`` rewrite mtimes wholesale without
+    changing content, so an mtime gate would force a pointless cold restart on
+    every branch switch. Hashing the whole tree costs ~10 ms for the ~300 files
+    (5 MB) involved, once per run launch.
+
+    ``external_libraries/`` is included: it is vendored and read-only by
+    policy, but it is imported into this same interpreter, so an edit there is
+    exactly as stale as any other. A file that cannot be read records the error
+    in place of its hash, which compares unequal and so errs toward restarting.
+    """
+
+    def __init__(self, files):
+        self.files = files
+
+    @classmethod
+    def capture(cls, root=None):
+        root = _ALGAN_DIR if root is None else root
+        files = {}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for name in filenames:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, name)
+                key = os.path.relpath(path, root).replace(os.sep, "/")
+                try:
+                    with open(path, "rb") as handle:
+                        files[key] = hashlib.sha256(handle.read()).hexdigest()
+                except OSError as exc:
+                    files[key] = f"<unreadable:{exc.errno}>"
+        return cls(files)
+
+    def changed_since(self, baseline):
+        """Sorted relative paths that differ from ``baseline``.
+
+        Added and removed files are included. Empty means this daemon's
+        sources are still the ones it imported.
+        """
+        names = set(self.files) | set(baseline.files)
+        return sorted(n for n in names if self.files.get(n) != baseline.files.get(n))
+
+
+def _stale_message(changed):
+    """Explain a staleness refusal to whoever asked for the run."""
+    shown = ", ".join(changed[:5])
+    more = f" (+{len(changed) - 5} more)" if len(changed) > 5 else ""
+    message = (
+        f"algan sources changed since this daemon started ({shown}{more}); "
+        "the daemon is shutting down and this run will execute in a fresh "
+        "process."
+    )
+    if any(name.endswith("_taichi.py") for name in changed):
+        message += (
+            " A *_taichi.py changed, so the next process also pays a full "
+            "kernel recompile."
         )
-        if any(p.endswith("_taichi.py") for p in changed):
-            _say(
-                "WARNING: *_taichi.py changed under a live JIT: newly "
-                "compiled kernel variants would mix old and new source. "
-                "Restart the daemon before rendering anything new."
-            )
+    return message
 
 
 class _StateFile:
@@ -236,6 +313,10 @@ class _RunJob:
         self.script = request["script"]
         self.argv = list(request.get("argv", ()))
         self.cwd = request.get("cwd") or os.getcwd()
+        # The client's whole environment, applied for the duration of the run
+        # so the script reads the variables its caller set, not the daemon's.
+        env = request.get("env_full")
+        self.env = dict(env) if isinstance(env, dict) else None
         self.isatty_out = bool(request.get("isatty_out"))
         self.isatty_err = bool(request.get("isatty_err"))
         self.done = threading.Event()
@@ -266,64 +347,191 @@ class _RunJob:
         self.done.set()
 
 
-class _ClientStream:
-    """``sys.stdout``/``sys.stderr`` stand-in: tees to console and client.
+class _RunStream(io.TextIOWrapper):
+    """``sys.stdout``/``sys.stderr`` for one run: a stream on the real fd.
 
-    ``fileno`` deliberately reports the daemon console's descriptor rather
-    than raising: subprocesses (ffmpeg, in particular) inherit it, so their
-    output lands in the daemon's terminal instead of crashing the run. That is
-    a known asymmetry -- Python-level output reaches the client, C-level and
-    subprocess output does not.
+    Built directly on the descriptor rather than wrapping whatever
+    ``sys.stdout`` happened to be, so Python-level writes provably reach the
+    redirected descriptor -- and therefore the client -- even if something
+    earlier in the process replaced the stream object with one that is not
+    backed by a file descriptor at all.
+
+    ``isatty`` reports the *client's* tty-ness rather than the pipe's. Code
+    that adapts to a terminal -- tqdm's progress bars in ``render_loop``, most
+    obviously -- would otherwise silently degrade to one line per update.
     """
 
-    def __init__(self, console, job, kind, isatty):
-        self._console = console
-        self._job = job
-        self._kind = kind
-        self._isatty = isatty
-
-    def write(self, text):
-        if isinstance(text, bytes):
-            text = text.decode("utf-8", "replace")
-        self._console.write(text)
-        self._job.send(self._kind, text)
-        return len(text)
-
-    def writelines(self, lines):
-        for line in lines:
-            self.write(line)
-
-    def flush(self):
-        with contextlib.suppress(Exception):
-            self._console.flush()
+    def __init__(self, fd, isatty):
+        super().__init__(
+            io.BufferedWriter(io.FileIO(fd, "w", closefd=False)),
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True,
+        )
+        self._algan_isatty = bool(isatty)
 
     def isatty(self):
-        return self._isatty
+        return self._algan_isatty
 
-    def fileno(self):
-        return self._console.fileno()
 
-    @property
-    def encoding(self):
-        return getattr(self._console, "encoding", "utf-8")
+class _Pump:
+    """Forward everything written to one descriptor into client frames.
 
-    @property
-    def errors(self):
-        return getattr(self._console, "errors", "replace")
+    The write end replaces file descriptor 1 or 2 for the duration of a run,
+    so Python-level writes, C-level writes and *subprocess* writes (ffmpeg's,
+    via moviepy) all travel one ordered channel and all reach the client. The
+    previous implementation replaced ``sys.stdout`` only, so anything that
+    reached the descriptor directly was lost to the daemon's own terminal.
+    """
 
-    closed = False
+    def __init__(self, job, kind, console):
+        self._job = job
+        self._kind = kind
+        self._console = console
+        self.read_fd, self.write_fd = os.pipe()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name=f"algan-daemon-pump-{kind.decode()}"
+        )
+        self._thread.start()
+
+    def _loop(self):
+        # Incremental, because a read can split a multi-byte character.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            with os.fdopen(self.read_fd, "rb", buffering=0) as reader:
+                while True:
+                    chunk = reader.read(65536)
+                    if not chunk:
+                        break
+                    self._emit(decoder.decode(chunk))
+        except OSError:
+            pass
+        finally:
+            with contextlib.suppress(Exception):
+                self._emit(decoder.decode(b"", True))
+
+    def _emit(self, text):
+        if not text:
+            return
+        with contextlib.suppress(Exception):
+            self._console.write(text)
+            self._console.flush()
+        self._job.send(self._kind, text)
+
+    def close(self, timeout=5.0):
+        """Close the write end and wait for the drain to finish."""
+        with contextlib.suppress(OSError):
+            os.close(self.write_fd)
+        self._thread.join(timeout)
+
+
+def _swap_std_handle(fd):
+    """Point Windows' std handle at ``fd``; returns a restore token or None.
+
+    ``os.dup2`` moves the C runtime's descriptor, which covers Python and the
+    CRT -- but a child process launched by :mod:`subprocess` inherits from
+    ``GetStdHandle``, not from the descriptor table. Without this, ffmpeg would
+    keep writing to the daemon's own console on Windows even though every
+    Python-level write was correctly redirected.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        import msvcrt
+
+        which = -11 if fd == 1 else -12
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+        kernel32.GetStdHandle.argtypes = [ctypes.c_uint32]
+        kernel32.SetStdHandle.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+        previous = kernel32.GetStdHandle(which)
+        kernel32.SetStdHandle(which, ctypes.c_void_p(msvcrt.get_osfhandle(fd)))
+        return (which, previous)
+    except Exception:  # noqa: BLE001 -- best effort; the run must still work
+        return None
+
+
+def _restore_std_handle(token):
+    if token is None:
+        return
+    with contextlib.suppress(Exception):
+        import ctypes
+
+        which, previous = token
+        ctypes.windll.kernel32.SetStdHandle(which, ctypes.c_void_p(previous))
 
 
 @contextlib.contextmanager
-def _client_streams(job):
-    """Redirect Python-level stdout/stderr to ``job`` for the duration."""
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = _ClientStream(old_out, job, _dc.FRAME_STDOUT, job.isatty_out)
-    sys.stderr = _ClientStream(old_err, job, _dc.FRAME_STDERR, job.isatty_err)
+def _run_context(job):
+    """Make one run look as much like its own process as a warm one can.
+
+    Reproduced: stdout and stderr at the descriptor level (so subprocess and
+    C-level output reach the client), their tty-ness, and the caller's full
+    environment. Not reproduced, deliberately: ``stdin``, which is connected to
+    ``os.devnull`` because the daemon's own stdin is its re-render trigger.
+
+    ``job`` is ``None`` for a locally triggered re-run, where there is no
+    client to stream to and no environment to adopt; stdin is still isolated,
+    so a script cannot eat the trigger.
+    """
+    saved_stdin = sys.stdin
+    saved_environ = dict(os.environ)
+    saved_out, saved_err = sys.stdout, sys.stderr
+    pumps = []
+    saved_fds = []
+    handles = []
+    run_streams = []
     try:
+        with contextlib.suppress(OSError, ValueError):
+            # Deliberately not a context manager: it has to outlive this
+            # statement and is closed in the finally below. noqa: SIM115.
+            sys.stdin = open(os.devnull)  # noqa: SIM115
+        if job is not None:
+            if job.env is not None:
+                os.environ.clear()
+                os.environ.update(job.env)
+                # Must survive the swap: it is what stops a python subprocess
+                # started by the script from handing *itself* to this daemon
+                # and deadlocking behind the run that spawned it.
+                os.environ["ALGAN_DAEMON_CHILD"] = "1"
+            for stream, fd, kind, isatty in (
+                (saved_out, 1, _dc.FRAME_STDOUT, job.isatty_out),
+                (saved_err, 2, _dc.FRAME_STDERR, job.isatty_err),
+            ):
+                # Anything already buffered belongs to the daemon, not this run.
+                with contextlib.suppress(Exception):
+                    stream.flush()
+                pump = _Pump(job, kind, _CONSOLE)
+                pumps.append(pump)
+                saved_fds.append((fd, os.dup(fd)))
+                os.dup2(pump.write_fd, fd)
+                handles.append(_swap_std_handle(fd))
+                run_streams.append(_RunStream(fd, isatty))
+            sys.stdout, sys.stderr = run_streams
         yield
     finally:
-        sys.stdout, sys.stderr = old_out, old_err
+        sys.stdout, sys.stderr = saved_out, saved_err
+        # Close the run's streams while their descriptors still point at the
+        # pipes, or their tail would flush onto the daemon's own console.
+        for stream in run_streams:
+            with contextlib.suppress(Exception):
+                stream.close()
+        for token in handles:
+            _restore_std_handle(token)
+        # Restore the descriptor before closing our copy of the write end: the
+        # pump only sees EOF once every duplicate of it is gone.
+        for fd, saved in saved_fds:
+            with contextlib.suppress(OSError):
+                os.dup2(saved, fd)
+                os.close(saved)
+        for pump in pumps:
+            pump.close()
+        with contextlib.suppress(Exception):
+            sys.stdin.close()
+        sys.stdin = saved_stdin
+        os.environ.clear()
+        os.environ.update(saved_environ)
 
 
 def _refuse(stream, reason):
@@ -408,6 +616,16 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         if not os.path.isfile(script):
             _refuse(self.wfile, f"script not found on the daemon's host: {script}")
             return
+        # Last of the handshake checks, and it must stay in the handshake: by
+        # the time ``execute`` runs, ``do_job`` has already sent FRAME_START
+        # and the client can no longer fall back safely. Refusing here means
+        # the run happens in a fresh process that loads the edited source.
+        changed = _SourceDigest.capture().changed_since(self.server.sources)
+        if changed:
+            _say(f"refusing a run: algan sources changed ({len(changed)} file(s))")
+            _refuse(self.wfile, _stale_message(changed))
+            self.server.events.put(("quit", "algan sources changed"))
+            return
 
         job = _RunJob(request, self.wfile)
         depth = self.server.events.qsize()
@@ -434,9 +652,28 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             self.wfile.write(b"idle\n")
 
 
-def _start_socket(events, port, state, busy):
+class _TriggerServer(socketserver.ThreadingTCPServer):
+    """The trigger socket, with one deviation from the default.
+
+    ``allow_reuse_address`` (SO_REUSEADDR) is set on POSIX so a daemon can bind
+    immediately after its predecessor exited. Without it the port sits in
+    TIME_WAIT for a minute or so, and since a daemon now shuts down every time
+    algan's sources change, the replacement started by the next run would fail
+    to bind and exit -- leaving no daemon at all for the rest of that minute,
+    exactly during a burst of library edits. The flag still does not permit two
+    live listeners on one port, so a spawn race keeps its loser.
+
+    Not set on Windows, where SO_REUSEADDR means something else: it lets two
+    sockets bind the same address *simultaneously*, which would let two daemons
+    each believe they were serving.
+    """
+
+    allow_reuse_address = sys.platform != "win32"
+
+
+def _start_socket(events, port, state, busy, sources):
     try:
-        server = socketserver.ThreadingTCPServer(("127.0.0.1", port), _TriggerHandler)
+        server = _TriggerServer(("127.0.0.1", port), _TriggerHandler)
     except OSError as e:
         _say(
             f"trigger socket unavailable on 127.0.0.1:{port} ({e}); "
@@ -447,6 +684,7 @@ def _start_socket(events, port, state, busy):
     server.events = events
     server.state = state
     server.busy = busy
+    server.sources = sources
     threading.Thread(
         target=server.serve_forever, daemon=True, name="algan-daemon-socket"
     ).start()
@@ -461,14 +699,21 @@ def _start_socket(events, port, state, busy):
 
 def _start_stdin(events):
     def loop():
+        # Bind the real stdin once, rather than calling input(), which
+        # re-reads ``sys.stdin`` on every call: a run replaces that with
+        # os.devnull (_run_context), and this loop would then read an instant
+        # EOF and quit the daemon in the middle of serving somebody.
+        stream = sys.stdin
         interactive = False
         with contextlib.suppress(Exception):
-            interactive = sys.stdin.isatty()
+            interactive = stream.isatty()
         got_line = False
         while True:
             try:
-                line = input()
-            except (EOFError, OSError):
+                line = stream.readline()
+                if not line:
+                    raise EOFError
+            except (EOFError, OSError, ValueError):
                 # Quit only for a deliberate close of a live interactive
                 # session (Ctrl+Z/Ctrl+D after use). A detached, piped or
                 # broken stdin running dry just disables this trigger --
@@ -598,6 +843,14 @@ def main(argv=None):
         action="store_true",
         help="wait for a trigger instead of rendering once at startup",
     )
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="exit after this long with nothing to do (0 = never, the default "
+        "for a hand-launched daemon; auto-started ones pass a real value)",
+    )
     args = parser.parse_args(argv)
 
     script = os.path.abspath(args.script) if args.script else None
@@ -616,9 +869,20 @@ def main(argv=None):
     events = queue.Queue()
     busy = threading.Event()
     snapshot = _SettingsSnapshot()
-    guard = _AlganSourceGuard()
+    sources = _SourceDigest.capture()
     state = _StateFile(args.port)
-    server = None if args.no_serve else _start_socket(events, args.port, state, busy)
+    server = (
+        None
+        if args.no_serve
+        else _start_socket(events, args.port, state, busy, sources)
+    )
+    if server is None and script is None:
+        # Nothing can ever reach this process: no socket to serve clients, and
+        # no script for the stdin trigger to re-run. Under auto-start that is
+        # what a lost spawn race looks like, and an immortal idle process
+        # holding a CUDA context is the last thing it should leave behind.
+        _say("no trigger socket and no SCRIPT -- nothing to serve; exiting")
+        return 1
     if server is not None:
         state.write()
         _say(f"serving any script launched on this machine (state: {state.path})")
@@ -646,9 +910,19 @@ def main(argv=None):
         """Run one script to completion. Returns its exit code."""
         nonlocal run_count
         run_count += 1
-        guard.warn_if_changed()
         if run_count > 1:
             reset_state()
+        # Point the output defaults at *this* script. They are resolved once,
+        # when the settings are constructed -- which in a daemon is its own
+        # startup, with no user script in sight -- so without this every
+        # client's video would land in the daemon's directory under the name
+        # "algan_render_output" instead of beside the script as its stem.
+        # Applied after reset_state()'s restore, and before the script runs so
+        # it can still override them itself.
+        SETTINGS.paths.set(
+            output_root=output_root_for(path),
+            output_filename=output_filename_for(path),
+        )
         script_dirs.add(os.path.dirname(path))
         _add_to_path(os.path.dirname(path))
         _say(f"run #{run_count} ({reason}): {path}")
@@ -693,14 +967,31 @@ def main(argv=None):
             )
         return code
 
+    def stale_quit():
+        """Shut down if algan's sources no longer match what we imported.
+
+        The socket handshake makes this call for client runs; this is the
+        locally triggered path (Enter, the socket's ``render``, ``--watch``),
+        where there is no client to refuse and the daemon simply stands down.
+        """
+        changed = _SourceDigest.capture().changed_since(sources)
+        if not changed:
+            return False
+        _say(_stale_message(changed))
+        events.put(("quit", "algan sources changed"))
+        return True
+
     def do_local(reason):
         target = last["script"]
         if target is None:
             _say("no script to re-run yet -- launch one and it will land here")
             return
+        if stale_quit():
+            return
         busy.set()
         try:
-            execute(target, last["args"], last["cwd"], reason)
+            with _run_context(None):
+                execute(target, last["args"], last["cwd"], reason)
         finally:
             busy.clear()
 
@@ -709,7 +1000,7 @@ def main(argv=None):
         job.send(_dc.FRAME_START)
         last.update(script=job.script, args=job.argv, cwd=job.cwd)
         try:
-            with _client_streams(job):
+            with _run_context(job):
                 code = execute(job.script, job.argv, job.cwd, "client")
         except BaseException:
             code = 1
@@ -724,12 +1015,26 @@ def main(argv=None):
         watcher.set_paths({script})
     _say("ready -- Enter = re-run the last script, q = quit")
 
+    idle_timeout = max(0.0, args.idle_timeout)
+    idle_since = time.monotonic()
     try:
         while True:
             try:
                 event = events.get(timeout=0.5)
             except queue.Empty:
+                # Only an auto-started daemon sets a timeout; one launched by
+                # hand stays until it is told to go. ``busy`` cannot be set
+                # here (runs occupy this thread), but check it anyway so the
+                # rule survives anyone moving execution off it.
+                if (
+                    idle_timeout
+                    and not busy.is_set()
+                    and time.monotonic() - idle_since > idle_timeout
+                ):
+                    _say(f"exiting after {idle_timeout:.0f}s idle")
+                    break
                 continue
+            idle_since = time.monotonic()
             event, deferred = _drain(events, event)
             for item in deferred:
                 events.put(item)
@@ -741,6 +1046,7 @@ def main(argv=None):
                 do_job(payload)
             else:
                 do_local(payload)
+            idle_since = time.monotonic()
             _say("ready -- Enter = re-run the last script, q = quit")
     except KeyboardInterrupt:
         _say("quitting (Ctrl+C)")

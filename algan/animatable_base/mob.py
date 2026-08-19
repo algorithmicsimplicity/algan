@@ -33,6 +33,7 @@ from algan.animatable_base.animatable import (
     ANIMATABLE_PROPERTY_VERSION,
     Animatable,
     animated_function,
+    attr_ranges_for_mob,
 )
 from algan.animatable_base.mob_hierarchy import MobHierarchyMixin
 from algan.animatable_base.mob_layout import MobLayoutMixin
@@ -262,6 +263,66 @@ class Mob(
             ).contiguous()
         return value
 
+    def _distribute_over_packed_subtree(self, key, value, current_value):
+        """Spread a per-member value across the rows of a packed subtree.
+
+        A packed Mob carries one row per logical member, but its components
+        carry a whole block of rows for each of them -- a surface's vertex
+        grid, a circuit's control points. A recursive write covers the entire
+        subtree in one tensor, so a value expressed per member has to be spread
+        over those blocks first. ``parent_batch_sizes`` is the map, recording
+        how many of a descendant's rows belong to each of its parent's, which
+        is what it has always been documented to be for.
+
+        Without this, ``pack.move(UP)`` raises: the change carries one row per
+        member and the subtree read carries every row of every component.
+
+        The subtree is addressed in **buffer** order, not descendant order --
+        :meth:`RowRanges.from_runs` sorts and coalesces the runs -- so the
+        per-member values are gathered into that order rather than simply
+        concatenated. Getting this wrong is silent: the rows still line up in
+        count, and every member reads a neighbour's value.
+
+        Returns ``value`` unchanged whenever it is already broadcastable or the
+        subtree cannot be covered exactly, so an unbatched Mob -- and any shape
+        this cannot describe -- behaves exactly as it did before.
+        """
+        members = value.shape[-2]
+        total = current_value.shape[-2]
+        if members == 1 or members == total:
+            return value
+        timeline = self.scene.timeline_manager.attr_to_timeline.get(key)
+        if timeline is None:
+            return value
+        descendants = [
+            mob
+            for mob in self.get_descendants(include_self=True)
+            if mob is self or key not in getattr(mob, "_excluded_from_parent_attrs", ())
+        ]
+        rows, owners = [], []
+        for mob in descendants:
+            if mob.id not in timeline.mob_id_to_inds:
+                return value
+            mob_rows = attr_ranges_for_mob(timeline, mob).tensor()
+            if mob is self:
+                owner = torch.arange(members, device=mob_rows.device)
+            else:
+                sizes = mob.parent_batch_sizes
+                if sizes is None or sizes.shape[-1] != members:
+                    return value
+                owner = torch.arange(members, device=mob_rows.device).repeat_interleave(
+                    sizes.to(mob_rows.device)
+                )
+            if mob_rows.numel() != owner.numel():
+                return value
+            rows.append(mob_rows)
+            owners.append(owner)
+        rows = torch.cat(rows)
+        if rows.numel() != total:
+            return value
+        owners = torch.cat(owners)[torch.argsort(rows)]
+        return value.index_select(-2, owners.to(value.device))
+
     @animated_function(
         animated_args={"interpolation": 0.0},
         unique_args=["key", "recursive", "relative"],
@@ -337,6 +398,17 @@ class Mob(
         current_value = self.get_animated_attribute(
             key, include_descendants=recursive, default=default
         )
+
+        # A pack's changes arrive one row per member; the union above covers
+        # every row of every component. See _distribute_over_packed_subtree.
+        def spread(change):
+            if not torch.is_tensor(change) or change.shape[-2] == 1:
+                return change
+            return self._distribute_over_packed_subtree(key, change, current_value)
+
+        if recursive:
+            change1 = spread(change1)
+            change2 = spread(change2)
         if relative:
             change1 = current_value * cast_to_tensor(change1)
             change2 = (
@@ -781,6 +853,8 @@ class Mob(
         current_value = self.get_animated_attribute(
             attr, include_descendants=recursive, copy=False, _scope=scope
         )
+        if recursive and scope is None:
+            change = self._distribute_over_packed_subtree(attr, change, current_value)
         new_value = current_value + change
         return self._setattr_and_record_modification(
             attr, new_value, include_descendants=recursive, _scope=scope
@@ -848,6 +922,8 @@ class Mob(
         current_value = self.get_animated_attribute(
             attr, include_descendants=recursive, default=value, copy=False
         )
+        if recursive:
+            value = self._distribute_over_packed_subtree(attr, value, current_value)
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
         return self
@@ -1048,13 +1124,29 @@ class Mob(
         child_loc = self.get_animated_attribute(
             "location", include_descendants=recursive, copy=False
         )
-        local_coords = map_global_to_local_coords(my_loc, my_basis, child_loc)
-        new_child_location = map_local_to_global_coords(my_loc, new_basis, local_coords)
+
+        # A packed Mob turns about one pivot per member, so the pivot and the
+        # change are spread over each component's rows the same way an ordinary
+        # recursive write is. Unbatched Mobs get these back unchanged.
+        def spread(key, value, reference):
+            if not recursive:
+                return value
+            return self._distribute_over_packed_subtree(key, value, reference)
+
+        pivot_loc = spread("location", my_loc, child_loc)
+        pivot_basis = spread("basis", my_basis, child_loc)
+        pivot_new_basis = spread("basis", new_basis, child_loc)
+        local_coords = map_global_to_local_coords(pivot_loc, pivot_basis, child_loc)
+        new_child_location = map_local_to_global_coords(
+            pivot_loc, pivot_new_basis, local_coords
+        )
 
         child_basis = self.get_animated_attribute(
             "basis", include_descendants=recursive, copy=False
         )
-        new_child_basis = relation(child_basis, interpolated_change)
+        new_child_basis = relation(
+            child_basis, spread("basis", interpolated_change, child_basis)
+        )
 
         self._apply_set("location", new_child_location, recursive=recursive)
         self._apply_set("basis", new_child_basis, recursive=recursive)
@@ -1645,14 +1737,19 @@ class Mob(
             c._set_data_sub_inds(data_sub_inds)
 
     def __len__(self):
-        return (
-            self.parent_batch_sizes.shape[-1]
-            if (
-                hasattr(self, "parent_batch_sizes")
-                and self.parent_batch_sizes is not None
-            )
-            else 0
-        )
+        """Number of logical objects in this Mob's batch, or 0 if it is not batched."""
+        parent_batch_sizes = getattr(self, "parent_batch_sizes", None)
+        if parent_batch_sizes is None:
+            return 0
+        # A packer that gives every member exactly one row records the count
+        # compressed into a single entry, which _set_data_sub_inds expands on
+        # the first index. Reading shape[-1] off that reports 1 member however
+        # many there are -- the reason Tex carries its own __len__.
+        if getattr(self, "singleton_batch_indexing", False) and (
+            parent_batch_sizes.shape[-1] == 1
+        ):
+            return int(parent_batch_sizes.item())
+        return parent_batch_sizes.shape[-1]
 
     def __getitem__(self, item: int | slice) -> Mob:
         """Get part of a batched Mob by index or slice, as a Mob.

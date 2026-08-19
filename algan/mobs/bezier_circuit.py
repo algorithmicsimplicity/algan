@@ -45,6 +45,7 @@ from algan.geometry.geometry import rotate_vector_around_axis
 from algan.rendering.raytracing.utils import _unify_time
 from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.settings.video_settings import PREVIEW
+from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
 from algan.utils.tensor_utils import *
 
 # Three.js's fixed dielectric F0 = 0.04 corresponds to IOR 1.5; MeshStandard
@@ -467,20 +468,9 @@ class BezierCircuitCubic(Mob):
             record_attr_modifications=False,
             animation_manager=mob.animation_manager,
         ):
-            for attr in mob.animatable_attrs:
-                try:
-                    value = getattr(mob, attr)
-                except AttributeError:
-                    continue
-                if attr == "location":
-                    value = locations
-                elif attr == "basis":
-                    value = bases
-                elif value.shape[-2] == 1:
-                    value = value.expand(
-                        *value.shape[:-2], count, value.shape[-1]
-                    ).contiguous()
-                mob._setattr_and_rebatch_without_record(attr, value)
+            pack_animatable_rows(
+                mob, count, overrides={"location": locations, "basis": bases}
+            )
 
             texture_point_count = max(mob.num_texture_points, 1)
             grid_locations = (
@@ -508,31 +498,14 @@ class BezierCircuitCubic(Mob):
                 mob.texture_points,
                 mob.border_texture_points,
             ):
-                texture_mob.parent_batch_sizes = torch.full(
-                    (count,), texture_point_count, dtype=torch.long
+                pack_member_rows(
+                    texture_mob,
+                    count,
+                    texture_point_count,
+                    overrides={"location": grid_locations},
                 )
-                for attr in texture_mob.animatable_attrs:
-                    try:
-                        value = getattr(texture_mob, attr)
-                    except AttributeError:
-                        continue
-                    if attr == "location":
-                        value = grid_locations
-                    elif value.shape[-2] == 1:
-                        value = value.expand(
-                            *value.shape[:-2],
-                            count * texture_point_count,
-                            value.shape[-1],
-                        ).contiguous()
-                    elif value.shape[-2] == texture_point_count and count > 1:
-                        value = value.repeat(
-                            *([1] * (value.dim() - 2)), count, 1
-                        ).contiguous()
-                    texture_mob._setattr_and_rebatch_without_record(attr, value)
 
             mob.control_points.parent_batch_sizes = point_counts
-            mob.parent_batch_sizes = torch.tensor((count,), dtype=torch.long)
-            mob.singleton_batch_indexing = True
         return mob
 
     def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):

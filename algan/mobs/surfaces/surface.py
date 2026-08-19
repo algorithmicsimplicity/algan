@@ -5,9 +5,12 @@ square, maps each through a coordinate function into 3-D space, and tiles the
 result with triangles. Every curved shape in Algan is one of these: a sphere is a
 :class:`Surface` whose coordinate function is a sphere.
 
-The grid resolution is chosen for you. ``geometry_tolerance`` bounds how far the
-PN-triangle approximation may stray from the analytic surface, and the search for
-a grid meeting it is cached per subclass and geometry configuration.
+The grid resolution is chosen for you, **one axis at a time**: ``geometry_tolerance``
+bounds how far the PN-triangle approximation may stray from the analytic surface,
+and the search sizes each parameter axis against its own contribution to that
+error, so an axis the surface is straight along (a cylinder's length, a cone's
+slant) costs the minimum however curved the other axis is. The search is cached
+per subclass and geometry configuration.
 ``render_tolerance`` then bounds the on-screen error when each PN triangle is
 diced into flat render triangles -- per triangle, per frame, so detail is spent
 only where the surface is near the camera.
@@ -32,7 +35,11 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.animation_timeline.animation_contexts import (
+    Off,
+    Sync,
+    active_scene_for_new_mob,
+)
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
 from algan.constants.spatial import OUT
@@ -42,16 +49,50 @@ from algan.geometry.geometry import (
 )
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
+    evaluate_logical_pn_per_patch,
     logical_pn_control_points,
+    mean_patch_edge_length,
 )
 from algan.utils.file_utils import get_image
+from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
+    cast_to_tensor,
     dot_product,
     squish,
     unsqueeze_left,
     unsquish,
 )
+
+
+def _as_member_colors(colors, count):
+    """Cast per-member colours to Algan's ``[N, 5]`` RGB+glow+opacity form.
+
+    Accepts RGB, RGBA or the full five channels, matching what
+    :class:`~algan.constants.color.Color` stores, so a point cloud's RGBA array
+    and a list of named colours both work.
+    """
+    colors = cast_to_tensor(colors).reshape(-1, cast_to_tensor(colors).shape[-1])
+    if len(colors) == 1 and count > 1:
+        colors = colors.expand(count, -1)
+    if len(colors) != count:
+        raise ValueError(
+            f"expected {count} colors to match {count} centers, got {len(colors)}"
+        )
+    channels = colors.shape[-1]
+    if channels == 5:
+        return colors.contiguous()
+    ones = torch.ones_like(colors[..., :1])
+    zeros = torch.zeros_like(colors[..., :1])
+    if channels == 4:
+        # RGBA: glow sits between the colour and the opacity.
+        return torch.cat((colors[..., :3], zeros, colors[..., 3:4]), -1).contiguous()
+    if channels == 3:
+        return torch.cat((colors, zeros, ones), -1).contiguous()
+    raise ValueError(
+        f"colors must have 3 (RGB), 4 (RGBA) or 5 channels, got {channels}"
+    )
+
 
 # Ceiling on the grid resolution ``wave_color`` will refine a surface to. A
 # tighter wave than this can afford is drawn as smoothly as the budget allows
@@ -76,6 +117,11 @@ _PROJECTION_BOX_CELLS = 2.0
 # walk the step back down costs one iteration per rejection. All scales are
 # evaluated in one batch instead, so each iteration lands on the best of them.
 _PROJECTION_SCALES = (1.0, 0.5, 0.25, 0.1, 0.03, 0.01)
+
+# How many texels ``Surface.get_texture_locations`` resolves at a time. Every
+# texel carries ten intermediate PN control points, so a 4K map evaluated in one
+# go would want gigabytes; this bounds it to tens of megabytes regardless.
+_TEXTURE_LOCATION_CHUNK_TEXELS = 1 << 18
 
 
 def _call_parametric_function(function, u, v):
@@ -316,6 +362,75 @@ def surface_weld_flags(grid):
         (grid[..., :, -1, :] - grid[..., :1, -1, :]).abs().lt(tol).all().item()
     )
     return (wrap_x, pole_lo, pole_hi)
+
+
+def surface_closed_axes(grid):
+    """Which parameter axes of a materialized grid close on themselves.
+
+    Returns ``(closed_u, closed_v)``: ``closed_u`` when column ``W-1``
+    coincides with column 0 (a surface of revolution's u-seam -- a
+    :class:`~.Sphere`, a :class:`~.Cylinder`, a :class:`~.Cone`), ``closed_v``
+    when row ``H-1`` coincides with row 0 (a :class:`~.Torus` closes on both).
+
+    This is :func:`surface_weld_flags`'s ``wrap_x`` test on both axes, but it
+    answers a different question -- how a *texture* must be sampled, not how
+    triangles are indexed -- so it is deliberately not gated on
+    ``ALGAN_WELD_SURFACE_SEAMS``: a closed surface's texture has to wrap
+    whether or not its seam vertices are shared.
+
+    Returns Python bools, so this synchronises with the device once per
+    textured primitive build. The result changes a tensor's *shape* (see
+    :func:`wrap_pad_texture`), which a device value cannot do.
+    """
+    if grid.dim() < 3:
+        return (False, False)
+    tol = _WELD_TOLERANCE
+    # A single-sample axis has one column playing both edges, which the test
+    # below cannot tell from a wraparound.
+    closed_u = grid.shape[-3] > 1 and bool(
+        (grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item()
+    )
+    closed_v = grid.shape[-2] > 1 and bool(
+        (grid[..., :, 0, :] - grid[..., :, -1, :]).abs().lt(tol).all().item()
+    )
+    return (closed_u, closed_v)
+
+
+def wrap_pad_texture(texture, closed_axes):
+    """Repeat a texture's first row/column at its far edge on closed axes.
+
+    The renderer addresses a ``[W, H]`` map as ``u * (W - 1)`` and clamps, so
+    texel 0 sits at ``u == 0`` and texel ``W-1`` at ``u == 1``. On a surface
+    whose u axis closes those are the *same place*, and the sampler has no way
+    to blend the last texel back into the first: the map lands on the surface
+    stretched by ``W / (W - 1)`` and cut by a hard seam wherever column 0
+    disagrees with column ``W-1``.
+
+    Appending a copy of column 0 as column ``W`` fixes both at once. Texel
+    ``i`` then sits at ``u == i / W``, so every column spans the same
+    ``1 / W`` of the way around, and the wrap cell interpolates column ``W-1``
+    into column 0 exactly as an interior cell interpolates its neighbours.
+
+    Parameters
+    ----------
+    texture
+        A texture map ``[T, W, H, C]`` (u along ``W``, v along ``H``), or None.
+    closed_axes
+        ``(closed_u, closed_v)`` from :func:`surface_closed_axes`.
+
+    Returns
+    -------
+    torch.Tensor
+        The padded map, or ``texture`` unchanged when neither axis closes.
+    """
+    if texture is None:
+        return None
+    closed_u, closed_v = closed_axes
+    if closed_u and texture.shape[-3] > 1:
+        texture = torch.cat((texture, texture[..., :1, :, :]), -3)
+    if closed_v and texture.shape[-2] > 1:
+        texture = torch.cat((texture, texture[..., :, :1, :]), -2)
+    return texture
 
 
 def grid_to_triangle_vertices(grid, weld=(False, False, False)):
@@ -565,8 +680,6 @@ class Surface(Mob):
         Height of the grid from which intrinsic coordinates are sampled.
     grid_width
         Width of the grid from which intrinsic coordinates are sampled.
-    grid_aspect_ratio
-        If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
     geometry_tolerance
         Maximum sampled world-space distance between the analytic surface and its
         PN-triangle approximation at construction time, in world units. It measures
@@ -586,7 +699,10 @@ class Surface(Mob):
         so detail spent where the surface is close to the camera is not spent on the
         rest of the mesh or on the frames where it is far away.
     min_grid_resolution, max_grid_resolution
-        Bounds for automatic grid sizing, measured in vertices per axis.
+        Bounds for automatic grid sizing, measured in vertices per axis. Default
+        to ``2`` and ``200``. The floor is two vertices -- one cell -- because a
+        surface that is straight along an axis needs no more than that, and the
+        search measures rather than assumes it.
     resolution_shrink_margin
         Deprecated compatibility argument. Logical PN topology is fixed at
         construction and is never resized during animation.
@@ -651,7 +767,6 @@ class Surface(Mob):
         normal_function=None,
         grid_height=None,
         grid_width=None,
-        grid_aspect_ratio=None,
         checkered_color=None,
         color_texture=None,
         reflectivity_texture=None,
@@ -662,7 +777,7 @@ class Surface(Mob):
         ignore_normals=False,
         geometry_tolerance=0.001,
         render_tolerance=0.001,
-        min_grid_resolution=4,
+        min_grid_resolution=2,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,
         *args,
@@ -772,7 +887,6 @@ class Surface(Mob):
         self._min_grid_resolution = int(min_grid_resolution)
         self._max_grid_resolution = int(max_grid_resolution)
         self._resolution_shrink_margin = float(resolution_shrink_margin)
-        self._grid_aspect_ratio = grid_aspect_ratio
         self._pending_auto_resolution = None
         self._resolution_update_in_progress = True
         if not np.isfinite(self._geometry_tolerance):
@@ -819,8 +933,6 @@ class Surface(Mob):
                 grid_width = grid_height
             if grid_height is None:
                 grid_height = grid_width
-            if grid_aspect_ratio is not None:
-                grid_height = int(grid_width * grid_aspect_ratio)
 
         self.grid_height, self.grid_width = grid_height, grid_width
 
@@ -855,6 +967,25 @@ class Surface(Mob):
 
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
+
+        # ``geometry_tolerance`` bounds a world-space distance measured on
+        # exactly this geometry, so remember it as a fraction of how big the
+        # geometry's patches were. A surface that is scaled (or deformed)
+        # afterwards can then carry the bound forward to the renderer instead of
+        # quoting a stale absolute length, and a PN soup converted from it
+        # arrives at the identical number from the identical triangles.
+        reference = float(
+            mean_patch_edge_length(
+                grid_to_triangle_vertices(
+                    unsquish(grid_points, -2, self.grid_height).reshape(
+                        -1, self.grid_width, self.grid_height, 3
+                    )
+                ).reshape(1, -1, 3, 3)
+            ).mean()
+        )
+        self._geometry_slack_ratio = (
+            self._geometry_tolerance / reference if reference > 0 else 0.0
+        )
 
         color = kwargs["color"] if "color" in kwargs else self.get_default_color()
         if checkered_color is None:
@@ -907,6 +1038,135 @@ class Surface(Mob):
         self.ignore_wave_animations = True
         self._resolution_update_in_progress = False
 
+    @classmethod
+    def from_batches(cls, centers, *args, colors=None, **kwargs):
+        """Build many independently indexable surfaces without per-surface mobs.
+
+        One packed Mob covers every centre in ``centers``: it is a single Scene
+        actor whose vertex grids are concatenated into one tensor, so the whole
+        collection costs one construction and one
+        :meth:`get_render_primitives` call per frame batch rather than one each.
+        Index it (``spheres[3]``) for a view onto a single member, which shares
+        the pack's timeline rows.
+
+        Every member has the same shape, resolution and material -- only its
+        centre and colour vary. Anything else that differs needs separate Mobs.
+
+        Parameters
+        ----------
+        centers
+            World-space centre of each surface, shape ``(N, 3)`` in world units.
+            Any nested sequence is cast to a tensor and reshaped.
+        colors
+            Per-member colour, shape ``(N, 3)`` as RGB, ``(N, 4)`` as RGBA or
+            ``(N, 5)`` as Algan's RGB+glow+opacity. Defaults to None, giving
+            every member the ``color`` passed in ``kwargs``.
+        *args, **kwargs
+            Passed to the ordinary constructor, which builds one representative
+            member -- so ``radius``, ``resolution``, ``color`` and the texture
+            maps all mean what they usually do, and apply to the whole pack.
+
+        Returns
+        -------
+        :class:`~algan.mobs.surfaces.surface.Surface`
+            The packed Mob, of whichever subclass this was called on.
+
+        Animation
+        ---------
+        Not animated: this only constructs. Animating the pack moves every
+        member; animating ``pack[i]`` moves just that one. All members share one
+        lifespan, so they spawn and despawn together -- stagger an entrance with
+        opacity rather than with separate spawns.
+
+        Examples
+        --------
+        A lattice of spheres as one Mob:
+
+        .. algan:: Example1SurfaceFromBatches
+            :save_last_frame:
+
+            from algan import *
+            import torch
+
+            grid = torch.linspace(-2, 2, 6)
+            centers = torch.cartesian_prod(grid, grid, torch.zeros(1))
+            Sphere.from_batches(centers, radius=0.15, color=BLUE).spawn()
+
+            Scene.save_video()
+        """
+        centers = cast_to_tensor(centers).reshape(-1, 3)
+        count = len(centers)
+        if count == 0:
+            raise ValueError("from_batches requires at least one centre")
+
+        # One representative member through the ordinary constructor, at the
+        # first centre. The resolution search, colour grid, textures and
+        # materials are then exactly what a lone member would have got, and the
+        # packing below only widens rows -- which is what keeps a pack
+        # bit-identical to batch_mobs over separately constructed members.
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
+        kwargs["location"] = centers[:1]
+        # Construction is instantaneous by definition, and the packing below
+        # re-allocates timeline rows, which is only valid while the Mob's
+        # history is fresh. A subclass constructor that repositions itself
+        # (Dot3D calls move_to) would otherwise record an animation here.
+        with Off(
+            record_funcs=False,
+            record_attr_modifications=False,
+            animation_manager=kwargs["scene"].animation_manager,
+        ):
+            mob = cls(*args, **kwargs)
+
+        points_per_grid = mob.grid_width * mob.grid_height
+        # Rebuilt from the same expression __init__ uses, rather than by
+        # subtracting the representative's centre back off its grid, so member
+        # i's rows are bit-identical to a separately constructed member's.
+        relative_grid = squish(
+            mob.coord_function_active(mob.get_base_grid().clone()), -3, -2
+        )
+        grid_overrides = {
+            "location": (relative_grid.unsqueeze(-3) + centers.unsqueeze(-2)).reshape(
+                1, count * points_per_grid, 3
+            )
+        }
+        surface_overrides = {"location": centers.unsqueeze(0)}
+
+        if colors is not None:
+            if kwargs.get("checkered_color") is not None:
+                raise ValueError(
+                    "from_batches cannot combine per-member colors with a "
+                    "shared checkered_color"
+                )
+            if mob._has_color_texture:
+                raise ValueError(
+                    "from_batches cannot combine per-member colors with a "
+                    "color_texture, which the whole pack shares"
+                )
+            member_colors = _as_member_colors(colors, count)
+            grid_color = mob.grid.get_animated_attribute("color")
+            packed = (
+                grid_color.repeat(1, count, 1)
+                .contiguous()
+                .view(1, count, points_per_grid, grid_color.shape[-1])
+            )
+            # __init__ lays a grid out as alternating colour / checkered-colour
+            # rows. Substitute per-member values into that same layout instead
+            # of rebuilding it, so the two constructions cannot drift apart.
+            packed[:, :, ::2] = member_colors.view(1, count, 1, -1)
+            packed[:, :, 1::2] = member_colors.view(1, count, 1, -1)
+            grid_overrides["color"] = packed.view(1, count * points_per_grid, -1)
+            surface_overrides["color"] = member_colors.unsqueeze(0)
+
+        with Off(
+            record_funcs=False,
+            record_attr_modifications=False,
+            animation_manager=mob.animation_manager,
+        ):
+            pack_member_rows(mob.grid, count, points_per_grid, overrides=grid_overrides)
+            pack_animatable_rows(mob, count, overrides=surface_overrides)
+        return mob
+
     @property
     def geometry_tolerance(self):
         """Construction-time absolute world-space PN fitting tolerance."""
@@ -933,6 +1193,13 @@ class Surface(Mob):
         the surface as it deforms. ``None`` means the surface is drawn from its
         per-vertex colours instead. Assigning a texture whose resolution differs from
         the current one detaches history, since the two cannot be interpolated.
+
+        On an axis where the surface closes on itself -- ``u`` on a
+        :class:`~algan.mobs.shapes_3d.Sphere`, both axes on a
+        :class:`~algan.mobs.shapes_3d.Torus` -- the image wraps: its last column of
+        texels neighbours its first, each column spanning ``1 / W`` of the way
+        around, so a map whose edges join draws no seam. On an open axis the first
+        and last texels sit on the two edges.
 
         Animation
         ---------
@@ -1646,39 +1913,14 @@ class Surface(Mob):
                     height = high
             return width, height
 
-        if self._grid_aspect_ratio is not None:
-            ratio = float(self._grid_aspect_ratio)
-            low, high = minimum, maximum
-            best_width = maximum
-            while low <= high:
-                width = (low + high) // 2
-                height = min(
-                    maximum,
-                    max(minimum, int(round(width * ratio))),
-                )
-                if acceptable(width, height):
-                    best_width = width
-                    high = width - 1
-                else:
-                    low = width + 1
-            result = (
-                best_width,
-                min(
-                    maximum,
-                    max(minimum, int(round(best_width * ratio))),
-                ),
-            )
-        else:
-            width = first_acceptable(maximum, vary_width=True)
-            height = first_acceptable(maximum, vary_width=False)
-            while not acceptable(width, height) and (
-                width < maximum or height < maximum
-            ):
-                if width < maximum:
-                    width = min(maximum, max(width + 1, int(width * 1.25)))
-                if height < maximum:
-                    height = min(maximum, max(height + 1, int(height * 1.25)))
-            result = trim(width, height)
+        width = first_acceptable(maximum, vary_width=True)
+        height = first_acceptable(maximum, vary_width=False)
+        while not acceptable(width, height) and (width < maximum or height < maximum):
+            if width < maximum:
+                width = min(maximum, max(width + 1, int(width * 1.25)))
+            if height < maximum:
+                height = min(maximum, max(height + 1, int(height * 1.25)))
+        result = trim(width, height)
 
         self._geometry_resolution_limit_reached = not acceptable(*result)
         if self._geometry_resolution_limit_reached:
@@ -1745,7 +1987,6 @@ class Surface(Mob):
             self._geometry_tolerance,
             self._min_grid_resolution,
             self._max_grid_resolution,
-            _freeze_resolution_cache_value(self._grid_aspect_ratio),
             str(self.location.device),
             str(self.location.dtype),
             _freeze_resolution_cache_value(self.u_range),
@@ -1812,22 +2053,6 @@ class Surface(Mob):
                 else:
                     low = middle + 1
             return best
-
-        if self._grid_aspect_ratio is not None:
-            ratio = float(self._grid_aspect_ratio)
-            low, high = minimum, maximum
-            best_width = maximum
-            while low <= high:
-                width = (low + high) // 2
-                height = min(maximum, max(minimum, int(round(width * ratio))))
-                if acceptable(width, height):
-                    best_width = width
-                    high = width - 1
-                else:
-                    low = width + 1
-            return best_width, min(
-                maximum, max(minimum, int(round(best_width * ratio)))
-            )
 
         width = first_acceptable(maximum, vary_width=True)
         height = first_acceptable(maximum, vary_width=False)
@@ -2497,6 +2722,13 @@ class Surface(Mob):
         batch sizer prices a 1774x887 image at a few kilobytes per frame and
         puts an entire video in a single batch.
 
+        A closed surface's map is wrap-padded (:func:`wrap_pad_texture`) on its
+        way to the renderer, which is a third copy, live while the premultiply
+        clones off it. Whether a surface closes is a property of its animated
+        geometry, so it is read off the previous primitive build -- the first
+        batch of a job prices a globe as if it were a plane, and the
+        out-of-render-memory retry is what covers that.
+
         Rows orphaned by :meth:`~algan.animatable_base.mob.Mob.detach_history`
         are materialized too but belong to no live Mob, so they are not
         attributed here; the animation memory fraction absorbs them.
@@ -2513,7 +2745,8 @@ class Surface(Mob):
         inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
-        return rows * texels * 4 * 2
+        copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
+        return rows * texels * 4 * copies
 
     def _packed_grid_count(self):
         """Number of independent grids concatenated into ``self.grid``.
@@ -2622,6 +2855,7 @@ class Surface(Mob):
 
         uvs = None
         texture_map = None
+        closed_axes = (False, False)
         material_texture_map = getattr(self, "material_texture", None)
         material_texture_flags = getattr(self, "material_texture_flags", 0)
         normal_texture_map = getattr(self, "normal_texture", None)
@@ -2645,17 +2879,29 @@ class Surface(Mob):
             if packed_grid_count is not None:
                 uvs = uvs.unsqueeze(0).expand(packed_grid_count, -1, -1).flatten(0, 1)
             uvs = uvs.unsqueeze(0)  # [1, num_triangles * 3, 2]
+            # u = 0 and u = 1 are the same place on a closed surface, so every
+            # map sampled against these uvs has to wrap there rather than
+            # clamp. wrap_pad_texture makes the clamping sampler do that.
+            closed_axes = surface_closed_axes(grid)
+            self._texture_is_wrap_padded = any(closed_axes)
+            material_texture_map = wrap_pad_texture(material_texture_map, closed_axes)
+            normal_texture_map = wrap_pad_texture(normal_texture_map, closed_axes)
         if has_color_texture:
             # Read the texels once, uncopied: this is the widest attribute in
             # the engine, and mult_opacity is out-of-place (Color.prep_set
             # clones), so the materialized state is never written through.
+            # Pad as a plain tensor, before mult_opacity, so the cat stays off
+            # Color's __torch_function__.
             texels = self._color_texture_uncopied()
             texture_map = (
-                texels.view(
-                    texels.shape[0],
-                    self.texture_height,
-                    self.texture_width,
-                    5,
+                wrap_pad_texture(
+                    texels.view(
+                        texels.shape[0],
+                        self.texture_height,
+                        self.texture_width,
+                        5,
+                    ),
+                    closed_axes,
                 )
                 .as_subclass(Color)
                 .mult_opacity(self.opacity.unsqueeze(-2))
@@ -2689,6 +2935,7 @@ class Surface(Mob):
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
             render_tolerance=self._render_tolerance,
+            geometry_slack_ratio=self._geometry_slack_ratio,
             **{
                 k: expand_grid_to_verts(v)
                 for k, v in self.grid.get_shader_params().items()
@@ -2783,6 +3030,207 @@ class Surface(Mob):
             self._cached_base_grid = grid
             self._cached_base_grid_key = cache_key
         return self._cached_base_grid
+
+    def _surface_points_at(self, u, v, grid, normals):
+        """World positions of the parameter lattice ``u`` x ``v`` on the mesh.
+
+        ``u`` and ``v`` are 1-D tensors in ``[0, 1]``, ``grid`` is
+        ``[..., grid_width, grid_height, 3]`` and ``normals`` its vertex
+        normals; the result is ``[..., len(u), len(v), 3]``.
+
+        This reproduces what the renderer does with a UV coordinate, which is
+        the only reason it is not simply ``coord_function(uv)``: the kernel
+        interpolates the triangle corners' UVs barycentrically and the geometry
+        under them is the logical PN patch, so a point's position is that patch
+        evaluated at the barycentric coordinate -- not the analytic surface at
+        the same parameter. The two differ tangentially by a fixed fraction of
+        a grid cell (~12% on a stock Sphere), which is what would otherwise
+        scallop a colour boundary once the texture out-resolves the grid.
+        """
+        width, height = self.grid_width, self.grid_height
+        fu = (u.clamp(0, 1) * (width - 1)).view(-1, 1)
+        fv = (v.clamp(0, 1) * (height - 1)).view(1, -1)
+        i = fu.floor().clamp(0, width - 2)
+        j = fv.floor().clamp(0, height - 2)
+        s = fu - i
+        t = fv - j
+        i = i.long().expand(-1, v.shape[0])
+        j = j.long().expand(u.shape[0], -1)
+
+        # get_grid_to_triangle_indices splits every cell into t1 = (00, 01, 10)
+        # and t2 = (10, 01, 11); the diagonal between them is s + t == 1.
+        lower = (s + t) <= 1.0
+        pick = lower.unsqueeze(-1)
+
+        def corners_of(field):
+            return torch.stack(
+                (
+                    torch.where(pick, field[..., i, j, :], field[..., i + 1, j, :]),
+                    field[..., i, j + 1, :],
+                    torch.where(
+                        pick, field[..., i + 1, j, :], field[..., i + 1, j + 1, :]
+                    ),
+                ),
+                -2,
+            )
+
+        # Barycentric weights of (s, t) in whichever triangle contains it, in
+        # the (corner 1, corner 2) form the PN evaluator takes.
+        barycentric = torch.stack(
+            (
+                torch.where(lower, t, 1 - s),
+                torch.where(lower, s, s + t - 1),
+            ),
+            -1,
+        )
+        return evaluate_logical_pn_per_patch(
+            logical_pn_control_points(corners_of(grid), corners_of(normals)),
+            barycentric,
+        )
+
+    def get_texture_locations(
+        self, resolution: int | tuple[int, int] | None = None
+    ) -> torch.Tensor:
+        """Get where in the world each texel of this surface's texture maps sits.
+
+        Textures are addressed in the surface's own ``(u, v)`` coordinates, which
+        makes a map easy to write in terms of the surface's parameters and awkward
+        to write in terms of *space*. This is the bridge: it hands back the world
+        position of every texel, laid out exactly like a texture map, so a map can
+        be built from arithmetic on 3-D coordinates.
+
+        .. code-block:: python
+
+            xyz = surface.get_texture_locations()
+            surface.color_texture = WHITE.mult_opacity(xyz[..., 1:2])
+
+        The positions are read from the surface's current mesh, so they are right
+        whether the shape came from its coordinate function, from a deformation,
+        or from writing ``surface.grid.location`` yourself. They describe the
+        surface *now*: a texture is carried in ``(u, v)``, so colours derived from
+        world position travel with the surface when it later moves. Recompute them
+        in an :meth:`~algan.animatable_base.animatable.Animatable.add_updater`
+        callback for a texture that stays locked to world space.
+
+        Animation
+        ---------
+        A query, not a change: nothing is recorded and the surface is untouched.
+        The positions are those of the surface's current state, so call it after
+        the transforms you want reflected in it.
+
+        Parameters
+        ----------
+        resolution
+            Texel counts ``(W, H)`` along ``u`` and ``v``, or one int for a square
+            map. Defaults to ``None``, meaning the resolution of the surface's
+            current :attr:`color_texture`, or its grid resolution when it has no
+            texture yet. Pass the resolution explicitly to build a map for one of
+            the material texture arguments instead.
+
+        Returns
+        -------
+        torch.Tensor
+            World-space positions, shape ``[W, H, 3]`` -- the layout
+            :attr:`color_texture` takes, one row per texel of the map that will
+            be sampled there. Called where the surface's state spans several
+            frames (inside an updater), it keeps a leading frame axis,
+            ``[F, W, H, 3]``.
+
+        Raises
+        ------
+        ValueError
+            If this is a packed surface built by
+            :meth:`~algan.mobs.surfaces.surface.Surface.from_batches`, whose
+            members share one texture and therefore have no single answer; if the
+            grid has fewer than two points on an axis, so it has no triangles to
+            sit on; or if ``resolution`` is not positive on both axes.
+
+        See Also
+        --------
+        :meth:`~algan.mobs.surfaces.surface.Surface.get_base_grid`
+            The ``(u, v)`` domain these positions correspond to.
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function`
+            Colour the surface's vertices by ``(u, v)`` instead.
+
+        Examples
+        --------
+        Paint a sphere's northern half, cutting the boundary in world space
+        rather than along a parameter line:
+
+        .. algan:: Example1SurfaceGetTextureLocations
+            :save_last_frame:
+
+            from algan import *
+
+            globe = Sphere(radius=1.5)
+            height = globe.get_texture_locations((128, 128))[..., 1:2]
+            globe.color_texture = BLUE.mult_opacity((height > 0).float())
+            globe.spawn()
+
+            Scene.save_video()
+        """
+        if self._packed_grid_count() is not None:
+            raise ValueError(
+                "get_texture_locations is not defined for a packed surface: the "
+                "members built by from_batches share one texture, so a texel "
+                "has one position per member. Build the members separately to "
+                "texture them by world position."
+            )
+        if self.grid_width < 2 or self.grid_height < 2:
+            raise ValueError(
+                "get_texture_locations needs at least 2 grid points on each "
+                f"axis, got grid_width={self.grid_width}, "
+                f"grid_height={self.grid_height}"
+            )
+
+        if resolution is None:
+            if self._has_color_texture:
+                # texture_height / texture_width are the u / v axis lengths, in
+                # that order -- the names are inverted with respect to the
+                # public [W, H, 5] contract, the axes are not.
+                resolution = (self.texture_height, self.texture_width)
+            else:
+                resolution = (self.grid_width, self.grid_height)
+        if isinstance(resolution, (tuple, list)):
+            width, height = int(resolution[0]), int(resolution[1])
+        else:
+            width = height = int(resolution)
+        if width < 1 or height < 1:
+            raise ValueError(
+                f"resolution must be positive on both axes, got {(width, height)}"
+            )
+
+        grid = self._reshape_grid_for_render(self.grid.location)
+        # The renderer builds its PN patches from these same normals, and
+        # ignore_normals leaves it without any: zero normals collapse the patch
+        # onto the flat triangle, which is then exactly what is drawn.
+        normals = (
+            torch.zeros_like(grid)
+            if self.ignore_normals
+            else compute_grid_vertex_normals(grid)
+        )
+
+        # A closed axis is wrap-padded at render time, putting texel i at
+        # i / W rather than i / (W - 1) (see wrap_pad_texture).
+        closed_u, closed_v = surface_closed_axes(grid)
+        u = torch.arange(width, device=grid.device, dtype=grid.dtype) / (
+            width if closed_u and width > 1 else max(width - 1, 1)
+        )
+        v = torch.arange(height, device=grid.device, dtype=grid.dtype) / (
+            height if closed_v and height > 1 else max(height - 1, 1)
+        )
+
+        rows = max(1, _TEXTURE_LOCATION_CHUNK_TEXELS // height)
+        locations = torch.cat(
+            [
+                self._surface_points_at(u[start : start + rows], v, grid, normals)
+                for start in range(0, width, rows)
+            ],
+            -3,
+        )
+        # The grid carries a leading frame axis, which is a single frame in
+        # every case but a query made mid-materialization.
+        return locations[0] if locations.shape[0] == 1 else locations
 
     def set_shape_to(self, other_surface: Surface):
         """Changes this surface's shape to the shape defined by another surface's

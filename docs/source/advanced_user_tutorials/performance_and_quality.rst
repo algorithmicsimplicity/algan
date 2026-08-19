@@ -196,10 +196,12 @@ In rough order of impact:
 1. **How much of the frame the geometry fills.** ``render_tolerance`` on a
    :class:`~.Surface` is expressed as a fraction of screen height, so a surface
    filling the frame is diced far more finely than the same surface in the distance.
-   The dice is decided per curved triangle and per frame: the part of a surface that
-   is close to the camera, or turned edge-on, is refined without the rest of the mesh
-   following it, and a frame where the surface is small or off screen costs what that
-   frame needs rather than what the closest frame of the batch needs. Raising
+   The dice is decided per curved triangle, per frame and per direction: the part of
+   a surface that is close to the camera, or turned edge-on, is refined without the
+   rest of the mesh following it; a frame where the surface is small or off screen
+   costs what that frame needs rather than what the closest frame of the batch needs;
+   and a direction the surface is straight along costs nothing, so a long thin
+   cylinder pays for its circumference and not for its length. Raising
    ``render_tolerance`` slightly is a large speedup on close-up surfaces.
 2. **Resolution × anti-aliasing × frame count.** Straightforwardly multiplicative.
 3. **Refraction.** Splits every ray in two, and routes the batch to the general

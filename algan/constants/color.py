@@ -27,7 +27,7 @@ import re
 import torch
 
 from algan.settings._startup import _ANIMATION_DEVICE
-from algan.utils.tensor_utils import broadcast, cast_to_tensor
+from algan.utils.tensor_utils import broadcast, cast_to_tensor, unsqueeze_left
 
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
 
@@ -108,6 +108,14 @@ class Color(torch.Tensor):
         value = cast_to_tensor(value)
         out = self.new_empty()
         out.data = self.data.clone()
+        # A named colour is a single ``[5]`` row, so painting a grid of values
+        # onto it -- one per vertex, one per texel -- has nothing to broadcast
+        # against until the leading axes exist. Give it the value's, but only
+        # when the value really carries a grid: a scalar opacity arrives padded
+        # to ``[1, 1, 1]``, and inflating a named colour to match it would
+        # change the shape every existing caller gets back.
+        if any(size > 1 for size in value.shape[:-1]):
+            out = unsqueeze_left(out, value)
         out = broadcast(out, value, [-1]).contiguous()
         return out
 

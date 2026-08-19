@@ -23,7 +23,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | --- | --- |
 | **T1** PN subdivision-level criterion | **shipped and confirmed end to end** -- 67.9 s -> 1.40 s |
 | **T2** Bezier chord-count search | **shipped and confirmed end to end** -- 18.4 s -> 0.89 s |
-| **T4** dice write-out (cheap half only) | **shipped** -- byte-exact, but only ~1.07x |
+| **T4** dice write-out | **shipped, and re-scoped by what it found** -- the dice ignored *temporal coherence*: a mesh that holds still is handed T identical source rows and diced T times. Collapsing them, deduping the patch evaluation and interpolating attributes on the shared vertices is **1.27-1.37x on the dice calls that can use it and 1.05-1.15x on the dice overall, measured inside real renders** -- because only 19-55% of a real scene's dice time has frame-invariant geometry. **Bit-identical**, and all six full-render scenes match their CPU baselines. Read the "how much of a real scene is static" measurement before extrapolating from a synthetic mesh. The `allocate()` zero-fills the last revision nominated turn out to be **4%** of the write-out, not its expensive half. See T4 |
 | **P2** contiguous replay time-selector | **shipped** -- 1.62x on replay-time `get`/`modify` |
 | **P3** lazily-zeroed remat buffer | **shipped** -- 1.20x on `rematerialize_state_at_times` |
 | **P4** whole-scene per-batch scans | **shipped** -- honestly ~3.7 s of a ~500 s render (66x on the actor filter), not the 11.63 s first reported; see the correction under P4 |
@@ -35,6 +35,8 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P8b** the `dim_mobs` family, collated in the video project | **shipped** -- `map_animated_attribute` replaced the per-descendant loops. With P8 this took `save_video` 396.7 s -> **348.75 s** and `set_state_to_times` own time 92.5 s -> **56.4 s (1.64x)**, reproducing the harness prediction end to end. See the 2026-08-16 re-profile |
 | **P10** the batched surface build | **measured -- the top item.** `get_batch_of_primitives`' own time was never orchestration: **85.35 s (21.9%)** is `get_render_primitives_batched`, which **had no profiler hook**. With the hook added the stage's own time drops 23.8% -> **4.5%**. Inside it, 59.8% is `compute_grid_vertex_normals` and only 24.2% is the per-surface tail. See P10 |
 | **P11** pairwise triangle sides in `compute_grid_vertex_normals` | **shipped and confirmed end to end** -- **2.0-2.2x** on the function, **1.51x on the whole stage** (85.35 s / 21.9% -> 56.62 s / 15.8%), **bit-identical** (asserted on bit patterns, incl. NaN payloads and signed zeros). Removes an 8-copy stack, an 8-wide subtract, two stride-2 gathers and a length-4 reduction. See P11 |
+| **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
+| **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
 | **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
 | **T5** sparse-coverage host chain | the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
@@ -223,8 +225,10 @@ already been wrapping correctly all along (it just predated the helper), and
 * A/B parity scripts for the shipped work, the kernel ones CUDA-only:
   `benchmarks/_pn_criterion_kernel_ab.py` (levels + shared-edge agreement +
   timing, static *and* moving meshes), `benchmarks/_bez_chord_kernel_ab.py`
-  (chord counts + timing), `benchmarks/_pn_dice_scatter_ab.py` (byte-equality of
-  every diced array), `benchmarks/_logical_pn_crack_check.py` (seam integrity),
+  (chord counts + timing), `benchmarks/_pn_dice_ab.py` (the dice against its
+  pre-temporal-coherence self: bit-equality of every diced array, plus
+  alternating in-process timing, on static / orbiting / deforming meshes),
+  `benchmarks/_logical_pn_crack_check.py` (seam integrity),
   `benchmarks/_p1_zerofill_ab.py` (the lazily-zeroed buffer, CPU),
   `benchmarks/_query_rowdedup_parity.py` (the endpoint row dedup, CPU: dense
   path == dedup path == brute force, with every branch -- fast path, break-even
@@ -566,19 +570,133 @@ large as the input and the bandwidth argument is weaker. Worth a
 `memory.scope`-level breakdown before committing. **Estimated** 47.1 s -> ~25 s
 (~2.7%), lower confidence.
 
-### T4. The dice write-out -- ~17 s (2.1%) -- **cheap half done, disappointing**
+### T4. The dice write-out -- **temporal coherence, shipped**
 
-> `_scatter_diced_rows` now folds (frame, column) into one flattened row index
-> and writes each output with a single `index_copy_` over `[T * M, ...]`
-> (`padding` with `index_fill_`). **Byte-identical** -- every diced array
-> compares equal on `benchmarks/_pn_dice_scatter_ab.py`.
+> The item was framed as "the write-out moves too many bytes", and both halves
+> of that framing were wrong. The dice's real problem was that **it recomputed
+> the same answer once per frame**: a patch's diced geometry is a function of
+> the patch and its level and *nothing else* -- the camera only picks the level
+> -- while materialization hands the dice one source row per frame whether or
+> not the mob moved. A still `Sphere` reaches it as T byte-identical copies
+> (measured on a two-mob scene: `corners` arrives `[4, 508, 3, 3]` with
+> `distinct_frames = 1`) and was diced T times over.
 >
-> But it is only **1.02-1.19x on the whole dice** (257 ms -> 239 ms across four
-> meshes), not the ~2x on the write-out the estimate below assumed. `index_put_`
-> was apparently not costing much more than `index_copy_` here. Kept -- it is
-> free and byte-exact -- but the remaining T4 estimate should be treated as
-> unproven, and the `allocate()` zero-fills (not the scatter) are the likelier
-> half of that 17 s.
+> Shipped, all **bit-identical** (`benchmarks/_pn_dice_ab.py` runs the
+> pre-change dice beside the current one in one process and compares every
+> diced array bit for bit -- corners, normals, colours, the surface and shader
+> parameters, uvs, the padding mask, both level arrays and the per-row surface
+> ids -- across static, orbiting, multi-level and deforming meshes):
+>
+> 1. **`_collapse_redundant_frames`.** Detect the identical rows (compare frame
+>    1 first, so a genuinely deforming mesh is rejected for a (T-1)th of the
+>    cost) and keep one. The three control-net builds --
+>    `logical_pn_control_points`, `logical_pn_normal_control_points`,
+>    `logical_pn_edge_control_points`, together ~25% of the write-out -- then
+>    run once instead of T times, and `_frame_broadcast_base` hands the
+>    criterion kernels a stride-0 net instead of T uploaded copies of one
+>    answer.
+> 2. **Per-patch dedup in the write-out.** The selected pairs are listed
+>    PATCH-major (`nonzero` on the transpose), so a patch's frames share a
+>    chunk; the patch and normal evaluations then run once per distinct patch
+>    and fan out with one `index_select`. Measured **9-20x** fewer evaluations
+>    than pairs under a fast orbit, and exactly T when the camera holds still.
+>    The boundary snap stays per row -- two frames dicing one patch need not
+>    agree on its boundary levels.
+> 3. **Attributes interpolate on the shared subdivision vertices**
+>    (`interpolate_patch_vertex_attribute`) and gather through
+>    `subdivision_triangle_indices` instead of being evaluated at every
+>    microtriangle corner: the corners *are* those vertices, so it is the same
+>    arithmetic over a sixth as many of them.
+>
+> The same dedup is applied to the **torch fallback** of the patch-flatness
+> criterion (`share_patches`), which re-evaluated a patch once per frame still
+> searching. Deliberately off on the kernel path, which keeps its samples in
+> registers and has nothing to share.
+>
+> Verified end to end: all six `tests/full_renders` scenes match their
+> committed **CPU** baselines here. That is a real check on this machine and not
+> a vacuous one -- re-baselining on it before the change rewrote every file
+> byte-identically, so the committed CPU set *is* this machine's output. CUDA is
+> unverified: this session has no GPU, and the criterion-kernel path
+> (`share_patches` off, stride-0 control nets) is only exercised there.
+
+#### How much it is worth, and why the synthetic number overstated it
+
+On isolated meshes `benchmarks/_pn_dice_ab.py` reports **1.13-1.33x** for a mesh
+that holds still while the camera moves. **Do not quote that as the render-level
+figure.** Measured *inside* a real render, by running both dice implementations
+on every call with the same inputs and alternating which goes first:
+
+| scene | dice calls | frame-invariant | deforming | whole dice |
+| --- | --- | --- | --- | --- |
+| `solids_and_camera` | 10 | **1.37x** (2 calls, 22% of dice time) | 0.98x | **1.05x** |
+| `materials_and_lighting` | 38 | **1.27x** (20 calls, 60%) | 1.01x | **1.15x** |
+| `complex_hierarchy_become` | 4 | -- (one 10 ms call) | 1.14x | **1.14x** |
+
+The gap is not a measurement artifact, it is the workload: **a mob's `corners`
+are world-space**, so "frame invariant" means the mob does not move *at all*
+during the batch, and a scene whose whole point is motion spends most of its
+dice time on meshes that do move. `solids_and_camera` has 2 of 10 calls static;
+`materials_and_lighting`, which animates the camera around mostly-parked
+spheres, has 20 of 38. Batches are large (101 and 138 frames here), so where it
+does fire the redundancy removed is correspondingly large.
+
+`_dice_logical_pn` was ~18% of `solids_and_camera`'s render, so 1.05x on the
+dice is ~1% of that render. On `materials_and_lighting` the dice is a bigger
+share and the saving is 2.9 s of 22.5 s.
+
+**And one thing this measurement caught that the synthetic benchmark hid.**
+Listing the work list patch-major is what lets the dedup see its duplicates,
+but it is not free: consecutive rows then write a whole frame apart in the
+output instead of in one run, and read their control points the same way. On
+the deforming half of `materials_and_lighting`'s calls -- which have nothing to
+dedup -- that cost **0.965x** while the isolated benchmark's deforming mesh
+reported a harmless 1.03x. Patch-major ordering is therefore gated on
+`geometry_static`, exactly as `share_patches` is in the search; with the gate
+the same calls measure 1.005x. A synthetic mesh was too small to show it.
+
+#### Three things measured here that change what to do next
+
+* **The `allocate()` zero-fills are not the expensive half.** The previous
+  revision nominated them as where a fresh attempt should start. Measured:
+  `torch.zeros` is **4%** of the write-out on CPU (9.3 ms of 227 ms on a
+  32-frame, 1056-patch batch) and proportionally less on a device that memsets
+  at hundreds of GB/s. Filling only the padding *is* available -- the unwritten
+  rows are each frame's contiguous tail -- it is simply not worth the branch.
+  Do not spend the round there.
+* **Deduping the attribute interpolation is a net loss.** A barycentric blend
+  of three corner values is cheap enough that fanning the result back out costs
+  more than recomputing it per row: **0.86x** on a deforming mesh whose colours
+  were frame invariant. Only the patch evaluation -- a ten-term polynomial plus
+  a snap, twenty-odd passes -- is expensive enough for the trade to pay. That
+  asymmetry is the rule to carry: dedup buys nothing unless what it skips costs
+  more than a gather.
+* **Emitting a `[1, ...]` diced array is worth much less than it looks.** When
+  the levels *and* the edge levels come out frame-uniform (a still mesh, which
+  is common) the whole diced output is T identical copies, and the flat path
+  already accepts `[1, N]` geometry. But `scene_builder`'s
+  `_cat_collections` runs `_unify_time` over the primitives it concatenates, so
+  a single moving flat mesh anywhere in the scene expands the static one
+  straight back out at merge time. The saving is confined to the primitive's
+  own allocation and packing -- real, but not the T-fold win the shape
+  suggests, and it changes the primitive's output contract (three tests assert
+  a per-frame diced array). Left undone deliberately.
+
+#### Where the dice's remaining cost is
+
+On CPU it is **the level search, not the write-out**: 65-85% of
+`_dice_logical_pn` across the benchmark's meshes. The criterion is inherently
+expensive -- per level tried it evaluates each patch at `V + 13 * 4 ** L`
+parameters and perspective-projects *both* the exact and the approximated point
+sets, so it does ~26 projections per output triangle where the dice does ~1.5
+vertex evaluations. On CUDA that is T1's fused kernel and costs nothing. **The
+obvious next move for the CPU path is to let those same kernels run on Taichi's
+x64 backend** -- `pn_criterion_kernel_active` gates them on a CUDA *render
+device* today, and the "Taichi would stage every argument through VRAM"
+objection in that comment is about CUDA-arch Taichi against CPU torch tensors,
+not about a CPU-arch runtime. It is not free: `fast_math` flips borderline
+levels, so it would move the CPU baselines exactly as T1 moved the CUDA ones,
+and it needs the same deliberate re-baseline.
 
 #### Why it was a target (original measurement)
 
@@ -586,16 +704,11 @@ large as the input and the bandwidth argument is weaker. Worth a
 (3.1 s), `evaluate_logical_pn_normals` (1.0 s) and `snap_boundary_values`
 (0.4 s). Two costs were identified: the `allocate()` zero-fills
 (`[T, max_triangles, 3, D]` for corners, normals, colours and every
-surface/shader parameter) and the advanced-index scatters.
-
-**The scatter half is done and was worth little (above), so the remaining
-`~17 s -> ~8 s` estimate now rests entirely on the untested half: the
-`allocate()` zero-fills.** That is where a fresh attempt should start --
-`max_triangles` is the batch's *widest frame*, so every frame's buffer is padded
-to it and the surplus is zeroed for nothing. Sizing per frame, or filling only
-the padding rows, is the idea to test. Writing the dice as a kernel (the more
-expensive option originally sketched here) should wait until the zero-fill has
-been measured on its own.
+surface/shader parameter) and the advanced-index scatters. An earlier round
+folded (frame, column) into one flattened row index so each output is written
+with a single `index_copy_` over `[T * M, ...]`; that was byte-exact and worth
+**1.02-1.19x** on the whole dice, well under the ~2x it assumed. Neither
+identified cost was the real one.
 
 ### T5. Sparse-coverage host chain -- ~37.7 s of 95.5 s (~9.9%) -- **next**
 
@@ -626,6 +739,76 @@ earlier round by hoisting them from per-chunk to per-batch. What remains is
 (`d`, `hit`, `rel`, two crosses, ...) to fill a `[F, N, 13]` table -- a clean
 one-kernel fusion. Small on this scene; grows with triangle count.
 **Estimated** 8.6 s -> ~3 s (~0.7%).
+
+### T7. Per-dimension dicing, and what the criterion may stop resolving (shipped)
+
+> **The cheapest microtriangle is the one the criterion never asks for.** T1 and
+> T4 made the level search and the dice write-out cheap. T7 is about the number
+> they were operating on: the dice was uniform in all three barycentric
+> directions, and it was measuring against a reference surface it had no right
+> to trust to the precision it was chasing.
+
+Two changes, both of which reduce the *count* rather than the cost per triangle,
+and a third that reduces the patch count they start from:
+
+1. **The dice is `(level, across level, apex)`.** `2 ** level` rows fanning from
+   one corner, each cut into at most `2 ** across` columns
+   (`logical_pn.dice_pattern`, `n * (m + 1) - m` microtriangles). Equal levels
+   reproduce the uniform barycentric grid *exactly* -- same vertices, same
+   triangle order -- so this can only remove triangles from a patch whose two
+   directions want different detail. The across level starts at the coarsest
+   boundary curve's own level and is measured by the same criterion as the
+   isotropic dice, so an anisotropic patch is one that passed, never one
+   inferred from its boundary. Crack-freeness is unchanged and now tested at
+   mesh scale (`test_a_whole_diced_mesh_stays_watertight_across_every_seam`,
+   which fails if the boundary snap is removed).
+2. **Both criteria stop at the logical surface's own accuracy.** They score the
+   flat dice against the PN patch, which is itself only `geometry_tolerance`
+   away from the analytic surface. Measured on one cylinder patch: a 31-triangle
+   strip sits 0.000768 world units from the analytic cylinder where the uniform
+   level-4 dice's 256 triangles sit 0.000782 from it -- both against a PN patch
+   0.000739 off. The 225 extra triangles resolve the PN patch's own error. The
+   searches now subtract that accuracy, projected per sample, from what they
+   measure (`PN_GEOMETRY_SLACK`). It is a world-space length, so it does nothing
+   for distant geometry and does its work in the close-ups where the counts
+   hurt.
+3. **`grid_aspect_ratio` is gone.** `Cylinder` and `Cone` tied their two grid
+   axes at `1/PI`, which bypassed the per-axis geometry search entirely. For the
+   cone it spent the resolution on exactly the wrong axis: 40 divisions along
+   the *ruled* slant and 13 around, where the free search picks 4 x 19 and meets
+   the same tolerance. `min_grid_resolution` now defaults to 2, since an axis a
+   surface is straight along needs one cell and the search measures that.
+
+Diced microtriangles for one frame, 1080p, camera 1.6 units back, default
+tolerances (`benchmarks`-style probe, CPU session):
+
+| shape | before | grid only | all three |
+| --- | --- | --- | --- |
+| cylinder r=0.3 h=8 | 1392 | 448 | **163** |
+| cylinder r=1 h=1 | 3898 | 976 | **188** |
+| cone | 9792 | 378 | **252** |
+| sphere | 8682 | 8682 | **3355** |
+| torus | 27075 | 27075 | **12562** |
+
+**What the across search costs.** It is not free: on the torus above (1218
+patches, one frame, torch path on a loaded CPU session) it took **988 ms of a
+4151 ms dice in 3 rounds**, evaluating 25 665 microtriangles across 26 criterion
+calls, to remove 21% of that mesh's triangles. Two things should make that
+cheaper and are untried: the prediction ought to land in one round rather than
+three, and the rounds launch one criterion per distinct `(along, across, apex)`
+group, which is launch-bound on small groups. On a CUDA device the fused
+criterion kernel carries this, so the shape of the cost is different -- measure
+there before tuning it.
+
+**What is not measured.** Everything else is triangle counts, not time: this
+landed on a CPU-only session, so what the smaller meshes are worth downstream
+(BVH build, traversal, shading, render memory) is unquantified. That wants a
+CUDA machine and the reference scene.
+
+**Output moves**, so every full-render baseline needs regenerating -- CPU and
+CUDA are separate committed sets and each belongs to the machine that made it.
+`tests/fast` is unaffected (no PN geometry), which is exactly the blind spot
+this document already warns about.
 
 ### Not worth a kernel
 
@@ -1432,6 +1615,70 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > gap is not P11. The stage's *share* -- 21.9% -> 15.8% of its own run -- is the
 > number that does not depend on thermal state.
 
+### P12 -- packed surfaces: one Mob for a whole collection (shipped)
+
+> **The cheapest primitive build is the one that was never a separate build.**
+> P10 and P11 attacked `get_render_primitives_batched`, which re-batches N
+> separate surface actors into one tensor pass **every frame batch**. A packed
+> surface does that batching **once, at construction**, and then there is only
+> one actor and one build to begin with.
+>
+> The mechanism already existed on the render side and was only reachable the
+> expensive way. `Surface._packed_grid_count` / `_reshape_grid_for_render` /
+> the per-shell `mesh_ids` stamp have handled a concatenated grid all along,
+> but the only way to *get* one was `batch_mobs`, which packs Mobs that already
+> exist -- so it removed the per-frame cost and none of the construction cost.
+> `Surface.from_batches` builds the packed grid directly, the way
+> `BezierCircuitCubic.from_batches` has always built a page of text.
+>
+> Measured on this machine (CPU, `Sphere(resolution=(8,4))`, 3 warm passes):
+>
+> | | cost |
+> | --- | --- |
+> | construct N spheres + `batch_mobs` (N=2048) | 2.258 s |
+> | **`Sphere.from_batches` (N=2048)** | **0.006 s** -- **378x**, and flat in N |
+> | primitive build/frame, 256 separate actors | 0.2133 s |
+> | same 256 via `get_render_primitives_batched` | 0.0527 s (4.0x) |
+> | **same 256 as one packed Mob** | **0.0040 s -- 54x / 13x** |
+> | Scene actors for 256 spheres | 512 -> **2** |
+>
+> And the case that motivated it, end to end -- `PMobject` built one `Dot3D`
+> per point and packed them afterwards, and now calls `from_batches` once:
+>
+> | `PMobject(points=rand(N, 3))` | before | after |
+> | --- | --- | --- |
+> | N = 1000 | 1.507 s | 0.174 s |
+> | N = 5000 | 6.742 s | **0.025 s** |
+>
+> **Read the third row against P10 before budgeting.** The 13x is against the
+> cross-actor batcher, so on a scene whose surfaces are already batchable this
+> caps what is left of the 56.62 s (15.8%) P11 left behind -- but only for
+> collections the author is willing to declare as one Mob. It does nothing for
+> surfaces that are genuinely independent, which is most of s05. The actor-count
+> drop feeds the same per-batch scans P4 measured at 0.5%, so do not budget on
+> that either.
+>
+> **What it cost to get right, which is the part worth keeping.** Two defects,
+> both silent, both in machinery that predates this work:
+>
+> * `parent_batch_sizes` documents itself as the map by which "the parent's
+>   attribute modifications will be expanded for this animatable's attributes",
+>   and **that expansion was never wired up** -- `_expand_batch_if_necessary`
+>   had no callers. So `pack.move(UP)` raised a shape error on *every* pack,
+>   `Text`'s glyph batch included, which is why a `Text` is moved through its
+>   unbatched container. `Mob._distribute_over_packed_subtree` supplies it.
+> * A subtree is addressed in **buffer order**, not descendant order --
+>   `RowRanges.from_runs` sorts and coalesces. Distributing a per-member value
+>   by concatenating in descendant order therefore lines up in *count* and
+>   hands every member a neighbour's value. A uniform move looks perfect either
+>   way; only distinct per-member values catch it, and only on a pack whose two
+>   orders differ (`from_batches` builds the grid first, `batch_mobs` does not,
+>   so the test parametrizes both).
+>
+> The general lesson matches P10's: **a caller-free helper is not dead code, it
+> is an unimplemented contract.** Grep for callers before trusting a docstring
+> that describes a mechanism.
+
 ### P9 -- the batched bezier build reaches 18.4% of the circuits (measured, not started)
 
 > **Measured first** (`videos/rl2/animations/_bezier_batchability_s05.py`, six
@@ -1573,9 +1820,12 @@ every round has left alone.
    has risen across three re-profiles purely because prep keeps shrinking, so
    the two poles are nearly level again and the "prefer prep at equal size"
    advice is close to expiring.
-6. **T3** (5.6%), then **T4's remaining half** (the `allocate()` zero-fills --
-   small, its estimate unproven, and P3 suggests the same lazily-zeroed trick
-   may apply; fold it in whenever the dice is open anyway), then **T6** (1.7%).
+6. **T3** (5.6%), then **T6** (1.7%). **T4 is done** -- and its `allocate()`
+   zero-fills, which this list used to nominate, were measured at 4% of the
+   write-out and are not worth opening the dice for. What T4 left behind is a
+   *CPU-path* item, not a reference-scene one: the level search is 65-85% of
+   the dice without the criterion kernels, which are gated on a CUDA render
+   device. See T4.
 
 Ruled out this round: further search-count work in `_query_row_states` (P6:
 write-bound now), bloom as a Taichi kernel (measured far slower), and the

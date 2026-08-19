@@ -1179,12 +1179,18 @@ def test_internal_helpers_are_importable_but_not_star_exported():
     """Trimmed from `from algan import *`, still public at their real path."""
     from algan.geometry.geometry import project_onto_basis  # noqa: F401
     from algan.utils.animation_utils import animate_lagged_by_location  # noqa: F401
-    from algan.utils.mob_utils import batch_mobs  # noqa: F401
+    from algan.utils.mob_utils import (  # noqa: F401
+        batch_mobs,
+        pack_animatable_rows,
+        pack_member_rows,
+    )
 
     for name in (
         "project_onto_basis",
         "animate_lagged_by_location",
         "batch_mobs",
+        "pack_animatable_rows",
+        "pack_member_rows",
         "get_orthonormal_vector",
         "get_rotation_between_bases",
     ):

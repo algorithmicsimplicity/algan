@@ -1706,6 +1706,47 @@ def pn_criterion_kernel_active():
     return PN_CRITERION_KERNEL and project_on_gpu_active()
 
 
+# --- what the level searches are allowed to stop resolving ------------------
+# The level searches score the flat dice against the PN patch, which is itself
+# only an approximation of the surface the author asked for -- accurate to
+# ``geometry_tolerance`` in world units, by construction. Detail finer than that
+# is not a feature of the surface, it is the PN patch's own error, and
+# subdividing to resolve it buys nothing: measured on a cylinder patch, a strip
+# of 31 microtriangles sits 0.000768 world units from the analytic cylinder
+# where the uniform level-4 dice's 256 sit 0.000782 from it, both against a PN
+# patch that is itself 0.000739 off.
+#
+# With this on, both criteria subtract the projected size of the surface's own
+# accuracy from the deviation they measure (see ``_guarded_pixel_error``). The
+# slack is a world-space length projected per sample, so it does nothing for
+# distant geometry -- where a whole ``geometry_tolerance`` is a fraction of a
+# pixel -- and does its work in the close-ups where the dice would otherwise
+# chase sub-surface-accuracy wiggle. The guarantee becomes: the dice lands
+# within ``render_tolerance`` of the logical surface, plus the accuracy of that
+# surface itself, which is the bound the render already inherits from
+# construction.
+#
+# Moves rendered output (coarser tessellation in close-ups).
+# ALGAN_PN_GEOMETRY_SLACK=0 restores the strict PN-patch criterion.
+PN_GEOMETRY_SLACK = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
+
+# --- per-dimension dicing ---------------------------------------------------
+# A patch's dice is (level_along, level_across): 2**along rows fanning from one
+# corner, each cut into at most 2**across columns. Equal levels reproduce the
+# uniform barycentric grid exactly, so this only ever *removes* microtriangles
+# from a patch whose two directions need different detail -- anything developable
+# (a cylinder's length, a cone's slant, an extruded profile), where the flat
+# direction otherwise pays whatever the curved one costs.
+#
+# The across level is not inferred from the boundary; it is searched and the
+# chosen pattern is measured by the same criterion as the isotropic one, so a
+# patch can only be coarsened where its own dice still meets the tolerance.
+#
+# Moves rendered output (different microtriangles under the same tolerance).
+# ALGAN_PN_ANISOTROPIC_DICE=0 restores the uniform per-patch grid.
+PN_ANISOTROPIC_DICE = env_flag("ALGAN_PN_ANISOTROPIC_DICE", True)
+
+
 # Feature bitmask for the UNSUPPORTED legacy textured wavefront (see
 # WF_TEXTURED): each bit compiled one of the monolith's features back into the
 # (otherwise lean) textured shade kernel, so the marginal occupancy /
