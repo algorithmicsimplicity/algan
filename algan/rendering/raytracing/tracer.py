@@ -1170,17 +1170,17 @@ def render_batch_raytraced(
                 or merged.get("has_uncertain_texture_alpha", True)
             )
             shadow_flag = 2 if batch_has_translucent else 3
-    # THE SHEET ROUTE (DESIGN_sheet_resolve.md, Phase 3): decided ONCE here so
-    # the frame-buffer prefill in render_chunk, the sparse-route gate and the
+    # THE SHEET ROUTE (DESIGN_sheet_resolve.md): decided ONCE here so the
+    # frame-buffer prefill in render_chunk, the sparse-route gate and the
     # emission's compaction all answer the same question (the host/kernel
-    # dual-language rule). Shadowed batches keep the fragment walk until the
-    # shadow-event build moves to sheet records (Phase 4); analytic_raster
-    # carries the AA-active-for-present-geometry facts the emission's own
-    # sheet gate re-checks (and prepare raises on a disagreement when the
-    # route was load-bearing for env/tonemap).
+    # dual-language rule). Shadows are served by the route itself since
+    # Phase 4a — the resolve kernel's event pass builds the shadow queue
+    # from sheet records, so no second walk exists. analytic_raster carries
+    # the AA-active-for-present-geometry facts the emission's own sheet gate
+    # re-checks (and prepare raises on a disagreement when the route was
+    # load-bearing for env/tonemap).
     sheet_route = bool(
         rt_settings.SHEET_RESOLVE
-        and shadow_flag == 0
         and analytic_raster
         and rt_settings.ANALYTIC_AA_RUN
         and samples <= 1
@@ -2484,9 +2484,8 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 layer_offset_triangles,
                 # The sheet resolve replaces the fragment walk for this
-                # window (DESIGN_sheet_resolve.md, Phase 2). Shadowed batches
-                # keep the walk: the shadow-event build replays it in
-                # lockstep, and its move to sheet records is Phase 4.
+                # window (DESIGN_sheet_resolve.md), shadow-event build
+                # included (the resolve kernel's own event pass).
                 sheet_resolve=sheet_route,
                 # env/tonemap batches only reached the sparse route on the
                 # sheet promise, so a compaction refusal there is a bug to

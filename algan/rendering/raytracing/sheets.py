@@ -31,10 +31,19 @@ threshold starts a new band. The candidates measured in Phase 1:
     The old system's behavior, and the fallback.
 ``prim``
     Split where the gap to the previous fragment exceeds ``band_c`` times the
-    two fragments' own primitive scales: each triangle's camera-distance
-    extent (``max_k |v_k - ro| - min_k |v_k - ro|``) plus one pixel's world
-    size at the fragment's depth (``pixel_world_scale[f] * t``). Both terms
-    come from the record; there is no absolute constant to retire later.
+    two fragments' own scales. The scale is the triangle's depth variation
+    ACROSS ONE PIXEL — its camera-distance extent divided by its projected
+    size in pixels (from ``tri_screen`` where the projection is valid) —
+    plus one pixel's world size at the fragment's depth
+    (``pixel_world_scale[f] * t``). Both terms come from the record; there
+    is no absolute constant to retire later.
+
+    The first build used the RAW camera-distance extent, and one measured
+    defect retired it: a large wall's extent (several world units) swamps
+    any gap in front of it, so a quad 1.0 in front of a same-id backdrop
+    FUSED into one sheet and shaded with the backdrop's color — a bright
+    line along the region where the two overlapped. Per-pixel slope is the
+    quantity that actually bounds same-sheet neighbour gaps.
 
 Failure directions are asymmetric (§6.2): FUSING two genuinely distinct
 same-facing sheets over-claims coverage (their areas sum past the footprint),
@@ -216,6 +225,7 @@ def compact_sheets(
     *,
     band_rule="prim",
     band_c=4.0,
+    tri_screen=None,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -309,8 +319,24 @@ def compact_sheets(
             dim=1,
         )
         ext = d.amax(dim=1) - d.amin(dim=1)
+        # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
+        # differ by about one pixel's worth of the surface's depth gradient,
+        # not by the triangle's whole extent. Where the projection table is
+        # valid, divide by the projected size in pixels; a camera-plane
+        # straddler keeps the conservative raw extent.
+        slope = ext
+        if tri_screen is not None and tri_screen.shape[2] >= 10:
+            rs = _rows(tri_screen, frame_rel, time_start)
+            sx = tri_screen[rs, safe_ref, 0:3]
+            sy = tri_screen[rs, safe_ref, 3:6]
+            proj = torch.maximum(
+                sx.amax(dim=1) - sx.amin(dim=1),
+                sy.amax(dim=1) - sy.amin(dim=1),
+            ).clamp_min_(1.0)
+            valid = tri_screen[rs, safe_ref, 9] > 0.5
+            slope = torch.where(valid, ext / proj, ext)
         pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
-        scale = torch.where(is_tri, ext + pws * t, torch.zeros_like(t))
+        scale = torch.where(is_tri, slope + pws * t, torch.zeros_like(t))
         scale_o = scale.index_select(0, order)
         gap = t_o[1:] - t_o[:-1]
         thr = float(band_c) * (scale_o[1:] + scale_o[:-1])

@@ -1787,6 +1787,7 @@ def prepare_sparse_raster_coverage(
                 int(height),
                 band_rule="prim",
                 band_c=2.0,
+                tri_screen=tri_screen,
             )
             ns = int(stream["num_sheets"])
             sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
@@ -1930,12 +1931,15 @@ def shade_sparse_raster_coverage(
     covered_idx = coverage["covered_idx"][c0:c1]
 
     if coverage.get("sheets"):
-        # THE SHEET RESOLVE (DESIGN_sheet_resolve.md, Phase 2). The emission
-        # compacted this window's fragments into per-pixel sheets; composite
-        # and shade those instead of walking the raw fragment list. Same
-        # slicing discipline as the fragment path below, same ray-state
-        # contract; shadows are structurally off on this route (the tracer
-        # keeps shadowed batches on the fragment walk until Phase 4).
+        # THE SHEET RESOLVE (DESIGN_sheet_resolve.md). The emission compacted
+        # this window's fragments into per-pixel sheets; composite and shade
+        # those instead of walking the raw fragment list. Same slicing
+        # discipline as the fragment path below, same ray-state contract.
+        # Shadows run as two launches of the SAME kernel body: mode 1 walks
+        # the transport and writes one candidate event per accepted lit
+        # triangle sheet (event identity = sheet index, no atomics), the
+        # host compacts + traces them, and mode 2 shades reading the traced
+        # visibility. Shadow-free batches take mode 0 in one launch.
         from algan.rendering.raytracing.sheet_resolve_taichi import (
             sheet_resolve_shade,
         )
@@ -1958,7 +1962,8 @@ def shade_sparse_raster_coverage(
             if dump_req
             else _aa_dump_arg(covered_idx.device)
         )
-        sheet_resolve_shade(
+        num_slice_sheets = s_end - s_start
+        pre_args = (
             num_covered,
             sheet_offsets,
             coverage["sheet_key"][s_start:s_end],
@@ -1995,6 +2000,8 @@ def shade_sparse_raster_coverage(
             float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
             int(rt_settings.glossy_reflection_mode()),
             1 if coverage.get("env_in_composite") else 0,
+        )
+        post_args = (
             covered_idx,
             int(time_start),
             int(width),
@@ -2015,6 +2022,132 @@ def shade_sparse_raster_coverage(
             1 if dump_req else 0,
             sdump,
         )
+        dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
+        dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
+        dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
+        dummy_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
+        if shadow_flag:
+            S = max(1, num_slice_sheets)
+            sheet_accept = _arena_tensor(memory, (S,), torch.int32, 0)
+            event_pos = _arena_tensor(memory, (S, 3), torch.float32)
+            event_snrm = _arena_tensor(memory, (S, 3), torch.float32)
+            event_fnrm = _arena_tensor(memory, (S, 3), torch.float32)
+            event_frame = _arena_tensor(memory, (S,), torch.int32, 0)
+            event_msk = _arena_tensor(memory, (S,), torch.int32, 0xF)
+            event_dp = _arena_tensor(
+                memory, (S if sec_aa > 1 else 1, 6), torch.float32
+            )
+            sheet_event_id = _arena_tensor(memory, (S,), torch.int32, -1)
+            sheet_resolve_shade(
+                *pre_args,
+                1,
+                sheet_accept,
+                event_pos,
+                event_snrm,
+                event_fnrm,
+                event_frame,
+                event_msk,
+                event_dp,
+                sheet_event_id,
+                dummy_vis,
+                *post_args,
+            )
+            acc_idx = sheet_accept[:num_slice_sheets].nonzero(as_tuple=True)[0]
+            num_events = int(acc_idx.numel())
+            shadow_vis = _arena_tensor(
+                memory,
+                (max(1, num_events), max(1, int(num_lights))),
+                torch.float32,
+                1.0,
+            )
+            if num_events:
+                sheet_event_id[:num_slice_sheets].scatter_(
+                    0,
+                    acc_idx,
+                    torch.arange(
+                        num_events, dtype=torch.int32, device=acc_idx.device
+                    ),
+                )
+                ev_pos = event_pos.index_select(0, acc_idx)
+                ev_snrm = event_snrm.index_select(0, acc_idx)
+                ev_fnrm = event_fnrm.index_select(0, acc_idx)
+                ev_frame = event_frame.index_select(0, acc_idx)
+                ev_msk = event_msk.index_select(0, acc_idx)
+                ev_dp = (
+                    event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
+                )
+                from algan.rendering.raytracing.refit_bvh import RefitBVH
+
+                raster_shadow_trace(
+                    num_events,
+                    ev_pos,
+                    ev_snrm,
+                    ev_fnrm,
+                    ev_frame,
+                    ev_msk,
+                    t_bvh.blocks,
+                    t_bvh.node_miss,
+                    t_bvh.leaf_prim,
+                    t_bvh.leaf_tspan,
+                    int(t_bvh.first_leaf),
+                    merged["tri_pos"],
+                    merged["tri_colors"],
+                    merged["tri_uvs"],
+                    merged["tri_tex_meta"],
+                    merged["textures"],
+                    int(merged["num_colored_triangles"]),
+                    bez_bvh.blocks,
+                    bez_bvh.node_miss,
+                    bez_bvh.leaf_prim,
+                    bez_bvh.leaf_tspan,
+                    int(bez_bvh.first_leaf),
+                    merged["circuit_meta"],
+                    merged["circuit_colors"],
+                    merged["circuit_border_colors"],
+                    merged["edges_2d"],
+                    merged["edge_accel"],
+                    light_pos,
+                    light_col,
+                    int(num_lights),
+                    pixel_world_scale,
+                    float(layer_offset_triangles),
+                    1 if isinstance(t_bvh, RefitBVH) else 0,
+                    1 if int(merged.get("num_triangles", 0)) > 0 else 0,
+                    1 if int(merged.get("num_circuits", 0)) > 0 else 0,
+                    ev_dp,
+                    sec_aa,
+                    shadow_vis,
+                    int(shadow_flag),
+                )
+            sheet_resolve_shade(
+                *pre_args,
+                2,
+                sheet_accept,
+                event_pos,
+                event_snrm,
+                event_fnrm,
+                event_frame,
+                event_msk,
+                event_dp,
+                sheet_event_id,
+                shadow_vis,
+                *post_args,
+            )
+        else:
+            sheet_resolve_shade(
+                *pre_args,
+                0,
+                dummy_i,
+                dummy_f3,
+                dummy_f3,
+                dummy_f3,
+                dummy_i,
+                dummy_i,
+                dummy_f6,
+                dummy_i,
+                dummy_vis,
+                *post_args,
+            )
         if dump_req:
             _aa_dump_emit("sheet-resolve", sdump)
         return covered_idx

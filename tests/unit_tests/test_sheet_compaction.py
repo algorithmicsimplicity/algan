@@ -204,6 +204,44 @@ def test_csr_aligns_with_covered_idx_and_order_is_classic():
     assert int(out["sheet_nfrag"][0]) == 2
 
 
+def test_band_scale_is_per_pixel_slope_not_raw_extent():
+    # The measured fusion defect: a big triangle (large camera-distance
+    # extent) 1.0 BEHIND a same-id fragment must still band-split when its
+    # projected size says its per-pixel depth slope is small. With no
+    # tri_screen the conservative raw extent fuses them; with the projection
+    # table the slope splits them.
+    frags = [
+        (0, 1.0, 0, 0.38, 0b10001001),
+        (0, 2.0, 1, 1.0, 0b11111111),
+    ]
+    coverage, merged, cam, pws = _coverage(frags)
+    # Make triangle 1 a huge wall: vertices spanning depths 1.0 .. 5.0.
+    merged["tri_pos"][0, 1] = torch.tensor([0.0, 0, 1.9, 6.8, 0, 5.0, 0, 6.0, 2.1])
+    fused = compact_sheets(
+        coverage, merged, cam, pws, 0, 4, 4, band_rule="prim", band_c=2.0
+    )
+    assert fused["num_sheets"] == 1  # raw extent (4.0) swamps the 1.0 gap
+    # Projection table: both triangles project large (500 px), flag valid.
+    ts = torch.zeros(1, 8, 10)
+    ts[..., 0:3] = torch.tensor([0.0, 500.0, 0.0])
+    ts[..., 3:6] = torch.tensor([0.0, 0.0, 500.0])
+    ts[..., 9] = 1.0
+    split = compact_sheets(
+        coverage,
+        merged,
+        cam,
+        pws,
+        0,
+        4,
+        4,
+        band_rule="prim",
+        band_c=2.0,
+        tri_screen=ts,
+    )
+    assert split["num_sheets"] == 2
+    assert not bool(split["sheet_fused"].any())
+
+
 def test_oracle_energy_and_exactness():
     from algan.rendering.raytracing.sheets import resolve_pixel_reference
 

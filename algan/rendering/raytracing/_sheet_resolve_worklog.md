@@ -153,6 +153,19 @@ current. Delete it in Phase 4's cleanup commit.
   GLOW-LANE BUG (env prefill): col 3 of the frame buffer is the GLOW lane;
   writing 255 bloomed every pixel white (max|d| 222 over the whole frame).
   Fixed to 0 (the sky emits none — matches the dense arm's retire).
+  4a STATUS: kernel mode templates (0 plain / 1 event build / 2 shade w/
+  vis) in ONE body; host three-mode launch + compact + raster_shadow_trace
+  reuse; sheet_route no longer requires shadow_flag==0. Basic parity
+  unchanged; shadow parity found a BRIGHT SEAM through the translucent
+  quad = a FUSED sheet (quad + backdrop BOTH sid 3, gap 1.04, my band
+  scale used raw triangle extent — the huge backdrop's ~4-unit extent
+  swamped the gap). FIX: band scale = per-PIXEL depth slope (extent /
+  projected px size from tri_screen, valid-flag guarded) + pws*t; unit
+  test pins it; spy confirms the split. NOTE the identity finding for
+  later: two DIFFERENT generic triangle mobs (TriangleTriangulated,
+  QuadTriangulated) shared one sid — the old run rule had the same
+  exposure (measured small); worth a mesh_key on generic tri mobs in the
+  §4.1 identity sweep. Shadow parity re-running after the fix.
 
 ## Phase 1 design notes (settled before building)
 - Compaction lives in NEW engine module algan/rendering/raytracing/sheets.py,

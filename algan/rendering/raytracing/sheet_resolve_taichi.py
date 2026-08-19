@@ -24,12 +24,13 @@ the sequential oracle, and pinned by the parity harness):
   state to per-record arithmetic -- ``_run_svis_write`` + ``_run_redistribute``
   with no pending flag and no cross-record feedback).
 
-Phase-2 scope: launched only by the sparse covered-pixel path, only when
-shadows are off (the shadow-event build still replays the fragment walk; it
-moves to sheet records in Phase 4), with the same ray-state contract as the
-walk -- retired pixels accumulate into ``pix_accum``, bounces keep their slot,
-splits go to the shared pool through the same atomic allocator (deterministic
-slot ids are Phase 4's P7).
+Launched only by the sparse covered-pixel path, with the same ray-state
+contract as the walk -- retired pixels accumulate into ``pix_accum``, bounces
+keep their slot, splits go to the shared pool through the same atomic
+allocator (deterministic slot ids are P7). Shadows are two launches of this
+one body (``mode`` 1 then 2, see the parameter comment): the event pass and
+the shading pass share every line of transport, which is what retires the
+old design's hand-maintained walk/shadow-walk lockstep.
 """
 
 import taichi as ti
@@ -51,11 +52,13 @@ from algan.rendering.raytracing.raster_taichi import (
     _glossy_reflect,
     _glossy_rotation,
     _jittered_surface_sample,
+    _pixel_footprint,
     _popcount_samples,
     _run_redistribute,
     _run_svis_write,
     _sec_positions,
     _spawn_pool_ray,
+    _tri_shadow_normals,
     _tri_surface_point,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -115,6 +118,21 @@ def sheet_resolve_shade(
         sec_aa: ti.template(), sec_min_energy: ti.f32,
         glossy: ti.template(),
         env_in_composite: ti.template(),
+        # Shadow support (DESIGN_sheet_resolve.md §4.9). ``mode`` 0 is the
+        # shadow-free resolve; 1 walks the IDENTICAL transport and writes one
+        # candidate shadow event per accepted lit triangle sheet (no shading,
+        # no spawns) into dense per-sheet tables — event identity is the
+        # sheet index, so no counter and no atomics exist; 2 is the shading
+        # resolve reading the traced per-event visibility. One kernel body
+        # for all three is what makes a resolve/shadow desync structurally
+        # impossible — the two fragment walks this replaces had to be kept
+        # in lockstep by hand and grew a harness just to check it.
+        mode: ti.template(),
+        sheet_accept: ti.types.ndarray(),
+        event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
+        event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
+        event_msk: ti.types.ndarray(), event_dp: ti.types.ndarray(),
+        sheet_event_id: ti.types.ndarray(), shadow_vis: ti.types.ndarray(),
         covered_idx: ti.types.ndarray(),
         time_start: int, width: int, height: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
@@ -303,12 +321,14 @@ def sheet_resolve_shade(
                     0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
-                if ti.static(frag_shading != 0):
-                    # Shadows are structurally off in Phase 2 (the sparse
-                    # gate keeps shadowed batches on the fragment walk until
-                    # shadow events are built from sheet records), so every
-                    # light is fully visible here.
+                if ti.static(frag_shading != 0 and mode != 1):
                     lvis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
+                    if ti.static(mode == 2):
+                        event_id = sheet_event_id[idx]
+                        if event_id >= 0:
+                            for li in range(num_lights):
+                                if li < MAX_SHADOW_LIGHTS:
+                                    lvis[li] = shadow_vis[event_id, li]
                     sn = ti.math.vec3(0.0, 0.0, 0.0)
                     if ti.static(skip_unlit_normal != 0):
                         if tri_mat_id[f % tri_mat_id.shape[0], prim] \
@@ -327,10 +347,44 @@ def sheet_resolve_shade(
                                            tri_pos, sn,
                                            tri_mat_id, tri_mat,
                                            light_pos, light_col,
-                                           num_lights, color, 0, lvis)
+                                           num_lights, color,
+                                           ti.static(1 if mode == 2 else 0),
+                                           lvis)
                 ior, T = _tri_ior_transmission_g(
                     0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)
+                if ti.static(mode == 1):
+                    # One candidate shadow event per accepted lit triangle
+                    # sheet, at the sheet index — mirroring the fragment
+                    # build's acceptance (reached the fetch, material not
+                    # unlit) and its payload: position and normals at the
+                    # dominant fragment, the 4-bit sub-pixel position mask
+                    # with the material pipeline id above it, and the pixel
+                    # footprint for soft sub-pixel sampling.
+                    pid_e = tri_mat_id[f % tri_mat_id.shape[0], prim]
+                    if pid_e != _MID_UNLIT:
+                        snrm, fnrm = _tri_shadow_normals(
+                            f, prim, a, b, surf_rd, tri_pos, tri_norm,
+                            tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                        sheet_accept[idx] = 1
+                        for k in ti.static(range(3)):
+                            event_pos[idx, k] = surf_pos[k]
+                            event_snrm[idx, k] = snrm[k]
+                            event_fnrm[idx, k] = fnrm[k]
+                        event_frame[idx] = f
+                        shadow_msk = 0xF
+                        if (not sliver) and (msk_low != 0):
+                            shadow_msk, _sn4 = _sec_positions(msk_low, 4)
+                        event_msk[idx] = shadow_msk | (pid_e << 8)
+                        if ti.static(sec_aa > 1):
+                            dpx, dpy = _pixel_footprint(
+                                f, px, py, gen_meta, surf_pos, fnrm,
+                                cam_origin, screen_point,
+                                pixel_basis_x, pixel_basis_y)
+                            for k in ti.static(range(3)):
+                                event_dp[idx, k] = dpx[k]
+                                event_dp[idx, 3 + k] = dpy[k]
 
             mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
             alpha = ti.math.clamp(mat_alpha * eff, 0.0, 1.0)
@@ -440,22 +494,24 @@ def sheet_resolve_shade(
                                         cam_origin, screen_point,
                                         pixel_basis_x, pixel_basis_y)
                                 rdt = _refract_ray(rdj, nj, ior)
-                                _spawn_pool_ray(
-                                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                    rs_pix, rs_alloc,
-                                    _offset_transmitted_origin(
-                                        hpj, rdt, face_normal, nj),
-                                    rdt, wsub, base_dist + t_hit,
-                                    bounces_left - 1, processed, pixel, r, 1)
+                                if ti.static(mode != 1):
+                                    _spawn_pool_ray(
+                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                        rs_pix, rs_alloc,
+                                        _offset_transmitted_origin(
+                                            hpj, rdt, face_normal, nj),
+                                        rdt, wsub, base_dist + t_hit,
+                                        bounces_left - 1, processed, pixel, r, 1)
                     else:
                         rdt = _refract_ray(surf_rd, normal, ior)
-                        _spawn_pool_ray(
-                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
-                            rs_alloc,
-                            _offset_transmitted_origin(
-                                hp, rdt, face_normal, normal),
-                            rdt, wt, base_dist + t_hit,
-                            bounces_left - 1, processed, pixel, r, 1)
+                        if ti.static(mode != 1):
+                            _spawn_pool_ray(
+                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
+                                rs_alloc,
+                                _offset_transmitted_origin(
+                                    hp, rdt, face_normal, normal),
+                                rdt, wt, base_dist + t_hit,
+                                bounces_left - 1, processed, pixel, r, 1)
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hit_point = surf_pos
@@ -486,11 +542,12 @@ def sheet_resolve_shade(
                                 jtap += 1
                                 org = hpj + nj * (10.0 * MIN_HIT_DISTANCE)
                                 if placed:
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc, org, rdr, weight,
-                                        base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, 1)
+                                    if ti.static(mode != 1):
+                                        _spawn_pool_ray(
+                                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                            rs_pix, rs_alloc, org, rdr, weight,
+                                            base_dist + t_hit, bounces_left - 1,
+                                            processed, pixel, r, 1)
                                 else:
                                     rd = rdr
                                     ro = org
@@ -545,20 +602,22 @@ def sheet_resolve_shade(
                                                 rdj, nj, rough, jtap, sec_n,
                                                 g_roff, g_aoff)
                                     jtap += 1
-                                    _spawn_pool_ray(
-                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                        rs_pix, rs_alloc,
-                                        hpj + nj * (10.0 * MIN_HIT_DISTANCE),
-                                        rdr, rwsub, base_dist + t_hit,
-                                        bounces_left - 1, processed, pixel, r,
-                                        1)
+                                    if ti.static(mode != 1):
+                                        _spawn_pool_ray(
+                                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                            rs_pix, rs_alloc,
+                                            hpj + nj * (10.0 * MIN_HIT_DISTANCE),
+                                            rdr, rwsub, base_dist + t_hit,
+                                            bounces_left - 1, processed, pixel, r,
+                                            1)
                         else:
-                            _spawn_pool_ray(
-                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
-                                rs_alloc,
-                                rhp + nref * (10.0 * MIN_HIT_DISTANCE),
-                                refl_rd, rwt, base_dist + t_hit,
-                                bounces_left - 1, processed, pixel, r, 1)
+                            if ti.static(mode != 1):
+                                _spawn_pool_ray(
+                                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
+                                    rs_alloc,
+                                    rhp + nref * (10.0 * MIN_HIT_DISTANCE),
+                                    refl_rd, rwt, base_dist + t_hit,
+                                    bounces_left - 1, processed, pixel, r, 1)
                     rr = _run_svis_write(svis, slots, a_s, 0.0, cfac, 1)
                     _run_redistribute(svis, own_msk, rr)
             elif is_pane or split_refl:
@@ -591,21 +650,23 @@ def sheet_resolve_shade(
                                             rdj, nj, rough, jtap, sec_n,
                                             g_roff, g_aoff)
                                 jtap += 1
-                                _spawn_pool_ray(
-                                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                    rs_pix, rs_alloc,
-                                    hpj + nj * (10.0 * MIN_HIT_DISTANCE),
-                                    rdr,
-                                    wsub, base_dist + t_hit, bounces_left - 1,
-                                    processed, pixel, r, 1)
+                                if ti.static(mode != 1):
+                                    _spawn_pool_ray(
+                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                        rs_pix, rs_alloc,
+                                        hpj + nj * (10.0 * MIN_HIT_DISTANCE),
+                                        rdr,
+                                        wsub, base_dist + t_hit, bounces_left - 1,
+                                        processed, pixel, r, 1)
                     else:
-                        _spawn_pool_ray(
-                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
-                            rs_alloc,
-                            hp + nref * (10.0 * MIN_HIT_DISTANCE),
-                            refl_rd,
-                            wt, base_dist + t_hit, bounces_left - 1,
-                            processed, pixel, r, 1)
+                        if ti.static(mode != 1):
+                            _spawn_pool_ray(
+                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
+                                rs_alloc,
+                                hp + nref * (10.0 * MIN_HIT_DISTANCE),
+                                refl_rd,
+                                wt, base_dist + t_hit, bounces_left - 1,
+                                processed, pixel, r, 1)
                 ts_s = a_s * trans_share
                 pm = (1.0 - a_s) + ts_s
                 rr = _run_svis_write(svis, slots, a_s, trans_share, cfac, 1)
@@ -643,11 +704,12 @@ def sheet_resolve_shade(
                             jtap += 1
                             org = hpj + nj * (10.0 * MIN_HIT_DISTANCE)
                             if placed:
-                                _spawn_pool_ray(
-                                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                    rs_pix, rs_alloc, org, rdr, weight,
-                                    base_dist + t_hit, bounces_left - 1,
-                                    processed, pixel, r, 1)
+                                if ti.static(mode != 1):
+                                    _spawn_pool_ray(
+                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                        rs_pix, rs_alloc, org, rdr, weight,
+                                        base_dist + t_hit, bounces_left - 1,
+                                        processed, pixel, r, 1)
                             else:
                                 rd = rdr
                                 ro = org
@@ -711,6 +773,10 @@ def sheet_resolve_shade(
                                   d_vis * _AA_SAMPLE_WEIGHT, acc, weight,
                                   svis)
 
+        if ti.static(mode == 1):
+            # The event pass owns no ray state and commits no pixels; its
+            # writes were the per-sheet event tables above.
+            continue
         if bounced and not done:
             for k in ti.static(range(3)):
                 rs_ro[r, k] = ro[k]

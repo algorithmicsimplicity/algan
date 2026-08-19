@@ -561,6 +561,43 @@ and its machinery (§7's list) deleted; ONE re-baseline, lossless-reviewed,
 CUDA on the reference box and the CPU set with it (which also settles the
 standing CPU-baseline debt, `DESIGN_mesh_identity_open.md` §B).
 
+**Phase 4a BUILT AND MEASURED (2026-08-19): shadow events from sheet
+records.** The resolve kernel gained a `mode` template — 1 walks the
+transport and writes one candidate event per accepted lit triangle sheet
+(no shading, no spawns), 2 shades reading the traced visibility — so the
+event pass and the shading pass are the SAME kernel body and a
+resolve/shadow desync is structurally impossible (the machinery the old
+lockstep pair needed, `_aa_dump_check`'s lockstep leg included, has
+nothing left to check on this route). Event identity is the SHEET INDEX
+into dense per-sheet tables: no counter, no atomic reserve; the host
+compacts accepted rows (deterministic ascending order) and the unchanged
+`raster_shadow_trace` runs over the compact queue. `sheet_route` no
+longer requires shadows off.
+
+* **A shadowed scene's A/A is now byte-identical in BOTH arms** (the
+  fragment walk's was too on this scene; the sheet route keeps it while
+  deleting the lockstep).
+* The remaining off-vs-on movement is the walk's dark same-id seam leak
+  REMOVED (the walk under-tiles a quad diagonal whose two triangles it
+  treats as separate engagement contexts — sheets paint the exact
+  tiling), shadow-boundary shifts of ~a pixel (per-sheet dominant-
+  fragment event positions), and mirror-rim reflection shifts. Reviewed
+  as panels and per-pixel dumps, not just measured.
+* **One band-rule defect found by the shadow panel and fixed with a
+  test**: the `prim` scale first used the triangle's RAW camera-distance
+  extent, and a large wall's extent (~4 units) swamped a 1.04 gap in
+  front of it — a same-sid quad+backdrop pair FUSED into one sheet and
+  shaded with the backdrop's color (a bright line where they overlapped
+  on screen). The scale is now the per-PIXEL depth slope (extent /
+  projected pixel size from `tri_screen`, straddlers keep the
+  conservative extent). The ink-wobble table is unchanged by the fix.
+* **Identity finding for the §4.1 sweep**: two DIFFERENT generic
+  triangle mobs (`TriangleTriangulated`, `QuadTriangulated`) shared one
+  surface id in the merge. The old run rule had the same exposure
+  (bounded by per-fragment shading); sheets amplify shared ids into
+  shared shading, so generic triangle mobs deserve a declared
+  `mesh_key` before the flip.
+
 **Success criteria**, stated before the work: coverage error on the harness
 cases strictly better than shipped; ink wobble no worse; §J extended
 byte-inert on every lever including env/tonemap scenes; run-to-run

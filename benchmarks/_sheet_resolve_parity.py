@@ -108,6 +108,27 @@ def build_scene(variant="basic"):
         )
         glass.spawn(animate=False)
         movers.append(glass)
+    if variant == "shadow":
+        from algan import DOWN, PointLight
+        from algan.mobs.shapes_2d import QuadTriangulated
+
+        # A light off to the side and a matte TRIANGLE backdrop (a circuit
+        # would occlude shadow rays but never receive shadows) so the solids
+        # cast visible shadows the route has to build events for.
+        PointLight(location=UP * 3.0 + RIGHT * 4.0 + OUTV * 3.0).spawn(
+            animate=False
+        )
+        with Off():
+            centre = IN * 2.2 + DOWN * 0.2
+            corners = torch.stack(
+                (
+                    centre - 3.4 * RIGHT - 3.0 * UP,
+                    centre + 3.4 * RIGHT - 3.0 * UP,
+                    centre + 3.4 * RIGHT + 3.0 * UP,
+                    centre - 3.4 * RIGHT + 3.0 * UP,
+                )
+            ).float()
+            QuadTriangulated(corners, color=WHITE).spawn(animate=False)
     if variant == "env":
         # Deterministic gradient env map (float tensor: taken as authored).
         h, w = 8, 16
@@ -137,6 +158,8 @@ def render_arm(tag, on, res, variant="basic"):
         # reads. Applied to BOTH arms so the A/B compares resolves, not
         # tonemap pipelines.
         SETTINGS.raytracing.experimental.set(post_process_tonemap=False)
+    if variant == "shadow":
+        SETTINGS.raytracing.set(shadows=True)
     launches = {"n": 0}
     orig = srt.sheet_resolve_shade
 
@@ -161,6 +184,8 @@ def render_arm(tag, on, res, variant="basic"):
         SETTINGS.raytracing.experimental.set(sheet_resolve=False)
         if variant == "tm":
             SETTINGS.raytracing.experimental.set(post_process_tonemap=True)
+        if variant == "shadow":
+            SETTINGS.raytracing.set(shadows=False)
     return launches["n"]
 
 
@@ -371,7 +396,7 @@ def main():
     ap.add_argument("--res", choices=("ld", "md"), default="ld")
     ap.add_argument(
         "--scene",
-        choices=("basic", "env", "tm"),
+        choices=("basic", "env", "tm", "shadow"),
         default="basic",
         help="scene variant: basic, env-mapped (dense walk vs sparse sheets), "
         "or in-kernel tonemap (post_process_tonemap off in both arms)",
