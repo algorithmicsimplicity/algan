@@ -111,13 +111,16 @@ def _aa_group_dense(aa_bez, aa_tri):
     the SPARSE emission builds, so the dense path passes one-element dummies
     for ``frag_run_e`` / ``frag_run_uw``. The kernel's read is gated on
     ``aa_grp``, not on which path launched it -- so a dense launch at
-    ``aa_grp == 6`` indexes a one-element array by fragment and reads whatever
-    the arena holds. That is not theoretical: it is what moved
-    ``shapes_and_timeline``'s last twelve frames (its fade-out segment takes
-    the dense path) by 31 channel values over 4,514 pixels, while the sparse
-    batches carrying the entire truncated population -- 197 pixel-frames in the
-    whole render -- moved nothing. Capping here answers the question in ONE
+    ``aa_grp == 6`` would index a one-element array by fragment and read
+    whatever the arena holds. Capping here answers the question in ONE
     language: the level a path can express is a property of the path.
+
+    (An earlier revision blamed this read for ``shapes_and_timeline``'s
+    fade-out move. Retracted: that scene renders every batch on the SPARSE
+    path, the move survives this cap byte-for-byte, and its mechanism is the
+    confined lane read doing its job plus H.264 spread in the comparison --
+    DESIGN_mesh_identity.md ss6.7.3. The cap stays as the correct defense for
+    any batch that IS dense at level 6.)
 
     Capped at 5 rather than 4 because ss6.8 needs only ``frag_cap``, which the
     dense path does pass at full length -- as the "no ceiling" sentinel, so the

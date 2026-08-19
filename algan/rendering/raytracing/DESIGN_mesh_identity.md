@@ -115,11 +115,13 @@ than for want of attention:
 * `ALGAN_ANALYTIC_AA_RUN_FULL` is **subsumed**, not pending: `ONE_MESH` implies it
   (`aa_grp` 3 or higher, and `_aa_run_full` accepts anything from 2 up), so it only
   selects the relaxed gate *without* the cap — a configuration kept for the harness.
-* `ALGAN_ANALYTIC_AA_RUN_EXACT` is confined, verified and still off: it makes
-  every truncated run exact and leaves complete runs bit-identical (§6.7.2), but
-  `shapes_and_timeline` moves by 31 channel values over 4,514 pixels for a reason
-  that is **not attributed** — the whole render holds 198 truncated runs over 197
-  pixel-frames, which cannot produce it. §0.1 rule 1 says do not flip it yet.
+* `ALGAN_ANALYTIC_AA_RUN_EXACT` is confined, verified, ATTRIBUTED and still
+  off: it makes every truncated run exact and leaves complete runs
+  bit-identical (§6.7.2), and `shapes_and_timeline`'s once-unattributed move
+  is measured at **18 lossless pixel-frames** — the engaged truncated runs it
+  exists to fix — inflated ~2,000x by the H.264 decode the comparisons read
+  (§6.7.3). What holds it off now is only the flip work: cost and baselines
+  (`DESIGN_mesh_identity_open.md` §C.4).
 
 And three that were off in the previous revision are now on:
 
@@ -254,16 +256,17 @@ list has been run; these are what running them produced.
    sum. `shapes_and_timeline` has zero notched pixels and still moves 31.
 
    **UPDATE — the full-mask half is now fixed and shipped (§6.8), and
-   `shapes_and_timeline`'s 31 is still not explained.** §6.8 takes the mesh's
+   `shapes_and_timeline`'s 31 is EXPLAINED (§6.7.3).** §6.8 takes the mesh's
    own coverage ceiling instead of a truncated sum on the full-mask arm, which
    is exact wherever a cap exists and costs no lane. What is left of §0.5 is the
    PARTIAL-mask arm, which is the larger half in both population and magnitude
    (mean 0.2762 over 314,072 truncated pixels in `text_and_media`) and needs the
-   sample union fixed, not just the area — only §6.7 does that, and it is held
-   off by that same unattributed move. `_notch_scene_check.py --all-runs` bounds
-   the population the scan limit can possibly reach in `shapes_and_timeline` at
-   **197 pixel-frames in the entire render**, against ~37,000 pixel-frames that
-   move; those two numbers cannot describe the same thing.
+   sample union fixed, not just the area — only §6.7 does that. The "197
+   pixel-frames of truncated runs against ~37,000 pixel-frames that move" that
+   held it off is resolved: the renderer's change is 18 lossless pixel-frames
+   inside the truncated population, and the other ~37,000 are the H.264 decode
+   spreading them (§6.7.3). Both counts were right; they measure different
+   instruments.
 
    **A third fix is now built and gated off: §6.7** takes the run's totals from
    a host segment reduction and deletes the kernel's scan entirely, which is the
@@ -642,6 +645,12 @@ arm reached its case, which is the first thing to check: `truncated` goes
 
 The two that do not move are exactly the two the probe said could not: pure
 circuits, and the scene whose longest run is exactly 16.
+
+*(Caveat added later: these moved-pixel counts are decoded-H.264 measurements
+and overstate the renderer's own change — §6.7.3 measured the equivalent
+`shapes_and_timeline` population at 18 lossless pixel-frames against the
+~37,000 the decode reports. WHICH scenes move, and the byte-identical rows,
+are unaffected.)*
 
 **But this is NOT the notch's price, and reading it as one would be the fourth
 mistake of this kind in this document.** `shapes_and_timeline` has **zero**
@@ -2882,11 +2891,17 @@ It does not. `_aa_run_exact` is a function of `aa_grp`, `aa_grp` came from
 which path is launching. So with `ALGAN_ANALYTIC_AA_RUN_EXACT=1` the dense
 kernel compiled the reads in and indexed a one-element array by fragment index.
 
-**What it cost.** It is why `shapes_and_timeline` moved under the unconditional
-arm in a way nobody could attribute: its last twelve frames are its fade-out
-segment, which renders in its own batches, and those batches take the dense
-path. Meanwhile every batch the probe can see — the sparse ones, which hold all
-198 truncated runs in the render — moved nothing.
+**What it cost — CORRECTED.** This section originally attributed
+`shapes_and_timeline`'s last-twelve-frames move to the OOB read, on the
+inference that its fade-out segment took the dense path. Measured at HEAD
+(§6.7.3): **every batch of that scene takes the SPARSE path** — both arms,
+whole render, `raster_iteration_zero` never launches — no raster-path default
+changed in between, and the move survives this fix byte-for-byte identical. So
+the OOB read never fired there, the attribution is retracted, and the real
+mechanism is §6.7.3's. The fix itself stands on its own feet: a dense launch
+at `aa_grp == 6` would index a one-element array by fragment index, the cap is
+the correct defense in the path's own language, and
+`test_analytic_aa_gates.py` pins it.
 
 **The fix is `_aa_group_dense`**, which caps the level at 5, and the point of it
 is where it lives: the level a path can express is a property of the PATH, so
@@ -2942,7 +2957,72 @@ precisely the non-determinism §6.6.4 paid to remove, on the quantity that feeds
 the discrete decisions. Accuracy and reproducibility point the same way.
 
 
-6.8 `frag_cap` AS A TRUNCATED RUN'S FULL-MASK AREA  [SHIPPED, default ON]
+6.7.3 THE `shapes_and_timeline` MOVE IS THE CODEC'S RENDERING OF 18 PIXELS
+--------------------------------------------------------------------------------
+The last open question of §6.7: with the arm confined and §6.7.1 capped,
+`shapes_and_timeline` still moved by 31 channel values over 4,514 pixels —
+~37,000 pixel-frames across its last twelve frames — while the whole render
+holds 198 truncated runs over 197 pixel-frames. Those numbers looked
+irreconcilable, and the elimination that reconciled them is worth keeping
+whole (`benchmarks/_c3_*.py`; every arm below diffed against an arm-OFF
+render that is itself byte-identical to the committed CUDA baseline):
+
+* **The move is real at HEAD and perfectly reproducible** — the twelve frames
+  differ, every other frame is byte-identical at zero tolerance, and a second
+  render of each arm reproduces its video byte-for-byte.
+* **Every batch takes the sparse path** (both arms — `raster_iteration_zero`
+  never launches), so §6.7.1's dense-path story could not be the mechanism;
+  and all 198 truncated runs sit in the fade-out's own sparse batches.
+* **The moved DECODED pixels are not the truncated population**: on the worst
+  frame, 4,514 moved pixels held 7 truncated runs, and most moved pixels'
+  longest run is 1–8 fragments.
+* **The lanes' existence is innocent**: reduction on, arena grown, windows
+  re-split, kernel pinned to the shipped level — byte-identical. Halving
+  `WAVEFRONT_TILE_RAYS` — byte-identical. Post-processing off — the diff is
+  unchanged (bloom is a no-op without glow, so §6.7.2's dismissal was right
+  for the wrong-sounding reason).
+* **A one-pixel `ALGAN_AA_DUMP` golden walk of the worst pixel is IDENTICAL
+  under both arms** — same fragments, same engaged run (complete, length 3),
+  same corr, same final accumulation — while its decoded value differs by 31.
+
+That contradiction has exactly one resolution, and re-rendering both arms
+losslessly (`codec="libx264rgb"`, `ffmpeg_params=["-crf", "0"]`) confirms it:
+**the renderer's change is 18 pixel-frames — 1–3 pixels per frame, worst
+|d| 21 — on the `PointCloudDot` ring's midline, where overlapping dots of one
+packed cloud share a surface id and fuse into the scene's only long runs.**
+Those are engaged truncated runs taking the exact totals, which is the arm
+doing precisely what it ships to do. The other ~37,000 pixel-frames are the
+suite comparison's own instrument: the videos are H.264 at yuv420p with
+I-frames 250 apart, so 1–3 changed pixels ride inter-prediction, 16x16 DCT
+blocks and 2x2 chroma subsampling across the dot footprints for the rest of
+the GOP. The window (frames 286–297 of 301) is also mechanism, not noise:
+`animate_fade_out` despawns mobs staggered, a despawned dot's fragments stay
+in the CSR at zero alpha, a zero-alpha write leaves `svis` exactly uniform, so
+the walk's run gate only reaches a deep truncated run between the first
+despawn and the last — the census counts 2–12 truncated runs per frame across
+the WHOLE fade-out, but only the engaged 1–3 per frame inside that window can
+read the lanes.
+
+Two standing lessons. First, §0.1 rule 1 in a new costume: a pixel diff read
+from an MP4 measures the encoder's output, not the renderer's. Byte-identity
+claims survive (identical raw frames encode identically — every byte-identical
+verdict in this file stands), but every "moved by N over M pixels" figure in
+these documents is measured through the codec, including §0.5's raised-limit
+table, whose `shapes_and_timeline` row is this same population. Before
+attributing a move's size or shape, re-render both arms losslessly. Second,
+rule 4 held again: the 198-vs-37,000 "contradiction" was two instruments
+answering different questions, and both were right.
+
+**The same instrument, pointed back at §6.7.2's own case** (a worktree at
+fc0f93f, the unconditional-read revision, both arms lossless —
+`_c3_uncond_lossless_ab.py`): the "42 channel values over 28,854 pixels — 16%
+of a frame" that motivated the confinement decodes to **2,063 pixel-frames
+over 35 of 179 frames, worst |d| 4**, mostly single |d| = 1 pixels. The ulp
+flips are real and the confinement still removes them exactly, but their true
+cost was ~10x smaller in magnitude and ~two orders smaller in extent than the
+number the decision was made on. That reopens §0.5's option (a) — raising the
+scan bound — whose case was closed on the same codec-inflated evidence; the
+open queue's §C.4 carries the reopened choice.
 --------------------------------------------------------------------------
 `ALGAN_ANALYTIC_AA_RUN_CAP`, `aa_grp = 5`. The cheap half of what §6.7 does,
 needing no new lane, no new host reduction and no new argument.

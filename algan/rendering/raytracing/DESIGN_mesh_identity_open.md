@@ -55,6 +55,11 @@ accident: 13 tests failed with a green tree and nothing wrong with the change.
                              §6.7's host reduction; --batch-frames prints the
                              time_start/frame mapping any pixel-to-frame claim
                              rests on; --cases runs the synthetic cases
+    _c3_*.py                 the §C.3 attribution set: fadeout_ab (A/B + batch
+                             path log), run_census + census_join (truncated-run
+                             population vs moved pixels), dump_pixel (one-pixel
+                             golden walk, both arms), tile_ab (slice partition),
+                             nopost_ab (bloom), lossless_ab (the codec — §Y.7)
     _bvh_steps.py            traversal STEPS per ray, transcribed from the
                              production walk and verified against it (§E)
     _order_window_check.py   is the render a function of the sorted hit list
@@ -250,32 +255,103 @@ what the partial arm needs.
    loop that is now KEPT (the confinement needs the scan's truncation flag), so
    the "deletes the loop" speed argument no longer applies.
 
-**THE ONE THING THAT BLOCKS THE DEFAULT.** `shapes_and_timeline` still moves by
-31 channel values over 4,514 pixels with the arm confined and the §6.7.1 dense-
-path bug fixed, and that is **not attributed**. The whole render holds 198
-truncated runs over 197 pixel-frames; the move is ~37,000 pixel-frames over 12
-frames. Those two numbers cannot both describe the same population, and the
-count is segment-independent so it does not depend on the frame-mapping trap in
-§A. Until a mechanism is found, do not flip it — §Y.1.
+**THE BLOCKER IS ATTRIBUTED, AND THE ARM IS INNOCENT** (measured 2026-08-19,
+`DESIGN_mesh_identity.md` §6.7.3). The "31 channel values over 4,514 pixels,
+~37,000 pixel-frames over 12 frames" reproduces byte-for-byte at HEAD — and
+re-rendering BOTH arms under a lossless codec (`codec="libx264rgb"`,
+`-crf 0`) collapses it to **18 pixel-frames: 1–3 pixels per frame, worst
+|d| 21**, a tight cluster on the `PointCloudDot` ring's midline, where
+overlapping same-sid dots fuse into the scene's only long runs. Those are
+exactly the engaged truncated runs the arm exists to fix, changed the way the
+design intends. Everything else was the MP4: the six-scene comparisons decode
+H.264 at yuv420p with I-frames 250 apart, so 1–3 real pixels per frame ride
+inter-prediction, 16x16 DCT blocks and 2x2 chroma subsampling across the dot
+footprints for the rest of the GOP — a ~2,000x inflation of the moved-pixel
+count. The "two numbers that cannot both describe the same population" were
+BOTH right: 198 truncated runs counts the renderer's change, ~37,000
+pixel-frames counts the codec's rendering of it.
 
-**Where to look next**, in order of cheapness: the moved frames are the scene's
-LAST twelve, which is its fade-out segment; `--batch-frames` shows that segment
-renders in its own batches. Ask whether those batches take the sparse path at
-all (the probe only hooks `prepare_sparse_raster_coverage`, so a dense batch is
-invisible to every number in the table above — that blindness is what §6.7.1
-turned out to be). If they are sparse, dump `frag_run_uw`'s `rest` field on them
-and check whether any run's extent crosses a `shade_sparse_raster_coverage`
-slice boundary: `rest` is a COUNT by design, so a run whose remainder lies in
-the next slice yields `run_end > nrun`, which the shipped scan can never
-produce.
+The move runs frames 286–297 because ENGAGEMENT, not run length, gates the
+population: the fade-out is a staggered despawn, a despawned dot's fragments
+stay in the CSR with zero alpha, and a zero-alpha write leaves `svis` exactly
+uniform — so only once the first dot dies can the walk's run gate reach a deep
+truncated run at all, and once every dot is dead there is nothing left to
+change. The truncated-run census is near-uniform over the whole fade-out
+(2–12 per frame); the ENGAGED subset is the 1–3 per frame the lossless diff
+shows.
+
+**Both of the previous revision's suspects are dead, measured:**
+
+* *The dense path.* Every batch of this scene takes the SPARSE path — both
+  arms, whole render, `raster_iteration_zero` never launches
+  (`_c3_fadeout_ab.py` logs every batch). §6.7.1's "its fade-out segment
+  takes the dense path" was an inference and is retracted in the record; the
+  `_aa_group_dense` cap stays, as defense for any batch that IS dense at
+  level 6, with `test_analytic_aa_gates.py` still pinning it.
+* *A run crossing a `shade_sparse_raster_coverage` slice boundary.*
+  Impossible by construction — the host reduction breaks runs at pixel
+  changes (`raster_pipeline.py`, `starts` includes `pix_s` changes) and the
+  slices are pixel-aligned views of `run_offsets` — and the slicing levers
+  are byte-inert: halving `WAVEFRONT_TILE_RAYS` is byte-identical
+  (`_c3_tile_ab.py`), as is building the lanes with the kernel pinned to the
+  shipped variant.
+
+The elimination chain, for the next investigation of this shape
+(`benchmarks/_c3_*.py`, every arm diffed against an arm-OFF render that is
+itself byte-identical to the committed CUDA baseline): per-batch path log +
+truncated-run census (moved DECODED pixels are overwhelmingly NOT the
+truncated population), lanes-built-but-kernel-pinned (byte-identical → the
+lanes and their arena footprint are innocent), a one-pixel `ALGAN_AA_DUMP`
+golden walk under both arms (the worst decoded pixel's walk is IDENTICAL in
+both), post-processing off (identical diff — bloom is a no-op without glow),
+and only then the codec.
 
 C.4 What ships
 ---------------
-**C.1 ships on. C.3 stays off.** They are not in competition — C.1 is a special
-case of what C.3 does generally — but C.1's output move is confined to the arm
-it makes exact by construction, and C.3's is not yet accounted for. When C.3's
-residual is explained and flipped, C.1 becomes inert under it and the kernel
-already compiles it out (`_aa_run_cap and not _aa_run_exact`).
+**C.1 ships on. C.3 is attributed and stays off only for the flip work.** They
+are not in competition — C.1 is a special case of what C.3 does generally, and
+when C.3 flips, C.1 becomes inert under it (the kernel already compiles it out:
+`_aa_run_cap and not _aa_run_exact`). §Y.1's "show the mechanism before
+flipping" is now satisfied; what the flip still needs:
+
+1. **Cost** (item 4 above): 8 B/fragment of lanes plus the reduction, against
+   a bounded loop that stays. Wall-clock is not measurable on this machine
+   (§A); the lanes are already accounted in `discovery_bytes`.
+2. **Baselines.** The scenes carrying truncated runs (`text_and_media` above
+   all — 420,552 truncated pixels, and the partial-mask arm only this fixes)
+   move in exactly those populations. Regenerate CUDA baselines on this box,
+   diff each scene under the LOSSLESS codec first so what is reviewed is the
+   renderer's change and not the encoder's spread of it, look at the frames,
+   and say in the commit that the CPU debt (§B) grows by the same scenes.
+
+**AND THE MECHANISM CHOICE ITSELF IS REOPENED** by two of §6.7.3's
+measurements, so decide it before doing the flip work:
+
+* §0.5's **option (a) — raise `_AA_MAX_RUN_SCAN`** (to
+  `MAX_SURFACES_PER_RAY`, which bounds any run the walk can see) — was closed
+  on "(a) is a re-baseline, not a patch". That case was codec-inflated, and
+  (a) has properties §6.7 cannot have: complete runs keep byte-for-byte the
+  SHIPPED arithmetic (no confinement machinery needed, no host/kernel second
+  language — rule Y.4 by construction), it reaches the DENSE path (the lanes
+  never can: they are a torch-side reduction over the sparse emission's CSR,
+  and the dense path's fragment lists exist only inside the per-tile
+  kernels), it deletes the lanes, the reduction and 8 B/fragment, and its
+  oracle is itself. Cost: each fragment of a >16 run is read by the scan once
+  more than today — unmeasured, and this box cannot measure it (§A). §0.5's
+  open obligation stands: re-run `_aa_line_check` / `_aa_run_gate_check` in
+  the raised arm before believing the new frames are better.
+* The **unconditional-lanes** variant ("read the lanes everywhere, drop the
+  confinement, re-baseline") is also cheaper than §6.7.2 believed: its
+  collateral on `materials_and_lighting` is really 2,063 pixel-frames at
+  worst |d| 4, not 42-over-16%-of-a-frame. But it is dominated by (a): same
+  intended fix, plus ulp-flip sprinkles (a) does not have, and it keeps the
+  lanes while still missing the dense path.
+
+Before spending anything on the dense path, show it matters: the six-scene
+suite renders sparse throughout (§6.7.3), the dense resolve is the fallback
+(env maps, non-default tonemap, `use_raster` rejections), and no instrument
+has ever counted truncated runs there (§Y's "an instrument that reports zero
+may not be looking").
 
 
 ================================================================================
@@ -576,7 +652,7 @@ change.
 
 
 ================================================================================
-Y. SIX RULES THIS SUBSYSTEM KEEPS RE-LEARNING
+Y. SEVEN RULES THIS SUBSYSTEM KEEPS RE-LEARNING
 ================================================================================
 Each cost a wrong result that is recorded in `DESIGN_mesh_identity.md`.
 
@@ -603,6 +679,14 @@ Each cost a wrong result that is recorded in `DESIGN_mesh_identity.md`.
 6. **A COUNT is segment-independent; a frame INDEX is not.** `time_start`
    restarts per render segment, so anything mapping a probe pixel to a video
    frame is wrong across a fade-out. Argue from populations.
+7. **A pixel diff read from an MP4 measures the ENCODER's output, not the
+   renderer's.** The suites decode H.264 at yuv420p with I-frames 250 apart,
+   so inter-prediction, DCT blocks and chroma subsampling spread a real change
+   into pixels the renderer never touched: §C.3's 18 lossless pixel-frames
+   decoded as ~37,000 (§6.7.3). Byte-identity claims survive (identical raw
+   frames encode identically); every "moved by N over M pixels" claim is
+   codec-inflated. Before attributing a move's SIZE or SHAPE, re-render both
+   arms with `codec="libx264rgb"`, `ffmpeg_params=["-crf", "0"]`.
 
 And one specific to this file's own instruments: **a metric that reports zero
 may be an instrument that is not looking.** `_notch_scene_check.py` scored only

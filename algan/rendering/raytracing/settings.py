@@ -1139,27 +1139,35 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 ANALYTIC_AA_ONE_MESH_DENS = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH_DENS", True)
 
 
-# Take the run's exact-area sum, sample union and extent from a HOST segment
-# reduction instead of the kernel's bounded forward scan
-# (DESIGN_mesh_identity.md ss6.7).
+# Take a TRUNCATED run's exact-area sum, sample union and extent from a HOST
+# segment reduction instead of the kernel's bounded forward scan
+# (DESIGN_mesh_identity.md ss6.7, ss6.7.2).
 #
 # ``_aa_run_scan`` walks at most ``_AA_MAX_RUN_SCAN = 16`` fragments, so on a
 # longer run it hands the rule a PARTIAL area sum and a PARTIAL sample union.
 # Both are segment reductions over the CSR the host already holds -- the same
-# shape as the one that builds ``frag_cap`` -- so the host can compute them
-# exactly, for a run of any length, and the kernel can read them in O(1) with no
-# lookahead loop at all. That makes the rule exact and REMOVES work from the
-# megakernel's hot path rather than adding it.
+# shape as the one that builds ``frag_cap`` -- computed on the render device in
+# float64 and rounded to f32 (ss6.6.4's reproducibility pattern), and read by
+# the kernel in O(1). The union is a real OR, one bit lane at a time: summing
+# was measured to corrupt 82,061 run starts where a concave mesh lays two
+# same-facing sheets adjacently (ss6.7).
 #
-# The union is summed rather than OR-ed, which is exact because within one sheet
-# the fill rule PARTITIONS the pixel's sub-samples -- no sample is claimed twice
-# (``_analytic_aa_fillrule_check``: 0 double-claims over 256000 pixel tests).
-# Flag bits are masked off first; they live at bit 16 and up and would carry
-# into the sum.
+# The kernel consults the lanes ONLY where the scan reports budget truncation
+# (ss6.7.2). A complete run keeps the kernel's own sequential-f32 sum, which is
+# what keeps scenes with no truncated run byte-identical: read unconditionally,
+# the host's correctly-rounded sum differs from the kernel's by an ulp, and the
+# resolve's discrete consumers turned that into 42 channel values over 16% of a
+# materials_and_lighting frame. The bounded scan therefore STAYS (the
+# confinement needs its truncation verdict, and only the scan can reproduce the
+# shipped arithmetic on complete runs); this rule adds two lanes per fragment
+# (8 B, accounted in discovery_bytes) and deletes nothing.
 #
-# Default OFF pending the render A/B against a raised ``_AA_MAX_RUN_SCAN``,
-# which is the oracle: with the limit above the longest run in a scene the two
-# must agree.
+# Default OFF for the remaining flip work only (DESIGN_mesh_identity_open.md
+# ssC.4: cost, and the moved scenes' baselines). Its output move is attributed:
+# it changes exactly the engaged truncated runs -- shapes_and_timeline's
+# once-mysterious fade-out move is 18 lossless pixel-frames of that population,
+# inflated ~2,000x by the H.264 decode the suite comparisons read
+# (DESIGN_mesh_identity.md ss6.7.3).
 ANALYTIC_AA_RUN_EXACT = env_flag("ALGAN_ANALYTIC_AA_RUN_EXACT", False)
 
 
