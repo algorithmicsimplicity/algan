@@ -1160,6 +1160,7 @@ def prepare_sparse_raster_coverage(
     half_w,
     half_h,
     layer_offset_triangles,
+    sheet_resolve=False,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -1301,6 +1302,15 @@ def prepare_sparse_raster_coverage(
             + 4 * min(aa_tri - 1, 2)
         )
     aa_grp = _aa_group(aa_bez, aa_tri)
+    # The sheet resolve (DESIGN_sheet_resolve.md) consumes EXACT areas, so it
+    # engages only when every geometry kind present emits them: triangles need
+    # the run representation (aa_tri >= 3), circuits their SDF coverage. The
+    # caller already gated on shadows and the sparse route; this is the
+    # emission-side half of the same decision, pinned into the returned dict
+    # so the resolve can never disagree with what was compacted.
+    sheets_wanted = bool(sheet_resolve) and (
+        (not has_tri or aa_tri >= 3) and (not has_bez or aa_bez > 0)
+    )
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1558,6 +1568,13 @@ def prepare_sparse_raster_coverage(
         # has, and it rides in a spare frag_msk flag bit so no kernel argument
         # changes.
         one_mesh_cap = None
+        # The one-mesh ceiling stays under the sheet resolve, as DATA on the
+        # sheet record. DESIGN_sheet_resolve.md §7 first deleted it as
+        # "subsumed by per-sheet claims", and the Phase-2 ink-wobble A/B
+        # REFUTED that: with the cap gone the coarse Cylinder's far sheet
+        # re-claims the corr residue and wobble regresses 2-4x (0.015 ->
+        # 0.060; the exact-fit angles go 0.000 -> 0.032). Only the §6.7 run
+        # lanes are truly subsumed (compaction has no budget to truncate).
         if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
             tri_obj = merged["tri_obj"]
             ppf = int(width) * int(height)
@@ -1636,7 +1653,7 @@ def prepare_sparse_raster_coverage(
         # This does not merely raise the limit, it deletes the loop: the kernel
         # reads E, U and the run's extent in O(1).
         run_lanes = None
-        if rt_settings.ANALYTIC_AA_RUN_EXACT and num_frags:
+        if rt_settings.ANALYTIC_AA_RUN_EXACT and num_frags and not sheets_wanted:
             tri_obj_r = merged["tri_obj"]
             ppf_r = int(width) * int(height)
             row_r = _tri_obj_row(pix_s, ppf_r, int(time_start), tri_obj_r.shape[0])
@@ -1727,6 +1744,65 @@ def prepare_sparse_raster_coverage(
         covered_idx.copy_(covered.to(torch.int32))
         run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
 
+        # -- SHEET COMPACTION (DESIGN_sheet_resolve.md P1/P2) ---------------
+        # Aggregation happens here, once, before any kernel: the resolve then
+        # composites a few depth-sorted sheets per pixel instead of walking
+        # the raw fragment list. Intermediates are allocator-owned (like the
+        # torch sort scratch above); only the final sheet arrays persist.
+        sheet_data = None
+        if sheets_wanted:
+            from algan.rendering.raytracing.sheets import compact_sheets
+
+            stream = compact_sheets(
+                {
+                    "frag_key": frag_key,
+                    "frag_ref": frag_ref,
+                    "frag_ab": frag_ab,
+                    "frag_cov": frag_cov,
+                    "frag_msk": frag_msk,
+                    "frag_cap": frag_cap,
+                    "covered_idx": covered_idx,
+                    "run_offsets": run_offsets,
+                    "num_fragments": num_frags,
+                    "num_covered": num_covered,
+                },
+                merged,
+                cam_origin,
+                pixel_world_scale,
+                int(time_start),
+                int(width),
+                int(height),
+                band_rule="prim",
+                band_c=2.0,
+            )
+            ns = int(stream["num_sheets"])
+            sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
+            sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+            sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
+            sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+            sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+            sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+            sheet_offsets = _arena_tensor(
+                memory, (num_covered + 1,), torch.int32, persist=True
+            )
+            sheet_key.copy_(stream["sheet_key"])
+            sheet_ref.copy_(stream["sheet_ref"])
+            sheet_ab.copy_(stream["sheet_ab"])
+            sheet_cov.copy_(stream["sheet_cov"])
+            sheet_msk.copy_(stream["sheet_msk"])
+            sheet_cap_t.copy_(stream["sheet_cap"])
+            sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+            sheet_data = {
+                "sheet_key": sheet_key,
+                "sheet_ref": sheet_ref,
+                "sheet_ab": sheet_ab,
+                "sheet_cov": sheet_cov,
+                "sheet_msk": sheet_msk,
+                "sheet_cap": sheet_cap_t,
+                "sheet_offsets": sheet_offsets,
+                "num_sheets": ns,
+            }
+
         # Recorded for calibration: the fragment/covered counts are this
         # scope's value-dependent drivers and are only known once the COUNT
         # kernel has run, so they are attached from inside the scope.
@@ -1748,11 +1824,15 @@ def prepare_sparse_raster_coverage(
     # when they are live -- they are allocated persist=True beside the rest.
     per_frag = 28 + (8 if rt_settings.ANALYTIC_AA_RUN_EXACT else 0)
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
+    if sheet_data is not None:
+        # 32 B of persistent sheet record + the CSR. The torch-side sort and
+        # scatter intermediates are allocator-owned, like the fragment sort's.
+        discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
 
-    return {
+    result = {
         "frag_key": frag_key,
         "frag_ref": frag_ref,
         "frag_ab": frag_ab,
@@ -1771,6 +1851,10 @@ def prepare_sparse_raster_coverage(
         "aa_tri": aa_tri,
         "aa_grp": aa_grp,
     }
+    if sheet_data is not None:
+        result.update(sheet_data)
+        result["sheets"] = True
+    return result
 
 
 def shade_sparse_raster_coverage(
@@ -1828,6 +1912,96 @@ def shade_sparse_raster_coverage(
     c0, c1 = int(covered_start), int(covered_end)
     num_covered = c1 - c0
     covered_idx = coverage["covered_idx"][c0:c1]
+
+    if coverage.get("sheets"):
+        # THE SHEET RESOLVE (DESIGN_sheet_resolve.md, Phase 2). The emission
+        # compacted this window's fragments into per-pixel sheets; composite
+        # and shade those instead of walking the raw fragment list. Same
+        # slicing discipline as the fragment path below, same ray-state
+        # contract; shadows are structurally off on this route (the tracer
+        # keeps shadowed batches on the fragment walk until Phase 4).
+        from algan.rendering.raytracing.sheet_resolve_taichi import (
+            sheet_resolve_shade,
+        )
+
+        so_host = coverage.get("sheet_offsets_host")
+        if so_host is None:
+            so_host = coverage["sheet_offsets"].cpu()
+            coverage["sheet_offsets_host"] = so_host
+        s_start = int(so_host[c0])
+        s_end = int(so_host[c1])
+        sheet_offsets = _arena_tensor(memory, (num_covered + 1,), torch.int32)
+        torch.sub(
+            coverage["sheet_offsets"][c0 : c1 + 1], s_start, out=sheet_offsets
+        )
+        (rs_ro, rs_rd, rs_acc, rs_sca, rs_int, *_stubs) = state
+        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
+        dump_req = _aa_dump_request()
+        sdump = (
+            _aa_dump_buffer(dump_req, covered_idx.device)
+            if dump_req
+            else _aa_dump_arg(covered_idx.device)
+        )
+        sheet_resolve_shade(
+            num_covered,
+            sheet_offsets,
+            coverage["sheet_key"][s_start:s_end],
+            coverage["sheet_ref"][s_start:s_end],
+            coverage["sheet_ab"][s_start:s_end],
+            coverage["sheet_cov"][s_start:s_end],
+            coverage["sheet_msk"][s_start:s_end],
+            coverage["sheet_cap"][s_start:s_end],
+            merged["tri_pos"],
+            merged["tri_norm"],
+            merged["tri_extra"],
+            merged["tri_colors"],
+            merged["tri_uvs"],
+            merged["tri_tex_meta"],
+            merged["textures"],
+            int(merged["num_colored_triangles"]),
+            col_row_arr,
+            merged["tri_mat_id"],
+            merged["tri_mat"],
+            merged["circuit_meta"],
+            merged["circuit_colors"],
+            merged["circuit_border_colors"],
+            light_pos,
+            light_col,
+            int(num_lights),
+            layer_offsets,
+            int(frag_flag),
+            frag_pipelines,
+            int(tri_pids),
+            int(refraction_flag),
+            int(skip_unlit_normal),
+            1 if int(merged.get("num_circuits", 0)) > 0 else 0,
+            sec_aa,
+            float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
+            int(rt_settings.glossy_reflection_mode()),
+            covered_idx,
+            int(time_start),
+            int(width),
+            int(height),
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+            gen_meta,
+            rs_ro,
+            rs_rd,
+            rs_acc,
+            rs_sca,
+            rs_int,
+            rs_pix,
+            pix_accum,
+            rs_alloc,
+            1 if dump_req else 0,
+            sdump,
+        )
+        if dump_req:
+            _aa_dump_emit("sheet-resolve", sdump)
+        return covered_idx
+
     # Slice boundaries come from a host mirror of run_offsets, copied once
     # per coverage (one queue drain) instead of two synchronizing ``.item()``
     # reads per slice -- a chunk resolves tens of slices, and each drain

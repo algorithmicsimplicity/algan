@@ -827,6 +827,27 @@ def set_raster_sparse_coverage(enabled):
     RASTER_SPARSE_COVERAGE = bool(enabled)
 
 
+# The sheet resolve (DESIGN_sheet_resolve.md): the sparse emission's fragment
+# stream is compacted into per-pixel SHEETS -- maximal same-surface regions,
+# keyed (pixel, mesh, facing, depth band), carrying exact area and unioned
+# sample masks -- and the resolve composites the few depth-sorted sheets per
+# pixel instead of walking the raw fragment list. Shading is evaluated once
+# per sheet, aggregation happens before the kernel with no lookahead budget,
+# and the run-scan/one-mesh-cap machinery does not execute.
+#
+# Phase-2 scope: engages on the sparse path only, and only for batches with
+# shadows OFF (shadow events still replay the fragment walk; they move to
+# sheet records in Phase 4). Off by default while the old walk remains the
+# shipped resolve.
+SHEET_RESOLVE = env_flag("ALGAN_SHEET_RESOLVE", False)
+
+
+def set_sheet_resolve(enabled):
+    """Toggle the sheet-compaction resolve (DESIGN_sheet_resolve.md)."""
+    global SHEET_RESOLVE
+    SHEET_RESOLVE = bool(enabled)
+
+
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
 # ``anti_alias_level`` times the output resolution and box-filtering back down
 # (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE

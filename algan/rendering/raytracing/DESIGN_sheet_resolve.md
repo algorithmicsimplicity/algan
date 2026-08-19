@@ -376,15 +376,27 @@ not empty-pixel optimizations.
 For the avoidance of nostalgia, the machinery this design retires outright:
 `_aa_run_scan` and `_AA_MAX_RUN_SCAN`; the truncation probe; the §6.7 lanes,
 their host segment reduction, `--verify-lanes` and the f32/f64 dual-language
-question; §6.8's `frag_cap` substitution; the one-mesh bit, cap and ink
-accounting (§6.6, subsumed by per-sheet claims); run rules A and B and the
-redistribution residue; the run engagement gate (`uni_v`) and every behavior
-that flowed from `svis`-uniformity (including the fade-out interaction
-§6.7.3 diagnosed); seam grouping as a special mode (aa_grp 1 -> §4.4
-siblings); the aa_grp ladder and `_aa_group_dense`; the emission/resolve
-level-pinning contract; the `env_active` and tonemap conditions in path
-selection; the lockstep shadow-event walk; and every atomic reduction in the
-resolve, `rs_alloc` and `pix_accum` splat order included.
+question; §6.8's `frag_cap` substitution; ~~the one-mesh bit, cap and ink
+accounting (§6.6, subsumed by per-sheet claims)~~ — **CORRECTED by Phase 2's
+measurement: the subsumption is FALSE.** With the cap gone the coarse
+Cylinder's far sheet re-claims the corr residue (`corr < 1` scales the
+occlusion write, the residual transmittance on owned samples has no
+position, the far sheet of the same solid claims it) and ink wobble
+regresses 2–4x, including 0.000 → 0.032 at the exact-fit angles. The
+one-mesh ceiling therefore SURVIVES — as data on the sheet record
+(`sheet_cap`, the host's f64-reduced `max(front, back)`), clamped in the
+resolve's bounded per-pixel loop with occlusion scaled alongside the claim
+(§6.6.2's completion). What §7 does retire of §6.6 is its *walk* costume:
+the per-fragment clamp interleaved with run state. Continuing the list: run
+rules A and B **as walk state** and the redistribution residue (rule B's
+arithmetic survives per-record, sheet-local, no pending flag); the run
+engagement gate (`uni_v`) and every behavior that flowed from
+`svis`-uniformity (including the fade-out interaction §6.7.3 diagnosed);
+seam grouping as a special mode (aa_grp 1 -> §4.4 siblings); the aa_grp
+ladder and `_aa_group_dense`; the emission/resolve level-pinning contract;
+the `env_active` and tonemap conditions in path selection; the lockstep
+shadow-event walk; and every atomic reduction in the resolve, `rs_alloc`
+and `pix_accum` splat order included.
 
 
 ================================================================================
@@ -466,6 +478,43 @@ walk; a torus (concave fold) case was added. Results at md on CUDA
 **Phase 2 — the sheet resolve behind a flag.** P3–P6 as the scan pipeline,
 with the sequential reference implementation (§2's oracle) beside it and a
 parity harness between them. The old walk remains the default.
+
+**BUILT AND MEASURED (2026-08-19).** `ALGAN_SHEET_RESOLVE` (default off;
+`SETTINGS.raytracing.experimental.set(sheet_resolve=...)`) routes the sparse
+covered-pixel path through `sheet_resolve_taichi.sheet_resolve_shade`: one
+thread per covered pixel over its depth-sorted sheets, shading once per
+sheet at the dominant fragment, per-sheet `corr` where the run rule's state
+machine used to be, rule-B redistribution collapsed to sheet-local
+arithmetic, and the walk's material split / continuations / ray-state
+contract unchanged (Phase 4 rebuilds those from sheet records). Compaction
+runs in `prepare_sparse_raster_coverage` (prim, c = 2); the §6.7 run lanes
+are skipped as genuinely subsumed. Shadowed batches keep the walk until
+Phase 4. Results:
+
+* **Determinism**: both arms byte-identical across repeated runs (A/A
+  max|d| 0), engagement asserted (kernel launch counters).
+* **Oracle parity**: `sheets.resolve_pixel_reference` (the §2 oracle) vs
+  the kernel's `ALGAN_AA_DUMP` rows — worst |claim| diff **8.94e-08** over
+  56 committed sheet rows at 24 probed pixels.
+* **Ink wobble** (`_aa_line_check`, md, daemon-free A/B): bezier and flat
+  quad identical to four decimals; the coarse Cylinder's mean over
+  non-degenerate angles **0.0159 → 0.0050 (−69%)** and the fine rod
+  **0.0442 → 0.0130 (−71%)**, worst angle 0.0878 → 0.0165. The two
+  degenerate axis-aligned rod angles move +0.0006/+0.0010 (values ~0.01).
+* **The §7 one-mesh correction was found here**: the first build deleted
+  the cap and the coarse Cylinder regressed 2–4x; restored as sheet data
+  the regression became the −69% above. §7 carries the full note.
+* **Off-vs-on output** (LD parity scene, lossless): max|d| 65 over ~0.4%
+  of pixels, reviewed as a worst-frame panel — movement confined to diced
+  silhouettes/rims plus faint interior dusting on lit curved meshes
+  (per-sheet shading), no notches, seams or structural change.
+* **Two A/B traps hit and recorded**: a warm auto-daemon served both arms
+  of an env-var A/B from its own environment (rows identical to the
+  digit — always disable the daemon in BOTH arms), and an edit to a
+  `*_taichi.py` while its first run was live invalidated that run (killed,
+  re-run clean).
+* Flag off is byte-identical by construction (new kernel, untouched walk);
+  `pytest -q --fast` 213 passed.
 
 **Phase 3 — unification.** Dense storage feeds the same compaction;
 background-as-sheet lands; tonemap un-fuses; the env/tonemap gates and the

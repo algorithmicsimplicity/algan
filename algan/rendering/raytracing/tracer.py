@@ -2423,6 +2423,12 @@ def raytrace_render_wavefront(
                 half_screen_w,
                 half_screen_h,
                 layer_offset_triangles,
+                # The sheet resolve replaces the fragment walk for this
+                # window (DESIGN_sheet_resolve.md, Phase 2). Shadowed batches
+                # keep the walk: the shadow-event build replays it in
+                # lockstep, and its move to sheet records is Phase 4.
+                sheet_resolve=bool(rt_settings.SHEET_RESOLVE)
+                and shadow_flag == 0,
             )
             if coverage is None:
                 return

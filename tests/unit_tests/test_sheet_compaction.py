@@ -204,6 +204,106 @@ def test_csr_aligns_with_covered_idx_and_order_is_classic():
     assert int(out["sheet_nfrag"][0]) == 2
 
 
+def test_oracle_energy_and_exactness():
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # A full-union interior tiling composites at exactly 1 and blacks out T.
+    claims, T = resolve_pixel_reference([1.0], [MASK_ALL], [False])
+    assert claims == [1.0]
+    assert all(t == 0.0 for t in T)
+
+    # A full-union silhouette sheet paints its exact area, and the leftover
+    # is exactly the complement (energy conserved).
+    claims, T = resolve_pixel_reference([0.6], [MASK_ALL], [False])
+    assert abs(claims[0] - 0.6) < 1e-12
+    assert abs(sum(T) / len(T) - 0.4) < 1e-12
+
+    # The dust band keeps a genuine tiling at exactly 1.
+    claims, _ = resolve_pixel_reference([0.9995], [MASK_ALL], [False])
+    assert claims == [1.0]
+
+    # Partial union with representative samples: corr = 1, sampled compositing.
+    claims, T = resolve_pixel_reference([0.25], [0b0011], [False])
+    assert abs(claims[0] - 0.25) < 1e-12
+    assert abs(sum(T) / len(T) - 0.75) < 1e-12
+
+    # A sub-sample rod (area 0.4, one sample): claim exact, and the clamped
+    # occlusion residue redistributes onto unowned samples so the background
+    # still receives exactly 1 - area.
+    claims, T = resolve_pixel_reference([0.4], [0b0001], [False])
+    assert abs(claims[0] - 0.4) < 1e-12
+    assert abs(sum(T) / len(T) - 0.6) < 1e-12
+
+    # Areal sheets (donors, circuits) claim alpha * area uniformly.
+    claims, T = resolve_pixel_reference([0.3], [SLIVER], [False])
+    assert abs(claims[0] - 0.3) < 1e-12
+    assert abs(sum(T) / len(T) - 0.7) < 1e-12
+
+    # Translucency: two stacked full sheets at alpha 0.5 telescope exactly.
+    claims, T = resolve_pixel_reference(
+        [1.0, 1.0], [MASK_ALL, MASK_ALL], [False, False], alphas=[0.5, 0.5]
+    )
+    assert abs(claims[0] - 0.5) < 1e-12
+    assert abs(claims[1] - 0.25) < 1e-12
+    assert abs(sum(T) / len(T) - 0.25) < 1e-12
+
+    # A transmitting sheet passes its share through per sample.
+    claims, T = resolve_pixel_reference([1.0], [MASK_ALL], [False], trans=[0.5])
+    assert abs(claims[0] - 1.0) < 1e-12
+    assert abs(sum(T) / len(T) - 0.5) < 1e-12
+
+    # Front sheet then far sheet of a closed solid at a silhouette: the far
+    # sheet's residual re-claim is the documented bounded inter-sheet error
+    # (ss6.1) -- pin its size so a change is a decision, not an accident.
+    claims, T = resolve_pixel_reference(
+        [0.25, 0.25], [0b0011, BACKFACE | 0b0011], [False, False]
+    )
+    assert abs(claims[0] - 0.25) < 1e-12
+    # corr = 1 on both (area == Q), so the far sheet sees zeroed samples.
+    assert claims[1] == 0.0
+
+
+def test_oracle_one_mesh_ceiling_stops_the_far_sheet_reclaim():
+    from algan.rendering.raytracing.raster_taichi import (
+        _AA_ONE_MESH_BIT as ONE_MESH,
+    )
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    # The measured Phase-2 regression case in miniature: a closed mesh's two
+    # full-mask sheets at a silhouette, exact area 0.25 but owning 3 of 8
+    # samples (Q = 0.375 > area, corr < 1). Without the ceiling the far sheet
+    # re-claims part of the corr residue; with it the mesh's total claim is
+    # exactly the near sheet's area.
+    covs = [0.25, 0.25]
+    msks = [ONE_MESH | 0b0111, ONE_MESH | BACKFACE | 0b0111]
+    free, _T = resolve_pixel_reference(covs, msks, [False, False])
+    capped, _T2 = resolve_pixel_reference(
+        covs, msks, [False, False], caps=[0.25, 0.25]
+    )
+    assert free[1] > 0.0  # the re-claim exists uncapped
+    assert abs(capped[0] - 0.25) < 1e-12
+    assert capped[1] == 0.0  # the ceiling leaves the far sheet no room
+    # A ceiling of 2.0 is the "no ceiling" sentinel and must change nothing.
+    sentinel, _T3 = resolve_pixel_reference(
+        covs, msks, [False, False], caps=[2.0, 2.0]
+    )
+    assert sentinel == free
+
+
+def test_sheet_resolve_setting_reaches_the_live_module():
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.SHEET_RESOLVE
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_resolve=True)
+        assert rt.SHEET_RESOLVE is True
+        SETTINGS.raytracing.experimental.set(sheet_resolve=False)
+        assert rt.SHEET_RESOLVE is False
+    finally:
+        rt.SHEET_RESOLVE = old
+
+
 def test_interleaved_fragments_keep_exact_key_depth():
     # sheet_key must be the NEAREST fragment's frag_key verbatim.
     out = _compact(

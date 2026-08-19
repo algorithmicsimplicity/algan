@@ -59,11 +59,130 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_NUM_SAMPLES as AA_NUM_SAMPLES,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
 )
 
 #: Band rules this module implements. "facing" is the no-depth-split fallback.
 BAND_RULES = ("facing", "prim")
+
+#: Interior-tiling dust band, shared with the kernels: a full-union sheet whose
+#: exact area is within this of 1 composites at exactly 1, so a genuine tiling
+#: stays bit-clean.
+FULL_DUST = 1e-3
+
+
+def resolve_pixel_reference(
+    covs, msks, is_bez, alphas=None, trans=None, *, caps=None, min_alpha=0.0
+):
+    """The sheet resolve's per-pixel semantics, plain and sequential — the ORACLE.
+
+    ``DESIGN_sheet_resolve.md`` §2 keeps a readable, unbounded, sequential
+    implementation of §4's semantics as the verification arm for the shipping
+    pipeline: the kernel must match it wherever fixed-tree and sequential
+    rounding agree, and to within reassociation noise where they do not. This
+    is that implementation; it is a harness dependency, never a shipping path.
+
+    Parameters are one pixel's depth-sorted sheet list: exact areas ``covs``,
+    mask words ``msks`` (low sample bits + flag bits), ``is_bez`` flags, and
+    optional per-sheet material ``alphas`` (default 1, matte) and transmission
+    shares ``trans`` (default 0). ``min_alpha`` mirrors the walk's
+    ``eff <= MIN_ALPHA`` skip when parity with a kernel is wanted.
+
+    Returns ``(claims, T)``: what each sheet paints, and the per-sample
+    transmittance left for the background (§4.5's final sheet).
+
+    The semantics, as settled for Phase 2:
+
+    * AREAL sheets — circuits, and donor-only sheets (empty sample union,
+      flagged ``_AA_SLIVER_BIT`` by the compaction) — claim
+      ``alpha * min(area, 1)`` uniformly over every sample. This single rule
+      replaces the old walk's ``run_mode 2`` sequential renormalization: with
+      one record per sheet there is no chain to renormalize.
+    * A FULL-union sheet composites at ``corr = 1`` inside the ``FULL_DUST``
+      band (interior tilings stay bit-clean) and at ``min(area, 1)`` outside
+      it (a silhouette sheet paints its exact area).
+    * A PARTIAL-union sheet takes ``corr = min(area, 1) / Q`` — §4.3's rule,
+      claim exact by construction.
+    * ``corr > 1`` (a sheet covering more than its sample share, e.g. a
+      sub-sample rod) keeps its claim exact and redistributes the clamped
+      occlusion residue onto the samples the sheet does NOT own — the old
+      rule B, collapsed from walk state to per-record arithmetic. No
+      cross-record feedback exists.
+    * The ONE-MESH ceiling survives as sheet data (``caps``, the per-pixel
+      ``frag_cap`` the host reduced — max of the mesh's two sheet areas). On
+      a pixel flagged single-opaque-mesh, the mesh's committed coverage is
+      clamped at the ceiling, occlusion scaled with the claim (§6.6.2's
+      completion). The design's first draft deleted this as "subsumed by
+      per-sheet claims"; the Phase-2 ink-wobble A/B refuted that — without
+      it the coarse Cylinder's far sheet re-claims the corr residue and
+      wobble regresses 2-4x.
+    * No run scan, no seam deduplication, no engagement gate, and no
+      TRUNCATED-sum machinery: fragment-walk apparatus the representation
+      deletes (§7).
+    """
+    n = len(covs)
+    N = AA_NUM_SAMPLES
+    if alphas is None:
+        alphas = [1.0] * n
+    if trans is None:
+        trans = [0.0] * n
+    T = [1.0] * N
+    claims = []
+    mesh_ink = 0.0
+    for i in range(n):
+        msk_low = msks[i] & AA_MASK_ALL
+        areal = bool(is_bez[i]) or (msks[i] & AA_SLIVER_BIT) or msk_low == 0
+        alpha = alphas[i]
+        area = min(covs[i], 1.0)
+        # Per-sample coverage BEFORE material alpha, which is what the walk's
+        # ``eff`` is and what the one-mesh ceiling bounds.
+        if areal:
+            c = [area] * N
+        else:
+            pop = bin(msk_low).count("1")
+            if msk_low == AA_MASK_ALL:
+                corr = 1.0 if abs(1.0 - covs[i]) <= FULL_DUST else area
+            else:
+                corr = area / (pop / N)
+            c = [corr if (msk_low >> s) & 1 else 0.0 for s in range(N)]
+        eff = sum(T[s] * c[s] for s in range(N)) / N
+        if (
+            caps is not None
+            and not is_bez[i]
+            and (msks[i] & AA_ONE_MESH_BIT)
+            and caps[i] <= 1.0
+        ):
+            room = max(caps[i] - mesh_ink, 0.0)
+            if eff > room:
+                k = room / max(eff, 1e-9)
+                c = [v * k for v in c]
+                eff = room
+        if eff <= min_alpha:
+            claims.append(0.0)
+            continue
+        claims.append(alpha * eff)
+        if not is_bez[i]:
+            mesh_ink += eff
+        a = [alpha * v for v in c]
+        ts = trans[i]
+        resid = 0.0
+        for s in range(N):
+            fct = (1.0 - a[s]) + a[s] * ts
+            if fct < 0.0:
+                resid -= fct * T[s]
+                fct = 0.0
+            T[s] *= fct
+        if resid > 0.0:
+            free = [s for s in range(N) if a[s] == 0.0]
+            tot = sum(T[s] for s in free)
+            if tot > 1e-12:
+                sc = max(1.0 - resid / tot, 0.0)
+                for s in free:
+                    T[s] *= sc
+    return claims, T
 
 
 def _lexsort(*keys):

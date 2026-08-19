@@ -46,8 +46,71 @@ current. Delete it in Phase 4's cleanup commit.
     per ~40k-frag stream per arm (indicative).
   * _aa_line_check ink-wobble gate DEFERRED to Phase 2 (needs a real render
     path; the line-check cases' |sheet-E| columns are the Phase-1 proxy).
-- Phase 2 (P3–P6 scan resolve behind flag + oracle): NOT STARTED
-- Phase 3 (unification): NOT STARTED
+- Phase 2 (P3–P6 scan resolve behind flag + oracle): IN PROGRESS.
+  DONE: ALGAN_SHEET_RESOLVE setting (env+rt_settings+experimental);
+  sheet_resolve_taichi.py kernel (per-pixel bounded loop over sheets, walk's
+  material split + continuations, per-sheet corr in cfac, sheet-local rule-B);
+  prepare_sparse_raster_coverage(sheet_resolve=) compacts (prim c=2), skips
+  one-mesh + run lanes, persists sheet arrays, pins "sheets" in dict;
+  shade_sparse_raster_coverage launches sheet kernel when pinned;
+  tracer passes sheet_resolve=SHEET_RESOLVE && shadow_flag==0;
+  oracle resolve_pixel_reference() in sheets.py + unit tests;
+  benchmarks/_sheet_resolve_parity.py (A/B lossless + A/A + engagement).
+  PARITY RESULTS (LD, benchmarks/_sheet_parity_ld.log): engagement 5
+  launches ON / 0 OFF; A/A byte-identical BOTH arms (max|d| 0 — the sheet
+  path is deterministic); off-vs-on max|d| 65 over 0.56% of pixels; worst-
+  frame panel (algan_outputs/sheet_parity/worst_diff.png) shows movement
+  confined to diced-mesh silhouettes/rims + faint interior dusting on the
+  lit sphere (per-sheet dominant-fragment shading) — the intended change,
+  no notches/seams/structure.
+  Fast suite flag-off: 213 passed (default path untouched).
+  Oracle-vs-kernel verify: PASS, worst |claim| diff 8.94e-08 over 61
+  committed sheet rows at 24 probe pixels (matte scene, dump-fed alphas).
+  WOBBLE A/B TRAP HIT AND FIXED: the first A/B came back IDENTICAL in every
+  row — a warm render DAEMON (auto-started by an earlier harness run) served
+  BOTH arms with its own environment, so ALGAN_SHEET_RESOLVE never reached
+  the render. The known "live daemon serves STALE code" trap in env-var
+  costume. Daemon killed; re-running both arms with ALGAN_USE_DAEMON=0 and
+  ALGAN_AUTO_DAEMON=0. Rule for every env-var A/B in this project: disable
+  the daemon in BOTH arms or the arms are one render.
+  FIRST DAEMON-FREE WOBBLE A/B: coarse cyl REGRESSED 2-4x (far-sheet
+  re-claim; §7's cap-subsumption claim refuted by measurement). FIX: the
+  one-mesh ceiling restored AS SHEET DATA — host reduction kept, sheet_cap
+  on the record, bounded-loop clamp in kernel + oracle (occlusion scaled
+  with claim). RE-VALIDATED (all green):
+  * parity: engagement ✓, A/A max|d| 0 both arms, off-vs-on 7479 px.
+  * oracle verify: PASS 8.94e-08 / 56 rows / 24 pixels.
+  * wobble: bez/quad identical; cyl mean 0.0159->0.0050 (-69%); cyl_fine
+    0.0442->0.0130 (-71%), worst 0.0878->0.0165; only the two degenerate
+    axis-aligned rod angles +<=0.001.
+  Phase 2 gates MET. Committing.
+  NOTE-TO-SELF: killed the first parity run after editing the kernel file
+  mid-run (JIT source rule); orphans killed, clean rerun done.
+- Phase 3 (unification): NOT STARTED. PLAN (sketched while Phase-2 runs):
+  * Core deliverable: the sparse+sheets route serves ENV-MAPPED and
+    IN-KERNEL-TONEMAP batches, so the sparse_coverage gate drops its
+    `not env_active` and `t_val == 3` conditions when SHEET_RESOLVE is on.
+  * Env (mechanics CONFIRMED by reading): the sparse route prefills the
+    frame buffer `out` with the background (`_prefill_background`) and
+    `wf_composite_accum_sparse` writes `out[p] = acc*255 + weight *
+    out_prefill[p]` for covered pixels only. So background-as-final-sheet
+    = (a) an `env_background_prefill` kernel writing env(ray)*255*
+    intensity into `out` per (frame, pixel) instead of the flat color, and
+    (b) the sheet kernel NOT folding env at retire on this route (pass
+    env cols zeroed in layer_offsets) so the leftover weight multiplies
+    the env-prefilled out in the composite. Bounced rays keep sampling
+    env at miss inside wavefront_shade (their pixel's bg would be wrong).
+    Empty pixels then need NOTHING — the prefill already holds env.
+  * Tonemap: resolve stays linear (it already is); with POST_PROCESS_
+    TONEMAP=0 the composite must run un-compacted with in-kernel tonemap
+    (the dense composite variant already exists). Launch policy, not
+    resolve semantics.
+  * Dense path stays as the fragment walk (kill-switch role) until Phase
+    4 decides; on the sheet route it simply stops being selected.
+  * Gate: the Phase-0 env_*/tm_* order-window arms must render through
+    sheets and stay lever-inert; env noise floor 1 -> expected 0 for
+    covered pixels? (pix_accum atomic remains for bounce adds — the full
+    §2.2 zero-floor claim lands with P7 in Phase 4.)
 - Phase 4 (P7, §H, §I, deletion, re-baseline): NOT STARTED
 
 ## Phase 1 design notes (settled before building)
