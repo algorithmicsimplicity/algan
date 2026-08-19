@@ -488,7 +488,7 @@ class TriangleVertices(Mob):
         )
         if n is None:
             n = torch.zeros_like(locations)
-        return effective_triangle_primitive()(
+        primitive = effective_triangle_primitive()(
             locations,
             c,
             o,
@@ -502,6 +502,18 @@ class TriangleVertices(Mob):
             shader=self.shader,
             **self.get_shader_params(),
         )
+        # One SURFACE per mob, the Polyhedron pattern: without a declared
+        # identity the batcher can merge several triangle mobs into one
+        # collection member, and everything downstream that groups by surface
+        # id then treats two unrelated mobs as one mesh. The fragment walk's
+        # run rule carried that exposure bounded (it still shaded per
+        # fragment); the sheet resolve shades once per surface per pixel, so
+        # a quad and a backdrop sharing an id fused into one sheet and took
+        # the backdrop's color (measured, DESIGN_sheet_resolve.md Phase 4a).
+        # A mob's own triangles being one surface is also simply true: a
+        # quad's diagonal is an interior edge, not a boundary.
+        primitive.mesh_key = ("trimob", self.id)
+        return primitive
 
 
 class QuadTriangulated(Mob):
