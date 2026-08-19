@@ -177,6 +177,8 @@ def assert_video_matches_baseline():
     import cv2
     import numpy as np
 
+    from algan import get_file_writer
+
     def compare(actual_path, expected_path, diff_path, fallback_fps=10):
         actual = cv2.VideoCapture(str(actual_path))
         expected = cv2.VideoCapture(str(expected_path))
@@ -214,18 +216,22 @@ def assert_video_matches_baseline():
                     if writer is None:
                         diff_path.parent.mkdir(parents=True, exist_ok=True)
                         height, width = difference.shape[:2]
-                        writer = cv2.VideoWriter(
+                        writer = get_file_writer(
                             str(diff_path),
-                            cv2.VideoWriter_fourcc(*"mp4v"),
-                            expected_fps,
                             (width, height),
+                            codec="libx264rgb",
+                            fps=expected_fps,
+                            with_mask=False,
+                            ffmpeg_params=["-crf", "0", "-preset", "fast"],
+                            audiofile=None,
+                            audio_codec=None,
                         )
-                    writer.write(difference)
+                    writer.write_frame(difference[..., ::-1])
         finally:
             actual.release()
             expected.release()
             if writer is not None:
-                writer.release()
+                writer.close()
 
         assert frame_count > 0, f"{actual_path.name} did not contain any frames"
         assert max_difference <= MAX_CHANNEL_DIFFERENCE, (
