@@ -344,7 +344,7 @@ def _spawn_daemon():
     """
     import subprocess
 
-    idle = env_int("ALGAN_DAEMON_IDLE_TIMEOUT", 1800)
+    idle = env_int("ALGAN_DAEMON_IDLE_TIMEOUT", 60*60*2)
     # The daemon inherits this environment, so the startup-only variables it
     # bakes in match ours and the handoff that follows cannot mismatch.
     # ALGAN_DAEMON_CHILD must not carry over: it would tell the new daemon's
