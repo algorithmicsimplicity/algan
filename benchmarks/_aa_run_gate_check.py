@@ -209,6 +209,7 @@ import contextlib
 import io
 import os
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -304,6 +305,18 @@ def _cases():
     def sphere_fine():
         Sphere(radius=0.9, resolution=(192, 96)).rotate(20, OUT).spawn()
 
+    def torus():
+        # CONCAVE: tilted near edge-on, so across the ring the near tube wall
+        # sits in front of the far tube wall -- two FRONT-facing sheets at
+        # different depths in one pixel. This is the population the sheet
+        # redesign's depth-band rule exists for (DESIGN_sheet_resolve.md
+        # ss4.2): facing alone cannot separate them, and the old lane
+        # reduction's "areas partition the pixel" assumption broke exactly
+        # here (masks of the two sheets overlap, sums pass 255).
+        from algan import Torus
+
+        Torus(major_radius=1.1, minor_radius=0.35).rotate(78, RIGHT).spawn()
+
     def _pack(spacing, depth):
         # ``batch_mobs`` flattens several INDEPENDENT Sphere grids into one
         # packed grid, which reaches the renderer as a SINGLE
@@ -396,6 +409,7 @@ def _cases():
         "cylinder (default)": cylinder,
         "cylinder (256x2)": cylinder_fine,
         "sphere (192x96)": sphere_fine,
+        "torus (edge-on)": torus,
         "line-check cyl (33deg)": line_check_cyl,
         "line-check cylfine (33d)": line_check_cyl_fine,
         "line-check quad (33deg)": line_check_quad,
@@ -971,6 +985,90 @@ class _Svis:
         self.err_by_verdict[verdict] += abs(actual - truth)
 
 
+#: Sheet-compaction arms replayed beside the shipped walk when --sheets is on
+#: (DESIGN_sheet_resolve.md Phase 1): (label, band_rule, band_c).
+SHEET_ARMS = []
+
+
+class _SheetStats:
+    """Per-arm scoring of the compacted-sheet replay (Phase 1's gate).
+
+    The claim scored here is: feed each pixel's SHEETS -- one synthesized
+    fragment per sheet, exact area and unioned mask -- through the verified
+    replay of the existing walk, and coverage error must strictly improve
+    where truncation used to bite (the run scan cannot truncate a
+    one-fragment run) while regressing nowhere else.
+    """
+
+    def __init__(self, label):
+        self.label = label
+        self.covered = 0
+        self.n = 0
+        self.err = 0.0
+        self.signed = 0.0
+        self.on_lattice = 0
+        self.interior = 0
+        self.notched = 0
+        self.notch_err = 0.0
+        self.notch_max = 0.0
+        self.max_sheets = 0
+        self.over_k = 0  # pixels with more sheets than the design's K=24
+        self.claim_occ_max = 0.0
+        # Deviation from the SHIPPED walk on the pixels the exact reference
+        # drops (folds, overlaps): exactness is undefined there, the per-sample
+        # resolve is the accepted R4 approximation, and this is where band
+        # rules actually differ -- a fused band over-claims against it, a
+        # split band stays near it. The band-rule arbiter.
+        self.unref_n = 0
+        self.unref_dev = 0.0
+        self.unref_signed = 0.0
+        self.unref_max = 0.0
+        # Stream totals (per emission, summed over spy calls).
+        self.num_sheets = 0
+        self.num_frags = 0
+        self.fused = 0
+        self.groups = 0
+        self.split_groups = 0
+        # Host wall seconds spent inside compact_sheets (indicative only on
+        # this machine -- the real cost gate is Phase 2's, ss6.4).
+        self.seconds = 0.0
+
+    def add_stream(self, stream, num_frags):
+        self.num_sheets += stream["num_sheets"]
+        self.num_frags += num_frags
+        self.fused += int(stream["sheet_fused"].sum().item())
+        self.groups += stream["num_groups"]
+        self.split_groups += stream["num_split_groups"]
+
+    def add(self, truth, ok, paint, occ, nsheets, actual):
+        self.covered += 1
+        self.max_sheets = max(self.max_sheets, nsheets)
+        if nsheets > 24:
+            self.over_k += 1
+        self.claim_occ_max = max(self.claim_occ_max, abs(paint - occ))
+        if not ok:
+            self.unref_n += 1
+            self.unref_dev += abs(paint - actual)
+            self.unref_signed += paint - actual
+            self.unref_max = max(self.unref_max, abs(paint - actual))
+            return
+        if truth >= _SILH_HI:
+            self.interior += 1
+            if paint < 1.0 - _NOTCH_TOL:
+                self.notched += 1
+                self.notch_err += 1.0 - paint
+                self.notch_max = max(self.notch_max, 1.0 - paint)
+            return
+        if truth <= _SILH_LO:
+            return
+        self.n += 1
+        self.err += abs(paint - truth)
+        self.signed += paint - truth
+        q = paint * _AA_NUM_SAMPLES
+        if abs(q - round(q)) <= 1e-4:
+            self.on_lattice += 1
+
+
 def _measure(build, settings, capture=None):
     """Render once, replaying the run rule and the resolve for every pixel.
 
@@ -983,6 +1081,9 @@ def _measure(build, settings, capture=None):
     lost_total = [0.0]
     uf_hist = Counter()
     svis_stats = _Svis()
+    svis_stats.sheet_stats = {
+        label: _SheetStats(label) for label, _r, _c in SHEET_ARMS
+    }
     silhouettes = []
     captured = {}
 
@@ -1019,6 +1120,43 @@ def _measure(build, settings, capture=None):
         # but a fragment's frame is not carried in the compact arrays. Every
         # case here is single-frame, so row 0 is the mapping.
         obj_row = tri_obj[0]
+
+        # -- sheet compaction arms (DESIGN_sheet_resolve.md Phase 1) --------
+        arm_streams = {}
+        if SHEET_ARMS:
+            from algan.rendering.raytracing.sheets import compact_sheets
+
+            merged_ref = kwargs.get("merged", args[0])
+            cam_o = kwargs.get("cam_origin", args[5])
+            pws = kwargs.get("pixel_world_scale", args[9])
+            t_start = int(kwargs.get("time_start", args[11]))
+            for label, rule, c in SHEET_ARMS:
+                t0 = time.perf_counter()
+                stream = compact_sheets(
+                    coverage,
+                    merged_ref,
+                    cam_o,
+                    pws,
+                    t_start,
+                    width,
+                    height,
+                    band_rule=rule,
+                    band_c=c,
+                )
+                if stream is not None and stream["sheet_key"].is_cuda:
+                    torch.cuda.synchronize()
+                st = svis_stats.sheet_stats[label]
+                st.seconds += time.perf_counter() - t0
+                if stream is None:
+                    continue
+                st.add_stream(stream, int(coverage["num_fragments"]))
+                arm_streams[label] = {
+                    "offs": stream["sheet_offsets"].cpu().tolist(),
+                    "ref": stream["sheet_ref"].cpu().tolist(),
+                    "cov": stream["sheet_cov"].cpu().tolist(),
+                    "msk": stream["sheet_msk"].cpu().tolist(),
+                    "cap": stream["sheet_cap"].cpu().tolist(),
+                }
 
         refs = ref.tolist()
         covs = cov.tolist()
@@ -1094,6 +1232,39 @@ def _measure(build, settings, capture=None):
                 sids,
                 faces,
             )
+            # -- score each sheet arm through the same verified replay ------
+            for label, stream in arm_streams.items():
+                lo2, hi2 = stream["offs"][i], stream["offs"][i + 1]
+                s_sids, s_faces, s_ms, s_cs, s_bz = [], [], [], [], []
+                for j in range(lo2, hi2):
+                    r2 = stream["ref"][j]
+                    if r2 >= 0:
+                        s_sids.append(int(obj_row[r2]))
+                        s_bz.append(False)
+                    else:
+                        s_sids.append(-1 - ((-r2 - 1) >> 8))
+                        s_bz.append(True)
+                    s_faces.append(1 if (stream["msk"][j] & _AA_BACKFACE_BIT) else 0)
+                    s_ms.append(stream["msk"][j])
+                    s_cs.append(stream["cov"][j])
+                paint, s_occ, _se = _replay(
+                    s_sids,
+                    s_faces,
+                    s_ms,
+                    s_cs,
+                    s_bz,
+                    rule_b,
+                    consult_e=run_full,
+                    consult_full=run_full,
+                    mesh_cap=one_mesh,
+                    mesh_cap_gated=True,
+                    mesh_cap_dens=one_mesh_dens,
+                    caps=stream["cap"][lo2:hi2],
+                )
+                svis_stats.sheet_stats[label].add(
+                    truth, ok, paint, s_occ, hi2 - lo2, actual
+                )
+
             p = pix[i] % ppf
             py, px = p // width, p % width
             svis_stats.painted[(px, py)] = actual
@@ -1438,8 +1609,25 @@ def main():
         help="probe N silhouette pixels per case with ALGAN_AA_DUMP and diff "
         "the host replay against the kernel's own per-fragment eff",
     )
+    ap.add_argument(
+        "--sheets",
+        action="store_true",
+        help="compact each pixel's fragments into SHEETS "
+        "(DESIGN_sheet_resolve.md P1/P2) per band rule, feed one synthesized "
+        "fragment per sheet through the same verified walk replay, and score "
+        "the result beside the shipped columns",
+    )
     args = ap.parse_args()
     settings = RESOLUTIONS[args.res]
+    if args.sheets:
+        SHEET_ARMS.extend(
+            [
+                ("facing (no bands)", "facing", 0.0),
+                ("prim c=2", "prim", 2.0),
+                ("prim c=4", "prim", 4.0),
+                ("prim c=8", "prim", 8.0),
+            ]
+        )
 
     cases = _cases()
     if args.cases:
@@ -1567,6 +1755,59 @@ def main():
         "is a diagnostic, and the size of the gap between it and 'actual' is\n"
         "what a mesh-level union rule would be worth."
     )
+
+    # -- DESIGN_sheet_resolve.md Phase 1: the compacted-sheet arms ----------
+    if SHEET_ARMS:
+        head3 = (
+            f"\n{'case / arm':32s} {'silh px':>8s} {'|sheet-E|':>10s} "
+            f"{'lattice':>8s} {'signed':>8s} {'notches':>14s} {'S/F':>6s} "
+            f"{'fused':>6s} {'split':>6s} {'maxS':>5s} {'>K':>4s}"
+        )
+        print(head3)
+        print("-" * len(head3))
+        for name, _build, sv, _silh in svis_rows:
+            sdepth = f"~{sv.notch_err / sv.notched:.4f}" if sv.notched else ""
+            base = (
+                f"{name:32s} {sv.n:8d} {sv.err_actual / max(sv.n, 1):10.4f} "
+                f"{100.0 * sv.on_lattice / max(sv.n, 1):7.1f}% "
+                f"{sv.sig_actual / max(sv.n, 1):+8.4f} "
+                f"{sv.notched:6d}/{sv.interior:<7d}{sdepth:<8s}"
+            )
+            print(base + "   <- shipped walk")
+            for label, _r, _c in SHEET_ARMS:
+                st = sv.sheet_stats.get(label)
+                if st is None or not st.covered:
+                    continue
+                ratio = st.num_sheets / max(st.num_frags, 1)
+                depth = (
+                    f"~{st.notch_err / st.notched:.4f}" if st.notched else ""
+                )
+                notch = f"{st.notched:6d}/{st.interior:<7d}{depth:<8s}"
+                unref = (
+                    f"  unref dev {st.unref_dev / st.unref_n:.4f}"
+                    f"/{st.unref_max:.3f}({st.unref_signed / st.unref_n:+.4f})"
+                    if st.unref_n
+                    else ""
+                )
+                print(
+                    f"  {label:30s} {st.n:8d} {st.err / max(st.n, 1):10.4f} "
+                    f"{100.0 * st.on_lattice / max(st.n, 1):7.1f}% "
+                    f"{st.signed / max(st.n, 1):+8.4f} {notch} "
+                    f"{ratio:6.2f} {st.fused:6d} {st.split_groups:6d} "
+                    f"{st.max_sheets:5d} {st.over_k:4d}  t={st.seconds:.3f}s{unref}"
+                )
+        print(
+            "\nSheet arms replay the SAME walk over one synthesized fragment per\n"
+            "sheet (exact area + unioned mask), so the run scan cannot truncate\n"
+            "and 'capped'/'split' populations cease to exist. 'fused' counts\n"
+            "sheets holding a sample bit twice -- the fill-rule partition\n"
+            "violation that proves a band fused two true sheets (the band\n"
+            "rule's one hard failure). 'split' counts (pixel, mesh, facing)\n"
+            "groups the rule split into several bands (benign). S/F is\n"
+            "sheets per fragment -- the compaction ratio the P5 shading\n"
+            "shrink rides on. '>K' counts pixels holding more sheets than\n"
+            "the design's starting K = 24 (overflow-policy sizing, ss4.6)."
+        )
 
     if args.verify:
         print("\nreplay vs kernel dump (ALGAN_AA_DUMP):")

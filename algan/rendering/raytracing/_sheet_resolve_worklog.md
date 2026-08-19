@@ -25,7 +25,27 @@ current. Delete it in Phase 4's cleanup commit.
   floor 1 (pix_accum atomic cap), tm floor 0, at LD on CUDA. Full lever
   sweep on the extended arms deferred to phase gates (each arm is a
   subprocess render).
-- Phase 1 (P1–P2 compaction + harness, band rule): IN PROGRESS
+- Phase 1 (P1–P2 compaction + harness, band rule): CODE DONE, measured on the
+  12 harness cases; six-scene stream stats running. RESULTS (md, CUDA,
+  benchmarks/_sheet_phase1_md.log):
+  * |sheet-E| ties or improves EVERY case: cylfine 0.0050->0.0011 (-78%),
+    sphere 0.0057->0.0040, torus 0.0065->0.0048; on-lattice -> ~0 everywhere.
+  * Notches: sphere 24@0.0018->14@0.0012, torus 2->0, cylfine 253@0.0090->
+    339@0.0012 — count UP but depth 7.5x DOWN: those pixels' TRUE coverage is
+    0.999x (not 1), sheets paint the exact area, the old walk rounded to 1.
+    Threshold artifact of the notch counter, verified per-pixel
+    (truth 0.99920, sheet 0.99875, frag 0.99966).
+  * Band rules are output-indistinguishable (unref-dev identical across
+    facing/prim c=2/4/8 on every case incl. torus). Fused counts at the
+    torus fold: facing 1773, c=2 686, c=4 984, c=8 1458 — fold tangency
+    fusion is irreducible (projection non-injective there). DECISION:
+    band_rule=prim, band_c=2 (errs toward benign splits; zero false splits
+    on all non-fold cases).
+  * S/F compaction ratio 0.03 (cylfine, 33x) to 0.99 (flat quad).
+    maxS = 4 at md on all cases; >K(24) = 0. Compaction cost ~10-30ms host
+    per ~40k-frag stream per arm (indicative).
+  * _aa_line_check ink-wobble gate DEFERRED to Phase 2 (needs a real render
+    path; the line-check cases' |sheet-E| columns are the Phase-1 proxy).
 - Phase 2 (P3–P6 scan resolve behind flag + oracle): NOT STARTED
 - Phase 3 (unification): NOT STARTED
 - Phase 4 (P7, §H, §I, deletion, re-baseline): NOT STARTED
@@ -127,6 +147,41 @@ aa ladder: `_aa_group` -> aa_grp 0/1/2(RUN_FULL)/3(ONE_MESH)/4(+DENS)/
 ## Decisions made this session
 (none yet)
 
+## Phase 2 architecture (settled while Phase-1 measurements ran)
+- Setting: ALGAN_SHEET_RESOLVE (default 0), environment.py + experimental.
+- Engages on the SPARSE path only, and only when shadow_flag == 0 (shadowed
+  batches keep the old walk until Phase 4 builds shadow events from sheet
+  records, per the design's own phasing). Flag off = old walk untouched =
+  byte-identical trivially.
+- prepare_sparse_raster_coverage, when flag on: skip the one-mesh reduction
+  and run lanes (machinery the sheet path deletes), run compact_sheets
+  (prim, c=2), return sheet arrays in the coverage dict (persist arena).
+- ONE new kernel `sheet_resolve_shade` in raster_taichi.py (shares all
+  shading helpers): one thread per covered pixel, bounded loop over its
+  sheets. Per-sheet semantics:
+  * circuits: areal, exactly the walk's (alpha *= SDF cov).
+  * tri, union == 0 (donor sheet): areal a[s] = alpha*min(cov,1) — replaces
+    old run_mode 2's sequential renormalization entirely (one record).
+  * tri, union == ALL: corr = 1 if |1-cov| <= _AA_FULL_DUST else min(cov,1);
+    a[s] = alpha*corr on all samples.
+  * tri, partial union: corr = min(cov,1)/Q; a[s] = alpha*corr on owned
+    samples; corr>1 clamps with SHEET-LOCAL rule-B redistribution onto
+    unowned samples (per-record arithmetic, no cross-record state).
+  * NO one-mesh cap, NO run scan, NO seam dedup, NO engagement gate.
+  * material 4-way split / continuations / sec_aa / glossy identical to the
+    walk, evaluated ONCE per sheet at the dominant fragment.
+  * P5-as-separate-material-sorted-kernel deferred (optimization, not
+    semantics; single per-pixel kernel first). Sibling machinery (§4.4)
+    currently vacuous: compaction emits exactly one record per band.
+- Oracle: sequential_reference() beside compact_sheets (host python),
+  matte+alpha first; parity harness _sheet_resolve_parity.py renders
+  flag off/on lossless + diffs, and oracle-vs-kernel via ALGAN_AA_DUMP
+  extended to the sheet kernel.
+- KNOWN semantic deltas vs old walk to measure in parity (expected, will
+  move output): far-sheet re-claim residual (cap deleted) ~(Q-area)*corr at
+  silhouettes; notch population becomes exact-area (see Phase-1 finding);
+  split/capped populations gone.
+
 ## Next action
-Phase 0: extend _order_window_check.py (env-map scene + non-default-tonemap
-scene arms + lossless codec), check tonemap/env API names first.
+Commit Phase 1; read six-scene stats when done; then build Phase 2
+(setting + prepare wiring + sheet_resolve_shade kernel + oracle + parity).
