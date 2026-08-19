@@ -1,10 +1,17 @@
 # Algan — the sheet resolve: analytic AA as data, not control flow
 
-**STATUS: design, plan of record for the resolve redesign. Nothing here is
-built.** Decided 2026-08-19 with the project owner: the renderer is being
-redesigned, output WILL move, and the committed baselines will be regenerated
-once at the end — so this document optimizes for the right system, not for
-byte-compatibility with the current one.
+**STATUS: BUILT AND SHIPPED (2026-08-19), same day as the decision.** The
+sheet resolve is the default renderer for every batch it accepts; the
+committed baselines (all four sets) were regenerated once under it, frames
+reviewed. Each phase's record lives inline in §8, and every deviation from
+the plan is annotated where the plan states the original intent — the two
+that matter: the one-mesh ceiling SURVIVES as sheet data (§7's subsumption
+claim was refuted by measurement), and P7's slot rework is DEFERRED because
+the determinism criterion was met without it (§8 Phase 4 record). §H/§I
+remain live items, now on sheet records. Decided 2026-08-19 with the project
+owner: the renderer is being redesigned, output WILL move, and the committed
+baselines will be regenerated once at the end — so this document optimizes
+for the right system, not for byte-compatibility with the old one.
 
 ================================================================================
 0. WHAT THIS SUPERSEDES, AND WHAT IT KEEPS
@@ -560,6 +567,48 @@ continuations from sheet records (P7); §H and §I built on top; the old walk
 and its machinery (§7's list) deleted; ONE re-baseline, lossless-reviewed,
 CUDA on the reference box and the CPU set with it (which also settles the
 standing CPU-baseline debt, `DESIGN_mesh_identity_open.md` §B).
+
+**Phase 4 RECORD (2026-08-19), with three deviations stated plainly:**
+
+* **P7 (deterministic continuation slots) is DEFERRED, by measurement.**
+  The criterion it exists for — run-to-run determinism exactly zero — was
+  measured MET without it: the §J scene's noise floor is 0 on the sheet
+  route at LD and MD (the fragment walk's was 1), shadowed scenes
+  included. `rs_alloc` and the bounce iterations' `pix_accum` adds remain
+  the resolve's only atomics, both OUTSIDE iteration 0's per-pixel
+  single-writer structure; if a scene ever measures a floor again, P7's
+  shape is recorded in the worklog history (count-pass template + host
+  int-scan + exact-slot emit).
+* **§H (nested IOR) and §I (self-shadow by identity) are built AFTER the
+  flip**, not before it, as separate reviewed features: each moves output
+  in a small population of its own (nested-glass interfaces; shadow-acne
+  pixels), each now has `sheet_sid`-carrying records to build on, and
+  bundling them into the flip's re-baseline would have hidden their
+  movement inside a 5-scene diff. They remain the top of the queue.
+* **Two defects the flip's own review caught before the baselines were
+  written** — the ones the phased discipline exists for:
+  1. Self-overlapping same-mesh translucent geometry (a mid-morph
+     tetrahedron) FUSED into one sheet and attenuated once where a ray
+     crosses the surface twice. Depth banding cannot split a zero-gap
+     overlap; the FILL RULE can — a band holding a sample bit twice holds
+     two sheets by definition. Each fragment's mask-CONFLICT RANK (integer
+     cumsums, deterministic) is now part of the sheet key; overlapping
+     layers attenuate per layer, tilings are untouched, and fold fusions
+     vanish with it, making `sheet_fused` a true invariant.
+  2. Two generic triangle mobs shared one merge-level surface id
+     (`TriangleTriangulated` + `QuadTriangulated`); they now declare
+     one surface per mob, the Polyhedron pattern.
+* **The re-baseline**: five of six full-render scenes and the fast scene
+  moved; `manim_compat_and_plots` (pure circuits) is byte-identical, the
+  mechanism confirming itself. Every scene's worst frame was reviewed as
+  a panel: movement is mesh silhouettes/interior edges, ~1px shadow
+  boundaries, reflection rims, and the minified-texture ImageMob (§10.5's
+  anticipated case). Both CUDA sets were regenerated on this box under the
+  render-twice discipline. The CPU sets are intentionally left stale: the
+  project owner regenerates them on the CI machine (decided mid-flip,
+  2026-08-19), which also keeps the CPU baselines the property of the
+  lineage that reproduces them (`DESIGN_mesh_identity.md` §3.5's standing
+  rule).
 
 **Phase 4a BUILT AND MEASURED (2026-08-19): shadow events from sheet
 records.** The resolve kernel gained a `mode` template — 1 walks the

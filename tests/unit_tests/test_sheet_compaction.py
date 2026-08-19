@@ -117,22 +117,47 @@ def test_facing_separates_a_closed_surface_into_two_sheets():
 
 
 def test_band_rule_splits_a_depth_gap_and_facing_rule_fuses_it():
-    # Two same-surface same-facing sheets 1.0 apart in depth (a fold): the
-    # relative rule must split them; the no-banding fallback fuses them, and
-    # the overlapping masks then trip the fusion detector.
+    # Two same-surface same-facing sheets 1.0 apart in depth with DISJOINT
+    # masks (the fill rule alone cannot separate them): the relative depth
+    # rule must split them; the no-banding fallback fuses them.
     frags = [
-        (0, 1.0, 0, 0.5, 0b00111100),
-        (0, 2.0, 1, 0.5, 0b00111100),
+        (0, 1.0, 0, 0.5, 0b00001111),
+        (0, 2.0, 1, 0.5, 0b11110000),
     ]
     split = _compact(frags, band_rule="prim")
     assert split["num_sheets"] == 2
-    assert not bool(split["sheet_fused"].any())
     assert split["num_split_groups"] == 1
 
     fused = _compact(frags, band_rule="facing")
     assert fused["num_sheets"] == 1
-    assert bool(fused["sheet_fused"][0])
     assert fused["num_split_groups"] == 0
+
+
+def test_mask_conflict_splits_overlapping_layers_at_any_depth():
+    # The fill rule is the sheet-membership oracle: two same-id same-facing
+    # fragments whose masks OVERLAP hold two sheets whatever their depths
+    # (a mid-morph self-overlap has no depth gap to split on). Each layer
+    # must become its own sheet so a translucent surface a ray crosses twice
+    # attenuates twice.
+    frags = [
+        (0, 1.0000, 0, 0.5, 0b00111100),
+        (0, 1.0001, 1, 0.5, 0b00111100),
+    ]
+    for rule in ("prim", "facing"):
+        out = _compact(frags, band_rule=rule)
+        assert out["num_sheets"] == 2, rule
+        assert not bool(out["sheet_fused"].any()), rule
+        assert torch.allclose(out["sheet_cov"], torch.tensor([0.5, 0.5])), rule
+    # And the oracle attenuates twice across the two layers.
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    claims, T = resolve_pixel_reference(
+        [0.5, 0.5],
+        [0b00111100, 0b00111100],
+        [False, False],
+        alphas=[0.5, 0.5],
+    )
+    assert claims[1] < claims[0]  # the second layer sees attenuated samples
 
 
 def test_adjacent_same_sheet_fragments_do_not_split():
@@ -207,12 +232,13 @@ def test_csr_aligns_with_covered_idx_and_order_is_classic():
 def test_band_scale_is_per_pixel_slope_not_raw_extent():
     # The measured fusion defect: a big triangle (large camera-distance
     # extent) 1.0 BEHIND a same-id fragment must still band-split when its
-    # projected size says its per-pixel depth slope is small. With no
-    # tri_screen the conservative raw extent fuses them; with the projection
-    # table the slope splits them.
+    # projected size says its per-pixel depth slope is small. Masks are
+    # DISJOINT so the fill-rule conflict split cannot mask the depth
+    # question. With no tri_screen the conservative raw extent fuses them;
+    # with the projection table the slope splits them.
     frags = [
-        (0, 1.0, 0, 0.38, 0b10001001),
-        (0, 2.0, 1, 1.0, 0b11111111),
+        (0, 1.0, 0, 0.38, 0b00001001),
+        (0, 2.0, 1, 1.0, 0b11110110),
     ]
     coverage, merged, cam, pws = _coverage(frags)
     # Make triangle 1 a huge wall: vertices spanning depths 1.0 .. 5.0.

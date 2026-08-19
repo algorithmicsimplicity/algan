@@ -835,11 +835,12 @@ def set_raster_sparse_coverage(enabled):
 # per sheet, aggregation happens before the kernel with no lookahead budget,
 # and the run-scan/one-mesh-cap machinery does not execute.
 #
-# Phase-2 scope: engages on the sparse path only, and only for batches with
-# shadows OFF (shadow events still replay the fragment walk; they move to
-# sheet records in Phase 4). Off by default while the old walk remains the
-# shipped resolve.
-SHEET_RESOLVE = env_flag("ALGAN_SHEET_RESOLVE", False)
+# Default ON (the Phase-4 flip): the sheet resolve is the shipped resolve for
+# every batch it accepts — analytic AA active for the geometry present,
+# deterministic single-sample rendering, opaque background — shadows, env
+# maps and non-default tonemaps included. A batch it does not accept keeps
+# the fragment walk (aa off, transparent background); OFF is the A/B lever.
+SHEET_RESOLVE = env_flag("ALGAN_SHEET_RESOLVE", True)
 
 
 def set_sheet_resolve(enabled):

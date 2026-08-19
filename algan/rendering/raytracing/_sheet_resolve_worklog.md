@@ -128,7 +128,61 @@ current. Delete it in Phase 4's cleanup commit.
     sheets and stay lever-inert; env noise floor 1 -> expected 0 for
     covered pixels? (pix_accum atomic remains for bounce adds — the full
     §2.2 zero-floor claim lands with P7 in Phase 4.)
-- Phase 4 (P7, §H, §I, deletion, re-baseline): NOT STARTED. SEQUENCING PLAN:
+- Phase 4 STATUS:
+  * 4a DONE + committed (shadow events from sheet records, one kernel body;
+    band-scale fix; generic-tri-mob identity fix committed separately).
+  * 4b P7 DISPOSITION: measured MD noise floor on the order-window scene:
+    walk route 1, SHEET ROUTE 0 — the §8 determinism criterion (exactly
+    zero) is met WITHOUT P7's slot rework. P7 recorded as deferred with the
+    measurement; rs_alloc/pix_accum atomics remain for the wavefront bounce
+    loop only (out of the resolve). State this in the design doc.
+  * 4c §H/§I: DEFERRED past the flip (recorded deviation: each is a bounded
+    feature with its own small reviewable output movement; doing them
+    hastily before the flip risks the flip. They port onto sheets cleanly —
+    sheet records carry sid; event tables extend).
+  * 4d FLIP FINDING + FIX: complex_hierarchy_become's translucent
+    mid-morph tetra faces rendered ~30% darker under sheets — SELF-
+    OVERLAPPING same-sid same-facing triangles at the SAME depth fused
+    into one sheet and attenuated ONCE where a ray crosses the surface
+    twice. Depth cannot split them; the FILL RULE can: mask-CONFLICT RANK
+    (number of prior in-band fragments sharing any sample bit, integer
+    cumsums, deterministic) is now part of the sheet key — overlapping
+    layers become separate sheets, tilings unchanged, fold fusions gone
+    too (sheet_fused becomes a true invariant). Verified: the scene's
+    diff is outline-only now; 13 unit tests incl. the new overlap test.
+  * 4d IN PROGRESS: ALGAN_SHEET_RESOLVE default=True (uncommitted).
+    Unit suite: 1216 passed; test_geometry_slack_follows_a_scaled_surface
+    fails FLAG-INDEPENDENTLY (also with sheet route off) — USER SAID
+    "Don't worry about the unit test failure." Leaving it.
+    Fast-scene flip movement reviewed: circuits/glyphs byte-still, mesh
+    silhouettes only, max 97 (panel saved). Re-baselining fast (2-render
+    discipline), then full_renders review + re-baseline, then CPU sets
+    (new epoch), then deletion pass + docs.
+  * DELETION INVENTORY (verified by grep):
+    - walk pair launched ONLY from shade_sparse fragment branch +
+      raster_iteration_zero; z kernels ONLY from raster_iteration_zero;
+      raster_iteration_zero ONLY from run_tile's use_raster block.
+    - DELETE: raster_first_shade, raster_shadow_event_build, raster_tri_z,
+      raster_bez_z, _terminal_z_hit, _decode_z_layer, _aa_run_scan,
+      _AA_MAX_RUN_SCAN, _coverage_slots (walk-only), _aa_one_mesh/
+      _aa_one_mesh_dens/_aa_run_cap/_aa_run_exact funcs, run-lanes host
+      reduction + frag_run_e/uw, raster_iteration_zero + run_tile raster
+      branch + tile_empty/covered composite plumbing, settings
+      ANALYTIC_AA_RUN_EXACT/RUN_CAP/ONE_MESH_DENS (+env names +
+      raytracing_settings rows), walk-specific test assertions.
+    - KEEP: emission kernels + _ss_pixel/_coverage_density/_tri_repr/
+      _tri_run, _aa_group + _aa_run_full (EMISSION truncation semantics
+      sheets rely on), ANALYTIC_AA_ONE_MESH + the host cap reduction,
+      _run_svis_write/_run_redistribute (sheet kernel uses), RUN_RULE
+      setting maps aa_tri 3/4 (same repr; harmless).
+    - Route rewrite: use_raster requires sheet_route + sparse toggles;
+      sparse_coverage == use_raster; env/t_val conditions gone;
+      SHEET_RESOLVE=0 or aa-off or (transparent AND env) -> classic
+      wavefront fallback (§5's stated fallback). Relax transparent bg:
+      allowed when no env map (composite already handles alpha).
+    - CHECK at deletion: test_environment may pin that declared env names
+      are read; test_analytic_aa_gates pins ladder behavior.
+  OLD SEQUENCING PLAN:
   4a. Shadow events from SHEET records: event id = SHEET INDEX (dense
       per-sheet tables, zero bookkeeping, deterministic by construction — no
       count pass, no atomic reserve). One shared @ti.func for the per-sheet

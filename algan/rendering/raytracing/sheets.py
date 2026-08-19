@@ -343,7 +343,39 @@ def compact_sheets(
         band_start[1:] |= (~new_group[1:]) & (gap > thr)
 
     band_id = torch.cumsum(band_start.to(torch.int64), 0) - 1
-    nb = int(band_id[-1]) + 1 if n else 0
+
+    # ---- The fill rule is the sheet-membership oracle -----------------------
+    # Within one true sheet the masks PARTITION the samples, so a band in
+    # which a sample bit appears twice holds two sheets by definition --
+    # whatever their depths. Depth banding cannot separate them (a mid-morph
+    # self-overlap or a fold tangency has no gap), so each fragment's
+    # CONFLICT RANK -- the number of prior in-band fragments sharing any of
+    # its sample bits -- becomes part of the sheet key: rank k joins the
+    # k-th sub-band, and each sub-band's masks partition again. Two
+    # overlapping translucent layers of one mesh then attenuate TWICE, which
+    # is what a ray crossing the surface twice physically does (measured:
+    # without this, a morphing tetrahedron's self-overlapping faces fused
+    # and rendered ~30% too light... dark; the fragment walk composited them
+    # per fragment and was right). Donors (empty masks) carry rank 0 and
+    # ride with their sheet's owners. Integer cumsums: deterministic.
+    positions_sorted = torch.arange(n, dtype=torch.int64, device=device)
+    band_first = torch.where(
+        band_start, positions_sorted, torch.zeros_like(positions_sorted)
+    )
+    band_first = torch.cummax(band_first, 0)[0]
+    bits_pre = (frag_msk.index_select(0, order) & AA_MASK_ALL).to(torch.int64)
+    rank = torch.zeros(n, dtype=torch.int64, device=device)
+    for b in range(AA_NUM_SAMPLES):
+        lane = (bits_pre >> b) & 1
+        excl = torch.cumsum(lane, 0) - lane
+        prior = excl - excl.index_select(0, band_first)
+        rank = torch.maximum(
+            rank, torch.where(lane > 0, prior, torch.zeros_like(prior))
+        )
+    rank.clamp_(max=15)
+    cid = band_id * 16 + rank
+    uniq_cid, band_id = torch.unique(cid, sorted=True, return_inverse=True)
+    nb = int(uniq_cid.numel())
     if nb == 0:
         return None
 
@@ -372,13 +404,17 @@ def compact_sheets(
         union |= (lane > 0).to(torch.int64) << b
         fused |= lane > 1
 
-    # Nearest fragment (depth order makes it the band's first) and the
-    # sheet's position in the classic order: the band's MINIMUM original
-    # stream position (the emission is (pixel, depth-bin, descending-layer)
-    # sorted, so min-position inherits that relation for the sheet).
-    starts_idx = band_start.nonzero(as_tuple=True)[0]
-    nearest_orig = pos_o.index_select(0, starts_idx)
-    sheet_pix = pix_o.index_select(0, starts_idx)
+    # Nearest fragment (minimum sorted position -- the stream is depth-sorted
+    # within a group, and a rank-split sheet's members need not be
+    # consecutive) and the sheet's position in the classic order: the
+    # MINIMUM original stream position (the emission is (pixel, depth-bin,
+    # descending-layer) sorted, so min-position inherits that relation).
+    first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
+    first_sorted.scatter_reduce_(
+        0, band_id, positions_sorted, reduce="amin", include_self=True
+    )
+    nearest_orig = pos_o.index_select(0, first_sorted)
+    sheet_pix = pix_o.index_select(0, first_sorted)
     min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
     min_pos.scatter_reduce_(0, band_id, pos_o, reduce="amin", include_self=True)
 
@@ -399,14 +435,15 @@ def compact_sheets(
     group_id = torch.cumsum(new_group.to(torch.int64), 0) - 1
     ngroups = int(group_id[-1]) + 1 if n else 0
     bands_per_group = torch.zeros(ngroups, dtype=torch.int64, device=device)
+    sheet_group = group_id.index_select(0, first_sorted)
     bands_per_group.scatter_add_(
         0,
-        group_id.index_select(0, starts_idx),
+        sheet_group,
         torch.ones(nb, dtype=torch.int64, device=device),
     )
-    tri_group = is_tri.index_select(0, order).index_select(0, starts_idx)
+    tri_group = is_tri.index_select(0, order).index_select(0, first_sorted)
     tri_groups_mask = torch.zeros(ngroups, dtype=torch.bool, device=device)
-    tri_groups_mask.scatter_(0, group_id.index_select(0, starts_idx), tri_group)
+    tri_groups_mask.scatter_(0, sheet_group, tri_group)
     num_split_groups = int(((bands_per_group > 1) & tri_groups_mask).sum().item())
     num_tri_groups = int(tri_groups_mask.sum().item())
 
