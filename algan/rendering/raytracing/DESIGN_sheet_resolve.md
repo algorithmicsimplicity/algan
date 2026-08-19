@@ -405,6 +405,16 @@ mp4 baselines are regenerated once, at the end, frames reviewed.
 * Adopt lossless A/B as the only moved-pixel instrument
   (`DESIGN_mesh_identity.md` §6.7.3's recipe).
 
+  **BUILT (2026-08-19).** `_order_window_check.py` now renders every arm
+  lossless (`libx264rgb`, crf 0), and gained `env_*` arms (the base scene
+  under a deterministic float-tensor gradient environment map — no file
+  dependency) and `tm_*` arms (the base scene with `post_process_tonemap`
+  off, which is the toggle the route gate actually reads; the public
+  `tonemapping` flag does not change path selection). Each scene family
+  gets its own noise floor. First readings on CUDA at LD: env noise floor
+  **1** channel value (the known `pix_accum` split-pixel atomic cap — the
+  population §2.2 predicts goes to 0), tonemap-in-kernel floor **0**.
+
 **Phase 1 — compaction beside the old walk.** Build P1–P2 and a harness that
 feeds sheets back through the EXISTING walk as synthesized one-fragment-per-
 sheet lists. Score against the current system on `_aa_run_gate_check`

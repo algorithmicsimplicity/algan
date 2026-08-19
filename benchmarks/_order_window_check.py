@@ -39,6 +39,32 @@ moving and a static reading. A lever that lands inside the floor has been shown
 not to matter; a lever that lands outside it has been shown to matter, which is
 the finding either way.
 
+LOSSLESS, AND THE TWO SCENES THE OLD GATES MADE UNTESTABLE
+-----------------------------------------------------------
+Two extensions from ``DESIGN_sheet_resolve.md`` Phase 0:
+
+* **Every arm renders lossless** (``codec="libx264rgb"``, ``-crf 0``): a pixel
+  diff read from a lossy MP4 measures the encoder, not the renderer -- measured
+  at up to ~2,000x inflation (``DESIGN_mesh_identity.md`` ss6.7.3). Byte-identity
+  verdicts were always safe; the *moved-pixel* columns only mean something now.
+* **An env-mapped scene and a non-default-tonemap scene**, as ``env_*`` and
+  ``tm_*`` arms. The sparse-coverage route requires ``not env_active`` and the
+  default tonemap (``_get_tonemap_t_val() == 3``), so those two configurations
+  run the DENSE resolve and could never be exercised by the base scene at
+  shipped defaults. The sheet redesign deletes both gates; these arms are the
+  regression net that has to stay byte-inert through every phase of it. The
+  tonemap arm flips ``post_process_tonemap`` (the experimental toggle), because
+  that is the one the route gate actually reads -- the public ``tonemapping``
+  flag does not change path selection.
+
+One falsifiable prediction, recorded here because this harness owns the number:
+at ``--res md`` the base scene's run-to-run NOISE FLOOR was measured at 46
+channel values over 212k pixels (translucent-stack edges + the glass sphere)
+-- far above the |d| = 1 split-pixel cap, unexplained, and tolerated. The sheet
+resolve's no-atomics rule (``DESIGN_sheet_resolve.md`` ss2.2) predicts that
+floor goes to exactly ZERO once the resolve ships. Check it with
+``--arms noise --res md`` before and after.
+
 WHY SUBPROCESSES
 -----------------
 ``KBUF`` is a module-level constant read at import and baked into array widths,
@@ -71,15 +97,20 @@ OUT_DIR = REPO / "algan_outputs" / "order_window"
 WINDOW_BIG = 1_400_000_000
 WINDOW_SMALL = 150_000_000
 
-#: tag -> (extra env, static scene?, pinned memory override). The frame batch
+#: tag -> (extra env, scene kind, pinned memory override). The frame batch
 #: window is a SETTING rather than an env var, so it is passed on the command
 #: line: ``algan/environment.py`` rejects names it does not declare, and a
 #: benchmark has no business adding one to the package's list.
+#:
+#: Scene kinds: "moving" is the base scene; "static" drops its animation;
+#: "env" adds an environment map (dense resolve, empty pixels sample the sky);
+#: "tonemap" is the base scene with post_process_tonemap OFF (dense resolve,
+#: in-kernel tonemap).
 ARMS = {
-    "ref": ({}, False, WINDOW_BIG),
-    "noise": ({}, False, WINDOW_BIG),
-    "kbuf1": ({"ALGAN_KBUF": "1"}, False, WINDOW_BIG),
-    "kbuf8": ({"ALGAN_KBUF": "8"}, False, WINDOW_BIG),
+    "ref": ({}, "moving", WINDOW_BIG),
+    "noise": ({}, "moving", WINDOW_BIG),
+    "kbuf1": ({"ALGAN_KBUF": "1"}, "moving", WINDOW_BIG),
+    "kbuf8": ({"ALGAN_KBUF": "8"}, "moving", WINDOW_BIG),
     # The instance-ORDER arms must also turn the refit tree off, and are
     # compared against ``refit_off`` rather than ``ref``. ``BVH_REFIT`` defaults
     # ON, and ``_build_accel``'s refit branch ignores ``builder`` outright, so
@@ -87,10 +118,10 @@ ARMS = {
     # report byte-identity for a lever that never moved. (That is also why
     # ``_bez_bvh_ab.py`` found ALGAN_BEZ_BVH_SPLIT byte-identical at 0.993x --
     # it was A/B-ing one render against itself.)
-    "refit_off": ({"ALGAN_BVH_REFIT": "0"}, False, WINDOW_BIG),
+    "refit_off": ({"ALGAN_BVH_REFIT": "0"}, "moving", WINDOW_BIG),
     "morton": (
         {"ALGAN_BVH_REFIT": "0", "ALGAN_BVH_BUILD": "morton"},
-        False,
+        "moving",
         WINDOW_BIG,
     ),
     "split": (
@@ -99,13 +130,47 @@ ARMS = {
             "ALGAN_BVH_BUILD": "split",
             "ALGAN_BEZ_BVH_SPLIT": "1",
         },
-        False,
+        "moving",
         WINDOW_BIG,
     ),
-    "tile_small": ({"ALGAN_WAVEFRONT_TILE": str(1 << 17)}, False, WINDOW_BIG),
-    "window_small": ({}, False, WINDOW_SMALL),
-    "static_ref": ({}, True, WINDOW_BIG),
-    "static_window": ({}, True, WINDOW_SMALL),
+    "tile_small": ({"ALGAN_WAVEFRONT_TILE": str(1 << 17)}, "moving", WINDOW_BIG),
+    "window_small": ({}, "moving", WINDOW_SMALL),
+    "static_ref": ({}, "static", WINDOW_BIG),
+    "static_window": ({}, "static", WINDOW_SMALL),
+    # DESIGN_sheet_resolve.md Phase 0: the two configurations the sparse gate
+    # excludes today, exercised with the levers that could plausibly reach
+    # their dense resolve. The env scene's mirror sphere reflects the map, so
+    # KBUF and instance order reach it through secondary rays.
+    "env_ref": ({}, "env", WINDOW_BIG),
+    "env_noise": ({}, "env", WINDOW_BIG),
+    "env_kbuf1": ({"ALGAN_KBUF": "1"}, "env", WINDOW_BIG),
+    "env_kbuf8": ({"ALGAN_KBUF": "8"}, "env", WINDOW_BIG),
+    "env_refit_off": ({"ALGAN_BVH_REFIT": "0"}, "env", WINDOW_BIG),
+    "env_morton": (
+        {"ALGAN_BVH_REFIT": "0", "ALGAN_BVH_BUILD": "morton"},
+        "env",
+        WINDOW_BIG,
+    ),
+    "env_split": (
+        {
+            "ALGAN_BVH_REFIT": "0",
+            "ALGAN_BVH_BUILD": "split",
+            "ALGAN_BEZ_BVH_SPLIT": "1",
+        },
+        "env",
+        WINDOW_BIG,
+    ),
+    "env_tile_small": ({"ALGAN_WAVEFRONT_TILE": str(1 << 17)}, "env", WINDOW_BIG),
+    "env_window_small": ({}, "env", WINDOW_SMALL),
+    # Same geometry as the base scene, so the order arms above already cover
+    # instance order at this scene's shape; what tonemap-off adds is the
+    # in-kernel tonemap in the resolve/composite, which tiles, windows and the
+    # gather width could interact with.
+    "tm_ref": ({}, "tonemap", WINDOW_BIG),
+    "tm_noise": ({}, "tonemap", WINDOW_BIG),
+    "tm_kbuf8": ({"ALGAN_KBUF": "8"}, "tonemap", WINDOW_BIG),
+    "tm_tile_small": ({"ALGAN_WAVEFRONT_TILE": str(1 << 17)}, "tonemap", WINDOW_BIG),
+    "tm_window_small": ({}, "tonemap", WINDOW_SMALL),
 }
 
 #: What each arm is compared against, and what the comparison is allowed to be.
@@ -120,10 +185,21 @@ COMPARISONS = [
     ("tile_small", "ref", "floor", "16x more wavefront tiles"),
     ("window_small", "ref", "floor", "a third of the frame-batch memory"),
     ("static_window", "static_ref", "exact", "same, on a scene with no animation"),
+    ("env_noise", "env_ref", "floor", "env-mapped: run-to-run noise"),
+    ("env_kbuf1", "env_ref", "floor", "env-mapped: K-buffer width 1"),
+    ("env_kbuf8", "env_ref", "floor", "env-mapped: K-buffer width 8"),
+    ("env_morton", "env_refit_off", "floor", "env-mapped: Morton order (refit off)"),
+    ("env_split", "env_refit_off", "floor", "env-mapped: split order (refit off)"),
+    ("env_tile_small", "env_ref", "floor", "env-mapped: 16x more wavefront tiles"),
+    ("env_window_small", "env_ref", "floor", "env-mapped: a third of the memory"),
+    ("tm_noise", "tm_ref", "floor", "tonemap-in-kernel: run-to-run noise"),
+    ("tm_kbuf8", "tm_ref", "floor", "tonemap-in-kernel: K-buffer width 8"),
+    ("tm_tile_small", "tm_ref", "floor", "tonemap-in-kernel: 16x more tiles"),
+    ("tm_window_small", "tm_ref", "floor", "tonemap-in-kernel: a third of the memory"),
 ]
 
 
-def build_scene(static):
+def build_scene(scene_kind):
     """Depth complexity, several meshes, and translucency -- the three things
     the levers under test could plausibly reach.
 
@@ -131,8 +207,12 @@ def build_scene(static):
     hit list at a pixel LONGER than any K-buffer, which is the only regime in
     which KBUF could change an answer. Reflective and refractive members put the
     secondary continuations through the same question. ``static`` drops the
-    animation so the timeline hands every batching the same numbers.
+    animation so the timeline hands every batching the same numbers. ``env``
+    surrounds the same moving scene with a deterministic gradient environment
+    map -- authored as a float tensor, no file dependency -- so empty pixels
+    sample the sky and the mirror sphere reflects it.
     """
+    static = scene_kind == "static"
     from algan import (  # noqa: PLC0415
         BLUE,
         DARKER_GRAY,
@@ -155,6 +235,17 @@ def build_scene(static):
     )
 
     Scene.set_background_color(DARKER_GRAY)
+    if scene_kind == "env":
+        import torch  # noqa: PLC0415
+
+        # Deterministic horizontal hue ramp with a vertical brightness ramp:
+        # enough structure that a shifted reflection or sky sample cannot land
+        # on the same value it left. Float tensor => taken as authored (0..1).
+        h, w = 8, 16
+        xs = torch.linspace(0.0, 1.0, w).view(1, w, 1).expand(h, w, 1)
+        ys = torch.linspace(0.15, 0.9, h).view(h, 1, 1).expand(h, w, 1)
+        env = torch.cat([xs * ys, ys, (1.0 - xs) * ys], dim=2).contiguous()
+        Scene.set_environment_map(env, intensity=1.0, ambient=True)
     sheets = []
     solids = []
     with Off():
@@ -192,16 +283,22 @@ def build_scene(static):
         Scene.get_camera().move(RIGHT * 0.2)
 
 
-def render_arm(tag, out_path, res, static, window):
+def render_arm(tag, out_path, res, scene_kind, window):
     from algan import KERNEL_REGISTRY, LD, MD, SETTINGS, Scene  # noqa: PLC0415
     from algan.scene_manager import SceneManager  # noqa: PLC0415
 
     quality = {"ld": LD, "md": MD}[res]
     SceneManager.reset()
     SETTINGS.computing.set(available_memory_override=int(window))
+    if scene_kind == "tonemap":
+        # The route gate reads _get_tonemap_t_val() == 3, which is
+        # POST_PROCESS_TONEMAP -- the public ``tonemapping`` flag does not
+        # change path selection, so this is the lever that actually forces the
+        # in-kernel tonemap (and, today, the dense resolve).
+        SETTINGS.raytracing.experimental.set(post_process_tonemap=False)
     scene = SceneManager.instance().current_scene
     scene.set_video_settings(quality)
-    build_scene(static)
+    build_scene(scene_kind)
     # Count the frame BATCHES this arm actually rendered in and write it beside
     # the video. Without it the window arm proves nothing: a short scene can fit
     # in one batch at both memory settings, and "byte-identical" would then be a
@@ -219,7 +316,16 @@ def render_arm(tag, out_path, res, static, window):
 
     KERNEL_REGISTRY.render_kernel = counting
     try:
-        Scene.save_video(str(out_path), quality, overwrite=True)
+        # Lossless on purpose (DESIGN_mesh_identity.md ss6.7.3): the moved-pixel
+        # columns this harness prints are only the renderer's if the codec adds
+        # nothing. libx264rgb at crf 0 is bit-exact RGB.
+        Scene.save_video(
+            str(out_path),
+            quality,
+            overwrite=True,
+            codec="libx264rgb",
+            ffmpeg_params=["-crf", "0"],
+        )
     finally:
         KERNEL_REGISTRY.render_kernel = orig_render
     Path(str(out_path) + ".batches").write_text(str(batches["n"]))
@@ -256,9 +362,9 @@ def main():
     args = ap.parse_args()
 
     if args.render:
-        _env, static, window = ARMS[args.render]
+        _env, scene_kind, window = ARMS[args.render]
         render_arm(
-            args.render, OUT_DIR / f"{args.render}.mp4", args.res, static, window
+            args.render, OUT_DIR / f"{args.render}.mp4", args.res, scene_kind, window
         )
         return
 
@@ -289,9 +395,19 @@ def main():
             return 1
 
     print()
-    floor = None
+    # One noise floor per SCENE FAMILY: the env and tonemap scenes have their
+    # own noise arms, and comparing an env lever against the base scene's floor
+    # would let a genuinely noisy family hide a lever (or damn a quiet one).
+    floors = {}
+
+    def family(tag):
+        for prefix in ("env_", "tm_", "static_"):
+            if tag.startswith(prefix):
+                return prefix
+        return ""
+
     head = (
-        f"{'lever':16s} {'vs':12s} {'worst':>6s} {'moved px':>9s} {'verdict':>10s}  why"
+        f"{'lever':16s} {'vs':14s} {'worst':>6s} {'moved px':>9s} {'verdict':>10s}  why"
     )
     print(head)
     print("-" * len(head))
@@ -312,8 +428,9 @@ def main():
             if Path(str(b) + ".batches").exists()
             else "?"
         )
-        if src == "noise":
-            floor = worst
+        floor = floors.get(family(src))
+        if src.endswith("noise"):
+            floors[family(src)] = worst
             verdict = "FLOOR"
         elif kind == "exact":
             verdict = "ok" if worst == 0 else "MOVES"
@@ -322,11 +439,12 @@ def main():
         else:
             verdict = "ok" if worst <= floor else "MOVES"
         print(
-            f"{src:16s} {ref:12s} {worst:6d} {moved:9d} {verdict:>10s}  {why}"
+            f"{src:16s} {ref:14s} {worst:6d} {moved:9d} {verdict:>10s}  {why}"
             f"  ({frames} frames, batches {nb_a}->{nb_b})"
         )
-    if floor is not None:
-        print(f"\nnoise floor = {floor} channel values; 'ok' means at or under it")
+    for fam, floor in floors.items():
+        label = {"": "base", "env_": "env", "tm_": "tonemap"}.get(fam, fam)
+        print(f"\n{label} noise floor = {floor} channel values ('ok' = at or under)")
     return 0
 
 
