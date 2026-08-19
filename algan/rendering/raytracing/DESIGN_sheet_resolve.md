@@ -520,6 +520,41 @@ Phase 4. Results:
 background-as-sheet lands; tonemap un-fuses; the env/tonemap gates and the
 ladder die. §J's extended harness gates this phase.
 
+**BUILT AND MEASURED (2026-08-19), for the sheet route.** The `env_active`
+and tonemap conditions are gone from the sparse gate when the route is on:
+
+* **Background-as-final-sheet (§4.5)**: `env_background_prefill` writes
+  `env(ray)` per (frame, pixel) into the frame buffer, the resolve hands
+  its leftover weight to the composite (`env_in_composite`, pinned at
+  emission), and empty pixels are final with no resolve launch. One bug
+  found by the parity panel: frame-buffer column 3 is the GLOW lane, and
+  prefilling it with 255 bloomed every pixel white (max|d| 222 over the
+  whole frame) — the sky emits glow 0, matching the dense retire.
+* **Tonemap out of the resolve (§4.8)**: the resolve stays linear;
+  `wf_composite_accum_sparse` gained the tonemapping template (3 = the
+  historical exact path), and `wf_finalize_uncovered` pays `finalize(bg)`
+  for untouched pixels under an in-kernel tonemap — including whole empty
+  frames (it runs even when the emission found nothing).
+* The route decision is computed ONCE (`sheet_route` in
+  `render_batch_raytraced`) and passed down; the emission raises on a
+  compaction refusal when the relaxation was load-bearing.
+* **Measured** (parity harness, env and tm scene variants, LD lossless):
+  engagement asserted both ways; **the env scene's run-to-run noise floor
+  drops from 1 (dense route's `pix_accum` atomic) to exactly 0 on the
+  sheet route** — the first §2.2 determinism prediction to land. The
+  off-vs-on diffs are the resolve change's own signature (rims and
+  reflection interiors), reviewed as panels. The §J env/tm lever arms
+  under the flag: tiles and windows byte-inert at the floor (env batches
+  7→4 and 7→23 — the levers demonstrably moved); `KBUF 8` moves **one
+  pixel in 9.2M pixel-frames by |d| 4**, sheet-route-specific (the old
+  dense route is KBUF-inert on the same scene, and the arm's own A/A is
+  clean). The mechanism sits in the classic bounce loop's KBUF-refill
+  batching, reached with different (valid) continuation inputs; it is an
+  OPEN ITEM for Phase 4's §J gate, where P7 reworks that hand-off anyway.
+* Dense storage feeding the compaction is NOT built: the sparse route now
+  serves every configuration the sheet resolve accepts, so the dense path
+  survives only as the non-sheet fallback until Phase 4 settles its fate.
+
 **Phase 4 — identity features and the flip.** Shadow events and
 continuations from sheet records (P7); §H and §I built on top; the old walk
 and its machinery (§7's list) deleted; ONE re-baseline, lossless-reviewed,

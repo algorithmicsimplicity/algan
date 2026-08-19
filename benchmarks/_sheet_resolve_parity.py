@@ -34,7 +34,7 @@ os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 OUT = REPO / "algan_outputs" / "sheet_parity"
 
 
-def build_scene():
+def build_scene(variant="basic"):
     import torch
 
     from algan import (
@@ -108,12 +108,22 @@ def build_scene():
         )
         glass.spawn(animate=False)
         movers.append(glass)
+    if variant == "env":
+        # Deterministic gradient env map (float tensor: taken as authored).
+        h, w = 8, 16
+        xs = torch.linspace(0.0, 1.0, w).view(1, w, 1).expand(h, w, 1)
+        ys = torch.linspace(0.15, 0.9, h).view(h, 1, 1).expand(h, w, 1)
+        env = torch.cat([xs * ys, ys, (1.0 - xs) * ys], dim=2).contiguous()
+        Scene.set_environment_map(env, intensity=1.0, ambient=True)
     with Sync(run_time=1.0):
         for i, mob in enumerate(movers):
             mob.rotate(10 + 3 * i, OUTV if i % 2 else UP)
 
 
-def render_arm(tag, on, res):
+ARGS_SCENE_PREFIX = ""
+
+
+def render_arm(tag, on, res, variant="basic"):
     from algan import LD, MD, SETTINGS, Scene
     from algan.rendering.raytracing import sheet_resolve_taichi as srt
     from algan.scene_manager import SceneManager
@@ -122,6 +132,11 @@ def render_arm(tag, on, res):
     SceneManager.reset()
     SETTINGS.computing.set(available_memory_override=1_400_000_000)
     SETTINGS.raytracing.experimental.set(sheet_resolve=bool(on))
+    if variant == "tm":
+        # The in-kernel tonemap configuration: the toggle the route gate
+        # reads. Applied to BOTH arms so the A/B compares resolves, not
+        # tonemap pipelines.
+        SETTINGS.raytracing.experimental.set(post_process_tonemap=False)
     launches = {"n": 0}
     orig = srt.sheet_resolve_shade
 
@@ -133,9 +148,9 @@ def render_arm(tag, on, res):
     try:
         scene = SceneManager.instance().current_scene
         scene.set_video_settings(quality)
-        build_scene()
+        build_scene(variant)
         Scene.save_video(
-            str(OUT / f"{tag}.mp4"),
+            str(OUT / f"{ARGS_SCENE_PREFIX}{tag}.mp4"),
             quality,
             overwrite=True,
             codec="libx264rgb",
@@ -144,6 +159,8 @@ def render_arm(tag, on, res):
     finally:
         srt.sheet_resolve_shade = orig
         SETTINGS.raytracing.experimental.set(sheet_resolve=False)
+        if variant == "tm":
+            SETTINGS.raytracing.experimental.set(post_process_tonemap=True)
     return launches["n"]
 
 
@@ -353,6 +370,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--res", choices=("ld", "md"), default="ld")
     ap.add_argument(
+        "--scene",
+        choices=("basic", "env", "tm"),
+        default="basic",
+        help="scene variant: basic, env-mapped (dense walk vs sparse sheets), "
+        "or in-kernel tonemap (post_process_tonemap off in both arms)",
+    )
+    ap.add_argument(
         "--verify",
         type=int,
         default=0,
@@ -362,6 +386,8 @@ def main():
     )
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
+    global ARGS_SCENE_PREFIX
+    ARGS_SCENE_PREFIX = "" if args.scene == "basic" else f"{args.scene}_"
 
     if args.verify:
         return verify_oracle(args.res, args.verify)
@@ -374,8 +400,11 @@ def main():
     ]
     launches = {}
     for tag, on in runs:
-        print(f"-- rendering {tag} (sheet_resolve={'ON' if on else 'off'})")
-        launches[tag] = render_arm(tag, on, args.res)
+        print(
+            f"-- rendering {tag} (sheet_resolve={'ON' if on else 'off'}, "
+            f"scene={args.scene})"
+        )
+        launches[tag] = render_arm(tag, on, args.res, args.scene)
         print(f"   sheet kernel launches: {launches[tag]}")
 
     ok = True
@@ -392,7 +421,9 @@ def main():
         ("A/A on ", "on_a", "on_b"),
         ("off vs on", "off_a", "on_a"),
     ):
-        worst, moved, frames, wf = diff(OUT / f"{x}.mp4", OUT / f"{y}.mp4")
+        worst, moved, frames, wf = diff(
+            OUT / f"{ARGS_SCENE_PREFIX}{x}.mp4", OUT / f"{ARGS_SCENE_PREFIX}{y}.mp4"
+        )
         print(
             f"{name}: max|d| {worst}, moved px (>2) {moved} over {frames} "
             f"frames, worst at frame {wf}"

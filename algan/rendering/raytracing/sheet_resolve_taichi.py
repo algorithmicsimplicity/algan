@@ -114,6 +114,7 @@ def sheet_resolve_shade(
         has_bez: ti.template(),
         sec_aa: ti.template(), sec_min_energy: ti.f32,
         glossy: ti.template(),
+        env_in_composite: ti.template(),
         covered_idx: ti.types.ndarray(),
         time_start: int, width: int, height: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
@@ -730,14 +731,65 @@ def sheet_resolve_shade(
             rs_pix[r] = pixel
             rs_int[r, 4] = r
         else:
-            if (env_w > 0) and (ti.max(weight[0], ti.max(
-                    weight[1], weight[2])) > 0.0):
-                ec = _sample_env_map(f, rd, env_off, env_w, env_h,
-                                     env_intensity, textures)
-                for k in ti.static(range(3)):
-                    acc[k] += weight[k] * ec[k]
-                weight = ti.math.vec3(0.0, 0.0, 0.0)
+            # Background-as-final-sheet (§4.5): on the sparse route the frame
+            # buffer is prefilled with the background — env map included, via
+            # env_background_prefill — and the composite multiplies the
+            # leftover weight by it. The primary retire direction IS the
+            # prefill direction, so folding the env here as well would count
+            # it twice; env_in_composite skips the fold and hands the weight
+            # through. Bounced rays retire in wavefront_shade, which still
+            # samples the env with THEIR direction (the pixel's background
+            # would be the wrong ray).
+            if ti.static(not env_in_composite):
+                if (env_w > 0) and (ti.max(weight[0], ti.max(
+                        weight[1], weight[2])) > 0.0):
+                    ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                                         env_intensity, textures)
+                    for k in ti.static(range(3)):
+                        acc[k] += weight[k] * ec[k]
+                    weight = ti.math.vec3(0.0, 0.0, 0.0)
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[r, k], acc[k])
             for k in ti.static(range(3)):
                 ti.atomic_add(pix_accum[r, 4 + k], weight[k])
+
+
+@ti.kernel
+def env_background_prefill(
+        num_frames: int, width: int, height: int, start_frame: int,
+        jx: ti.f32, jy: ti.f32, half_w: ti.f32, half_h: ti.f32,
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        env_off: int, env_w: int, env_h: int, env_intensity: ti.f32,
+        textures: ti.types.ndarray(),
+        out: ti.types.ndarray()):
+    """Prefill the frame buffer with the environment map, per (frame, pixel).
+
+    Background-as-final-sheet (DESIGN_sheet_resolve.md §4.5): the resolve
+    emits a leftover weight per covered pixel and the composite multiplies it
+    by whatever the buffer holds — a flat color, an image plate, or this. An
+    empty pixel is then already final with no resolve launch at all, which is
+    what lets an env-mapped scene take the sparse covered-pixel route instead
+    of forcing the dense one. Byte-scale to match ``_prefill_background``;
+    the alpha channel is opaque (the sheet route excludes transparent
+    backgrounds).
+    """
+    ppf = width * height
+    for i in range(num_frames * ppf):
+        f_rel = i // ppf
+        p = i - f_rel * ppf
+        f = start_frame + f_rel
+        py = p // width
+        px = p - py * width
+        _ro, rd = _generate_ray(f, px, py, jx, jy, half_w, half_h,
+                                cam_origin, screen_point,
+                                pixel_basis_x, pixel_basis_y)
+        ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                             env_intensity, textures)
+        for k in ti.static(range(3)):
+            out[f_rel, p, k] = ec[k] * 255.0
+        if out.shape[2] > 3:
+            # Column 3 is the GLOW lane, not alpha: the sky emits none, which
+            # is also what the dense path's env retire deposits (acc[3] == 0,
+            # weight zeroed). Writing 255 here bloomed every pixel white.
+            out[f_rel, p, 3] = 0.0

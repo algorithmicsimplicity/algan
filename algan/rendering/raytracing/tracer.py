@@ -97,6 +97,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wf_composite_accum_aa,
     wf_composite_accum_sparse,
     wf_finalize_aa,
+    wf_finalize_uncovered,
 )
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
@@ -1169,6 +1170,22 @@ def render_batch_raytraced(
                 or merged.get("has_uncertain_texture_alpha", True)
             )
             shadow_flag = 2 if batch_has_translucent else 3
+    # THE SHEET ROUTE (DESIGN_sheet_resolve.md, Phase 3): decided ONCE here so
+    # the frame-buffer prefill in render_chunk, the sparse-route gate and the
+    # emission's compaction all answer the same question (the host/kernel
+    # dual-language rule). Shadowed batches keep the fragment walk until the
+    # shadow-event build moves to sheet records (Phase 4); analytic_raster
+    # carries the AA-active-for-present-geometry facts the emission's own
+    # sheet gate re-checks (and prepare raises on a disagreement when the
+    # route was load-bearing for env/tonemap).
+    sheet_route = bool(
+        rt_settings.SHEET_RESOLVE
+        and shadow_flag == 0
+        and analytic_raster
+        and rt_settings.ANALYTIC_AA_RUN
+        and samples <= 1
+        and not transparent_background
+    )
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
     # kernel specialization unchanged (see shading_taichi._run_frag_pipeline).
@@ -1309,6 +1326,39 @@ def render_batch_raytraced(
                     device,
                     background_frames=time_end - time_start,
                 )
+                if env_meta is not None and sheet_route:
+                    # Background-as-final-sheet (DESIGN_sheet_resolve.md
+                    # §4.5): under the sheet route the frame buffer IS the
+                    # background stage, so an env-mapped batch prefills the
+                    # map per (frame, pixel) and the resolve hands its
+                    # leftover weight to the composite instead of sampling
+                    # the map at retire. Empty pixels are then final with no
+                    # resolve launch at all.
+                    from algan.rendering.raytracing.sheet_resolve_taichi import (
+                        env_background_prefill,
+                    )
+
+                    eo, ew, eh, ei = env_meta
+                    env_background_prefill(
+                        int(end - start),
+                        int(width),
+                        int(height),
+                        int(start),
+                        0.5,
+                        0.5,
+                        float(width // 2),
+                        float(height // 2),
+                        cam_origin,
+                        sp,
+                        pbx,
+                        pby,
+                        int(eo),
+                        int(ew),
+                        int(eh),
+                        float(ei),
+                        merged["textures"],
+                        out,
+                    )
                 accum = None
                 if samples > 1:
                     # f32 per-pixel sample sums, averaged by finalize_samples.
@@ -1427,6 +1477,7 @@ def render_batch_raytraced(
                             near_clip=near_clip,
                             far_clip=far_clip,
                             analytic_raster=analytic_raster,
+                            sheet_route=sheet_route,
                         )
             frames = out.view(end - start, height, width, C_out)
             # Post-processing launches Taichi kernels (the tonemap in particular)
@@ -1874,6 +1925,7 @@ def raytrace_render_wavefront(
     near_clip=0.0,
     far_clip=0.0,
     analytic_raster=False,
+    sheet_route=False,
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
@@ -2115,13 +2167,21 @@ def raytrace_render_wavefront(
     # skip (every empty pixel still samples the map) but keeps the pre-fill.
     raster_prefill = bool(use_raster and rt_settings.RASTER_EMPTY_SKIP)
     env_active = env_meta is not None and int(env_meta[1]) > 0
+    # The env/tonemap conditions die under the sheet route
+    # (DESIGN_sheet_resolve.md §5): the frame buffer is the background stage
+    # (env prefilled per pixel in render_chunk), the resolve stays linear,
+    # and an in-kernel tonemap moves to the composite + the uncovered-pixel
+    # finalize. Off the sheet route the historical gate stands.
+    sheet_unify = bool(sheet_route and use_raster)
     sparse_coverage = bool(
         use_raster
         and rt_settings.RASTER_SPARSE_COVERAGE
         and raster_prefill
         and rt_settings.RASTER_COVERED_SHADE
-        and not env_active
-        and _get_tonemap_t_val() == 3
+        and (
+            (not env_active and _get_tonemap_t_val() == 3)
+            or sheet_unify
+        )
     )
 
     # Fused primary-ray generation (settings.WF_GEN_FUSED): the tile's first
@@ -2427,9 +2487,39 @@ def raytrace_render_wavefront(
                 # window (DESIGN_sheet_resolve.md, Phase 2). Shadowed batches
                 # keep the walk: the shadow-event build replays it in
                 # lockstep, and its move to sheet records is Phase 4.
-                sheet_resolve=bool(rt_settings.SHEET_RESOLVE)
-                and shadow_flag == 0,
+                sheet_resolve=sheet_route,
+                # env/tonemap batches only reached the sparse route on the
+                # sheet promise, so a compaction refusal there is a bug to
+                # surface, not a fallback to take.
+                require_sheets=sheet_route
+                and (env_active or _get_tonemap_t_val() != 3),
+                env_in_composite=bool(env_active and sheet_route),
             )
+            t_val_sparse = _get_tonemap_t_val()
+            if t_val_sparse != 3:
+                # In-kernel tonemap on the sparse route (sheet unification,
+                # DESIGN_sheet_resolve.md §4.8): every pixel the covered
+                # composite will not touch owes finalize(bg) — including the
+                # whole frame when nothing is covered at all. The covered
+                # composite reads its pixels' RAW prefilled background before
+                # writing, so ordering between the two is free.
+                with memory.temp():
+                    total_px = (
+                        (int(time_end) - int(time_start)) * int(width) * int(height)
+                    )
+                    covered_mask = memory.get_tensor((total_px,), torch.uint8)
+                    covered_mask.zero_()
+                    if coverage is not None:
+                        covered_mask[coverage["covered_idx"].to(torch.int64)] = 1
+                    wf_finalize_uncovered(
+                        total_px,
+                        int(width),
+                        int(height),
+                        covered_mask,
+                        t_val_sparse,
+                        float(rt_settings.TONEMAP_EXPOSURE),
+                        out,
+                    )
             if coverage is None:
                 return
 
@@ -2621,6 +2711,7 @@ def raytrace_render_wavefront(
                         0,
                         covered_idx,
                         pix_accum,
+                        t_val_sparse,
                         float(rt_settings.TONEMAP_EXPOSURE),
                         out,
                     )

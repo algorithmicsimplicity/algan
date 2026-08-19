@@ -86,7 +86,24 @@ current. Delete it in Phase 4's cleanup commit.
   Phase 2 gates MET. Committing.
   NOTE-TO-SELF: killed the first parity run after editing the kernel file
   mid-run (JIT source rule); orphans killed, clean rerun done.
-- Phase 3 (unification): NOT STARTED. PLAN (sketched while Phase-2 runs):
+- Phase 3 (unification): CODE DONE, validating. Implemented:
+  * sheet_route decided ONCE in render_batch_raytraced (SHEET_RESOLVE &&
+    shadow_flag==0 && analytic_raster && ANALYTIC_AA_RUN && samples<=1 &&
+    !transparent_background), passed down to raytrace_render_wavefront.
+  * env_background_prefill kernel (sheet_resolve_taichi): env(ray)*255 per
+    (frame,pixel) into `out` in render_chunk when env_meta && sheet_route.
+  * sheet kernel env_in_composite template: retire hands leftover weight to
+    the composite instead of folding env (prefill IS the primary ray's env).
+  * sparse gate: `(not env_active and t_val==3) or (sheet_route and
+    use_raster)`. prepare(require_sheets=) raises on emission refusal when
+    the relaxation was load-bearing.
+  * wf_composite_accum_sparse gained tonemapping template (3 = old exact
+    path); new wf_finalize_uncovered(mask) pays finalize(bg) for untouched
+    pixels under in-kernel tonemap, mask scattered from covered_idx, runs
+    even when coverage is None (empty env/tm frames).
+  RUNNING: parity --scene env and --scene tm (A/B + A/A, engagement).
+  Old plan notes below.
+  PLAN (sketched while Phase-2 runs):
   * Core deliverable: the sparse+sheets route serves ENV-MAPPED and
     IN-KERNEL-TONEMAP batches, so the sparse_coverage gate drops its
     `not env_active` and `t_val == 3` conditions when SHEET_RESOLVE is on.
@@ -111,7 +128,31 @@ current. Delete it in Phase 4's cleanup commit.
     sheets and stay lever-inert; env noise floor 1 -> expected 0 for
     covered pixels? (pix_accum atomic remains for bounce adds — the full
     §2.2 zero-floor claim lands with P7 in Phase 4.)
-- Phase 4 (P7, §H, §I, deletion, re-baseline): NOT STARTED
+- Phase 4 (P7, §H, §I, deletion, re-baseline): NOT STARTED. SEQUENCING PLAN:
+  4a. Shadow events from SHEET records: event id = SHEET INDEX (dense
+      per-sheet tables, zero bookkeeping, deterministic by construction — no
+      count pass, no atomic reserve). One shared @ti.func for the per-sheet
+      claim arithmetic serves resolve + event build (kills the lockstep
+      drift class). Then drop the shadow_flag==0 restriction on the route.
+  4b. P7 deterministic continuation slots for iteration 0: resolve runs a
+      COUNT pass (same kernel, count template — resolve is a few % of
+      frame, 2x is affordable), host int-scan -> per-pixel base, emit pass
+      writes base+ordinal. No rs_alloc atomic in iteration 0. Measure §J's
+      MD noise floor (46 -> predicted drop; the wavefront loop's own deeper
+      splits keep their allocator, out of P7 scope — say so).
+  4c. §H nested IOR (rs_sca cols 7+, relative eta at interfaces, overflow ->
+      air fallback) in sheet kernel glass branch + wavefront shade; §I
+      self-shadow by identity (sheet_sid on the record — compact_sheets must
+      output it; accept rule same-mesh-only-at-near-zero-t).
+  4d. Flip ALGAN_SHEET_RESOLVE default ON; delete raster_first_shade +
+      raster_shadow_event_build + run machinery + ladder (the one-mesh HOST
+      reduction and cap stay — Phase 2's measured correction); ONE
+      re-baseline (CUDA sets here; CPU sets = new epoch, stated in commit);
+      final design-doc + AGENTS_DETAILED/CLAUDE.md updates; delete this
+      worklog.
+  GLOW-LANE BUG (env prefill): col 3 of the frame buffer is the GLOW lane;
+  writing 255 bloomed every pixel white (max|d| 222 over the whole frame).
+  Fixed to 0 (the sky emits none — matches the dense arm's retire).
 
 ## Phase 1 design notes (settled before building)
 - Compaction lives in NEW engine module algan/rendering/raytracing/sheets.py,

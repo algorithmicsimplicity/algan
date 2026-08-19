@@ -1161,6 +1161,8 @@ def prepare_sparse_raster_coverage(
     half_h,
     layer_offset_triangles,
     sheet_resolve=False,
+    require_sheets=False,
+    env_in_composite=False,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -1311,6 +1313,17 @@ def prepare_sparse_raster_coverage(
     sheets_wanted = bool(sheet_resolve) and (
         (not has_tri or aa_tri >= 3) and (not has_bez or aa_bez > 0)
     )
+    if require_sheets and not sheets_wanted:
+        # The tracer relaxed the sparse gate (env map / in-kernel tonemap) on
+        # the promise that the sheet resolve serves this batch; rendering it
+        # through the fragment walk here would silently paint the wrong
+        # background. A loud mismatch beats a quiet wrong frame — same
+        # precedent as the analytic-raster/use_raster check in tracer.py.
+        raise RuntimeError(
+            "The sheet resolve was required for this batch (env map or "
+            "in-kernel tonemap on the sparse route) but the emission cannot "
+            "produce sheets under the current analytic-AA settings."
+        )
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1801,6 +1814,9 @@ def prepare_sparse_raster_coverage(
                 "sheet_cap": sheet_cap_t,
                 "sheet_offsets": sheet_offsets,
                 "num_sheets": ns,
+                # Pinned with the emission like aa_*: the resolve's env
+                # handling must match the frame buffer this batch prefilled.
+                "env_in_composite": bool(env_in_composite),
             }
 
         # Recorded for calibration: the fragment/covered counts are this
@@ -1978,6 +1994,7 @@ def shade_sparse_raster_coverage(
             sec_aa,
             float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
             int(rt_settings.glossy_reflection_mode()),
+            1 if coverage.get("env_in_composite") else 0,
             covered_idx,
             int(time_start),
             int(width),

@@ -1184,14 +1184,18 @@ def wf_composite_accum(
 def wf_composite_accum_sparse(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int, pixel_idx: ti.types.ndarray(),
-        pix_accum: ti.types.ndarray(), tonemap_exposure: ti.f32,
+        pix_accum: ti.types.ndarray(),
+        tonemapping: ti.template(), tonemap_exposure: ti.f32,
         out: ti.types.ndarray()):
     """Composite compact accumulator rows at their real local pixels.
 
-    This is the post-process-tonemapping counterpart of
-    :func:`wf_composite_accum`: empty pixels are already the prefilled
-    background and never appear in ``pixel_idx``.  Row ``r`` of
-    ``pix_accum`` belongs to local pixel ``pixel_idx[r]``.
+    This is the covered-pixel counterpart of :func:`wf_composite_accum`:
+    empty pixels never appear in ``pixel_idx``. Row ``r`` of ``pix_accum``
+    belongs to local pixel ``pixel_idx[r]``. Under post-process tonemapping
+    (``tonemapping == 3``, the historical only mode) the untouched pixels'
+    prefilled background IS their final value; under an in-kernel tonemap
+    the sheet route pairs this with :func:`wf_finalize_uncovered`, which
+    owes every untouched pixel ``finalize(bg)``.
     """
     pixels_per_frame = width * height
     for r in range(pix_accum.shape[0]):
@@ -1207,14 +1211,51 @@ def wf_composite_accum_sparse(
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
             csum[ci] = pix_accum[r, ci] * 255.0 + weight[ci] * bg
         color_final = finalize_pixel_color(
-            csum, 1.0, 3, tonemap_exposure)
+            csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = color_final[ci]
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
             val = (1.0 - weight[3]) * 255.0 + weight[3] * bg_a
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
+
+
+@ti.kernel
+def wf_finalize_uncovered(
+        num_pixels: int, width: int, height: int,
+        covered_mask: ti.types.ndarray(),
+        tonemapping: ti.template(), tonemap_exposure: ti.f32,
+        out: ti.types.ndarray()):
+    """``finalize(bg)`` for every pixel the sparse resolve did not touch.
+
+    Under an in-kernel tonemap an untouched pixel owes ``tonemap(bg) != bg``,
+    which the covered-only composite cannot supply. The mask is the sparse
+    coverage scattered to per-pixel bytes; covered pixels were finalized by
+    :func:`wf_composite_accum_sparse` (which read their RAW prefilled
+    background first, so ordering between the two kernels is free). Only
+    launched when ``tonemapping != 3`` — the linear mode's untouched pixels
+    are already final by identity.
+    """
+    pixels_per_frame = width * height
+    for g in range(num_pixels):
+        if covered_mask[g] != 0:
+            continue
+        f_rel = g // pixels_per_frame
+        p = g - f_rel * pixels_per_frame
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        for ci in ti.static(range(4)):
+            csum[ci] = ti.cast(out[f_rel, p, ci], ti.f32)
+        color_final = finalize_pixel_color(
+            csum, 1.0, tonemapping, tonemap_exposure)
+        for ci in ti.static(range(4)):
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
 
 
 @ti.kernel
