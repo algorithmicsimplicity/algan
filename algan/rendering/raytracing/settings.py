@@ -1990,8 +1990,13 @@ _MAT_DEFAULTS = [
     0.0,
     0.0,
     0.0,
+    # 26 one_sided: 0.0 is two-sided lighting, what every mob got before the
+    # built-in solids started declaring an outside (shading_taichi._MAT_ONE_SIDED).
+    0.0,
 ]
 # Material-property name -> (start slot, width) in the canonical block.
+# ``one_sided`` (slot 26) is deliberately absent: it is declared by the mob's
+# geometry, not by its material, and ``_pack_material`` writes it directly.
 _MAT_SLOTS = {
     "emissive": (0, 3),
     "emissive_intensity": (3, 1),

@@ -39,7 +39,8 @@ single-stage pipeline)::
     12 ior          13 specular_intensity  14..16 specular_color
     17 clearcoat    18 clearcoat_roughness 19 sheen         20 sheen_roughness
     21..23 sheen_color   24 transmission   25 iridescence (accepted, unused --
-    matches the PyTorch shader)
+    matches the PyTorch shader)      26 one_sided (declared by the GEOMETRY,
+    not by the material -- see ``_MAT_ONE_SIDED``)
 
 The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
 terms, ``AMBIENT_STRENGTH``, ``light_intensity == ambient == 1``) and reproduces
@@ -53,7 +54,17 @@ import taichi as ti
 from algan.environment import env_int
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 26
+MAT_W = 27
+
+# Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
+# so a back-facing hit is shaded with its own normal instead of the viewer's
+# side (``Mob.two_sided`` False). Not a material property -- the MOB declares
+# it -- so it is not in ``_MAT_SLOTS``, and it is deliberately the LAST slot
+# with 0.0 ("two-sided", the historical behaviour) as its default: a custom
+# fragment pipeline's block is a different layout entirely and is zero-padded
+# to this width when the two share a scene, so the padding reads as the
+# behaviour that pipeline already had.
+_MAT_ONE_SIDED = 26
 
 # Built-in single-stage pipeline ids.
 _MID_DEFAULT = 0
@@ -171,23 +182,92 @@ def _faces_viewer(n, face_n, view_dir):
 
 
 @ti.func
-def _prep_normal(n_interp, face_n, flat, view_dir):
-    """Shading normal (optionally flat-blended) flipped to the visible side.
+def _two_sided_normal(n_interp, face_n, flat, view_dir):
+    """``n_interp`` flipped toward the viewer -- the historical behaviour, kept
+    for geometry that has not declared an outside.
 
-    Two-sided shading: light the face the viewer actually sees. A coarsely
-    tessellated mesh whose perpendicular frame was built from an arbitrary axis
-    (e.g. a Cylinder via ``move_between_points``) can leave some patch normals
-    pointing inward; without flipping them toward the viewer they shade as unlit
-    backfaces (black), so a thin tube's apparent lighting would depend on its
-    (incidental) frame orientation instead of just its shape.
-
-    Which side that is comes from :func:`_faces_viewer` -- see there for why it
-    must not be read off the shading normal.
-    """
-    n = _shading_normal(n_interp, face_n, flat)
-    if not _faces_viewer(n, face_n, view_dir):
-        n = -n
+    The side is tested on the flat-BLENDED normal, which is the vector
+    :func:`_prep_normal` used to hand :func:`_faces_viewer`, and the RAW normal
+    is what gets negated: the stage blends again downstream, and the blend is
+    odd (``_shading_normal(-n) == -_shading_normal(n)``, since it aligns the
+    face normal to whichever side ``n`` is on), so negating before or after it
+    gives the same vector. That makes this decision the old one by
+    construction. Measured, the distinction does not reach a single pixel on
+    the harness scenes -- ``_faces_viewer`` reads the geometric normal wherever
+    it is credible, and the blend only moves that credibility test's own dot
+    product -- so this is parity by reasoning, not a fix for anything
+    observed."""
+    n = n_interp
+    if not _faces_viewer(_shading_normal(n_interp, face_n, flat), face_n,
+                         view_dir):
+        n = -n_interp
     return n
+
+
+@ti.func
+def _sided_shading_normal(n_interp, face_n, view_dir, params: ti.template(),
+                          f, prim):
+    """``n_interp``, flipped toward the viewer for TWO-SIDED geometry only.
+
+    The shading side is a property of the surface, not of the material, so it
+    is decided ONCE per hit here -- in :func:`_run_frag_pipeline`, before any
+    stage runs -- rather than inside each stage's :func:`_prep_normal`. Every
+    ray type therefore gets the same answer: the camera ray, the reflection
+    that sees the same solid in a mirror, and the coverage pass-through behind
+    a half-transparent surface.
+
+    Two-sided (``one_sided`` 0, the default) is for geometry with no outside:
+    a 2-D shape, ``Text``, a parametric ``Surface``, an imported mesh whose
+    winding nobody has checked. A coarsely tessellated mesh whose perpendicular
+    frame was built from an arbitrary axis can leave some patch normals
+    pointing inward, and without this flip such a surface shades as an unlit
+    backface (black), its apparent lighting depending on an incidental frame
+    orientation rather than on its shape.
+
+    One-sided (``one_sided`` 1) is what the built-in solids declare, having
+    normals that face out (``Mob.two_sided``,
+    ``tests/unit_tests/test_normal_orientation.py``). A back-facing hit on one
+    of those is genuinely its inside, and lighting it as though it faced the
+    camera is what turned a half-transparent solid's far shell into a second,
+    brightly lit front shell -- the bright and dark planes through a fading
+    Octahedron, whose far faces were lit by a key light they face away from.
+
+    Which side the viewer is on comes from :func:`_faces_viewer` -- see there
+    for why it must not be read off the shading normal.
+
+    KNOWN LIMIT: the shadow path still orients toward the ray
+    (:func:`_orient_hit_normals`), and its light-facing cull skips the shadow
+    ray for a hit whose ray-facing normal points away from the light. On a
+    one-sided surface shaded from BEHIND -- the inside of a solid, reachable
+    only through transparency or refraction -- that is exactly the case the
+    shading now lights, so such a point is lit without being shadow-tested.
+    It needs a light on the far side of a translucent solid AND shadows on to
+    show at all; closing it means carrying this declaration into the shadow
+    event build, which is a different kernel and a wider change than the one
+    this fixes.
+    """
+    tm = f % params.shape[0]
+    n = n_interp
+    if params[tm, prim, _MAT_ONE_SIDED] < 0.5:
+        # Slot 10 is flat_shading, and a built-in single-stage pipeline's block
+        # starts at 0 -- so this is the very value the stage is about to blend
+        # with (see _two_sided_normal on why the test takes it).
+        n = _two_sided_normal(n_interp, face_n, params[tm, prim, 10], view_dir)
+    return n
+
+
+@ti.func
+def _prep_normal(n_interp, face_n, flat, view_dir):
+    """Shading normal, optionally blended toward the flat (per-face) one.
+
+    The side it is lit from is NOT decided here: the caller
+    (:func:`_run_frag_pipeline`) has already oriented ``n_interp`` per the
+    surface's own declaration (:func:`_sided_shading_normal`), so a stage --
+    built-in or user-written -- shades whatever side it is handed. ``view_dir``
+    stays in the signature for stages that were written against it and for the
+    symmetry with ``material_shaders._shading_normal``.
+    """
+    return _shading_normal(n_interp, face_n, flat)
 
 
 @ti.func
@@ -828,19 +908,30 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
     out = ti.math.vec3(albedo[0], albedo[1], albedo[2])
     g = glow
     solo = ti.static(solo_pid(pids_present, len(frag_pipelines)))
+    # THE SHADING SIDE, decided once per hit rather than once per stage (see
+    # _sided_shading_normal). Only a BUILT-IN pipeline's parameter block has a
+    # one_sided slot -- a custom fragment pipeline lays its block out itself --
+    # so a custom pipeline gets the viewer-facing normal unconditionally, which
+    # is what its stages were handed before the decision moved out here.
+    shade_n = n_interp
     if ti.static(solo >= 0):
+        if ti.static(solo < _USER_PIPELINE_BASE):
+            shade_n = _sided_shading_normal(n_interp, face_n, view_dir,
+                                            params, f, prim)
+        else:
+            shade_n = _two_sided_normal(n_interp, face_n, 0.0, view_dir)
         if ti.static(solo == _MID_UNLIT):
             pass  # passthrough: colour returned unchanged (raw or baked).
         elif ti.static(solo < _USER_PIPELINE_BASE):
             stage = ti.static(_BUILTIN_STAGE_FNS[solo])
-            r = stage(pos, view_dir, n_interp, face_n, out, g,
+            r = stage(pos, view_dir, shade_n, face_n, out, g,
                       params, f, prim, 0,
                       light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         else:
             fn = ti.static(frag_pipelines[solo - _USER_PIPELINE_BASE])
-            r = fn(pos, view_dir, n_interp, face_n, out, g,
+            r = fn(pos, view_dir, shade_n, face_n, out, g,
                    params, f, prim,
                    light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
@@ -852,32 +943,37 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
         # kernel this hot is not the place to change the emitted branch
         # structure for cosmetics.
         pid = pid_arr[f % pid_arr.shape[0], prim]
+        if pid < _USER_PIPELINE_BASE:
+            shade_n = _sided_shading_normal(n_interp, face_n, view_dir,
+                                            params, f, prim)
+        else:
+            shade_n = _two_sided_normal(n_interp, face_n, 0.0, view_dir)
         if pid == _MID_DEFAULT:
-            r = _stage_default(pos, view_dir, n_interp, face_n, out, g,
+            r = _stage_default(pos, view_dir, shade_n, face_n, out, g,
                                params, f, prim, 0,
                                light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_LAMBERT:
-            r = _stage_lambert(pos, view_dir, n_interp, face_n, out, g,
+            r = _stage_lambert(pos, view_dir, shade_n, face_n, out, g,
                                params, f, prim, 0,
                                light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_PHONG:
-            r = _stage_phong(pos, view_dir, n_interp, face_n, out, g,
+            r = _stage_phong(pos, view_dir, shade_n, face_n, out, g,
                              params, f, prim, 0,
                              light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_STANDARD:
-            r = _stage_standard(pos, view_dir, n_interp, face_n, out, g,
+            r = _stage_standard(pos, view_dir, shade_n, face_n, out, g,
                                 params, f, prim, 0,
                                 light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_PHYSICAL:
-            r = _stage_physical(pos, view_dir, n_interp, face_n, out, g,
+            r = _stage_physical(pos, view_dir, shade_n, face_n, out, g,
                                 params, f, prim, 0,
                                 light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
@@ -888,13 +984,18 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
             for pi in ti.static(range(len(frag_pipelines))):
                 if pid == _USER_PIPELINE_BASE + pi:
                     fn = ti.static(frag_pipelines[pi])
-                    r = fn(pos, view_dir, n_interp, face_n, out, g,
+                    r = fn(pos, view_dir, shade_n, face_n, out, g,
                            params, f, prim,
                            light_pos, light_col, num_lights, shadows, vis)
                     out = ti.math.vec3(r[0], r[1], r[2])
                     g = r[3]
     else:
         pid = pid_arr[f % pid_arr.shape[0], prim]
+        if pid < _USER_PIPELINE_BASE:
+            shade_n = _sided_shading_normal(n_interp, face_n, view_dir,
+                                            params, f, prim)
+        else:
+            shade_n = _two_sided_normal(n_interp, face_n, 0.0, view_dir)
         # GATED: only the ids the batch carries get a branch. _MID_UNLIT never
         # needs one -- matching nothing leaves the colour unchanged, which is
         # its whole semantics.
@@ -902,7 +1003,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
             if ti.static(mid != _MID_UNLIT and ((pids_present >> mid) & 1)):
                 stage = ti.static(_BUILTIN_STAGE_FNS[mid])
                 if pid == mid:
-                    r = stage(pos, view_dir, n_interp, face_n, out, g,
+                    r = stage(pos, view_dir, shade_n, face_n, out, g,
                               params, f, prim, 0,
                               light_pos, light_col, num_lights, shadows, vis)
                     out = ti.math.vec3(r[0], r[1], r[2])
@@ -911,7 +1012,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
             if ti.static((pids_present >> (_USER_PIPELINE_BASE + pi)) & 1):
                 fn = ti.static(frag_pipelines[pi])
                 if pid == _USER_PIPELINE_BASE + pi:
-                    r = fn(pos, view_dir, n_interp, face_n, out, g,
+                    r = fn(pos, view_dir, shade_n, face_n, out, g,
                            params, f, prim,
                            light_pos, light_col, num_lights, shadows, vis)
                     out = ti.math.vec3(r[0], r[1], r[2])

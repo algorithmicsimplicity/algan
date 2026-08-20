@@ -26,7 +26,7 @@ mechanism with their duration taken from a sound clip instead of a number.
 
 :class:`AnimationManager` is the per-Scene owner of the context stack.
 
-See :doc:`/new_user_tutorials/controlling_animations`.
+See :doc:`/new_user_tutorials/combining_animations`.
 """
 
 from __future__ import annotations

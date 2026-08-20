@@ -122,12 +122,12 @@ that would produce the same effect.
 For anything simpler, prefer the ordinary contexts:
 
 * A fixed stagger across a list is :class:`~.Lag` (see
-  :doc:`../new_user_tutorials/controlling_animations`).
+  :doc:`../new_user_tutorials/combining_animations`).
 * A rule that holds continuously, rather than a set of scheduled animations, is an
   updater (see :doc:`../new_user_tutorials/updaters`).
 
 See Also
 ********
 
-* :doc:`../new_user_tutorials/controlling_animations` -- the contexts this bypasses.
+* :doc:`../new_user_tutorials/combining_animations` -- the contexts this bypasses.
 * :doc:`../developer_tutorials/index` -- how the timeline materializes state.

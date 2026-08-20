@@ -199,7 +199,9 @@ class Material:
         if self.side != FrontSide:
             msgs.append(
                 "non-default 'side' (BackSide/DoubleSide) is not supported; "
-                "Algan renders all faces"
+                "Algan renders all faces. Whether a back-facing hit is LIT "
+                "from the viewer's side is decided by the geometry instead, "
+                "through Mob.two_sided"
             )
         for m in msgs:
             warnings.warn(f"{type(self).__name__}: {m}", stacklevel=2)

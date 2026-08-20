@@ -513,6 +513,10 @@ class TriangleVertices(Mob):
         # A mob's own triangles being one surface is also simply true: a
         # quad's diagonal is an interior edge, not a boundary.
         primitive.mesh_key = ("trimob", self.id)
+        # A bare triangle mob has no outside (a Polyhedron's faces do -- it
+        # sets ``two_sided`` False on them, and this is what carries that to
+        # the renderer).
+        primitive.declare_one_sided(not self.two_sided)
         return primitive
 
 

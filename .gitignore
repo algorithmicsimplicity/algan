@@ -2,6 +2,9 @@
 **/output_errors/
 benchmarks/_*_out/
 **/algan_outputs/
+# tests/full_renders writes its renders next to the baselines, in a directory
+# the glob above just misses (test_full_renders.OUTPUT_DIR).
+**/algan_outputs2/
 algan_outputs/
 algan_outputs
 algan_cache

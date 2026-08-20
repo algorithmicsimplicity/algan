@@ -12,7 +12,7 @@ and settles, ``delay_fade`` and ``pulse_fade`` are shaped for appearance and
 attention effects, and ``inversed`` reverses any function you hand it.
 
 A rate function is just a callable on tensors, so writing your own is a
-one-liner. See :doc:`/new_user_tutorials/controlling_animations`.
+one-liner. See :doc:`/new_user_tutorials/combining_animations`.
 """
 
 from __future__ import annotations
