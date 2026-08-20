@@ -40,7 +40,7 @@ from algan.rendering.raytracing.settings import (
     _shader_is_core,
     _shader_material_id,
 )
-from algan.rendering.raytracing.shading_taichi import MAT_W
+from algan.rendering.raytracing.shading_taichi import _MAT_ONE_SIDED, MAT_W
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _unify_time
 from algan.settings import SETTINGS
@@ -322,7 +322,20 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # whether -- and how much -- the surface transmits. All are derived from the
     # material alone (see ``_derive_material_surface_params``) -- there is no
     # user-facing renderer control, matching the Three.js material interface.
-    _surface_params = ("reflectivity", "roughness", "refractive_index", "transmission")
+    #
+    # ``one_sided`` is the odd one out: the MOB declares it
+    # (:meth:`declare_one_sided`) rather than the material, and it is packed
+    # into the material block rather than into ``tri_extra``. It rides this
+    # tuple for the machinery around it -- the per-member gather below, whose
+    # default fill of 0.0 is exactly "two-sided, as before", and the logical-PN
+    # dice, which has to carry it to every diced triangle.
+    _surface_params = (
+        "reflectivity",
+        "roughness",
+        "refractive_index",
+        "transmission",
+        "one_sided",
+    )
 
     def __init__(
         self,
@@ -441,6 +454,27 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 [self], None
             )
             self._derive_material_surface_params()
+            # Two-sided until the mob says otherwise, which it does after
+            # construction (``declare_one_sided``) -- the same point at which
+            # it declares ``mesh_key``.
+            self.declare_one_sided(False)
+
+    def declare_one_sided(self, one_sided=True):
+        """Declare whether this primitive's hits are shaded from one side only.
+
+        Called by the mob that built the primitive, from its geometry rather
+        than from its material: ``one_sided`` says the normals face out of a
+        solid, so a back-facing hit is its inside and must be shaded as such
+        instead of borrowing the viewer's side
+        (:attr:`~algan.animatable_base.mob.Mob.two_sided`).
+
+        Stored per corner, matching the other ``_surface_params``, so the
+        collection merge and the logical-PN dice carry it with everything else.
+        """
+        self.one_sided = torch.full_like(
+            self.colors[:1, ..., :1], 1.0 if one_sided else 0.0
+        )
+        return self
 
     def _derive_material_surface_params(self):
         """Derive ray transport directly from material shader parameters.
@@ -630,6 +664,13 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             for name, value in zip(names, values):
                 if name in _MAT_SLOTS and value is not None:
                     pairs.append((name, per_triangle(value)))
+        # The mob's own declaration, not the material's: whether this geometry
+        # has an outside for the shading side to be read off (see
+        # ``declare_one_sided``). Packed here because this block is what
+        # ``_run_frag_pipeline`` already has in hand at the hit.
+        one_sided = getattr(self, "one_sided", None)
+        if one_sided is not None:
+            pairs.append((None, per_triangle(one_sided)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
         mat = (
             torch.tensor(_MAT_DEFAULTS, device=device)
@@ -638,7 +679,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             .contiguous()
         )
         for name, v in pairs:
-            start, width = _MAT_SLOTS[name]
+            start, width = (_MAT_ONE_SIDED, 1) if name is None else _MAT_SLOTS[name]
             if v.shape[-1] != width:  # broadcast a scalar into a vector slot
                 v = v.expand(*v.shape[:-1], width)
             mat[:, :, start : start + width] = v

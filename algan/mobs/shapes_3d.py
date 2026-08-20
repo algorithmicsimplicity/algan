@@ -255,6 +255,9 @@ class Sphere(Surface):
         Scene.save_video()
     """
 
+    # Its normals face out of the sphere, so a back-facing hit is its inside.
+    two_sided = False
+
     def __init__(
         self,
         center=ORIGIN,
@@ -368,6 +371,12 @@ class Cone(Surface):
 
         Scene.save_video()
     """
+
+    # The side's normals face out of the cone. An UNCAPPED cone therefore
+    # shades its inside as an inside (ambient only) rather than as a second
+    # lit exterior; pass ``show_base=True``, or set ``two_sided = True`` on
+    # the instance, if you want the old two-sided lighting.
+    two_sided = False
 
     def __init__(
         self,
@@ -552,6 +561,10 @@ class Cylinder(Surface):
         Scene.save_video()
     """
 
+    # The tube's normals face out; see Cone for what that means for an
+    # uncapped one.
+    two_sided = False
+
     def __init__(
         self,
         radius=1,
@@ -683,7 +696,15 @@ class Cylinder(Surface):
         with Sync(animation_manager=self.animation_manager):
             up_b = F.normalize(end - start, p=2, dim=-1)
             right_b = get_orthonormal_vector(up_b)
-            forward_b = get_orthonormal_vector(up_b, right_b)
+            # forward = right x up is the basis convention every other Mob is
+            # built with (look(), the default basis). get_orthonormal_vector
+            # promises orthogonality and determinism but says nothing about
+            # handedness, and the vector it returned here was the other one --
+            # a mirrored frame, which turned the tessellated tube inside out:
+            # a Line3D's vertex normals and winding faced INWARD, so its lit
+            # side was its inside. Nothing showed while the flip in
+            # _prep_normal covered it; a transparent Line3D showed it plainly.
+            forward_b = torch.cross(right_b, up_b, dim=-1)
             self.move_to((start + end) * 0.5)
             self._setattr_and_record_modification(
                 "basis",
@@ -1034,6 +1055,15 @@ class Torus(Surface):
         Scene.save_video()
     """
 
+    # Its normals face out of the tube (given the reorientation below).
+    two_sided = False
+
+    # Manim's torus parameterization is left-handed: du x dv points INTO the
+    # tube, so both the vertex normals and the triangle winding came out
+    # inside-out. ``coord_function`` below stays Manim's, vertex for vertex;
+    # the renderer reverses the v axis instead (Surface._grid_orientation).
+    _grid_orientation = -1
+
     def __init__(
         self,
         major_radius=3,
@@ -1208,16 +1238,26 @@ class Polyhedron(Mob):
         # today. Read live, per the settings-are-read-at-call-time rule.
         from algan.rendering.raytracing import settings as rt_settings
 
+        # Whether the faces below are known to face outward, which decides
+        # whether this solid can be shaded one-sided: ``orient_faces_outward``
+        # returns its input UNCHANGED (same object) for anything that is not a
+        # closed orientable manifold, and for an open or non-manifold
+        # Polyhedron -- both of which the public constructor accepts --
+        # "outward" has no answer, so such a mob stays two-sided.
+        self._faces_are_outward = False
         if rt_settings.POLYHEDRON_WINDING:
             # Gated, but not because it is known to move output -- measured, the
             # fast-suite render is BYTE-IDENTICAL across this flag while
             # ALGAN_MESH_ID is off, since a per-triangle surface id makes every
             # run one fragment and the facing bit then groups nothing. With
             # MESH_ID on it does move, which is the mechanism: one id per solid
-            # leaves facing as the only thing separating the two sheets. Off by
-            # default until tests/full_renders has been checked on a machine
-            # whose baselines those are.
-            self.faces_list = orient_faces_outward(self.vertex_coords, self.faces_list)
+            # leaves facing as the only thing separating the two sheets. ON by
+            # default since DESIGN_mesh_identity.md ss3.7, and now load-bearing
+            # rather than cosmetic: one-sided shading below is declared off the
+            # back of it.
+            oriented = orient_faces_outward(self.vertex_coords, self.faces_list)
+            self._faces_are_outward = oriented is not self.faces_list
+            self.faces_list = oriented
         self.vertex_indices = list(range(len(self.vertex_coords)))
         self.layout = {i: self.vertex_coords[i] for i in self.vertex_indices}
         self.face_coords = [
@@ -1250,6 +1290,13 @@ class Polyhedron(Mob):
                 )
             face_groups.append(Group(*triangles, scene=self.scene, add_to_scene=False))
         self.faces = Group(*face_groups, scene=self.scene, add_to_scene=False)
+        # The faces are triangle mobs, which are two-sided sheets on their own;
+        # what makes them the SKIN of a solid is this polyhedron, so it is this
+        # polyhedron that declares it -- and only when the winding pass above
+        # established which way out is.
+        self.two_sided = not self._faces_are_outward
+        for mob in self._face_primitive_mobs():
+            mob.two_sided = self.two_sided
 
         vertex_type = self.graph_config.get("vertex_type", Dot3D)
         vertex_config = dict(self.graph_config.get("vertex_config", {}))
