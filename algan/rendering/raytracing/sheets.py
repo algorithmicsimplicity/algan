@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import torch
 
+from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
 )
@@ -261,40 +262,237 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     """
     n = safe_ref.numel()
     device = safe_ref.device
-    cls = torch.zeros(n, dtype=torch.int64, device=device)
     tri_norm = merged.get("tri_norm")
     tri_pos = merged.get("tri_pos")
     if tri_norm is None or tri_pos is None or not bool(is_tri.any()):
-        return cls
+        return torch.zeros(n, dtype=torch.int64, device=device)
+    # Everything here is [n, 3] or [n, 3, 3] over the whole fragment stream --
+    # 42 and 126 MB at 4K -- and the function was the compaction's allocation
+    # peak because it held all of them at once. Each is released the statement
+    # after its last read, and the two reductions below are written to avoid
+    # materializing an [n, 3, 3] temporary at all.
     nrm = tri_norm[_rows(tri_norm, frame_rel, time_start), safe_ref].view(-1, 3, 3)
     mag = nrm.norm(dim=2)
-    unit = nrm / mag.unsqueeze(2).clamp_min(1e-12)
-    spread = (unit - unit[:, :1]).abs().amax(dim=(1, 2))
+    # In place: the gather is this function's own copy and the normalized
+    # vectors are the only thing wanted from it.
+    unit = nrm.div_(mag.unsqueeze(2).clamp_min(1e-12))
+    del nrm
+    # max over vertex j and component c of |unit[j] - unit[0]|. The j = 0 term
+    # is identically zero and the terms are non-negative, so dropping it
+    # leaves the maximum unchanged -- and drops a full [n, 3, 3] temporary.
+    spread = torch.maximum(
+        (unit[:, 1] - unit[:, 0]).abs().amax(dim=1),
+        (unit[:, 2] - unit[:, 0]).abs().amax(dim=1),
+    )
     declared_flat = (mag.amin(dim=1) > 1e-6) & (spread < 1e-6)
+    del spread
     # All-degenerate vertex normals: the kernel falls back to the geometric
     # normal, so the class does too (the Polyhedron family authors none).
     geometric_flat = mag.amax(dim=1) < 1e-6
-    v = tri_pos[_rows(tri_pos, frame_rel, time_start), safe_ref]
-    gn = torch.cross(v[:, 3:6] - v[:, 0:3], v[:, 6:9] - v[:, 0:3], dim=1)
+    del mag
+    # A copy, so the [n, 3, 3] storage this row views goes now.
+    vertex_n = unit[:, 0].contiguous()
+    del unit
+    rows = _rows(tri_pos, frame_rel, time_start)
+    p0 = tri_pos[rows, safe_ref, 0:3]
+    e1 = tri_pos[rows, safe_ref, 3:6] - p0
+    e2 = tri_pos[rows, safe_ref, 6:9] - p0
+    del p0, rows
+    gn = torch.cross(e1, e2, dim=1)
+    del e1, e2
     gn = gn / gn.norm(dim=1, keepdim=True).clamp_min(1e-12)
-    face_n = torch.where(geometric_flat.unsqueeze(1), gn, unit[:, 0])
+    face_n = torch.where(geometric_flat.unsqueeze(1), gn, vertex_n)
+    del gn, vertex_n
     q = (
         torch.round(face_n * float(SHADE_CLASS_QUANT))
         .to(torch.int64)
         .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
         + SHADE_CLASS_QUANT
     )
+    del face_n
     packed = (q[:, 0] << 16) | (q[:, 1] << 8) | q[:, 2]
+    del q
     flat = is_tri & (declared_flat | geometric_flat)
-    return torch.where(flat, packed + 1, cls)
+    zero = torch.zeros((), dtype=torch.int64, device=device)
+    return torch.where(flat, packed + 1, zero)
 
 
 def _popcount_lanes(bits):
-    """Number of set sample bits in each element of an int64 mask tensor."""
-    pop = torch.zeros_like(bits)
+    """Number of set sample bits in each element of a mask tensor.
+
+    The count cannot exceed ``AA_NUM_SAMPLES`` and both callers cast it to a
+    float before use, so the accumulator is int32 whatever ``bits`` is: on a
+    4K frame the ``zeros_like`` version held 26 MB of int64 for values below
+    nine, and every one of these arrays is live at the compaction's peak.
+    """
+    n = int(bits.numel())
+    # The kernel walks one dimension; both callers pass a flat sheet array, and
+    # anything else falls through to the loop rather than silently reshaping.
+    if rt_settings.SHEET_MASK_KERNEL and n and bits.dim() == 1:
+        from algan.rendering.raytracing.sheet_compact_taichi import mask_popcount
+
+        pop = torch.empty(n, dtype=torch.int32, device=bits.device)
+        mask_popcount(bits.contiguous(), n, pop)
+        return pop
+    pop = torch.zeros(bits.shape, dtype=torch.int32, device=bits.device)
     for b in range(AA_NUM_SAMPLES):
-        pop += (bits >> b) & 1
+        pop += ((bits >> b) & 1).to(torch.int32)
     return pop
+
+
+def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
+    """Per-band ``(area, union, fused, sliver)`` over the sorted fragments.
+
+    ``area`` is the exact-area sum (float32, unclamped -- the caller owns the
+    clamp), ``union`` the OR of the sample bits, ``fused`` marks a band some
+    sample of which two fragments both claimed (the DESIGN_sheet_resolve.md
+    §6.2 partition violation that proves the band holds more than one sheet),
+    and ``sliver`` -- only when asked for -- whether any fragment carried the
+    sliver bit.
+
+    All four walk the same stream, so under ``SHEET_MASK_KERNEL`` they are one
+    kernel pass; the torch arm below is what they were, and stays as the A/B
+    arm. That arm's shape is the reason they were ever separate: the mask
+    reductions are one ``scatter_add_`` per sample lane, and the area sum
+    needs an f64 copy of the whole fragment array before ``scatter_add_`` will
+    take it (29 MB on a 4K frame), so there was nothing to share.
+
+    The three integer results are int32 in both arms. A union holds
+    ``AA_NUM_SAMPLES`` bits and a sliver flag holds one, and every consumer
+    either compares them or casts explicitly, so the width was only ever
+    costing bandwidth and 13 MB an array on a 4K frame -- which matters
+    because two unions (this band set's and the shading split's) are live
+    across the whole second half of the compaction.
+
+    ``area`` accumulates in float64 and rounds to float32 in BOTH arms
+    (§6.6.4): a float32 atomic add is not order-reproducible on CUDA and this
+    value feeds thresholds. Measured on a real frame, 81% of sheets hold one
+    fragment and 17% hold two -- order-independent at any width -- but the
+    remaining 1.6% run to eleven, which is enough.
+    """
+    device = msk.device
+    n = int(msk.numel())
+    area64 = torch.zeros(nbands, dtype=torch.float64, device=device)
+    if rt_settings.SHEET_MASK_KERNEL and n:
+        from algan.rendering.raytracing.sheet_compact_taichi import (
+            sheet_band_reduce,
+        )
+
+        union = torch.zeros(nbands, dtype=torch.int32, device=device)
+        dup = torch.zeros(nbands, dtype=torch.int32, device=device)
+        sliver = torch.zeros(
+            nbands if want_sliver else 1, dtype=torch.int32, device=device
+        )
+        sheet_band_reduce(
+            band_id.contiguous(),
+            msk.contiguous(),
+            cov.contiguous(),
+            n,
+            int(AA_MASK_ALL),
+            int(AA_SLIVER_BIT),
+            area64,
+            union,
+            dup,
+            sliver,
+            bool(want_sliver),
+        )
+        fused = dup != 0
+        del dup
+        area = area64.to(torch.float32)
+        del area64
+        return area, union, fused, (sliver if want_sliver else None)
+
+    area64.scatter_add_(0, band_id, cov.to(torch.float64))
+    area = area64.to(torch.float32)
+    del area64
+    bits = (msk & AA_MASK_ALL).to(torch.int64)
+    union = torch.zeros(nbands, dtype=torch.int32, device=device)
+    fused = torch.zeros(nbands, dtype=torch.bool, device=device)
+    lane = torch.zeros(nbands, dtype=torch.int64, device=device)
+    for b in range(AA_NUM_SAMPLES):
+        lane.zero_()
+        lane.scatter_add_(0, band_id, (bits >> b) & 1)
+        union |= (lane > 0).to(torch.int32) << b
+        fused |= lane > 1
+    del bits, lane
+    sliver = None
+    if want_sliver:
+        sliver = torch.zeros(nbands, dtype=torch.int32, device=device)
+        sliver.scatter_reduce_(
+            0,
+            band_id,
+            ((msk & AA_SLIVER_BIT) != 0).to(torch.int32),
+            reduce="amax",
+            include_self=True,
+        )
+    return area, union, fused, sliver
+
+
+def _prim_split_after(
+    merged,
+    cam_origin,
+    pixel_world_scale,
+    tri_screen,
+    frame_rel,
+    time_start,
+    safe_ref,
+    is_tri,
+    t,
+    t_o,
+    order,
+    band_c,
+):
+    """The ``prim`` band rule: ``True`` where a sorted fragment's depth gap to
+    its predecessor exceeds the pair's own per-pixel scale (``compact_sheets``
+    documents the rule; this is only its evaluation).
+
+    A function rather than an inline block so its gathers are released at the
+    return. They are the largest transients the compaction makes -- a
+    per-fragment copy of the triangle's three world vertices and of its
+    screen bounds -- and inline they stayed live through the rank loop and
+    the segmented reductions, which is where the peak actually is. The
+    vertices are reduced one at a time for the same reason: gathering all
+    three at once cost 126 MB on a 4K frame for an answer that is one float
+    per fragment.
+    """
+    tri_pos = merged["tri_pos"]
+    rows = _rows(tri_pos, frame_rel, time_start)
+    ro = cam_origin[_rows(cam_origin, frame_rel, time_start)]
+    dmin = dmax = None
+    for k in range(3):
+        dk = torch.linalg.norm(tri_pos[rows, safe_ref, 3 * k : 3 * k + 3] - ro, dim=1)
+        dmin = dk if dmin is None else torch.minimum(dmin, dk)
+        dmax = dk if dmax is None else torch.maximum(dmax, dk)
+    del ro, dk, rows
+    ext = dmax - dmin
+    del dmin, dmax
+    # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
+    # differ by about one pixel's worth of the surface's depth gradient,
+    # not by the triangle's whole extent. Where the projection table is
+    # valid, divide by the projected size in pixels; a camera-plane
+    # straddler keeps the conservative raw extent.
+    slope = ext
+    if tri_screen is not None and tri_screen.shape[2] >= 10:
+        rs = _rows(tri_screen, frame_rel, time_start)
+        sx = tri_screen[rs, safe_ref, 0:3]
+        span_x = sx.amax(dim=1) - sx.amin(dim=1)
+        del sx
+        sy = tri_screen[rs, safe_ref, 3:6]
+        span_y = sy.amax(dim=1) - sy.amin(dim=1)
+        del sy
+        proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
+        del span_x, span_y
+        valid = tri_screen[rs, safe_ref, 9] > 0.5
+        slope = torch.where(valid, ext / proj, ext)
+        del rs, proj, valid
+    pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
+    scale = torch.where(is_tri, slope + pws * t, torch.zeros_like(t))
+    del pws, slope, ext
+    scale_o = scale.index_select(0, order)
+    del scale
+    thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
+    del scale_o
+    return (t_o[1:] - t_o[:-1]) > thr
 
 
 def _band_composite(band_of_frag, nbands, cov_o, msk_o):
@@ -319,26 +517,10 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o):
 
     Returns ``(area, union, corr, split)``, one entry per band.
     """
-    device = cov_o.device
-    area64 = torch.zeros(nbands, dtype=torch.float64, device=device)
-    area64.scatter_add_(0, band_of_frag, cov_o.to(torch.float64))
-    area = area64.to(torch.float32)
-
-    bits = (msk_o & AA_MASK_ALL).to(torch.int64)
-    union = torch.zeros(nbands, dtype=torch.int64, device=device)
-    lane = torch.zeros(nbands, dtype=torch.int64, device=device)
-    for b in range(AA_NUM_SAMPLES):
-        lane.zero_()
-        lane.scatter_add_(0, band_of_frag, (bits >> b) & 1)
-        union |= (lane > 0).to(torch.int64) << b
-    sliver = torch.zeros(nbands, dtype=torch.int64, device=device)
-    sliver.scatter_reduce_(
-        0,
-        band_of_frag,
-        ((msk_o & AA_SLIVER_BIT) != 0).to(torch.int64),
-        reduce="amax",
-        include_self=True,
+    area, union, _fused, sliver = _band_reduce(
+        band_of_frag, msk_o, cov_o, nbands, want_sliver=True
     )
+    del _fused
 
     pop = _popcount_lanes(union)
     clamped = area.clamp(max=1.0)
@@ -348,7 +530,9 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o):
         torch.where((1.0 - area).abs() <= FULL_DUST, torch.ones_like(clamped), clamped),
         clamped * float(AA_NUM_SAMPLES) / pop.clamp_min(1).to(torch.float32),
     )
+    del pop, clamped, full
     split = (union != 0) & (sliver == 0)
+    del sliver
     return area, union, corr, split
 
 
@@ -545,6 +729,8 @@ def compact_sheets(
     safe_ref = frag_ref.clamp_min(0).to(torch.int64)
     sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
     facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
+    # One arange, used both for the bezier group key here and for the
+    # band-first scan below -- they were two identical int64 [n] tensors.
     positions = torch.arange(n, dtype=torch.int64, device=device)
     # Triangles group by (surface, facing); every bezier fragment is its own
     # group (negative, unique — a shared sentinel would fuse adjacent
@@ -553,6 +739,7 @@ def compact_sheets(
     # a band is the same set of fragments whatever ``shade_split`` says, and
     # the class only SUBDIVIDES that band below (see ``_sibling_weights``).
     gkey = torch.where(is_tri, sid * 2 + facing, -(positions + 2))
+    del sid, facing
     cls = None
     if shade_split:
         cls = _shade_class(merged, frame_rel, time_start, safe_ref, is_tri)
@@ -562,43 +749,32 @@ def compact_sheets(
     pix_o = pix.index_select(0, order)
     g_o = gkey.index_select(0, order)
     t_o = t.index_select(0, order)
+    del pix, gkey
 
     new_group = torch.ones(n, dtype=torch.bool, device=device)
     if n > 1:
         new_group[1:] = (pix_o[1:] != pix_o[:-1]) | (g_o[1:] != g_o[:-1])
+    del g_o
 
     band_start = new_group.clone()
     if band_rule == "prim" and n > 1 and bool(is_tri.any()):
-        tri_pos = merged["tri_pos"]
-        v = tri_pos[_rows(tri_pos, frame_rel, time_start), safe_ref]
-        ro = cam_origin[_rows(cam_origin, frame_rel, time_start)]
-        d = torch.stack(
-            [torch.linalg.norm(v[:, 3 * k : 3 * k + 3] - ro, dim=1) for k in range(3)],
-            dim=1,
+        split_after = _prim_split_after(
+            merged,
+            cam_origin,
+            pixel_world_scale,
+            tri_screen,
+            frame_rel,
+            time_start,
+            safe_ref,
+            is_tri,
+            t,
+            t_o,
+            order,
+            band_c,
         )
-        ext = d.amax(dim=1) - d.amin(dim=1)
-        # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
-        # differ by about one pixel's worth of the surface's depth gradient,
-        # not by the triangle's whole extent. Where the projection table is
-        # valid, divide by the projected size in pixels; a camera-plane
-        # straddler keeps the conservative raw extent.
-        slope = ext
-        if tri_screen is not None and tri_screen.shape[2] >= 10:
-            rs = _rows(tri_screen, frame_rel, time_start)
-            sx = tri_screen[rs, safe_ref, 0:3]
-            sy = tri_screen[rs, safe_ref, 3:6]
-            proj = torch.maximum(
-                sx.amax(dim=1) - sx.amin(dim=1),
-                sy.amax(dim=1) - sy.amin(dim=1),
-            ).clamp_min_(1.0)
-            valid = tri_screen[rs, safe_ref, 9] > 0.5
-            slope = torch.where(valid, ext / proj, ext)
-        pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
-        scale = torch.where(is_tri, slope + pws * t, torch.zeros_like(t))
-        scale_o = scale.index_select(0, order)
-        gap = t_o[1:] - t_o[:-1]
-        thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
-        band_start[1:] |= (~new_group[1:]) & (gap > thr)
+        band_start[1:] |= (~new_group[1:]) & split_after
+        del split_after
+    del frame_rel, safe_ref, t, t_o
 
     band_id = torch.cumsum(band_start.to(torch.int64), 0) - 1
 
@@ -616,24 +792,30 @@ def compact_sheets(
     # and rendered ~30% too light... dark; the fragment walk composited them
     # per fragment and was right). Donors (empty masks) carry rank 0 and
     # ride with their sheet's owners. Integer cumsums: deterministic.
-    positions_sorted = torch.arange(n, dtype=torch.int64, device=device)
-    band_first = torch.where(
-        band_start, positions_sorted, torch.zeros_like(positions_sorted)
-    )
+    band_first = torch.where(band_start, positions, torch.zeros_like(positions))
     band_first = torch.cummax(band_first, 0)[0]
-    bits_pre = (frag_msk.index_select(0, order) & AA_MASK_ALL).to(torch.int64)
-    rank = torch.zeros(n, dtype=torch.int64, device=device)
+    # int32 through the scan: a lane holds 0/1 and its exclusive prefix sum is
+    # bounded by the fragment count, so every value fits, and the loop's five
+    # live [n] arrays cost half what they did (70 MB of a 4K frame).
+    bits_pre = (frag_msk.index_select(0, order) & AA_MASK_ALL).to(torch.int32)
+    rank = torch.zeros(n, dtype=torch.int32, device=device)
     for b in range(AA_NUM_SAMPLES):
         lane = (bits_pre >> b) & 1
-        excl = torch.cumsum(lane, 0) - lane
+        excl = torch.cumsum(lane, 0, dtype=torch.int32) - lane
         prior = excl - excl.index_select(0, band_first)
+        del excl
         rank = torch.maximum(
             rank, torch.where(lane > 0, prior, torch.zeros_like(prior))
         )
+        del lane, prior
+    del bits_pre, band_first
     rank.clamp_(max=15)
     cid = band_id * 16 + rank
+    del rank
     uniq_cid, band_id = torch.unique(cid, sorted=True, return_inverse=True)
+    del cid
     nb = int(uniq_cid.numel())
+    del uniq_cid
     if nb == 0:
         return None
 
@@ -655,33 +837,27 @@ def compact_sheets(
             band_of_frag, nb, cov_o, msk_o
         )
         cls_o = cls.index_select(0, order)
+        cls = None
         cls_eff = torch.where(
             band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
         )
+        del cls_o, band_split
         skey = band_of_frag * _SHADE_CLASS_BASE + cls_eff
+        del cls_eff, band_of_frag
         uniq_skey, band_id = torch.unique(skey, sorted=True, return_inverse=True)
+        del skey
         nb = int(uniq_skey.numel())
         sheet_band = uniq_skey // _SHADE_CLASS_BASE
+        del uniq_skey
 
-    # Exact area: float64 accumulate, float32 round (§6.6.4 — a float32
-    # scatter_add_ is order-nondeterministic on CUDA and this value feeds
-    # thresholds downstream).
-    area64 = torch.zeros(nb, dtype=torch.float64, device=device)
-    area64.scatter_add_(0, band_id, cov_o.to(torch.float64))
-    sheet_cov = area64.to(torch.float32).clamp_min_(0.0)
-
-    # Sample-mask union + the fusion detector, one bit lane at a time
-    # (integer adds are exact under any order; a lane count above 1 is the
-    # fill-rule partition violation).
-    bits = (msk_o & AA_MASK_ALL).to(torch.int64)
-    union = torch.zeros(nb, dtype=torch.int64, device=device)
-    fused = torch.zeros(nb, dtype=torch.bool, device=device)
-    lane = torch.zeros(nb, dtype=torch.int64, device=device)
-    for b in range(AA_NUM_SAMPLES):
-        lane.zero_()
-        lane.scatter_add_(0, band_id, (bits >> b) & 1)
-        union |= (lane > 0).to(torch.int64) << b
-        fused |= lane > 1
+    # The band's aggregates in one walk of the sorted stream: exact area
+    # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,
+    # and the fusion detector.
+    sheet_cov, union, fused, _ = _band_reduce(
+        band_id, msk_o, cov_o, nb, want_sliver=False
+    )
+    sheet_cov.clamp_min_(0.0)
+    del msk_o
 
     # Nearest fragment (minimum sorted position -- the stream is depth-sorted
     # within a group, and a rank-split sheet's members need not be
@@ -690,8 +866,9 @@ def compact_sheets(
     # descending-layer) sorted, so min-position inherits that relation).
     first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
     first_sorted.scatter_reduce_(
-        0, band_id, positions_sorted, reduce="amin", include_self=True
+        0, band_id, positions, reduce="amin", include_self=True
     )
+    del positions
     nearest_orig = pos_o.index_select(0, first_sorted)
     sheet_pix = pix_o.index_select(0, first_sorted)
     min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
@@ -702,19 +879,25 @@ def compact_sheets(
     cmax = torch.zeros(nb, dtype=torch.float32, device=device)
     cmax.scatter_reduce_(0, band_id, cov_o, reduce="amax", include_self=True)
     is_max = cov_o >= cmax.index_select(0, band_id)
+    del cmax, cov_o
     big = torch.full((n,), n, dtype=torch.int64, device=device)
     cand_pos = torch.where(is_max, pos_o, big)
+    del is_max, big
     rep_orig = torch.full((nb,), n, dtype=torch.int64, device=device)
     rep_orig.scatter_reduce_(0, band_id, cand_pos, reduce="amin", include_self=True)
+    del cand_pos
 
     nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
     nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
+    del band_id
 
     # Split-group accounting (diagnostic): groups are triangle-only.
     group_id = torch.cumsum(new_group.to(torch.int64), 0) - 1
+    del new_group
     ngroups = int(group_id[-1]) + 1 if n else 0
     bands_per_group = torch.zeros(ngroups, dtype=torch.int64, device=device)
     sheet_group = group_id.index_select(0, first_sorted)
+    del group_id
     bands_per_group.scatter_add_(
         0,
         sheet_group,
@@ -725,6 +908,11 @@ def compact_sheets(
     tri_groups_mask.scatter_(0, sheet_group, tri_group)
     num_split_groups = int(((bands_per_group > 1) & tri_groups_mask).sum().item())
     num_tri_groups = int(tri_groups_mask.sum().item())
+    del bands_per_group, tri_groups_mask, sheet_group, tri_group
+    # Last read of the sorted stream: from here the function works only in
+    # per-sheet arrays, so the per-fragment ones go now rather than at the
+    # return (they are 28 MB apiece on a 4K frame).
+    del first_sorted, is_tri, order, pos_o
 
     # Flags: facing from the band key; one-mesh / sliver policy bits from the
     # dominant fragment (uniform per pixel / per emission policy); the sliver
@@ -732,13 +920,16 @@ def compact_sheets(
     # whatever its dominant fragment carried.
     rep_msk = frag_msk.index_select(0, rep_orig)
     flags = rep_msk & (~AA_MASK_ALL)
+    del rep_msk
     empty_union = union == 0
     flags = flags | torch.where(
         empty_union,
         torch.full_like(flags, AA_SLIVER_BIT),
         torch.zeros_like(flags),
     )
+    del empty_union
     sheet_msk = union.to(torch.int32) | flags
+    del union, flags
 
     # ---- Final order: (pixel, classic order of nearest fragment) -----------
     final = torch.argsort(min_pos, stable=True)

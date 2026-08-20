@@ -38,7 +38,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
 | **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
 | **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
-| **T5** sparse-coverage host chain | the render thread's largest non-kernel item |
+| **T5** sparse-coverage host chain | **partly shipped, and T5's own item is the half that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Two measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
 | **T3**, **T6** | untouched; both shrank in share |
 
 **Read this before picking anything up.** The 2026-08-16 round moved the
@@ -710,7 +710,7 @@ with a single `index_copy_` over `[T * M, ...]`; that was byte-exact and worth
 **1.02-1.19x** on the whole dice, well under the ~2x it assumed. Neither
 identified cost was the real one.
 
-### T5. Sparse-coverage host chain -- ~37.7 s of 95.5 s (~9.9%) -- **next**
+### T5. Sparse-coverage host chain -- ~37.7 s of 95.5 s (~9.9%) -- **partly shipped**
 
 `raster: sparse discovery` is 95.5 s (25.0%), but 57.8 s of that is already
 Taichi (`raster_tri_count/write`, `raster_bez_count/write`) -- the stage row
@@ -729,6 +729,88 @@ compaction on `keep_idx` a few lines below. Each gather re-reads the whole
 permutation, so six of them move ~48 bytes of index traffic per fragment
 against ~29 bytes of payload. Do that; leave the sorts alone.
 **Estimated** ~10-15 s (~1.5%), moderate confidence.
+
+**BUILT 2026-08-20, MEASURED, AND PARKED OFF.**
+`sheet_compact_taichi.gather_fragment_arrays` behind `RASTER_FUSED_GATHER`,
+**default OFF**. It is bit-identical (a gather copies bits, so `fast_math` has
+nothing to act on) and it is faster, but by far less than this section
+predicted: **13.7 ms -> 9.6 ms** across both gather sites of a real 3840x2160
+frame, i.e. ~4 ms of a 1.3 s frame against the ~1.5% estimated.
+
+And it is not free. Fusing forces all six outputs to exist before the kernel
+writes the first, where six sequential `index_select`s let the caching
+allocator hand each output the block the previous stage just freed: the frame's
+peak CUDA allocation rises **50-160 MB**. Four milliseconds does not buy that,
+so the flag exists and the default does not use it. Turn it on for a
+bandwidth-bound machine with VRAM to spare.
+
+The traffic argument above is sound as far as it goes; what it omits is that
+six sequential gathers each get a coalesced write and one coherent read stream,
+while the fused one interleaves six scattered streams per thread -- and that
+peak allocation, not traffic, is what binds this stage on a small card.
+
+**Measure this with the REAL permutation or the answer inverts.** On a
+`torch.randperm` of the same length the fused gather is **0.82x -- slower**,
+at every size from 1 M to 7 M fragments. The permutation this code actually
+gathers through is a sort order (pixel, then depth), so consecutive output rows
+read nearby source rows and the six streams stay in cache; a random index makes
+each of the six miss independently. So a `randperm` microbenchmark gets the
+SIGN wrong here, not just the magnitude -- worth knowing before anyone
+re-measures this, or measures the same shape somewhere else in the pipeline.
+
+**Shipped, and the half that actually paid: the per-sample-lane reductions.** This
+section predates the sheet route, so it does not mention `sheets.compact_sheets`
+-- which is now the biggest host item in the stage (31% of a 4K frame, 7% of an
+LD one) and grows with resolution. Three of its passes were written one SAMPLE
+LANE at a time because torch cannot say "reduce these eight bits at once": the
+mask union and the DESIGN_sheet_resolve.md ss6.2 fusion detector cost one
+`scatter_add_` per lane, and `_popcount_lanes` cost eight shift/and/add passes
+to count at most eight bits. `sheet_compact_taichi.sheet_band_reduce` and
+`mask_popcount` (`SHEET_MASK_KERNEL`, default on) do each in one pass.
+
+The exact-area sum went into the same kernel, because it walks the identical
+stream and in torch could not share it: `scatter_add_` wants matching dtypes,
+so the f64 accumulate needed an f64 copy of the whole fragment array first --
+29 MB on a 4K frame, for a value read once. Widening in a register off the f32
+read deletes that copy and a launch: ~2 ms and **27 MB of peak**. The f64
+accumulator itself stays; only the copy is gone. Narrowing it to f32 was
+measured and rejected -- 0.2% of a frame against re-opening an ordering
+dependence on a value that feeds thresholds, on the 1.6% of a real frame's
+sheets that hold three or more fragments (81% hold one, 17% hold two, and
+those are order-independent at any width).
+
+Bit-identical, and the fusion detector is the only part where that needs an
+argument rather than an inspection: `atomic_or` returns the value *before* this
+fragment's contribution, so for a lane claimed by k fragments of a band exactly
+k - 1 of them observe it already set, whatever order the hardware serializes
+them in -- which is `lane > 1` on the count the loop used to build. The float
+area sum stays in torch float64 (ss6.6.4); no float reduction moved.
+
+Together, on the alternating in-process A/B
+(`benchmarks/_sheet_kernel_ab.py`, sphere + cube + glass + text):
+
+| resolution | `compact_sheets` | frame |
+| --- | --- | --- |
+| 864x486 | 40 -> 32 ms (1.25x) | 0.467 -> 0.450 s |
+| 1920x1080 | 130 -> 100 ms (1.30x) | 0.933 -> 0.916 s |
+| 3840x2160 | 471 -> 354 ms (1.33x) | 1.381 -> 1.297 s (1.065x) |
+
+(that A/B ran with the gather on as well; on its own the gather is the ~4 ms
+above.) The stage figure is the reliable one; the frame column is within noise
+below 4K. Peak allocation is **+49 MB** at 4K for the mask kernels alone,
+after narrowing the union/dup/sliver arrays to int32 -- they hold eight-bit
+masks and every consumer casts explicitly, so the width was pure bandwidth. Parity is `benchmarks/_sheet_kernel_check.py` (the kernels against the
+exact torch expressions they replace, plus four rendered frames hashed with
+both toggles on and both off). `tests/full_renders` and `tests/fast` pass
+unchanged on CUDA.
+
+**What is left of T5, and what to leave alone.** The sorts (`_lexsort`'s three
+stable `argsort`s and two `torch.unique` calls, ~87 ms of a 4K compaction)
+are cuB radix sorts; Taichi has no sort primitive and hand-writing one to lose
+is not a plan. What remains worth measuring is the per-fragment gathers in
+`_shade_class` and `_prim_split_after`, and the conflict-rank scan -- a
+segmented scan, so DESIGN_sheet_resolve.md ss10.4's two-pass blocked-scan
+question has to be answered first.
 
 ### T6. Raster precompute tables -- 5.4 s (1.4%)
 

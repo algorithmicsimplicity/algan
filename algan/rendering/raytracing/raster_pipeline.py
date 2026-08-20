@@ -1064,18 +1064,77 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     bez_layer = bez_code >> _BEZ_BORDER_BITS
     tri_layer = frag_ref + int(layer_offset_triangles)
     layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int64)
+    del is_bez, bez_code, bez_layer, tri_layer
     layer_order = torch.argsort(layer, descending=True, stable=True)
+    del layer
 
     key_l = frag_key.index_select(0, layer_order)
     pixel = key_l >> 32
     t_bits = (key_l & 0xFFFFFFFF).to(torch.int32)
+    del key_l
     # dtype-view reinterprets IEEE bits; it does not allocate a numeric cast.
     t = t_bits.view(torch.float32)
     depth_bin = torch.floor(t / DEPTH_TIE_EPSILON).to(torch.int64)
+    del t, t_bits
     depth_bin.clamp_(0, 0x7FFFFFFF)
     primary_key = (pixel << 32) | depth_bin
+    del pixel, depth_bin
     depth_order = torch.argsort(primary_key, stable=True)
-    return layer_order.index_select(0, depth_order)
+    del primary_key
+    # Named so the two permutations are freed before the caller's gathers
+    # run: at 4K they are 56 MB each and this is the discovery peak.
+    order = layer_order.index_select(0, depth_order)
+    del layer_order, depth_order
+    return order
+
+
+def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
+    """The six-array fragment gather ``idx`` drives, as one pass.
+
+    Returns the same six tensors ``index_select`` would. One kernel launch
+    reads ``idx`` once instead of six times (``RASTER_FUSED_GATHER``,
+    DESIGN_optimization_targets.md T5); a gather copies bits, so the two arms
+    are bit-identical and the flag is there for the A/B rather than for a
+    choice.
+
+    Only for a gather whose SOURCES outlive it. Fusing forces all six outputs
+    to exist before the first is written, so at a site that *replaces* its
+    inputs -- the opaque-prefix truncation below, which rebinds each name and
+    lets the old array die as the new one lands -- the fused form holds twelve
+    arrays where the sequential one holds seven. Measured on a 4K frame that
+    is +53 MB of peak for 4 ms of gather, so that site stays sequential.
+    """
+    m = int(idx.shape[0])
+    if not rt_settings.RASTER_FUSED_GATHER or m == 0:
+        return tuple(t.index_select(0, idx) for t in (key, ref, ab, cov, msk, opq))
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        gather_fragment_arrays,
+    )
+
+    out_key = torch.empty(m, dtype=key.dtype, device=key.device)
+    out_ref = torch.empty(m, dtype=ref.dtype, device=ref.device)
+    out_ab = torch.empty((m, 2), dtype=ab.dtype, device=ab.device)
+    out_cov = torch.empty(m, dtype=cov.dtype, device=cov.device)
+    out_msk = torch.empty(m, dtype=msk.dtype, device=msk.device)
+    out_opq = torch.empty(m, dtype=opq.dtype, device=opq.device)
+    # Taichi has no bool ndarray, so the flags ride as the bytes they are.
+    gather_fragment_arrays(
+        idx,
+        m,
+        key,
+        ref,
+        ab,
+        cov,
+        msk,
+        opq.view(torch.uint8),
+        out_key,
+        out_ref,
+        out_ab,
+        out_cov,
+        out_msk,
+        out_opq.view(torch.uint8),
+    )
+    return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
 
 
 def _tri_obj_row(pix, ppf, time_start, rows):
@@ -1446,12 +1505,10 @@ def prepare_sparse_raster_coverage(
             frag_cursor += n_spec
 
         order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
-        key_s = frag_key_u.index_select(0, order)
-        ref_s = frag_ref_u.index_select(0, order)
-        ab_s = frag_ab_u.index_select(0, order)
-        cov_s = frag_cov_u.index_select(0, order)
-        msk_s = frag_msk_u.index_select(0, order)
-        opaque_s = opaque_u.index_select(0, order)
+        key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(
+            order, frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
+        )
+        del order
         # Kept before the coverage adjustment below overwrites it: this is
         # MATERIAL opacity, which the one-mesh rule needs, while the adjusted
         # opaque_s means "occludes every sample".
@@ -1516,16 +1573,26 @@ def prepare_sparse_raster_coverage(
                 reduce="amin",
                 include_self=True,
             )
+            del opaque_pos, starts
             keep_end = torch.minimum(first_opaque, ends)
+            del first_opaque, ends
             keep = positions <= keep_end.index_select(0, segments)
-            if int(keep.sum().item()) != num_frags:
-                keep_idx = keep.nonzero(as_tuple=True)[0]
+            del positions, segments, keep_end
+            truncated = int(keep.sum().item()) != num_frags
+            keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
+            del keep
+            if truncated:
+                # One at a time, and NOT through _gather_fragment_arrays: each
+                # rebinding frees the array it replaces, which is worth more
+                # here than the fused gather's traffic saving (see its
+                # docstring).
                 key_s = key_s.index_select(0, keep_idx)
                 ref_s = ref_s.index_select(0, keep_idx)
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)
                 msk_s = msk_s.index_select(0, keep_idx)
                 mat_opaque_s = mat_opaque_s.index_select(0, keep_idx)
+                del keep_idx
                 pix_s = key_s >> 32
                 covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
                 num_frags = int(key_s.shape[0])
@@ -1557,6 +1624,7 @@ def prepare_sparse_raster_coverage(
             # far sheet is legitimately visible THROUGH the near one.
             usable = (ref_s >= 0) & mat_opaque_s
             sid = torch.where(usable, sid, torch.full_like(sid, -1))
+            del frame_of, safe_ref, usable
             seg = torch.repeat_interleave(
                 torch.arange(covered.numel(), dtype=torch.int64, device=device),
                 counts,
@@ -1568,6 +1636,7 @@ def prepare_sparse_raster_coverage(
             lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
             hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
             one_mesh = (lo == hi) & (lo >= 0)
+            del lo, hi, sid
             # The mesh's coverage CEILING: the larger of the two sheets' exact
             # areas. Well inside a silhouette a closed solid's sheets tile to
             # the same area, so this is that area and the far sheet gets no room
@@ -1604,6 +1673,7 @@ def prepare_sparse_raster_coverage(
             front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
             back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
             cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
+            del front, back, cov_acc, is_back
             msk_s = msk_s | torch.where(
                 one_mesh.index_select(0, seg),
                 torch.full_like(msk_s, AA_ONE_MESH_BIT),
@@ -1621,6 +1691,8 @@ def prepare_sparse_raster_coverage(
                 one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
                 cap_s,
             )
+            one_mesh_cap = None
+            del one_mesh, seg, cap_pix
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
         frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
@@ -1639,6 +1711,11 @@ def prepare_sparse_raster_coverage(
         frag_cap.copy_(cap_s)
         covered_idx.copy_(covered.to(torch.int32))
         run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+        # Everything above now lives in the arena. The sheet compaction below
+        # is this function's memory peak, so the host copies are released
+        # before it starts rather than at the return.
+        del key_s, ref_s, ab_s, cov_s, msk_s, cap_s, pix_s, mat_opaque_s
+        del opaque_s, covered, counts
 
         # -- SHEET COMPACTION (DESIGN_sheet_resolve.md P1/P2) ---------------
         # Aggregation happens here, once, before any kernel: the resolve then
@@ -1692,6 +1769,7 @@ def prepare_sparse_raster_coverage(
         sheet_msk.copy_(stream["sheet_wmsk"])
         sheet_cap_t.copy_(stream["sheet_cap"])
         sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+        stream = None
         sheet_data = {
             "sheet_key": sheet_key,
             "sheet_ref": sheet_ref,

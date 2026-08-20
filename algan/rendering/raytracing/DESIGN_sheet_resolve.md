@@ -749,6 +749,38 @@ untouched by this design; revisit after Phase 4 on their own merits.
 10.4 Segmented-scan implementation shape in Taichi (two-pass blocked scan vs
      sort-order exploitation) — an implementation question, not a semantic
      one, provided the tree order is fixed.
+
+     **PARTLY ANSWERED (2026-08-20) for the reductions that are not scans.**
+     The compaction's per-sample-lane passes moved to kernels
+     (``sheet_compact_taichi.sheet_band_reduce`` / ``mask_popcount``,
+     ``SHEET_MASK_KERNEL``, default on): the mask union, the §6.2 fusion
+     detector, the popcount and the exact-area sum are one pass each instead
+     of eight -- the area rode into the same kernel because it walks the
+     identical stream -- worth 1.26x on ``compact_sheets``, 445 -> 352 ms on a
+     4K frame. See DESIGN_optimization_targets.md T5 for the numbers and for
+     the measurement trap in the gather beside them.
+
+     The mask passes are REDUCTIONS, not scans, so §2.2's "no atomic
+     reductions" rule is not what governs them: it exists because a float sum
+     reassociates, and these are integer OR/max, exact under any order. The
+     fusion detector stays order-independent through ``atomic_or``'s return
+     value rather than through a fixed tree -- a lane claimed k times is
+     observed already-set by exactly k-1 fragments however the atomics
+     serialize.
+
+     The area sum is the one float reduction and it does NOT get that
+     guarantee. It keeps §6.6.4's float64 accumulator, now widened in a
+     register off an f32 read rather than from an f64 copy of the fragment
+     array. Two measurements stand behind it: the kernel agrees with the torch
+     ``scatter_add_`` bitwise at a 4K frame's shapes and with 4096 addends in
+     one bin, and repeated runs agree with each other. Narrowing it to f32 was
+     considered and rejected on measurement -- 81% of a real frame's sheets
+     hold one fragment and 17% hold two, both order-independent at any width,
+     but the remaining 1.6% run to eleven and ``sheet_cov`` feeds thresholds,
+     for 0.2% of a frame.
+
+     What §10.4 still owns is the genuine SCAN: the conflict-rank
+     exclusive-prefix-sum per lane, still eight ``torch.cumsum`` passes.
 10.5 Whether any material class measurably needs multi-sample sheet shading
      (§4.7) beyond the dominant fragment.
 

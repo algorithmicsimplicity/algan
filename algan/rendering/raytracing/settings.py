@@ -777,6 +777,32 @@ def set_raster_pair_flags(enabled):
     RASTER_PAIR_FLAGS = bool(enabled)
 
 
+# Fused permutation gather in the sparse compaction
+# (sheet_compact_taichi.gather_fragment_arrays). The sorted fragment stream is
+# six arrays produced from ONE permutation, and six index_select calls read
+# that permutation six times -- ~106 bytes of traffic per fragment where one
+# kernel moves 66. That is DESIGN_optimization_targets.md T5's own proposal.
+#
+# DEFAULT OFF, on the measurement rather than the argument. Built, and it is
+# bit-identical (a gather copies bits, so fast_math has nothing to act on) and
+# it is faster -- but only just: 13.7 ms -> 9.6 ms across both gather sites of
+# a 3840x2160 frame, which is 4 ms of a 1.3 s frame. Against that it raises the
+# frame's peak CUDA allocation by 50-160 MB, because the six outputs must all
+# exist before the kernel writes the first, where the sequential form lets the
+# allocator hand each one the block the previous stage just freed. This session
+# reached here from an out-of-memory failure on this very scene; 4 ms is not
+# worth 150 MB. Turn it on for a bandwidth-bound machine with VRAM to spare.
+RASTER_FUSED_GATHER = env_flag("ALGAN_RASTER_FUSED_GATHER", False)
+
+
+def set_raster_fused_gather(enabled):
+    """Toggle the fused six-array fragment gather (see ``RASTER_FUSED_GATHER``).
+    Takes effect at the next batch's emission.
+    """
+    global RASTER_FUSED_GATHER
+    RASTER_FUSED_GATHER = bool(enabled)
+
+
 # Covered-pixel-compacted resolve: the emission already knows exactly which
 # pixels hold fragments, so the resolve launches one thread per COVERED pixel
 # instead of one per screen pixel that early-outs, turning the resolve from
@@ -871,6 +897,37 @@ def set_sheet_shade_split(enabled):
     """
     global SHEET_SHADE_SPLIT
     SHEET_SHADE_SPLIT = bool(enabled)
+
+
+# Kernel band reductions in the compaction
+# (sheet_compact_taichi.sheet_band_reduce / mask_popcount). The mask passes
+# were written one SAMPLE LANE at a time because torch has no way to say
+# "reduce these eight bits at once": the union and the
+# DESIGN_sheet_resolve.md §6.2 fusion detector cost one scatter_add_ per lane
+# (eight passes over the fragment stream and eight over the sheet array) to
+# learn whether each lane's count is 0, 1 or more, and the popcount cost eight
+# shift/and/add passes to count at most eight bits. The exact-area sum walks
+# the same stream and could not share it, because scatter_add_ wanted an f64
+# copy of the whole fragment array first. One kernel now does all of it.
+# Measured at 3840x2160: compact_sheets 445 -> 352 ms, and 27 MB less peak.
+#
+# Bit-identical. The mask passes are integer reductions, exact under any
+# order, and the fusion detector stays order-independent because atomic_or's
+# RETURN value tells a fragment whether a lane was already claimed. The area
+# sum keeps its float64 accumulator (ss6.6.4) -- widened in a register off an
+# f32 read, so the f64 copy of the fragment array is gone but the exactness is
+# not -- and agrees with the torch scatter_add_ bitwise. See
+# sheet_compact_taichi's module docstring for both arguments and
+# benchmarks/_sheet_kernel_check.py for the checks.
+SHEET_MASK_KERNEL = env_flag("ALGAN_SHEET_MASK_KERNEL", True)
+
+
+def set_sheet_mask_kernel(enabled):
+    """Toggle the kernel sample-mask reductions in sheet compaction (see
+    ``SHEET_MASK_KERNEL``). Takes effect at the next batch's emission.
+    """
+    global SHEET_MASK_KERNEL
+    SHEET_MASK_KERNEL = bool(enabled)
 
 
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
