@@ -23,14 +23,12 @@ from algan.logging.logger import get_logger
 logger = get_logger("audio")
 pattern = re.compile(r"[\W_]+", re.UNICODE)
 
+from algan.errors import TranscriptAudioMismatchError
+
 # --- Configuration ---
 # A larger chunk size is more efficient with the optimized torchaudio function.
-CHUNK_DURATION_S = 1 * 60  # 45 minutes
+CHUNK_DURATION_S = 1 * 60  # 1 minute
 MODEL_ID = "facebook/wav2vec2-base-960h"
-
-
-class TranscriptAudioMismatchError(Exception):
-    pass
 
 
 class Counter:
@@ -40,9 +38,6 @@ class Counter:
 
 def strip_nonchars(x):
     return pattern.sub("", x).upper()
-    for _ in "~`\"'][(),.?/><!@#$%^&*+-=-_\\|:;":
-        x = x.replace(_, "")
-    return x.upper()
 
 
 def unflatten(list_, lengths):

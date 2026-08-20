@@ -51,13 +51,13 @@ PLASTIC = MeshPhysicalMaterial(
     roughness=0.35,
     metalness=0.0,
     clearcoat=0.25,
-    clearcoatRoughness=0.25,
+    clearcoat_roughness=0.25,
 )
 CERAMIC = MeshPhysicalMaterial(
     roughness=0.25,
     metalness=0.0,
     clearcoat=0.1,
-    clearcoatRoughness=0.15,
+    clearcoat_roughness=0.15,
 )
 
 # Conductors.

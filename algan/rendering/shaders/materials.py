@@ -72,33 +72,33 @@ DoubleSide = 2
 _TEXTURE_SLOTS = frozenset(
     {
         "map",
-        "alphaMap",
-        "aoMap",
-        "envMap",
-        "lightMap",
-        "bumpMap",
-        "normalMap",
-        "displacementMap",
-        "roughnessMap",
-        "metalnessMap",
-        "emissiveMap",
-        "specularMap",
-        "gradientMap",
+        "alpha_map",
+        "ao_map",
+        "env_map",
+        "light_map",
+        "bump_map",
+        "normal_map",
+        "displacement_map",
+        "roughness_map",
+        "metalness_map",
+        "emissive_map",
+        "specular_map",
+        "gradient_map",
         "matcap",
-        "clearcoatMap",
-        "clearcoatRoughnessMap",
-        "clearcoatNormalMap",
-        "sheenColorMap",
-        "sheenRoughnessMap",
-        "transmissionMap",
-        "thicknessMap",
-        "iridescenceMap",
-        "iridescenceThicknessMap",
-        "specularIntensityMap",
-        "specularColorMap",
-        "normalScale",
-        "displacementScale",
-        "displacementBias",
+        "clearcoat_map",
+        "clearcoat_roughness_map",
+        "clearcoat_normal_map",
+        "sheen_color_map",
+        "sheen_roughness_map",
+        "transmission_map",
+        "thickness_map",
+        "iridescence_map",
+        "iridescence_thickness_map",
+        "specular_intensity_map",
+        "specular_color_map",
+        "normal_scale",
+        "displacement_scale",
+        "displacement_bias",
     }
 )
 
@@ -150,10 +150,10 @@ class Material:
         transparent=False,
         visible=True,
         side=FrontSide,
-        flatShading=False,
-        vertexColors=False,
+        flat_shading=False,
+        vertex_colors=False,
         wireframe=False,
-        toneMapped=True,
+        tone_mapped=True,
         **texture_kwargs,
     ):
         self.color = color
@@ -161,10 +161,10 @@ class Material:
         self.transparent = transparent
         self.visible = visible
         self.side = side
-        self.flatShading = flatShading
-        self.vertexColors = vertexColors
+        self.flat_shading = flat_shading
+        self.vertex_colors = vertex_colors
         self.wireframe = wireframe
-        self.toneMapped = toneMapped
+        self.tone_mapped = tone_mapped
         # Stash any texture / unsupported slots so set_material can warn about them.
         self._textures = {k: v for k, v in texture_kwargs.items() if v is not None}
         unexpected = set(texture_kwargs) - _TEXTURE_SLOTS
@@ -181,7 +181,7 @@ class Material:
         return {}
 
     def _flat(self):
-        return 1.0 if self.flatShading else 0.0
+        return 1.0 if self.flat_shading else 0.0
 
     # -- warnings ---------------------------------------------------------
     def emit_warnings(self):
@@ -194,8 +194,8 @@ class Material:
             )
         if self.wireframe:
             msgs.append("wireframe is not supported and is ignored")
-        if self.vertexColors:
-            msgs.append("vertexColors is not supported and is ignored")
+        if self.vertex_colors:
+            msgs.append("vertex_colors is not supported and is ignored")
         if self.side != FrontSide:
             msgs.append(
                 "non-default 'side' (BackSide/DoubleSide) is not supported; "
@@ -227,21 +227,21 @@ class DiffuseMaterial(Material):
         color=None,
         *,
         emissive=0x000000,
-        emissiveIntensity=1.0,
-        envMapIntensity=1.0,
+        emissive_intensity=1.0,
+        env_map_intensity=1.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
         self.emissive = emissive
-        self.emissiveIntensity = emissiveIntensity
-        self.envMapIntensity = envMapIntensity
+        self.emissive_intensity = emissive_intensity
+        self.env_map_intensity = env_map_intensity
 
     def get_shader_param_values(self):
         return {
             "emissive": _to_rgb(self.emissive),
-            "emissive_intensity": self.emissiveIntensity,
+            "emissive_intensity": self.emissive_intensity,
             "flat_shading": self._flat(),
-            "env_map_intensity": self.envMapIntensity,
+            "env_map_intensity": self.env_map_intensity,
         }
 
 
@@ -258,27 +258,27 @@ class SpecularMaterial(Material):
         color=None,
         *,
         emissive=0x000000,
-        emissiveIntensity=1.0,
+        emissive_intensity=1.0,
         specular=0x111111,
         shininess=30.0,
-        envMapIntensity=1.0,
+        env_map_intensity=1.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
         self.emissive = emissive
-        self.emissiveIntensity = emissiveIntensity
+        self.emissive_intensity = emissive_intensity
         self.specular = specular
         self.shininess = shininess
-        self.envMapIntensity = envMapIntensity
+        self.env_map_intensity = env_map_intensity
 
     def get_shader_param_values(self):
         return {
             "emissive": _to_rgb(self.emissive),
-            "emissive_intensity": self.emissiveIntensity,
+            "emissive_intensity": self.emissive_intensity,
             "specular": _to_rgb(self.specular),
             "shininess": self.shininess,
             "flat_shading": self._flat(),
-            "env_map_intensity": self.envMapIntensity,
+            "env_map_intensity": self.env_map_intensity,
         }
 
 
@@ -297,24 +297,24 @@ class PBRMaterial(Material):
         roughness=1.0,
         metalness=0.0,
         emissive=0x000000,
-        emissiveIntensity=1.0,
-        envMapIntensity=1.0,
+        emissive_intensity=1.0,
+        env_map_intensity=1.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
         self.roughness = roughness
         self.metalness = metalness
         self.emissive = emissive
-        self.emissiveIntensity = emissiveIntensity
-        self.envMapIntensity = envMapIntensity
+        self.emissive_intensity = emissive_intensity
+        self.env_map_intensity = env_map_intensity
 
     def get_shader_param_values(self):
         return {
             "roughness": self.roughness,
             "metalness": self.metalness,
             "emissive": _to_rgb(self.emissive),
-            "emissive_intensity": self.emissiveIntensity,
-            "env_map_intensity": self.envMapIntensity,
+            "emissive_intensity": self.emissive_intensity,
+            "env_map_intensity": self.env_map_intensity,
             "flat_shading": self._flat(),
         }
 
@@ -334,25 +334,25 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         color=None,
         *,
         clearcoat=0.0,
-        clearcoatRoughness=0.0,
+        clearcoat_roughness=0.0,
         ior=1.5,
         reflectivity=None,
-        specularIntensity=1.0,
-        specularColor=0xFFFFFF,
+        specular_intensity=1.0,
+        specular_color=0xFFFFFF,
         sheen=0.0,
-        sheenRoughness=1.0,
-        sheenColor=0x000000,
+        sheen_roughness=1.0,
+        sheen_color=0x000000,
         transmission=0.0,
         thickness=0.0,
-        attenuationColor=0xFFFFFF,
-        attenuationDistance=math.inf,
+        attenuation_color=0xFFFFFF,
+        attenuation_distance=math.inf,
         iridescence=0.0,
-        iridescenceIOR=1.3,
+        iridescence_ior=1.3,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
         self.clearcoat = clearcoat
-        self.clearcoatRoughness = clearcoatRoughness
+        self.clearcoat_roughness = clearcoat_roughness
         # Three.js exposes ``reflectivity`` as a backwards-compatible alias
         # for dielectric IOR rather than as an independent mirror control.
         # Preserve that API: an explicitly supplied reflectivity updates IOR;
@@ -363,35 +363,35 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         else:
             self.reflectivity = reflectivity
             self.ior = (1.0 + 0.4 * reflectivity) / (1.0 - 0.4 * reflectivity)
-        self.specularIntensity = specularIntensity
-        self.specularColor = specularColor
+        self.specular_intensity = specular_intensity
+        self.specular_color = specular_color
         self.sheen = sheen
-        self.sheenRoughness = sheenRoughness
-        self.sheenColor = sheenColor
+        self.sheen_roughness = sheen_roughness
+        self.sheen_color = sheen_color
         self.transmission = transmission
         # Stored for API parity; not used by the per-vertex approximation.
         self.thickness = thickness
-        self.attenuationColor = attenuationColor
-        self.attenuationDistance = attenuationDistance
+        self.attenuation_color = attenuation_color
+        self.attenuation_distance = attenuation_distance
         self.iridescence = iridescence
-        self.iridescenceIOR = iridescenceIOR
+        self.iridescence_ior = iridescence_ior
 
     def get_shader_param_values(self):
         return {
             "roughness": self.roughness,
             "metalness": self.metalness,
             "emissive": _to_rgb(self.emissive),
-            "emissive_intensity": self.emissiveIntensity,
-            "env_map_intensity": self.envMapIntensity,
+            "emissive_intensity": self.emissive_intensity,
+            "env_map_intensity": self.env_map_intensity,
             "flat_shading": self._flat(),
             "ior": self.ior,
-            "specular_intensity": self.specularIntensity,
-            "specular_color": _to_rgb(self.specularColor),
+            "specular_intensity": self.specular_intensity,
+            "specular_color": _to_rgb(self.specular_color),
             "clearcoat": self.clearcoat,
-            "clearcoat_roughness": self.clearcoatRoughness,
+            "clearcoat_roughness": self.clearcoat_roughness,
             "sheen": self.sheen,
-            "sheen_roughness": self.sheenRoughness,
-            "sheen_color": _to_rgb(self.sheenColor),
+            "sheen_roughness": self.sheen_roughness,
+            "sheen_color": _to_rgb(self.sheen_color),
             "transmission": self.transmission,
             "iridescence": self.iridescence,
         }
@@ -415,19 +415,19 @@ class MeshToonMaterial(Material):
         color=None,
         *,
         emissive=0x000000,
-        emissiveIntensity=1.0,
+        emissive_intensity=1.0,
         bands=3.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
         self.emissive = emissive
-        self.emissiveIntensity = emissiveIntensity
+        self.emissive_intensity = emissive_intensity
         self.bands = bands
 
     def get_shader_param_values(self):
         return {
             "emissive": _to_rgb(self.emissive),
-            "emissive_intensity": self.emissiveIntensity,
+            "emissive_intensity": self.emissive_intensity,
             "num_bands": self.bands,
             "flat_shading": self._flat(),
         }

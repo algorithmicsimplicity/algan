@@ -26,24 +26,111 @@ import re
 
 import torch
 
+from algan.errors import InvalidColorError
 from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import broadcast, cast_to_tensor, unsqueeze_left
 
-re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
+CSS_COLORS: dict[str, str] = {
+    "black": "#000000",
+    "white": "#FFFFFF",
+    "red": "#FF0000",
+    "green": "#008000",
+    "blue": "#0000FF",
+    "yellow": "#FFFF00",
+    "cyan": "#00FFFF",
+    "magenta": "#FF00FF",
+    "gray": "#808080",
+    "grey": "#808080",
+    "darkgray": "#A9A9A9",
+    "darkgrey": "#A9A9A9",
+    "lightgray": "#D3D3D3",
+    "lightgrey": "#D3D3D3",
+    "orange": "#FFA500",
+    "pink": "#FFC0CB",
+    "purple": "#800080",
+    "brown": "#A52A2A",
+    "gold": "#FFD700",
+    "silver": "#C0C0C0",
+    "maroon": "#800000",
+    "navy": "#000080",
+    "olive": "#808000",
+    "lime": "#00FF00",
+    "teal": "#008080",
+    "aqua": "#00FFFF",
+    "coral": "#FF7F50",
+    "salmon": "#FA8072",
+    "violet": "#EE82EE",
+    "indigo": "#4B0082",
+    "turquoise": "#40E0D0",
+    "transparent": "#00000000",
+}
+
+
+def _parse_color_string(s: str) -> tuple[tuple[float, float, float], float]:
+    """Parse a hex string or standard CSS color name into ((r, g, b), opacity)."""
+    raw = s.strip()
+    key = raw.lower().replace(" ", "").replace("_", "").replace("-", "")
+    if key in CSS_COLORS:
+        raw = CSS_COLORS[key]
+
+    hex_str = raw
+    if hex_str.startswith("#"):
+        hex_str = hex_str[1:]
+    elif hex_str.lower().startswith("0x"):
+        hex_str = hex_str[2:]
+
+    if not hex_str or not all(c in "0123456789abcdefABCDEF" for c in hex_str):
+        raise InvalidColorError(
+            f"Invalid color string: {s!r}. Expected a hex color ('#RRGGBB', '#RGB', '#RRGGBBAA') "
+            f"or a standard CSS color name (e.g. 'red', 'navy', 'coral')."
+        )
+
+    if len(hex_str) == 3:
+        hex_str = "".join(c * 2 for c in hex_str)
+    elif len(hex_str) == 4:
+        hex_str = "".join(c * 2 for c in hex_str)
+
+    if len(hex_str) == 6:
+        val = int(hex_str, 16)
+        r = ((val >> 16) & 0xFF) / 255.0
+        g = ((val >> 8) & 0xFF) / 255.0
+        b = (val & 0xFF) / 255.0
+        return (r, g, b), 1.0
+    elif len(hex_str) == 8:
+        val = int(hex_str, 16)
+        r = ((val >> 24) & 0xFF) / 255.0
+        g = ((val >> 16) & 0xFF) / 255.0
+        b = ((val >> 8) & 0xFF) / 255.0
+        a = (val & 0xFF) / 255.0
+        return (r, g, b), a
+    else:
+        raise InvalidColorError(
+            f"Invalid hex color length for {s!r}: expected 3, 4, 6, or 8 hex digits, got {len(hex_str)}."
+        )
 
 
 class Color(torch.Tensor):
-    def __new__(cls, rgb: str | tuple[float], glow=0, opacity=1, *args, **kwargs):
+    def __new__(cls, rgb: str | tuple[float, ...] | list[float] | torch.Tensor, glow=0, opacity=1, *args, **kwargs):
         if isinstance(rgb, str):
-            hex_code = re_hex.search(rgb).group()
-            if len(hex_code) == 6:
-                hex_code += "00"
-            tmp = int(hex_code, 16)
-            rgb = (
-                ((tmp >> 24) & 0xFF) / 255,
-                ((tmp >> 16) & 0xFF) / 255,
-                ((tmp >> 8) & 0xFF) / 255,
-            )
+            rgb_tuple, extracted_opacity = _parse_color_string(rgb)
+            rgb = rgb_tuple
+            if opacity == 1 and extracted_opacity != 1.0:
+                opacity = extracted_opacity
+        elif isinstance(rgb, (tuple, list)):
+            if len(rgb) == 4:
+                rgb, opacity = tuple(rgb[:3]), rgb[3]
+            elif len(rgb) == 5:
+                rgb, glow, opacity = tuple(rgb[:3]), rgb[3], rgb[4]
+            elif len(rgb) == 3:
+                rgb = tuple(rgb)
+        elif isinstance(rgb, torch.Tensor):
+            t = rgb.reshape(-1)
+            if t.numel() == 5:
+                rgb, glow, opacity = (float(t[0]), float(t[1]), float(t[2])), float(t[3]), float(t[4])
+            elif t.numel() == 4:
+                rgb, opacity = (float(t[0]), float(t[1]), float(t[2])), float(t[3])
+            elif t.numel() == 3:
+                rgb = (float(t[0]), float(t[1]), float(t[2]))
         return (
             super()
             .__new__(cls, (*rgb, glow, opacity), *args, **kwargs)

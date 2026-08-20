@@ -15,6 +15,7 @@ timing a render.
 
 from __future__ import annotations
 
+import base64
 import cProfile
 import inspect
 import multiprocessing
@@ -124,6 +125,74 @@ class RenderResult:
     @property
     def rendered(self) -> bool:
         return self.status == "rendered"
+
+    def _repr_html_(self) -> str | None:
+        """HTML representation for rich rendering in Jupyter / Colab notebooks."""
+        if not self.output_path or not self.output_path.exists():
+            return (
+                f"<p>RenderResult: <code>{self.status}</code> (file: {self.output_path})</p>"
+            )
+
+        ext = self.output_path.suffix.lower()
+        if ext in (".mp4", ".webm", ".mov"):
+            mime = (
+                "video/mp4"
+                if ext == ".mp4"
+                else ("video/webm" if ext == ".webm" else "video/quicktime")
+            )
+            try:
+                data = self.output_path.read_bytes()
+                if len(data) <= 50 * 1024 * 1024:
+                    b64 = base64.b64encode(data).decode("ascii")
+                    return (
+                        f'<div style="max-width: 720px; margin: 8px 0;">'
+                        f'<video controls autoplay loop playsinline style="max-width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">'
+                        f'<source src="data:{mime};base64,{b64}" type="{mime}">'
+                        f"Your browser does not support the video tag."
+                        f"</video>"
+                        f'<div style="font-size: 0.85em; color: #666; margin-top: 4px;">Rendered to <code>{self.output_path.name}</code> ({self.duration_seconds:.2f}s)</div>'
+                        f"</div>"
+                    )
+            except Exception:
+                pass
+            return f'<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code> ({self.duration_seconds:.2f}s)</p>'
+
+        if ext in (".png", ".jpg", ".jpeg", ".webp"):
+            mime = (
+                "image/png"
+                if ext == ".png"
+                else (
+                    "image/jpeg" if ext in (".jpg", ".jpeg") else "image/webp"
+                )
+            )
+            try:
+                data = self.output_path.read_bytes()
+                if len(data) <= 20 * 1024 * 1024:
+                    b64 = base64.b64encode(data).decode("ascii")
+                    return (
+                        f'<div style="max-width: 720px; margin: 8px 0;">'
+                        f'<img src="data:{mime};base64,{b64}" style="max-width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);" alt="{self.output_path.name}" />'
+                        f'<div style="font-size: 0.85em; color: #666; margin-top: 4px;">Frame saved to <code>{self.output_path.name}</code></div>'
+                        f"</div>"
+                    )
+            except Exception:
+                pass
+            return f'<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code></p>'
+
+        return None
+
+    def _repr_png_(self) -> bytes | None:
+        """PNG representation for IPython displays."""
+        if (
+            self.output_path
+            and self.output_path.suffix.lower() == ".png"
+            and self.output_path.exists()
+        ):
+            try:
+                return self.output_path.read_bytes()
+            except Exception:
+                return None
+        return None
 
 
 def _resolve_output_destination(file_path, default_extension: str) -> Path:

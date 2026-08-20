@@ -1,3 +1,9 @@
+"""Plotting and mathematical graph mobs for Algan.
+
+Provides 2D coordinate axes, function curve plotting, directional arrows with ticks,
+and bar graphs.
+"""
+
 from __future__ import annotations
 
 import torch.nn.functional as F
@@ -24,26 +30,6 @@ from algan.utils.tensor_utils import (
 )
 
 
-class Line2(Quad):
-    def __init__(self, start, end, facing_direction=OUT, width=0.05, **kwargs):
-        direction = F.normalize(end - start, p=2, dim=-1)
-        perp = F.normalize(
-            broadcast_cross_product(direction, facing_direction), p=2, dim=-1
-        )
-        super().__init__(
-            torch.stack(
-                [
-                    start + perp * width * 0.5,
-                    end + perp * width * 0.5,
-                    end - perp * width * 0.5,
-                    start - perp * width * 0.5,
-                ],
-                -2,
-            ),
-            **kwargs,
-        )
-
-
 def convert_points_to_path(points):
     path = [Move(points[0])]
     for i in range(len(points) - 1):
@@ -53,6 +39,28 @@ def convert_points_to_path(points):
 
 
 class Arrow(TriangulatedBezierCircuit):
+    """Directional arrow with optional tick marks along its shaft.
+
+    Constructs a 2D triangulated arrow pointing from `start` to `end`.
+
+    Parameters
+    ----------
+    start : torch.Tensor | list[float]
+        Starting coordinate vector `[x, y, z]`.
+    end : torch.Tensor | list[float]
+        Ending coordinate vector `[x, y, z]` where the arrow head points.
+    facing_direction : torch.Tensor, default=OUT
+        Normal orientation vector perpendicular to the arrow plane.
+    width : float, default=0.009
+        Width of the arrow shaft.
+    bidirectional : bool, default=False
+        Whether to add arrow heads at both ends.
+    num_ticks : int, default=4
+        Number of tick subdivisions along the shaft.
+    **kwargs
+        Additional keyword arguments forwarded to :class:`TriangulatedBezierCircuit`.
+    """
+
     def __init__(
         self,
         start,
@@ -63,8 +71,6 @@ class Arrow(TriangulatedBezierCircuit):
         num_ticks=4,
         **kwargs,
     ):
-        # line = Line(start, end, facing_direction=OUT, width=0.05, **kwargs)
-        # head = TriangleTriangulated(end )
         direction = F.normalize(end - start, p=2, dim=-1)
         perp = F.normalize(
             broadcast_cross_product(direction, facing_direction), p=2, dim=-1
@@ -111,6 +117,19 @@ class Arrow(TriangulatedBezierCircuit):
 
 
 class AxesMob(Mob):
+    """2D coordinate axis system with horizontal and vertical axes.
+
+    Parameters
+    ----------
+    width : float, default=1.0
+        Span width of the coordinate axes.
+    quadrant : bool, default=False
+        If True, renders axes starting from the origin (first quadrant only).
+        If False, centers axes symmetrically around the origin.
+    **kwargs
+        Additional keyword arguments forwarded to child :class:`Arrow` mobs.
+    """
+
     def __init__(self, width=1.0, quadrant=False, **kwargs):
         super().__init__(**kwargs)
         kwargs["scene"] = self.scene
@@ -142,6 +161,22 @@ def get_corners(start, direction, width, height, facing_direction):
 
 
 class Bar(Quad):
+    """Rectangular 2D bar mob for discrete plots and histograms.
+
+    Parameters
+    ----------
+    start : torch.Tensor | list[float]
+        Base center point of the bar.
+    end : torch.Tensor | list[float]
+        Top center point of the bar.
+    width : float, default=0.05
+        Half-width of the bar quad.
+    facing_direction : torch.Tensor, default=OUT
+        Normal vector for orientation.
+    **kwargs
+        Additional keyword arguments forwarded to :class:`Quad`.
+    """
+
     def __init__(self, start, end, width=0.05, facing_direction=OUT, **kwargs):
         self.direction = F.normalize(end - start, p=2, dim=-1)
         self.height = (end - start).norm(p=2, dim=-1)
@@ -158,6 +193,7 @@ class Bar(Quad):
     def move_to_with_height_matching(
         self, location, height_func, original_loc, interpolation=1
     ):
+        """Smoothly moves the bar to `location` while adjusting height dynamically via `height_func`."""
         self.location = original_loc * (1 - interpolation) + interpolation * location
         loc1 = unsquish(self.triangles[0].corners.location, -2, 3).clone()
         loc2 = unsquish(self.triangles[1].corners.location, -2, 3).clone()
@@ -172,6 +208,32 @@ class Bar(Quad):
 
 
 class FunctionPlotMob(Mob):
+    """Plot of a mathematical function `y = f(x)` on a coordinate axis system.
+
+    Parameters
+    ----------
+    func : callable
+        Mathematical function taking an `x` tensor and returning `y`.
+    axes : AxesMob, optional
+        Pre-existing :class:`AxesMob` coordinate system to plot upon. If None, a new axes system is created.
+    width : float, default=0.02
+        Stroke width of the plotted curve.
+    func_color : Color, default=RED_A
+        Colour of the plotted function curve or bars.
+    num_points : int, default=200
+        Number of sample points evaluated along the domain.
+    offset : float, default=1.0
+        Depth offset along OUT axis to prevent z-fighting with axes.
+    scale : float, default=1.0
+        Domain scaling factor.
+    max_value : float, optional
+        Maximum range value for vertical scaling.
+    bar_plot : bool, default=False
+        If True, renders discrete bar rectangles instead of a continuous curve.
+    **kwargs
+        Additional keyword arguments forwarded to :class:`Mob`.
+    """
+
     def __init__(
         self,
         func,
@@ -210,8 +272,6 @@ class FunctionPlotMob(Mob):
         func_points = self.map_input_domain_to_curve_location(xs)
         func_points = func_points[~func_points[..., 1].isnan()]
         func_points = func_points[func_points[..., 1].abs() <= self.get_scaler()]
-        # s = 1.1
-        # func_points = func_points.clamp_(min=-(axes.width * 0.5 * s), max=(axes.width * 0.5 * s))
 
         points = func_points
         perps = [
@@ -226,7 +286,6 @@ class FunctionPlotMob(Mob):
             )
             for i in range(len(points))
         ]
-        # perps = [UP for i in range(len(points))]
         func_points = torch.stack(
             [
                 *[points[i] + perps[i] * width * 0.5 for i in range(len(points))],
@@ -254,7 +313,6 @@ class FunctionPlotMob(Mob):
                     ],
                     scene=self.scene,
                 )
-        # self.axes = axes
         self.add_children(self.func)
         if new_axes:
             self.add_children(axes)
@@ -267,9 +325,7 @@ class FunctionPlotMob(Mob):
         def get_func_point_at_x(x):
             return torch.stack((x, torch.zeros_like(x), torch.zeros_like(x)), -1)
 
-        func_points = get_func_point_at_x(
-            xs
-        )  # torch.stack([get_func_point_at_x(x) for x in xs])
+        func_points = get_func_point_at_x(xs)
         return func_points
 
     def get_scaler(self):
@@ -281,9 +337,7 @@ class FunctionPlotMob(Mob):
                 (x, self.func_callable(x * self.s) / self.s, torch.zeros_like(x)), -1
             )
 
-        func_points = get_func_point_at_x(
-            xs
-        )  # torch.stack([get_func_point_at_x(x) for x in xs])
+        func_points = get_func_point_at_x(xs)
         if self.axes.max_value is None:
             max_value = (
                 func_points[..., 1]
@@ -295,9 +349,7 @@ class FunctionPlotMob(Mob):
             )
             self.axes.max_value = max_value
         max_value = self.axes.max_value
-        # func_points = func_points[(func_points[..., 1].abs() <= max_value+1e-6)]  # (axes.width*0.5*1.25))]
         func_points[..., 1] = (func_points[..., 1] / max_value) * self.get_scaler()
-        # func_points = func_points.nan_to_num_(max_value + 1)
         return func_points
 
     def on_create(self):
@@ -305,35 +357,3 @@ class FunctionPlotMob(Mob):
 
     def on_destroy(self):
         self.despawn_tilewise_recursive()
-
-
-class Quad(Mob):
-    def __init__(self, corner_locations, color=None, *args, **kwargs):
-        if kwargs.get("scene") is None:
-            kwargs["scene"] = active_scene_for_new_mob()
-        if color is None:
-            color = self.get_default_color()
-        if color.dim() == 1:
-            color = color.unsqueeze(0)
-        if color.shape[0] == 1:
-            color = color.expand(corner_locations.shape[-2], -1)
-        with Sync(animation_manager=kwargs["scene"].animation_manager):
-
-            def q(_):
-                return torch.cat((_[..., 2:4, :], _[..., :1, :]), -2)
-
-            triangles = [
-                TriangleTriangulated(
-                    corner_locations[..., :3, :],
-                    *args,
-                    color=color[..., :3, :],
-                    **kwargs,
-                ),
-                TriangleTriangulated(
-                    q(corner_locations), *args, color=q(color), **kwargs
-                ),
-            ]
-            kwargs["location"] = mean([_.location for _ in triangles])
-            super().__init__(*args, **kwargs)
-            self.triangles = triangles
-            self.add_children(triangles)

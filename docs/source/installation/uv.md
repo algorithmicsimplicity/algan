@@ -86,9 +86,11 @@ and widely used typesetting system allowing you to write formulas like
 = \frac{f^{(n)}(z_0)}{n!}.
 \end{equation*}
 
-Algan uses LaTeX to generate its text. If you never intend to render text, then
-you can technically skip this step. Otherwise select your operating system from the tab 
-list below and follow the instructions.
+Algan provides two ways to render text:
+- **`Text`**: Standard typography rendered via system fonts and Pango. **Does not require LaTeX.**
+- **`Tex` and `MathTex`**: High-quality mathematical equations and formulas rendered using LaTeX.
+
+If you only plan to use `Text` or geometric graphics, you can skip this step. If you plan to render mathematical equations and LaTeX formulas, follow the instructions below for your operating system.
 
 :::::{tab-set}
 
@@ -160,41 +162,39 @@ setspace standalone tipa wasy wasysym xcolor xetex xkeyval
 
 ### Step 3: Installing PyTorch
 
-Algan is built on top of PyTorch, to provide GPU accelerated animations and rendering.
-Depending on your operating system and GPU hardware, you will need to install different
-versions of PyTorch.
+Algan uses PyTorch for tensor math and GPU-accelerated ray tracing.
+Depending on your hardware and bandwidth, choose the appropriate installation command:
 
-Head over to [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) 
-and you should see a bunch of options to choose from.
+:::::{tab-set}
 
-* For the PyTorch build select `Stable`.
-
-* Select your operating system.
-
-* For the package select `pip`.
-
-* For the language select `Python`.
-
-* For the compute platform, you need to select the right version for your
- computer's GPU hardware. If you are using an NVIDIA GPU you want to select
- the latest version of CUDA. If you are using an AMD GPU you will want to
- select ROCm. Otherwise, you can select CPU to run without GPU acceleration.
-
-There should now be a pip3 command shown in the "Run this Command" box. Since we are using
-uv to manage our packages, we need to modify the this command to use uv.
-Simply replace the `pip3` at the start of the command with `uv pip`.
-For example, PyTorch shows me the command
-
-`pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128`
-
-so I would run
+::::{tab-item} NVIDIA GPU (CUDA)
+For NVIDIA GPUs with full ray-tracing hardware acceleration (~2.5GB-5GB download):
 
 ```bash
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ```
+*(Check [pytorch.org](https://pytorch.org/get-started/locally/) for your specific CUDA version if different from cu128).*
+::::
 
-If no error message is shown, then installation was successful and you can move on
-to installing Algan.
+::::{tab-item} CPU-Only (Lightweight)
+If you do not have an NVIDIA GPU, or for lightweight CI / cloud container deployments (~200MB download):
+
+```bash
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
+::::
+
+::::{tab-item} Apple Silicon (macOS)
+On macOS (M1/M2/M3/M4), standard PyTorch packages include native Apple Silicon (Metal/MPS) acceleration:
+
+```bash
+uv pip install torch torchvision
+```
+::::
+
+:::::
+
+If no error message is shown, then installation was successful and you can move on to installing Algan.
 
 ### Step 4: Installing Algan 
 

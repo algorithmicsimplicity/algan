@@ -107,15 +107,16 @@ def test_base_defaults():
     assert m.transparent is False
     assert m.visible is True
     assert m.side == FrontSide
-    assert m.flatShading is False
+    assert m.flat_shading is False
     assert m.wireframe is False
-    assert m.vertexColors is False
+    assert m.vertex_colors is False
+    assert m.tone_mapped is True
     print("ok: base material defaults")
 
 
 def test_material_defaults():
     assert MeshLambertMaterial().emissive == 0x000000
-    assert MeshLambertMaterial().emissiveIntensity == 1.0
+    assert MeshLambertMaterial().emissive_intensity == 1.0
 
     p = MeshPhongMaterial()
     assert p.specular == 0x111111
@@ -125,18 +126,18 @@ def test_material_defaults():
     s = MeshStandardMaterial()
     assert s.roughness == 1.0
     assert s.metalness == 0.0
-    assert s.emissiveIntensity == 1.0
-    assert s.envMapIntensity == 1.0
+    assert s.emissive_intensity == 1.0
+    assert s.env_map_intensity == 1.0
 
     ph = MeshPhysicalMaterial()
     assert ph.clearcoat == 0.0
-    assert ph.clearcoatRoughness == 0.0
+    assert ph.clearcoat_roughness == 0.0
     assert ph.ior == 1.5
-    assert ph.specularIntensity == 1.0
-    assert ph.specularColor == 0xFFFFFF
+    assert ph.specular_intensity == 1.0
+    assert ph.specular_color == 0xFFFFFF
     assert ph.sheen == 0.0
-    assert ph.sheenRoughness == 1.0
-    assert ph.sheenColor == 0x000000
+    assert ph.sheen_roughness == 1.0
+    assert ph.sheen_color == 0x000000
     assert ph.transmission == 0.0
     assert ph.iridescence == 0.0
     # Inherits Standard defaults.
@@ -177,9 +178,26 @@ def test_unexpected_kwarg_raises():
     try:
         MeshStandardMaterial(not_a_real_property=1.0)
     except TypeError:
-        print("ok: unexpected kwarg raises TypeError")
-        return
-    raise AssertionError("expected TypeError for unknown property")
+        pass
+    else:
+        raise AssertionError("expected TypeError for unknown property")
+
+    # CamelCase is rejected in favor of pythonic snake_case
+    try:
+        MeshPhysicalMaterial(clearcoatRoughness=0.2)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError for camelCase clearcoatRoughness")
+
+    try:
+        Material(flatShading=True)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError for camelCase flatShading")
+
+    print("ok: unexpected kwarg raises TypeError")
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +357,7 @@ def test_set_material_wires_shader_and_attrs():
     from algan import RED, Sphere
 
     s = Sphere(color=RED).set_material(
-        MeshStandardMaterial(metalness=1.0, roughness=0.2, emissiveIntensity=3.0)
+        MeshStandardMaterial(metalness=1.0, roughness=0.2, emissive_intensity=3.0)
     )
     assert s.shader is ms.standard_shader
     assert _v(s.metalness)[0] == 1.0
@@ -412,9 +430,9 @@ def test_set_material_after_spawn_raises():
 def test_texture_and_unsupported_warnings():
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        MeshStandardMaterial(roughnessMap="dummy", wireframe=True).emit_warnings()
+        MeshStandardMaterial(roughness_map="dummy", wireframe=True).emit_warnings()
     text = " ".join(str(w.message) for w in rec)
-    assert "roughnessMap" in text
+    assert "roughness_map" in text
     assert "wireframe" in text
     print("ok: texture/unsupported-property warnings fire")
 

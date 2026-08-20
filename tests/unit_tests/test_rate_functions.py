@@ -10,6 +10,7 @@ quietly move where animations land.
 from __future__ import annotations
 
 import inspect
+import math
 
 import pytest
 import torch
@@ -36,6 +37,30 @@ CURVES = sorted(
 )
 
 
+NON_MONOTONIC_CURVES = {
+    "ease_in_back",
+    "ease_out_back",
+    "ease_in_out_back",
+    "ease_in_elastic",
+    "ease_out_elastic",
+    "ease_in_out_elastic",
+    "ease_in_bounce",
+    "ease_out_bounce",
+    "ease_in_out_bounce",
+}
+MONOTONIC_CURVES = [c for c in CURVES if c not in NON_MONOTONIC_CURVES]
+
+OVERSHOOTING_CURVES = {
+    "ease_in_back",
+    "ease_out_back",
+    "ease_in_out_back",
+    "ease_in_elastic",
+    "ease_out_elastic",
+    "ease_in_out_elastic",
+}
+UNIT_INTERVAL_CURVES = [c for c in CURVES if c not in OVERSHOOTING_CURVES]
+
+
 def _evaluate(func, t):
     return torch.as_tensor(func(t)).reshape(-1).double()
 
@@ -55,7 +80,7 @@ def test_rate_function_starts_at_zero_and_finishes_at_one(name):
     assert values[-1] == pytest.approx(1.0, abs=1e-5), f"{name} does not end at 1"
 
 
-@pytest.mark.parametrize("name", CURVES)
+@pytest.mark.parametrize("name", UNIT_INTERVAL_CURVES)
 def test_rate_function_is_finite_and_stays_inside_the_unit_interval(name):
     values = _evaluate(getattr(rate_funcs, name), SAMPLES)
     assert torch.isfinite(values).all(), f"{name} is not finite on [0, 1]"
@@ -63,7 +88,7 @@ def test_rate_function_is_finite_and_stays_inside_the_unit_interval(name):
     assert values.max() <= 1 + 1e-5, f"{name} overshoots 1"
 
 
-@pytest.mark.parametrize("name", CURVES)
+@pytest.mark.parametrize("name", MONOTONIC_CURVES)
 def test_rate_function_never_runs_an_animation_backwards(name):
     values = _evaluate(getattr(rate_funcs, name), SAMPLES)
     assert (values.diff() >= -1e-5).all(), f"{name} is not monotone increasing"
@@ -76,7 +101,9 @@ def test_rate_function_accepts_a_scalar_progress_tensor(name):
     value = float(
         torch.as_tensor(getattr(rate_funcs, name)(torch.tensor(0.5))).reshape(-1)[0]
     )
-    assert 0.0 - 1e-5 <= value <= 1.0 + 1e-5
+    assert math.isfinite(value)
+    if name in UNIT_INTERVAL_CURVES:
+        assert 0.0 - 1e-5 <= value <= 1.0 + 1e-5
 
 
 def test_linear_is_the_identity_curve_not_a_copy_of_it():

@@ -16,9 +16,7 @@ from algan.utils.tensor_utils import cast_to_tensor
 if TYPE_CHECKING:
     from algan.animatable_base.mob import Mob
 
-
-class ModifiedProtectedAttributeError(Exception):
-    """Raised when a shader/material is (re)assigned after the mob has spawned."""
+from algan.errors import ModifiedProtectedAttributeError
 
 
 class MobMaterialsMixin:
@@ -76,10 +74,12 @@ class MobMaterialsMixin:
             Shade per fragment instead of per vertex.
         """
         if self.is_spawned():
+            mob_name = type(self).__name__
             raise ModifiedProtectedAttributeError(
-                "You are attempting to change the shader "
-                "of a mob that is already spawned. This is not allowed. "
-                "See docs for help."
+                f"Cannot change shader on {mob_name} because it has already been spawned. "
+                "Shaders and materials must be configured before calling .spawn(). "
+                "To change shaders after spawning, create an unspawned clone with `with Off(): clone = mob.clone(spawn=False)`, "
+                "configure its shader, despawn the old mob, and spawn the new one."
             )
 
         if shader is None:
@@ -161,9 +161,12 @@ class MobMaterialsMixin:
             If called on a Mob that has already been spawned.
         """
         if self.is_spawned():
+            mob_name = type(self).__name__
             raise ModifiedProtectedAttributeError(
-                "You are attempting to change the fragment shader of a mob that "
-                "is already spawned. This is not allowed. See docs for help."
+                f"Cannot change fragment shader on {mob_name} because it has already been spawned. "
+                "Shaders must be configured before calling .spawn(). "
+                "To change fragment shaders after spawning, create an unspawned clone with `with Off(): clone = mob.clone(spawn=False)`, "
+                "configure its fragment shader, despawn the old mob, and spawn the new one."
             )
 
         if shader is None:
@@ -246,10 +249,12 @@ class MobMaterialsMixin:
         from algan.rendering.shaders.materials import _to_color5
 
         if self.is_spawned():
+            mob_name = type(self).__name__
             raise ModifiedProtectedAttributeError(
-                "You are attempting to set the material "
-                "of a mob that is already spawned. This is not allowed. "
-                "See docs for help."
+                f"Cannot set material on {mob_name} because it has already been spawned. "
+                "Materials must be configured before calling .spawn(). "
+                "To change materials after spawning, create an unspawned clone with `with Off(): clone = mob.clone(spawn=False)`, "
+                "configure its material, despawn the old mob, and spawn the new one."
             )
 
         # Register the lighting shader and its animatable parameters, then

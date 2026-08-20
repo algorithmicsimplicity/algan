@@ -59,6 +59,24 @@ class HierarchyError(AlganError, ValueError):
     code = "ALGAN_INVALID_HIERARCHY"
 
 
+class ModifiedProtectedAttributeError(AlganError, ValueError):
+    """Raised when a shader/material is (re)assigned after the mob has spawned."""
+
+    code = "ALGAN_MODIFIED_PROTECTED_ATTRIBUTE"
+
+
+class TranscriptAudioMismatchError(AlganError, ValueError):
+    """Raised when audio duration and transcript mismatch during alignment."""
+
+    code = "ALGAN_TRANSCRIPT_AUDIO_MISMATCH"
+
+
+class InvalidColorError(AlganError, ValueError):
+    """Raised when an invalid color string or value is passed."""
+
+    code = "ALGAN_INVALID_COLOR"
+
+
 class AlganWarning(UserWarning):
     """Base class for user-facing Algan warnings."""
 
@@ -94,6 +112,9 @@ __all__ = [
     "AlganConfigurationError",
     "UnsupportedFeatureError",
     "HierarchyError",
+    "ModifiedProtectedAttributeError",
+    "TranscriptAudioMismatchError",
+    "InvalidColorError",
     "AlganWarning",
     "UnsupportedFeatureWarning",
     "LegacySceneDiscoveryWarning",

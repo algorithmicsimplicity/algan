@@ -749,8 +749,8 @@ class NeuronV3(Neuron):
             roughness=0.18,
             metalness=0.0,
             clearcoat=1.0,
-            clearcoatRoughness=0.08,
-            envMapIntensity=4.0,
+            clearcoat_roughness=0.08,
+            env_map_intensity=4.0,
             # reflectivity=1.0
         )
         return (
@@ -774,11 +774,11 @@ class NeuronV3(Neuron):
             roughness=0.12,
             metalness=0.0,
             clearcoat=1.0,
-            clearcoatRoughness=0.05,
+            clearcoat_roughness=0.05,
             sheen=8.0,
-            sheenRoughness=0.1,
-            sheenColor=rim_color,
-            envMapIntensity=5.0,
+            sheen_roughness=0.1,
+            sheen_color=rim_color,
+            env_map_intensity=5.0,
             transmission=0.0,
             ior=5,
         )

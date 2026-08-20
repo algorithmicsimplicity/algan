@@ -60,6 +60,8 @@ dependencies = [
     "trimesh>=4.0.0",
 ]
 
+[project.scripts]
+algan = "algan.cli:main"
 
 [project.urls]
 repository = "https://github.com/algorithmicsimplicity/algan"
