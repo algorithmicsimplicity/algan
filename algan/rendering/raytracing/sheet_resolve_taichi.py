@@ -190,6 +190,14 @@ def sheet_resolve_shade(
         # already committed. Only meaningful where the host flagged the pixel
         # (the _AA_ONE_MESH_BIT rides in every sheet's flags there).
         mesh_ink = 0.0
+        # §4.4 band state: sheets of ONE band (the shading-class siblings the
+        # compaction subdivides) claim against the same incoming visibility
+        # and occlude ONCE, at the band's last sheet, by their summed
+        # coverage factor. A NEGATIVE sheet coverage is the host's flag that
+        # this band continues at the NEXT sheet of the walk, which is what
+        # lets the sum ride in a register (sheets.py, ``_sibling_weights``).
+        band_p = 0.0
+        band_open = False
         base_dist = 0.0
         bounces_left = max_bounces
         processed = 0
@@ -204,6 +212,8 @@ def sheet_resolve_shade(
             a = sheet_ab[idx, 0]
             b = sheet_ab[idx, 1]
             cov = sheet_cov[idx]
+            defer = cov < 0.0
+            cov = ti.abs(cov)
             msk = sheet_msk[idx]
             in_border = 0.0
             q += 1
@@ -271,7 +281,18 @@ def sheet_resolve_shade(
                 if eff > room:
                     dens *= room / ti.max(eff, MIN_ALPHA)
                     eff = room
+            # This sheet's contribution to its band's single occlusion write
+            # (inert outside a band: there band_p IS the sheet's own factor).
+            band_p += cfac * dens
             if eff <= MIN_ALPHA:
+                if not defer:
+                    # The band ends here with nothing left to claim -- its
+                    # samples are already dark -- so drop the pending sum
+                    # rather than carry it into the next band.
+                    band_p = 0.0
+                    band_open = False
+                else:
+                    band_open = True
                 if ti.static(dump):
                     if dmatch:
                         _aa_dump_frag(dump_out, q - 1, d_kind, 1,
@@ -389,6 +410,15 @@ def sheet_resolve_shade(
             mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
             alpha = ti.math.clamp(mat_alpha * eff, 0.0, 1.0)
             a_s = mat_alpha * dens
+            # Inside a subdivided band the occlusion write is the BAND's, made
+            # once at its last sheet: the summed coverage factor against the
+            # material alpha. A lone sheet writes its own, unchanged.
+            w_cfac = cfac
+            w_a_s = a_s
+            if defer or band_open:
+                w_cfac = band_p
+                w_a_s = mat_alpha
+            band_open = defer
             T = ti.math.clamp(T, 0.0, 1.0)
 
             normal = ti.math.vec3(0.0, 0.0, 0.0)
@@ -618,8 +648,10 @@ def sheet_resolve_shade(
                                     rhp + nref * (10.0 * MIN_HIT_DISTANCE),
                                     refl_rd, rwt, base_dist + t_hit,
                                     bounces_left - 1, processed, pixel, r, 1)
-                    rr = _run_svis_write(svis, slots, a_s, 0.0, cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
+                    if not defer:
+                        rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
+                        _run_redistribute(svis, own_msk, rr)
+                        band_p = 0.0
             elif is_pane or split_refl:
                 wt = weight * refl_energy
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
@@ -667,15 +699,18 @@ def sheet_resolve_shade(
                                 refl_rd,
                                 wt, base_dist + t_hit, bounces_left - 1,
                                 processed, pixel, r, 1)
-                ts_s = a_s * trans_share
-                pm = (1.0 - a_s) + ts_s
-                rr = _run_svis_write(svis, slots, a_s, trans_share, cfac, 1)
-                _run_redistribute(svis, own_msk, rr)
-                if ts_s > 1e-6:
-                    frac = cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                    num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
-                           + ts_s * tint)
-                    weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
+                ts_s = w_a_s * trans_share
+                pm = (1.0 - w_a_s) + ts_s
+                if not defer:
+                    rr = _run_svis_write(svis, slots, w_a_s, trans_share,
+                                         w_cfac, 1)
+                    _run_redistribute(svis, own_msk, rr)
+                    band_p = 0.0
+                    if ts_s > 1e-6:
+                        frac = w_cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
+                        num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
+                               + ts_s * tint)
+                        weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
             elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                 refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                 hit_point = surf_pos
@@ -730,15 +765,18 @@ def sheet_resolve_shade(
                                       t_hit, svis)
                 break
             else:
-                ts_s = a_s * trans_share
-                pm = (1.0 - a_s) + ts_s
-                rr = _run_svis_write(svis, slots, a_s, trans_share, cfac, 1)
-                _run_redistribute(svis, own_msk, rr)
-                if ts_s > 1e-6:
-                    frac = cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                    num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
-                           + ts_s * tint)
-                    weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
+                ts_s = w_a_s * trans_share
+                pm = (1.0 - w_a_s) + ts_s
+                if not defer:
+                    rr = _run_svis_write(svis, slots, w_a_s, trans_share,
+                                         w_cfac, 1)
+                    _run_redistribute(svis, own_msk, rr)
+                    band_p = 0.0
+                    if ts_s > 1e-6:
+                        frac = w_cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
+                        num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
+                               + ts_s * tint)
+                        weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
 
             if ti.static(dump):
                 if dmatch:

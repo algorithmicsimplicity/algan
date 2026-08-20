@@ -111,9 +111,7 @@ class _SheetSpy:
             stats.covered += int(counts.numel())
             stats.max_sheets = max(stats.max_sheets, int(counts.max().item()))
             stats.over_k += int((counts > 24).sum().item())
-            stats.hist += torch.bincount(
-                counts.clamp(max=32).cpu(), minlength=33
-            )
+            stats.hist += torch.bincount(counts.clamp(max=32).cpu(), minlength=33)
             return coverage
 
         rp.prepare_sparse_raster_coverage = spy
@@ -129,9 +127,7 @@ def main():
     ap.add_argument("--scenes", nargs="*", default=None)
     ap.add_argument("--rule", choices=("prim", "facing"), default="prim")
     ap.add_argument("--band-c", type=float, default=4.0)
-    ap.add_argument(
-        "--res", choices=sorted(nsc.RESOLUTIONS), default="preview"
-    )
+    ap.add_argument("--res", choices=sorted(nsc.RESOLUTIONS), default="preview")
     args = ap.parse_args()
     global RULE, BAND_C
     RULE = args.rule
@@ -166,11 +162,7 @@ def main():
             f"{sf:6.2f} {s.fused:8d} {s.split_groups:8d} {s.max_sheets:5d} "
             f"{s.over_k:6d} {s.seconds:10.2f}"
         )
-        tail = {
-            k: int(s.hist[k].item())
-            for k in range(9, 33)
-            if int(s.hist[k].item())
-        }
+        tail = {k: int(s.hist[k].item()) for k in range(9, 33) if int(s.hist[k].item())}
         print(f"{'':26s} {s.baseline}")
         if tail:
             print(f"{'':26s} sheets/pixel tail (>=9): {tail}")

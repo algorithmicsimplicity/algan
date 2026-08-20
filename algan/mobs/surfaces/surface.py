@@ -11,9 +11,11 @@ and the search sizes each parameter axis against its own contribution to that
 error, so an axis the surface is straight along (a cylinder's length, a cone's
 slant) costs the minimum however curved the other axis is. The search is cached
 per subclass and geometry configuration.
-``render_tolerance`` then bounds the on-screen error when each PN triangle is
-diced into flat render triangles -- per triangle, per frame, so detail is spent
-only where the surface is near the camera.
+``render_tolerance`` and ``render_tolerance_pixels`` then bound the on-screen
+error when each PN triangle is diced into flat render triangles -- per triangle,
+per frame, so detail is spent only where the surface is near the camera. The
+first is a fraction of the frame height and the second an absolute pixel count;
+whichever is finer at the resolution being rendered is the one that binds.
 
 Surfaces carry the texture-map API: ``color_texture`` plus per-texel
 reflectivity, roughness, refractive-index, normal and glow maps, all sampled in
@@ -52,6 +54,7 @@ from algan.rendering.logical_pn import (
     evaluate_logical_pn_per_patch,
     logical_pn_control_points,
     mean_patch_edge_length,
+    normalize_pixel_tolerance,
 )
 from algan.utils.file_utils import get_image
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
@@ -693,11 +696,23 @@ class Surface(Mob):
         configuration, so constructing the same shape again does not repeat
         the resolution search.
     render_tolerance
-        Maximum sampled output-pixel deviation (as percentage of screen height) used
-        when each PN triangle is dynamically diced into ordinary flat render triangles.
-        Every PN triangle is diced only as finely as it itself needs, in every frame,
-        so detail spent where the surface is close to the camera is not spent on the
-        rest of the mesh or on the frames where it is far away.
+        Maximum sampled deviation between a PN triangle and the flat render
+        triangles it is dynamically diced into, as a fraction of the output frame
+        height. Defaults to ``0.001``. Every PN triangle is diced only as finely as
+        it itself needs, in every frame, so detail spent where the surface is close
+        to the camera is not spent on the rest of the mesh or on the frames where it
+        is far away.
+    render_tolerance_pixels
+        The same maximum deviation, stated as an absolute number of output pixels
+        instead. Defaults to ``1.0``; ``None`` removes the bound. The two render
+        tolerances are both upper bounds on the same error and the finer one at the
+        resolution being rendered is what the dice satisfies. A fraction of the
+        frame height is what a low-resolution render needs -- the analytic-coverage
+        antialiasing computes a pixel's coverage from the microtriangles crossing
+        it, so at ``PREVIEW`` the default ``render_tolerance`` is worth 0.4 px and
+        holds the dice below a pixel -- but the same fraction grows with the frame,
+        and past roughly 1080p it alone would leave triangles several pixels across.
+        This is the bound that takes over there.
     min_grid_resolution, max_grid_resolution
         Bounds for automatic grid sizing, measured in vertices per axis. Default
         to ``2`` and ``200``. The floor is two vertices -- one cell -- because a
@@ -777,6 +792,7 @@ class Surface(Mob):
         ignore_normals=False,
         geometry_tolerance=0.001,
         render_tolerance=0.001,
+        render_tolerance_pixels=1.0,
         min_grid_resolution=2,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,
@@ -883,6 +899,9 @@ class Surface(Mob):
         self._auto_resolution_enabled = False
         self._geometry_tolerance = float(geometry_tolerance)
         self._render_tolerance = float(render_tolerance)
+        self._render_tolerance_pixels = normalize_pixel_tolerance(
+            render_tolerance_pixels
+        )
         self._resolution_tolerance = self._geometry_tolerance
         self._min_grid_resolution = int(min_grid_resolution)
         self._max_grid_resolution = int(max_grid_resolution)
@@ -1180,8 +1199,18 @@ class Surface(Mob):
 
     @property
     def render_tolerance(self):
-        """Per-frame output-pixel flat-triangle tessellation tolerance."""
+        """Per-frame flat-triangle tessellation tolerance, as a screen fraction."""
         return self._render_tolerance
+
+    @property
+    def render_tolerance_pixels(self):
+        """Per-frame flat-triangle tessellation tolerance, in output pixels.
+
+        ``inf`` when the surface declares none, in which case
+        :attr:`render_tolerance` alone decides the dice. Whichever of the two
+        is finer at the resolution being rendered is the one that binds.
+        """
+        return self._render_tolerance_pixels
 
     def func(self, u, v):
         """Evaluate the original Manim-style parametric function."""
@@ -2941,6 +2970,7 @@ class Surface(Mob):
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
             render_tolerance=self._render_tolerance,
+            render_tolerance_pixels=self._render_tolerance_pixels,
             geometry_slack_ratio=self._geometry_slack_ratio,
             **{
                 k: expand_grid_to_verts(v)

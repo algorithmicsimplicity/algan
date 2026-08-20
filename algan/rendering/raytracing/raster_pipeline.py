@@ -1684,8 +1684,12 @@ def prepare_sparse_raster_coverage(
         sheet_key.copy_(stream["sheet_key"])
         sheet_ref.copy_(stream["sheet_ref"])
         sheet_ab.copy_(stream["sheet_ab"])
-        sheet_cov.copy_(stream["sheet_cov"])
-        sheet_msk.copy_(stream["sheet_msk"])
+        # The resolve consumes the COMPOSITING weights, not the record: they
+        # are the sheet's own area and union everywhere except inside a band
+        # the shading-class split subdivided, where they carry §4.4's
+        # additive sibling arithmetic (``sheets._sibling_weights``).
+        sheet_cov.copy_(stream["sheet_wgt"])
+        sheet_msk.copy_(stream["sheet_wmsk"])
         sheet_cap_t.copy_(stream["sheet_cap"])
         sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
         sheet_data = {

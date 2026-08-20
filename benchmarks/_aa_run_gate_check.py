@@ -1081,9 +1081,7 @@ def _measure(build, settings, capture=None):
     lost_total = [0.0]
     uf_hist = Counter()
     svis_stats = _Svis()
-    svis_stats.sheet_stats = {
-        label: _SheetStats(label) for label, _r, _c in SHEET_ARMS
-    }
+    svis_stats.sheet_stats = {label: _SheetStats(label) for label, _r, _c in SHEET_ARMS}
     silhouettes = []
     captured = {}
 
@@ -1779,9 +1777,7 @@ def main():
                 if st is None or not st.covered:
                     continue
                 ratio = st.num_sheets / max(st.num_frags, 1)
-                depth = (
-                    f"~{st.notch_err / st.notched:.4f}" if st.notched else ""
-                )
+                depth = f"~{st.notch_err / st.notched:.4f}" if st.notched else ""
                 notch = f"{st.notched:6d}/{st.interior:<7d}{depth:<8s}"
                 unref = (
                     f"  unref dev {st.unref_dev / st.unref_n:.4f}"

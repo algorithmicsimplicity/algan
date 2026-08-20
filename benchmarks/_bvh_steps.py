@@ -85,7 +85,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
 )
 from algan.scene_manager import SceneManager  # noqa: E402
 
-DEBUG = bool(os.environ.get('STEPS_DEBUG'))
+DEBUG = bool(os.environ.get("STEPS_DEBUG"))
 PINNED_BYTES = 1_400_000_000
 FONT = "Algan Test Sans"
 
@@ -129,9 +129,16 @@ def _steps_tri(
         g_st = ti.Vector([0] * _GROUP_STACK)
         g_cur = 0
         g_pend, g_near = _group_test(
-            0, 0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            0,
+            0,
+            0,
+            f,
+            ro,
+            inv_rd,
+            t_prev - DEPTH_TIE_EPSILON,
             ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
-            blocks)
+            blocks,
+        )
         n_grp += 1
         while True:
             if g_pend == 0:
@@ -142,9 +149,16 @@ def _steps_tri(
                 g_cur = saved >> BVH_ARITY
                 saved_mask = saved & _GROUP_MASK
                 fresh_mask, g_near = _group_test(
-                    0, 0, g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
-                    ti.min(best_t + DEPTH_TIE_EPSILON,
-                           t_cap + DEPTH_TIE_EPSILON), blocks)
+                    0,
+                    0,
+                    g_cur,
+                    f,
+                    ro,
+                    inv_rd,
+                    t_prev - DEPTH_TIE_EPSILON,
+                    ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                    blocks,
+                )
                 n_grp += 1
                 g_pend = saved_mask & fresh_mask
             else:
@@ -165,28 +179,37 @@ def _steps_tri(
                         prim = -1
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
-                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                        if (
+                            (p0 >= 0)
+                            and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))
+                        ):
                             prim = p0
                         if prim >= 0:
                             n_prim += 1
-                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                              tri_pos[tp, prim, 1],
-                                              tri_pos[tp, prim, 2])
-                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                              tri_pos[tp, prim, 4],
-                                              tri_pos[tp, prim, 5])
-                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                              tri_pos[tp, prim, 7],
-                                              tri_pos[tp, prim, 8])
+                            v0 = ti.math.vec3(
+                                tri_pos[tp, prim, 0],
+                                tri_pos[tp, prim, 1],
+                                tri_pos[tp, prim, 2],
+                            )
+                            v1 = ti.math.vec3(
+                                tri_pos[tp, prim, 3],
+                                tri_pos[tp, prim, 4],
+                                tri_pos[tp, prim, 5],
+                            )
+                            v2 = ti.math.vec3(
+                                tri_pos[tp, prim, 6],
+                                tri_pos[tp, prim, 7],
+                                tri_pos[tp, prim, 8],
+                            )
                             hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
                             if hit_ok != 0:
                                 layer = ti.cast(prim, ti.f32)
-                                if ((t > MIN_HIT_DISTANCE)
-                                        and _comes_after(t, layer, t_prev,
-                                                         layer_prev)
-                                        and _comes_after(best_t, best_layer,
-                                                         t, layer)):
+                                if (
+                                    (t > MIN_HIT_DISTANCE)
+                                    and _comes_after(t, layer, t_prev, layer_prev)
+                                    and _comes_after(best_t, best_layer, t, layer)
+                                ):
                                     best_t = t
                                     best_layer = layer
                                     best_prim = prim
@@ -196,9 +219,16 @@ def _steps_tri(
                         g_sp += 1
                     g_cur = child_blk
                     g_pend, g_near = _group_test(
-                        0, 0, g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
-                        ti.min(best_t + DEPTH_TIE_EPSILON,
-                               t_cap + DEPTH_TIE_EPSILON), blocks)
+                        0,
+                        0,
+                        g_cur,
+                        f,
+                        ro,
+                        inv_rd,
+                        t_prev - DEPTH_TIE_EPSILON,
+                        ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                        blocks,
+                    )
                     n_grp += 1
         out[r, 0] = ti.cast(n_grp, ti.f32)
         out[r, 1] = ti.cast(n_leaf, ti.f32)
@@ -243,9 +273,16 @@ def _steps_bez(
         g_st = ti.Vector([0] * _GROUP_STACK)
         g_cur = 0
         g_pend, g_near = _group_test(
-            0, 0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            0,
+            0,
+            0,
+            f,
+            ro,
+            inv_rd,
+            t_prev - DEPTH_TIE_EPSILON,
             ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
-            blocks)
+            blocks,
+        )
         n_grp += 1
         while True:
             if g_pend == 0:
@@ -256,9 +293,16 @@ def _steps_bez(
                 g_cur = saved >> BVH_ARITY
                 saved_mask = saved & _GROUP_MASK
                 fresh_mask, g_near = _group_test(
-                    0, 0, g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
-                    ti.min(best_t + DEPTH_TIE_EPSILON,
-                           t_cap + DEPTH_TIE_EPSILON), blocks)
+                    0,
+                    0,
+                    g_cur,
+                    f,
+                    ro,
+                    inv_rd,
+                    t_prev - DEPTH_TIE_EPSILON,
+                    ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                    blocks,
+                )
                 n_grp += 1
                 g_pend = saved_mask & fresh_mask
             else:
@@ -279,8 +323,11 @@ def _steps_bez(
                         circuit = -1
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
-                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                        if (
+                            (p0 >= 0)
+                            and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))
+                        ):
                             circuit = p0
                         if circuit >= 0:
                             n_prim += 1
@@ -288,50 +335,77 @@ def _steps_bez(
                             nrm = ti.math.vec3(
                                 circuit_meta[tm, circuit, _M_NORMAL],
                                 circuit_meta[tm, circuit, _M_NORMAL + 1],
-                                circuit_meta[tm, circuit, _M_NORMAL + 2])
+                                circuit_meta[tm, circuit, _M_NORMAL + 2],
+                            )
                             denom = rd.dot(nrm)
                             layer = ti.cast(circuit, ti.f32)
                             if ti.abs(denom) > 1e-9:
                                 center = ti.math.vec3(
                                     circuit_meta[tm, circuit, _M_CENTER],
                                     circuit_meta[tm, circuit, _M_CENTER + 1],
-                                    circuit_meta[tm, circuit, _M_CENTER + 2])
+                                    circuit_meta[tm, circuit, _M_CENTER + 2],
+                                )
                                 t = (center - ro).dot(nrm) / denom
-                                if ((t > MIN_HIT_DISTANCE)
-                                        and _comes_after(t, layer, t_prev,
-                                                         layer_prev)
-                                        and _comes_after(best_t, best_layer,
-                                                         t, layer)):
+                                if (
+                                    (t > MIN_HIT_DISTANCE)
+                                    and _comes_after(t, layer, t_prev, layer_prev)
+                                    and _comes_after(best_t, best_layer, t, layer)
+                                ):
                                     hit = ro + t * rd - center
                                     bu = ti.math.vec3(
                                         circuit_meta[tm, circuit, _M_BASIS_U],
                                         circuit_meta[tm, circuit, _M_BASIS_U + 1],
-                                        circuit_meta[tm, circuit, _M_BASIS_U + 2])
+                                        circuit_meta[tm, circuit, _M_BASIS_U + 2],
+                                    )
                                     bv = ti.math.vec3(
                                         circuit_meta[tm, circuit, _M_BASIS_U + 3],
                                         circuit_meta[tm, circuit, _M_BASIS_U + 4],
-                                        circuit_meta[tm, circuit, _M_BASIS_U + 5])
+                                        circuit_meta[tm, circuit, _M_BASIS_U + 5],
+                                    )
                                     u = hit.dot(bu)
                                     v = hit.dot(bv)
                                     pixel_size = pixel_size_per_t * (base_dist + t)
                                     border_w = (
                                         circuit_meta[tm, circuit, _M_BORDER_W]
-                                        * pixel_size)
+                                        * pixel_size
+                                    )
                                     outline_w = 0.6 * pixel_size
-                                    filled = (
-                                        circuit_meta[tm, circuit, _M_FILLED] > 0.5)
+                                    filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
                                     query_radius = _circuit_query_radius(
-                                        border_w, outline_w, filled)
+                                        border_w, outline_w, filled
+                                    )
                                     te = f % num_edge_frames
-                                    (crossings, min_dist_sq, _ccu, _ccv, _e1x,
-                                        _e1y, _sg1, _s2, _s2u, _s2v, _e2x,
-                                        _e2y, _sg2) = _bezier_point_metrics(
-                                        circuit, te, u, v, query_radius,
-                                        circuit_meta.shape[1], edges_2d,
-                                        edge_accel)
+                                    (
+                                        crossings,
+                                        min_dist_sq,
+                                        _ccu,
+                                        _ccv,
+                                        _e1x,
+                                        _e1y,
+                                        _sg1,
+                                        _s2,
+                                        _s2u,
+                                        _s2v,
+                                        _e2x,
+                                        _e2y,
+                                        _sg2,
+                                    ) = _bezier_point_metrics(
+                                        circuit,
+                                        te,
+                                        u,
+                                        v,
+                                        query_radius,
+                                        circuit_meta.shape[1],
+                                        edges_2d,
+                                        edge_accel,
+                                    )
                                     inside, _in_border = _circuit_point_region(
-                                        border_w, outline_w, filled, crossings,
-                                        min_dist_sq)
+                                        border_w,
+                                        outline_w,
+                                        filled,
+                                        crossings,
+                                        min_dist_sq,
+                                    )
                                     if inside:
                                         best_t = t
                                         best_layer = layer
@@ -342,9 +416,16 @@ def _steps_bez(
                         g_sp += 1
                     g_cur = child_blk
                     g_pend, g_near = _group_test(
-                        0, 0, g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
-                        ti.min(best_t + DEPTH_TIE_EPSILON,
-                               t_cap + DEPTH_TIE_EPSILON), blocks)
+                        0,
+                        0,
+                        g_cur,
+                        f,
+                        ro,
+                        inv_rd,
+                        t_prev - DEPTH_TIE_EPSILON,
+                        ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                        blocks,
+                    )
                     n_grp += 1
         out[r, 0] = ti.cast(n_grp, ti.f32)
         out[r, 1] = ti.cast(n_leaf, ti.f32)
@@ -377,8 +458,23 @@ def _ref_tri(
         rd = ti.math.vec3(rays[r, 3], rays[r, 4], rays[r, 5])
         inv_rd = ti.math.vec3(1.0 / rd[0], 1.0 / rd[1], 1.0 / rd[2])
         t, prim, _w1, _w2, _layer = _nearest_triangle_hit(
-            0, ro, rd, inv_rd, f, ti.cast(f, ti.f32), 0.0, 1e30, 1e30, 0.0,
-            blocks, node_miss, leaf_prim, leaf_tspan, first_leaf, tri_pos)
+            0,
+            ro,
+            rd,
+            inv_rd,
+            f,
+            ti.cast(f, ti.f32),
+            0.0,
+            1e30,
+            1e30,
+            0.0,
+            blocks,
+            node_miss,
+            leaf_prim,
+            leaf_tspan,
+            first_leaf,
+            tri_pos,
+        )
         out[r, 0] = t
         out[r, 1] = ti.cast(prim, ti.f32)
 
@@ -404,9 +500,26 @@ def _ref_bez(
         rd = ti.math.vec3(rays[r, 3], rays[r, 4], rays[r, 5])
         inv_rd = ti.math.vec3(1.0 / rd[0], 1.0 / rd[1], 1.0 / rd[2])
         t, circuit, _b, _u, _v, _layer = _nearest_bezier_hit(
-            0, ro, rd, inv_rd, f, ti.cast(f, ti.f32), 0.0, 1e30, 1e30,
-            pixel_size_per_t, 0.0, blocks, node_miss, leaf_prim, leaf_tspan,
-            first_leaf, circuit_meta, edges_2d, edge_accel)
+            0,
+            ro,
+            rd,
+            inv_rd,
+            f,
+            ti.cast(f, ti.f32),
+            0.0,
+            1e30,
+            1e30,
+            pixel_size_per_t,
+            0.0,
+            blocks,
+            node_miss,
+            leaf_prim,
+            leaf_tspan,
+            first_leaf,
+            circuit_meta,
+            edges_2d,
+            edge_accel,
+        )
         out[r, 0] = t
         out[r, 1] = ti.cast(circuit, ti.f32)
 
@@ -430,9 +543,19 @@ def _gen_rays(
         g = r * stride
         px = g % width
         py = g // width
-        ro, rd = _generate_ray(f, px, py, 0.5, 0.5, half_w, half_h,
-                               cam_origin, screen_point, pixel_basis_x,
-                               pixel_basis_y)
+        ro, rd = _generate_ray(
+            f,
+            px,
+            py,
+            0.5,
+            0.5,
+            half_w,
+            half_h,
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+        )
         rays[r, 0] = ro[0]
         rays[r, 1] = ro[1]
         rays[r, 2] = ro[2]
@@ -459,6 +582,7 @@ class _Capture:
 
         def spy(*args, **kwargs):
             if self.data is None:
+
                 def arg(name, pos):
                     return kwargs[name] if name in kwargs else args[pos]
 
@@ -478,21 +602,22 @@ class _Capture:
                 }
                 for geom, bvh_key, prim_keys in (
                     ("tri", "tri_bvh", ("tri_pos",)),
-                    ("bez", "bez_bvh", ("circuit_meta", "edges_2d",
-                                        "edge_accel")),
+                    ("bez", "bez_bvh", ("circuit_meta", "edges_2d", "edge_accel")),
                 ):
                     bvh = merged.get(bvh_key)
                     if bvh is None:
                         continue
                     if DEBUG:
-                        print(f"  [dbg] {bvh_key}: {type(bvh).__name__} "
-                              f"nodes={tuple(bvh.nodes.shape)} "
-                              f"blocks={tuple(bvh.blocks.shape)} "
-                              f"leaf_prim={tuple(bvh.leaf_prim.shape)} "
-                              f"first_leaf={bvh.first_leaf} "
-                              f"deferred={merged.get('bvh_deferred')} "
-                              f"ncirc={merged.get('num_circuits')} "
-                              f"ntri={merged.get('num_triangles')}")
+                        print(
+                            f"  [dbg] {bvh_key}: {type(bvh).__name__} "
+                            f"nodes={tuple(bvh.nodes.shape)} "
+                            f"blocks={tuple(bvh.blocks.shape)} "
+                            f"leaf_prim={tuple(bvh.leaf_prim.shape)} "
+                            f"first_leaf={bvh.first_leaf} "
+                            f"deferred={merged.get('bvh_deferred')} "
+                            f"ncirc={merged.get('num_circuits')} "
+                            f"ntri={merged.get('num_triangles')}"
+                        )
                     keep[f"{geom}_nodes"] = bvh.nodes.clone()
                     keep[f"{geom}_blocks"] = bvh.blocks.clone()
                     keep[f"{geom}_node_miss"] = bvh.node_miss.clone()
@@ -570,9 +695,9 @@ def _scene_bez():
         Text("bezier bvh ordering", font_size=26, color=WHITE, font=FONT).move(
             UP * -2.6
         ).spawn(animate=False)
-        Tex(r"\sum_{i=0}^{n} x_i^2", font_size=30, color=WHITE).move(
-            UP * 2.6
-        ).spawn(animate=False)
+        Tex(r"\sum_{i=0}^{n} x_i^2", font_size=30, color=WHITE).move(UP * 2.6).spawn(
+            animate=False
+        )
         mirror = Sphere(color=WHITE).scale(0.9).move(IN * 2.2)
         mirror.set_material(MeshStandardMaterial(metalness=1.0, roughness=0.0))
         mirror.spawn(animate=False)
@@ -634,9 +759,7 @@ def _register_test_fonts():
     import importlib.util  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
-    conftest = (
-        Path(__file__).resolve().parent.parent / "tests" / "conftest.py"
-    )
+    conftest = Path(__file__).resolve().parent.parent / "tests" / "conftest.py"
     if not conftest.exists():
         return
     spec = importlib.util.spec_from_file_location("_algan_steps_conf", conftest)
@@ -711,9 +834,17 @@ def _run(geom, data, n_rays, verify, random_rays):
 
     rays = torch.zeros((n, 6), dtype=torch.float32, device=dev)
     _gen_rays(
-        n, frame, stride, width, float(data["half_w"]), float(data["half_h"]),
-        _to_ti(data["cam_origin"]), _to_ti(data["screen_point"]),
-        _to_ti(data["pixel_basis_x"]), _to_ti(data["pixel_basis_y"]), rays,
+        n,
+        frame,
+        stride,
+        width,
+        float(data["half_w"]),
+        float(data["half_h"]),
+        _to_ti(data["cam_origin"]),
+        _to_ti(data["screen_point"]),
+        _to_ti(data["pixel_basis_x"]),
+        _to_ti(data["pixel_basis_y"]),
+        rays,
     )
     if random_rays:
         # Incoherent rays through the same volume: the harder case for any
@@ -728,48 +859,84 @@ def _run(geom, data, n_rays, verify, random_rays):
 
     if DEBUG:
         nd = data.get(f"{geom}_nodes")
-        print(f"  [dbg] {geom} root node row: {nd[0].tolist() if nd is not None else None}")
-        print(f"  [dbg] blocks {tuple(data[f'{geom}_blocks'].shape)} "
-              f"first_leaf {data[f'{geom}_first_leaf']} "
-              f"leaf_prim {tuple(data[f'{geom}_leaf_prim'].shape)} "
-              f"live slots {int((data[f'{geom}_leaf_prim'] >= 0).sum())}")
-        print(f"  [dbg] frame {frame} width {width} height {height} "
-              f"half {data['half_w']},{data['half_h']}")
+        print(
+            f"  [dbg] {geom} root node row: {nd[0].tolist() if nd is not None else None}"
+        )
+        print(
+            f"  [dbg] blocks {tuple(data[f'{geom}_blocks'].shape)} "
+            f"first_leaf {data[f'{geom}_first_leaf']} "
+            f"leaf_prim {tuple(data[f'{geom}_leaf_prim'].shape)} "
+            f"live slots {int((data[f'{geom}_leaf_prim'] >= 0).sum())}"
+        )
+        print(
+            f"  [dbg] frame {frame} width {width} height {height} "
+            f"half {data['half_w']},{data['half_h']}"
+        )
         print(f"  [dbg] ray0 o={rays[0, :3].tolist()} d={rays[0, 3:].tolist()}")
-        print(f"  [dbg] ray mid o={rays[n // 2, :3].tolist()} "
-              f"d={rays[n // 2, 3:].tolist()}")
+        print(
+            f"  [dbg] ray mid o={rays[n // 2, :3].tolist()} "
+            f"d={rays[n // 2, 3:].tolist()}"
+        )
     out = torch.zeros((n, 5), dtype=torch.float32, device=dev)
     ref = torch.zeros((n, 2), dtype=torch.float32, device=dev)
     if geom == "tri":
         _steps_tri(
-            n, frame, rays, _to_ti(data["tri_blocks"]),
-            _to_ti(data["tri_leaf_prim"]), _to_ti(data["tri_leaf_tspan"]),
-            data["tri_first_leaf"], _to_ti(data["tri_pos"]), out,
+            n,
+            frame,
+            rays,
+            _to_ti(data["tri_blocks"]),
+            _to_ti(data["tri_leaf_prim"]),
+            _to_ti(data["tri_leaf_tspan"]),
+            data["tri_first_leaf"],
+            _to_ti(data["tri_pos"]),
+            out,
         )
         if verify:
             _ref_tri(
-                n, frame, rays, _to_ti(data["tri_blocks"]),
-                _to_ti(data["tri_node_miss"]), _to_ti(data["tri_leaf_prim"]),
-                _to_ti(data["tri_leaf_tspan"]), data["tri_first_leaf"],
-                _to_ti(data["tri_pos"]), ref,
+                n,
+                frame,
+                rays,
+                _to_ti(data["tri_blocks"]),
+                _to_ti(data["tri_node_miss"]),
+                _to_ti(data["tri_leaf_prim"]),
+                _to_ti(data["tri_leaf_tspan"]),
+                data["tri_first_leaf"],
+                _to_ti(data["tri_pos"]),
+                ref,
             )
     else:
         # Screen-constant border widths need the render's own pixel scale;
         # the same value goes to both walks, so it cannot favour either.
         psz = 2.0 / max(1.0, float(data["half_h"]) * 2.0)
         _steps_bez(
-            n, frame, psz, rays, _to_ti(data["bez_blocks"]),
-            _to_ti(data["bez_leaf_prim"]), _to_ti(data["bez_leaf_tspan"]),
-            data["bez_first_leaf"], _to_ti(data["circuit_meta"]),
-            _to_ti(data["edges_2d"]), _to_ti(data["edge_accel"]), out,
+            n,
+            frame,
+            psz,
+            rays,
+            _to_ti(data["bez_blocks"]),
+            _to_ti(data["bez_leaf_prim"]),
+            _to_ti(data["bez_leaf_tspan"]),
+            data["bez_first_leaf"],
+            _to_ti(data["circuit_meta"]),
+            _to_ti(data["edges_2d"]),
+            _to_ti(data["edge_accel"]),
+            out,
         )
         if verify:
             _ref_bez(
-                n, frame, psz, rays, _to_ti(data["bez_blocks"]),
-                _to_ti(data["bez_node_miss"]), _to_ti(data["bez_leaf_prim"]),
-                _to_ti(data["bez_leaf_tspan"]), data["bez_first_leaf"],
-                _to_ti(data["circuit_meta"]), _to_ti(data["edges_2d"]),
-                _to_ti(data["edge_accel"]), ref,
+                n,
+                frame,
+                psz,
+                rays,
+                _to_ti(data["bez_blocks"]),
+                _to_ti(data["bez_node_miss"]),
+                _to_ti(data["bez_leaf_prim"]),
+                _to_ti(data["bez_leaf_tspan"]),
+                data["bez_first_leaf"],
+                _to_ti(data["circuit_meta"]),
+                _to_ti(data["edges_2d"]),
+                _to_ti(data["edge_accel"]),
+                ref,
             )
     ti.sync()
     o = out.cpu().numpy()
@@ -785,8 +952,10 @@ def _run(geom, data, n_rays, verify, random_rays):
     if verify:
         rf = ref.cpu().numpy()
         same_prim = int((rf[:, 1] == o[:, 4]).sum())
-        dt = np.abs(np.where(o[:, 3] < 1e29, o[:, 3], 0.0)
-                    - np.where(rf[:, 0] < 1e29, rf[:, 0], 0.0))
+        dt = np.abs(
+            np.where(o[:, 3] < 1e29, o[:, 3], 0.0)
+            - np.where(rf[:, 0] < 1e29, rf[:, 0], 0.0)
+        )
         result["verify"] = (same_prim, n, float(dt.max()))
     return result
 
@@ -797,10 +966,16 @@ def main():
     ap.add_argument("--geom", choices=("tri", "bez"), default=None)
     ap.add_argument("--rays", type=int, default=200000)
     ap.add_argument("--res", choices=("ld", "md"), default="md")
-    ap.add_argument("--random", action="store_true",
-                    help="incoherent rays instead of the primary sweep")
-    ap.add_argument("--verify", action="store_true",
-                    help="also run the PRODUCTION walk and compare its hit")
+    ap.add_argument(
+        "--random",
+        action="store_true",
+        help="incoherent rays instead of the primary sweep",
+    )
+    ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="also run the PRODUCTION walk and compare its hit",
+    )
     ap.add_argument(
         "--compare",
         default=None,
@@ -842,8 +1017,18 @@ def main():
         for pair in args.compare.split(","):
             k, _, v = pair.partition("=")
             env[k.strip()] = v.strip() or "1"
-        cmd = [sys.executable, __file__, "--scene", scene, "--geom", geom,
-               "--rays", str(args.rays), "--res", args.res]
+        cmd = [
+            sys.executable,
+            __file__,
+            "--scene",
+            scene,
+            "--geom",
+            geom,
+            "--rays",
+            str(args.rays),
+            "--res",
+            args.res,
+        ]
         if args.random:
             cmd.append("--random")
         if args.verify:

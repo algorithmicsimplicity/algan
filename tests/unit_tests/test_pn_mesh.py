@@ -26,6 +26,7 @@ def test_surface_conversion_reproduces_its_logical_pn_primitive():
         assert torch.equal(actual.colors, expected.colors)
         assert torch.equal(actual.glow, expected.glow)
         assert actual.render_tolerance == expected.render_tolerance
+        assert actual.render_tolerance_pixels == expected.render_tolerance_pixels
         assert actual.shader is expected.shader
 
 

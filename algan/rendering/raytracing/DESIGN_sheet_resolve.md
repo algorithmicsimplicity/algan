@@ -278,6 +278,38 @@ exceeds its sample ownership no longer needs a residue pushed onto unowned
 samples, because the band's total claim is bounded by its total area, which
 the additive rule respects.
 
+**BUILT 2026-08-20, after the shading-class split (§10.5) made the first real
+siblings and shipped without this.** Until then no band held more than one
+sheet, so §4.4 was unexercised prose and the resolve walked every sheet as an
+independent occluder. Split crease faces walked that way occlude each other:
+the near sibling's write dims the samples the far one reads, and a DONOR
+sibling (exact area, no samples of its own -- the ordinary shape of a crease
+pixel where one face is a corner sliver) is treated as a uniform veil and
+claims a few percent of its area instead of all of it. Measured on
+`solids_and_camera`'s Icosahedron: a crease pixel's two front faces claimed
+0.9346 + 0.0043 of it instead of 0.9346 + 0.0654, and the 6% deficit was
+filled by the solid's own BACK faces, whose Phong highlight is over twice as
+bright as the front -- the bright seam along every interior edge.
+
+The implementation keeps the walk and gives it the band. The compaction bands
+and ranks CLASS-BLIND (a band is the sheet the split-off compaction would
+build) and subdivides it afterwards, so each sibling can be handed the band's
+sample union and `p_i = corr * share_i`, its share of the band's per-sample
+coverage factor. Every sibling but the one that closes the band in walk order
+carries `p_i` NEGATED: the sign is the flag that tells the resolve the band
+continues, so it claims against the undimmed visibility and defers the write.
+The resolve sums `p_i` in a register and writes once, at the closing sibling,
+with `corr` and the material alpha -- exactly the write the unsplit band
+made. Committed coverage is therefore independent of the split at any alpha,
+which is what the compaction suite pins (donor, corr > 1, partitioned and
+mismatched samples, alpha 1/0.6/0.25). Areal bands (empty union, or a
+fragment sliver) are position-less and stay whole. A band another surface
+interleaves at a coincident depth closes early and its remainder composites
+sheet by sheet, as it did before the split; nothing reorders the walk for a
+band, because pulling a sibling forward past a nearer sheet of another
+surface flips which face paints the pixel (measured, 90 channel values on
+`tests/fast`).
+
 4.5 The background is the final sheet
 --------------------------------------
 Area 1, depth infinity, claim = residual `T`. The resolve emits, per pixel,
@@ -764,3 +796,17 @@ untouched by this design; revisit after Phase 4 on their own merits.
      not an exact partition, and a `corr > 1` sibling's rule-B residue
      lands on its co-sibling's samples — bounded, sub-pixel, and a property
      of the emission's seam handling rather than of this split.
+
+     **CORRECTED 2026-08-20.** That last sentence read the symptom as a
+     bound. The residue landing on a co-sibling is not sub-pixel noise: it
+     is the band claiming less coverage than it has, and the same
+     mechanism -- siblings walked as independent occluders -- costs a donor
+     sibling nearly its whole claim. What the deficit admits is whatever
+     lies behind the crease, which on a closed solid is its own back faces.
+     `solids_and_camera`'s Icosahedron rendered a BRIGHT SEAM along its
+     interior edges from exactly that. Fixed by building §4.4 (see there):
+     the band's sheets now claim additively and occlude once. Measured
+     after: of the 9,895 pixels the fix moves across the scene, the ones
+     brighter than both their neighbours -- the seam signature -- fall from
+     522 to 88, the tent's wobble win is unchanged (0.1487 → 0.0836 px RMS,
+     +45 sheets), and the split-off path stays byte-identical.

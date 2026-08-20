@@ -35,6 +35,25 @@ from typing import NamedTuple
 import torch
 import torch.nn.functional as F
 
+
+def normalize_pixel_tolerance(value):
+    """Normalize an absolute-pixel render tolerance to a positive float.
+
+    ``None`` means "no absolute bound", which the level searches spell as
+    ``inf`` so that the two render tolerances combine by a plain ``min`` with
+    no branch. Anything else must be a positive number of output pixels;
+    ``inf`` itself is accepted and means the same as ``None``.
+    """
+    if value is None:
+        return float("inf")
+    value = float(value)
+    if value != value:
+        raise ValueError("render_tolerance_pixels must not be NaN")
+    if value <= 0:
+        raise ValueError("render_tolerance_pixels must be greater than zero")
+    return value
+
+
 _SUBDIVISION_UV_CACHE = {}
 _VERTEX_UV_CACHE = {}
 _TRIANGLE_INDEX_CACHE = {}

@@ -70,8 +70,10 @@ def main():
     seg1 = batches[:seg_break]
     seg2 = batches[seg_break:]
     seg1_frames = max(int(m[1]) for m, _ in seg1)
-    print(f"segment 1: {len(seg1)} batches, {seg1_frames} frames; "
-          f"segment 2: {len(seg2)} batches")
+    print(
+        f"segment 1: {len(seg1)} batches, {seg1_frames} frames; "
+        f"segment 2: {len(seg2)} batches"
+    )
 
     for idx in MOVED_FRAMES if len(sys.argv) < 2 else [int(sys.argv[1])]:
         rel = idx - seg1_frames  # frame index inside segment 2
@@ -111,20 +113,26 @@ def main():
         unmoved_trunc = len(trunc_p - moved_p)
 
         moved_lens = [max_len.get(p, 0) for p in moved_p]
-        moved_cov = [n for p, n in zip(cov_p.tolist(), cov_n.tolist())
-                     if p in moved_p]
+        moved_cov = [n for p, n in zip(cov_p.tolist(), cov_n.tolist()) if p in moved_p]
         hist = np.histogram(moved_lens, bins=[0, 1, 5, 9, 13, 17, 33, 1000])[0]
-        print(f"frame {idx} (seg2 rel {rel}, batch t=[{t0},{int(meta[1])}) "
-              f"f_rel {f_rel}):")
-        print(f"  moved px {len(moved_p)}; with trunc run {moved_trunc}; "
-              f"trunc px not moved {unmoved_trunc}; "
-              f"covered px this frame {len(cov_p)}")
-        print(f"  moved max-tri-run-len hist [0,1-4,5-8,9-12,13-16,17-32,33+]: "
-              f"{hist.tolist()}")
+        print(
+            f"frame {idx} (seg2 rel {rel}, batch t=[{t0},{int(meta[1])}) "
+            f"f_rel {f_rel}):"
+        )
+        print(
+            f"  moved px {len(moved_p)}; with trunc run {moved_trunc}; "
+            f"trunc px not moved {unmoved_trunc}; "
+            f"covered px this frame {len(cov_p)}"
+        )
+        print(
+            f"  moved max-tri-run-len hist [0,1-4,5-8,9-12,13-16,17-32,33+]: "
+            f"{hist.tolist()}"
+        )
         if moved_cov:
             q = np.percentile(moved_cov, [50, 90, 99]).astype(int).tolist()
-            print(f"  moved per-px frag count median/p90/p99: {q}, "
-                  f"max {max(moved_cov)}")
+            print(
+                f"  moved per-px frag count median/p90/p99: {q}, max {max(moved_cov)}"
+            )
 
 
 if __name__ == "__main__":

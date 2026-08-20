@@ -1,9 +1,9 @@
 """Sheet compaction: the fragment stream aggregated into per-pixel sheets.
 
 ``DESIGN_sheet_resolve.md`` P1 + P2. A **sheet** is a maximal same-surface
-region within one pixel — keyed ``(pixel, mesh id, facing, depth band)`` and,
-under ``SHEET_SHADE_SPLIT``, the flat-face shading class (see
-``compact_sheets``) — with each bezier circuit fragment standing alone
+region within one pixel — keyed ``(pixel, mesh id, facing, depth band)``,
+which ``SHEET_SHADE_SPLIT`` subdivides by flat-face shading class into §4.4
+siblings (see ``compact_sheets``) — with each bezier circuit fragment alone
 (circuits never group; their border/fill blend is already packed per
 fragment). The compaction turns the emission's depth-sorted fragment stream
 into the sheet stream: exact area as a sum over the sheet's fragments, the
@@ -140,6 +140,11 @@ def resolve_pixel_reference(
       per-sheet claims"; the Phase-2 ink-wobble A/B refuted that — without
       it the coarse Cylinder's far sheet re-claims the corr residue and
       wobble regresses 2-4x.
+    * §4.4 BAND siblings (the shading-class split's crease faces) arrive as
+      consecutive sheets, all but the last carrying a NEGATIVE area: each
+      claims against the same incoming ``T`` and the band occludes once, at
+      its last sheet, by the summed factor. One sheet per band -- every
+      sheet with the split off -- is the unchanged arithmetic above.
     * No run scan, no seam deduplication, no engagement gate, and no
       TRUNCATED-sum machinery: fragment-walk apparatus the representation
       deletes (§7).
@@ -153,22 +158,29 @@ def resolve_pixel_reference(
     T = [1.0] * N
     claims = []
     mesh_ink = 0.0
+    band_p = 0.0
+    band_open = False
     for i in range(n):
         msk_low = msks[i] & AA_MASK_ALL
         areal = bool(is_bez[i]) or (msks[i] & AA_SLIVER_BIT) or msk_low == 0
         alpha = alphas[i]
-        area = min(covs[i], 1.0)
+        # A negative area marks a sheet whose §4.4 band continues at the next
+        # one: it claims against the same incoming T and defers the band's
+        # single occlusion write to the band's last sheet, which makes it with
+        # the summed coverage factor (``sheets._sibling_weights``).
+        defer = covs[i] < 0.0
+        raw = abs(covs[i])
+        area = min(raw, 1.0)
         # Per-sample coverage BEFORE material alpha, which is what the walk's
         # ``eff`` is and what the one-mesh ceiling bounds.
         if areal:
-            c = [area] * N
+            p_i = area
+        elif msk_low == AA_MASK_ALL:
+            p_i = 1.0 if abs(1.0 - raw) <= FULL_DUST else area
         else:
-            pop = bin(msk_low).count("1")
-            if msk_low == AA_MASK_ALL:
-                corr = 1.0 if abs(1.0 - covs[i]) <= FULL_DUST else area
-            else:
-                corr = area / (pop / N)
-            c = [corr if (msk_low >> s) & 1 else 0.0 for s in range(N)]
+            p_i = area / (bin(msk_low).count("1") / N)
+        own = [1.0 if (areal or (msk_low >> s) & 1) else 0.0 for s in range(N)]
+        c = [p_i * own[s] for s in range(N)]
         eff = sum(T[s] * c[s] for s in range(N)) / N
         if (
             caps is not None
@@ -179,15 +191,26 @@ def resolve_pixel_reference(
             room = max(caps[i] - mesh_ink, 0.0)
             if eff > room:
                 k = room / max(eff, 1e-9)
-                c = [v * k for v in c]
+                p_i *= k
                 eff = room
+        band_p += p_i
         if eff <= min_alpha:
             claims.append(0.0)
+            if not defer:
+                band_p = 0.0
+            band_open = defer
             continue
         claims.append(alpha * eff)
         if not is_bez[i]:
             mesh_ink += eff
-        a = [alpha * v for v in c]
+        # The write factor: the band's sum at a band's last sheet, the
+        # sheet's own everywhere else (identical outside a subdivided band).
+        w = band_p if (defer or band_open) else p_i
+        band_open = defer
+        if defer:
+            continue
+        band_p = 0.0
+        a = [alpha * w * own[s] for s in range(N)]
         ts = trans[i]
         resid = 0.0
         for s in range(N):
@@ -266,6 +289,151 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     return torch.where(flat, packed + 1, cls)
 
 
+def _popcount_lanes(bits):
+    """Number of set sample bits in each element of an int64 mask tensor."""
+    pop = torch.zeros_like(bits)
+    for b in range(AA_NUM_SAMPLES):
+        pop += (bits >> b) & 1
+    return pop
+
+
+def _band_composite(band_of_frag, nbands, cov_o, msk_o):
+    """Per-band aggregates and the §4.4 sibling-split gate.
+
+    A band is what the compaction emits as ONE sheet with ``shade_split``
+    off, so its aggregates are exactly that sheet's: the float64 area sum,
+    the sample union, and ``corr`` -- the per-owned-sample coverage the
+    resolve derives from the pair (the shipping rules, mirrored from
+    ``resolve_pixel_reference``: 1 inside the full-union dust band, the
+    clamped area on a full union outside it, ``area * N / pop`` on a partial
+    one).
+
+    ``split`` marks the bands a class split can partition. The one that
+    cannot is the AREAL band -- empty union, or a fragment carrying the
+    sliver bit -- position-less by construction: its siblings would have no
+    samples to blend across and nothing to anti-alias, and the weights have
+    no union to spread over. ``corr > 1`` (a band covering more area than
+    its samples own) needs no exclusion: the band's write is made whole at
+    its last sheet, so rule B's residue redistributes over the same unowned
+    samples it always did.
+
+    Returns ``(area, union, corr, split)``, one entry per band.
+    """
+    device = cov_o.device
+    area64 = torch.zeros(nbands, dtype=torch.float64, device=device)
+    area64.scatter_add_(0, band_of_frag, cov_o.to(torch.float64))
+    area = area64.to(torch.float32)
+
+    bits = (msk_o & AA_MASK_ALL).to(torch.int64)
+    union = torch.zeros(nbands, dtype=torch.int64, device=device)
+    lane = torch.zeros(nbands, dtype=torch.int64, device=device)
+    for b in range(AA_NUM_SAMPLES):
+        lane.zero_()
+        lane.scatter_add_(0, band_of_frag, (bits >> b) & 1)
+        union |= (lane > 0).to(torch.int64) << b
+    sliver = torch.zeros(nbands, dtype=torch.int64, device=device)
+    sliver.scatter_reduce_(
+        0,
+        band_of_frag,
+        ((msk_o & AA_SLIVER_BIT) != 0).to(torch.int64),
+        reduce="amax",
+        include_self=True,
+    )
+
+    pop = _popcount_lanes(union)
+    clamped = area.clamp(max=1.0)
+    full = union == AA_MASK_ALL
+    corr = torch.where(
+        full,
+        torch.where((1.0 - area).abs() <= FULL_DUST, torch.ones_like(clamped), clamped),
+        clamped * float(AA_NUM_SAMPLES) / pop.clamp_min(1).to(torch.float32),
+    )
+    split = (union != 0) & (sliver == 0)
+    return area, union, corr, split
+
+
+def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
+    """§4.4 compositing weights for the sheets of a subdivided band.
+
+    The resolve walks sheets one at a time, each occluding what follows, and
+    that is right for sheets of DIFFERENT surfaces. Siblings of one band are
+    not different surfaces: their exact areas partition the band's, so §4.4
+    has them claim additively against the SAME incoming visibility, with the
+    band occluding deeper sheets ONCE by its summed claim. Walked as
+    independent occluders they instead occlude each other -- the first
+    sibling's write dims the samples the second reads, a donor sibling (no
+    samples of its own) is treated as a uniform veil and claims almost
+    nothing, and the band as a whole under-claims by a few percent. On a
+    closed solid that deficit is filled by the geometry BEHIND the crease --
+    its own back faces, which a specular material can leave far brighter than
+    the front -- so an interior edge renders as a bright seam.
+
+    So each sibling is handed the band's sample union and its own share of
+    the band's per-sample coverage factor,
+
+        ``p_i = corr * share_i``,   ``share_i = area_i / sum(area)``
+
+    and every sibling but the LAST carries it negated: the sign is the flag
+    that tells the resolve this band continues, so it claims ``p_i`` against
+    the undimmed visibility and defers the occlusion write. The resolve sums
+    the band's ``p_i`` as it walks and writes once, at the closing sibling,
+    with ``corr`` -- the unsplit band's own write. Coverage is therefore
+    identical to the unsplit band's whatever the material alpha, and the
+    colour becomes the area-weighted blend of the siblings' own shading:
+    the interior-edge AA the split is for.
+
+    The sum rides in a register, so the flag marks band CONTINUATION in walk
+    order rather than membership: siblings are consecutive there in the
+    ordinary case, and where another surface interleaves them (a coincident
+    depth) the band closes early and its remainder composites sheet by sheet
+    -- the pre-split behaviour, on a pixel where the depth order was already
+    ambiguous.
+
+    Takes the per-sheet arrays already in WALK order and returns
+    ``(wgt, wmsk)``: the coverage and mask the resolve consumes, equal to the
+    sheet's own where its band holds one sheet.
+    """
+    nb = sheet_band.numel()
+    device = cov.device
+    members = torch.zeros_like(band_area, dtype=torch.int64)
+    members.scatter_add_(
+        0, sheet_band, torch.ones(nb, dtype=torch.int64, device=device)
+    )
+    multi = members.index_select(0, sheet_band) > 1
+    if not bool(multi.any()):
+        return cov, msk
+
+    share = cov.to(torch.float64) / band_area.index_select(0, sheet_band).to(
+        torch.float64
+    ).clamp_min(1e-12)
+    p = band_corr.index_select(0, sheet_band).to(torch.float64) * share
+
+    union = band_union.index_select(0, sheet_band)
+    pop = _popcount_lanes(union).clamp_min(1).to(torch.float64)
+    full = union == AA_MASK_ALL
+    # The resolve reads the coverage through its own branch, so hand it the
+    # value that branch turns back into p: the factor itself on a full union,
+    # the sample-share fraction of it on a partial one.
+    wgt = torch.where(full, p, p * pop / float(AA_NUM_SAMPLES)).to(torch.float32)
+
+    # Negative = "this band continues at the NEXT sheet of the walk", which
+    # is exactly when the register sum is safe to carry. Nothing reorders the
+    # walk for it: a band whose sheets some other surface interleaves (a
+    # coincident depth) simply closes early there and its remainder
+    # composites sheet by sheet, as it did before the split existed.
+    cont = torch.zeros(nb, dtype=torch.bool, device=device)
+    if nb > 1:
+        cont[:-1] = sheet_band[1:] == sheet_band[:-1]
+    wgt = torch.where(multi & cont, -wgt, wgt)
+    # A donor sibling carries the sliver bit because its OWN union is empty;
+    # inside a band it holds the band's samples, so the areal (position-less)
+    # rule no longer applies to it. Fragment slivers cannot appear here --
+    # ``_band_composite`` leaves those bands whole.
+    flags = msk & ~AA_MASK_ALL & ~AA_SLIVER_BIT
+    wmsk = union.to(msk.dtype) | flags
+    return torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
+
+
 def compact_sheets(
     coverage,
     merged,
@@ -304,12 +472,14 @@ def compact_sheets(
     * a SMOOTH-shaded triangle (varying vertex normals, diced PN geometry)
       takes class 0, so curved meshes compact exactly as before.
 
-    Faces meeting at a crease then compact into sibling sheets of one band
-    (disjoint exact areas, additive compositing -- DESIGN_sheet_resolve.md
-    §4.4), each shading with its own normal: the area-weighted blend across
-    interior edges, paid only at crease pixels. Off, the group key is
-    unchanged and the output is bit-identical to before the parameter
-    existed.
+    Faces meeting at a crease then compact into sibling sheets of one band,
+    each shading with its own normal, and composite additively by exact area
+    (DESIGN_sheet_resolve.md §4.4, carried by ``sheet_wgt`` / ``sheet_wmsk``
+    -- see ``_sibling_weights``): the area-weighted blend across interior
+    edges, over coverage identical to the unsplit band's, paid only at crease
+    pixels. Bands whose claim has no exact partition are left whole
+    (``_band_composite``). Off, no band subdivides and the output is
+    bit-identical to before the parameter existed.
 
     Returns a dict of per-sheet arrays, ordered by ``(pixel, classic order of
     the sheet's nearest fragment)`` so a walk over them front-to-back matches
@@ -331,6 +501,12 @@ def compact_sheets(
         key, the one-mesh/sliver flags from the dominant fragment, and the
         sliver bit forced on when the union is empty (an areal, positionless
         sheet — the donors-only case).
+    ``sheet_wgt`` / ``sheet_wmsk``
+        What the RESOLVE consumes in place of ``sheet_cov`` / ``sheet_msk``:
+        equal to them for a sheet that is its band's only one, and §4.4's
+        additive sibling weights (``_sibling_weights``) where a band split by
+        shading class. The record above stays the sheet's own area and union;
+        these carry the band's compositing arithmetic.
     ``sheet_cap``
         The dominant fragment's ``frag_cap`` (per-pixel one-mesh ceiling).
     ``sheet_nfrag``
@@ -370,16 +546,16 @@ def compact_sheets(
     sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
     facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
     positions = torch.arange(n, dtype=torch.int64, device=device)
-    # Triangles group by (surface, facing) -- plus, under ``shade_split``, the
-    # flat-face shading class (see the docstring); every bezier fragment is
-    # its own group (negative, unique — a shared sentinel would fuse adjacent
-    # circuits into one "sheet" no consumer wants).
-    tkey = sid * 2 + facing
+    # Triangles group by (surface, facing); every bezier fragment is its own
+    # group (negative, unique — a shared sentinel would fuse adjacent
+    # circuits into one "sheet" no consumer wants). The shading class is NOT
+    # part of this key: bands and conflict ranks are decided class-blind, so
+    # a band is the same set of fragments whatever ``shade_split`` says, and
+    # the class only SUBDIVIDES that band below (see ``_sibling_weights``).
+    gkey = torch.where(is_tri, sid * 2 + facing, -(positions + 2))
+    cls = None
     if shade_split:
-        tkey = tkey * _SHADE_CLASS_BASE + _shade_class(
-            merged, frame_rel, time_start, safe_ref, is_tri
-        )
-    gkey = torch.where(is_tri, tkey, -(positions + 2))
+        cls = _shade_class(merged, frame_rel, time_start, safe_ref, is_tri)
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
     order = _lexsort(pix, gkey, t)
@@ -466,6 +642,27 @@ def compact_sheets(
     msk_o = frag_msk.index_select(0, order)
     pos_o = order  # original stream position of each sorted fragment
 
+    # ---- The shading-class subdivision -------------------------------------
+    # ``band_id`` is now the BAND -- the sheet this compaction would build
+    # with the split off. Under ``shade_split`` each band subdivides by
+    # shading class into §4.4 siblings, except where there is nothing to
+    # anti-alias: an areal (position-less) band stays whole, exactly as it
+    # is with the split off (``_band_composite``).
+    band_area = band_union = band_corr = sheet_band = None
+    if shade_split:
+        band_of_frag = band_id
+        band_area, band_union, band_corr, band_split = _band_composite(
+            band_of_frag, nb, cov_o, msk_o
+        )
+        cls_o = cls.index_select(0, order)
+        cls_eff = torch.where(
+            band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
+        )
+        skey = band_of_frag * _SHADE_CLASS_BASE + cls_eff
+        uniq_skey, band_id = torch.unique(skey, sorted=True, return_inverse=True)
+        nb = int(uniq_skey.numel())
+        sheet_band = uniq_skey // _SHADE_CLASS_BASE
+
     # Exact area: float64 accumulate, float32 round (§6.6.4 — a float32
     # scatter_add_ is order-nondeterministic on CUDA and this value feeds
     # thresholds downstream).
@@ -546,6 +743,23 @@ def compact_sheets(
     # ---- Final order: (pixel, classic order of nearest fragment) -----------
     final = torch.argsort(min_pos, stable=True)
 
+    # §4.4's additive sibling compositing, expressed in the weights the walk
+    # consumes (see ``_sibling_weights``). Where a band holds one sheet --
+    # every band with ``shade_split`` off -- these ARE the sheet's own area
+    # and mask, so the resolve reads exactly what it read before.
+    sheet_cov_final = sheet_cov.index_select(0, final)
+    sheet_msk_final = sheet_msk.index_select(0, final)
+    sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
+    if sheet_band is not None:
+        sheet_wgt, sheet_wmsk = _sibling_weights(
+            sheet_band.index_select(0, final),
+            sheet_cov_final,
+            sheet_msk_final,
+            band_area,
+            band_union,
+            band_corr,
+        )
+
     sheet_key = frag_key.index_select(0, nearest_orig).index_select(0, final)
     sheet_pix = sheet_pix.index_select(0, final)
     rep_final = rep_orig.index_select(0, final)
@@ -554,8 +768,10 @@ def compact_sheets(
         "sheet_pix": sheet_pix,
         "sheet_ref": frag_ref.index_select(0, rep_final),
         "sheet_ab": frag_ab.index_select(0, rep_final),
-        "sheet_cov": sheet_cov.index_select(0, final),
-        "sheet_msk": sheet_msk.index_select(0, final),
+        "sheet_cov": sheet_cov_final,
+        "sheet_msk": sheet_msk_final,
+        "sheet_wgt": sheet_wgt,
+        "sheet_wmsk": sheet_wmsk,
         "sheet_cap": frag_cap.index_select(0, rep_final),
         "sheet_nfrag": nfrag.index_select(0, final),
         "sheet_fused": fused.index_select(0, final),

@@ -159,6 +159,7 @@ def _grid_to_pn_soup(surface, *, add_to_scene=False):
             for name, value in surface.grid.get_shader_params().items()
         },
         render_tolerance=surface._render_tolerance,
+        render_tolerance_pixels=surface._render_tolerance_pixels,
         # The soup approximates the analytic surface exactly as well as the
         # patches it is made of do, so it inherits their accuracy and dices the
         # same way (``test_surface_and_pn_conversion_render_pixel_identically``).
@@ -380,6 +381,7 @@ def _pn_soup_identity(mob, *, add_to_scene=False):
         shader=mob.shader,
         shader_params={k: v.clone() for k, v in mob.get_shader_params().items()},
         render_tolerance=mob.render_tolerance,
+        render_tolerance_pixels=mob.render_tolerance_pixels,
         scene=mob.scene,
         add_to_scene=add_to_scene,
     )

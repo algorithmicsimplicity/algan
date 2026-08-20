@@ -64,8 +64,9 @@ def main():
         d = np.abs(fa.astype(np.int16) - fb.astype(np.int16))
         m = int(d.max())
         if m > 0:
-            nz.append((i, m, int((d.max(axis=2) > 0).sum()),
-                       int((d.max(axis=2) > 2).sum())))
+            nz.append(
+                (i, m, int((d.max(axis=2) > 0).sum()), int((d.max(axis=2) > 2).sum()))
+            )
         i += 1
     print(f"no-post ON vs OFF: {len(nz)} nonzero frames of {i}")
     for f, m, c, c2 in nz:

@@ -115,9 +115,7 @@ def build_scene(variant="basic"):
         # A light off to the side and a matte TRIANGLE backdrop (a circuit
         # would occlude shadow rays but never receive shadows) so the solids
         # cast visible shadows the route has to build events for.
-        PointLight(location=UP * 3.0 + RIGHT * 4.0 + OUTV * 3.0).spawn(
-            animate=False
-        )
+        PointLight(location=UP * 3.0 + RIGHT * 4.0 + OUTV * 3.0).spawn(animate=False)
         with Off():
             centre = IN * 2.2 + DOWN * 0.2
             corners = torch.stack(

@@ -73,8 +73,14 @@ def main():
         m = int(d.max())
         if m > 0:
             moved = np.nonzero(d.max(axis=2) > 0)
-            nz.append((i, m, len(moved[0]),
-                       list(zip(moved[1].tolist(), moved[0].tolist()))[:12]))
+            nz.append(
+                (
+                    i,
+                    m,
+                    len(moved[0]),
+                    list(zip(moved[1].tolist(), moved[0].tolist()))[:12],
+                )
+            )
         i += 1
     print(f"LOSSLESS ON vs OFF: {len(nz)} nonzero frames of {i}")
     for f, m, c, px in nz:

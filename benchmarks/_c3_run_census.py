@@ -72,20 +72,52 @@ class _Spy:
         self._sparse = rp.prepare_sparse_raster_coverage
         spy = self
 
-        def sparse(merged, tri_screen, tri_bounds, bez_bounds, memory,
-                   cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                   pixel_world_scale, col_row_arr, time_start, time_end,
-                   width, height, half_w, half_h, layer_offset_triangles):
+        def sparse(
+            merged,
+            tri_screen,
+            tri_bounds,
+            bez_bounds,
+            memory,
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+            pixel_world_scale,
+            col_row_arr,
+            time_start,
+            time_end,
+            width,
+            height,
+            half_w,
+            half_h,
+            layer_offset_triangles,
+        ):
             cov = spy._sparse(
-                merged, tri_screen, tri_bounds, bez_bounds, memory,
-                cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                pixel_world_scale, col_row_arr, time_start, time_end,
-                width, height, half_w, half_h, layer_offset_triangles)
+                merged,
+                tri_screen,
+                tri_bounds,
+                bez_bounds,
+                memory,
+                cam_origin,
+                screen_point,
+                pixel_basis_x,
+                pixel_basis_y,
+                pixel_world_scale,
+                col_row_arr,
+                time_start,
+                time_end,
+                width,
+                height,
+                half_w,
+                half_h,
+                layer_offset_triangles,
+            )
             data = None
             if cov is not None:
                 data = _census(cov, merged, time_start, width, height)
             RECORDS.append(
-                (int(time_start), int(time_end), int(width), int(height), data))
+                (int(time_start), int(time_end), int(width), int(height), data)
+            )
             return cov
 
         rp.prepare_sparse_raster_coverage = sparse

@@ -220,13 +220,11 @@ def test_import_time_variables_match_where_the_code_reads_them():
     spurious = sorted(declared - read_at_import)
     assert not missing, (
         "read while a module imports, but declared as read live -- move them "
-        "to _IMPORT_TIME_VARIABLES in algan/environment.py:\n  "
-        + "\n  ".join(missing)
+        "to _IMPORT_TIME_VARIABLES in algan/environment.py:\n  " + "\n  ".join(missing)
     )
     assert not spurious, (
         "declared as import-time but never read during an import -- move "
-        "them to _LIVE_VARIABLES in algan/environment.py:\n  "
-        + "\n  ".join(spurious)
+        "them to _LIVE_VARIABLES in algan/environment.py:\n  " + "\n  ".join(spurious)
     )
 
 
@@ -238,9 +236,7 @@ def test_import_time_and_live_variables_partition_the_runtime_ones():
     )
 
     assert not set(_IMPORT_TIME_VARIABLES) & set(_LIVE_VARIABLES)
-    assert set(_RUNTIME_VARIABLES) == set(_IMPORT_TIME_VARIABLES) | set(
-        _LIVE_VARIABLES
-    )
+    assert set(_RUNTIME_VARIABLES) == set(_IMPORT_TIME_VARIABLES) | set(_LIVE_VARIABLES)
     assert list(_IMPORT_TIME_VARIABLES) == sorted(_IMPORT_TIME_VARIABLES)
     assert list(_LIVE_VARIABLES) == sorted(_LIVE_VARIABLES)
 

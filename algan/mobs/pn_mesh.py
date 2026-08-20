@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
+from algan.rendering.logical_pn import normalize_pixel_tolerance
 from algan.rendering.raytracing.primitives import LogicalPNTrianglePrimitive
 from algan.utils.tensor_utils import cast_to_tensor
 
@@ -26,6 +27,7 @@ class PNMesh(Mob):
         normals,
         *,
         render_tolerance=0.5,
+        render_tolerance_pixels=None,
         geometry_slack_ratio=0.0,
         shader=None,
         shader_params=None,
@@ -50,6 +52,14 @@ class PNMesh(Mob):
             raise ValueError("render_tolerance must be finite")
         if self.render_tolerance <= 0:
             raise ValueError("render_tolerance must be greater than zero")
+        # ``None`` here (the default, and what a soup converted from flat
+        # geometry keeps) is the absence of an absolute bound, not a loose one:
+        # a soup dices by whichever of the two tolerances is finer, so a
+        # conversion that carries no pixel tolerance is judged by the
+        # fraction-of-screen one alone.
+        self.render_tolerance_pixels = normalize_pixel_tolerance(
+            render_tolerance_pixels
+        )
         # A soup is its own logical surface unless it was converted from
         # something that only approximates one, in which case the conversion
         # passes that surface's accuracy on (see ``convert_to_pn_soup``).
@@ -79,6 +89,7 @@ class PNMesh(Mob):
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             render_tolerance=self.render_tolerance,
+            render_tolerance_pixels=self.render_tolerance_pixels,
             geometry_slack_ratio=self.geometry_slack_ratio,
             **self.get_shader_params(),
         )

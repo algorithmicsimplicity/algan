@@ -69,7 +69,9 @@ def main():
             animate_fade_out=True,
         )
     widths = sorted({b - a for a, b in SLICES})
-    print(f"{len(SLICES)} shade slices; widths {widths[:8]}{'...' if len(widths) > 8 else ''}")
+    print(
+        f"{len(SLICES)} shade slices; widths {widths[:8]}{'...' if len(widths) > 8 else ''}"
+    )
     print("last 12 slices:", SLICES[-12:])
 
 

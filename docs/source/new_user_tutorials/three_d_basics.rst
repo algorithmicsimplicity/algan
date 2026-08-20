@@ -215,7 +215,9 @@ Keeping 3-D Renders Fast
 * Watch how close the camera gets, not how far it travels. A :class:`~.Surface`
   is diced more finely the more of the frame it fills, so a close-up is what
   makes a render slow. If one runs out of memory, raising ``render_tolerance``
-  on the surfaces nearest the camera usually fixes it.
+  on the surfaces nearest the camera usually fixes it -- at ``HD`` and above,
+  raise ``render_tolerance_pixels`` alongside it, since that is the bound in
+  force once the frame is large.
 
 See :doc:`../advanced_user_tutorials/performance_and_quality` for the details.
 

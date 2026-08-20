@@ -512,9 +512,7 @@ def _probe_block(
                 d64 = (1.0 - e64.to(torch.float64)).abs() > _AA_FULL_DUST
                 d32 = (1.0 - e32.to(torch.float64)).abs() > _AA_FULL_DUST
                 stats.prec_dust_flips += int((d64 != d32).sum())
-                stats.prec_clamp_flips += int(
-                    ((e64 > 1.0) != (e32 > 1.0)).sum()
-                )
+                stats.prec_clamp_flips += int(((e64 > 1.0) != (e32 > 1.0)).sum())
                 c64 = torch.where(d64, e64.to(torch.float64).clamp(max=1.0), 1.0)
                 c32 = torch.where(d32, e32.to(torch.float64).clamp(max=1.0), 1.0)
                 stats.prec_worst_corr = max(
@@ -642,9 +640,7 @@ def _probe_block(
             changed = cap_sel & ((c1 - torch.clamp(e_trunc, max=1.0)).abs() > 1e-6)
             if bool(changed.any()):
                 sel_pix = pix[changed.nonzero(as_tuple=True)[0]]
-                CAP_PIXELS.append(
-                    (sel_pix // ppf + int(time_start), sel_pix % ppf)
-                )
+                CAP_PIXELS.append((sel_pix // ppf + int(time_start), sel_pix % ppf))
     for arm, acc in (
         (full_arm, stats.arm_full_c),
         (~full_arm & ~donor_arm, stats.arm_part_c),

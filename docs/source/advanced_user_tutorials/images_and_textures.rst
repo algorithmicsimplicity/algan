@@ -413,9 +413,10 @@ Choosing a resolution
 A surface's texture detail is limited by two independent things: the resolution of
 the image you supply, and (for glow) the surface's own grid resolution.
 :class:`~.Surface` sizes its grid automatically between ``min_grid_resolution`` and
-``max_grid_resolution``, and dices curved triangles at render time to
-``render_tolerance`` -- a fraction of screen height, so a surface that fills the
-frame gets more triangles than one in the distance.
+``max_grid_resolution``, and dices curved triangles at render time to whichever of
+``render_tolerance`` (a fraction of screen height, so a surface that fills the frame
+gets more triangles than one in the distance) and ``render_tolerance_pixels`` (an
+absolute pixel count, which takes over at high resolutions) is finer.
 
 Textures also cost render memory. If a heavily textured scene runs out of it, reduce
 the texture resolution before reducing anything else; see

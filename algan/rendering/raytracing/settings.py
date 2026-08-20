@@ -856,9 +856,12 @@ def set_sheet_resolve(enabled):
 # the old per-fragment area-weighted blend across interior edges, paid only
 # at crease pixels; smooth (diced PN) geometry compacts exactly as before.
 #
-# Default OFF pending measurement and the baseline decision: ON moves every
-# lit crease edge (toward the pre-sheet fragment-walk appearance), which is a
-# re-baseline of the scenes that carry flat-shaded solids.
+# ON by default since the split shipped; the scenes carrying flat-shaded
+# solids are baselined with it. Turning it OFF returns every lit crease edge
+# to the winner-take-all staircase and is a re-baseline in its own right.
+# What a band's sheets COMMIT does not depend on the flag either way -- §4.4
+# gives the band one occlusion write -- so flipping it moves colour at crease
+# pixels, never coverage.
 SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 
 

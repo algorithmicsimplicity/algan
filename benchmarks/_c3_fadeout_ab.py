@@ -60,7 +60,8 @@ def _register_fonts():
 
 def _sparse_trunc_stats(coverage, merged, time_start, width, height):
     """Replicate the host reduction's run segmentation over the compact CSR
-    and count the runs a 16-fragment scan budget cannot finish."""
+    and count the runs a 16-fragment scan budget cannot finish.
+    """
     counts = (coverage["run_offsets"][1:] - coverage["run_offsets"][:-1]).to(
         torch.int64
     )
@@ -100,24 +101,62 @@ class _PathSpy:
         self._dense = rp.raster_iteration_zero
         spy = self
 
-        def sparse(merged, tri_screen, tri_bounds, bez_bounds, memory,
-                   cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                   pixel_world_scale, col_row_arr, time_start, time_end,
-                   width, height, half_w, half_h, layer_offset_triangles):
+        def sparse(
+            merged,
+            tri_screen,
+            tri_bounds,
+            bez_bounds,
+            memory,
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+            pixel_world_scale,
+            col_row_arr,
+            time_start,
+            time_end,
+            width,
+            height,
+            half_w,
+            half_h,
+            layer_offset_triangles,
+        ):
             cov = spy._sparse(
-                merged, tri_screen, tri_bounds, bez_bounds, memory,
-                cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                pixel_world_scale, col_row_arr, time_start, time_end,
-                width, height, half_w, half_h, layer_offset_triangles)
+                merged,
+                tri_screen,
+                tri_bounds,
+                bez_bounds,
+                memory,
+                cam_origin,
+                screen_point,
+                pixel_basis_x,
+                pixel_basis_y,
+                pixel_world_scale,
+                col_row_arr,
+                time_start,
+                time_end,
+                width,
+                height,
+                half_w,
+                half_h,
+                layer_offset_triangles,
+            )
             if cov is None:
                 BATCH_LOG.append(
-                    ("sparse-empty", int(time_start), int(time_end), 0, 0, 0))
+                    ("sparse-empty", int(time_start), int(time_end), 0, 0, 0)
+                )
             else:
-                n_tr, n_px = _sparse_trunc_stats(
-                    cov, merged, time_start, width, height)
+                n_tr, n_px = _sparse_trunc_stats(cov, merged, time_start, width, height)
                 BATCH_LOG.append(
-                    ("sparse", int(time_start), int(time_end),
-                     int(cov["num_fragments"]), n_tr, n_px))
+                    (
+                        "sparse",
+                        int(time_start),
+                        int(time_end),
+                        int(cov["num_fragments"]),
+                        n_tr,
+                        n_px,
+                    )
+                )
             return cov
 
         def dense(*args, **kwargs):
@@ -185,8 +224,10 @@ def _render(run_exact, out_name):
         total_tr += max(n_tr, 0)
         total_px += max(n_px, 0)
     if dense_starts:
-        print(f"  dense raster_iteration_zero calls: {len(dense_starts)} "
-              f"(time_starts {sorted(set(dense_starts))})")
+        print(
+            f"  dense raster_iteration_zero calls: {len(dense_starts)} "
+            f"(time_starts {sorted(set(dense_starts))})"
+        )
     print(f"  sparse totals: trunc_runs={total_tr} trunc_px={total_px}")
     return OUT / out_name
 
@@ -220,9 +261,11 @@ def _diff(path_a, path_b, label):
     if not per_frame:
         print(f"  byte-identical over {frames} frames (worst |d| {worst})")
         return
-    print(f"  worst |d| {worst} at frame {worst_frame}; "
-          f"{total_moved} moved pixel-frames over {len(per_frame)} frames "
-          f"of {frames}")
+    print(
+        f"  worst |d| {worst} at frame {worst_frame}; "
+        f"{total_moved} moved pixel-frames over {len(per_frame)} frames "
+        f"of {frames}"
+    )
     for f, d, m in per_frame:
         print(f"    frame {f:4d}  max|d| {d:3d}  moved px {m}")
 

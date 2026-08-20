@@ -1,7 +1,8 @@
 """fc0f93f (UNCONDITIONAL lane reads): materials_and_lighting OFF vs ON,
 rendered losslessly. The record says this configuration moved the scene by 42
 channel values over 28,854 pixels (16% of a frame) -- a decoded-H.264 number.
-This measures what the renderer itself changed."""
+This measures what the renderer itself changed.
+"""
 
 import importlib.util
 import os
@@ -76,9 +77,11 @@ def main():
         total += c
         worst = max(worst, m)
         i += 1
-    print(f"LOSSLESS unconditional ON vs OFF (materials): "
-          f"{len(nz)} nonzero frames of {i}, {total} moved pixel-frames, "
-          f"worst |d| {worst}")
+    print(
+        f"LOSSLESS unconditional ON vs OFF (materials): "
+        f"{len(nz)} nonzero frames of {i}, {total} moved pixel-frames, "
+        f"worst |d| {worst}"
+    )
     for f, m, c in nz[:20]:
         print(f"  frame {f:3d} max {m:2d} px {c}")
 

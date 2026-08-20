@@ -968,6 +968,13 @@ class MobMorphMixin:
         tolerance = min(source_soup.render_tolerance, target_soup.render_tolerance)
         source_soup.render_tolerance = tolerance
         target_soup.render_tolerance = tolerance
+        # The two soups are diced as one primitive, so the pixel bound has to
+        # agree the same way the screen-fraction one does.
+        pixel_tolerance = min(
+            source_soup.render_tolerance_pixels, target_soup.render_tolerance_pixels
+        )
+        source_soup.render_tolerance_pixels = pixel_tolerance
+        target_soup.render_tolerance_pixels = pixel_tolerance
 
         difference = (
             target_soup.location.shape[-2] - source_soup.location.shape[-2]

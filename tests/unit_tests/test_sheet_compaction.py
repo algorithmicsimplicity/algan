@@ -388,6 +388,91 @@ def test_shade_split_separates_flat_faces_at_a_crease():
     assert sorted(split["sheet_ref"].tolist()) == [0, 1]
 
 
+def _resolve_band(out, alpha=1.0):
+    """Resolve one pixel's sheets through the oracle on the WEIGHTS the kernel
+    consumes, returning ``(total claim, per-sheet claims)``.
+    """
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    covs = out["sheet_wgt"].tolist()
+    msks = [int(v) for v in out["sheet_wmsk"].tolist()]
+    claims, _ = resolve_pixel_reference(
+        covs, msks, [False] * len(covs), alphas=[alpha] * len(covs)
+    )
+    return sum(claims), claims
+
+
+def test_shade_split_siblings_composite_additively():
+    # §4.4: siblings claim by exact area against the SAME incoming
+    # visibility, and the band occludes once by the summed claim -- so a
+    # split band commits exactly the coverage the unsplit one did. Walked as
+    # independent occluders they would not: the first sibling's write dims
+    # the samples the second reads and the band under-claims, which is what
+    # let the geometry behind an interior crease show through as a seam.
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x)})
+    cases = (
+        # partitioned samples, areas matching them
+        [(3, 1.0, 0, 0.5, 0b00001111), (3, 1.0001, 1, 0.5, 0b11110000)],
+        # partitioned samples, areas NOT matching them (corr > 1 on the
+        # nearer sibling -- rule B's residue used to land on its co-sibling)
+        [(3, 1.0, 0, 0.77, 0b11010111), (3, 1.0001, 1, 0.23, 0b00101000)],
+        # a DONOR sibling: real area, no samples of its own
+        [(3, 1.0, 0, 0.93, MASK_ALL), (3, 1.0001, 1, 0.07, 0)],
+        # donor first
+        [(3, 1.0, 0, 0.02, 0), (3, 1.0001, 1, 0.98, MASK_ALL)],
+    )
+    for frags in cases:
+        fused = _compact(frags, tri_norm=tn)
+        split = _compact(frags, shade_split=True, tri_norm=tn)
+        assert fused["num_sheets"] == 1, frags
+        assert split["num_sheets"] == 2, frags
+        # At every material alpha, including translucent: the band's write is
+        # the unsplit band's, so what it commits cannot depend on the split.
+        for alpha in (1.0, 0.6, 0.25):
+            whole, _ = _resolve_band(fused, alpha)
+            total, claims = _resolve_band(split, alpha)
+            assert total == pytest.approx(whole, abs=1e-6), (frags, alpha)
+            # And each sibling claims its own exact share of that coverage.
+            area = sum(f[3] for f in frags)
+            for claim, cov in zip(claims, split["sheet_cov"].tolist()):
+                assert claim == pytest.approx(whole * cov / area, abs=1e-6)
+
+
+def test_shade_split_leaves_an_areal_band_whole():
+    # An areal band -- every fragment position-less -- has no samples for
+    # siblings to blend across and nothing to anti-alias, so it stays whole.
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x)})
+    donors = [(3, 1.0, 0, 0.3, 0), (3, 1.0001, 1, 0.2, 0)]
+    assert _compact(donors, shade_split=True, tri_norm=tn)["num_sheets"] == 1
+    # A sub-sample rod (corr > 1) DOES split: the band's write is made whole
+    # at its last sheet, so rule B's residue still lands on unowned samples.
+    rod = [(3, 1.0, 0, 0.3, 0b00000001), (3, 1.0001, 1, 0.2, 0b00000010)]
+    fused = _compact(rod, tri_norm=tn)
+    split = _compact(rod, shade_split=True, tri_norm=tn)
+    assert split["num_sheets"] == 2
+    whole, _ = _resolve_band(fused)
+    total, _ = _resolve_band(split)
+    assert total == pytest.approx(whole, abs=1e-6)
+
+
+def test_weights_are_the_record_where_a_band_holds_one_sheet():
+    # Everything the split does not touch hands the resolve its own area and
+    # mask -- the byte-identity the flag-off path rests on.
+    frags = [
+        (3, 1.0, 0, 0.4, 0b00001111),
+        (3, 1.0001, 1, 0.6, 0b11110000),
+        (5, 1.0, 4, 0.25, 0b00000011),
+    ]
+    for flag in (False, True):
+        out = _compact(frags, shade_split=flag)
+        assert torch.equal(out["sheet_wgt"], out["sheet_cov"]), flag
+        assert torch.equal(out["sheet_wmsk"], out["sheet_msk"]), flag
+
+
 def test_shade_split_uses_the_geometric_normal_for_zero_vertex_normals():
     # The Polyhedron family authors NO vertex normals (all zero); the shade
     # kernel substitutes the geometric cross-product normal, so the class

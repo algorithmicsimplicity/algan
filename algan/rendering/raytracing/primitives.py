@@ -20,6 +20,7 @@ from algan.rendering.logical_pn import (
     logical_pn_edge_control_points,
     logical_pn_normal_control_points,
     mean_patch_edge_length,
+    normalize_pixel_tolerance,
     snap_boundary_values,
 )
 from algan.rendering.primitives.bezier_circuit_primitive import (
@@ -969,10 +970,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
       the two neighbours chose.
 
     The tolerance guarantee is therefore stated per component: the diced
-    boundary lands within ``render_tolerance`` of the true boundary curve and
-    the diced interior within ``render_tolerance`` of the true patch, both in
-    output pixels.  In the band of microtriangles touching a snapped boundary
-    the two displacements can add, for a worst case of twice the tolerance.
+    boundary lands within the frame's error budget of the true boundary curve
+    and the diced interior within it of the true patch, both in output pixels.
+    In the band of microtriangles touching a snapped boundary the two
+    displacements can add, for a worst case of twice the budget.  The budget
+    itself is the finer of the two tolerances at this frame's resolution --
+    ``render_tolerance`` as a fraction of the frame height, and
+    ``render_tolerance_pixels`` as an absolute pixel count -- see
+    :meth:`_pixel_threshold`.
 
     Both criteria measure against the *logical PN patch*, which is itself only
     an approximation of the surface the author asked for.  Where the mesh
@@ -1037,7 +1042,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     _edge_sample_parameters = (0.25, 0.5, 0.75)
     _flatness_safety_factor = 1.25
 
-    def __init__(self, *args, render_tolerance=0.5, geometry_slack_ratio=0.0, **kwargs):
+    def __init__(
+        self,
+        *args,
+        render_tolerance=0.5,
+        render_tolerance_pixels=None,
+        geometry_slack_ratio=0.0,
+        **kwargs,
+    ):
         collection = kwargs.get("triangle_collection")
         if collection is not None:
             tolerances = [
@@ -1045,15 +1057,26 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 for p in collection
             ]
             render_tolerance = min(tolerances)
-            # The merged primitive is judged by one criterion, so the least
-            # slack any member declares is the only value that cannot over-relax
-            # another. A member that declares none (a hand-built patch soup is
-            # its own surface, exactly) therefore pins the batch to zero.
+            # Both tolerances merge the same way and for the same reason: the
+            # merged primitive is judged by one criterion, so the finest value
+            # any member declares is the only one that cannot over-relax
+            # another.
+            render_tolerance_pixels = min(
+                normalize_pixel_tolerance(
+                    getattr(p, "render_tolerance_pixels", render_tolerance_pixels)
+                )
+                for p in collection
+            )
+            # A member that declares no slack (a hand-built patch soup is its
+            # own surface, exactly) therefore pins the batch to zero.
             geometry_slack_ratio = min(
                 float(getattr(p, "geometry_slack_ratio", 0.0)) for p in collection
             )
         super().__init__(*args, **kwargs)
         self.render_tolerance = float(render_tolerance)
+        self.render_tolerance_pixels = normalize_pixel_tolerance(
+            render_tolerance_pixels
+        )
         self.geometry_slack_ratio = float(geometry_slack_ratio)
         if not torch.isfinite(torch.tensor(self.render_tolerance)):
             raise ValueError("render_tolerance must be finite")
@@ -1064,6 +1087,26 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return (
             f"{super().get_batch_identifier()}"
             f"_logical_pn_render_tolerance={self.render_tolerance}"
+            f"_logical_pn_render_tolerance_pixels={self.render_tolerance_pixels}"
+        )
+
+    def _pixel_threshold(self, screen_height):
+        """This frame's error budget for the dice criteria, in output pixels.
+
+        Both tolerances bound the same quantity and the finer one wins.
+        ``render_tolerance`` is a fraction of the frame height, so it holds the
+        error to a constant share of the picture however large the picture is;
+        ``render_tolerance_pixels`` is an absolute count, so it holds the error
+        to a constant number of pixels however small the picture is. A
+        low-resolution render is therefore still diced well below a pixel --
+        which the analytic-coverage antialiasing needs, since a microtriangle
+        wider than a pixel is what its coverage is computed from -- while a
+        high-resolution one no longer inherits triangles several pixels across
+        from a tolerance that only ever scaled with the frame.
+        """
+        return min(
+            self.render_tolerance * float(screen_height),
+            self.render_tolerance_pixels,
         )
 
     @staticmethod
@@ -1278,7 +1321,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             return apex, across
 
         max_level = int(self.max_subdivision_level)
-        threshold = self.render_tolerance * float(screen_height)
+        threshold = self._pixel_threshold(screen_height)
         candidate = floor.clone()
         # A patch whose coarsest boundary is already as fine as its interior has
         # nothing to coarsen; everything else starts at that boundary's level.
@@ -1386,7 +1429,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         num_frames, num_patches = edge_controls.shape[0], edge_controls.shape[1]
         max_level = int(self.max_subdivision_level)
         budget = max(1, int(self.max_diced_triangles))
-        threshold = self.render_tolerance * float(screen_height)
+        threshold = self._pixel_threshold(screen_height)
 
         levels = torch.zeros(
             (num_frames, num_patches, 3), dtype=torch.long, device=device
@@ -1533,7 +1576,8 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         Every patch starts at the largest of its three boundary levels -- the
         floor imposed by the snap in
         :func:`~algan.rendering.logical_pn.snap_boundary_values` -- and climbs
-        only while its *own* dice misses ``render_tolerance``.  Because the
+        only while its *own* dice misses the frame's budget
+        (:meth:`_pixel_threshold`).  Because the
         active set shrinks as patches resolve, the whole search costs about a
         third more than the tessellation it settles on, rather than one full
         trial tessellation of the entire mesh per level tried.
@@ -1541,14 +1585,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         The criterion measures the *unsnapped* dice.  Folding the boundary snap
         in instead would be measuring against a floor the interior cannot get
         under -- the snap displacement is fixed by the boundary level, and is
-        itself allowed to reach the tolerance -- so patches whose boundary
-        resolved just inside the tolerance would climb to the safety cap
+        itself allowed to reach the budget -- so patches whose boundary
+        resolved just inside the budget would climb to the safety cap
         without ever passing.  The two approximations are held to the tolerance
         separately (see the class docstring).
         """
         max_level = int(self.max_subdivision_level)
         budget = max(1, int(self.max_diced_triangles))
-        threshold = self.render_tolerance * float(screen_height)
+        threshold = self._pixel_threshold(screen_height)
         dtype = control_points.dtype
         levels = start.clone()
         if levels.numel() == 0:

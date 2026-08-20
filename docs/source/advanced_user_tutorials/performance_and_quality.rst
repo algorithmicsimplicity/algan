@@ -203,6 +203,15 @@ In rough order of impact:
    and a direction the surface is straight along costs nothing, so a long thin
    cylinder pays for its circumference and not for its length. Raising
    ``render_tolerance`` slightly is a large speedup on close-up surfaces.
+
+   Its companion ``render_tolerance_pixels`` (default ``1.0``) bounds the same
+   error as an absolute pixel count, and whichever of the two is finer at the
+   resolution you are rendering decides the dice. Below about 1080p the fraction
+   is the finer one and this changes nothing; above it, the fraction alone would
+   let triangles grow to several pixels across as the frame grew, and the pixel
+   bound holds them to one. It is therefore what makes a ``UHD`` render cost
+   more than a ``PREVIEW`` one in tessellation as well as in pixels -- raise it
+   (or pass ``None``) if you would rather buy that back.
 2. **Resolution × anti-aliasing × frame count.** Straightforwardly multiplicative.
 3. **Refraction.** Splits every ray in two, and routes the batch to the general
    wavefront tracer.
@@ -231,7 +240,9 @@ What to try, in order:
 
 1. **Raise ``render_tolerance``** on the surfaces that fill the frame, for the reason
    above. This is the first thing to reach for whenever the scene contains a
-   :class:`~.Surface` close to the camera.
+   :class:`~.Surface` close to the camera. At ``PRODUCTION`` and above, raise
+   ``render_tolerance_pixels`` with it -- otherwise it is the bound still in
+   force and the change buys nothing.
 2. **Lower ``anti_alias_level``** to 1. Cuts the pixel count fourfold.
 3. **Drop to a smaller preset** for the draft.
 4. **Reduce geometry**: fewer Mobs on screen at once, coarser

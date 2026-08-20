@@ -42,20 +42,28 @@ def reset_scene():
     SceneManager.reset()
 
 
-def _logical_patch(corners, normals, render_tolerance=0.5):
+def _logical_patch(
+    corners, normals, render_tolerance=0.5, render_tolerance_pixels=None
+):
     """A one-patch primitive; ``corners``/``normals`` are ``[3, 3]``."""
     return _logical_patches(
-        corners.reshape(1, 3, 3), normals.reshape(1, 3, 3), render_tolerance
+        corners.reshape(1, 3, 3),
+        normals.reshape(1, 3, 3),
+        render_tolerance,
+        render_tolerance_pixels,
     )
 
 
-def _logical_patches(corners, normals, render_tolerance=0.5):
+def _logical_patches(
+    corners, normals, render_tolerance=0.5, render_tolerance_pixels=None
+):
     """A multi-patch primitive; ``corners``/``normals`` are ``[P, 3, 3]``."""
     source = LogicalPNTrianglePrimitive(
         corners=corners.reshape(1, -1, 3),
         normals=normals.reshape(1, -1, 3),
         colors=BLUE,
         render_tolerance=render_tolerance,
+        render_tolerance_pixels=render_tolerance_pixels,
     )
     return LogicalPNTrianglePrimitive(triangle_collection=[source])
 
@@ -674,6 +682,130 @@ def test_other_analytic_surfaces_use_compact_geometry_accurate_topology(
     assert _dense_implicit_surface_error(shape) <= shape.geometry_tolerance
 
 
+# --- the absolute-pixel render tolerance ------------------------------------
+
+
+def _levels_at(screen_height, **tolerances):
+    corners, normals = _curved_patch_inputs()
+    primitive = _logical_patch(corners, normals, **tolerances)
+    primitive._dice_logical_pn(
+        _camera([-3.0], screen_height=screen_height, device=primitive.corners.device)
+    )
+    return primitive
+
+
+@pytest.mark.parametrize("screen_height", [396, 486])
+def test_pixel_tolerance_is_inert_where_the_screen_fraction_is_finer(screen_height):
+    """At low resolutions the fraction already asks for sub-pixel triangles.
+
+    ``render_tolerance=0.001`` is worth 0.4 px at ``PREVIEW`` and 0.49 px at
+    ``LD``, so a 1 px absolute bound cannot bind there and the dice -- every
+    vertex of it -- has to be the one the fraction alone chose.
+    """
+    without = _levels_at(screen_height, render_tolerance=0.001)
+    with_pixels = _levels_at(
+        screen_height, render_tolerance=0.001, render_tolerance_pixels=1.0
+    )
+
+    assert torch.equal(
+        without._logical_pn_subdivision_levels,
+        with_pixels._logical_pn_subdivision_levels,
+    )
+    assert torch.equal(without.corners, with_pixels.corners)
+
+
+def test_pixel_tolerance_refines_the_dice_at_high_resolution():
+    """Once the frame is large, the absolute bound is what binds.
+
+    ``render_tolerance=0.001`` is worth 2.16 px at ``UHD``; asking for half a
+    pixel there costs a subdivision level the fraction would not have bought.
+    """
+    without = _levels_at(2160, render_tolerance=0.001)
+    with_pixels = _levels_at(2160, render_tolerance=0.001, render_tolerance_pixels=0.5)
+
+    assert (
+        with_pixels._logical_pn_subdivision_levels.amax()
+        > without._logical_pn_subdivision_levels.amax()
+    )
+    assert with_pixels.corners.shape[1] > without.corners.shape[1]
+
+
+@pytest.mark.parametrize("pixels", [2.16, 1.0, 0.5, 0.25])
+def test_pixel_tolerance_dices_exactly_as_the_equivalent_fraction_would(pixels):
+    """``p`` pixels of an ``H`` pixel frame is the fraction ``p / H``.
+
+    The two spellings are the same bound, so they must reach the same dice --
+    vertex for vertex -- rather than merely the same level.
+    """
+    by_pixels = _levels_at(2160, render_tolerance=0.5, render_tolerance_pixels=pixels)
+    by_fraction = _levels_at(2160, render_tolerance=pixels / 2160)
+
+    assert torch.equal(
+        by_pixels._logical_pn_subdivision_levels,
+        by_fraction._logical_pn_subdivision_levels,
+    )
+    assert torch.equal(by_pixels.corners, by_fraction.corners)
+
+
+def test_pixel_tolerance_does_not_relax_a_finer_screen_fraction():
+    """The finer of the two bounds wins; neither can loosen the other."""
+    tight = _levels_at(480, render_tolerance=0.0005)
+    with_loose_pixels = _levels_at(
+        480, render_tolerance=0.0005, render_tolerance_pixels=8.0
+    )
+
+    assert torch.equal(
+        tight._logical_pn_subdivision_levels,
+        with_loose_pixels._logical_pn_subdivision_levels,
+    )
+
+
+def test_merged_primitive_takes_the_finest_pixel_tolerance_of_its_members():
+    corners, normals = _curved_patch_inputs()
+    members = [
+        LogicalPNTrianglePrimitive(
+            corners=corners.reshape(1, -1, 3),
+            normals=normals.reshape(1, -1, 3),
+            colors=BLUE,
+            render_tolerance_pixels=pixels,
+        )
+        for pixels in (2.0, None, 0.5)
+    ]
+
+    merged = LogicalPNTrianglePrimitive(triangle_collection=members)
+
+    assert merged.render_tolerance_pixels == 0.5
+    # Members that differ only in this must not share a merge bucket.
+    assert members[0].get_batch_identifier() != members[2].get_batch_identifier()
+
+
+def test_absent_pixel_tolerance_leaves_the_screen_fraction_alone():
+    primitive = _logical_patch(
+        *_curved_patch_inputs(), render_tolerance=0.001, render_tolerance_pixels=None
+    )
+
+    assert primitive.render_tolerance_pixels == float("inf")
+    assert primitive._pixel_threshold(2160) == pytest.approx(2.16)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan")])
+def test_non_positive_pixel_tolerance_is_rejected(value):
+    with pytest.raises(ValueError, match="render_tolerance_pixels"):
+        Sphere(render_tolerance_pixels=value)
+
+
+def test_surface_defaults_to_a_one_pixel_absolute_tolerance():
+    sphere = Sphere()
+
+    primitive = sphere.get_render_primitives()
+
+    assert sphere.render_tolerance_pixels == 1.0
+    assert primitive.render_tolerance_pixels == 1.0
+    # PREVIEW and LD are decided by the fraction; HD and above by the pixel.
+    assert primitive._pixel_threshold(396) == pytest.approx(0.396)
+    assert primitive._pixel_threshold(1080) == 1.0
+
+
 def test_surface_builds_new_logical_pn_primitive_with_both_tolerances():
     sphere = Sphere(
         geometry_tolerance=0.04,
@@ -687,6 +819,7 @@ def test_surface_builds_new_logical_pn_primitive_with_both_tolerances():
     assert sphere.geometry_tolerance == 0.04
     assert sphere.render_tolerance == 0.75
     assert primitive.render_tolerance == 0.75
+    assert primitive.render_tolerance_pixels == sphere.render_tolerance_pixels
 
 
 # --- per-dimension dicing ---------------------------------------------------
