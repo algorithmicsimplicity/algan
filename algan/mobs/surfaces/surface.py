@@ -974,12 +974,18 @@ class Surface(Mob):
         # afterwards can then carry the bound forward to the renderer instead of
         # quoting a stale absolute length, and a PN soup converted from it
         # arrives at the identical number from the identical triangles.
+        #
+        # The weld has to be the render path's, not the default: welding a pole
+        # DROPS the degenerate triangle of every cell touching it, and those are
+        # exactly the short ones, so an unwelded reference quotes a scale the
+        # renderer never measures (a Sphere's came out 3.7% low).
+        reference_grid = unsquish(grid_points, -2, self.grid_height).reshape(
+            -1, self.grid_width, self.grid_height, 3
+        )
         reference = float(
             mean_patch_edge_length(
                 grid_to_triangle_vertices(
-                    unsquish(grid_points, -2, self.grid_height).reshape(
-                        -1, self.grid_width, self.grid_height, 3
-                    )
+                    reference_grid, surface_weld_flags(reference_grid)
                 ).reshape(1, -1, 3, 3)
             ).mean()
         )

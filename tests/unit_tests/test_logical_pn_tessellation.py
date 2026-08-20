@@ -526,7 +526,11 @@ def _materialized_per_frame(primitive, num_frames):
 def test_vertex_attribute_interpolation_matches_the_per_corner_form():
     # The dice interpolates attributes on the shared subdivision vertices and
     # gathers them through the triangle indices, which is only sound because a
-    # microtriangle's corners ARE those vertices.
+    # microtriangle's corners ARE those vertices. That identity is exact and is
+    # asserted as such; the interpolated values are only compared closely,
+    # because the two forms contract [V, 3] and [M * 3, 3] weight matrices and
+    # a BLAS is free to order a three-term sum differently between the two
+    # shapes -- measured at one ulp here from level 2 up.
     torch.manual_seed(0)
     values = torch.randn(23, 3, 4)
     for level in range(4):
@@ -537,9 +541,12 @@ def test_vertex_attribute_interpolation_matches_the_per_corner_form():
             level, device=values.device, dtype=values.dtype
         )
         indices = subdivision_triangle_indices(level, device=values.device)
-        assert torch.equal(
+        assert torch.equal(vertex_uv[indices], corner_uv)
+        torch.testing.assert_close(
             interpolate_patch_vertex_attribute(values, vertex_uv)[:, indices],
             interpolate_patch_attribute(values, corner_uv),
+            rtol=1e-6,
+            atol=1e-6,
         )
 
 

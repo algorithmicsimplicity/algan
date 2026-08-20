@@ -814,7 +814,10 @@ def interpolate_patch_attribute(values, triangle_uv):
     evaluates a sixth as many points and gathers.  This is kept as the
     definition that one is stated against: the equivalence test and the dice's
     A/B reference arm (``benchmarks/_pn_dice_ab.py``) both compare to it, so it
-    is not dead code.
+    is not dead code.  The two agree to rounding, not bit for bit: this form
+    contracts an ``[M * 3, 3]`` weight matrix where the vertex form contracts a
+    ``[V, 3]`` one, and a BLAS may order a three-term sum differently between
+    the two shapes (one ulp, on some machines, from level 2 up).
     """
     weights = triangle_uv_to_barycentric(triangle_uv)
     return torch.einsum("mak,pkc->pmac", weights, values)
@@ -825,12 +828,14 @@ def interpolate_patch_vertex_attribute(values, vertex_uv):
 
     ``values`` is ``[K, 3, C]`` and ``vertex_uv`` is ``[V, 2]``; the result is
     ``[K, V, C]``.  Gathering that through :func:`subdivision_triangle_indices`
-    reproduces :func:`interpolate_patch_attribute` exactly -- a microtriangle's
-    corners *are* these vertices, and :func:`subdivision_triangle_uvs` is
-    literally this vertex list gathered through those indices -- for a sixth of
-    the arithmetic, because a vertex is a corner of up to six microtriangles.
-    It is the attribute counterpart of what
-    :func:`subdivision_vertex_uvs` already does for positions.
+    reproduces :func:`interpolate_patch_attribute` -- a microtriangle's corners
+    *are* these vertices, and :func:`subdivision_triangle_uvs` is literally this
+    vertex list gathered through those indices -- for a sixth of the arithmetic,
+    because a vertex is a corner of up to six microtriangles.  It is the
+    attribute counterpart of what :func:`subdivision_vertex_uvs` already does
+    for positions.  The reproduction is to rounding rather than bit for bit; see
+    :func:`interpolate_patch_attribute` for why, and why an attribute (unlike a
+    position) does not need more than that.
     """
     weights = triangle_uv_to_barycentric(vertex_uv)
     return torch.einsum("vk,pkc->pvc", weights, values)
