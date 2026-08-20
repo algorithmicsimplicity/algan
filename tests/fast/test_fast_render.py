@@ -25,11 +25,15 @@ child processes that keep the output mp4s locked.
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import importlib.util
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
@@ -44,6 +48,77 @@ CACHE_DIR = HERE / "algan_cache"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
 UPDATE_BASELINE = os.getenv("ALGAN_UPDATE_FAST_BASELINE") == "1"
+LOG_FILE = HERE / "pytest.log"
+
+
+class _TeeStream:
+    """A stream wrapper that writes to an underlying stream and registered log files."""
+
+    def __init__(self, original_stream: Any) -> None:
+        self._orig = original_stream
+        self._log_files: list[Any] = []
+
+    def add_file(self, file_obj: Any) -> None:
+        if file_obj not in self._log_files:
+            self._log_files.append(file_obj)
+
+    def write(self, s: str) -> int:
+        res = self._orig.write(s)
+        if self._log_files:
+            clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
+            for f in list(self._log_files):
+                with contextlib.suppress(Exception):
+                    f.write(clean)
+                    f.flush()
+        return res
+
+    def flush(self) -> None:
+        self._orig.flush()
+        for f in list(self._log_files):
+            with contextlib.suppress(Exception):
+                f.flush()
+
+    def isatty(self) -> bool:
+        return getattr(self._orig, "isatty", lambda: False)()
+
+    def fileno(self) -> int:
+        return self._orig.fileno()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._orig, name)
+
+
+def _setup_log_piping(log_path: Path, config: Any = None) -> Any:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
+
+    if not hasattr(sys.stdout, "add_file"):
+        sys.stdout = _TeeStream(sys.stdout)
+    if not hasattr(sys.stderr, "add_file"):
+        sys.stderr = _TeeStream(sys.stderr)
+
+    sys.stdout.add_file(log_file)
+    sys.stderr.add_file(log_file)
+
+    if config is not None:
+        tr = config.pluginmanager.get_plugin("terminalreporter")
+        if tr and hasattr(tr, "_tw"):
+            if not hasattr(tr._tw._file, "add_file"):
+                tr._tw._file = _TeeStream(tr._tw._file)
+            tr._tw._file.add_file(log_file)
+
+    atexit.register(log_file.close)
+    return log_file
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pipe_output_to_log(pytestconfig):
+    """Pipe all test output, failed assert messages, and success status to a log file."""
+    log_file = _setup_log_piping(LOG_FILE, pytestconfig)
+    yield
+    with contextlib.suppress(Exception):
+        log_file.flush()
+
 
 # The one render in the fast suite, and the most expensive thing in it by a
 # wide margin. It stays because nothing else in the loop can see the renderer.
