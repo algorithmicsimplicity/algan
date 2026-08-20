@@ -77,7 +77,7 @@ New environment variables (all runtime, none startup-only):
 | Name | Default | Meaning |
 |---|---|---|
 | `ALGAN_AUTO_DAEMON` | `1` | Start a daemon when none is running |
-| `ALGAN_DAEMON_IDLE_TIMEOUT` | `1800` | Seconds before an auto-started daemon exits |
+| `ALGAN_DAEMON_IDLE_TIMEOUT` | `7200` | Seconds before an auto-started daemon exits |
 | `ALGAN_DAEMON_START_TIMEOUT` | `60` | Seconds to wait for a spawned daemon before running in-process |
 | `ALGAN_DAEMON_LOG_MAX_BYTES` | `4194304` | Rotate `~/.algan/daemon.log` past this size |
 
@@ -105,6 +105,39 @@ Do not redo these; they are recorded so you know what is *not* in question.
   0.23 s warm, 4-frame 32×32 mp4, landing beside the script.
 * Idle timeout fires and removes the state file; stale registration from a
   `SIGKILL`ed daemon is detected, removed, and replaced.
+
+---
+
+## 4b. Verified on Windows + CUDA (2026-08-20, GTX 1050, this checkout)
+
+Run on this machine while working through §5/§6; what is still open is listed
+at the end.
+
+* **§5.1 `SetStdHandle`.** `tests\unit_tests\test_daemon_run_context.py` passes
+  here, `test_subprocess_output_reaches_the_client` included — so the handle
+  swap does take effect. A real render's ffmpeg output also reaches the client.
+* **§5.2 Detached spawn.** Auto-start spawned a daemon that outlived its
+  parent, showed no console window, and logged to `~/.algan/daemon.log`.
+* **§5.3 Port rebinding.** Not a problem in practice: the staleness gate shut a
+  daemon down and the very next run bound 46711 again, six times over, with no
+  `SO_REUSEADDR` and no wait. `SO_EXCLUSIVEADDRUSE` is not needed.
+* **§5.5 The gate fires on Windows.** Editing `algan\constants\spatial.py`
+  under a warm daemon produced a refusal naming `constants/spatial.py`, an
+  in-process run that read the *edited* value, and a daemon that removed its
+  state file and exited. Reverting the edit did the same again (content hash,
+  not mtime), and editing a `*_taichi.py` added the recompile warning.
+* **§6.2 GPU residency.** An idle daemon held 1601 MiB of a 4096 MiB card after
+  a 90-frame render. It now hands that back when the run ends (§14 of the
+  design doc), so an idle daemon sits at ~125 MiB and the idle timeout is no
+  longer the only thing standing between other GPU work and that VRAM.
+* **§6.4 Renders are unchanged.** `pytest -q --fast` 213 passed (66 s of its
+  75 s budget) and `pytest -q tests\unit_tests` 1228 passed / 90 skipped. No
+  baseline was regenerated. `tests\full_renders` was **not** run.
+
+Still open: §5.4 (project-directory deletion and mp4 locking), §6.1 (replacing
+the "~20 s" docstring figures with a measured one), §6.3 (confirming exactly
+one process allocates VRAM during a cold first run), §6.5 (tqdm on a real
+Windows terminal).
 
 ---
 
@@ -189,10 +222,12 @@ corrected to whatever you actually measure.
 
 An auto-started daemon holds a CUDA context. Confirm with `nvidia-smi` that it
 appears when a daemon starts and is released when the idle timeout fires
-(default 1800 s; test with `--idle-timeout 30` on a hand-launched daemon).
-Judgement call worth making with real numbers in front of you: **is 30 minutes
+(default 7200 s; test with `--idle-timeout 30` on a hand-launched daemon).
+Judgement call worth making with real numbers in front of you: **is 2 hours
 the right default** for a background process sitting on VRAM? Lower it if it
-gets in the way of other GPU work.
+gets in the way of other GPU work — though see §4b: an idle daemon now
+holds ~125 MiB rather than 1601 MiB, which is most of what made the number
+urgent.
 
 ### 6.3 Two heavy processes must not overlap
 

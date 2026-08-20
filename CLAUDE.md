@@ -191,6 +191,8 @@ Every `ALGAN_` variable the package honors is declared in `algan/environment.py`
 
 **Initialization-only settings** are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_RENDER_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16` and the Taichi/warm-start trio — `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it. `SETTINGS.computing.set(render_device=...)` raises with that instruction rather than a generic "unknown setting".
 
+**Variables an A/B script sets before `import algan` do not reach a warm daemon, so it refuses the run.** Most renderer toggles become module-level defaults during the import, which in a daemon happened at its launch — `_IMPORT_TIME_VARIABLES` in `algan/environment.py` is the list of record, checked against the call sites by `tests/unit_tests/test_environment.py`. A client whose values differ is refused and runs cold, matching what it would have rendered on its own; variables read live (`_LIVE_VARIABLES`) are swapped in per run, so flipping one *between* two renders in a script works warm. Benchmarks set `ALGAN_USE_DAEMON=0` anyway, because a warm process also carries the previous run's adaptive renderer state.
+
 ### Performance discipline
 - **`DESIGN_optimization_targets.md` is the plan of record for render performance.** It opens with a status table, how to reproduce the reference profile, and what to verify. Read it before starting (or resuming) optimization work, and update it when something lands.
 - Optimizations must target general moving scenes, not static-only fast paths.

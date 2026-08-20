@@ -151,6 +151,56 @@ def test_render_device_mismatch_is_reported():
 
 
 # --------------------------------------------------------------------------
+# Import-time env: read into module defaults when the daemon started, so a
+# client wanting different values has to run cold too
+# --------------------------------------------------------------------------
+
+
+def test_matching_import_env_is_no_mismatch():
+    env = dict.fromkeys(dc.IMPORT_TIME_ENV, "x")
+    assert dc.describe_import_env_mismatch(env, env) is None
+
+
+def test_an_unset_import_variable_matches_an_empty_one():
+    assert (
+        dc.describe_import_env_mismatch({}, dict.fromkeys(dc.IMPORT_TIME_ENV, ""))
+        is None
+    )
+
+
+def test_a_toggle_the_daemon_never_saw_is_reported():
+    report = dc.describe_import_env_mismatch(
+        {"ALGAN_SHEET_RESOLVE": "0"}, {"ALGAN_SHEET_RESOLVE": "1"}
+    )
+    assert report is not None
+    assert "ALGAN_SHEET_RESOLVE" in report
+    assert "'0'" in report
+    assert "'1'" in report
+    assert "fresh process" in report, "the report must say what happens next"
+
+
+def test_a_live_variable_is_not_grounds_for_refusal():
+    """The A/B case that must keep working warm: flipping an arm mid-script.
+
+    A variable read at the point of use is picked up by the very next read, on
+    the daemon exactly as in a fresh process, so a difference in one is not a
+    reason to refuse a run.
+    """
+    assert (
+        dc.describe_import_env_mismatch(
+            {"ALGAN_PREFETCH_BATCHES": "0"}, {"ALGAN_PREFETCH_BATCHES": "1"}
+        )
+        is None
+    )
+
+
+def test_the_transport_variables_are_exempt():
+    """They configure the handoff that has already happened by this point."""
+    for name in dc.IMPORT_TIME_ENV_EXEMPT:
+        assert dc.describe_import_env_mismatch({name: "1"}, {name: "2"}) is None
+
+
+# --------------------------------------------------------------------------
 # Framing
 # --------------------------------------------------------------------------
 

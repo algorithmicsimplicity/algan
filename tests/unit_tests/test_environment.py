@@ -17,6 +17,7 @@ from algan.environment import (
     env_is_set,
     env_overrides,
     env_str,
+    import_time_environment_variables,
     startup_environment_variables,
     unknown_algan_environment_variables,
     warn_for_unknown_algan_environment_variables,
@@ -144,6 +145,104 @@ def test_undeclared_names_are_rejected_by_every_accessor():
     ):
         with pytest.raises(AlganConfigurationError, match="not a declared"):
             read()
+
+
+#: The accessors, by the name they are called under at their call sites.
+_ACCESSOR_NAMES = frozenset(
+    {"env_flag", "env_int", "env_float", "env_str", "env_is_set"}
+)
+
+
+def _read_at_import(tree):
+    """Names this module reads while it is being imported.
+
+    A read inside a function body runs when the function is called; anything
+    else -- module level, a class body, a decorator argument -- runs during the
+    import, which is the moment a warm process can no longer adopt a new value.
+    """
+    found = set()
+
+    def visit(node, inside_a_function):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call) and not inside_a_function:
+                function = child.func
+                called = (
+                    function.id
+                    if isinstance(function, ast.Name)
+                    else getattr(function, "attr", None)
+                )
+                if (
+                    called in _ACCESSOR_NAMES
+                    and child.args
+                    and isinstance(child.args[0], ast.Constant)
+                    and isinstance(child.args[0].value, str)
+                ):
+                    found.add(child.args[0].value)
+            visit(
+                child,
+                inside_a_function
+                or isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ),
+            )
+
+    visit(tree, False)
+    return found
+
+
+def test_import_time_variables_match_where_the_code_reads_them():
+    """The split in algan/environment.py against what the package actually does.
+
+    A variable read while its module imports becomes a module-level default, so
+    a process that imported algan with one value cannot serve a script that
+    wants another -- the render daemon refuses such a run and lets it execute
+    cold instead (:func:`algan.daemon_client.describe_import_env_mismatch`).
+    That gate is only as good as this classification, and a wrong entry is
+    silent: the script renders with the daemon's toggles and looks fine. So the
+    declaration is checked here against the call sites rather than trusted.
+
+    Moving a read into or out of a function body is what flips a name between
+    the two tuples; the failure message names it either way.
+    """
+    source_root = Path(__file__).parents[2] / "algan"
+    declared = set(import_time_environment_variables())
+    read_at_import = set()
+    for source_path in source_root.rglob("*.py"):
+        if "external_libraries" in source_path.parts:
+            continue
+        read_at_import |= _read_at_import(
+            ast.parse(source_path.read_text(encoding="utf-8"))
+        )
+    # Startup variables are their own tuple and are checked before this one.
+    read_at_import -= set(startup_environment_variables())
+
+    missing = sorted(read_at_import - declared)
+    spurious = sorted(declared - read_at_import)
+    assert not missing, (
+        "read while a module imports, but declared as read live -- move them "
+        "to _IMPORT_TIME_VARIABLES in algan/environment.py:\n  "
+        + "\n  ".join(missing)
+    )
+    assert not spurious, (
+        "declared as import-time but never read during an import -- move "
+        "them to _LIVE_VARIABLES in algan/environment.py:\n  "
+        + "\n  ".join(spurious)
+    )
+
+
+def test_import_time_and_live_variables_partition_the_runtime_ones():
+    from algan.environment import (
+        _IMPORT_TIME_VARIABLES,
+        _LIVE_VARIABLES,
+        _RUNTIME_VARIABLES,
+    )
+
+    assert not set(_IMPORT_TIME_VARIABLES) & set(_LIVE_VARIABLES)
+    assert set(_RUNTIME_VARIABLES) == set(_IMPORT_TIME_VARIABLES) | set(
+        _LIVE_VARIABLES
+    )
+    assert list(_IMPORT_TIME_VARIABLES) == sorted(_IMPORT_TIME_VARIABLES)
+    assert list(_LIVE_VARIABLES) == sorted(_LIVE_VARIABLES)
 
 
 def test_startup_variables_are_declared_and_ordered():

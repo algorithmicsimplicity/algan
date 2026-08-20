@@ -259,6 +259,12 @@ startup subset keeps its current behavior — refused on mismatch
 ([`daemon.py:400`](algan/daemon.py)), because those are baked into Torch and
 Taichi at launch and cannot be adopted per run.
 
+**This is two categories where there are three**, which §14 records:
+swapping `os.environ` in covers every variable read *live*, and refusing covers
+the ones Torch and Taichi consumed at launch, but the renderer's toggles are
+read into module-level defaults while *algan itself* is imported — which in a
+daemon also happened at launch. Those need refusing too.
+
 ### 5.3 stdin
 
 The daemon's stdin is its own Enter-to-re-render trigger
@@ -342,7 +348,7 @@ One line to stderr at spawn:
 
 ```
 [algan] starting a background render daemon so later runs skip the ~20s
-        startup (log: ~/.algan/daemon.log, exits after 30 min idle).
+        startup (log: ~/.algan/daemon.log, exits after 2 h idle).
         Disable with ALGAN_AUTO_DAEMON=0.
 ```
 
@@ -382,11 +388,19 @@ per `CLAUDE.md`:
 | Name | Default | Meaning |
 |---|---|---|
 | `ALGAN_AUTO_DAEMON` | `1` | Start a daemon when none is running. |
-| `ALGAN_DAEMON_IDLE_TIMEOUT` | `1800` | Seconds before an auto-started daemon exits. |
+| `ALGAN_DAEMON_IDLE_TIMEOUT` | `7200` | Seconds before an auto-started daemon exits. |
 | `ALGAN_DAEMON_START_TIMEOUT` | `60` | Seconds to wait for a spawned daemon before running in-process. |
 
 These are runtime variables, not startup ones: they do not participate in
 `STARTUP_ENV` and a client whose value differs from the daemon's is not refused.
+
+The idle timeout is **two hours**, not the half hour an earlier draft of this
+section named. A daemon that dies while you are still working costs a cold
+start for no reason, and the objection to a long one — a background process
+sitting on VRAM — no longer applies: an idle daemon hands a finished render's
+memory back to the driver (§14), so what it holds between runs is the warm
+process itself. Only auto-started daemons take the value at all; one launched
+by hand stays until it is told to go.
 
 **There is deliberately no kill switch for the staleness gate.** An earlier
 draft had `ALGAN_DAEMON_STALE_CHECK=0` as an escape hatch for a "misfiring"
@@ -503,6 +517,8 @@ behave identically would turn two latent bugs into everyone's first impression.
 | Script reading the daemon's env instead of the caller's | Full env shipped and swapped per run (§5.2) |
 | First run hanging on a daemon that never starts | Readiness timeout, then in-process fallback (§6.3) |
 | Orphan GPU-resident process | Idle timeout (§7), one-line notice at spawn (§6.4), `ALGAN_AUTO_DAEMON=0` |
+| Idle daemon holding a finished render's VRAM | Collect and hand it back when the run ends, not when the next one starts (§14) |
+| Script served with the daemon's renderer toggles instead of its own | Import-time env differences refused like startup ones (§14) |
 | Daemon with no trigger and no work | Exit when the socket fails and there is no SCRIPT (§7) |
 | Branch switches forcing pointless restarts | Content hashing, not mtime (§2) |
 | Two daemons started at once | Loser fails to bind the port and now exits (§7); the state file is written only by the winner |
@@ -573,3 +589,68 @@ reproduce?" and got three of four. The fourth was found by rendering a real
 scene and looking for the file. Enumerating divergences from the code is
 necessary and not sufficient — and the question §5 *should* also have asked is
 "which programs will now be handed to a daemon that were not before?"
+
+---
+
+## 14. What using it on Windows and CUDA found
+
+§13's entries came from getting the pieces working together; these two came from
+running the result on the platform it is used on. Both are the same shape as the
+`python -m` defect: a question §5 asked of the code, answered correctly, but not
+asked of everything the code does.
+
+**Ship the environment, and the run still sees the daemon's settings.** §5.2
+fixed "the script reads the daemon's environment" by shipping the client's and
+swapping it in, and verified it the way the section was written — a variable set
+and read back. But almost nothing in the renderer reads a variable that way. The
+~83 toggles behind `SETTINGS.raytracing.experimental` are `env_flag` calls *at
+module level*, evaluated once while algan imports, which in a daemon is its own
+launch; swapping `os.environ` afterwards cannot reach them. Measured against an
+`ALGAN_USE_DAEMON=0` control, a script setting `ALGAN_MESH_ID=1`,
+`ALGAN_WAVEFRONT_TILE=4242` and `ALGAN_POST_PROCESS_TONEMAP=0` before its
+`import algan` — the idiom every A/B script in `benchmarks/` uses to select an
+arm — was served by a daemon that gave it `False`, `12345` and `True`. Nothing
+warned, and nothing about the output would have looked wrong: an A/B run made
+that way silently measures the same arm twice.
+
+The fix is the startup check one layer out. `algan/environment.py` splits its
+runtime names into `_IMPORT_TIME_VARIABLES` and `_LIVE_VARIABLES`, and
+`describe_import_env_mismatch` refuses a run whose import-time values differ
+from the ones the daemon imported with, exactly as a startup mismatch is
+refused. Live variables are untouched, so flipping one *between two renders in
+one script* — which is what "changing environment variables mid-script" actually
+means — keeps working warm, and agrees with a cold run because in both cases the
+import has already happened.
+
+The classification is the load-bearing part, and it is not maintained by hand:
+`tests/unit_tests/test_environment.py` walks every `env_*` call in the package
+and fails if a name sits on the wrong side, because a wrong entry there is
+silent in exactly the way this gate exists to prevent. Two names are exempt by
+declaration (`ALGAN_DAEMON_PORT`, `ALGAN_DAEMON_TIMEOUT`): they configure the
+handoff that has already happened by the time they are compared.
+
+One consequence to know rather than to fix: auto-start inherits the spawning
+client's environment (§6.2), so a script with non-default toggles that does
+*not* set `ALGAN_USE_DAEMON=0` leaves behind a daemon only scripts setting the
+same toggles can use. The refusal says so, and says to stop it. The A/B scripts
+in `benchmarks/` opt out already, for the separate and older reason that a warm
+process carries the previous run's adaptive renderer state.
+
+**A warm daemon was also a full one.** The daemon reset its state at the *start*
+of the next run, so between runs it kept the finished render's scene alive, and
+with it every tensor on the animation device. Measured on a 4 GB GTX 1050 after
+a 90-frame render: 1348 MiB still allocated and 1500 MiB reserved while idle —
+39% of the card, held by a process doing nothing. It is what made a later `UHD`
+`save_frame` on this machine fail with `OutOfRenderMemory`.
+
+Dropping the scene is not enough on its own: the object graph is cyclic (mobs
+hold their children, the timeline holds every mob), so refcounting released
+almost none of it. `gc.collect()` did, in 0.08 s, and `torch.cuda.empty_cache()`
+returned the blocks to the driver in 0.04 s. So the reset moved to the end of a
+run — after the client is released, since it is the daemon's housekeeping and
+the script has nothing left to wait for — followed by
+`memory_utils.empty_cache(force_gc=True)`. Idle usage after the same render is
+now ~0.1 GB. Three warm renders with the release on measured 2.9 / 2.8 / 2.7 s
+against 2.7 / 2.9 / 2.9 s with `ALGAN_DAEMON_RELEASE_MEMORY=0`, so re-acquiring
+the blocks costs nothing worth measuring — which is what makes it a default
+rather than an option.

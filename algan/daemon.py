@@ -43,7 +43,9 @@ coalesce into at most one queued re-run):
 * ``--watch`` re-renders when the scene script or any of its sibling helper
   modules change on disk (polled; coalesced; never interrupts).
 
-Between runs the daemon restores a clean slate:
+When a run ends the daemon restores a clean slate, before it goes idle rather
+than at the start of the next run -- so what it holds while waiting is the warm
+process and nothing else:
 
 * ``SceneManager.reset()`` -- fresh scene, camera, light and timeline.
 * ``SETTINGS.snapshot()`` / ``SETTINGS.restore()`` resets every public
@@ -53,6 +55,12 @@ Between runs the daemon restores a clean slate:
   are evicted from ``sys.modules`` so the next run picks up their edits (the
   daemon prints what it evicted). Modules imported from elsewhere are NOT
   reloaded.
+* **The render's GPU memory goes back to the driver**: one ``gc.collect()``
+  (the scene's object graph is cyclic, so refcounting alone frees almost none
+  of it) and one ``torch.cuda.empty_cache()``. Measured on a 4 GB card, an
+  idle daemon holding 1.6 GB after a 90-frame render now holds ~0.1 GB, at a
+  cost of ~0.15 s and no measurable change to the next render.
+  ``ALGAN_DAEMON_RELEASE_MEMORY=0`` keeps the memory cached instead.
 
 **Edits to algan itself are handled, not merely warned about.** The daemon
 fingerprints every algan source file at startup and re-checks at every run
@@ -72,13 +80,24 @@ connected to ``os.devnull``, because the daemon's own stdin is its re-render
 trigger -- and ``atexit`` handlers do not run, because ``runpy`` does not run
 them and a warm process never shuts down.
 
-Two more limits that are specific to serving other processes:
+Three more limits that are specific to serving other processes:
 
 * **Startup-only settings cannot be adopted from a client.**
   ``ALGAN_RENDER_DEVICE`` and friends are read while Torch/Taichi initialise,
   i.e. when the *daemon* started. A script that sets one to a different value
   is refused with an explanation and runs cold in its own process, rather than
   being silently rendered on the wrong device.
+* **Neither can settings read while algan is imported.** The renderer's
+  toggles become module-level defaults during ``import algan``, which in a
+  daemon happened at *its* launch -- so a script that sets one before its own
+  ``import algan``, the way every A/B script in ``benchmarks/`` selects an
+  arm, would otherwise be served by a process that never saw it and would
+  render with the daemon's values instead. Those are refused too
+  (:func:`algan.daemon_client.describe_import_env_mismatch`); the swapped-in
+  environment covers every variable read live, so flipping one *during* a run
+  works here exactly as it does cold. The corollary is that a daemon started
+  by a script with non-default toggles serves only scripts that set the same
+  ones: stop it if you want one baked with the defaults.
 * **Anything that can reach 127.0.0.1 can ask the daemon to execute a path.**
   Requests must carry the token from the state file, which lives in the user's
   home directory (mode 0600 where the platform honours it). Do not forward the
@@ -117,12 +136,20 @@ os.environ["ALGAN_DAEMON_CHILD"] = "1"
 import algan  # noqa: E402, F401  (the whole point: pay the import once, up front)
 from algan import SceneManager
 from algan import daemon_client as _dc
-from algan.environment import env_int
+from algan.environment import env_flag, env_int
 from algan.settings import SETTINGS
 from algan.settings.path_settings import output_filename_for, output_root_for
+from algan.utils.memory_utils import empty_cache
 
 DEFAULT_PORT = env_int("ALGAN_DAEMON_PORT", 46711)
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
+
+# The environment algan was imported with, captured immediately after that
+# import and never touched again. A run swaps ``os.environ`` for the client's
+# (see :func:`_run_context`), so this is the only record of the values that
+# were live at the moment the import-time settings read them -- which is what
+# :func:`_dc.describe_import_env_mismatch` compares a client against.
+_IMPORT_ENVIRON = dict(os.environ)
 
 
 def _capture_console():
@@ -167,6 +194,55 @@ def _is_under(path, root):
         return os.path.commonpath([path, root]) == root
     except ValueError:  # different drives on Windows
         return False
+
+
+def _torch_reserved_bytes():
+    """VRAM torch holds from the driver, or ``None`` when there is no CUDA."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_reserved())
+    except Exception:  # noqa: BLE001 -- a memory report must never fail a run
+        return None
+
+
+def _release_run_memory():
+    """Hand a finished run's GPU memory back to the driver.
+
+    A daemon exists to stay warm, not to stay *full*: between runs none of the
+    render's memory is wanted, and on a small card an idle daemon holding it is
+    what makes the next real render -- or anything else on the GPU -- run out.
+    Measured on a 4 GB GTX 1050 after a 90-frame render: 1348 MiB still
+    allocated and 1500 MiB reserved while idle, released in 0.12 s.
+
+    Two steps, and both are needed. The scene's object graph is cyclic (mobs
+    hold their children, the timeline holds every mob), so dropping the
+    daemon's reference to it frees almost nothing by refcount alone --
+    ``gc.collect()`` is what actually releases the tensors. They then sit in
+    torch's caching allocator, visible to the next run but not to any other
+    process, until ``torch.cuda.empty_cache()`` returns the blocks to the
+    driver. :func:`algan.utils.memory_utils.empty_cache` does both.
+
+    The cost is paid by the *next* run, which re-acquires its blocks from the
+    driver instead of from the cache; that is a few milliseconds against a
+    render. ``ALGAN_DAEMON_RELEASE_MEMORY=0`` keeps the memory instead.
+    """
+    if not env_flag("ALGAN_DAEMON_RELEASE_MEMORY", True):
+        return
+    before = _torch_reserved_bytes()
+    started = time.perf_counter()
+    empty_cache(force_gc=True)
+    after = _torch_reserved_bytes()
+    if before is None or after is None:
+        return
+    freed = before - after
+    if freed >= (64 << 20):
+        _say(
+            f"released {freed / 2**20:.0f} MiB of GPU memory in "
+            f"{time.perf_counter() - started:.2f} s"
+        )
 
 
 class _SettingsSnapshot:
@@ -626,6 +702,19 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             _refuse(self.wfile, _stale_message(changed))
             self.server.events.put(("quit", "algan sources changed"))
             return
+        # Settings this daemon baked in when it imported algan. Unlike a
+        # startup-variable mismatch, one here is invisible in the output --
+        # the script simply renders with the daemon's toggles instead of its
+        # own -- which is why it is refused rather than warned about. It comes
+        # after the staleness gate so that a stale daemon still shuts down for
+        # the next client instead of merely refusing this one.
+        import_mismatch = _dc.describe_import_env_mismatch(
+            request.get("env_full") or {}, _IMPORT_ENVIRON
+        )
+        if import_mismatch is not None:
+            _say("refused a run: " + import_mismatch.splitlines()[0])
+            _refuse(self.wfile, import_mismatch)
+            return
 
         job = _RunJob(request, self.wfile)
         depth = self.server.events.qsize()
@@ -897,6 +986,12 @@ def main(argv=None):
     script_dirs = set()
     last = {"script": script, "args": list(args.script_args), "cwd": os.getcwd()}
 
+    # Whether the daemon's state is fresh enough to run into. Set False for
+    # the duration of a run and True again by ``release_after_run``; a release
+    # that failed leaves it False so the next run resets before it starts
+    # rather than inheriting whatever the failure left behind.
+    clean = {"state": True}
+
     def reset_state():
         evicted = sorted({n for d in script_dirs for n in _user_modules(d)})
         for name in evicted:
@@ -906,12 +1001,30 @@ def main(argv=None):
         snapshot.restore()
         SceneManager.reset()
 
+    def release_after_run():
+        """Reset for the next run *now*, and give its memory back.
+
+        The reset used to happen at the start of the following run, which left
+        the finished run's scene -- and every tensor it holds -- resident for
+        however long the daemon sat idle. Doing it on the way out costs the
+        same and means an idle daemon holds nothing but the warm process it
+        exists to be.
+        """
+        try:
+            reset_state()
+            _release_run_memory()
+            clean["state"] = True
+        except BaseException:  # noqa: BLE001 -- tidying must not kill the daemon
+            traceback.print_exc()
+            clean["state"] = False
+
     def execute(path, script_args, cwd, reason):
         """Run one script to completion. Returns its exit code."""
         nonlocal run_count
         run_count += 1
-        if run_count > 1:
+        if not clean["state"]:
             reset_state()
+        clean["state"] = False
         # Point the output defaults at *this* script. They are resolved once,
         # when the settings are constructed -- which in a daemon is its own
         # startup, with no user script in sight -- so without this every
@@ -994,6 +1107,7 @@ def main(argv=None):
                 execute(target, last["args"], last["cwd"], reason)
         finally:
             busy.clear()
+            release_after_run()
 
     def do_job(job):
         busy.set()
@@ -1007,7 +1121,10 @@ def main(argv=None):
             traceback.print_exc()
         finally:
             busy.clear()
+            # Release the client first: the tidy-up below is the daemon's own
+            # housekeeping and the script has nothing left to wait for.
             job.finish(code)
+            release_after_run()
 
     if script is not None and not args.no_initial_render:
         do_local("startup")

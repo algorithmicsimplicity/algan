@@ -176,3 +176,60 @@ def test_stdin_is_isolated_from_the_trigger():
     for job in (_FakeJob(), None):
         with d._run_context(job):
             assert sys.stdin.read() == ""
+
+
+# --------------------------------------------------------------------------
+# What the daemon hands back when a run ends
+# --------------------------------------------------------------------------
+
+
+def test_a_finished_run_returns_its_memory(monkeypatch):
+    """A warm process is the point; a full one is not.
+
+    A render's tensors survive the run -- the scene's object graph is cyclic,
+    so nothing frees by refcount -- and torch keeps the blocks it allocated
+    them from. An idle daemon was holding both, which on a small card is what
+    makes the *next* render run out of memory.
+    """
+    calls = []
+    monkeypatch.setattr(d, "empty_cache", lambda force_gc: calls.append(force_gc))
+    d._release_run_memory()
+    assert calls == [True], "the collection is what actually frees the tensors"
+
+
+def test_the_release_can_be_turned_off(monkeypatch):
+    calls = []
+    monkeypatch.setattr(d, "empty_cache", lambda force_gc: calls.append(force_gc))
+    monkeypatch.setenv("ALGAN_DAEMON_RELEASE_MEMORY", "0")
+    d._release_run_memory()
+    assert calls == []
+
+
+def test_a_worthwhile_release_is_reported(monkeypatch):
+    said = []
+    monkeypatch.setattr(d, "empty_cache", lambda force_gc: None)
+    monkeypatch.setattr(d, "_say", said.append)
+    reserved = iter([2 << 30, 8 << 20])
+    monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: next(reserved))
+    d._release_run_memory()
+    assert said
+    assert "released" in said[0]
+    assert "MiB" in said[0]
+
+
+def test_a_release_that_frees_nothing_is_quiet(monkeypatch):
+    said = []
+    monkeypatch.setattr(d, "empty_cache", lambda force_gc: None)
+    monkeypatch.setattr(d, "_say", said.append)
+    monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: 8 << 20)
+    d._release_run_memory()
+    assert said == []
+
+
+def test_the_report_is_skipped_without_cuda(monkeypatch):
+    said = []
+    monkeypatch.setattr(d, "empty_cache", lambda force_gc: None)
+    monkeypatch.setattr(d, "_say", said.append)
+    monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: None)
+    d._release_run_memory()
+    assert said == []

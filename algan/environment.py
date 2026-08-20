@@ -56,73 +56,60 @@ _HARNESS_VARIABLES = (
     "ALGAN_UPDATE_FULL_RENDER_BASELINES",
 )
 
-#: Everything else: read at import of the module that owns the knob, or live
-#: at the point of use. Alphabetical.
-_RUNTIME_VARIABLES = (
-    "ALGAN_AA_DUMP",
-    "ALGAN_ADV_OPT",
+#: Variables whose value is consumed while the module that owns them is
+#: imported, becoming a module-level default. Setting one *after*
+#: ``import algan`` therefore does nothing, and a warm process cannot adopt
+#: a client's differing value either: the render daemon refuses such a run
+#: so it executes in a fresh process that reads it (see
+#: :func:`algan.daemon_client.describe_import_env_mismatch`).
+#: ``tests/unit_tests/test_environment.py`` checks this split against where
+#: the code actually reads each name, so a knob that moves between the two
+#: fails a test rather than silently rendering with the wrong value.
+#: Alphabetical.
+_IMPORT_TIME_VARIABLES = (
     "ALGAN_ANALYTIC_AA",
     "ALGAN_ANALYTIC_AA_BEZ",
     "ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH",
     "ALGAN_ANALYTIC_AA_BEZ_WEDGE",
     "ALGAN_ANALYTIC_AA_CHORD_TOLERANCE",
     "ALGAN_ANALYTIC_AA_EXACT",
+    "ALGAN_ANALYTIC_AA_ONE_MESH",
+    "ALGAN_ANALYTIC_AA_RUN",
+    "ALGAN_ANALYTIC_AA_RUN_FULL",
+    "ALGAN_ANALYTIC_AA_RUN_RULE",
     "ALGAN_ANALYTIC_AA_SEAM",
     "ALGAN_ANALYTIC_AA_SECONDARY",
     "ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY",
-    "ALGAN_ANALYTIC_AA_RUN",
-    "ALGAN_ANALYTIC_AA_ONE_MESH",
-    "ALGAN_ANALYTIC_AA_RUN_FULL",
-    "ALGAN_ANALYTIC_AA_RUN_RULE",
     "ALGAN_ANALYTIC_AA_SLIVER",
     "ALGAN_ANALYTIC_AA_TRI",
-    "ALGAN_AUTO_DAEMON",
-    "ALGAN_BATCH_BEZIER_PREP",
-    "ALGAN_BATCH_SURFACE_PREP",
     "ALGAN_BEZ_BVH_SPLIT",
-    "ALGAN_BLOOM_FFT_SMOOTH",
     "ALGAN_BVH_ARITY",
     "ALGAN_BVH_BLOCK_F16",
     "ALGAN_BVH_BUILD",
     "ALGAN_BVH_DEFER",
     "ALGAN_BVH_REFIT",
-    "ALGAN_DAEMON_CHILD",
-    "ALGAN_DAEMON_IDLE_TIMEOUT",
-    "ALGAN_DAEMON_LOG_MAX_BYTES",
     "ALGAN_DAEMON_PORT",
-    "ALGAN_DAEMON_START_TIMEOUT",
     "ALGAN_DAEMON_TIMEOUT",
     "ALGAN_FRAG_PID_GATE",
     "ALGAN_GLOSSY_INTERLEAVE",
     "ALGAN_GLOSSY_REFLECTION",
-    "ALGAN_GPU_MAX_REG",
     "ALGAN_HYBRID_RASTER",
     "ALGAN_INPLACE_AA",
     "ALGAN_KBUF",
     "ALGAN_LOG_LEVEL",
-    "ALGAN_LOG_TAICHI_COMPILES",
-    "ALGAN_MANIM_SVG_CACHE_MB",
     "ALGAN_MAX_SHADOW_LIGHTS",
     "ALGAN_MERGE_DEDUP_TIME",
-    "ALGAN_MESH_ID",
     "ALGAN_MERGE_GPU_PEAK_FACTOR",
     "ALGAN_MERGE_ON_GPU",
     "ALGAN_MERGE_TRACK_PEAK",
+    "ALGAN_MESH_ID",
     "ALGAN_OPAQUE_BVH_SKIP_DEAD",
-    "ALGAN_OPT_DISABLE",
-    "ALGAN_OPT_LEVEL",
     "ALGAN_PN_ANISOTROPIC_DICE",
     "ALGAN_PN_CRITERION_KERNEL",
     "ALGAN_PN_GEOMETRY_SLACK",
     "ALGAN_POLYHEDRON_WINDING",
     "ALGAN_POST_PROCESS_TONEMAP",
     "ALGAN_POST_TONEMAP_KERNEL",
-    "ALGAN_PREFETCH_BATCHES",
-    "ALGAN_PREFETCH_MERGE",
-    "ALGAN_PROFILE_CPROFILE",
-    "ALGAN_PROFILE_NVPROF",
-    "ALGAN_PROFILE_RUNS",
-    "ALGAN_PROFILE_TELEMETRY",
     "ALGAN_PROGRESS",
     "ALGAN_PROJECT_GPU_PEAK_FACTOR",
     "ALGAN_PROJECT_ON_GPU",
@@ -135,22 +122,15 @@ _RUNTIME_VARIABLES = (
     "ALGAN_RASTER_SS",
     "ALGAN_RASTER_STRADDLE_CLIP",
     "ALGAN_RASTER_TRI_PRECOMPUTE",
-    "ALGAN_REUSE_FETCHED_BATCH",
     "ALGAN_SHADOW_ANYHIT",
     "ALGAN_SHEET_RESOLVE",
     "ALGAN_SHEET_SHADE_SPLIT",
-    "ALGAN_SLICE_ACROSS_SPAWNS",
     "ALGAN_SPARSE_DISCOVERY_SAFETY",
     "ALGAN_SPLIT_TIME_WEIGHT",
     "ALGAN_STBVH_LEAF_SIZE",
     "ALGAN_STBVH_TIGHTNESS",
-    "ALGAN_TAICHI_COMPILE_LOG",
-    "ALGAN_TAICHI_FAST_LAUNCH_VERIFY",
-    "ALGAN_TAICHI_WARMSTART_VERIFY",
-    "ALGAN_TI_KERNEL_PROFILER",
-    "ALGAN_UNDER_NVPROF",
     "ALGAN_UNSUPPORTED_FEATURE_POLICY",
-    "ALGAN_USE_DAEMON",
+    "ALGAN_WATERTIGHT_TRI",
     "ALGAN_WAVEFRONT_INITIAL_POOL_RATIO",
     "ALGAN_WAVEFRONT_SPLIT",
     "ALGAN_WAVEFRONT_TILE",
@@ -158,6 +138,7 @@ _RUNTIME_VARIABLES = (
     "ALGAN_WAVEFRONT_TILE_MAX",
     "ALGAN_WAVEFRONT_TILE_MIN",
     "ALGAN_WAVEFRONT_TILE_SAFETY",
+    "ALGAN_WELD_SURFACE_SEAMS",
     "ALGAN_WF_COMPACT_ACTIVE_ONLY",
     "ALGAN_WF_GEN_FUSED",
     "ALGAN_WF_GEN_FUSED_GAIN",
@@ -168,10 +149,49 @@ _RUNTIME_VARIABLES = (
     "ALGAN_WF_OPAQUE_PREPASS",
     "ALGAN_WF_REVALIDATE_PENDING",
     "ALGAN_WF_SKIP_UNLIT_NORMAL",
-    "ALGAN_WATERTIGHT_TRI",
-    "ALGAN_WELD_SURFACE_SEAMS",
     "ALGAN_WF_TEXTURED_FEATURES",
 )
+
+#: Variables read live, at the point of use. A script may set one at any
+#: time -- including between two renders in one process, which is how an
+#: A/B script flips arms -- and the next read sees the new value, on the
+#: daemon exactly as in its own process. Alphabetical.
+_LIVE_VARIABLES = (
+    "ALGAN_AA_DUMP",
+    "ALGAN_ADV_OPT",
+    "ALGAN_AUTO_DAEMON",
+    "ALGAN_BATCH_BEZIER_PREP",
+    "ALGAN_BATCH_SURFACE_PREP",
+    "ALGAN_BLOOM_FFT_SMOOTH",
+    "ALGAN_DAEMON_CHILD",
+    "ALGAN_DAEMON_IDLE_TIMEOUT",
+    "ALGAN_DAEMON_LOG_MAX_BYTES",
+    "ALGAN_DAEMON_RELEASE_MEMORY",
+    "ALGAN_DAEMON_START_TIMEOUT",
+    "ALGAN_GPU_MAX_REG",
+    "ALGAN_LOG_TAICHI_COMPILES",
+    "ALGAN_MANIM_SVG_CACHE_MB",
+    "ALGAN_OPT_DISABLE",
+    "ALGAN_OPT_LEVEL",
+    "ALGAN_PREFETCH_BATCHES",
+    "ALGAN_PREFETCH_MERGE",
+    "ALGAN_PROFILE_CPROFILE",
+    "ALGAN_PROFILE_NVPROF",
+    "ALGAN_PROFILE_RUNS",
+    "ALGAN_PROFILE_TELEMETRY",
+    "ALGAN_REUSE_FETCHED_BATCH",
+    "ALGAN_SLICE_ACROSS_SPAWNS",
+    "ALGAN_TAICHI_COMPILE_LOG",
+    "ALGAN_TAICHI_FAST_LAUNCH_VERIFY",
+    "ALGAN_TAICHI_WARMSTART_VERIFY",
+    "ALGAN_TI_KERNEL_PROFILER",
+    "ALGAN_UNDER_NVPROF",
+    "ALGAN_USE_DAEMON",
+)
+
+#: Everything that is not startup-only, in the one tuple the declaration
+#: check consults.
+_RUNTIME_VARIABLES = _IMPORT_TIME_VARIABLES + _LIVE_VARIABLES
 
 #: Every declared name, including the one variable Algan honors that is not
 #: its own (Taichi's ``TI_OFFLINE_CACHE_FILE_PATH``).
@@ -191,6 +211,15 @@ _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 def startup_environment_variables() -> tuple[str, ...]:
     """The variables consumed while Torch and Taichi initialise, in report order."""
     return _STARTUP_VARIABLES
+
+
+def import_time_environment_variables() -> tuple[str, ...]:
+    """The variables whose value is baked in when their module is imported.
+
+    Setting one of these after ``import algan`` has no effect; a warm process
+    that imported algan with different values cannot adopt them.
+    """
+    return _IMPORT_TIME_VARIABLES
 
 
 def _require_declared(name: str) -> None:
@@ -323,6 +352,7 @@ __all__ = [
     "env_is_set",
     "env_overrides",
     "env_str",
+    "import_time_environment_variables",
     "startup_environment_variables",
     "unknown_algan_environment_variables",
     "warn_for_unknown_algan_environment_variables",

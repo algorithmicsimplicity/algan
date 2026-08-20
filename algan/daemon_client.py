@@ -42,6 +42,16 @@ and the exit code. What it deliberately does not: ``stdin`` (connected to
 ``os.devnull``; the daemon's own stdin is its re-render trigger) and ``atexit``
 handlers (``runpy`` does not run them, and a warm process never shuts down).
 
+Shipping the environment is not enough for the variables algan reads *while it
+is imported* -- the renderer's toggles, which a script sets before its own
+``import algan``, and which in a daemon were read at its launch. A warm process
+cannot adopt those any more than it can a startup one, and unlike a startup one
+nothing about the run would look wrong: it would simply render with the
+daemon's toggles. Those differences are refused as well, so the script runs
+cold and reads its own values (:func:`describe_import_env_mismatch`). Variables
+read live are unaffected -- setting one between two renders in a script works
+warm exactly as it does cold.
+
 Nothing heavier than the standard library and :mod:`algan.environment` (which
 is itself stdlib-only, and already imported by the time this module loads) may
 be imported here, and the module must stay that way: it runs before
@@ -64,6 +74,7 @@ from algan.environment import (
     env_float,
     env_int,
     env_str,
+    import_time_environment_variables,
     startup_environment_variables,
 )
 
@@ -94,6 +105,22 @@ FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 #: alongside every other variable Algan honors; see also the
 #: "Initialization-only settings" section of ``CLAUDE.md``.
 STARTUP_ENV = startup_environment_variables()
+
+#: Environment variables algan consumes while it is *imported*, which in a
+#: daemon happened at its launch. Their values are already module-level
+#: defaults by the time a client's script starts, so a warm process cannot
+#: adopt a client's differing value any more than it can a startup one -- and
+#: unlike a startup variable, nothing about the run would look wrong: the
+#: script would simply render with the daemon's toggles instead of its own.
+#: A difference is therefore refused too, and the run executes in a fresh
+#: process that reads the client's values (:func:`describe_import_env_mismatch`).
+IMPORT_TIME_ENV = import_time_environment_variables()
+
+#: The import-time variables a difference in is not worth refusing over. These
+#: two configure the client/daemon transport rather than anything the script
+#: renders, and by the time the daemon compares them the handoff they govern
+#: has already happened.
+IMPORT_TIME_ENV_EXEMPT = frozenset({"ALGAN_DAEMON_PORT", "ALGAN_DAEMON_TIMEOUT"})
 
 
 class DaemonUnavailable(Exception):
@@ -154,6 +181,37 @@ def describe_env_mismatch(client_env, daemon_env):
         + "\nThese are read while Torch/Taichi initialise, so the daemon "
         "cannot adopt them. Restart the daemon with these values, or set "
         "ALGAN_USE_DAEMON=0 for this script."
+    )
+
+
+def describe_import_env_mismatch(client_env, daemon_env):
+    """Report import-time env differences, or ``None`` if there are none.
+
+    ``daemon_env`` is the environment the daemon process was *launched* with,
+    not the one it is running the script under: these variables were read into
+    module-level defaults while algan was importing, so that launch is the only
+    moment their values mattered. A script that sets one before ``import
+    algan`` -- which is how every A/B script in ``benchmarks/`` selects an arm
+    -- would otherwise be served by a process that never saw it.
+    """
+    diffs = [
+        f"  {name}: this script wants {client_env.get(name, '') or '<unset>'!r}, "
+        f"the daemon imported algan with {daemon_env.get(name, '') or '<unset>'!r}"
+        for name in IMPORT_TIME_ENV
+        if name not in IMPORT_TIME_ENV_EXEMPT
+        and client_env.get(name, "") != daemon_env.get(name, "")
+    ]
+    if not diffs:
+        return None
+    return (
+        "settings read at import time differ from the running daemon's:\n"
+        + "\n".join(diffs)
+        + "\nThe daemon imported algan before this script chose them, so it "
+        "would render with its own values; this run will execute in a fresh "
+        "process instead. To choose them from inside a run -- which works warm "
+        "or cold -- use SETTINGS, or a set_* in "
+        "algan.rendering.raytracing.settings. To have the daemon itself adopt "
+        "them, stop it (see algan/daemon.py) and let the next run start one."
     )
 
 
@@ -353,7 +411,9 @@ def _spawn_daemon():
     env.pop("ALGAN_DAEMON_CHILD", None)
     kwargs = {}
     if sys.platform == "win32":
-        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
     else:
         kwargs["start_new_session"] = True
     try:
