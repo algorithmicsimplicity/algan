@@ -390,7 +390,20 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     candidates come from every 2D cell touched by the radius query square.
     Both candidate sets are conservative; the original exact predicates are
     still evaluated here, so the acceleration changes only the number of edges
-    inspected.
+    inspected. For the border query the exact predicate is the RADIUS ITSELF:
+    a grid cell is coarser than the query square (a glyph's cell is a pixel or
+    two across), so it hands back segments several pixels away, and a candidate
+    is only a result when its own distance is inside ``query_radius``. Without
+    that test ``min_dist_sq`` reported the nearest segment in the NEIGHBOURHOOD
+    rather than the nearest within reach, which the oriented wedge in
+    :func:`_bez_pixel_hit` then modelled as the local boundary: a pixel in a
+    glyph's empty interior notch -- the gap between the arms of an ``A`` -- sat
+    on the drawn side of both long diagonals' extended LINES and was painted at
+    full coverage, a lone opaque speck in the middle of nothing. The plain
+    half-plane path is unaffected either way: ``query_radius`` is the widest
+    distance the coverage filter can still read (the drawn width plus half a
+    pixel's diagonal), so every candidate this drops was already resolving to a
+    flat 0 or 1, which is what the ``1e30`` sentinel gives.
 
     ``(ccu, ccv)`` is the vector from the query point to the closest point on
     the nearest segment -- the closest-point vector this already forms to get
@@ -450,6 +463,8 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
             and (u - query_radius <= max_u)
             and (v + query_radius >= min_v)
             and (v - query_radius <= max_v)):
+        # The cell walk below is a superset filter; this is the exact one.
+        radius_sq = query_radius * query_radius
         grid_inv_u = ti.bit_cast(
             edge_accel[header + BEZIER_GRID_INV_U], ti.f32)
         grid_inv_v = ti.bit_cast(
@@ -487,26 +502,27 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                     cx = x0 + seg_t * dx - u
                     cy = y0 + seg_t * dy - v
                     dsq = cx * cx + cy * cy
-                    if dsq < min_dist_sq:
-                        sec_dist_sq = min_dist_sq
-                        scu = ccu
-                        scv = ccv
-                        e2x = e1x
-                        e2y = e1y
-                        sg2 = sg1
-                        min_dist_sq = dsq
-                        ccu = cx
-                        ccv = cy
-                        e1x = dx
-                        e1y = dy
-                        sg1 = edges_2d[te, e, 5]
-                    elif dsq < sec_dist_sq:
-                        sec_dist_sq = dsq
-                        scu = cx
-                        scv = cy
-                        e2x = dx
-                        e2y = dy
-                        sg2 = edges_2d[te, e, 5]
+                    if dsq < radius_sq:
+                        if dsq < min_dist_sq:
+                            sec_dist_sq = min_dist_sq
+                            scu = ccu
+                            scv = ccv
+                            e2x = e1x
+                            e2y = e1y
+                            sg2 = sg1
+                            min_dist_sq = dsq
+                            ccu = cx
+                            ccv = cy
+                            e1x = dx
+                            e1y = dy
+                            sg1 = edges_2d[te, e, 5]
+                        elif dsq < sec_dist_sq:
+                            sec_dist_sq = dsq
+                            scu = cx
+                            scv = cy
+                            e2x = dx
+                            e2y = dy
+                            sg2 = edges_2d[te, e, 5]
 
     return (crossings, min_dist_sq, ccu, ccv, e1x, e1y, sg1,
             sec_dist_sq, scu, scv, e2x, e2y, sg2)

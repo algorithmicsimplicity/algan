@@ -550,6 +550,49 @@ In order, because the first item inverts the sign of everything after it:
      ss19 matrix unchanged-or-better, with the usual hash proof that
      wedge-off is byte-identical.
 
+5.6 The wedge needs a REACH, and the accelerator never enforced one
+-------------------------------------------------------------------
+Fixed 2026-08-21. §5.3's third bullet promised "the trivial-containment
+short-circuit BEFORE any wedge math (an unrelated far segment's apex sits tens
+of pixels away)". Nothing upstream delivered it, and it could not: the walls
+the wedge reads are whatever `_bezier_point_metrics` calls nearest, and that
+function returned the nearest segment in the QUERIED CELLS rather than the
+nearest within `query_radius`. The spatial grid is a superset filter — a
+circuit's cell is a pixel or two across and a long chord is registered in every
+cell its AABB touches — so the two "walls" handed to the wedge could be four or
+five pixels away, on opposite sides of an empty region.
+
+Two half-planes have no notion of where their segments END, so a pixel sitting
+between the EXTENDED lines of a glyph's two long diagonals reads as deeply
+inside both: `sd1 = sd2 = +5px`, `a1 = a2 = 1`, coverage 1.0. That is a fully
+opaque speck in the empty notch between the arms of an `A`, and there was one
+under a legend `A` in every one of the six full-render scenes (measured, worst
+frame per scene: 183–200 channel values, 0.2–5.3 pixels per frame). Parity says
+"outside" at those pixels and always did; the wedge simply does not consult it
+except in the ∩/∪ arbitration, which cannot help when both forms agree.
+
+The fix is the missing exact predicate, in `_bezier_point_metrics` where the
+conservative candidate set is consumed: a candidate only updates
+`min_dist_sq`/`sec_dist_sq` when `dsq < query_radius²`. This restores the
+contract both that function and `_bez_pixel_hit` already documented ("Zero when
+no edge is within the query radius" / "left at 1e30 ... reads as deep inside /
+far outside"), and it is the RIGHT place: `query_radius` is by construction the
+widest distance the coverage filter can still read — the drawn width plus
+`_AA_FILTER_RADIUS` (half a pixel's diagonal) — so every candidate it drops was
+already resolving to a flat 0 or 1 on the plain half-plane path, which is what
+the sentinel gives. The three megakernel call sites take
+`_circuit_query_radius` alone and use `min_dist_sq` only through
+`_circuit_point_region`, whose two thresholds are both ≤ that radius; they are
+untouched.
+
+The general lesson, and it generalises past this function: an acceleration
+structure's candidate set is conservative BY CONTRACT, so the exact predicate
+has to run on what it returns. Here the exact predicate is not a fancier
+distance — it is the radius the query was issued with. The plain half-plane
+path had hidden the omission for as long as it shipped, because a wrong-but-far
+distance still clamps to the right answer; the wedge is a LOCAL model and reads
+the same numbers as geometry.
+
 
 ================================================================================
 6. SETTINGS, TEMPLATES, CACHE DISCIPLINE

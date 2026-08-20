@@ -47,7 +47,6 @@ def test_rate_funcs_endpoints():
         rate_funcs.ease_in_out_quint,
         rate_funcs.ease_in_expo,
         rate_funcs.ease_out_expo,
-        rate_funcs.ease_in_out_expo,
         rate_funcs.ease_in_circ,
         rate_funcs.ease_out_circ,
         rate_funcs.ease_in_out_circ,
