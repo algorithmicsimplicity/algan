@@ -32,7 +32,7 @@ This inverts the usual relationship between animation and timing. Ordinarily you
 say how long an animation takes; inside an ``Audio`` or ``Speech`` context the
 *sound* sets the duration and the animations inside are fitted to it, exactly as a
 ``run_time`` would (see
-:doc:`../new_user_tutorials/controlling_animations`). That is what makes narrated
+:doc:`../new_user_tutorials/combining_animations`). That is what makes narrated
 video practical to author: write the narration, and the visuals follow it.
 
 Both contexts take ``wait_at_end``, a number of extra seconds to hold after the
@@ -182,7 +182,7 @@ Practical notes
 See Also
 ========
 
-* :doc:`../new_user_tutorials/controlling_animations` -- the animation contexts
+* :doc:`../new_user_tutorials/combining_animations` -- the animation contexts
   ``Audio`` and ``Speech`` extend.
 * :doc:`../new_user_tutorials/text_and_math` -- putting on screen what the
   narration is saying.
