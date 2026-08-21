@@ -45,7 +45,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing.                                                                                          |
 | 9 | [The shadowed resolve runs the resolve kernel twice](#9-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan, and never separated out from "shadows are expensive". Measure before building.                                  |
 | 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted.                                                                                                |
-| 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; half shipped.                                                                                         |
+| 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; the host loops are shipped, the sorts stay. |
 | 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | Measured, not started.                                                                                                                        |
 | 13 | [`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path.                                                                                            |
 | 14 | [Delete the dead render paths](#14-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist.                                                                                    |
@@ -440,8 +440,8 @@ figure predates P8, which changed the denominator.
 
 ## 11. T5 — the sparse-discovery host chain
 
-**`DESIGN_optimization_targets.md` T5. Half shipped; the shipped half is the one
-that paid.**
+**`DESIGN_optimization_targets.md` T5. The host loops are done; only the sorts
+are left, and they should stay.**
 
 The compaction's per-sample-lane reductions are kernels now
 (`sheet_compact_taichi.py`, `SHEET_MASK_KERNEL` default on, bit-identical,
@@ -449,17 +449,25 @@ measured 1.25-1.33x on `compact_sheets`). The six-array gather T5 originally
 proposed is built and bit-identical too but ships **default off**: worth ~4 ms
 of a 1.3 s 4K frame against 50-160 MB of peak.
 
-What remains, in `sheets.compact_sheets`:
+**The conflict-rank scan is done** (2026-08-21). It was eight `torch.cumsum`
+passes over `[n]` plus a per-lane `index_select`, `maximum` and two `where`s,
+with five live `[n]` arrays; `sheet_compact_taichi.sheet_conflict_rank`
+(`SHEET_RANK_KERNEL`, default on) is one pass, a thread per band walking its
+fragments forward with the eight per-lane counters in registers. It closes the
+last of `DESIGN_sheet_resolve.md` §10.4, and it closes it by not needing what
+that section was asking about: the bands are already contiguous runs of the
+sorted stream, so no blocked segmented scan was required. Bit-identical **by
+construction** — both arms are integer and walk the stream in the same order —
+rather than by the order-independence argument the mask kernels beside it need.
+Measured on CPU only (this container): at 1080p, one call per frame over
+976,231 fragments, `_conflict_rank` 33 ms → 6 ms and `compact_sheets`
+480 ms → 458 ms. **CUDA is unmeasured**, which is the open item on it.
 
-* **The conflict-rank scan: eight `torch.cumsum` passes over `[n]`**, plus an
-  `index_select` and a `maximum` per lane. `DESIGN_sheet_resolve.md` §10.4 names
-  this as the genuine remaining scan. It is the natural next kernel — the mask
-  kernel beside it already proves the shape works.
-* **The sorts.** T5's own advice is to leave them alone: `_lexsort` is three
-  stable `argsort`s and there are two `torch.unique` calls after it. Radix sorts
-  at these sizes are not the bottleneck the scans are.
-
-Do the cumsum scan; leave the sorts.
+What remains is **the sorts**, and T5's own advice is to leave them alone:
+`_lexsort` is three stable `argsort`s and there are two `torch.unique` calls
+after it. Radix sorts at these sizes were never the bottleneck the scans were.
+Worth measuring instead, per T5: the per-fragment gathers in `_shade_class` and
+`_prim_split_after`.
 
 ---
 
@@ -857,9 +865,9 @@ below nine (now int32); `_shade_class`'s `[n, 3]` / `[n, 3, 3]` gathers are 42
 and 126 MB and were the function's allocation peak until each was freed the
 statement after its last read; `_exact_fragment_order`'s two permutations are
 56 MB each and are the discovery peak; the conflict-rank loop's five live `[n]`
-arrays cost 70 MB until they were narrowed to int32. All of that is already
-optimized once. What is left is the eight-pass `torch.cumsum` scan itself
-(item 11).
+arrays cost 70 MB until they were narrowed to int32, and cost nothing at all
+now that the kernel arm (item 11) keeps only its output. All of that is already
+optimized once.
 
 **3. The frame buffer, and the fallback's multiplier.** Under post-process
 tonemapping (the default) the frame buffer is **float32 rather than uint8** —

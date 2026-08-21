@@ -779,8 +779,46 @@ untouched by this design; revisit after Phase 4 on their own merits.
      but the remaining 1.6% run to eleven and ``sheet_cov`` feeds thresholds,
      for 0.2% of a frame.
 
-     What §10.4 still owns is the genuine SCAN: the conflict-rank
-     exclusive-prefix-sum per lane, still eight ``torch.cumsum`` passes.
+     **ANSWERED (2026-08-21) for the scan too, and the answer is that it
+     needed neither shape this question offered.** The conflict-rank
+     exclusive-prefix-sum per lane -- eight ``torch.cumsum`` passes plus a
+     per-lane ``index_select``, ``maximum`` and two ``where``s, five live
+     ``[n]`` arrays -- is ``sheet_compact_taichi.sheet_conflict_rank`` now
+     (``SHEET_RANK_KERNEL``, default on). No two-pass blocked scan and no
+     sort-order exploitation: the premise does not hold here, because the
+     bands are already CONTIGUOUS runs of the sorted stream and there is
+     nothing left to segment. One thread per band walks its own fragments
+     forward with the eight per-lane counters in registers, reading each
+     before that fragment's own increment -- which is the exclusive prefix --
+     and no lane's counter is touched by another band's walk.
+
+     Bit-identity here is by construction rather than by argument: both arms
+     are integer and visit the stream in the same order, so §2.2's fixed-tree
+     rule has nothing to bind. That is firmer footing than the mask
+     reductions above, which need the ``atomic_or``-return argument.
+
+     **What the shape assumes -- measured, not asserted.** The walk is serial
+     WITHIN a band, so load balance is bounded by the longest band. On a real
+     1920x1080 frame of the ``benchmarks/_sheet_kernel_ab.py`` scene (976,231
+     fragments) there are 877,047 bands: mean 1.11 fragments, median 1, p99 2,
+     **maximum 15**, 90.0% holding one and 9.2% two. A band cannot be long for
+     the same reason a sheet cannot -- it is the fragments of one surface, one
+     facing, in ONE pixel. A future band rule that produced a band holding a
+     large fraction of the stream would make this the wrong shape; the parity
+     harness covers that case for correctness (one band, whole stream) and
+     nothing covers it for speed.
+
+     Measured in a real render, on CPU (a 4-vCPU cloud container, so a CPU
+     number and nothing else -- CUDA is unmeasured): at 1920x1080 the scan is
+     one call per frame and goes **33 ms -> 6 ms**, taking ``compact_sheets``
+     from 480 ms to 458 ms. A note for whoever re-measures it: substituting a
+     ``torch.randperm`` for the real ``order`` reads 4.0x instead of 7.7x on
+     the same captured tensors, because the side that goes scattered is the
+     KERNEL's own ``msk[order[j]]`` gather (the real order's mean
+     ``|order[j+1] - order[j]|`` is 1.9). That is the mirror image of the
+     gather trap DESIGN_optimization_targets.md T5 records -- it understates
+     instead of inverting -- but a synthetic permutation still gets the
+     number wrong.
 10.5 Whether any material class measurably needs multi-sample sheet shading
      (§4.7) beyond the dominant fragment.
 

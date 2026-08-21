@@ -1,19 +1,23 @@
-"""A/B parity for the compaction kernels (RASTER_FUSED_GATHER, SHEET_MASK_KERNEL).
+"""A/B parity for the compaction kernels
+(RASTER_FUSED_GATHER, SHEET_MASK_KERNEL, SHEET_RANK_KERNEL).
 
 The kernels replace multi-pass torch loops with one pass, and all are meant to
 be BIT-IDENTICAL to the arm they replace: the gather copies bits, the mask
-reductions are integer, and the exact-area sum keeps the f64 accumulator the
+reductions are integer, the conflict-rank scan is an integer serial walk in
+the stream's own order, and the exact-area sum keeps the f64 accumulator the
 torch ``scatter_add_`` had -- that last one by measurement rather than by
 construction, since an f64 atomic add reassociates and only the f32 cast makes
 it agree. This checks two ways, because the two catch different mistakes:
 
 * **unit** -- the kernels against the exact torch expressions they replaced,
   on random inputs at a 4K frame's shapes, including the ones the render never
-  produces (empty bands, every-sample-shared bands, sliver flags, and 4096
-  addends in a single area sum), plus a repeat-run check on the area;
+  produces (empty bands, every-sample-shared bands, sliver flags, 4096
+  addends in a single area sum, a conflict-rank stream whose FIRST band flag
+  is clear -- compact_sheets never emits one, but the helper must agree with
+  its torch arm on any input), plus a repeat-run check on the area;
 * **end to end** -- four rendered frames of a scene carrying PN surfaces, flat
-  polyhedra, transparency, bezier circuits and text, hashed with both toggles
-  ON and both OFF.
+  polyhedra, transparency, bezier circuits and text, hashed with all three
+  toggles ON and all three OFF.
 
     <venv-python> benchmarks/_sheet_kernel_check.py
 """
@@ -159,8 +163,121 @@ mask_case(
     True,
 )
 
+# ------------------------------------------------------- unit: conflict rank
+print("\n_conflict_rank vs the eight-cumsum torch scan it replaced")
+
+
+def rank_case(label, band_start, order, msk, expect=None):
+    """Both arms of ``sheets._conflict_rank`` must agree EXACTLY; ``expect``
+    optionally pins the values themselves (the unclamped int32 ranks).
+    """
+    positions = torch.arange(int(msk.numel()), dtype=torch.int64, device=DEV)
+    EXPERIMENTAL.set(sheet_rank_kernel=False)
+    want = sheets._conflict_rank(band_start, order, msk, positions)
+    EXPERIMENTAL.set(sheet_rank_kernel=True)
+    got = sheets._conflict_rank(band_start, order, msk, positions)
+    ok = bits_equal(want, got) and want.dtype == torch.int32
+    if expect is not None:
+        ok = ok and bits_equal(want, expect.to(torch.int32))
+    check(f"{label} (n={msk.numel()}, max rank {int(want.max())})", ok)
+    return want
+
+
+rank_n = 3_661_824
+rank_msk = torch.randint(
+    0, 1 << (_AA_NUM_SAMPLES + 3), (rank_n,), generator=g, device=DEV, dtype=torch.int32
+)
+rank_order = torch.randperm(rank_n, generator=g, device=DEV)
+
+
+def band_starts(p, first):
+    bs = torch.rand(rank_n, generator=g, device=DEV) < p
+    bs[0] = first
+    return bs
+
+
+rank_case("4K shapes, sparse bands", band_starts(0.01, True), rank_order, rank_msk)
+rank_case("4K shapes, dense bands", band_starts(0.1, True), rank_order, rank_msk)
+
+# One band holding the whole stream, and its saturated twin: every fragment
+# claiming EVERY lane walks the unclamped ranks 0,1,2,... straight past the
+# caller's clamp_(max=15).
+rn = 100_000
+one_band = torch.zeros(rn, dtype=torch.bool, device=DEV)
+one_band[0] = True
+ids = torch.arange(rn, dtype=torch.int64, device=DEV)
+rand_msk = torch.randint(
+    0, 1 << _AA_NUM_SAMPLES, (rn,), generator=g, device=DEV, dtype=torch.int32
+)
+rank_case("one band, whole stream", one_band, ids, rand_msk)
+full_msk = torch.full((rn,), _AA_MASK_ALL, dtype=torch.int32, device=DEV)
+want = rank_case(
+    "saturated band, unclamped ranks 0..n-1",
+    one_band,
+    ids,
+    full_msk,
+    expect=torch.arange(rn, dtype=torch.int32, device=DEV),
+)
+check(
+    "saturated band clamps to exactly 15 at the caller",
+    int(want.clamp_(max=15)[-1]) == 15,
+)
+
+# Every fragment its own band: no earlier in-band fragments anywhere.
+own_band = torch.ones(rn, dtype=torch.bool, device=DEV)
+rank_case(
+    "every fragment its own band",
+    own_band,
+    ids,
+    rand_msk,
+    expect=torch.zeros(rn, dtype=torch.int32, device=DEV),
+)
+
+# Donors: empty sample words claim nothing, so their ranks are all 0.
+donor_starts = torch.rand(rn, generator=g, device=DEV) < 0.01
+donor_starts[0] = True
+rank_case(
+    "all-zero mask words (donors)",
+    donor_starts,
+    ids,
+    torch.zeros(rn, dtype=torch.int32, device=DEV),
+    expect=torch.zeros(rn, dtype=torch.int32, device=DEV),
+)
+
+# A shuffled emission->sorted permutation: exercises the kernel's in-kernel
+# gather msk[order[j]] against the torch arm's index_select.
+shuffled = torch.randperm(rn, generator=g, device=DEV)
+scattered = torch.rand(rn, generator=g, device=DEV) < 0.03
+scattered[0] = True
+rank_case("shuffled permutation", scattered, shuffled, rand_msk)
+
+rank_case(
+    "n == 1",
+    torch.ones(1, dtype=torch.bool, device=DEV),
+    torch.zeros(1, dtype=torch.int64, device=DEV),
+    torch.randint(
+        0, 1 << _AA_NUM_SAMPLES, (1,), generator=g, device=DEV, dtype=torch.int32
+    ),
+)
+
+# THE LEADING-RUN REGRESSION: a stream whose FIRST flag is clear.
+# compact_sheets never produces one (its new_group[0] is always set), but the
+# helper must agree with the torch arm on ANY input: the cummax gives a
+# leading run of clear flags band-first 0 -- one band starting at row 0 --
+# and the kernel must walk that band instead of leaving those rows unwritten.
+leading = torch.rand(rn, generator=g, device=DEV) < 0.03
+leading[:8] = False
+leading[0] = False
+want = rank_case("band_start[0] clear (leading run)", leading, ids, rand_msk)
+EXPERIMENTAL.set(sheet_rank_kernel=True)
+again = sheets._conflict_rank(leading, ids, rand_msk, ids)
+check(
+    "leading run: row 0 rank 0, kernel arm reproducible",
+    int(want[0]) == 0 and bits_equal(again, want),
+)
+
 # ------------------------------------------------------------- end to end
-print("\nrendered frames, both toggles ON vs both OFF")
+print("\nrendered frames, all three toggles ON vs all three OFF")
 SETTINGS.computing.set(available_memory_override=2 * GIGABYTES)
 sphere = Sphere().scale(1.4).move(LEFT * 3).set_color(GREEN).spawn()
 cube = Cube().scale(1.1).move(RIGHT * 3).set_color(BLUE).spawn()
@@ -185,9 +302,13 @@ def render_hashes(arm):
     return out
 
 
-EXPERIMENTAL.set(raster_fused_gather=False, sheet_mask_kernel=False)
+EXPERIMENTAL.set(
+    raster_fused_gather=False, sheet_mask_kernel=False, sheet_rank_kernel=False
+)
 torch_arm = render_hashes("torch")
-EXPERIMENTAL.set(raster_fused_gather=True, sheet_mask_kernel=True)
+EXPERIMENTAL.set(
+    raster_fused_gather=True, sheet_mask_kernel=True, sheet_rank_kernel=True
+)
 kernel_arm = render_hashes("kernel")
 for i, (a, b) in enumerate(zip(torch_arm, kernel_arm)):
     check(f"frame {i}  {a[:16]}", a == b)
