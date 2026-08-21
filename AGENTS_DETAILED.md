@@ -211,6 +211,8 @@ scene.save_frame(file_path=None, video_settings=None, at=None, *,
 
 Both return a `RenderResult` (`status`, `output_path`, `duration_seconds`, `render_plan`). `save_frame` returns a list of them only when `at` is a sequence.
 
+`render_plan` is the last batch's `RenderPlan`, also left on `scene.last_render_plan`: which renderer ran, what it could not honor, and `truncations` — a `TruncationCounts` of how often each of the render path's four fixed ceilings bound (`algan/rendering/raytracing/truncation.py`). Those counters are unconditional and render-job-scoped, so a zero is a reading rather than a missing instrument, and each ceiling warns **once per render** at `WARNING` — not `PERF`, which is for the budget events (batch splits, pool retries) that are the memory model working as designed. A truncation moves the image.
+
 ### Output-path resolution
 
 Both still and video output use the same resolver, `_resolve_output_destination`:
@@ -431,7 +433,12 @@ Practical rules:
   silently dropped: a continuation that does not fit raises the pool's overflow
   flag, and the host discards and retries the tile with fewer primaries
   (deterministically — verified by starving the pool to force 13 retries, which
-  changed nothing). Suspect the change under test instead.
+  changed nothing). Suspect the change under test instead. That "never" is now
+  instrumented rather than asserted: the host reads the flag on *every* tile,
+  including the split-free ones at `pool_ratio == 1` that used to short-circuit
+  past it, and counts any reservation past the capacity as
+  `RenderPlan.truncations.dropped_continuations` — which reads zero on the
+  shipped renderer and is there to catch the change that makes it stop.
 - The fix, if byte-identical A/B on reflective scenes is ever needed, is to
   accumulate in fixed point: integer atomic add *is* associative and
   commutative, so the sum stops depending on arrival order. That trades a scale

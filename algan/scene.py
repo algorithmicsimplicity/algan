@@ -1069,8 +1069,18 @@ class Scene(RenderLoopMixin):
                         continue
                     started = time.perf_counter()
                     self._render_still(target, time_stamp, post_processes)
+                    # The same plan ``save_video`` reports, and for the same
+                    # reason: it is how a script reads back which renderer ran,
+                    # what it could not honor, and what it truncated. The field
+                    # was documented on ``RenderResult`` from the start but only
+                    # ever filled by the video path.
                     results.append(
-                        RenderResult("rendered", target, time.perf_counter() - started)
+                        RenderResult(
+                            "rendered",
+                            target,
+                            time.perf_counter() - started,
+                            getattr(self, "last_render_plan", None),
+                        )
                     )
         finally:
             # set_video_settings restores every derived cache (dimensions,

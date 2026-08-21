@@ -358,6 +358,10 @@ Organised by subsystem. The files worth knowing about (★ = in the fast suite):
   degrades rather than failing — but they only move when their own module does,
   and the fast suite's render exercises the real path.
 - `test_raytracing_unit.py` — brute-force references for the tracer. Expensive.
+- `test_render_truncations.py` — the instrument on the render path's four fixed
+  ceilings: what each reports, that a ceiling warns once per render rather than
+  once per batch, and two scenes built to exceed one. A feature test — it breaks
+  when the instrument does — so it stays out of the fast suite.
 - `test_render_coverage_audit.py` — keeps the render suite honest (above).
 - `test_fast_suite_curation.py` — keeps the `fast` markers and the membership
   table above in step, so the suite cannot grow without someone saying why.

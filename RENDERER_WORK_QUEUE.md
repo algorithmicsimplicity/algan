@@ -35,7 +35,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 
 | # | Item | Kind | Why here |
 | --- | --- | --- | --- |
-| 1 | [Silent truncations have no instrument](#1-silent-truncations-have-no-instrument) | Correctness | Four ceilings degrade the image with no signal. Cheapest high-value item on the list. |
+| 1 | ~~Silent truncations have no instrument~~ | Correctness | **Done.** All four ceilings are counted, warn once per render, and ride on `RenderPlan.truncations`. |
 | 2 | [The verification harnesses the docs and the source name do not exist](#2-the-verification-harnesses-the-docs-and-the-source-name-do-not-exist) | Process | 56 missing, 24 of them cited from inside `algan/`, including the stated gate for eight default-on toggles. Every item below is harder without them. |
 | 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | Designed, not built. The absolute epsilons are what couple the renderer to scene scale. |
 | 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open. |
@@ -57,34 +57,70 @@ behaviour or for wall-clock rankings; where that matters it says so.
 
 ---
 
-## 1. Silent truncations have no instrument
+## 1. Done
 
-**Status: not built. Cheapest item here with a real payoff.**
+Built in `algan/rendering/raytracing/truncation.py`. All four ceilings are
+counted per batch, accumulated over the render job, reported once each at
+**`WARNING`** — not `PERF`, which is for the budget events (batch splits, pool
+retries) that are the memory model working as designed; a truncation moves the
+image — and carried on `RenderPlan.truncations` as a `TruncationCounts`
+(exported from `algan`). Later batches escalate a growing total at `PERF`
+rather than repeating the warning, and a batch that adds nothing says nothing.
 
-Four ceilings in the render path degrade the image and report nothing. Three of
-them are documented in the code as deliberate bounds; none is counted.
+Where each is detected:
 
-| Ceiling | Where | Value | What happens |
-| --- | --- | --- | --- |
-| Surfaces composited along one primary ray | `sheet_resolve_taichi.py:209, 809`; `wavefront_kernels_taichi.py:2901` | `MAX_SURFACES_PER_RAY = 256` | The walk stops; the ray's leftover weight is handed to the background. |
-| Shadowed lights per fragment | `shading_taichi.py:99` | `MAX_SHADOW_LIGHTS = 16` | Lights past the cap are lit but never shadowed. |
-| Overlapping layers of one surface in one pixel | `sheets.py:812` (`rank.clamp_(max=15)`) | 16 | Further layers merge into the last sub-band and attenuate once instead of per layer. |
-| Continuation-pool reservation at `pool_ratio == 1` | `tracer.py:1760, 2550` | — | `overflow = pool_ratio > 1 and …` — at ratio 1 the pool's own overflow flag is **not read**, so a failed reservation is dropped silently. `_secondary_split_needed`'s docstring records this; nothing detects it. |
+| Ceiling | Detected | Verified by |
+| --- | --- | --- |
+| `MAX_SURFACES_PER_RAY` | In-kernel, `sheet_resolve_taichi.py` and `wavefront_shade`, into a new `rs_alloc` word | 300 stacked quads at opacity 0.002 (thin enough that `MIN_WEIGHT` does not stop the walk first): 16,856 rays truncated, warned. |
+| `MAX_SHADOW_LIGHTS` | Host, in `render_batch_raytraced` where `num_lights` and `shadow_flag` are both known | 21 light slots with shadows on: reports 5. |
+| Sheet conflict rank (16) | Host, `sheets.compact_sheets`, an `amax` before the clamp with the `[n]` count only in the case being reported | One `Polyhedron` of 24 stacked quads: 3,320 fragments, warned. |
+| Continuation-pool reservation at `pool_ratio == 1` | Host, `_read_tile_alloc` now reads the overflow word on **every** tile | **Structurally unreachable — see below.** |
 
-`DESIGN_mesh_identity_open.md` §Y already states the rule this violates: *"an
-instrument that reports zero may not be looking."*
+Two things worth carrying forward:
 
-**The pattern to copy already exists in the same codebase.** The two
-tessellation budgets — `max_subdivision_level = 8` and
-`max_diced_triangles = 2_000_000` (`primitives.py:1037, 1054`) — do exactly
-this: a patch that cannot meet `render_tolerance` within them raises a
-`RuntimeWarning` naming the cap (`primitives.py:1326`). The four ceilings above
-are the same kind of thing and say nothing. The work is a per-batch counter for
-each, reported the way the wavefront pool retries already are
-(`logger.log(PERF, …)`), plus a `RenderPlan` field so a script can assert on it.
+* **The ratio-1 drop is currently closed, and the counter says so.** Every
+  kernel branch that reserves a pool slot is compiled in only under
+  `ti.static(refraction != 0)` or is reached only by reflective geometry on the
+  sheet route; and every condition that sets `refraction_flag` — refractive,
+  reflective-transparent, custom scatter, `_secondary_split_needed` — also
+  drives `pool_ratio` above 1, where the host discards and retries the tile.
+  No scene reaches it. The counter stays because that agreement is between the
+  host's `merged` flags and the kernel's runtime tests, and the day they stop
+  agreeing is exactly the day nobody would notice. It reads zero, and the zero
+  is now a measurement.
+* **`save_frame` never filled its `render_plan`.** Documented on
+  `RenderResult` from the start, filled only by the video path. Fixed here,
+  since half the output surface could not otherwise report its counts.
 
-**Done when** a scene built to exceed each ceiling produces a log line naming
-it, and `RenderPlan` carries the counts.
+Guarded by `tests/unit_tests/test_render_truncations.py` (unmarked: it only
+breaks when the instrument does).
+
+**Rendered output does not move.** Kernel-side counting is one `ti.atomic_add`
+inside a branch that was already there, and the store it sits beside is
+unchanged. Measured rather than asserted, by running each render suite on this
+branch and on `ecd6947` in the same container:
+
+| Suite | Base `ecd6947` | With the instrument |
+| --- | --- | --- |
+| `tests/fast` | 32 @ frame 6 | 32 @ frame 6 |
+| `full_renders/complex_hierarchy_become` | 189 @ frame 3 | 189 @ frame 3 |
+| `full_renders/manim_compat_and_plots` | 190 @ frame 123 | 190 @ frame 123 |
+| `full_renders/materials_and_lighting` | 221 @ frame 36 | 221 @ frame 36 |
+| `full_renders/shapes_and_timeline` | 198 @ frame 179 | 198 @ frame 179 |
+| `full_renders/solids_and_camera` | 205 @ frame 67 | 205 @ frame 67 |
+| `full_renders/text_and_media` | 207 @ frame 150 | 207 @ frame 150 |
+
+Every one of those is a *failure* against a tolerance of 2, and every one of
+them fails identically without this change — the fast row is item 17's baseline
+debt, and the six full-render rows are the per-machine baselines this container
+was never going to match (`CLAUDE.md`, "Cloud sessions"). No baseline was
+regenerated. What the pairing buys is the parity statement: identical worst
+channel *and* identical worst frame on seven scenes covering PN surfaces,
+shadows, refraction, glTF and `Text` — the paths `tests/fast` does not reach.
+
+The one added host cost is a single `rs_alloc.tolist()` per accepted tile, where
+the ray compactor already forces a device synchronisation per wavefront
+iteration *inside* the tile.
 
 ---
 

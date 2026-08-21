@@ -734,14 +734,37 @@ def _offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
     return hit_point + (n + out_dir) * (10.0 * MIN_HIT_DISTANCE)
 
 
+# ---------------------------------------------------------------------------
+# ``rs_alloc`` slot layout. One tiny i32 ndarray carries the tile's shared-pool
+# allocator AND its truncation counters, rather than each taking a kernel
+# argument: the shade kernels are already near Taichi's 64-argument ceiling,
+# and an ndarray's SHAPE is not part of a kernel's compiled signature, so
+# widening this costs no recompile. The host zeroes it per tile attempt and
+# reads it back once, after the attempt is accepted.
+# ---------------------------------------------------------------------------
+#: Next free slot in the shared continuation pool; starts at ``num_primary``
+#: and keeps counting past capacity, so an overflow reports how much it wanted.
+ALLOC_NEXT = 0
+#: Raised to 1 by any reservation that did not fit.
+ALLOC_OVERFLOW = 1
+#: Rays retired by the ``MAX_SURFACES_PER_RAY`` compositing ceiling with
+#: transport still to carry (``rendering.raytracing.truncation``).
+ALLOC_TRUNC_SURFACES = 2
+#: Number of ``rs_alloc`` words the host must allocate and zero.
+ALLOC_WIDTH = 3
+
+
 @ti.func
 def _reserve_continuation_slot(rs_alloc: ti.template(), capacity):
     """Append one continuation to the tile-wide shared ray pool.
 
     ``rs_alloc[0]`` is the next free slot and starts at ``num_primary``. When
     the append exceeds ``capacity``, no state is written and ``rs_alloc[1]`` is
-    atomically raised. The host discards that tile attempt and retries it with
-    fewer primaries, so an overflow can never silently remove light transport.
+    atomically raised. On a *splitting* batch the host discards that tile
+    attempt and retries it with fewer primaries, so an overflow can never
+    silently remove light transport. A batch at ``pool_ratio == 1`` has no
+    spare slots to retry into: there the host counts the failed reservations
+    (``rs_alloc[0]`` minus the capacity) as dropped continuations instead.
     """
     slot = ti.atomic_add(rs_alloc[0], 1)
     valid = slot < capacity
@@ -2899,6 +2922,14 @@ def wavefront_shade(
                 if (not done) and (not bounced) and (num_hits < KBUF):
                     done = True
             if processed >= MAX_SURFACES_PER_RAY:
+                # Truncation, not completion: the blocks above have already set
+                # ``done`` for every ray that finished on its own terms, so a
+                # ray still active here is one the ceiling is cutting short --
+                # it either bounced or had hits left to drain. Counted, because
+                # what it drops is image (``truncation.py``). The store is
+                # unchanged, so the frame is byte-identical.
+                if not done:
+                    ti.atomic_add(rs_alloc[ALLOC_TRUNC_SURFACES], 1)
                 done = True
 
             for k in ti.static(range(3)):

@@ -471,7 +471,8 @@ Limits and approximations
 * **At most 16 lights are shadowed** (``ALGAN_MAX_SHADOW_LIGHTS``, set before
   the first render). Lights past the cap are still lit, just never shadowed, and
   **each emitter sample of a** :class:`~.RectAreaLight` **counts as one slot**, so
-  a single 4x4 area light fills the default cap on its own.
+  a single 4x4 area light fills the default cap on its own. A render that goes
+  over the cap warns and reports the surplus (:ref:`limits-truncation`).
 * **One shadow query point per same-surface region per pixel.** The query is
   taken at the region's largest fragment and, by default, at four sub-pixel
   positions around it
@@ -549,9 +550,10 @@ The depth budget, and what happens at the end of it
 ----------------------------------------------------
 
 A primary ray composites **at most 256 surfaces**. Beyond that the ray stops and
-the background shows through the remainder of the stack, with no warning. This
-is a real ceiling only for pathological geometry -- 256 stacked translucent
-sheets in one pixel -- but it is silent when it is reached.
+the background shows through the remainder of the stack. This is a real ceiling
+only for pathological geometry -- 256 stacked translucent sheets in one pixel --
+and reaching it now warns, naming the ceiling and how many rays hit it (see
+:ref:`limits-truncation` for what is counted and how to read it back).
 
 Continuation rays for reflection and refraction are allocated from a shared pool
 sized from an estimate of how many the batch will need. Exceeding the estimate
@@ -748,16 +750,19 @@ Hard limits
      - What happens if exceeded
    * - Surfaces composited along one primary ray
      - 256
-     - The ray stops; the background shows through the rest. Silent.
+     - The ray stops; the background shows through the rest. **Warns**
+       (:ref:`limits-truncation`).
    * - Reflection / refraction bounces
      - 8 (``max_bounces``)
      - The branch stops and contributes its remaining throughput.
    * - Shadowed lights
      - 16 (``ALGAN_MAX_SHADOW_LIGHTS``)
-     - Further lights are lit but never shadowed. Silent.
+     - Further lights are lit but never shadowed. **Warns**
+       (:ref:`limits-truncation`).
    * - Overlapping layers of one surface in one pixel
      - 16
-     - Further layers merge into the last. Silent.
+     - Further layers merge into the last, and attenuate once between them
+       instead of once each. **Warns** (:ref:`limits-truncation`).
    * - Frames in one render batch
      - 32767
      - Raises. Not reachable in practice -- memory bounds the batch far below
@@ -791,7 +796,45 @@ Hard limits
        can show flattening facets.
 
 Where a limit is marked *silent*, nothing is printed and no exception is raised.
-The two tessellation budgets are the exception: they warn.
+Everything marked **warns** logs one ``WARNING`` naming the ceiling the first
+time a render reaches it.
+
+.. _limits-truncation:
+
+Reading back what a render truncated
+------------------------------------
+
+Three of the ceilings above degrade the image rather than raising, and a render
+that reaches one says so once, at ``WARNING``, naming the ceiling and what it
+cost. They are warnings rather than the renderer's usual ``PERF`` budget
+messages because they change the picture: a batch split or a ray-pool retry is
+the memory model working as intended, but a truncated ray is transport that
+never reached the pixel.
+
+The counts are also on the render's :class:`~.RenderPlan`, so a script can
+check without reading logs::
+
+    result = Scene.save_video("scene")
+    truncations = result.render_plan.truncations
+
+    assert not truncations, truncations.as_dict()
+
+:class:`~.TruncationCounts` has one field per ceiling --
+``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers`` and
+``dropped_continuations`` -- plus ``total``. The counts are cumulative over the
+whole render, except ``shadow_lights``, which is a property of the scene rather
+than a tally of events and reports the worst batch.
+
+Every counter is unconditional, so **a zero is a measurement**: it says the
+ceiling was watched and never reached, not that nothing was looking.
+``dropped_continuations`` in particular should always read zero on the shipped
+renderer -- every path that can lose a continuation ray retries its tile
+instead -- and is counted so that a future change which breaks that cannot do
+it quietly.
+
+The two tessellation budgets in the table warn through Python's ``warnings``
+module instead (a ``RuntimeWarning``), because they are decided while geometry
+is built rather than while a frame is composited.
 
 
 Not implemented at all

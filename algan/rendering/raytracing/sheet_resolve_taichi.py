@@ -82,6 +82,7 @@ from algan.rendering.raytracing.shading_taichi import (
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
+    ALLOC_TRUNC_SURFACES,
     _material_reflectance,
     _mirror_share,
     _offset_transmitted_origin,
@@ -807,6 +808,17 @@ def sheet_resolve_shade(
             weight *= vis_all * _AA_SAMPLE_WEIGHT
 
         if processed >= MAX_SURFACES_PER_RAY:
+            # Truncation, not completion (``truncation.py``): ``done`` is
+            # already set for a walk that ended at the far clip or ran its
+            # weight out, and ``q == total`` means every sheet was composited.
+            # What is left -- sheets unwalked, or a bounce this retires -- is
+            # transport the ceiling is dropping. Counted on the SHADING pass
+            # only: a shadowed batch runs this body twice over the same sheets
+            # (mode 1 builds events, mode 2 shades) and would count each ray
+            # twice. The store is unchanged, so the frame is byte-identical.
+            if ti.static(mode != 1):
+                if (not done) and (bounced or (q < total)):
+                    ti.atomic_add(rs_alloc[ALLOC_TRUNC_SURFACES], 1)
             done = True
 
         if ti.static(dump):

@@ -59,6 +59,7 @@ from algan.rendering.raytracing.primitives import (
 )
 from algan.rendering.raytracing.stbvh import STBVH, build_stbvh
 from algan.rendering.raytracing.tracer import RenderPlan
+from algan.rendering.raytracing.truncation import TruncationCounts
 
 __all__ = [
     "MAX_BOUNCES",
@@ -76,4 +77,5 @@ __all__ = [
     "set_ray_traced_shadows",
     "set_unsupported_feature_policy",
     "RenderPlan",
+    "TruncationCounts",
 ]
