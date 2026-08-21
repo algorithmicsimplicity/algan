@@ -59,6 +59,17 @@ def _circuit_z_index(primitive):
     return lane
 
 
+#: Maximum screen-space curve-to-chord error, in pixels, that a circuit is
+#: flattened to. Named because two builders have to agree on it: the per-actor
+#: path takes it as this constructor's default, and
+#: ``bezier_circuit.build_render_primitives_batched`` -- whose contract is to
+#: be a byte-identical replacement for that constructor -- has to set the same
+#: value on the mega-primitive it assembles by hand. It once did not, and the
+#: default analytic-AA route hid the difference (see ``num_pixels_per_sample``
+#: there).
+DEFAULT_CHORD_TOLERANCE_PIXELS = 0.5
+
+
 class BezierCircuitPrimitive(RenderPrimitive):
     def __init__(
         self,
@@ -79,7 +90,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
         glow=0,
         num_texture_points=0,
         filled=True,
-        num_pixels_per_sample=0.5,
+        num_pixels_per_sample=DEFAULT_CHORD_TOLERANCE_PIXELS,
         z_index=None,
     ):
         # Legacy name retained for compatibility.  The ray tracer uses this as

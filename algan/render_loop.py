@@ -66,11 +66,6 @@ logger = get_logger("scene")
 # free to be short-lived; ten log lines about a two-second render are not.
 _PROGRESS_MIN_LOGGED_FRAMES = 60
 
-#: Sentinel "class" marking an entry of grouped_primitives that already holds
-#: finished collections (merged bezier groups) rather than per-actor
-#: primitives awaiting concatenation.
-_PREBUILT_COLLECTION = object()
-
 #: Share of a budget that a batch's *actor set* must take -- the part no frame
 #: count can shrink -- before the window stops being the right lever and the
 #: loop retreats behind a spawn to carry fewer actors instead (see
@@ -1798,12 +1793,24 @@ class RenderLoopMixin:
         is attached to the group's first entry (matching the position the
         group's collection had in the per-actor path); later entries stay
         empty.
+
+        A group is a ``(batch group key, run index)`` pair: get_batch_of_
+        primitives stamps ``entry["run"]`` when it splits an identifier that
+        clashes with raw primitives into maximal batchable runs, and merging
+        per run is what keeps each merged collection on the span its
+        circuits' raw primitives would have occupied. Entries from the
+        gated-off path carry no run index at all; ``get`` maps them onto run
+        0, which collapses the key to the historical grouping exactly -- and
+        no group key either, so it is computed here for them instead.
         """
         from algan.mobs.bezier_circuit import build_render_primitives_batched
 
         groups = {}
         for entry in deferred:
-            groups.setdefault(self._bezier_group_key(entry["actor"]), []).append(entry)
+            key = entry.get("group_key")
+            if key is None:
+                key = self._bezier_group_key(entry["actor"])
+            groups.setdefault((key, entry.get("run", 0)), []).append(entry)
         for entries in groups.values():
             mega = build_render_primitives_batched([e["actor"] for e in entries], self)
             entries[0]["prebuilt"] = [mega]
@@ -1944,7 +1951,19 @@ class RenderLoopMixin:
             time_inds / self.frames_per_second, active_mobs=actors
         )
 
-        grouped_primitives = collections.defaultdict(lambda: [None, []])
+        # Each bucket holds the batch identifier's primitives and merged
+        # collections as an ordered list of ``(is_finished_collection,
+        # primitive_class, primitive)`` items, in actor order. A bucket used
+        # to be a ``[class marker, flat list]`` pair and could therefore hold
+        # either raw primitives or finished collections, never both -- which
+        # is what forced the all-or-nothing bezier group revert. With the
+        # groups split into runs (above) a bucket legitimately mixes both:
+        # a run's merged collection shares its identifier with the very raw
+        # primitives that caused the clash. The walk below emits each
+        # maximal run of raw primitives through the same per-class emission
+        # as before, so what lands downstream is the same concatenation the
+        # all-raw path produced.
+        grouped_primitives = collections.defaultdict(list)
         # Surfaces sharing a grid shape are not built one-by-one: their state
         # is materialized per-actor below (in anchor-priority order, exactly as
         # before), but the geometry build is deferred so all of them can run as
@@ -1975,12 +1994,20 @@ class RenderLoopMixin:
                 # Mob built outside a render loop on its authored z_index.
                 actor._draw_bias = float(draw_bias[id(actor)])
             if self._is_batchable_surface(actor):
-                entry = {"actor": actor, "prims": None}
+                # ``kind`` tells the deferred-bezier run walk below that this
+                # entry's primitives are raw (already built by then) without
+                # probing for whichever payload key happens to be filled.
+                entry = {"actor": actor, "prims": None, "kind": "surface"}
                 deferred_surfaces.append(entry)
                 ordered_items.append(entry)
                 continue
             if self._is_batchable_bezier(actor):
-                entry = {"actor": actor, "prims": None, "prebuilt": None}
+                entry = {
+                    "actor": actor,
+                    "prims": None,
+                    "prebuilt": None,
+                    "kind": "bezier",
+                }
                 deferred_beziers.append(entry)
                 ordered_items.append(entry)
                 continue
@@ -1993,11 +2020,55 @@ class RenderLoopMixin:
         if deferred_surfaces:
             self._build_deferred_surfaces(deferred_surfaces)
 
-        if deferred_beziers:
+        if deferred_beziers and env_flag("ALGAN_BEZIER_GROUP_RUNS", True):
+            # A non-batchable primitive sharing a group's batch identifier
+            # would be concatenated into the same collection, interleaved by
+            # actor order -- which used to force the *whole group* back to the
+            # per-actor build. The old comment called such groups rare; on the
+            # reference scene they reverted 51.5% of all circuits, because a
+            # single packed circuit (a Text's glyphs, say) poisons every
+            # batchable peer sharing its identifier. Wholesale reversion is
+            # not needed to keep the merged layout identical: within one
+            # batch identifier, each deferred circuit sits after some number
+            # of raw primitives of that identifier and before the rest, so
+            # splitting the group into maximal runs of consecutive batchable
+            # actors -- each run merged on its own -- puts every merged
+            # collection on exactly the span its circuits' raw primitives
+            # would have occupied, and the bucket's concatenation comes out in
+            # the per-actor path's order. ``entry["run"]`` records that
+            # position: the count of raw primitives sharing the entry's batch
+            # identifier seen so far in this walk. "Raw" means anything that
+            # will be registered into grouped_primitives outside a merged
+            # collection -- both plain per-actor lists and a deferred
+            # surface's already-built primitives. Surfaces cannot actually
+            # collide with a circuit's identifier today, but counting them
+            # costs one dict lookup apiece and makes the invariant true by
+            # construction rather than by a class-name accident.
+            # The key is stamped on the entry rather than recomputed in
+            # _build_deferred_beziers: it costs two timeline row lookups per
+            # circuit, and this walk already has to take it for every one of
+            # them to find the identifier.
+            raw_counts = collections.Counter()
+            for item in ordered_items:
+                if isinstance(item, dict):
+                    if item["kind"] == "bezier":
+                        key = self._bezier_group_key(item["actor"])
+                        item["group_key"] = key
+                        item["run"] = raw_counts[key[0]]
+                        continue
+                    prims = item["prims"]  # a deferred surface: built above
+                else:
+                    prims = item
+                for p in prims:
+                    raw_counts[p.get_batch_identifier()] += 1
+            self._build_deferred_beziers(deferred_beziers)
+        elif deferred_beziers:
             # A non-batchable primitive sharing a group's batch identifier
             # would have been concatenated into the same collection,
             # interleaved by actor order; fall back to the per-actor build
             # for such (rare) groups so the collection layout is unchanged.
+            # ALGAN_BEZIER_GROUP_RUNS=0 keeps this all-or-nothing revert (A/B
+            # against the run splitting above).
             raw_identifiers = set()
             for item in ordered_items:
                 if isinstance(item, dict):
@@ -2023,82 +2094,108 @@ class RenderLoopMixin:
                 # identifier at the position of the group's first actor, so
                 # the final collection order matches the per-actor path.
                 for collection in item["prebuilt"]:
-                    key = collection.get_batch_identifier()
-                    grouped_primitives[key][0] = _PREBUILT_COLLECTION
-                    grouped_primitives[key][1].append(collection)
+                    grouped_primitives[collection.get_batch_identifier()].append(
+                        (True, None, collection)
+                    )
                 continue
             primitives = item["prims"] if isinstance(item, dict) else item
             if not primitives:
                 continue
             for p in primitives:
-                grouped_primitives[p.get_batch_identifier()][0] = p.__class__
-                grouped_primitives[p.get_batch_identifier()][1].append(p)
+                grouped_primitives[p.get_batch_identifier()].append(
+                    (False, p.__class__, p)
+                )
 
         primitive_collections = []
-        max_bezier_batch_size = 50000
-        for _, (primitive_class, primitives) in grouped_primitives.items():
-            if primitive_class is _PREBUILT_COLLECTION:
-                for collection in primitives:
-                    collection.memory = self.memory
-                    collection.scene = self
-                    primitive_collections.append(collection)
-                continue
-            if primitive_class is BezierCircuitPrimitive:
-                counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(
-                    0
-                )
-                num_sub_batches = (counts[-1] // max_bezier_batch_size) + 1
-                current_ind = 0
-                for _i in range(num_sub_batches):
-                    inds = (counts > max_bezier_batch_size).nonzero()
-                    if len(inds) == 0:
-                        next_ind = len(primitives)
-                    else:
-                        next_ind = max(inds[0], current_ind + 1)
-                    primitive_collections.append(
-                        primitive_class(
-                            triangle_collection=primitives[current_ind:next_ind]
+        for _, items in grouped_primitives.items():
+            run = []
+            run_class = None
+            for is_collection, primitive_class, primitive in items:
+                if is_collection:
+                    if run:
+                        self._emit_primitive_collections(
+                            run_class, run, primitive_collections
                         )
-                    )
-                    current_ind = next_ind
-                    primitive_collections[-1].memory = self.memory
-                    primitive_collections[-1].scene = self
-                    if current_ind >= len(primitives):
-                        break
-                    counts -= counts[current_ind - 1]
-            else:
-                textured = []
-                colored = []
-                for p in primitives:
-                    if (
-                        getattr(p, "uvs", None) is not None
-                        or getattr(p, "texture_map", None) is not None
-                    ):
-                        textured.append(p)
-                    else:
-                        colored.append(p)
-                if colored:
-                    primitive_collections.append(
-                        primitive_class(triangle_collection=colored)
-                    )
-                    primitive_collections[-1].memory = self.memory
-                    primitive_collections[-1].scene = self
-                # Textured primitives are batched one per collection: a
-                # collection carries a single texture map set (color/material/
-                # normal), so merging two differently-textured primitives
-                # would drop all but the first primitive's maps. Their
-                # geometry is still merged into one kernel launch downstream
-                # (see _merge_scene).
-                for p in textured:
-                    primitive_collections.append(
-                        primitive_class(triangle_collection=[p])
-                    )
-                    primitive_collections[-1].memory = self.memory
-                    primitive_collections[-1].scene = self
+                        run = []
+                    primitive.memory = self.memory
+                    primitive.scene = self
+                    primitive_collections.append(primitive)
+                    continue
+                # Last raw item wins, exactly as the old single class marker
+                # was overwritten by each registration; identifiers are
+                # class-derived, so a run mixing classes cannot arise without
+                # two classes sharing one identifier string.
+                run_class = primitive_class
+                run.append(primitive)
+            if run:
+                self._emit_primitive_collections(run_class, run, primitive_collections)
         render_state = self._materialize_render_state(
             start_time_ind, start_time_ind + duration
         )
         return primitive_collections, start_time_ind + duration, render_state
+
+    def _emit_primitive_collections(self, primitive_class, primitives, out):
+        """Build the collections for one run of same-identifier raw
+        primitives and append them to ``out``.
+
+        This is the per-class emission the final grouping loop in
+        get_batch_of_primitives has always applied to a whole bucket,
+        factored out unchanged so a bucket that mixes raw runs with finished
+        collections (see the run splitting above) can emit its raw runs
+        between the collections it walks past. Called once over a bucket
+        with no finished collections in it, it must -- and does -- produce
+        exactly the collections that bucket produced before the split, in
+        the same order, with ``.memory`` / ``.scene`` set the same way.
+        """
+        if not primitives:
+            return
+        if primitive_class is BezierCircuitPrimitive:
+            max_bezier_batch_size = 50000
+            counts = torch.tensor([p.corners.shape[1] for p in primitives]).cumsum(0)
+            num_sub_batches = (counts[-1] // max_bezier_batch_size) + 1
+            current_ind = 0
+            for _i in range(num_sub_batches):
+                inds = (counts > max_bezier_batch_size).nonzero()
+                if len(inds) == 0:
+                    next_ind = len(primitives)
+                else:
+                    next_ind = max(inds[0], current_ind + 1)
+                out.append(
+                    primitive_class(
+                        triangle_collection=primitives[current_ind:next_ind]
+                    )
+                )
+                current_ind = next_ind
+                out[-1].memory = self.memory
+                out[-1].scene = self
+                if current_ind >= len(primitives):
+                    break
+                counts -= counts[current_ind - 1]
+        else:
+            textured = []
+            colored = []
+            for p in primitives:
+                if (
+                    getattr(p, "uvs", None) is not None
+                    or getattr(p, "texture_map", None) is not None
+                ):
+                    textured.append(p)
+                else:
+                    colored.append(p)
+            if colored:
+                out.append(primitive_class(triangle_collection=colored))
+                out[-1].memory = self.memory
+                out[-1].scene = self
+            # Textured primitives are batched one per collection: a
+            # collection carries a single texture map set (color/material/
+            # normal), so merging two differently-textured primitives
+            # would drop all but the first primitive's maps. Their
+            # geometry is still merged into one kernel launch downstream
+            # (see _merge_scene).
+            for p in textured:
+                out.append(primitive_class(triangle_collection=[p]))
+                out[-1].memory = self.memory
+                out[-1].scene = self
 
     def _prewarm_render_batch(self, primitives, render_state):
         """Run a batch's ``project_to_screen`` (+ the CPU merge when merge and

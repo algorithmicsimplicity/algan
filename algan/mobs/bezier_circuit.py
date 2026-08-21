@@ -1382,6 +1382,9 @@ def build_render_primitives_batched(actors, scene):
     border texture-color row counts / primitive class across the group.
     """
     from algan.animation_timeline.timeline import RowRanges
+    from algan.rendering.primitives.bezier_circuit_primitive import (
+        DEFAULT_CHORD_TOLERANCE_PIXELS,
+    )
 
     timeline = scene.timeline_manager
     first = actors[0]
@@ -1524,8 +1527,17 @@ def build_render_primitives_batched(actors, scene):
     cls = first.render_primitive
     mega = cls.__new__(cls)
     # The ray tracer interprets this legacy density setting as the maximum
-    # screen-space curve-to-chord error in pixels.
-    mega.num_pixels_per_sample = 1
+    # screen-space curve-to-chord error in pixels. It must be the value
+    # BezierCircuitPrimitive's constructor defaults to, because this builder's
+    # whole contract is to be a byte-identical replacement for that
+    # constructor: it stood at 1 against the per-actor path's 0.5, which the
+    # default analytic-AA route hides (it clamps the tolerance to
+    # ANALYTIC_AA_CHORD_TOLERANCE = 0.25, so 0.5 and 1 both land on 0.25) and
+    # the classic supersampled route does not -- there every batched circuit
+    # was flattened to twice the per-actor path's chord error. Harmless while
+    # the batched build reached a fifth of a scene's circuits; not harmless now
+    # that a group clash no longer sends the rest down the other path (P9).
+    mega.num_pixels_per_sample = DEFAULT_CHORD_TOLERANCE_PIXELS
     mega.num_bezier_parameters = 4
     mega.num_texture_points = ntp
     mega.filled = first.filled

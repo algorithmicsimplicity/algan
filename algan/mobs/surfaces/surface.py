@@ -472,16 +472,61 @@ def _grid_normals_paired():
     return not _opt_disabled("gridnormals")
 
 
+def _wrapped_difference(grid, axis, shift):
+    """``grid.roll(shift, axis) - grid``, without materializing the roll.
+
+    ``roll`` allocates and fills a whole copy of the grid, which the very next
+    subtraction then reads once and throws away: two full-size writes where one
+    will do. Writing the difference straight into one output buffer, in the two
+    pieces the wrap-around splits it into, halves the traffic of every side.
+
+    Bit-identical, and not by an argument about associativity: every element is
+    the same subtraction of the same two elements, just written to a different
+    place. That holds for NaN and inf operands as much as for finite ones, and
+    for a degenerate axis of length 1, where the interior slice is empty and the
+    wrap piece is the element minus itself -- exactly what ``roll`` gives there.
+
+    ``axis`` is ``-3`` (the grid's x axis) or ``-2`` (its y axis); ``shift``
+    matches ``Tensor.roll``'s, so ``+1`` reads the previous neighbour and ``-1``
+    the next one.
+
+    Measured on the shape the batched build passes, ``[120, 50, 24, 12, 3]``:
+    **1.44x** over roll-then-subtract for the four sides (and 1.33x over the
+    whole sides-and-crosses block once the accumulation below is in place too).
+    Small grids are dispatch-bound and show nothing -- read the large rows, the
+    same caveat P11 records.
+    """
+
+    def along(piece):
+        return (
+            (Ellipsis, piece, slice(None), slice(None))
+            if axis == -3
+            else (Ellipsis, slice(None), piece, slice(None))
+        )
+
+    interior, wrap = (
+        ((slice(None, -1), slice(1, None)), (slice(-1, None), slice(None, 1)))
+        if shift == 1
+        else ((slice(1, None), slice(None, -1)), (slice(None, 1), slice(-1, None)))
+    )
+    neighbour, here = interior
+    wrap_neighbour, wrap_here = wrap
+    out = torch.empty_like(grid)
+    torch.sub(grid[along(neighbour)], grid[along(here)], out=out[along(here)])
+    torch.sub(
+        grid[along(wrap_neighbour)],
+        grid[along(wrap_here)],
+        out=out[along(wrap_here)],
+    )
+    return out
+
+
 def compute_grid_vertex_normals(grid):
     """Area-weighted vertex normals for a surface grid ``[..., W, H, 3]``,
     with closed-seam and pole merging. All computations broadcast over any
     leading dims (time, or a stack of same-shaped surfaces), which lets
     :func:`get_render_primitives_batched` run this once for many surfaces.
     """
-    grid_x_plus_1 = grid.roll(-1, -3)
-    grid_x_minus_1 = grid.roll(1, -3)
-    grid_y_plus_1 = grid.roll(-1, -2)
-    grid_y_minus_1 = grid.roll(1, -2)
     if _grid_normals_paired():
         # The four triangles around a vertex use each neighbour twice, as the
         # second side of one and the first side of the next. The stacked form
@@ -495,13 +540,20 @@ def compute_grid_vertex_normals(grid):
         # a contiguous axis is the sequential order these adds take, so the
         # result is bit-identical (asserted, including NaN payloads and signed
         # zeros, by benchmarks/_grid_normals_ab.py). It moves roughly half the
-        # bytes, which matters because this function is ~60% of
-        # get_render_primitives_batched -- the largest single item in a render
-        # (see DESIGN_optimization_targets.md).
-        side_x_minus = grid_x_minus_1 - grid
-        side_y_minus = grid_y_minus_1 - grid
-        side_x_plus = grid_x_plus_1 - grid
-        side_y_plus = grid_y_plus_1 - grid
+        # bytes, which matters because this function is the largest single item
+        # in a render (see DESIGN_optimization_targets.md).
+        #
+        # Two later passes over the same block took the traffic down again, on
+        # the same bit-identical terms: the sides are written straight into
+        # their output instead of through a materialized roll
+        # (_wrapped_difference), and the four are accumulated in place rather
+        # than through three temporaries. 1.33x over the shipped form on the
+        # shape the batched build passes; see P11b in
+        # DESIGN_optimization_targets.md.
+        side_x_minus = _wrapped_difference(grid, -3, 1)
+        side_y_minus = _wrapped_difference(grid, -2, 1)
+        side_x_plus = _wrapped_difference(grid, -3, -1)
+        side_y_plus = _wrapped_difference(grid, -2, -1)
         normals_xm_ym = broadcast_cross_product(side_x_minus, side_y_minus)
         normals_ym_xp = broadcast_cross_product(side_y_minus, side_x_plus)
         normals_xp_yp = broadcast_cross_product(side_x_plus, side_y_plus)
@@ -517,10 +569,18 @@ def compute_grid_vertex_normals(grid):
         normals_ym_xp[..., :, 0, :] = 0
         normals_xp_yp[..., :, -1, :] = 0
         normals_yp_xm[..., :, -1, :] = 0
-        unnormalized_normals = (
-            normals_xm_ym + normals_ym_xp + normals_xp_yp + normals_yp_xm
-        )
+        # ``a + b + c + d`` allocates and fills three whole tensors to reach one
+        # answer. Accumulating in place after the first add makes the same three
+        # additions in the same left-to-right order on the same values -- so it
+        # is bit-identical, associativity never enters -- and materializes one.
+        unnormalized_normals = normals_xm_ym + normals_ym_xp
+        unnormalized_normals += normals_xp_yp
+        unnormalized_normals += normals_yp_xm
     else:
+        grid_x_plus_1 = grid.roll(-1, -3)
+        grid_x_minus_1 = grid.roll(1, -3)
+        grid_y_plus_1 = grid.roll(-1, -2)
+        grid_y_minus_1 = grid.roll(1, -2)
         triangle_sides = unsquish(
             torch.stack(
                 (

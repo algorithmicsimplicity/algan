@@ -11,6 +11,13 @@ grid from every one of them, and then sliced two **stride-2** views back out to
 cross. The paired form differences each neighbour once and crosses the four
 pairs directly.
 
+The paired arm has since taken two further passes over the same block, on the
+same terms (P10): each side is written straight into its output buffer instead
+of through a materialized ``roll``, and the four crossed pairs are accumulated
+in place instead of through three temporaries. Both are covered by the same
+comparison -- this script A/Bs *whatever the paired arm currently is* against
+the legacy stacked form, so the REAL rows move when either changes.
+
 Every operation involved is elementwise on the same values in the same order, so
 the result must be **bit-identical**, not merely close. This script asserts that
 on bit patterns rather than on ``==``, so a signed-zero flip or a changed NaN

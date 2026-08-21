@@ -46,7 +46,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 9 | [The shadowed resolve runs the resolve kernel twice](#9-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan, and never separated out from "shadows are expensive". Measure before building. |
 | 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted. |
 | 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; half shipped. |
-| 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | Measured, not started. |
+| 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | **P9 shipped; P10 re-split and one piece shipped.** The re-split moved the ranking — what this item named as P10's remainder is mostly not where the time is. |
 | 13 | [`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path. |
 | 14 | [Delete the dead render paths](#14-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist. |
 | 15 | [Stale docstrings that describe a renderer that no longer exists](#15-stale-docstrings-that-describe-a-renderer-that-no-longer-exists) | Docs | Each has already misled someone reading the code. |
@@ -367,22 +367,64 @@ Do the cumsum scan; leave the sorts.
 
 ## 12. P9 / P10 — the batched geometry builds
 
-**`DESIGN_optimization_targets.md` items 2 and 3. Measured, not started.**
+**`DESIGN_optimization_targets.md` items 2 and 3. P9 shipped; P10 re-split and
+one piece of it shipped.** What follows is what was found and what is left; the
+detail is in that document under P9, P10b and P11b.
 
-* **P9** — the batched bezier build reaches only 18.4% of the reference scene's
-  circuits, and **51.5% are reverted by an all-or-nothing group clash** the code
-  calls "rare". Batched is ~5x cheaper per circuit; the per-actor build is
-  40.97 s (11.4%) of own time, each with its own accessor round trips, so this
-  cuts item 9 as well.
-* **P10 remainder** — 56.62 s (15.8%) after P11 halved
-  `compute_grid_vertex_normals`. What is left: the per-surface tail (colours,
-  shader parameters, primitive construction, still one surface at a time), the
-  rest of `compute_grid_vertex_normals` (seam merge, pole fans, final
-  normalize), and `grid_to_triangle_vertices` on the whole stack — "two gathers
-  sharing one permutation", the same shape T5's gather had.
+* **P9 — done.** The all-or-nothing group revert is gone. The constraint it
+  existed to protect is *positional*, not group-wide: within one batch
+  identifier a deferred circuit sits after some number of raw primitives of that
+  identifier and before the rest, so splitting a group into **maximal runs of
+  consecutive batchable actors** and merging each run puts every merged
+  collection on exactly the span its circuits would have occupied. Byte-identical
+  — a lossless two-arm render of a clashing scene differs by **0 pixels** — and
+  on that scene 97.6% of circuits move to the batched build, taking
+  `get_batch_of_primitives` to **0.43–0.48x**. Gated by
+  `ALGAN_BEZIER_GROUP_RUNS`; guarded by
+  `tests/unit_tests/test_bezier_group_runs.py`.
 
-Re-split P10 before choosing inside it: its proportions were measured *before*
-P11.
+  Two things it turned up on the way. **`benchmarks/_bez_batch_parity.py` — the
+  harness that guarantees the builder this widens — had rotted past running**
+  (item 2's problem in the flesh, in the one script that certifies
+  byte-identity for a path P9 quadruples the reach of: `set_render_settings`,
+  `AnimationManager.instance()`, `TimelineManager.instance()` and
+  `scene.actors[-1]` had all been gone for some time, and its attribute list
+  named fields the primitive no longer has). Repaired, and it now runs on a
+  2513-circuit group. And with it
+  running again it caught a real defect: the batched builder flattened curves to
+  **twice** the per-actor path's chord tolerance, which the default analytic-AA
+  route hides by clamping and the classic supersampled route does not. Fixed;
+  both builders now read one named constant.
+
+* **P10 — re-split, and the re-split changed the answer.** The proportions this
+  item quoted were measured before P11 halved `compute_grid_vertex_normals`, and
+  they were wrong about which parts matter.
+  `benchmarks/_surface_build_split.py` is the probe (it verifies its
+  instrumented copies bit-identical to the shipped functions before timing
+  them).
+
+  * The **seam merge, pole fans and final normalize** named above are together
+    **~4% of `compute_grid_vertex_normals`** — under 2% of the stage. Not worth
+    touching. What is worth touching is the other 76.8%, "sides + crosses".
+  * **`grid_to_triangle_vertices` on the whole stack is 9.5%, not 13.7%.**
+    Fusing the two gathers buys ~2%, not the item this listed it as.
+  * **The per-surface tail grew to 31%**, and its largest row is the primitive
+    **construction (13.5%)** — a full colour clone plus two in-place passes per
+    surface — which nothing had named.
+  * **Shipped from it (P11b):** the four triangle sides are written straight
+    into their buffers instead of through a materialized `roll`, and the four
+    crossed pairs accumulate in place. Bit-identical, covered by the existing
+    `benchmarks/_grid_normals_ab.py` across 13 grid topologies, **1.33x** on the
+    sides-and-crosses block at the shape the batched build passes.
+  * **Tried and rejected on measurement:** batching the per-surface colour
+    gather. Bit-identical and **1.002x** — the `torch.stack` that feeds the
+    single gather copies exactly the bytes the saved dispatches were worth. Read
+    P10b before repeating it.
+  * **What is left is a decision, not a patch.** The remaining large win inside
+    the normals is the identity that collapses four cross products into one. It
+    is exact in real arithmetic and **not bit-identical**, and the boundary
+    zeroing breaks the algebra at the grid's edges — so it moves baselines and
+    needs someone to decide that is acceptable.
 
 ---
 

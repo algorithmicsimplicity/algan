@@ -11,19 +11,17 @@ bitwise.
 
 from __future__ import annotations
 
-import os
-import sys
+import math  # noqa: E402
+import os  # noqa: E402
+import sys  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import manim as mn  # noqa: E402
+import torch  # noqa: E402
 
 from algan import *  # noqa: E402
-from algan.animation_timeline.animation_contexts import (  # noqa: E402
-    AnimationManager,
-    Off,
-)
-from algan.animation_timeline.timeline import TimelineManager  # noqa: E402
+from algan.animation_timeline.animation_contexts import Off  # noqa: E402
 from algan.mobs.bezier_circuit import build_render_primitives_batched  # noqa: E402
 from algan.mobs.neural_nets.neural_net import NeuralNetMLP  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
@@ -64,6 +62,14 @@ def text_scene():
     with Sync(run_time=0.25):
         nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
+        # A few ordinary circuits so the groups have real size: the parity
+        # check is only as good as the group it runs on.
+        circles = [Circle(color=BLUE) for _ in range(8)]
+        squares = [Square(color=RED) for _ in range(4)]
+        for i, c in enumerate(circles):
+            c.move(RIGHT * (i - 3)).spawn()
+        for i, s in enumerate(squares):
+            s.move(LEFT * (i + 1)).spawn()
     with Sync(run_time=0.25):
         mob.move(LEFT)
         nn.move(LEFT)
@@ -76,25 +82,25 @@ ATTRS = [
     "normals",
     "border_width",
     "border_color",
-    "glow_radius",
     "mob_center",
     "grid_width",
     "grid_height",
     "basis1",
     "basis2",
+    "z_index",
     "num_segments_per_object",
 ]
 
 
 def main():
     scene = SceneManager.reset()
-    scene.set_render_settings(PREVIEW)
+    scene.set_video_settings(PREVIEW)
     text_scene()
     scene.scene_times.append(
         [
             scene.scene_times[-1][0],
             round(
-                AnimationManager.instance().context.timespan.original_end
+                scene.animation_manager.context.timespan.original_end
                 * scene.frames_per_second
             ),
         ]
@@ -110,10 +116,10 @@ def main():
     ):
         # Materialize a mid-animation window (covers fade + move).
         times = torch.arange(start_ind, end_ind)
-        TimelineManager.instance().set_state_to_times(times / scene.frames_per_second)
+        scene.timeline_manager.set_state_to_times(times / scene.frames_per_second)
 
         actors = sorted(
-            [a for a in scene.actors[-1] if hasattr(a, "get_render_primitives")],
+            [a for a in scene.actors if hasattr(a, "get_render_primitives")],
             key=lambda x: x.anchor_priority,
             reverse=True,
         )
@@ -163,6 +169,11 @@ def main():
                         do = a_old.dtype if torch.is_tensor(a_old) else type(a_old)
                         dn = a_new.dtype if torch.is_tensor(a_new) else type(a_new)
                         print(f"  MISMATCH {attr}: {so}/{do} vs {sn}/{dn}")
+            # ``num_pixels_per_sample`` is in this list on purpose, and it is
+            # what this harness caught when it was repaired: the batched
+            # builder had drifted to 1 against the per-actor path's 0.5 -- a
+            # curve flattened to twice the chord error on any batch the
+            # analytic-AA route rejects. Keep it a plain equality check.
             for attr in ("num_texture_points", "filled", "num_pixels_per_sample"):
                 if getattr(old, attr) != getattr(new, attr):
                     n_fail += 1
