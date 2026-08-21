@@ -17,9 +17,14 @@ cannot write directly into an arena view.
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from algan.environment import env_str
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    MIN_HIT_DISTANCE,
+)
 from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
@@ -1164,39 +1169,44 @@ def _tri_obj_row(pix, ppf, time_start, rows):
     return ((pix // ppf) + time_start) % rows
 
 
-def _pack_shadow_source_ids(merged, ev_msk, ev_frame, ev_ref):
-    """Pack each shadow event's SOURCE surface id into its mask word.
+def _shadow_identity_epsilons(merged):
+    """The shadow acceptance floors for this batch, in world units.
 
-    Self-shadow rejection by identity (``SHADOW_IDENTITY_REJECT``,
-    DESIGN_mesh_identity_open.md ssI) needs the source id where the event is
-    TRACED, and ``event_msk`` is the one per-event slot with room: bits 0-3
-    are the sub-pixel sample mask, 8-15 the material pipeline id, and 16-31
-    carry ``sid + 1`` (so 0 means "no identity"). The trace kernel reads the
-    hit side from ``tri_obj`` during traversal.
+    Identity-aware rejection (``SHADOW_IDENTITY_REJECT``,
+    DESIGN_mesh_identity_open.md ssI) replaces the absolute
+    ``MIN_HIT_DISTANCE`` on the shadow path with a floor proportional to the
+    batch's own scene scale -- the diagonal of the merged triangle bounding
+    box over every frame of the batch. That is what decouples the shadow path
+    from scene scale: 1e-4 is only ever the right number for a scene about
+    ten units across.
 
-    An event whose pipeline id does not fit under bit 16, whose id does not
-    fit in 16 bits, or whose sheet ref is not a triangle keeps 0 there and is
-    traced with the classic epsilon -- the feature degrades per event rather
-    than misrejecting. Returns a new mask tensor; the caller's ``ev_msk`` (a
-    fresh ``index_select`` result) is left untouched.
+    Returns ``(eps_self, eps_near)``: the floor a hit on the ray's own
+    triangle keeps, and the (by default zero) share of it a hit on another
+    triangle of the same mesh keeps. Degenerate batches -- no triangles, or a
+    bounding box that is not finite -- fall back to ``MIN_HIT_DISTANCE`` so a
+    pathological scene can never end up with a zero or NaN floor.
     """
-    tri_obj = merged["tri_obj"]
-    ref = ev_ref.to(torch.int64)
-    # Same row mapping the trace kernel uses: event_frame holds the absolute
-    # batch-relative frame, and tri_obj indexes it modulo its row count.
-    row = ev_frame.to(torch.int64) % tri_obj.shape[0]
-    sid = tri_obj[row, ref.clamp_min(0)].to(torch.int64)
-    sid = torch.where(ref >= 0, sid, sid.new_full(sid.shape, -1))
-    fits = (
-        (ref >= 0)
-        & (sid >= 0)
-        & (sid < 0xFFFF)
-        & ((ev_msk.to(torch.int64) >> 8) < 0x100)
-    )
-    packed = torch.where(
-        fits, ((sid + 1) << 16).to(ev_msk.dtype), torch.zeros_like(ev_msk)
-    )
-    return ev_msk | packed
+    tri_pos = merged["tri_pos"]
+    scale = 0.0
+    if tri_pos.numel():
+        # tri_pos is [frames, N, 9]: three vertices, three coordinates each.
+        verts = tri_pos.reshape(-1, 3, 3)
+        lo = verts.amin(dim=(0, 1))
+        hi = verts.amax(dim=(0, 1))
+        diag = (hi - lo).norm().item()
+        if math.isfinite(diag):
+            scale = diag
+    eps_self = float(rt_settings.SHADOW_EPS_RELATIVE) * scale
+    if not (eps_self > 0.0) or not math.isfinite(eps_self):
+        eps_self = float(MIN_HIT_DISTANCE)
+    # Clamped, not merely scaled: a negative fraction would make the same-mesh
+    # floor negative, and `t > eps_near` would then accept hits at t <= 0 --
+    # geometry BEHIND the ray origin occluding the light. NaN fails the
+    # comparison and lands on 0.0 too.
+    eps_near = eps_self * float(rt_settings.SHADOW_NEAR_FRACTION)
+    if not (eps_near > 0.0):
+        eps_near = 0.0
+    return eps_self, eps_near
 
 
 def prepare_sparse_raster_coverage(
@@ -2069,19 +2079,23 @@ def shade_sparse_raster_coverage(
             ev_fnrm = event_fnrm.index_select(0, acc_idx)
             ev_frame = event_frame.index_select(0, acc_idx)
             ev_msk = event_msk.index_select(0, acc_idx)
-            # Self-shadow rejection by identity (SHADOW_IDENTITY_REJECT):
-            # pack each accepted event's source surface id above its material
-            # id so the trace can spare cross-mesh hits the absolute
-            # MIN_HIT_DISTANCE. Events that do not fit the packing keep the
-            # sentinel and today's epsilon.
+            # Identity-aware shadow rejection (SHADOW_IDENTITY_REJECT): hand
+            # the trace each accepted event's SOURCE triangle, so it can tell
+            # a hit on the surface the ray left from a hit on a different one
+            # and spare the latter the acceptance floor entirely. The sheet
+            # ref IS that triangle (-1 for a bezier-sourced event, which the
+            # kernel reads as "no identity" and traces with the old epsilon).
             identity_on = bool(rt_settings.SHADOW_IDENTITY_REJECT)
             if identity_on:
-                ev_msk = _pack_shadow_source_ids(
-                    merged,
-                    ev_msk,
-                    ev_frame,
-                    coverage["sheet_ref"][s_start:s_end].index_select(0, acc_idx),
+                ev_src_prim = (
+                    coverage["sheet_ref"][s_start:s_end]
+                    .index_select(0, acc_idx)
+                    .to(torch.int32)
                 )
+                eps_self, eps_near = _shadow_identity_epsilons(merged)
+            else:
+                ev_src_prim = dummy_i
+                eps_self, eps_near = float(MIN_HIT_DISTANCE), 0.0
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
             from algan.rendering.raytracing.refit_bvh import RefitBVH
 
@@ -2125,12 +2139,16 @@ def shade_sparse_raster_coverage(
                 sec_aa,
                 shadow_vis,
                 int(shadow_flag),
-                # Self-shadow rejection by identity: the hit-side surface map
-                # and the compile-time gate. With the toggle off the kernel
-                # never reads tri_obj (a 1-element dummy keeps the signature)
+                # Identity-aware rejection: the hit-side surface map, the
+                # per-event source triangle, the two scene-scaled floors, and
+                # the compile-time gate. With the toggle off the kernel never
+                # reads either array (1-element dummies keep the signature)
                 # and every acceptance test compiles to exactly the
                 # pre-identity predicate.
                 merged["tri_obj"] if identity_on else dummy_i,
+                ev_src_prim,
+                eps_self,
+                eps_near,
                 1 if identity_on else 0,
             )
         sheet_resolve_shade(

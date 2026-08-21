@@ -633,11 +633,54 @@ SHADOW_IDENTITY_REJECT = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", False)
 
 
 def set_shadow_identity_reject(enabled):
-    """Toggle self-shadow rejection by mesh identity (see
+    """Toggle self-shadow rejection by identity (see
     ``SHADOW_IDENTITY_REJECT``). Takes effect at the next render batch.
     """
     global SHADOW_IDENTITY_REJECT
     SHADOW_IDENTITY_REJECT = bool(enabled)
+
+
+# The acceptance floor a shadow ray keeps against its OWN primitive, as a
+# fraction of the batch's scene scale (the diagonal of the merged triangle
+# bounding box over every frame of the batch). This is what retires the last
+# absolute constant on the shadow path: `MIN_HIT_DISTANCE` = 1e-4 is only ever
+# right for a scene about ten units across, which is where the default below
+# reproduces it exactly (1e-5 * 10). A scene authored at millimetre or
+# kilometre scale gets a floor in proportion instead of acne at one end and
+# erased contact at the other.
+#
+# The scale is GEOMETRIC, deliberately not the pixel footprint: the error this
+# floor guards against is the positional error of the reconstructed hit point,
+# which is a property of the coordinates and the tessellation. Tying it to
+# pixels would shrink it as resolution rises and make a 4K render noisier than
+# a 720p one from the same geometry.
+SHADOW_EPS_RELATIVE = env_float("ALGAN_SHADOW_EPS_RELATIVE", 1e-5)
+
+# What fraction of that floor a hit on the SAME mesh but a DIFFERENT primitive
+# keeps. 0.0 is primitive-precise: only the triangle the ray actually started
+# from is treated as a possible artifact, so a concave crease and a mesh with
+# two separate parts get their contact shadow back. 1.0 restores mesh-wide
+# rejection, which is what shipped first and what to compare against. Values
+# in between buy back protection at mesh seams, where the reconstructed point
+# of one facet can land under its neighbour: raise this if a diced curved
+# surface shows seam speckle with the feature on.
+SHADOW_NEAR_FRACTION = env_float("ALGAN_SHADOW_NEAR_FRACTION", 0.0)
+
+
+def set_shadow_eps_relative(value):
+    """Set the shadow acceptance floor as a fraction of scene scale (see
+    ``SHADOW_EPS_RELATIVE``). Takes effect at the next render batch.
+    """
+    global SHADOW_EPS_RELATIVE
+    SHADOW_EPS_RELATIVE = float(value)
+
+
+def set_shadow_near_fraction(value):
+    """Set the same-mesh share of the shadow acceptance floor (see
+    ``SHADOW_NEAR_FRACTION``). Takes effect at the next render batch.
+    """
+    global SHADOW_NEAR_FRACTION
+    SHADOW_NEAR_FRACTION = float(value)
 
 
 # Build the dedicated opaque-only STBVHs only when a rollout that walks them

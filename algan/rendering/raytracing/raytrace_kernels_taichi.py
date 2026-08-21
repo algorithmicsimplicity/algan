@@ -880,28 +880,48 @@ def _comes_after(t, layer, t_prev, layer_prev) -> bool:
 
 
 @ti.func
-def _shadow_identity_t_min(f, prim, src_sid, tri_obj: ti.template(),
+def _shadow_identity_t_min(f, prim, src_sid, src_prim, eps_self, eps_near,
+                           tri_obj: ti.template(),
                            ident: ti.template()) -> ti.f32:
     """Acceptance floor along a shadow ray for one candidate triangle hit.
 
-    ``ident != 0`` (compile-time) engages self-shadow rejection by identity
-    (DESIGN_mesh_identity_open.md ssI): a hit on the ray's OWN surface keeps
-    the ``MIN_HIT_DISTANCE`` guard, while any OTHER mesh's threshold is zero,
-    so contact shadows survive where the absolute epsilon used to erase them.
-    The rejection is per hit -- "same mesh AND near-zero t", never "same
-    mesh": a concave solid legitimately shadows itself.
+    ``ident != 0`` (compile-time) engages identity-aware rejection
+    (DESIGN_mesh_identity_open.md ssI, extended). The floor is chosen per hit
+    from how plausibly that hit could be an artifact of the ray's own origin,
+    in three tiers:
 
-    ``src_sid < 0`` (per-ray runtime) disables the test for that ray: callers
-    without a source identity -- the megakernel's camera, secondary and
-    shadow rays, and shadow events whose source is a bezier circuit or whose
-    id did not fit the event_msk packing -- keep exactly the old epsilon.
+    * the ray's OWN primitive -- the only surface a reconstructed origin can
+      re-hit spuriously by construction -- keeps the full floor ``eps_self``;
+    * another primitive of the SAME mesh keeps ``eps_near``, which exists for
+      mesh seams (a facet's reconstructed point can land under its
+      neighbour's plane) and is 0 by default, i.e. primitive-precise;
+    * any OTHER mesh gets 0. A different mesh cannot be an artifact of this
+      ray's origin, so no floor is defensible there, and this is what lets a
+      contact shadow survive.
+
+    Rejecting a whole mesh would be wrong for a concave solid that
+    legitimately shadows itself; rejecting only near-zero ``t`` on the source
+    primitive is the narrowest test that still covers the artifact.
+
+    Both epsilons arrive already scaled to the batch's scene size (see
+    ``SHADOW_EPS_RELATIVE``), which is what retires the absolute
+    ``MIN_HIT_DISTANCE`` from this path.
+
+    ``src_prim < 0`` (per-ray runtime) disables the test for that ray:
+    callers without a source identity -- the megakernel's camera, secondary
+    and shadow rays, and shadow events whose source is a bezier circuit --
+    keep exactly the old absolute epsilon.
     """
     t_min = MIN_HIT_DISTANCE
     if ti.static(ident != 0):
-        if src_sid >= 0:
-            hit_obj = ti.cast(tri_obj[f % tri_obj.shape[0], prim], ti.i32)
-            if hit_obj != src_sid:
+        if src_prim >= 0:
+            if prim == src_prim:
+                t_min = eps_self
+            else:
+                hit_obj = ti.cast(tri_obj[f % tri_obj.shape[0], prim], ti.i32)
                 t_min = 0.0
+                if hit_obj == src_sid:
+                    t_min = eps_near
     return t_min
 
 
@@ -912,7 +932,8 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                           nodes: ti.template(), node_miss: ti.template(),
                           leaf_prim: ti.template(), leaf_tspan: ti.template(),
                           first_leaf, tri_pos: ti.template(),
-                          src_sid, tri_obj: ti.template(),
+                          src_sid, src_prim, eps_self, eps_near,
+                          tri_obj: ti.template(),
                           ident: ti.template()):
     """Nearest triangle intersection strictly after (t_prev, layer_prev).
 
@@ -996,7 +1017,7 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                         if hit_ok != 0:
                             layer = layer_offset + ti.cast(prim, ti.f32)
                             if ((t > _shadow_identity_t_min(
-                                    f, prim, src_sid, tri_obj, ident))
+                                    f, prim, src_sid, src_prim, eps_self, eps_near, tri_obj, ident))
                                     and _comes_after(t, layer, t_prev,
                                                      layer_prev)
                                     and _comes_after(best_t, best_layer,
@@ -1615,7 +1636,8 @@ def _nearest_surface_g(refit: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
                      edges_2d: ti.template(), edge_accel: ti.template(),
-                     src_sid, tri_obj: ti.template(), ident: ti.template()):
+                     src_sid, src_prim, eps_self, eps_near,
+                     tri_obj: ti.template(), ident: ti.template()):
     """Nearest surface of any geometry type strictly after
     (t_prev, layer_prev) along the ray. Geometry only -- shading data is
     fetched by the caller for the hits it actually uses.
@@ -1627,7 +1649,7 @@ def _nearest_surface_g(refit: ti.template(),
     escapes the scene, ``edge_hit == 1`` flags a triangle hit on/near one of
     its edges (used to merge the duplicate hits of mesh seams).
 
-    ``(src_sid, tri_obj, ident)`` carry the shadow ray's source-surface
+    ``(src_sid, src_prim, eps_self, eps_near, tri_obj, ident)`` carry the shadow ray's source-surface
     identity for :func:`_shadow_identity_t_min`; see that function for the
     sentinel convention.
     """
@@ -1651,7 +1673,7 @@ def _nearest_surface_g(refit: ti.template(),
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
             layer_offset_triangles,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-            tri_pos, src_sid, tri_obj, ident)
+            tri_pos, src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
     bt = 1e30
     b_circ = -1
     b_border = 0
@@ -1874,7 +1896,7 @@ def _nearest_surface(refit: ti.template(),
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
         circuit_meta, edges_2d, edge_accel,
-        -1, tri_pos, 0)
+        -1, -1, 0.0, 0.0, tri_pos, 0)
 
 
 @ti.func
@@ -1894,7 +1916,8 @@ def _collect_hits(refit: ti.template(),
                    has_tri: ti.template(),
                    has_bez: ti.template(), initial_opq_t: ti.f32,
                    initial_opq_layer: ti.f32,
-                   src_sid, tri_obj: ti.template(), ident: ti.template()) -> ti.i32:
+                   src_sid, src_prim, eps_self, eps_near,
+                   tri_obj: ti.template(), ident: ti.template()) -> ti.i32:
     """Gather the up-to-``KBUF`` nearest hits strictly after
     (t_prev, layer_prev) into the caller's buffers, in one traversal of each
     BVH. Triangles are traversed first; the bezier traversal then prunes
@@ -1910,7 +1933,7 @@ def _collect_hits(refit: ti.template(),
     Buffers hold geometry only (the consumer fetches shading data):
     ``hit_flags`` packs the hit type (0 = bezier circuit, 1 = triangle)
     in bits 0-1, plus ``edge_hit << 2`` and ``border << 3``.
-    ``(src_sid, tri_obj, ident)`` carry the shadow ray's source-surface
+    ``(src_sid, src_prim, eps_self, eps_near, tri_obj, ident)`` carry the shadow ray's source-surface
     identity for :func:`_shadow_identity_t_min` (triangle arm only; the
     bezier arm keeps the classic epsilon). See that function for the sentinel
     convention.
@@ -2007,7 +2030,7 @@ def _collect_hits(refit: ti.template(),
                                 layer = (layer_offset_triangles
                                          + ti.cast(prim, ti.f32))
                                 accept = ((t > _shadow_identity_t_min(
-                                    f, prim, src_sid, tri_obj, ident))
+                                    f, prim, src_sid, src_prim, eps_self, eps_near, tri_obj, ident))
                                           and _comes_after(
                                               t, layer, t_prev,
                                               layer_prev)
@@ -2227,7 +2250,8 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                        nodes: ti.template(), leaf_prim: ti.template(),
                        leaf_tspan: ti.template(), first_leaf,
                        tri_pos: ti.template(),
-                       src_sid, tri_obj: ti.template(),
+                       src_sid, src_prim, eps_self, eps_near,
+                       tri_obj: ti.template(),
                        ident: ti.template()) -> ti.i32:
     """1 if ANY interval-opaque triangle (classic ``leaf_tspan`` bit 31 /
     refit link bit 30) is hit with the identity-aware floor (see
@@ -2313,7 +2337,7 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                         hit_ok, w1, w2, t = _tri_hit(ro, rd, v0, v1, v2)
                         if hit_ok != 0:
                             if (t > _shadow_identity_t_min(
-                                    f, prim, src_sid, tri_obj, ident)) \
+                                    f, prim, src_sid, src_prim, eps_self, eps_near, tri_obj, ident)) \
                                     and (t < max_t):
                                 hit = 1
             else:
@@ -2467,14 +2491,15 @@ def _shadow_anyhit_opaque(refit: ti.template(),
                           circuit_meta: ti.template(),
                           edges_2d: ti.template(),
                           edge_accel: ti.template(),
-                          src_sid, tri_obj: ti.template(),
+                          src_sid, src_prim, eps_self, eps_near,
+                          tri_obj: ti.template(),
                           ident: ti.template()) -> ti.i32:
     """1 if any interval-opaque primitive of any geometry type blocks the
     shadow ray before ``max_t``. Trees are tried triangle -> bezier, the
     second skipped entirely on a hit in the first. ``t_lo`` prunes the
     node-visit window only (see :func:`_anyhit_opaque_tri`).
 
-    ``(src_sid, tri_obj, ident)`` carry the shadow ray's source-surface
+    ``(src_sid, src_prim, eps_self, eps_near, tri_obj, ident)`` carry the shadow ray's source-surface
     identity into the triangle arm; a circuit blocker keeps the classic
     epsilon (circuits have no per-triangle identity).
     """
@@ -2483,7 +2508,7 @@ def _shadow_anyhit_opaque(refit: ti.template(),
         hit = _anyhit_opaque_tri(refit, ro, rd, inv_rd, f, t_lo, max_t,
                                  t_nodes, t_leaf_prim, t_leaf_tspan,
                                  t_first_leaf, tri_pos,
-                                 src_sid, tri_obj, ident)
+                                 src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
     if ti.static(has_bez != 0):
         if hit == 0:
             hit = _anyhit_opaque_bez(refit, ro, rd, inv_rd, f, t_lo, max_t,
@@ -2512,7 +2537,8 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                      circuit_colors: ti.template(),
                      circuit_border_colors: ti.template(),
                      edges_2d: ti.template(), edge_accel: ti.template(),
-                     src_sid, tri_obj: ti.template(), ident: ti.template()):
+                     src_sid, src_prim, eps_self, eps_near,
+                     tri_obj: ti.template(), ident: ti.template()):
     """Fraction of light occluded along a deterministic shadow ray.
 
     Every surface between the shaded point and the light attenuates the
@@ -2521,7 +2547,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     seams still merge their duplicate edge hit so a thin surface cannot
     attenuate twice along a shared edge.
 
-    ``(src_sid, tri_obj, ident)`` carry the shadow ray's source-surface
+    ``(src_sid, src_prim, eps_self, eps_near, tri_obj, ident)`` carry the shadow ray's source-surface
     identity for :func:`_shadow_identity_t_min` (see it for the sentinel
     convention); with ``ident == 0`` every acceptance test is exactly the
     pre-identity one.
@@ -2557,7 +2583,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                 t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
                 b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                 circuit_meta, edges_2d, edge_accel,
-                src_sid, tri_obj, ident),
+                src_sid, src_prim, eps_self, eps_near, tri_obj, ident),
             ti.f32)
     else:
         if ti.static(anyhit == 4):
@@ -2571,7 +2597,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, circuit_colors,
                 circuit_border_colors, edges_2d, edge_accel,
-                src_sid, tri_obj, ident)
+                src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
         else:
             occluded = _shadow_march_occluded(
                 refit, anyhit, ro, rd, inv_rd, f, ff, max_t,
@@ -2583,7 +2609,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, circuit_colors,
                 circuit_border_colors, edges_2d, edge_accel,
-                src_sid, tri_obj, ident)
+                src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
     return occluded
 
 
@@ -2611,7 +2637,8 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                            circuit_border_colors: ti.template(),
                            edges_2d: ti.template(),
                            edge_accel: ti.template(),
-                           src_sid, tri_obj: ti.template(),
+                           src_sid, src_prim, eps_self, eps_near,
+                           tri_obj: ti.template(),
                            ident: ti.template()):
     """The classic ordered closest-hit shadow march (the pre-any-hit body of
     :func:`_shadow_occluded`, byte-identical at ``anyhit`` 0/1; 2 adds the
@@ -2643,7 +2670,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             tri_pos,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel,
-            src_sid, tri_obj, ident)
+            src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
         if (found == 0) or (t_hit >= max_t):
             break
         seam_eps = DEPTH_TIE_EPSILON
@@ -2686,7 +2713,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                         tri_pos,
                         b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                         circuit_meta, edges_2d, edge_accel,
-                        src_sid, tri_obj, ident) == 1:
+                        src_sid, src_prim, eps_self, eps_near, tri_obj, ident) == 1:
                     transmitted = 0.0
                     break
         t_prev = t_hit
@@ -2721,7 +2748,8 @@ def _shadow_gather_occluded(refit: ti.template(),
                             circuit_border_colors: ti.template(),
                             edges_2d: ti.template(),
                             edge_accel: ti.template(),
-                            src_sid, tri_obj: ti.template(),
+                            src_sid, src_prim, eps_self, eps_near,
+                            tri_obj: ti.template(),
                             ident: ti.template()):
     """The ordered shadow march rebuilt on the KBUF gather (shadow mode 4).
 
@@ -2770,7 +2798,7 @@ def _shadow_gather_occluded(refit: ti.template(),
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
             max_t, -1e30,
-            src_sid, tri_obj, ident)
+            src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
         if num_hits == 0:
             alive = 0
         drained = 0

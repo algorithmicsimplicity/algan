@@ -2591,7 +2591,9 @@ def raster_shadow_trace(
         has_tri: ti.template(), has_bez: ti.template(),
         event_dp: ti.types.ndarray(), sec_aa: ti.template(),
         shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template(),
-        tri_obj: ti.types.ndarray(), shadow_identity: ti.template()):
+        tri_obj: ti.types.ndarray(), event_src_prim: ti.types.ndarray(),
+        eps_self: ti.f32, eps_near: ti.f32,
+        shadow_identity: ti.template()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
 
     A zero-radius point/spot/directional light emits one hard-shadow ray.
@@ -2601,14 +2603,16 @@ def raster_shadow_trace(
     the material shader.
 
     ``shadow_identity`` (``SHADOW_IDENTITY_REJECT``, DESIGN_mesh_identity_open.md
-    ssI) engages self-shadow rejection by identity: each event's SOURCE surface
-    id arrives packed in ``event_msk`` above the material pipeline id (bits
-    16+, ``sid + 1``, 0 = none), and a candidate hit on another mesh is
-    accepted down to ``t > 0`` while a hit on the event's own surface keeps
-    the ``MIN_HIT_DISTANCE`` guard -- so cross-mesh contact shadows survive
-    the absolute epsilon that used to erase them. ``tri_obj`` answers "which
-    mesh is this hit on" during traversal. Events without a packed id (and,
-    with ``shadow_identity == 0``, every event) keep exactly the old epsilon.
+    ssI) engages identity-aware rejection. ``event_src_prim`` carries each
+    event's SOURCE triangle (-1 for a bezier-sourced event, which keeps the
+    old absolute epsilon), ``tri_obj`` answers "which mesh is this hit on"
+    during traversal, and ``eps_self`` / ``eps_near`` are the acceptance
+    floors the host has already scaled to the batch's scene size. The source
+    triangle keeps ``eps_self``, another triangle of the same mesh keeps
+    ``eps_near``, and any other mesh is accepted down to ``t > 0`` -- so a
+    contact shadow survives the epsilon that used to erase it. See
+    :func:`_shadow_identity_t_min` for the tiers. With
+    ``shadow_identity == 0`` every event keeps exactly the old epsilon.
 
     ``sec_aa`` (``ANALYTIC_AA_SECONDARY_SAMPLES``): visibility is a BINARY query,
     so analytic coverage cannot antialias a shadow edge however exact the
@@ -2655,13 +2659,17 @@ def raster_shadow_trace(
         # exact fan for every light.
         pid_e = event_msk[e] >> 8
         src_sid = -1
+        src_prim = -1
         if ti.static(shadow_identity != 0):
-            # The event's source surface id (packed by the host above the
-            # material pipeline id; sid + 1, so 0 = none). Masking pid_e to
-            # its byte is exact here: the host only packs events whose
-            # pipeline id fits below bit 16.
-            src_sid = ti.cast((event_msk[e] >> 16) & 0xFFFF, ti.i32) - 1
-            pid_e = pid_e & 0xFF
+            # The event's source triangle, and the mesh it belongs to. Both
+            # ride their own array rather than spare mask bits: a primitive
+            # index does not fit in the 16 bits that were free, and keeping
+            # ``event_msk`` untouched leaves the material pipeline id above
+            # bit 8 exactly as the resolve wrote it.
+            src_prim = ti.cast(event_src_prim[e], ti.i32)
+            if src_prim >= 0:
+                src_sid = ti.cast(
+                    tri_obj[f % tri_obj.shape[0], src_prim], ti.i32)
         fan_exact = 1
         fan_geom = 0
         if pid_e < _USER_PIPELINE_BASE:
@@ -2769,7 +2777,8 @@ def raster_shadow_trace(
                         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                         b_first_leaf, circuit_meta, circuit_colors,
                         circuit_border_colors, edges_2d, edge_accel,
-                        src_sid, tri_obj, shadow_identity)
+                        src_sid, src_prim, eps_self, eps_near,
+                        tri_obj, shadow_identity)
             if n_valid > 0.0:
                 visibility = 1.0 - occ_sum / n_valid
         shadow_vis[e, li] = visibility

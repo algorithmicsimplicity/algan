@@ -37,7 +37,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | --- | --- | --- | --- |
 | 1 | [Silent truncations have no instrument](#1-silent-truncations-have-no-instrument) | Correctness | Four ceilings degrade the image with no signal. Cheapest high-value item on the list. |
 | 2 | [The verification harnesses the docs and the source name do not exist](#2-the-verification-harnesses-the-docs-and-the-source-name-do-not-exist) | Process | 56 missing, 24 of them cited from inside `algan/`, including the stated gate for eight default-on toggles. Every item below is harder without them. |
-| 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | Designed, not built. The absolute epsilons are what couple the renderer to scene scale. |
+| 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | **Built, default off.** Retires the absolute shadow epsilon for a scene-relative one. Needs CUDA qualification and a default decision. |
 | 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open. |
 | 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index. |
 | 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first. |
@@ -54,6 +54,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 17 | [The CPU baseline debt](#17-the-cpu-baseline-debt) | Process | **Do this first.** `DESIGN_mesh_identity_open.md` §B, and it is now a red CI on master. |
 | 18 | [An untracked file on the default path reached master](#18-an-untracked-file-on-the-default-path-reached-master) | Process | Fixed at `2016a26`; the gap that allowed it is not. |
 | 19 | [Open design-doc items with no owner](#19-open-design-doc-items-with-no-owner) | Various | §J, §L, §G, §4.6, P7 — recorded so they are not rediscovered. |
+| 20 | [The shadow terminator on diced surfaces](#20-the-shadow-terminator-on-diced-surfaces) | Correctness | The acne half of item 3, which item 3 could never have fixed. Split out once that was established. |
 
 ---
 
@@ -158,9 +159,49 @@ or has had its citation corrected, and a check keeps it that way.
 
 ## 3. §I self-shadow rejection by identity
 
-**Status: designed down to the argument list in
-`DESIGN_mesh_identity_open.md` §I. Not started — verified: `raster_shadow_trace`
-(`raster_taichi.py:2570`) still takes no `tri_obj` argument.**
+**Status: BUILT, behind `SHADOW_IDENTITY_REJECT` (default off). Extended past
+§I as designed — see "what shipped" below. Remaining work is qualification on
+CUDA and a decision on the default, not implementation.**
+
+**What shipped.** The acceptance floor is now chosen per hit from three tiers:
+the ray's own triangle keeps `eps_self`, another triangle of the same mesh
+keeps `eps_near` (`SHADOW_NEAR_FRACTION`, default 0 — primitive-precise), and
+any other mesh gets 0. Both epsilons are proportional to the batch's scene
+scale (`SHADOW_EPS_RELATIVE`, default 1e-5), which is what actually retires the
+absolute constant rather than merely bypassing it: 1e-4 is only ever right for
+a scene about ten units across, and the default reproduces it exactly there.
+
+Two corrections to what this item claimed, both found while building it:
+
+* **§I as written could not do half of it.** The item named both lost contact
+  shadows and grazing-light acne. §I relaxes only *cross-mesh* hits, and acne
+  is a mesh shadowing itself, which by design keeps its floor. The acne claim
+  traces to a bullet in `DESIGN_mesh_identity.md:1994` that is internally
+  inconsistent — "reject its own mesh at near-zero `t`" *is* keeping the
+  epsilon for exactly the population acne is made of. Acne needs the shadow
+  terminator fix (offset onto the smooth surface implied by the vertex
+  normals, both normals already on the event), not an identity test. That is
+  now [item 20](#20-the-shadow-terminator-on-diced-surfaces).
+* **§I's plumbing costing was stale.** It names `raster_shadow_event_build`,
+  deleted on 2026-08-19 by the sheet-resolve flip, and claims `event_msk` has
+  28 free bits when bits 8+ carry the material pipeline id. The source
+  triangle rides its own array instead.
+
+**Verified** on CPU: default path byte-identical (`--fast` 271 passed, the
+item 17 baseline failure unchanged at exactly 40 channel values / frame 6);
+and, on a torus — one mesh, concave, so it genuinely self-shadows — the
+feature moves real pixels and both knobs behave as specified. With
+`SHADOW_NEAR_FRACTION=1` the output tracks `SHADOW_EPS_RELATIVE` (2,174 →
+3,448 pixels moved as it goes 1e-5 → 5e-2); with it at 0 the output is
+*completely insensitive* to it (2,273 pixels at every value), which is exactly
+right because the same-mesh floor is then 0 regardless. No acne was introduced
+at the default: the change is a coherent band over the ring's self-shadowed
+region, not scattered speckle.
+
+**Still open here:** CUDA is unqualified (this was built CPU-only), only the
+default shadow mode was exercised at runtime, and whether the gate should
+become default-on needs `tests/full_renders` on a machine that owns those
+baselines.
 
 A shadow ray rejects its own surface with `MIN_HIT_DISTANCE = 1e-4` plus a
 normal offset of `10 * MIN_HIT_DISTANCE`. Both are absolute world-space
@@ -720,6 +761,55 @@ Recorded so they are not rediscovered from scratch. None is started.
   nor turning the rotation off fixes it. A real fix needs more taps than the
   coverage budget can pay for, which makes it a path-tracer feature; record it
   as such rather than as a tuning problem.
+
+
+## 20. The shadow terminator on diced surfaces
+
+**Status: not started. This is the half of item 3 that item 3 could never have
+delivered, split out once that was established rather than left attached to a
+mechanism that cannot address it.**
+
+Item 3 named two symptoms: contact shadows erased by an absolute epsilon, and
+shadow acne at grazing light angles. Only the first is an epsilon problem. Acne
+is a mesh shadowing *itself*, and every identity scheme keeps a floor for that
+population by construction -- otherwise a concave solid stops shadowing itself.
+Worse, the acne hits are not near-zero `t` at all: near the terminator the ray
+leaves almost tangentially and travels a long way before striking a
+neighbouring facet, so no acceptance floor of any size rejects them.
+
+The claim traces to a bullet in `DESIGN_mesh_identity.md:1994` ("reject its own
+mesh at near-zero `t` ... removing shadow acne"), which is internally
+inconsistent: rejecting near-zero `t` on your own mesh is precisely *keeping*
+the guard on the population acne comes from. §I inherited the sentence.
+
+**What actually causes it here.** `_faces_viewer`'s docstring
+(`shading_taichi.py:143`) states the geometry: a PN patch carries "a quadratic
+normal field over a quadratic position patch", diced to *flat* triangles. The
+shading normal is therefore not perpendicular to the facet the ray starts on,
+and the facet is a chord *below* the smooth surface it approximates, so
+neighbouring facets rise above the plane the ray was offset from. The current
+origin offset is `sorigin = spos + fnrm * (10 * MIN_HIT_DISTANCE)`
+(`raster_taichi.py:2641`) -- along the *face* normal, a fixed 1e-3, with no
+relation to how far the true surface bulges above the facet.
+
+**The remedy is standard and its inputs are already on the event.** Hanika's
+shadow terminator fix (Ray Tracing Gems II, ch. 4) offsets the origin onto the
+smooth surface implied by the vertex normals, by an amount derived from the
+hit's barycentrics and the per-vertex normal deviation. `event_snrm` (shading)
+and `event_fnrm` (geometric) are both already stored per shadow event and both
+already read in `raster_shadow_trace`; only `fnrm` is used today.
+
+Note what currently hides the symptom: the shadow trace is entered only where
+`fnrm.dot(wis) > 1e-3 and snrm.dot(wis) > 1e-4` (`raster_taichi.py:2756`), so
+the terminator band does not trace shadow rays at all. That is why a convex
+solid shows no acne today -- and also why a convex solid cannot be used to test
+any of this. Use a concave single mesh (a `Torus` is the cheap one).
+
+**Done when** a diced curved surface under a grazing light shows no acne with
+the guard angles relaxed, and item 3's feature can be turned on without
+introducing speckle at seams.
+
+---
 
 ---
 

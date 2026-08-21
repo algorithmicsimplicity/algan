@@ -524,10 +524,42 @@ inner interface, and the existing glass scenes are unchanged with the gate off.
 
 
 ================================================================================
-I. SELF-SHADOW REJECTION BY IDENTITY — costed, NOT BUILT
+I. SELF-SHADOW REJECTION BY IDENTITY — BUILT (default off), EXTENDED
 ================================================================================
-**STATUS: not started. The plumbing cost below is new; the implementation is
-not.**
+**STATUS: built behind `SHADOW_IDENTITY_REJECT`, default off. What shipped is
+wider than what is designed below, and two of this section's premises were
+stale by the time it was built. Read this header before the body.**
+
+**What shipped.** Three tiers rather than two, keyed on the source TRIANGLE
+rather than the source mesh: the ray's own triangle keeps `eps_self`, another
+triangle of the same mesh keeps `eps_near` (`SHADOW_NEAR_FRACTION`, default 0),
+and any other mesh gets 0. Both epsilons are proportional to the batch's scene
+scale (`SHADOW_EPS_RELATIVE`, default 1e-5, computed host-side in
+`_shadow_identity_epsilons`), so the absolute constant is genuinely retired
+rather than bypassed — and the default reproduces `MIN_HIT_DISTANCE` exactly at
+the ten-unit scale it was chosen for. Primitive identity is what lets a concave
+crease or a two-part mesh keep its own contact shadow, which mesh-wide
+rejection erases.
+
+**Two stale premises, corrected in the build.**
+
+* The source id is NOT available in `raster_shadow_event_build`. That function
+  was deleted 2026-08-19 by the sheet-resolve flip (`DESIGN_sheet_resolve.md`
+  Phase 4). The event is built in `sheet_resolve_taichi.py` and the sheet ref
+  there IS the source triangle.
+* `event_msk` does NOT have 28 free bits. Bits 8+ carry the material pipeline
+  id (written at `sheet_resolve_taichi.py:401`, read at
+  `raster_taichi.py:2645`). The source triangle rides its own `event_src_prim`
+  array — which a primitive index needs anyway, since it does not fit in 16
+  bits.
+
+**And one claim this section should not have made.** The acne half of the
+"Care needed" framing below is not reachable by any identity test: acne is a
+mesh shadowing itself, so every scheme keeps a floor there by construction, and
+the hits are not near-zero `t` in the first place. That is now item 20 of
+`RENDERER_WORK_QUEUE.md` (the shadow terminator fix), not this section.
+
+The body below is preserved as the original costing.
 
 A shadow ray currently rejects its own surface with `MIN_HIT_DISTANCE = 1e-4`
 (`raytrace_kernels_taichi.py:95`) plus a normal offset of `10 *
