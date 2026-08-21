@@ -182,6 +182,22 @@ fields are the ones you set once at the top of a script:
     Vertex shader applied to Mobs that do not set their own. Defaults to
     ``None`` (Algan's built-in shading) -- see :doc:`shaders_and_materials`.
 
+``shape_style_profile``
+    Whose per-shape styling defaults the built-in shapes adopt: ``"algan"``
+    (the default) keeps Algan's own -- a red filled ``Square`` with a wide
+    white border, say -- while ``"manim"`` asks them to adopt Manim
+    Community's constructor defaults instead (an unfilled white ``Square``
+    outline of stroke width 4). Enabling it reads each shape's defaults out
+    of the installed ``manim`` package once, so the values follow whatever
+    version you have; a shape Manim does not define simply keeps Algan's
+    default. An explicit keyword always wins over the profile:
+    ``Square(color=BLUE)`` is blue either way.
+
+.. code-block:: python
+
+    SETTINGS.style.set(shape_style_profile="manim")  # Manim-looking shapes
+    SETTINGS.style.set(shape_style_profile="algan")  # back to Algan's
+
 .. code-block:: python
 
     SETTINGS.style.set(background_color=Color([0.05, 0.05, 0.15]), buffer=0.3)

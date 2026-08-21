@@ -94,6 +94,30 @@ working with the names its author already wrote. Those names are exported and
 supported. Do not add an Algan-side alias for an Algan name, and do not delete a
 Manim-side name because it duplicates one.
 
+`Scene.use_manim_defaults()` (`algan/manim_defaults.py`) is the *settings* half of
+that surface: it points a Scene's camera, field of view, lighting and background at
+Manim's own defaults so imported geometry lands on the pixels Manim would use.
+Three things in it are load-bearing and were each established by measurement, not
+by reading Manim's docs — `benchmarks/_manim_defaults_parity_check.py` is the
+experiment:
+- **fov 22.62 degrees at distance 20.** Manim's frame is 8 units tall and its
+  `ThreeDCamera` scales by `f / (f - z)` with `f = 20`, which is a pinhole eye 20
+  units from the frame plane. Manim's *2-D* camera is orthographic instead, but
+  the two agree exactly at `z = 0`, so one Algan perspective camera serves both.
+- **Tonemapping off.** Algan's default tonemap darkens every flat fill by a
+  uniform 10/255 — it reads as a colour error, not a highlight roll-off. Off, a
+  flat fill is byte-identical to Manim's.
+- **The z mirror.** Manim's `OUT` is `+z` and Algan's is `-z`, so the two screen
+  bases are mirror images and no camera placement can reconcile them; the
+  geometry and the camera are both mirrored (`Scene.manim_coordinates`, read by
+  `ManimMob`). Flat `z = 0` geometry is unaffected, which is why the existing
+  Manim baselines did not move.
+
+Two known residuals, both Algan renderer conventions rather than settings: a
+*filled* circuit's border is drawn inside its path where Manim centres a stroke on
+it (half a stroke width — unfilled strokes match to ~0.3 px), and Manim shades a
+3-D face by a two-point gradient where Algan ray-traces.
+
 ```python
 from algan import *
 

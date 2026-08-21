@@ -177,6 +177,10 @@ class Scene(RenderLoopMixin):
         self.effects = []
         self.camera = None
         self.light_sources = []
+        # Set by use_manim_defaults(): mirrors imported Manim geometry in z, so
+        # Manim's +z-toward-viewer convention lands the right way round in
+        # Algan's, where -z faces the viewer. Read by ManimMob at construction.
+        self.manim_coordinates = False
         self.scene_times = [[self.current_time, self.current_time]]
         depth_source = (
             SETTINGS.style.frame if callable(background_frame) else background_frame
@@ -294,6 +298,99 @@ class Scene(RenderLoopMixin):
             The camera, or ``None`` if the Scene has not been initialized with one.
         """
         return self.camera
+
+    @active_scene_method
+    def use_manim_defaults(
+        self,
+        *,
+        camera: bool = True,
+        shading: bool = True,
+        background: bool = True,
+        coordinates: bool = True,
+        video_settings: bool = False,
+        shape_defaults: bool = False,
+    ):
+        """Set this Scene up the way Manim sets its scenes up.
+
+        Call it once, before building the Scene, and geometry authored against
+        Manim's conventions -- most obviously anything arriving through
+        :class:`~algan.mobs.manim_mob.ManimMob` -- lands on the pixels Manim
+        would have put it on: same 8-unit frame height, same perspective, same
+        light position, same black background.
+
+        Manim's frame is 8 world units tall and its ``ThreeDCamera`` sits 20
+        units from the frame plane, which is a vertical field of view of
+        22.62 degrees. Manim's plain 2-D camera is a flat orthographic
+        projection, but the two agree exactly at ``z = 0``, so this one
+        perspective camera reproduces 2-D scenes exactly and 3-D scenes with
+        Manim's own perspective.
+
+        Because Manim's ``OUT`` is ``+z`` where Algan's is ``-z``, this also
+        turns on :attr:`manim_coordinates`, which makes ``ManimMob`` mirror
+        imported geometry in z. Without it a converted 3-D scene renders
+        back-to-front. It has no effect on flat ``z = 0`` geometry.
+
+        Animation
+        ---------
+        Not animated: the Scene is reconfigured immediately, at the point in the
+        timeline where the call happens. Call it before spawning anything.
+
+        Parameters
+        ----------
+        camera
+            Whether to move the camera to Manim's viewpoint and set its field of
+            view. Defaults to ``True``.
+        shading
+            Whether to reproduce Manim's colour pipeline: its single light in its
+            own position, unlit flat colour as the default shading -- which is
+            what Manim's renderer actually does to a vector Mobject -- and no
+            tonemapping, so a flat fill comes out byte-identical to Manim's.
+            Defaults to ``True``.
+        background
+            Whether to set the background to black, Manim's default. Defaults to
+            ``True``.
+        coordinates
+            Whether imported Manim geometry is mirrored into Algan's coordinate
+            system. Defaults to ``True``.
+        video_settings
+            Whether to also switch the output to Manim's default 1920x1080 at 60
+            fps. Defaults to ``False``, so an explicitly chosen quality preset
+            survives the call. Only the *aspect ratio* affects framing.
+        shape_defaults
+            Whether Algan's own shapes (``Square``, ``Circle``, ...) also adopt
+            Manim's default colours and stroke styling. Defaults to ``False``,
+            since it changes shapes that have nothing to do with Manim.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+
+        See Also
+        --------
+        :class:`~algan.mobs.manim_mob.ManimMob` : Convert a Manim Mobject into a Mob.
+
+        Examples
+        --------
+        .. algan::
+
+            import manim
+
+            Scene.use_manim_defaults()
+            ManimMob(manim.Circle()).spawn()
+            Scene.save_video()
+        """
+        from algan.manim_defaults import apply_manim_defaults
+
+        return apply_manim_defaults(
+            self,
+            camera=camera,
+            shading=shading,
+            background=background,
+            coordinates=coordinates,
+            video_settings=video_settings,
+            shape_defaults=shape_defaults,
+        )
 
     @active_scene_method
     def get_light_sources(self):
@@ -738,6 +835,9 @@ class Scene(RenderLoopMixin):
         self.effects = []
         self.camera = None
         self.light_sources = []
+        # The initializer below restores Algan's own camera and lighting, so the
+        # Manim viewpoint is gone; drop the coordinate convention that went with it.
+        self.manim_coordinates = False
         with (
             SceneManager.instance().activating(self),
             animation_manager_context(self.animation_manager),
