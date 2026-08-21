@@ -172,6 +172,11 @@ into the older behaviour explicitly:
 The default is ``"error"``. ``RenderResult.render_plan`` records which backend ran
 and which features were requested, if you want to check programmatically.
 
+This table covers only the split between the two renderers.
+:doc:`renderer_limitations` is the complete list of what the renderer does not
+do -- which objects are lit and shadowed, which texture maps are sampled, where
+reflection and refraction stop, and the hard limits.
+
 shadows
 -------
 
@@ -316,6 +321,7 @@ per-batch fetch and render times as it goes.
 See Also
 ========
 
+- :doc:`renderer_limitations` -- the complete list of what the renderer cannot do.
 - :doc:`settings` -- how the settings system works, including temporary overrides.
 - :doc:`reflections_and_glass` -- the cost of bounces.
 - :doc:`lighting_and_shadows` -- the cost of lights and shadows.
