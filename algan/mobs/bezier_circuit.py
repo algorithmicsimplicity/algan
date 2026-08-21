@@ -42,6 +42,10 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
 from algan.constants.spatial import OUT, RIGHT, UP
 from algan.geometry.geometry import rotate_vector_around_axis
+from algan.mobs.nonplanar_circuit import (
+    build_render_primitives as build_nonplanar_render_primitives,
+)
+from algan.mobs.nonplanar_circuit import classify_circuit
 from algan.rendering.raytracing.utils import _unify_time
 from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.settings.video_settings import PREVIEW
@@ -422,6 +426,14 @@ class BezierCircuitCubic(Mob):
             second_axis_synthesized,
         ) = _circuit_location_and_basis(control_points)
 
+        # Decided once, here, from the authored control points: a circuit whose
+        # sub-paths do not lie in planes cannot be rendered by projecting them
+        # onto one (see algan.mobs.nonplanar_circuit). The plan is topology
+        # only -- the geometry it describes is rebuilt from the live control
+        # points every render batch -- but the choice itself is fixed, exactly
+        # as the plane in ``basis`` above is.
+        self._nonplanar_plan = classify_circuit(control_points, filled)
+
         self.grid_width = self.grid_height = 1
         self.num_texture_points = 0
         first_basis = kwargs2["basis"][..., :3]
@@ -506,6 +518,20 @@ class BezierCircuitCubic(Mob):
         self.normals = normals
         self.is_primitive = True
         self.render_primitive = RENDERER_REGISTRY.bezier_circuit_primitive
+
+    def _after_repack(self):
+        """Re-decide the planar/patch/stroke split against the whole pack.
+
+        ``batch_mobs`` clones its first member and then writes every member's
+        control points in, so the plan made at construction describes one tile
+        of what is now a whole sphere. Classification is per sub-path and the
+        pack's sub-paths are its members', so redoing it here reaches the same
+        decision the members reached individually -- which is what
+        ``ManimMob(..., batch=True)`` relies on.
+        """
+        self._nonplanar_plan = classify_circuit(
+            self.control_points.location.reshape(-1, 3), self.filled
+        )
 
     @classmethod
     def from_batches(cls, control_point_batches, *args, **kwargs):
@@ -1013,6 +1039,17 @@ class BezierCircuitCubic(Mob):
             ignored_dims=[-1],
         )
         num_control_points = 4  # cubic beziers
+        if self._nonplanar_plan is not None:
+            # Not projectable onto one plane: this circuit renders as PN patches
+            # and/or per-run circuits built from the same live control points.
+            return build_nonplanar_render_primitives(
+                self,
+                unsquish(self.control_points.location, -2, num_control_points),
+                self.texture_points.get_animated_attribute("color"),
+                self.border_texture_points.get_animated_attribute("color"),
+                *shader_vars[:1],
+                *shader_vars[2:],
+            )
         # Read the colour rows as plain tensors. ``mob.color`` hands back a
         # :class:`~algan.constants.color.Color` so callers get its rgb / glow /
         # opacity views, but a Tensor subclass routes *every* subsequent

@@ -635,6 +635,47 @@ Camera
   where the same scene renders fine from outside.
 
 
+.. _limits-nonplanar:
+
+Bezier outlines that are not flat
+=================================
+
+A Bezier circuit is resolved by intersecting a camera ray with the circuit's own
+plane and deciding coverage analytically in that plane, which is what keeps a
+circle exactly round and a glyph crisp at any zoom. Geometry that does not lie in
+a plane cannot be resolved that way, so Algan classifies every circuit once, when
+you construct it, and gives the non-planar ones real 3-D geometry instead:
+
+* **Filled** -- each closed sub-path becomes curved patches, the same primitive
+  :class:`~.Surface` produces. This is how a Manim ``Sphere`` imports.
+* **Unfilled** -- the path is split into near-straight runs, each drawn as its
+  own circuit facing the camera, so a 3-D curve keeps its position in space and
+  its stroke keeps a constant width on screen.
+
+Both produce ordinary geometry, so shadows, reflections and refraction see
+exactly what the camera sees. What to know:
+
+* The decision is made **at construction and does not change**, exactly as the
+  circuit's plane does not. A flat shape that you later
+  :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` into a
+  non-flat one stays on the flat path (and keeps its original plane), and the
+  reverse holds too.
+* A non-planar **filled** circuit's holes are filled. The even-odd rule that
+  carves a counter out of a glyph has no equivalent once each sub-path is its
+  own patch group. Manim's 3-D tiles have no holes, so this is only reachable by
+  hand-building one.
+* A non-planar circuit's texture grid collapses to one colour per shape, so
+  :meth:`~.BezierCircuitCubic.set_color_by_function` and colour waves across it
+  come out flat. The grid is laid out across a circuit's plane frame, which
+  these no longer have.
+* Neighbouring patches share corner *positions* exactly, so the surface is
+  watertight, but their corner *normals* are each estimated from one patch's own
+  boundary -- about 2.5 degrees apart on a stock ``manim.Sphere()``, which is a
+  sub-pixel seam at 1080p.
+
+Set ``ALGAN_NONPLANAR_CIRCUITS=0`` to turn the whole thing off and flatten every
+circuit onto a plane, which is what Algan did before this existed.
+
 .. _limits-coplanar:
 
 Ordering, coplanar geometry and z-fighting

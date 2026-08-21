@@ -1285,6 +1285,16 @@ class Animatable:
         clone.components = component_clones
         return clone
 
+    def _after_repack(self):
+        """Called once ``batch_mobs`` has finished packing this Mob's rows.
+
+        A pack is cloned from its first member and then has every member's rows
+        written into it, so anything a class derived from its own geometry at
+        construction was derived from that one member. Override to redo it
+        against the pack. The default does nothing, which is right for any class
+        whose construction-time state is not geometry-dependent.
+        """
+
     def clone(
         self,
         add_to_scene: bool = True,

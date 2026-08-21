@@ -314,4 +314,10 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
 
         batch_mob.add_children(components)
 
+        # The pack was cloned from ``mobs[0]``, so anything a class derived from
+        # its own geometry at construction describes ONE member and now has to
+        # be redone against all of them. ``from_batches`` needs no such hook --
+        # it hands the constructor every member's geometry to begin with.
+        batch_mob._after_repack()
+
         return batch_mob

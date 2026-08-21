@@ -44,6 +44,18 @@ _manim = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 class ManimMob(BezierCircuitCubic):
     """Constructs an equivalent Algan Mob from a given Manim Mobject.
 
+    Manim's 3-D Mobjects convert too, and arrive as real 3-D geometry rather
+    than flattened onto a plane. A ``Surface`` -- and everything built on it,
+    ``Sphere``, ``Torus``, ``Cone`` -- is a grid of curved quad tiles in Manim,
+    and each tile becomes one of the curved patches Algan's own 3-D shapes are
+    made of; a 3-D path such as a helical ``ParametricFunction`` keeps its
+    position in space while its stroke keeps a constant width on screen. Both
+    are ordinary geometry, so shadows, reflections and materials apply to them.
+    See :ref:`limits-nonplanar` for what that costs.
+
+    Note that Manim's z axis points opposite to Algan's, so a converted
+    ``Sphere`` has its poles facing the camera until you rotate it.
+
     Parameters
     ----------
     manim_mob : manim.Mobject

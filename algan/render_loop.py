@@ -1634,6 +1634,10 @@ class RenderLoopMixin:
             return False
         if actor.empty:
             return False
+        if getattr(actor, "_nonplanar_plan", None) is not None:
+            # Renders as PN patches and/or per-run circuits, neither of which
+            # the vectorized circuit pack knows how to build.
+            return False
         if actor.control_points.parent_batch_sizes is not None:
             return False
         timeline = self.timeline_manager

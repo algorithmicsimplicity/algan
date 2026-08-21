@@ -252,6 +252,7 @@ _INTERNAL_EXPORT_MODULES = (
     "algan.animatable_base.mob_movement",
     "algan.animatable_base.mob_orientation",
     "algan.animation_timeline.timeline",
+    "algan.mobs.nonplanar_circuit",
     "algan.rendering.logical_pn",
     "algan.utils.file_utils",
     "algan.utils.lazy_import",

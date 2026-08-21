@@ -98,6 +98,55 @@ Wrapping the finished ``VGroup`` gives you one Algan Mob whose parts are its
 children, so you can animate the whole diagram together or reach into
 ``plot.children`` for an individual piece.
 
+Three-dimensional Manim geometry
+================================
+
+Manim's 3-D Mobjects import too, and they arrive as real 3-D geometry rather
+than as something flattened to face you. A :class:`~.Surface` -- and everything
+built on it, ``Sphere``, ``Torus``, ``Cone`` -- is a grid of curved quad tiles
+in Manim, and each tile becomes one of the same curved patches Algan's own
+3-D shapes are made of: it is diced to triangles afresh in every frame, as
+finely as that frame needs and no more, so the silhouette stays smooth however
+far you push the camera in.
+
+.. algan:: ImportingManim3D
+
+    from algan import *
+    import manim as mn
+    import numpy as np
+
+    with Off():
+        ball = ManimMob(mn.Sphere(resolution=(16, 8)))
+        coil = ManimMob(mn.ParametricFunction(
+            lambda t: np.array([1.8 * np.cos(t), 1.8 * np.sin(t), t / 3 - 3.1]),
+            t_range=[0, 6 * np.pi], stroke_width=8,
+        ))
+        # Manim builds both around its own z axis, which points away from the
+        # camera in Algan; stand them upright before animating.
+        Group(ball, coil).rotate(-75, RIGHT).spawn()
+
+    with Sync(run_time=4):
+        ball.rotate(360, UP)
+        coil.rotate(360, UP)
+
+    Scene.save_video()
+
+A 3-D *path* -- a ``ParametricFunction`` tracing a helix, a knot, a field line --
+keeps its true position in space while its stroke keeps a constant width on
+screen, which is what Manim draws and what a solid tube would not.
+
+Because all of this is ordinary geometry, the rest of Algan applies to it: an
+imported sphere casts and receives ray-traced shadows, shows up in reflections
+and refractions, and takes an Algan
+:doc:`material <../advanced_user_tutorials/shaders_and_materials>` like any
+native shape.
+
+Two things to know. Manim tiles a surface at a fixed ``resolution``, and that
+tiling is the shape Algan reproduces -- raising it gives a rounder object, at
+the usual cost. And Manim's z axis points opposite to Algan's, so a ``Sphere``
+imported as-is has its poles pointing at the camera; rotate it about
+:data:`~algan.constants.spatial.RIGHT` if you want them upright, as above.
+
 Importing an SVG
 ================
 
