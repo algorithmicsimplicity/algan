@@ -36,6 +36,7 @@ from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Circle
 from algan.mobs.surfaces.surface import Surface
+from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.tensor_utils import cast_to_tensor
 
 
@@ -1268,7 +1269,18 @@ class Polyhedron(Mob):
         self.graph_config = dict(graph_config or {})
 
         super().__init__(**kwargs)
-        face_style = _face_style_kwargs(self.faces_config, {})
+        # Opt-in Manim shape profile: a mapped solid adopts Manim's fill
+        # defaults on its faces unless the caller styled them (fill_color /
+        # fill_opacity reach faces_config through the constructors above).
+        face_config_source = self.faces_config
+        style = _manim_shape_style_for(type(self))
+        if style is not None:
+            face_config_source = dict(face_config_source)
+            if style["color"] is not None:
+                face_config_source.setdefault("fill_color", style["color"])
+            if style["fill_opacity"] is not None:
+                face_config_source.setdefault("fill_opacity", style["fill_opacity"])
+        face_style = _face_style_kwargs(face_config_source, {})
         face_groups = []
         for face in self.faces_list:
             triangles = []

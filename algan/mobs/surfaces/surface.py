@@ -56,6 +56,7 @@ from algan.rendering.logical_pn import (
     mean_patch_edge_length,
     normalize_pixel_tolerance,
 )
+from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.file_utils import get_image
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
 from algan.utils.tensor_utils import (
@@ -938,6 +939,18 @@ class Surface(Mob):
         if not 0 <= self._resolution_shrink_margin < 1:
             raise ValueError("resolution_shrink_margin must be in [0, 1)")
         # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
+        # Opt-in Manim shape profile: a mapped shape adopts Manim's
+        # constructor fill (and checkerboard pair) unless the caller passed a
+        # colour of its own -- ``Sphere(checkerboard_colors=[a, b])`` arrives
+        # here already translated to ``color``/``checkered_color``. Injected
+        # here so both the Mob's own colour attribute and the grid child built
+        # below carry it.
+        if "color" not in kwargs:
+            style = _manim_shape_style_for(type(self))
+            if style is not None and style["color"] is not None:
+                kwargs["color"] = style["color"]
+                if checkered_color is None and style.get("checker_color") is not None:
+                    checkered_color = style["checker_color"]
         super().__init__(*args, **kwargs)
         kwargs["scene"] = self.scene
         # Texture timelines are keyed by texel count. AttributeTimeline fixes

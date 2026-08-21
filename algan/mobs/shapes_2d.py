@@ -37,6 +37,7 @@ from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.settings import SETTINGS
 from algan.settings.renderer_settings import effective_triangle_primitive
+from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.tensor_utils import (
     broadcast_all,
     cast_to_tensor,
@@ -57,13 +58,20 @@ def _coerce_algan_color(value, opacity=None):
     return value
 
 
-def _translate_vector_style_kwargs(kwargs, *, default_color=None, line=False):
+def _translate_vector_style_kwargs(
+    kwargs, *, default_color=None, line=False, shape=None
+):
     """Translate common VMobject style keywords to BezierCircuitCubic.
 
     Algan stores fill color on ``color`` and outline style on
     ``border_color``/``border_width``.  Manim exposes the same concepts as
     ``fill_*`` and ``stroke_*``.  Consuming the keywords here also prevents
     renderer-only VMobject settings from leaking into ``Animatable``.
+
+    ``shape``, when given, is the Mob class being constructed; under the
+    opt-in Manim shape profile (``SETTINGS.style.shape_style_profile``) its
+    Manim constructor defaults are fed in for anything the caller did not pass
+    -- an explicit keyword always wins over the profile.
     """
     kwargs = dict(kwargs)
     has_color = "color" in kwargs
@@ -75,10 +83,30 @@ def _translate_vector_style_kwargs(kwargs, *, default_color=None, line=False):
     stroke_opacity = kwargs.pop("stroke_opacity", None)
     stroke_width = kwargs.pop("stroke_width", None)
 
+    style = _manim_shape_style_for(shape) if shape is not None else None
+    if style is not None:
+        if not has_color and style["color"] is not None:
+            color = style["color"]
+            has_color = True
+        if (
+            stroke_color is None
+            and stroke_opacity is None
+            and "border_color" not in kwargs
+            and style["border_color"] is not None
+        ):
+            kwargs["border_color"] = style["border_color"]
+        if stroke_width is None and "border_width" not in kwargs:
+            kwargs["border_width"] = style["border_width"]
+        if "filled" not in kwargs:
+            kwargs["filled"] = style["filled"]
+
     if line:
         # A Line is an unfilled path; Manim's generic ``color`` controls its
         # stroke, while fill settings are accepted but have no visible effect.
-        if stroke_color is None and has_color:
+        # The profile's own border colour stands in for that stroke when it has
+        # already been injected, so the (invisible) profile fill never leaks
+        # into the stroke.
+        if stroke_color is None and has_color and "border_color" not in kwargs:
             stroke_color = color
         kwargs["filled"] = False
     else:
@@ -195,7 +223,7 @@ class Line(BezierCircuitCubic):
             start_center = start_center + unit * effective_buff
             end_center = end_center - unit * effective_buff
 
-        kwargs = _translate_vector_style_kwargs(kwargs, line=True)
+        kwargs = _translate_vector_style_kwargs(kwargs, line=True, shape=type(self))
 
         if abs(float(path_arc)) > 1e-10:
             import manim as mn
@@ -350,7 +378,9 @@ class Point(BezierCircuitCubic):
 
     def __init__(self, location=ORIGIN, *args, **kwargs):
         location = cast_to_tensor(location)
-        kwargs = _translate_vector_style_kwargs(kwargs, default_color=BLACK)
+        kwargs = _translate_vector_style_kwargs(
+            kwargs, default_color=BLACK, shape=type(self)
+        )
         super().__init__(torch.cat([location for _ in range(4)], -2), *args, **kwargs)
 
     def get_num_points(self):
@@ -551,7 +581,9 @@ class Polygon(BezierCircuitCubic):
     """
 
     def __init__(self, *vertex_locations: torch.Tensor, **kwargs):
-        kwargs = _translate_vector_style_kwargs(kwargs, default_color=RED)
+        kwargs = _translate_vector_style_kwargs(
+            kwargs, default_color=RED, shape=type(self)
+        )
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
             while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:
@@ -816,7 +848,9 @@ class SurroundingRectangle(Quad):
                 dtype=md.dtype,
             )
             control_points = control_points + md.reshape(-1, 3)[0] + IN * 0.01
-            kwargs = _translate_vector_style_kwargs(kwargs, default_color=RED)
+            kwargs = _translate_vector_style_kwargs(
+                kwargs, default_color=RED, shape=type(self)
+            )
             BezierCircuitCubic.__init__(self, control_points, **kwargs)
         else:
             super().__init__(corners + IN * 0.01, **kwargs)
@@ -869,7 +903,9 @@ class Circle(BezierCircuitCubic):
             radius = 1
         if color is not None:
             kwargs.setdefault("color", color)
-        kwargs = _translate_vector_style_kwargs(kwargs, default_color=BLUE)
+        kwargs = _translate_vector_style_kwargs(
+            kwargs, default_color=BLUE, shape=type(self)
+        )
         a = 1.00005519
         b = 0.55342686
         c = 0.99873585

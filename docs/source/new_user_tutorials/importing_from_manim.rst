@@ -199,6 +199,69 @@ The two libraries use different conventions, and the boundary is the
   origin plane is about 7. Imported diagrams usually want a modest
   :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`.
 
+.. _manim-defaults:
+
+Matching Manim's framing exactly
+================================
+
+Rather than rescaling each import, you can point the whole Scene at Manim's own
+defaults with :meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>`.
+Call it once, before you build anything::
+
+    from algan import *
+    import manim as mn
+
+    Scene.use_manim_defaults()
+
+    ManimMob(mn.Square()).spawn()
+    ManimMob(mn.Sphere()).spawn()
+
+    Scene.save_video()
+
+It sets the four things that decide where imported geometry lands, and what
+colour it comes out:
+
+* **The frame.** Manim's frame is 8 world units tall and its width follows from
+  the aspect ratio, which is the same convention Algan's vertical ``fov`` uses.
+* **The camera.** Manim's ``ThreeDCamera`` is a pinhole camera 20 units from the
+  frame plane, so the vertical field of view is
+  ``2 * atan(4 / 20)`` = 22.62 degrees. Manim's plain 2-D camera is a flat
+  orthographic projection instead, but the two agree exactly at ``z = 0``, so this
+  one camera reproduces 2-D scenes exactly and 3-D scenes with Manim's own
+  perspective.
+* **The lighting.** Manim's single light, in Manim's position, and flat unlit
+  colour as the default shading -- which is what Manim's renderer actually does
+  to a vector Mobject -- with tonemapping off, so a flat fill comes out
+  byte-identical to Manim's.
+* **The z axis.** Manim's ``OUT`` is ``+z`` and Algan's is ``-z``, so
+  ``use_manim_defaults()`` also mirrors imported geometry in z. Without that a
+  converted 3-D scene renders back-to-front; flat ``z = 0`` geometry is
+  unaffected either way.
+
+Each part can be declined -- ``use_manim_defaults(shading=False)`` keeps Algan's
+lighting while taking Manim's framing. Two extras are off by default:
+``video_settings=True`` also switches the output to Manim's 1920x1080 at 60 fps,
+and ``shape_defaults=True`` makes Algan's *own* shapes (``Square``, ``Circle``,
+...) adopt Manim's colours and stroke styling.
+
+How close it gets
+-----------------
+
+Close enough that the two are hard to tell apart, but not byte-identical, and
+the residue is worth knowing:
+
+* **Flat fills are exact.** A filled region renders to the same bytes as Manim's.
+* **Unfilled strokes land within about a third of a pixel** at 854x480.
+* **A filled shape's outline is offset by half its stroke width.** Manim centres
+  a stroke on the path; Algan draws a filled circuit's border inside it. At
+  Manim's default ``stroke_width`` of 4 that is about 1 pixel at 854x480.
+* **3-D solids are shaded differently.** Manim shades a face by a two-point
+  gradient across it (``shading_factor`` 0.2); Algan ray-traces. Silhouettes,
+  positions and base colours agree, the shading within a face does not.
+
+``benchmarks/_manim_defaults_parity_check.py`` renders the same scene through
+both engines and reports these numbers, if you want to measure them yourself.
+
 Native compatibility classes
 ============================
 
