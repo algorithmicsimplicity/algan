@@ -930,6 +930,34 @@ def set_sheet_mask_kernel(enabled):
     SHEET_MASK_KERNEL = bool(enabled)
 
 
+# Kernel conflict-rank scan in the compaction
+# (sheet_compact_taichi.sheet_conflict_rank). A fragment's conflict rank --
+# the largest, over the sample lanes it claims, of how many EARLIER fragments
+# of its band claim the same lane -- keys a band's sub-bands when the fill
+# rule's partition is violated (sheets.compact_sheets). Torch walked it lane
+# by lane: eight cumsum passes over the stream, an index_select + maximum +
+# two wheres each, and five live [n] arrays at the peak -- the compaction's
+# one genuine remaining scan (RENDERER_WORK_QUEUE.md item 11;
+# DESIGN_sheet_resolve.md §10.4). One kernel now walks each band forward once
+# with the eight per-lane counters in registers, gathering msk[order[j]]
+# itself instead of materializing the sorted+masked copy.
+#
+# Bit-identical, and trivially so: both arms are integer and visit the stream
+# in the SAME order -- the kernel's serial band walk reads fragments exactly
+# as the cumsums do -- so unlike SHEET_MASK_KERNEL above it needs no
+# order-independence argument at all. The max=15 clamp stays in
+# compact_sheets in both arms.
+SHEET_RANK_KERNEL = env_flag("ALGAN_SHEET_RANK_KERNEL", True)
+
+
+def set_sheet_rank_kernel(enabled):
+    """Toggle the kernel conflict-rank scan in sheet compaction (see
+    ``SHEET_RANK_KERNEL``). Takes effect at the next batch's emission.
+    """
+    global SHEET_RANK_KERNEL
+    SHEET_RANK_KERNEL = bool(enabled)
+
+
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
 # ``anti_alias_level`` times the output resolution and box-filtering back down
 # (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE

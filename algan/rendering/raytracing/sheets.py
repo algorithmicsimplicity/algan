@@ -428,6 +428,72 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     return area, union, fused, sliver
 
 
+def _conflict_rank(band_start, order, msk, positions):
+    """Per-sorted-fragment conflict rank within its band, UNCLAMPED.
+
+    ``rank[j]`` is the largest, over the sample lanes sorted fragment ``j``
+    claims, of the number of earlier fragments of the same band claiming that
+    same lane (the call site in ``compact_sheets`` explains why the sheet key
+    needs it). Returns int32; the caller owns the ``max=15`` clamp and both
+    arms must reach it the same way.
+
+    Under ``SHEET_RANK_KERNEL`` one kernel walks each band forward once with
+    the eight per-lane counters in registers (``sheet_compact_taichi.
+    sheet_conflict_rank``); the torch arm below is what it replaced and stays
+    as the A/B arm. That arm computes the same numbers lane by lane -- a
+    global exclusive prefix sum minus the prefix at the band's first index,
+    which is the count of earlier in-band claimants because bands are
+    contiguous and disjoint. Both arms are integer and visit the stream in
+    the same order, so they agree bitwise by construction rather than by an
+    order-independence argument (unlike ``_band_reduce``, whose atomics need
+    one). Row 0 starts a band in both arms whether or not its flag is set,
+    so they agree on ANY input, not only on streams ``compact_sheets``
+    produces (whose first flag is always set).
+
+    ``positions`` is the caller's shared arange; ONLY the torch arm reads it
+    (the kernel needs no positions at all, which is part of what it saves).
+    int32 through the torch scan: a lane holds 0/1 and its exclusive prefix
+    sum is bounded by the fragment count, so every value fits, and the loop's
+    five live [n] arrays cost half what they did (70 MB of a 4K frame). The
+    kernel arm keeps only the output array: the sorted+masked copy this loop
+    materializes as ``bits_pre`` never exists there.
+    """
+    device = msk.device
+    n = int(order.numel())
+    if not rt_settings.SHEET_RANK_KERNEL or n == 0:
+        band_first = torch.where(band_start, positions, torch.zeros_like(positions))
+        band_first = torch.cummax(band_first, 0)[0]
+        bits_pre = (msk.index_select(0, order) & AA_MASK_ALL).to(torch.int32)
+        rank = torch.zeros(n, dtype=torch.int32, device=device)
+        for b in range(AA_NUM_SAMPLES):
+            lane = (bits_pre >> b) & 1
+            excl = torch.cumsum(lane, 0, dtype=torch.int32) - lane
+            prior = excl - excl.index_select(0, band_first)
+            del excl
+            rank = torch.maximum(
+                rank, torch.where(lane > 0, prior, torch.zeros_like(prior))
+            )
+            del lane, prior
+        return rank
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        sheet_conflict_rank,
+    )
+
+    # Uninitialized is safe: the kernel starts a band at row 0 even when its
+    # flag is clear, so every row is written exactly once (see its docstring).
+    rank = torch.empty(n, dtype=torch.int32, device=device)
+    # Taichi has no bool ndarray, so the flags ride as the bytes they are.
+    sheet_conflict_rank(
+        band_start.contiguous().view(torch.uint8),
+        order.contiguous(),
+        msk.contiguous(),
+        n,
+        int(AA_MASK_ALL),
+        rank,
+    )
+    return rank
+
+
 def _prim_split_after(
     merged,
     cam_origin,
@@ -729,8 +795,9 @@ def compact_sheets(
     safe_ref = frag_ref.clamp_min(0).to(torch.int64)
     sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
     facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
-    # One arange, used both for the bezier group key here and for the
-    # band-first scan below -- they were two identical int64 [n] tensors.
+    # One arange, shared by the bezier group key here and the conflict-rank
+    # scan's torch arm below (_conflict_rank) -- they were two identical
+    # int64 [n] tensors.
     positions = torch.arange(n, dtype=torch.int64, device=device)
     # Triangles group by (surface, facing); every bezier fragment is its own
     # group (negative, unique — a shared sentinel would fuse adjacent
@@ -791,24 +858,8 @@ def compact_sheets(
     # without this, a morphing tetrahedron's self-overlapping faces fused
     # and rendered ~30% too light... dark; the fragment walk composited them
     # per fragment and was right). Donors (empty masks) carry rank 0 and
-    # ride with their sheet's owners. Integer cumsums: deterministic.
-    band_first = torch.where(band_start, positions, torch.zeros_like(positions))
-    band_first = torch.cummax(band_first, 0)[0]
-    # int32 through the scan: a lane holds 0/1 and its exclusive prefix sum is
-    # bounded by the fragment count, so every value fits, and the loop's five
-    # live [n] arrays cost half what they did (70 MB of a 4K frame).
-    bits_pre = (frag_msk.index_select(0, order) & AA_MASK_ALL).to(torch.int32)
-    rank = torch.zeros(n, dtype=torch.int32, device=device)
-    for b in range(AA_NUM_SAMPLES):
-        lane = (bits_pre >> b) & 1
-        excl = torch.cumsum(lane, 0, dtype=torch.int32) - lane
-        prior = excl - excl.index_select(0, band_first)
-        del excl
-        rank = torch.maximum(
-            rank, torch.where(lane > 0, prior, torch.zeros_like(prior))
-        )
-        del lane, prior
-    del bits_pre, band_first
+    # ride with their sheet's owners. Integer throughout: deterministic.
+    rank = _conflict_rank(band_start, order, frag_msk, positions)
     rank.clamp_(max=15)
     cid = band_id * 16 + rank
     del rank

@@ -38,7 +38,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
 | **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
 | **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
-| **T5** sparse-coverage host chain | **partly shipped, and T5's own item is the half that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Two measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
+| **T5** sparse-coverage host chain | **the host loops are done; T5's own item is the one that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame), and the conflict-rank scan followed on 2026-08-21 (`SHEET_RANK_KERNEL`, default on, bit-identical, 33 -> 6 ms of a 1080p frame on CPU). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Three measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
 | **T3**, **T6** | untouched; both shrank in share |
 
 **Read this before picking anything up.** The 2026-08-16 round moved the
@@ -804,13 +804,34 @@ exact torch expressions they replace, plus four rendered frames hashed with
 both toggles on and both off). `tests/full_renders` and `tests/fast` pass
 unchanged on CUDA.
 
+**Shipped 2026-08-21: the conflict-rank scan, the last of the compaction's
+multi-pass loops.** `sheet_compact_taichi.sheet_conflict_rank`
+(`SHEET_RANK_KERNEL`, default on) replaces eight `torch.cumsum` passes over the
+fragment stream -- plus a per-lane `index_select`, `maximum` and two `where`s,
+and five live `[n]` arrays -- with one pass: a thread per band walking its
+fragments forward with the eight per-lane counters in registers. It needed no
+answer to ss10.4's blocked-scan question after all, because the bands are
+already contiguous runs of the sorted stream and there is nothing to segment;
+see that section for the shape and for the band-length distribution it rests on
+(mean 1.11 fragments, max 15 on a real 1080p frame). Bit-identical **by
+construction** rather than by argument -- both arms are integer and walk the
+stream in the same order -- and pinned by `benchmarks/_sheet_kernel_check.py`,
+whose eleven rank cases include ones the render cannot produce.
+
+Measured on **CPU only** (a 4-vCPU cloud container; this is a CPU number and
+nothing else, and the reference machine's is unknown): at 1920x1080, one call
+per frame over 976,231 fragments, `_conflict_rank` goes **33 ms -> 6 ms** and
+`compact_sheets` **480 ms -> 458 ms**. Do not re-measure it on a
+`torch.randperm`: on the same captured tensors that reads 4.0x instead of 7.7x,
+because the side a random permutation scatters is the kernel's own
+`msk[order[j]]` gather -- the mirror image of the gather trap two paragraphs up.
+It understates rather than inverting, but it is still wrong.
+
 **What is left of T5, and what to leave alone.** The sorts (`_lexsort`'s three
 stable `argsort`s and two `torch.unique` calls, ~87 ms of a 4K compaction)
 are cuB radix sorts; Taichi has no sort primitive and hand-writing one to lose
 is not a plan. What remains worth measuring is the per-fragment gathers in
-`_shade_class` and `_prim_split_after`, and the conflict-rank scan -- a
-segmented scan, so DESIGN_sheet_resolve.md ss10.4's two-pass blocked-scan
-question has to be answered first.
+`_shade_class` and `_prim_split_after`.
 
 ### T6. Raster precompute tables -- 5.4 s (1.4%)
 

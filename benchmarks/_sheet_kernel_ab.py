@@ -1,8 +1,12 @@
-"""A/B the compaction kernels in a real render: RASTER_FUSED_GATHER + SHEET_MASK_KERNEL.
+"""A/B the compaction kernels in a real render:
+RASTER_FUSED_GATHER + SHEET_MASK_KERNEL + SHEET_RANK_KERNEL.
 
 Alternates the arms inside one process (wall-clock across processes swings ~2x
 with thermal throttling on this hardware) and reports the median of each arm,
-plus the two stages the kernels sit in.
+plus the two stages the kernels sit in. The thermal-throttling caveat -- and
+so the trustworthiness of the wall-clock numbers themselves -- is a
+CUDA-machine caveat; on a CPU-only box the script still runs (the sync helper
+is a no-op without CUDA) but its times are CPU numbers and nothing else.
 
     <venv-python> benchmarks/_sheet_kernel_ab.py [width] [height] [rounds]
 """
@@ -29,16 +33,24 @@ EXPERIMENTAL = SETTINGS.raytracing.experimental
 acc = collections.Counter()
 
 
+def _sync():
+    """Synchronize the device before/after a timed region; a no-op where
+    there is no CUDA to synchronize (torch.cuda.synchronize raises there).
+    """
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
 def timed(mod, name, key):
     orig = getattr(mod, name)
 
     def wrapper(*a, **k):
-        torch.cuda.synchronize()
+        _sync()
         t0 = time.perf_counter()
         try:
             return orig(*a, **k)
         finally:
-            torch.cuda.synchronize()
+            _sync()
             acc[key] += time.perf_counter() - t0
 
     setattr(mod, name, wrapper)
@@ -55,8 +67,16 @@ Text("sheets").scale(0.7).move(DOWN * 2.2).spawn()
 VS = UHD.set(resolution=(W, H))
 
 ARMS = {
-    "torch ": {"raster_fused_gather": False, "sheet_mask_kernel": False},
-    "kernel": {"raster_fused_gather": True, "sheet_mask_kernel": True},
+    "torch ": {
+        "raster_fused_gather": False,
+        "sheet_mask_kernel": False,
+        "sheet_rank_kernel": False,
+    },
+    "kernel": {
+        "raster_fused_gather": True,
+        "sheet_mask_kernel": True,
+        "sheet_rank_kernel": True,
+    },
 }
 samples = {arm: [] for arm in ARMS}
 stages = {arm: collections.Counter() for arm in ARMS}
@@ -71,10 +91,10 @@ for _round in range(ROUNDS):
     for arm, cfg in ARMS.items():
         EXPERIMENTAL.set(**cfg)
         acc.clear()
-        torch.cuda.synchronize()
+        _sync()
         t0 = time.perf_counter()
         Scene.save_frame("_sheet_kernel_ab.png", VS)
-        torch.cuda.synchronize()
+        _sync()
         samples[arm].append(time.perf_counter() - t0)
         stages[arm].update(acc)
 

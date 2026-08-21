@@ -1,9 +1,14 @@
 """Sheet compaction (DESIGN_sheet_resolve.md P1/P2) on synthetic streams.
 
-Pure tensor assertions against hand-built fragment streams -- no render, no
-kernel launch. These pin the semantics the Phase-2 resolve consumes: keying,
-banding, the exact-area sum, the mask union, the fusion detector, the dominant
-fragment, ordering, and the CSR.
+Pure tensor assertions against hand-built fragment streams -- no render. These
+pin the semantics the Phase-2 resolve consumes: keying, banding, the exact-area
+sum, the mask union, the fusion detector, the dominant fragment, ordering, and
+the CSR.
+
+The two ``sheet_rank_kernel`` tests are the exception to "no kernel launch":
+they run the conflict-rank scan through both arms and compare, which is the
+only way to pin a kernel against the torch expression it replaced. They pay one
+small Taichi compile between them, which is why nothing here is marked ``fast``.
 """
 
 from __future__ import annotations
@@ -163,6 +168,84 @@ def test_mask_conflict_splits_overlapping_layers_at_any_depth():
         alphas=[0.5, 0.5],
     )
     assert claims[1] < claims[0]  # the second layer sees attenuated samples
+
+
+def test_conflict_rank_kernel_agrees_with_torch_arm_through_compact_sheets():
+    # The kernel arm of the conflict-rank scan must produce the SAME
+    # compaction as the torch arm, on every array, not just the same sheet
+    # count. The stream is conflict-heavy: five same-surface same-facing
+    # fragments in ONE band (the facing rule never splits), whose masks
+    # overlap enough to walk the unclamped ranks 0,1,2,3 past nothing -- plus
+    # a donor (empty mask, rank 0) riding with the first owner.
+    frags = [
+        (3, 1.0000, 0, 0.30, 0b11110000),
+        (3, 1.0001, 1, 0.25, 0b11110000),
+        (3, 1.0002, 2, 0.20, 0b11110000),
+        (3, 1.0003, 3, 0.15, 0b00111111),
+        (3, 1.0004, 4, 0.10, 0),
+    ]
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.SHEET_RANK_KERNEL
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_rank_kernel=False)
+        torch_arm = _compact(frags, band_rule="facing")
+        SETTINGS.raytracing.experimental.set(sheet_rank_kernel=True)
+        kernel_arm = _compact(frags, band_rule="facing")
+    finally:
+        rt.SHEET_RANK_KERNEL = old
+    # The stream really is conflict-heavy: the ranks subdivide the band.
+    assert torch_arm["num_sheets"] >= 3
+    assert set(torch_arm) == set(kernel_arm)
+    for key in sorted(torch_arm):
+        a, b = torch_arm[key], kernel_arm[key]
+        if isinstance(a, torch.Tensor):
+            assert torch.equal(a, b), key
+        else:
+            assert a == b, key
+
+
+def test_conflict_rank_kernel_matches_the_torch_arm_including_a_clear_first_flag():
+    # Direct two-arm check of sheets._conflict_rank on synthetic streams,
+    # including THE LEADING-RUN CASE: when band_start[0] is clear the torch
+    # arm's cummax makes the leading run one band starting at row 0, and the
+    # kernel must walk that band rather than leave its rows unwritten
+    # (compact_sheets itself never produces this input -- its first flag is
+    # always set -- but the helper must agree on ANY input).
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+    from algan.rendering.raytracing.sheets import _conflict_rank
+
+    def both_arms(band_start, order, msk):
+        positions = torch.arange(msk.numel(), dtype=torch.int64)
+        old = rt.SHEET_RANK_KERNEL
+        try:
+            SETTINGS.raytracing.experimental.set(sheet_rank_kernel=False)
+            want = _conflict_rank(band_start, order, msk, positions)
+            SETTINGS.raytracing.experimental.set(sheet_rank_kernel=True)
+            got = _conflict_rank(band_start, order, msk, positions)
+        finally:
+            rt.SHEET_RANK_KERNEL = old
+        return want, got
+
+    gen = torch.Generator().manual_seed(19)
+    n = 512
+    msk = torch.randint(0, 1 << 8, (n,), generator=gen, dtype=torch.int32)
+    order = torch.randperm(n, generator=gen)
+
+    scattered = torch.rand(n, generator=gen) < 0.05
+    scattered[0] = True
+    want, got = both_arms(scattered, order, msk)
+    assert want.dtype == torch.int32
+    assert torch.equal(want, got)
+
+    leading = scattered.clone()
+    leading[:8] = False
+    leading[0] = False
+    want, got = both_arms(leading, order, msk)
+    assert torch.equal(want, got)
+    assert int(want[0]) == 0  # row 0 has no earlier fragments in its band
 
 
 def test_adjacent_same_sheet_fragments_do_not_split():
@@ -552,6 +635,20 @@ def test_sheet_resolve_setting_reaches_the_live_module():
         assert rt.SHEET_RESOLVE is False
     finally:
         rt.SHEET_RESOLVE = old
+
+
+def test_sheet_rank_kernel_setting_reaches_the_live_module():
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.SHEET_RANK_KERNEL
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_rank_kernel=True)
+        assert rt.SHEET_RANK_KERNEL is True
+        SETTINGS.raytracing.experimental.set(sheet_rank_kernel=False)
+        assert rt.SHEET_RANK_KERNEL is False
+    finally:
+        rt.SHEET_RANK_KERNEL = old
 
 
 def test_interleaved_fragments_keep_exact_key_depth():
