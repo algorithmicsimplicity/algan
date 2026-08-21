@@ -626,10 +626,8 @@ def set_shadow_anyhit(enabled):
 # "same mesh": a concave solid legitimately shadows itself. Events without a
 # usable source id (bezier-originated, or ids that do not fit the packing) and
 # every path outside the sheet route's shadow queue keep today's epsilon.
-# DEFAULT OFF: it moves shadowed output wherever a cross-mesh blocker sits
-# within MIN_HIT_DISTANCE of an event, so it ships behind this gate until the
-# pixel suites qualify it; ALGAN_SHADOW_IDENTITY_REJECT=1 opts in.
-SHADOW_IDENTITY_REJECT = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", False)
+# DEFAULT ON.
+SHADOW_IDENTITY_REJECT = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", True)
 
 
 def set_shadow_identity_reject(enabled):

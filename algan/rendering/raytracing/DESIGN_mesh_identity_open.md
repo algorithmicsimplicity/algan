@@ -524,7 +524,7 @@ inner interface, and the existing glass scenes are unchanged with the gate off.
 
 
 ================================================================================
-I. SELF-SHADOW REJECTION BY IDENTITY — BUILT (default off), EXTENDED
+I. SELF-SHADOW REJECTION BY IDENTITY — BUILT (default on), EXTENDED
 ================================================================================
 **STATUS: built behind `SHADOW_IDENTITY_REJECT`, default off. What shipped is
 wider than what is designed below, and two of this section's premises were

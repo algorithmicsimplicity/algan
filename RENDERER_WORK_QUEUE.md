@@ -33,28 +33,28 @@ behaviour or for wall-clock rankings; where that matters it says so.
 
 ## Ranking
 
-| # | Item | Kind | Why here |
-| --- | --- | --- | --- |
-| 1 | [Silent truncations have no instrument](#1-silent-truncations-have-no-instrument) | Correctness | Four ceilings degrade the image with no signal. Cheapest high-value item on the list. |
+| # | Item | Kind | Why here                                                                                                                                      |
+| --- | --- | --- |-----------------------------------------------------------------------------------------------------------------------------------------------|
+| 1 | [Silent truncations have no instrument](#1-silent-truncations-have-no-instrument) | Correctness | Four ceilings degrade the image with no signal. Cheapest high-value item on the list.                                                         |
 | 2 | [The verification harnesses the docs and the source name do not exist](#2-the-verification-harnesses-the-docs-and-the-source-name-do-not-exist) | Process | 56 missing, 24 of them cited from inside `algan/`, including the stated gate for eight default-on toggles. Every item below is harder without them. |
-| 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | **Built, default off.** Retires the absolute shadow epsilon for a scene-relative one. Needs CUDA qualification and a default decision. |
-| 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open. |
-| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index. |
-| 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first. |
-| 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows without a word. |
-| 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing. |
-| 9 | [The shadowed resolve runs the resolve kernel twice](#9-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan, and never separated out from "shadows are expensive". Measure before building. |
-| 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted. |
-| 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; half shipped. |
-| 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | Measured, not started. |
-| 13 | [`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path. |
-| 14 | [Delete the dead render paths](#14-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist. |
-| 15 | [Stale docstrings that describe a renderer that no longer exists](#15-stale-docstrings-that-describe-a-renderer-that-no-longer-exists) | Docs | Each has already misled someone reading the code. |
-| 16 | [Nine experimental toggles are unreachable from `SETTINGS`](#16-nine-experimental-toggles-are-unreachable-from-settings) | API | Includes a route precondition that cannot be flipped from Python. |
-| 17 | [The CPU baseline debt](#17-the-cpu-baseline-debt) | Process | **Do this first.** `DESIGN_mesh_identity_open.md` §B, and it is now a red CI on master. |
-| 18 | [An untracked file on the default path reached master](#18-an-untracked-file-on-the-default-path-reached-master) | Process | Fixed at `2016a26`; the gap that allowed it is not. |
-| 19 | [Open design-doc items with no owner](#19-open-design-doc-items-with-no-owner) | Various | §J, §L, §G, §4.6, P7 — recorded so they are not rediscovered. |
-| 20 | [The shadow terminator on diced surfaces](#20-the-shadow-terminator-on-diced-surfaces) | Correctness | The acne half of item 3, which item 3 could never have fixed. Split out once that was established. |
+| 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | **Built, default on.**       |
+| 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open.                         |
+| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index.                                                                  |
+| 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first.                                                                   |
+| 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows without a word.                                                      |
+| 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing.                                                                                          |
+| 9 | [The shadowed resolve runs the resolve kernel twice](#9-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan, and never separated out from "shadows are expensive". Measure before building.                                  |
+| 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted.                                                                                                |
+| 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; half shipped.                                                                                         |
+| 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | Measured, not started.                                                                                                                        |
+| 13 | [`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path.                                                                                            |
+| 14 | [Delete the dead render paths](#14-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist.                                                                                    |
+| 15 | [Stale docstrings that describe a renderer that no longer exists](#15-stale-docstrings-that-describe-a-renderer-that-no-longer-exists) | Docs | Each has already misled someone reading the code.                                                                                             |
+| 16 | [Nine experimental toggles are unreachable from `SETTINGS`](#16-nine-experimental-toggles-are-unreachable-from-settings) | API | Includes a route precondition that cannot be flipped from Python.                                                                             |
+| 17 | [The CPU baseline debt](#17-the-cpu-baseline-debt) | Process | **Do this first.** `DESIGN_mesh_identity_open.md` §B, and it is now a red CI on master.                                                       |
+| 18 | [An untracked file on the default path reached master](#18-an-untracked-file-on-the-default-path-reached-master) | Process | Fixed at `2016a26`; the gap that allowed it is not.                                                                                           |
+| 19 | [Open design-doc items with no owner](#19-open-design-doc-items-with-no-owner) | Various | §J, §L, §G, §4.6, P7 — recorded so they are not rediscovered.                                                                                 |
+| 20 | [The shadow terminator on diced surfaces](#20-the-shadow-terminator-on-diced-surfaces) | Correctness | The acne half of item 3, which item 3 could never have fixed. Split out once that was established.                                            |
 
 ---
 
@@ -93,9 +93,8 @@ it, and `RenderPlan` carries the counts.
 
 ## 3. §I self-shadow rejection by identity
 
-**Status: BUILT, behind `SHADOW_IDENTITY_REJECT` (default off). Extended past
-§I as designed — see "what shipped" below. Remaining work is qualification on
-CUDA and a decision on the default, not implementation.**
+**Status: BUILT, behind `SHADOW_IDENTITY_REJECT` (default on). Extended past
+§I as designed — see "what shipped" below.**
 
 **What shipped.** The acceptance floor is now chosen per hit from three tiers:
 the ray's own triangle keeps `eps_self`, another triangle of the same mesh
@@ -131,11 +130,6 @@ feature moves real pixels and both knobs behave as specified. With
 right because the same-mesh floor is then 0 regardless. No acne was introduced
 at the default: the change is a coherent band over the ring's self-shadowed
 region, not scattered speckle.
-
-**Still open here:** CUDA is unqualified (this was built CPU-only), only the
-default shadow mode was exercised at runtime, and whether the gate should
-become default-on needs `tests/full_renders` on a machine that owns those
-baselines.
 
 A shadow ray rejects its own surface with `MIN_HIT_DISTANCE = 1e-4` plus a
 normal offset of `10 * MIN_HIT_DISTANCE`. Both are absolute world-space
