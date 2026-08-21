@@ -191,20 +191,42 @@ falls back into local shading rather than contributing black.
 same size side by side over a floor, lit straight down, so each shadow sits
 directly beneath its sphere and the two are trivial to compare.
 
-| | floor | glass sphere's shadow | opaque sphere's shadow |
-| --- | --- | --- | --- |
-| Algan (before) | 0.694 | 0.0070 — **1.0% of the floor** | 0.0070 — 1.0% |
-| Three.js path tracer | 0.154 | 0.157 — **101.9% of the floor** | 0.007 — 4.6% |
-| Three.js raster | 0.195 | 0.000 — 0% | 0.000 — 0% |
+| | glass sphere's shadow | opaque sphere's shadow |
+| --- | --- | --- |
+| Algan, before | **1.0% of the floor** | 1.0% |
+| **Algan, after** | **85.1% of the floor** | 1.0% |
+| Three.js path tracer | 101.9% of the floor | 4.6% |
+| Three.js raster | 0% | 0% |
 
-(Linear radiance; the glass patch exceeds 100% in the path tracer because the
-sphere is a lens and concentrates light.)
+(Linear radiance, each shadow patch as a fraction of the open floor. The glass
+patch exceeds 100% in the path tracer because the sphere is a lens and
+concentrates light.)
 
 Algan's glass blocked light **exactly as completely as an opaque sphere of the
 same size**. The shadow march attenuated by coverage alone —
 `transmitted *= 1.0 - alpha` — and never consulted `transmission` or `ior`, so a
 window, a wine glass and a brick were the same object to a shadow ray. This was
 the single largest structural error found.
+
+Now each shadow-ray hit passes `transmission · (1 - metalness) · (1 - F0)` of the
+light it covers. `F0` is the normal-incidence dielectric reflectance rather than
+a real angle-dependent Fresnel — the march has no normals and fetching them
+would cost the hottest loop in the renderer for a second-order effect — and it is
+less of an approximation than it sounds, because a solid presents the march two
+surfaces, entry and exit, each taking its own `1 - F0`.
+
+Two things it deliberately does not do, both because the shadow payload is one
+scalar per light: it does not bend the light (so there is no caustic core), and
+it does not tint it (so the shadow under green glass gets brighter but stays
+grey, where the path tracer's turns green). "A transmissive surface stops
+blocking light" is the honest description, not "glass casts a correct shadow".
+
+The any-hit shadow fast paths had to be gated: modes 2 and 3 answer "is anything
+there" and treat a hit as full occlusion, which stopped being equivalent to the
+march once a covered surface can pass light — and a glass ball is `alpha = 1`, so
+it does not even register as translucent. A batch containing transmissive
+geometry now stays on the ordered march. Scenes without any keep their fast path
+and their pixels: `calib_mirror.algan.png` is **byte-identical** across the change.
 
 ![shadow calibration](out/calib_shadow.compare.jpg)
 
@@ -296,8 +318,31 @@ material-appearance control living among ~55 experimental performance switches.
 `MeshPhysicalMaterial`, documented, and then **silently dropped** — they never
 reach the GPU. Instead the transmitted ray is tinted by the surface albedo at
 *every* interface crossing, so a coloured pane is tinted twice (entry and exit)
-and a metre-thick block is tinted exactly the same as a thin shell. Depth-dependent
-colour — the most recognisable property of real coloured glass — is unreachable.
+and a metre-thick block is tinted exactly the same as a thin shell.
+
+`scenes/calib_absorption.json` makes that concrete: three glass spheres of radius
+0.55, 1.05 and 1.75, identical material, against a white backdrop. Mean linear
+RGB through the centre of each:
+
+| radius | Algan | Three.js path tracer |
+| --- | --- | --- |
+| 0.55 | (0.032, 0.439, 0.068) | (0.006, 0.067, 0.008) |
+| 1.05 | (0.032, 0.440, 0.069) | (0.000, 0.043, 0.001) |
+| 1.75 | (0.032, 0.440, 0.069) | (0.000, 0.025, 0.000) |
+
+Algan's three spheres are **the same colour to three decimal places** whatever
+their size. The path tracer's deepen with the path length, losing a third of
+their transmitted green from the small sphere to the large one and going
+essentially pure green as the red and blue channels are absorbed away.
+Depth-dependent colour is the most recognisable property of real coloured glass
+and Algan cannot express it at all.
+
+![absorption calibration](out/calib_absorption.compare.jpg)
+
+The same figure shows the limit of the §4.1 shadow fix: the path tracer's glass
+spheres cast **green** shadows, because what reaches the floor has been through
+the glass. Algan's are now pale rather than black — the light gets through — but
+they stay grey, because a shadow query returns one scalar per light.
 
 This is a genuine missing feature rather than a wrong formula, and it needs new
 material slots plumbed through `scene_builder` into three kernel sites. The
@@ -349,6 +394,9 @@ back wall, under a directional key and a blue point light.
    where the motion artefact that justifies the default cannot occur.
 4. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
    conformance rather than Three.js parity is the goal.
+5. **Coloured shadows through coloured glass** (§4.1). Needs an RGB visibility
+   payload where there is one scalar per light today, so it is a bigger change
+   than the attenuation it would complete.
 
 ## 7. Files
 
@@ -362,7 +410,7 @@ back wall, under a directional key and a blue point light.
 | `metrics.py` | unit-free transport ratios (transmission and reflection efficiency) |
 | `transfer_probe.py` | Algan's authored-colour → pixel transfer curve |
 | `OX_AUDIT.md` | Ox Alpha's independent source-level audit |
-| `../../OX_FIXES.md`, `../../OX_BEER.md` | Ox Alpha's implementation reports |
+| `../../OX_FIXES.md` | Ox Alpha's implementation report |
 
 Reproduce:
 

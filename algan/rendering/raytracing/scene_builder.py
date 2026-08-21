@@ -14,7 +14,11 @@ from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
     RayTracedTrianglePrimitive,
 )
-from algan.rendering.raytracing.raytrace_kernels_taichi import _M_REFLECTIVITY, _M_WIDTH
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _M_REFLECTIVITY,
+    _M_TRANSMISSION,
+    _M_WIDTH,
+)
 from algan.rendering.raytracing.refit_bvh import build_refit_bvh
 from algan.rendering.raytracing.settings import (
     _USER_PIPELINE_BASE,
@@ -1638,6 +1642,27 @@ def _merge_scene(primitives):
     scene["has_refl_transparent"] = _has_refl_transparent(
         triangles, _pbr_from_extra("_rt_tri_extra")
     ) or _has_refl_transparent(beziers, _pbr_from_circuit_meta)
+
+    # Does anything in the batch pass light through itself? Shadow rays need
+    # to know: a transmissive surface attenuates rather than blocks (see
+    # ``raytrace_kernels_taichi._shadow_pass_through``), which is exactly the
+    # thing the opaque any-hit shadow modes assume cannot happen -- they answer
+    # "is there any hit" and treat a hit as full occlusion. ``tracer`` keeps
+    # such a batch on the ordered march. Deliberately conservative in the same
+    # way as ``has_refl_transparent``: a false positive costs a slower shadow
+    # query, a false negative renders a black shadow under a pane of glass.
+    def _any_transmissive(prims, attr, cols):
+        for p in prims:
+            extra = getattr(p, attr, None)
+            if extra is None or extra.shape[1] == 0:
+                continue
+            if bool((extra[..., cols] > 0.0).any()):
+                return True
+        return False
+
+    scene["has_transmissive"] = _any_transmissive(
+        triangles, "_rt_tri_extra", slice(9, 12)
+    ) or _any_transmissive(beziers, "_rt_circuit_meta", _M_TRANSMISSION)
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(

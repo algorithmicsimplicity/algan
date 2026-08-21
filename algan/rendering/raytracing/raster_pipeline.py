@@ -2054,6 +2054,7 @@ def shade_sparse_raster_coverage(
                 merged["tri_uvs"],
                 merged["tri_tex_meta"],
                 merged["textures"],
+                merged["tri_extra"],
                 int(merged["num_colored_triangles"]),
                 bez_bvh.blocks,
                 bez_bvh.node_miss,
