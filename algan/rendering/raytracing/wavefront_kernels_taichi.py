@@ -38,6 +38,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
     NODE_ARG,
+    _M_IOR,
+    _M_REFLECTIVITY,
+    _M_ROUGHNESS,
+    _M_TRANSMISSION,
     _axis_cos,
     _bezier_normal,
     _collect_hits,
@@ -754,6 +758,65 @@ def _reserve_continuation_slot(rs_alloc: ti.template(), capacity):
 # ---------------------------------------------------------------------------
 
 
+# How much of a material's specular lobe a SINGLE traced ray is allowed to
+# carry, as a function of roughness. See ``_mirror_share`` below; the constant
+# is the GGX ``alpha`` at which half the reflection is still traced.
+#
+# 0.15 is where the lobe stops being resolvable as an image: GGX at
+# roughness 0.15 puts its median microfacet at ``atan(alpha) = 1.29`` degrees,
+# a reflected deflection of ~2.6 degrees, which is already ~20 px of blur
+# across a PREVIEW frame. Below it a mirror ray is a fair stand-in for the
+# lobe; above it the lobe is a wide integral one ray cannot estimate, and the
+# reflected image it draws instead is a sharp minified alias -- the bright
+# hard-edged chunks this replaced.
+#
+# A module constant for the same reason as ``_GLOSSY_MIN_ROUGHNESS``: it is
+# baked into the compiled kernel and is not a template argument, so an env knob
+# would let the offline cache serve a kernel built for a different value.
+_MIRROR_SHARE_ALPHA = 0.15 * 0.15
+_MIRROR_SHARE_A2 = _MIRROR_SHARE_ALPHA * _MIRROR_SHARE_ALPHA
+
+
+@ti.func
+def _mirror_share(roughness):
+    """Fraction of the specular lobe one mirror ray may carry, in [0, 1].
+
+    A continuation is a single ray in a single direction, so it can only stand
+    for a reflection whose lobe is narrow enough that every direction in it
+    sees roughly the same thing. Spending the material's whole Fresnel energy
+    on one direction regardless of roughness is what made a
+    ``MeshStandardMaterial(roughness=0.35)`` draw a razor-sharp, full-strength
+    mirror image: minified 10x or more by the reflection's own geometry, that
+    image aliases into hard bright chunks that no amount of sub-pixel sampling
+    of the SAME direction can fix (``ANALYTIC_AA_SECONDARY_SAMPLES`` moves the
+    ray's origin, not its direction, so on a flat face all four taps agree).
+
+    So the ray carries only the share of the lobe that sits within a cone it
+    can honestly represent -- the GGX CDF mass inside half-angle
+    ``atan(_MIRROR_SHARE_ALPHA)``::
+
+        F(theta) = tan^2 / (alpha^2 + tan^2),  alpha = roughness^2
+
+    which is ``1`` for a mirror (byte-identical to tracing it outright), ~0.83
+    at roughness 0.10, 0.5 at 0.15 and ~0.03 at 0.35.
+
+    The rest is not lost. The caller shades ``alpha * (1 - R - trans_share)``
+    locally, so whatever the mirror ray gives up goes back to the material's
+    own shading -- which already carries a roughness-correct GGX highlight from
+    the direct lights and the ambient/environment term that stands in for the
+    reflected surroundings. A rough metal therefore reads as a rough metal
+    rather than as a mirror with an aliased picture painted on it.
+
+    This is the stand-in for a properly sampled glossy lobe, not a rival to it:
+    with ``GLOSSY_REFLECTION`` on, the raster resolve's continuations spread
+    over the real GGX lobe (``raster_taichi._glossy_reflect``) and skip this
+    entirely, because the lobe is then being integrated rather than
+    approximated by its peak.
+    """
+    a = roughness * roughness
+    return _MIRROR_SHARE_A2 / (_MIRROR_SHARE_A2 + a * a)
+
+
 @ti.func
 def _material_reflectance(rd, normal, metalness, packed_ior, albedo):
     """Per-channel (vec3) Schlick reflectance of a Three.js-style material,
@@ -852,6 +915,14 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     specular-perfect and the cost stays N x the secondary traversal rather than
     N^depth. The Monte Carlo megakernel jitters every bounce, by a wider
     normal-perturbation lobe rather than GGX.
+
+    Roughness does not fade the bounce here either. The callers that spawn a
+    PRIMARY continuation scale ``R`` by ``_mirror_share(roughness)`` so a rough
+    material cannot draw a full-strength mirror image; this func is the deeper
+    bounce, and its signature is the user-facing scatter contract, so it takes
+    neither roughness nor the fade. A mirror reflecting a rough metal shows
+    that metal's reflection unfaded as well as unblurred -- one scope, stated
+    in DESIGN_analytic_aa.md ss20.7.
 
     A partially covering reflective surface has two continuations: the mirror
     reflection (``alpha * R``) and whatever shows through behind it
@@ -2138,13 +2209,14 @@ def wavefront_shade(
                 color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                 alpha = 0.0
                 reflectivity = 0.0
+                rough = 0.0
                 if htype == 1:
                     w0 = 1.0 - a - b
                     color, alpha = _tri_color_g(mem_trim, f, prim, w0, a, b,
                                                 tri_colors, col_row, tri_uvs,
                                                 tri_tex_meta, textures,
                                                 num_colored_triangles)
-                    reflectivity, _rough = _tri_extra_g(
+                    reflectivity, rough = _tri_extra_g(
                         mem_trim, f, prim, w0, a, b, tri_extra, col_row,
                         tri_uvs, tri_tex_meta, textures, num_colored_triangles)
                 else:
@@ -2153,6 +2225,7 @@ def wavefront_shade(
                         circuit_meta, circuit_colors, circuit_border_colors)
                     cm = f % circuit_meta.shape[0]
                     reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
+                    rough = circuit_meta[cm, prim, _M_ROUGHNESS]
 
                 # Raw surface colour, saved before fragment shading replaces
                 # ``color`` with the lit result: the colour transport tints
@@ -2452,6 +2525,13 @@ def wavefront_shade(
 
                     R, diel_pass = _material_reflectance(
                         rd, normal, reflectivity, ior, albedo3)
+                    # This route never spreads a continuation over the GGX
+                    # lobe (the glossy fan lives in the raster resolve), so
+                    # the mirror ray keeps only the share of the lobe it can
+                    # stand for and the rest falls back to local shading --
+                    # see ``_mirror_share``. Keeping the two routes agreed
+                    # matters: a batch the raster front-end rejects lands here.
+                    R *= _mirror_share(rough)
                     if bounces_left <= 0:
                         # Out of bounces: no reflected ray. Transmission stays
                         # gated by ``diel_pass`` -- see ``_scatter_impl``.

@@ -2211,7 +2211,7 @@ def _sec_positions(msk, n: ti.template()):
 # compiled kernel and is NOT part of any template argument, so an env knob would
 # let the offline cache serve a kernel built for a different threshold (the same
 # trap ``_AA_SAMPLES`` carries).
-_GLOSSY_MIN_ROUGHNESS = 100#1e-4
+_GLOSSY_MIN_ROUGHNESS = 1e-4
 _GLOSSY_INV_16 = 1.0 / 16.0
 
 

@@ -83,6 +83,7 @@ from algan.rendering.raytracing.shading_taichi import (
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _material_reflectance,
+    _mirror_share,
     _offset_transmitted_origin,
     _refract_ray,
     _sample_env_map,
@@ -448,6 +449,12 @@ def sheet_resolve_shade(
             R, diel_pass = _material_reflectance(surf_rd, normal,
                                                  reflectivity,
                                                  ior, albedo3)
+            if ti.static(glossy == 0):
+                # No lobe to spread the continuations over, so the mirror ray
+                # keeps only the share of the lobe it can honestly stand for
+                # and the remainder falls back to local shading (which the
+                # ``share`` term below picks up). See ``_mirror_share``.
+                R *= _mirror_share(rough)
             if bounces_left <= 0:
                 R = ti.math.vec3(0.0, 0.0, 0.0)
 
