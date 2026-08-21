@@ -254,6 +254,41 @@ designing the experiment that would prove its own work — specify the
 verification, do not leave it to invent one. Budget for a continuation call,
 and read `git diff` yourself: the report is accurate but it is not a review.
 
+## 4.1 A long prompt hangs the run — put the brief in a file
+
+Found on 2026-08-21 while driving four tasks through `opencode run`. **A prompt
+of roughly 9 KB or more hangs before the first step and never recovers.** It is
+not a crash and not a timeout: the process sits at 1% CPU with the log stopping
+after `init` / `cleanup` and no `loop ... step=1` line ever appearing. Two runs
+were killed at 47 and 12 minutes in that state, having written nothing.
+
+It is the prompt *size*, not the model, the network or the task: a one-line ping
+and a two-sentence tool-using question both answered normally in the same
+minutes that a long prompt hung, on the same model ID and the same `--variant
+max`. Prompts around 6-7 KB did work earlier in the same session, so the
+threshold is somewhere above that and is not worth locating precisely.
+
+The workaround is reliable and costs nothing:
+
+```bash
+cp brief.md /tmp/ox_brief.md
+opencode run --auto --variant max --model opencode/x-preview-f-free \
+  "Read the file /tmp/ox_brief.md and carry out the task it describes, in full,
+   including every verification step it specifies. It is a complete brief;
+   follow it."
+```
+
+Ox reads the file as its first tool call and proceeds normally. Write briefs to
+a file by default rather than deciding each time whether this one is short
+enough.
+
+**How to tell a hang from slow thinking**, since `opencode run` buffers all its
+output until the process exits and shows you nothing in the meantime: tail
+`/root/.local/share/opencode/log/opencode.log`. A healthy run emits
+`message=loop ... step=N` lines that keep climbing. A hung one stops at
+`message=init` and the `cleanup prune=7.days` line a minute later, and never
+logs a step. Check that before waiting another half hour.
+
 ## 5. Settled, and still open
 
 Settled — do not re-test:
@@ -267,6 +302,12 @@ Settled — do not re-test:
 - The seven-model list is the unauthenticated-usable subset, **not** an offline
   fallback (§3.1).
 - `ANTHROPIC_API_KEY` is not set in the environment by default.
+- A prompt of ~9 KB or more hangs the run before its first step; pass the brief
+  as a file instead (§4.1). Confirmed by killing two hung runs and re-running
+  the identical task from a file, which worked.
+- `opencode run` shows nothing until it exits, so
+  `/root/.local/share/opencode/log/opencode.log` is how you tell progress from a
+  hang: look for `message=loop ... step=N`.
 
 - Ox Alpha's quality on a substantial task: assessed in §7. It implemented a real
   designed-but-unbuilt renderer change competently and reported it honestly.
