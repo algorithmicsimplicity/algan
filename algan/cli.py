@@ -19,7 +19,9 @@ def _cmd_check(_args: argparse.Namespace) -> int:
     print("=== Algan Environment Health Check ===")
 
     # 1. Python version
-    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    py_ver = (
+        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    )
     print(f"Python: {py_ver} ({sys.executable})")
 
     # 2. PyTorch & Acceleration
@@ -158,7 +160,9 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", help="Subcommand to run")
 
     # render
-    render_parser = subparsers.add_parser("render", help="Render a scene script to video")
+    render_parser = subparsers.add_parser(
+        "render", help="Render a scene script to video"
+    )
     render_parser.add_argument("script", help="Path to Python script containing Scene")
     render_parser.add_argument(
         "-q",
@@ -177,24 +181,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Bypass warm daemon and execute in fresh process",
     )
     render_parser.add_argument(
-        "extra_args", nargs=argparse.REMAINDER, help="Extra arguments to forward to the script"
+        "extra_args",
+        nargs=argparse.REMAINDER,
+        help="Extra arguments to forward to the script",
     )
 
     # preview
-    preview_parser = subparsers.add_parser("preview", help="Render still frames / preview")
+    preview_parser = subparsers.add_parser(
+        "preview", help="Render still frames / preview"
+    )
     preview_parser.add_argument("script", help="Path to Python script containing Scene")
     preview_parser.add_argument("-o", "--output", help="Output file destination")
     preview_parser.add_argument(
         "--no-daemon", action="store_true", help="Bypass warm daemon"
     )
-    preview_parser.add_argument("extra_args", nargs=argparse.REMAINDER, help="Extra arguments")
+    preview_parser.add_argument(
+        "extra_args", nargs=argparse.REMAINDER, help="Extra arguments"
+    )
 
     # daemon
     daemon_parser = subparsers.add_parser("daemon", help="Manage warm render daemon")
-    daemon_parser.add_argument("--stop", action="store_true", help="Stop running daemon")
+    daemon_parser.add_argument(
+        "--stop", action="store_true", help="Stop running daemon"
+    )
 
     # check
-    subparsers.add_parser("check", help="Check system dependencies, acceleration, and paths")
+    subparsers.add_parser(
+        "check", help="Check system dependencies, acceleration, and paths"
+    )
 
     # new
     new_parser = subparsers.add_parser("new", help="Scaffold a new scene script")

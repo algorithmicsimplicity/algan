@@ -153,7 +153,9 @@ def test_render_result_repr():
         mp4_path = Path(tmpdir) / "test.mp4"
         mp4_path.write_bytes(b"dummy video bytes")
 
-        res = RenderResult(status="rendered", output_path=mp4_path, duration_seconds=5.0)
+        res = RenderResult(
+            status="rendered", output_path=mp4_path, duration_seconds=5.0
+        )
         html = res._repr_html_()
         assert "<video controls" in html
         assert "test.mp4" in html

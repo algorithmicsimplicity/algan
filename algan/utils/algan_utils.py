@@ -129,9 +129,7 @@ class RenderResult:
     def _repr_html_(self) -> str | None:
         """HTML representation for rich rendering in Jupyter / Colab notebooks."""
         if not self.output_path or not self.output_path.exists():
-            return (
-                f"<p>RenderResult: <code>{self.status}</code> (file: {self.output_path})</p>"
-            )
+            return f"<p>RenderResult: <code>{self.status}</code> (file: {self.output_path})</p>"
 
         ext = self.output_path.suffix.lower()
         if ext in (".mp4", ".webm", ".mov"):
@@ -155,15 +153,13 @@ class RenderResult:
                     )
             except Exception:
                 pass
-            return f'<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code> ({self.duration_seconds:.2f}s)</p>'
+            return f"<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code> ({self.duration_seconds:.2f}s)</p>"
 
         if ext in (".png", ".jpg", ".jpeg", ".webp"):
             mime = (
                 "image/png"
                 if ext == ".png"
-                else (
-                    "image/jpeg" if ext in (".jpg", ".jpeg") else "image/webp"
-                )
+                else ("image/jpeg" if ext in (".jpg", ".jpeg") else "image/webp")
             )
             try:
                 data = self.output_path.read_bytes()
@@ -177,7 +173,7 @@ class RenderResult:
                     )
             except Exception:
                 pass
-            return f'<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code></p>'
+            return f"<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code></p>"
 
         return None
 

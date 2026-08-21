@@ -48,9 +48,9 @@ def pulse_fade(t):
     """Linear blend with rapid initial ramp."""
     f = 0.2
     t_tensor = torch.as_tensor(t)
-    return (t_tensor - f).clamp_min(0) * (0.5 / (1 - f)) + (
-        t_tensor / f
-    ).clamp_max(1) * 0.5
+    return (t_tensor - f).clamp_min(0) * (0.5 / (1 - f)) + (t_tensor / f).clamp_max(
+        1
+    ) * 0.5
 
 
 def inversed(f):
@@ -103,9 +103,7 @@ def ease_out_cubic(t):
 def ease_in_out_cubic(t):
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
-    return m * (4 * t_tensor**3) + (1 - m) * (
-        1 - torch.pow(-2 * t_tensor + 2, 3) / 2
-    )
+    return m * (4 * t_tensor**3) + (1 - m) * (1 - torch.pow(-2 * t_tensor + 2, 3) / 2)
 
 
 # --- Quart ---
@@ -120,9 +118,7 @@ def ease_out_quart(t):
 def ease_in_out_quart(t):
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
-    return m * (8 * t_tensor**4) + (1 - m) * (
-        1 - torch.pow(-2 * t_tensor + 2, 4) / 2
-    )
+    return m * (8 * t_tensor**4) + (1 - m) * (1 - torch.pow(-2 * t_tensor + 2, 4) / 2)
 
 
 # --- Quint ---
@@ -141,9 +137,7 @@ def ease_out_quintic(t):
 def ease_in_out_quint(t):
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
-    return m * (16 * t_tensor**5) + (1 - m) * (
-        1 - torch.pow(-2 * t_tensor + 2, 5) / 2
-    )
+    return m * (16 * t_tensor**5) + (1 - m) * (1 - torch.pow(-2 * t_tensor + 2, 5) / 2)
 
 
 # --- Expo ---
@@ -195,11 +189,9 @@ def ease_out_circ(t):
 def ease_in_out_circ(t):
     t_tensor = torch.as_tensor(t).clamp(0, 1)
     m = (t_tensor < 0.5).float()
-    return m * (
-        (1 - torch.sqrt((1 - torch.pow(2 * t_tensor, 2)).clamp_min(0))) / 2
-    ) + (1 - m) * (
-        (torch.sqrt((1 - torch.pow(-2 * t_tensor + 2, 2)).clamp_min(0)) + 1) / 2
-    )
+    return m * ((1 - torch.sqrt((1 - torch.pow(2 * t_tensor, 2)).clamp_min(0))) / 2) + (
+        1 - m
+    ) * ((torch.sqrt((1 - torch.pow(-2 * t_tensor + 2, 2)).clamp_min(0)) + 1) / 2)
 
 
 # --- Back ---
@@ -217,14 +209,10 @@ def ease_in_out_back(t, s=1.70158):
     c2 = s * 1.525
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
-    return m * (
-        torch.pow(2 * t_tensor, 2) * ((c2 + 1) * 2 * t_tensor - c2) / 2
-    ) + (1 - m) * (
-        (
-            torch.pow(2 * t_tensor - 2, 2) * ((c2 + 1) * (t_tensor * 2 - 2) + c2)
-            + 2
-        )
-        / 2
+    return m * (torch.pow(2 * t_tensor, 2) * ((c2 + 1) * 2 * t_tensor - c2) / 2) + (
+        1 - m
+    ) * (
+        (torch.pow(2 * t_tensor - 2, 2) * ((c2 + 1) * (t_tensor * 2 - 2) + c2) + 2) / 2
     )
 
 
@@ -253,8 +241,7 @@ def ease_out_elastic(t):
         torch.where(
             t_tensor == 1,
             torch.ones_like(t_tensor),
-            torch.pow(2.0, -10 * t_tensor) * torch.sin((t_tensor * 10 - 0.75) * c4)
-            + 1,
+            torch.pow(2.0, -10 * t_tensor) * torch.sin((t_tensor * 10 - 0.75) * c4) + 1,
         ),
     )
 
@@ -323,9 +310,9 @@ def ease_in_bounce(t):
 def ease_in_out_bounce(t):
     t_tensor = torch.as_tensor(t)
     m = (t_tensor < 0.5).float()
-    return m * ((1 - _ease_out_bounce_tensor(1 - 2 * t_tensor)) / 2) + (
-        1 - m
-    ) * ((1 + _ease_out_bounce_tensor(2 * t_tensor - 1)) / 2)
+    return m * ((1 - _ease_out_bounce_tensor(1 - 2 * t_tensor)) / 2) + (1 - m) * (
+        (1 + _ease_out_bounce_tensor(2 * t_tensor - 1)) / 2
+    )
 
 
 # --- Animation flow helpers ---

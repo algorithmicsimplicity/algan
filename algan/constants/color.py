@@ -110,7 +110,14 @@ def _parse_color_string(s: str) -> tuple[tuple[float, float, float], float]:
 
 
 class Color(torch.Tensor):
-    def __new__(cls, rgb: str | tuple[float, ...] | list[float] | torch.Tensor, glow=0, opacity=1, *args, **kwargs):
+    def __new__(
+        cls,
+        rgb: str | tuple[float, ...] | list[float] | torch.Tensor,
+        glow=0,
+        opacity=1,
+        *args,
+        **kwargs,
+    ):
         if isinstance(rgb, str):
             rgb_tuple, extracted_opacity = _parse_color_string(rgb)
             rgb = rgb_tuple
@@ -126,7 +133,11 @@ class Color(torch.Tensor):
         elif isinstance(rgb, torch.Tensor):
             t = rgb.reshape(-1)
             if t.numel() == 5:
-                rgb, glow, opacity = (float(t[0]), float(t[1]), float(t[2])), float(t[3]), float(t[4])
+                rgb, glow, opacity = (
+                    (float(t[0]), float(t[1]), float(t[2])),
+                    float(t[3]),
+                    float(t[4]),
+                )
             elif t.numel() == 4:
                 rgb, opacity = (float(t[0]), float(t[1]), float(t[2])), float(t[3])
             elif t.numel() == 3:
