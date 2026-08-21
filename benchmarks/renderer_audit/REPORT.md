@@ -297,8 +297,8 @@ metalness-1 roughness-0.35 sphere:
 | Three.js raster (no env map) | 0.042 | 3.07 |
 
 By default a rough metal in Algan reflects **2.5%** of what it should — a factor
-of 23. With `SETTINGS.raytracing.experimental.set(glossy_reflection=True)` it
-lands within 8% of the path tracer. This is the largest *visible* difference in
+of 23. With `SETTINGS.raytracing.set(glossy_reflection=True)` it lands within 8%
+of the path tracer. This is the largest *visible* difference in
 the showcase scene: Algan's gold sphere is a dark ball with a specular dot where
 the path tracer's is a bright, blurred mirror of its surroundings.
 
@@ -309,8 +309,11 @@ ordered dither that crawls as geometry moves, and the plain variant lands as fou
 discrete ghost copies. For an animation engine that is a worse artefact than a
 dim reflection. The escape hatch is one setting and is right for stills.
 
-What is worth changing is discoverability rather than the default: this is a
-material-appearance control living among ~55 experimental performance switches.
+It is already a documented public setting (`_PUBLIC_FIELDS` in
+`raytracing_settings.py`), not one of the ~55 experimental switches, so nothing
+needs promoting — what it could use is a mention wherever `roughness` is
+documented as a material property, since that is where a user meets the
+symptom.
 
 ### 4.6 No volumetric absorption — NOT FIXED
 
@@ -353,7 +356,14 @@ tractable version is sketched in §6.
 `SETTINGS.raytracing.light_intensity` (default π) and
 `SETTINGS.raytracing.ambient_light` are read only by `path_trace_physical_stbvh`,
 a kernel `tracer.py` never launches — it is referenced only from a test. Setting
-either had no effect on any render, silently.
+either had no effect on any render, silently. (`renderer_limitations.rst` already
+said as much; the API just did not.)
+
+Writing either now raises `AlganConfigurationError` naming what to do instead —
+a light's own `intensity=` and an `AmbientLight` respectively. Reads still work,
+because engine code binds the settings object and reads fields off it on the hot
+path, and restoring a captured `SETTINGS.snapshot()` still round-trips them: a
+snapshot is not a request to tune anything.
 
 ### 4.8 Algan adds 10% ambient to every lit surface — NOT FIXED (documented choice)
 
@@ -389,9 +399,9 @@ back wall, under a directional key and a blue point light.
    on the inside of a transmissive surface (`rd · n > 0`) that hit's own `t` is
    the interior path length. Apply `attenuation_color^(t/attenuation_distance)`
    there. Exact for a single convex solid, approximate for nested ones.
-3. **Promote `glossy_reflection`** out of `experimental` (§4.5) so the trade-off
-   is a choice users can find, and consider defaulting it on for `save_frame`,
-   where the motion artefact that justifies the default cannot occur.
+3. **Consider defaulting `glossy_reflection` on for `save_frame`** (§4.5): the
+   crawling-dither artefact that justifies the default off cannot occur in a
+   still.
 4. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
    conformance rather than Three.js parity is the goal.
 5. **Coloured shadows through coloured glass** (§4.1). Needs an RGB visibility

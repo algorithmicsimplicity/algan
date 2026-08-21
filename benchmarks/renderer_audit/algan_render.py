@@ -178,7 +178,7 @@ def render(
     if bounces is not None:
         SETTINGS.raytracing.set(max_bounces=bounces)
     if glossy:
-        SETTINGS.raytracing.experimental.set(glossy_reflection=True)
+        SETTINGS.raytracing.set(glossy_reflection=True)
 
     Scene.set_background_color(_color(r.get("background"), (0.0, 0.0, 0.0)))
 
