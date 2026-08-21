@@ -1623,7 +1623,11 @@ def wavefront_traverse(
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_accel)
+                b_first_leaf, circuit_meta, edges_2d, edge_accel,
+                # Camera rays carry no source identity: (-1, _, 0) compiles
+                # the identity-aware acceptance floor out entirely. The
+                # forwarded tri_pos is never read.
+                -1, -1, 0.0, 0.0, tri_pos, 0)
             num_hits = found
             if found != 0:
                 kb_t[0] = t_hit
@@ -1646,7 +1650,8 @@ def wavefront_traverse(
                         ot_leaf_tspan, ot_first_leaf, tri_pos,
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
-                        edges_2d, edge_accel)
+                        edges_2d, edge_accel,
+                        -1, -1, 0.0, 0.0, tri_pos, 0)
                 if opq_found == 0:
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
@@ -1658,7 +1663,8 @@ def wavefront_traverse(
                 tri_pos,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                 circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
-                initial_opq_t, initial_opq_layer)
+                initial_opq_t, initial_opq_layer,
+                -1, -1, 0.0, 0.0, tri_pos, 0)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
         # commits its accumulated colour + leftover (background) throughput to
@@ -1796,7 +1802,11 @@ def wavefront_traverse_events(
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_accel)
+                b_first_leaf, circuit_meta, edges_2d, edge_accel,
+                # No source identity on camera rays: (-1, _, 0) compiles the
+                # identity-aware acceptance floor out entirely; the forwarded
+                # tri_pos is never read.
+                -1, -1, 0.0, 0.0, tri_pos, 0)
             num_hits = found
             if found != 0:
                 kb_t[0] = t_hit
@@ -1819,7 +1829,8 @@ def wavefront_traverse_events(
                         ot_leaf_tspan, ot_first_leaf, tri_pos,
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
-                        edges_2d, edge_accel)
+                        edges_2d, edge_accel,
+                        -1, -1, 0.0, 0.0, tri_pos, 0)
                 if opq_found == 0:
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
@@ -1831,12 +1842,9 @@ def wavefront_traverse_events(
                 tri_pos,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                 circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
-                initial_opq_t, initial_opq_layer)
+                initial_opq_t, initial_opq_layer,
+                -1, -1, 0.0, 0.0, tri_pos, 0)
         rs_int[r, 3] = num_hits
-        # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
-        # commits its accumulated colour + leftover (background) throughput to
-        # the per-pixel accumulator before retiring it -- a split branch's
-        # background contribution must be summed, not dropped.
         if num_hits > 0:
             # Surface events are indexed by compacted active-queue ordinal,
             # not by the sparse ray-pool slot.  The host releases this exact
@@ -1971,7 +1979,10 @@ def wavefront_shadow(
                                                 b_first_leaf, circuit_meta,
                                                 circuit_colors,
                                                 circuit_border_colors,
-                                                edges_2d, edge_accel)
+                                                edges_2d, edge_accel,
+                                                # No source identity on this
+                                                # path (see wavefront_traverse).
+                                                -1, -1, 0.0, 0.0, tri_pos, 0)
                                             if occ > 0.5:
                                                 bits |= (
                                                     1 << (q
@@ -2429,7 +2440,13 @@ def wavefront_shade(
                                                     b_first_leaf, circuit_meta,
                                                     circuit_colors,
                                                     circuit_border_colors,
-                                                    edges_2d, edge_accel)
+                                                    edges_2d, edge_accel,
+                                                    # No source identity on
+                                                    # this path (the shade
+                                                    # kernel does not receive
+                                                    # tri_obj; see
+                                                    # wavefront_traverse).
+                                                    -1, -1, 0.0, 0.0, tri_pos, 0)
                                         if n_valid > 0.0:
                                             vis[li] = 1.0 - occ_sum / n_valid
                     if htype == 1:
