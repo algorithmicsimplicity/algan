@@ -136,6 +136,24 @@ class Mob(
     # structural containers; renderable subclasses opt into a concrete family.
     _morph_family = None
 
+    #: Whether this Mob's geometry should be lit from whichever side the ray
+    #: arrives on. ``True`` (the default) is for geometry with no meaningful
+    #: outside -- a 2-D shape, ``Text``, a parametric
+    #: :class:`~algan.mobs.surfaces.surface.Surface`, an imported mesh whose
+    #: winding nobody has checked -- where a back-facing hit is shaded with its
+    #: normal flipped toward the viewer, so the surface is lit from behind
+    #: instead of coming out black.
+    #:
+    #: The built-in solids set it ``False``: their normals face out (see
+    #: ``tests/unit_tests/test_normal_orientation.py``), so a back-facing hit is
+    #: genuinely the inside of the solid and is shaded as such. That is what
+    #: stops a half-transparent solid's far shell from being lit like a second
+    #: front shell -- the bright and dark "planes" through a fading Octahedron.
+    #: Set it ``True`` on an instance to get the old two-sided lighting back
+    #: (an open ``Cone`` you want lit inside, say); it must be set before the
+    #: Mob is spawned, since the render primitive reads it once.
+    two_sided = True
+
     def __init__(
         self,
         location: torch.Tensor = ORIGIN,

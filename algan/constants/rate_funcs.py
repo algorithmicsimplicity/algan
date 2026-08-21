@@ -12,7 +12,7 @@ moves and anything mechanical usually want. The standard Penner easing families
 fine-grained control over acceleration and deceleration.
 
 A rate function is just a callable on tensors, so writing your own is a
-one-liner. See :doc:`/new_user_tutorials/controlling_animations`.
+one-liner. See :doc:`/new_user_tutorials/combining_animations`.
 """
 
 from __future__ import annotations

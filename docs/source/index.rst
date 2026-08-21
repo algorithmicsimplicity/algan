@@ -32,7 +32,7 @@ First steps
 * Follow :doc:`installation` to install Algan and its system dependencies.
 * Build your first animation in :doc:`new_user_tutorials/getting_started`.
 * Learn how animations are composed in
-  :doc:`new_user_tutorials/controlling_animations`.
+  :doc:`new_user_tutorials/combining_animations`.
 * Browse what you can put on screen in :doc:`new_user_tutorials/mob_gallery`.
 * Move into three dimensions with :doc:`new_user_tutorials/three_d_basics`.
 * Configure quality, paths, memory, and ray tracing through

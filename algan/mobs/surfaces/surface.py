@@ -754,6 +754,18 @@ class Surface(Mob):
 
     _morph_family = "grid"
 
+    #: Handedness of this surface's ``(u, v)`` parameterization: ``1`` when
+    #: ``du x dv`` already points out of the solid, ``-1`` when it points in.
+    #: A ``-1`` surface has its v axis reversed on the way to the renderer
+    #: (:meth:`_reshape_grid_for_render`), which flips its vertex normals and
+    #: its triangle winding without moving a single vertex -- so the shape's own
+    #: ``coord_function`` keeps whatever parameterization it is written to
+    #: match (Manim's, for the built-ins) while the geometry the renderer sees
+    #: faces outward. Shading reads this through
+    #: :attr:`~algan.animatable_base.mob.Mob.two_sided`: a surface whose
+    #: normals face out does not need the renderer to guess a side.
+    _grid_orientation = 1
+
     # Every concrete Surface type gets its own dictionary via
     # ``__init_subclass__``. Entries are keyed by both the fitting policy and a
     # compact signature of the construction-time geometry, so parameterized
@@ -1326,9 +1338,18 @@ class Surface(Mob):
         )
 
     def get_unit_normals(self):
-        """Return one smooth unit normal for each sampled surface vertex."""
-        grid = unsquish(self.grid.location, -2, self.grid_height)
-        return compute_grid_vertex_normals(grid).reshape(*grid.shape[:-3], -1, 3)
+        """Return one smooth unit normal for each sampled surface vertex.
+
+        Oriented the way the renderer orients them (outward, for the built-in
+        shapes), because both go through :meth:`_reshape_grid_for_render`. The
+        v axis that reorientation reverses is put back before flattening, so
+        row i is still the normal of ``grid.location``'s row i.
+        """
+        grid = self._reshape_grid_for_render(self.grid.location)
+        normals = compute_grid_vertex_normals(grid)
+        if self._grid_orientation < 0:
+            normals = normals.flip(-2)
+        return normals.reshape(*grid.shape[:-3], -1, 3)
 
     def set_fill_by_checkerboard(self, *colors, opacity=None):
         """Apply an alternating vertex-color pattern and return this surface."""
@@ -2815,17 +2836,30 @@ class Surface(Mob):
         return flat_sizes.numel()
 
     def _reshape_grid_for_render(self, values):
-        """Restore flat grid rows to one or more independent surface grids."""
+        """Restore flat grid rows to one or more independent surface grids.
+
+        Also applies :attr:`_grid_orientation`, which is why every consumer of
+        the grid's *orientation* -- vertex normals, triangle winding, the morph
+        soup -- reaches it through here.
+        """
         packed_grid_count = self._packed_grid_count()
         if packed_grid_count is None:
-            return unsquish(values, -2, self.grid_height)
-        return values.reshape(
-            *values.shape[:-2],
-            packed_grid_count,
-            self.grid_width,
-            self.grid_height,
-            values.shape[-1],
-        )
+            grid = unsquish(values, -2, self.grid_height)
+        else:
+            grid = values.reshape(
+                *values.shape[:-2],
+                packed_grid_count,
+                self.grid_width,
+                self.grid_height,
+                values.shape[-1],
+            )
+        if self._grid_orientation < 0:
+            # Reverse the v axis: the same sampled points in the opposite
+            # order, which is the whole point -- it costs no geometry and
+            # flips the handedness of (u, v), hence of every normal and
+            # every triangle's winding.
+            grid = grid.flip(-2)
+        return grid
 
     def _flatten_packed_triangle_vertices(self, values):
         """Merge the packed-grid and triangle-vertex axes after gathering."""
@@ -2989,6 +3023,9 @@ class Surface(Mob):
             primitive.mesh_ids = torch.arange(
                 packed, dtype=torch.int32, device=corners.device
             ).repeat_interleave(per_grid)
+        # A plain Surface is a two-sided sheet; the shapes of revolution built
+        # on it declare an outside (Mob.two_sided).
+        primitive.declare_one_sided(not self.two_sided)
         return primitive
 
     def coord_function(self, uv: torch.Tensor):
