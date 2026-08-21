@@ -1,0 +1,334 @@
+{
+  "name": "showcase",
+  "_why": "The audit's main scene: reflection, refraction, coloured transmission, a clearcoat lobe, a sheen lobe, an emitter and a rough conductor, all in one frame over a lit floor with a back wall so every reflective surface has something to reflect.",
+  "render": {
+    "width": 640,
+    "height": 480,
+    "background": [
+      0.02,
+      0.025,
+      0.035
+    ]
+  },
+  "camera": {
+    "position": [
+      0,
+      1.8,
+      11.5
+    ],
+    "target": [
+      0,
+      0.1,
+      0
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "fov": 40,
+    "near": 0.1,
+    "far": 200
+  },
+  "lights": [
+    {
+      "type": "directional",
+      "direction": [
+        -0.45,
+        -0.75,
+        -0.5
+      ],
+      "color": [
+        1.0,
+        0.97,
+        0.9
+      ],
+      "intensity": 2.0
+    },
+    {
+      "type": "point",
+      "position": [
+        -5.0,
+        4.0,
+        4.5
+      ],
+      "color": [
+        0.45,
+        0.62,
+        1.0
+      ],
+      "intensity": 1.0,
+      "decay": 0,
+      "distance": 0
+    }
+  ],
+  "objects": [
+    {
+      "name": "floor",
+      "geometry": {
+        "type": "box",
+        "size": [
+          40,
+          0.4,
+          40
+        ]
+      },
+      "position": [
+        0,
+        -1.2,
+        0
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.48,
+          0.48,
+          0.52
+        ],
+        "roughness": 0.85,
+        "metalness": 0.0
+      }
+    },
+    {
+      "name": "wall",
+      "geometry": {
+        "type": "box",
+        "size": [
+          40,
+          16,
+          0.4
+        ]
+      },
+      "position": [
+        0,
+        6.8,
+        -8.0
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.32,
+          0.34,
+          0.4
+        ],
+        "roughness": 1.0,
+        "metalness": 0.0
+      }
+    },
+    {
+      "name": "mirror_ball",
+      "geometry": {
+        "type": "sphere",
+        "radius": 1.0,
+        "segments": 96
+      },
+      "position": [
+        -3.3,
+        0.0,
+        0.0
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.95,
+          0.95,
+          0.97
+        ],
+        "roughness": 0.05,
+        "metalness": 1.0
+      }
+    },
+    {
+      "name": "clear_glass",
+      "geometry": {
+        "type": "sphere",
+        "radius": 1.0,
+        "segments": 96
+      },
+      "position": [
+        -1.1,
+        0.0,
+        0.9
+      ],
+      "material": {
+        "type": "physical",
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "roughness": 0.0,
+        "metalness": 0.0,
+        "ior": 1.5,
+        "transmission": 1.0
+      }
+    },
+    {
+      "name": "tinted_glass",
+      "geometry": {
+        "type": "sphere",
+        "radius": 1.0,
+        "segments": 96
+      },
+      "position": [
+        1.2,
+        0.0,
+        0.0
+      ],
+      "material": {
+        "type": "physical",
+        "color": [
+          0.35,
+          0.85,
+          0.62
+        ],
+        "roughness": 0.0,
+        "metalness": 0.0,
+        "ior": 1.45,
+        "transmission": 1.0,
+        "attenuation_color": [
+          0.35,
+          0.85,
+          0.62
+        ],
+        "attenuation_distance": 1.2
+      }
+    },
+    {
+      "name": "gold_ball",
+      "geometry": {
+        "type": "sphere",
+        "radius": 1.0,
+        "segments": 96
+      },
+      "position": [
+        3.4,
+        0.0,
+        0.7
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          1.0,
+          0.77,
+          0.34
+        ],
+        "roughness": 0.4,
+        "metalness": 1.0
+      }
+    },
+    {
+      "name": "clearcoat_ball",
+      "geometry": {
+        "type": "sphere",
+        "radius": 0.8,
+        "segments": 96
+      },
+      "position": [
+        -2.4,
+        -0.2,
+        3.0
+      ],
+      "material": {
+        "type": "physical",
+        "color": [
+          0.75,
+          0.12,
+          0.12
+        ],
+        "roughness": 0.55,
+        "metalness": 0.0,
+        "clearcoat": 1.0,
+        "clearcoat_roughness": 0.05
+      }
+    },
+    {
+      "name": "glass_cube",
+      "geometry": {
+        "type": "box",
+        "size": [
+          1.5,
+          1.5,
+          1.5
+        ]
+      },
+      "position": [
+        2.5,
+        -0.45,
+        2.9
+      ],
+      "rotation_y": 28,
+      "material": {
+        "type": "physical",
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "roughness": 0.0,
+        "metalness": 0.0,
+        "ior": 1.52,
+        "transmission": 1.0
+      }
+    },
+    {
+      "name": "sheen_ball",
+      "geometry": {
+        "type": "sphere",
+        "radius": 0.75,
+        "segments": 96
+      },
+      "position": [
+        0.2,
+        1.9,
+        -3.2
+      ],
+      "material": {
+        "type": "physical",
+        "color": [
+          0.12,
+          0.12,
+          0.16
+        ],
+        "roughness": 0.9,
+        "metalness": 0.0,
+        "sheen": 1.0,
+        "sheen_roughness": 0.35,
+        "sheen_color": [
+          0.9,
+          0.55,
+          0.75
+        ]
+      }
+    },
+    {
+      "name": "emitter",
+      "geometry": {
+        "type": "sphere",
+        "radius": 0.45,
+        "segments": 64
+      },
+      "position": [
+        -4.6,
+        2.6,
+        -2.0
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.05,
+          0.05,
+          0.05
+        ],
+        "roughness": 1.0,
+        "metalness": 0.0,
+        "emissive": [
+          1.0,
+          0.55,
+          0.2
+        ],
+        "emissive_intensity": 3.0
+      }
+    }
+  ]
+}

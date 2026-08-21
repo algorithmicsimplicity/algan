@@ -1,0 +1,175 @@
+{
+  "name": "calib_mirror",
+  "_why": "Calibration: a smooth metal sphere and a rough metal sphere over a floor, with coloured blocks around them. Isolates the specular lobe (mirror image geometry, conductor tint, grazing whitening) and how roughness blurs a reflection.",
+  "render": {
+    "width": 480,
+    "height": 360,
+    "background": [
+      0.03,
+      0.035,
+      0.05
+    ]
+  },
+  "camera": {
+    "position": [
+      0,
+      1.4,
+      8
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "fov": 40,
+    "near": 0.1,
+    "far": 200
+  },
+  "lights": [
+    {
+      "type": "directional",
+      "direction": [
+        -0.4,
+        -0.7,
+        -0.6
+      ],
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "intensity": 1.8
+    }
+  ],
+  "objects": [
+    {
+      "name": "floor",
+      "geometry": {
+        "type": "box",
+        "size": [
+          30,
+          0.4,
+          30
+        ]
+      },
+      "position": [
+        0,
+        -1.4,
+        0
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.45,
+          0.45,
+          0.5
+        ],
+        "roughness": 0.9,
+        "metalness": 0.0
+      }
+    },
+    {
+      "name": "block_red",
+      "geometry": {
+        "type": "box",
+        "size": [
+          1.6,
+          1.6,
+          1.6
+        ]
+      },
+      "position": [
+        -3.4,
+        -0.4,
+        -1.6
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.85,
+          0.2,
+          0.2
+        ],
+        "roughness": 1.0,
+        "metalness": 0.0
+      }
+    },
+    {
+      "name": "block_green",
+      "geometry": {
+        "type": "box",
+        "size": [
+          1.6,
+          1.6,
+          1.6
+        ]
+      },
+      "position": [
+        3.4,
+        -0.4,
+        -1.6
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.2,
+          0.75,
+          0.3
+        ],
+        "roughness": 1.0,
+        "metalness": 0.0
+      }
+    },
+    {
+      "name": "mirror",
+      "geometry": {
+        "type": "sphere",
+        "radius": 1.2,
+        "segments": 96
+      },
+      "position": [
+        -1.5,
+        -0.2,
+        0.6
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          0.95,
+          0.95,
+          0.95
+        ],
+        "roughness": 0.04,
+        "metalness": 1.0
+      }
+    },
+    {
+      "name": "gold_rough",
+      "geometry": {
+        "type": "sphere",
+        "radius": 1.2,
+        "segments": 96
+      },
+      "position": [
+        1.5,
+        -0.2,
+        0.6
+      ],
+      "material": {
+        "type": "standard",
+        "color": [
+          1.0,
+          0.77,
+          0.34
+        ],
+        "roughness": 0.35,
+        "metalness": 1.0
+      }
+    }
+  ]
+}

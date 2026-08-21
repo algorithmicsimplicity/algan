@@ -818,7 +818,8 @@ def _mirror_share(roughness):
 
 
 @ti.func
-def _material_reflectance(rd, normal, metalness, packed_ior, albedo):
+def _material_reflectance(rd, normal, metalness, packed_ior, albedo,
+                          transmission):
     """Per-channel (vec3) Schlick reflectance of a Three.js-style material,
     plus the scalar dielectric pass fraction that gates transmission.
 
@@ -837,12 +838,39 @@ def _material_reflectance(rd, normal, metalness, packed_ior, albedo):
     Blending the two lobes after Schlick is algebraically identical to
     blending f0 first (R is linear in f0).
 
+    **Which side of the interface the ray is on matters, and only for a
+    transmissive material.**  Schlick's approximation is written for a ray
+    arriving from the *thin* side; a ray already inside the glass reflects far
+    more than the same incident angle suggests, and past the critical angle it
+    reflects everything.  KHR_materials_volume states the three cases
+    normatively: entering, evaluate Schlick at the incident angle; leaving
+    without total internal reflection, evaluate it at the angle on the AIR side
+    (Snell's partner of the incident one); leaving beyond the critical angle,
+    ``F = 1``.  For glass (ior 1.5, critical angle 41.8 deg) an internal ray at
+    40 deg has a true reflectance of 0.245, which the air-side Schlick
+    reproduces to three digits and the inside-angle one puts at 0.041 -- so
+    without this the light leaving a solid is split six-to-one the wrong way,
+    and at total internal reflection it leaks through a surface that should be
+    a perfect mirror.
+
+    ``transmission`` gates that side test, deliberately.  The renderer does not
+    track which medium a ray is in, so "the ray is on the far side of the
+    surface" is inferred from the sign of ``rd . normal`` -- sound for a closed
+    transmissive solid, wrong for a back-facing hit on an ordinary opaque
+    surface (an open mesh seen from behind), which is not inside anything.
+    Gating on transmission keeps every non-transmissive material bit-for-bit
+    on the path it took before.
+
     Returns ``(R, diel_pass)``.  ``diel_pass = (1-m) * (1-r_diel)`` is the
     fraction of incident light that enters the dielectric interior -- the
     only share that can transmit.  It must NOT be derived from ``1 - R``: a
     coloured metal has ``R < 1`` in its absorbed channels, and that absorbed
     share would then leak through transmissive surfaces as if dielectric
     (with scalar transport ``m = 1`` forced ``R = 1``, which hid this).
+    Total internal reflection arrives here as ``r_diel = 1``, hence
+    ``diel_pass = 0``: the transmitted branch is given no energy at all rather
+    than being handed the mirror direction with the transmitted weight (which
+    also tinted a perfectly achromatic Fresnel reflection by the glass colour).
     """
     result = ti.math.vec3(0.0, 0.0, 0.0)
     diel_pass = 1.0
@@ -850,13 +878,29 @@ def _material_reflectance(rd, normal, metalness, packed_ior, albedo):
         m = ti.math.clamp(metalness, 0.0, 1.0)
         ior = ti.abs(packed_ior)
         n = normal.normalized()
-        cosi = ti.math.clamp(ti.abs(rd.dot(n)), 0.0, 1.0)
+        cos_n = rd.dot(n)  # signed: < 0 arriving from outside, > 0 leaving
+        cosi = ti.math.clamp(ti.abs(cos_n), 0.0, 1.0)
         tail = ti.pow(1.0 - cosi, 5.0)
         r_diel = 0.0
         if ior > 1.0 + 1e-4:
             r0 = (1.0 - ior) / (1.0 + ior)
             dielectric_f0 = r0 * r0
-            r_diel = dielectric_f0 + (1.0 - dielectric_f0) * tail
+            # The cosine Schlick is evaluated at, and whether there is one at
+            # all. Unchanged (the incident cosine, no TIR) for everything that
+            # does not transmit and for every ray arriving from outside.
+            cos_s = cosi
+            total_internal = False
+            if (transmission > 1e-4) and (cos_n > 0.0):
+                sin2_t = ior * ior * (1.0 - cosi * cosi)
+                if sin2_t > 1.0:
+                    total_internal = True
+                else:
+                    cos_s = ti.sqrt(1.0 - sin2_t)
+            if total_internal:
+                r_diel = 1.0
+            else:
+                tail_s = ti.pow(1.0 - cos_s, 5.0)
+                r_diel = dielectric_f0 + (1.0 - dielectric_f0) * tail_s
         f0_metal = ti.math.clamp(albedo, 0.0, 1.0)
         r_metal = f0_metal + (1.0 - f0_metal) * tail
         result = r_diel * (1.0 - m) + m * r_metal
@@ -945,7 +989,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     tint = ti.math.clamp(albedo, 0.0, 1.0)
     normal = n_interp.normalized()
     R, diel_pass = _material_reflectance(rd, normal, reflectivity, ior,
-                                         albedo)
+                                         albedo, T)
     if bounces_left <= 0:
         # Out of bounces: no reflected ray. The transmitted share stays gated
         # by ``diel_pass`` (the metal share never transmits), so zeroing R
@@ -2524,7 +2568,7 @@ def wavefront_shade(
                             geo_normal = normal
 
                     R, diel_pass = _material_reflectance(
-                        rd, normal, reflectivity, ior, albedo3)
+                        rd, normal, reflectivity, ior, albedo3, T)
                     # This route never spreads a continuation over the GGX
                     # lobe (the glossy fan lives in the raster resolve), so
                     # the mirror ray keeps only the share of the lobe it can

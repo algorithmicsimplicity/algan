@@ -448,7 +448,7 @@ def sheet_resolve_shade(
 
             R, diel_pass = _material_reflectance(surf_rd, normal,
                                                  reflectivity,
-                                                 ior, albedo3)
+                                                 ior, albedo3, T)
             if ti.static(glossy == 0):
                 # No lobe to spread the continuations over, so the mirror ray
                 # keeps only the share of the lobe it can honestly stand for

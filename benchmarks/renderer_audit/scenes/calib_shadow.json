@@ -1,0 +1,18 @@
+{
+  "name": "calib_shadow",
+  "_why": "Calibration: a clear glass sphere and an opaque sphere of the same size, side by side over a floor, lit straight down. Each throws its shadow directly beneath it, so the two patches are trivial to find and to compare. The question the scene asks is what fraction of the light a transmissive solid lets past -- physically most of it, since only Fresnel reflects at the two interfaces.",
+  "render": {"width": 480, "height": 360, "background": [0.0, 0.0, 0.0]},
+  "camera": {"position": [0, 3.2, 8.5], "target": [0, -0.6, 0], "up": [0, 1, 0], "fov": 40, "near": 0.1, "far": 200},
+  "lights": [
+    {"type": "directional", "direction": [0, -1, 0], "color": [1, 1, 1], "intensity": 1.0}
+  ],
+  "objects": [
+    {"name": "floor", "geometry": {"type": "box", "size": [24, 0.4, 24]}, "position": [0, -2.2, 0],
+     "material": {"type": "standard", "color": [0.8, 0.8, 0.8], "roughness": 1.0, "metalness": 0.0}},
+    {"name": "glass_ball", "geometry": {"type": "sphere", "radius": 1.0, "segments": 96}, "position": [-1.8, 0.4, 0],
+     "material": {"type": "physical", "color": [1.0, 1.0, 1.0], "roughness": 0.0, "metalness": 0.0,
+                  "ior": 1.5, "transmission": 1.0}},
+    {"name": "opaque_ball", "geometry": {"type": "sphere", "radius": 1.0, "segments": 96}, "position": [1.8, 0.4, 0],
+     "material": {"type": "standard", "color": [0.8, 0.8, 0.8], "roughness": 1.0, "metalness": 0.0}}
+  ]
+}
