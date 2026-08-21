@@ -1164,6 +1164,41 @@ def _tri_obj_row(pix, ppf, time_start, rows):
     return ((pix // ppf) + time_start) % rows
 
 
+def _pack_shadow_source_ids(merged, ev_msk, ev_frame, ev_ref):
+    """Pack each shadow event's SOURCE surface id into its mask word.
+
+    Self-shadow rejection by identity (``SHADOW_IDENTITY_REJECT``,
+    DESIGN_mesh_identity_open.md ssI) needs the source id where the event is
+    TRACED, and ``event_msk`` is the one per-event slot with room: bits 0-3
+    are the sub-pixel sample mask, 8-15 the material pipeline id, and 16-31
+    carry ``sid + 1`` (so 0 means "no identity"). The trace kernel reads the
+    hit side from ``tri_obj`` during traversal.
+
+    An event whose pipeline id does not fit under bit 16, whose id does not
+    fit in 16 bits, or whose sheet ref is not a triangle keeps 0 there and is
+    traced with the classic epsilon -- the feature degrades per event rather
+    than misrejecting. Returns a new mask tensor; the caller's ``ev_msk`` (a
+    fresh ``index_select`` result) is left untouched.
+    """
+    tri_obj = merged["tri_obj"]
+    ref = ev_ref.to(torch.int64)
+    # Same row mapping the trace kernel uses: event_frame holds the absolute
+    # batch-relative frame, and tri_obj indexes it modulo its row count.
+    row = ev_frame.to(torch.int64) % tri_obj.shape[0]
+    sid = tri_obj[row, ref.clamp_min(0)].to(torch.int64)
+    sid = torch.where(ref >= 0, sid, sid.new_full(sid.shape, -1))
+    fits = (
+        (ref >= 0)
+        & (sid >= 0)
+        & (sid < 0xFFFF)
+        & ((ev_msk.to(torch.int64) >> 8) < 0x100)
+    )
+    packed = torch.where(
+        fits, ((sid + 1) << 16).to(ev_msk.dtype), torch.zeros_like(ev_msk)
+    )
+    return ev_msk | packed
+
+
 def prepare_sparse_raster_coverage(
     merged,
     tri_screen,
@@ -2034,6 +2069,19 @@ def shade_sparse_raster_coverage(
             ev_fnrm = event_fnrm.index_select(0, acc_idx)
             ev_frame = event_frame.index_select(0, acc_idx)
             ev_msk = event_msk.index_select(0, acc_idx)
+            # Self-shadow rejection by identity (SHADOW_IDENTITY_REJECT):
+            # pack each accepted event's source surface id above its material
+            # id so the trace can spare cross-mesh hits the absolute
+            # MIN_HIT_DISTANCE. Events that do not fit the packing keep the
+            # sentinel and today's epsilon.
+            identity_on = bool(rt_settings.SHADOW_IDENTITY_REJECT)
+            if identity_on:
+                ev_msk = _pack_shadow_source_ids(
+                    merged,
+                    ev_msk,
+                    ev_frame,
+                    coverage["sheet_ref"][s_start:s_end].index_select(0, acc_idx),
+                )
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
             from algan.rendering.raytracing.refit_bvh import RefitBVH
 
@@ -2077,6 +2125,13 @@ def shade_sparse_raster_coverage(
                 sec_aa,
                 shadow_vis,
                 int(shadow_flag),
+                # Self-shadow rejection by identity: the hit-side surface map
+                # and the compile-time gate. With the toggle off the kernel
+                # never reads tri_obj (a 1-element dummy keeps the signature)
+                # and every acceptance test compiles to exactly the
+                # pre-identity predicate.
+                merged["tri_obj"] if identity_on else dummy_i,
+                1 if identity_on else 0,
             )
         sheet_resolve_shade(
             *pre_args,

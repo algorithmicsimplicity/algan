@@ -2590,7 +2590,8 @@ def raster_shadow_trace(
         refit: ti.template(),
         has_tri: ti.template(), has_bez: ti.template(),
         event_dp: ti.types.ndarray(), sec_aa: ti.template(),
-        shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template()):
+        shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template(),
+        tri_obj: ti.types.ndarray(), shadow_identity: ti.template()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
 
     A zero-radius point/spot/directional light emits one hard-shadow ray.
@@ -2598,6 +2599,16 @@ def raster_shadow_trace(
     wavefront shader; area lights are already expanded into packed sample rows
     and therefore naturally obtain soft visibility by averaging those rows in
     the material shader.
+
+    ``shadow_identity`` (``SHADOW_IDENTITY_REJECT``, DESIGN_mesh_identity_open.md
+    ssI) engages self-shadow rejection by identity: each event's SOURCE surface
+    id arrives packed in ``event_msk`` above the material pipeline id (bits
+    16+, ``sid + 1``, 0 = none), and a candidate hit on another mesh is
+    accepted down to ``t > 0`` while a hit on the event's own surface keeps
+    the ``MIN_HIT_DISTANCE`` guard -- so cross-mesh contact shadows survive
+    the absolute epsilon that used to erase them. ``tri_obj`` answers "which
+    mesh is this hit on" during traversal. Events without a packed id (and,
+    with ``shadow_identity == 0``, every event) keep exactly the old epsilon.
 
     ``sec_aa`` (``ANALYTIC_AA_SECONDARY_SAMPLES``): visibility is a BINARY query,
     so analytic coverage cannot antialias a shadow edge however exact the
@@ -2643,6 +2654,14 @@ def raster_shadow_trace(
         # Only user pipelines, which may read visibility arbitrarily, keep the
         # exact fan for every light.
         pid_e = event_msk[e] >> 8
+        src_sid = -1
+        if ti.static(shadow_identity != 0):
+            # The event's source surface id (packed by the host above the
+            # material pipeline id; sid + 1, so 0 = none). Masking pid_e to
+            # its byte is exact here: the host only packs events whose
+            # pipeline id fits below bit 16.
+            src_sid = ti.cast((event_msk[e] >> 16) & 0xFFFF, ti.i32) - 1
+            pid_e = pid_e & 0xFF
         fan_exact = 1
         fan_geom = 0
         if pid_e < _USER_PIPELINE_BASE:
@@ -2749,7 +2768,8 @@ def raster_shadow_trace(
                         tri_tex_meta, textures, num_colored_triangles,
                         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                         b_first_leaf, circuit_meta, circuit_colors,
-                        circuit_border_colors, edges_2d, edge_accel)
+                        circuit_border_colors, edges_2d, edge_accel,
+                        src_sid, tri_obj, shadow_identity)
             if n_valid > 0.0:
                 visibility = 1.0 - occ_sum / n_valid
         shadow_vis[e, li] = visibility

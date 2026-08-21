@@ -610,6 +610,36 @@ def set_shadow_anyhit(enabled):
         SHADOW_ANYHIT = bool(enabled)
 
 
+# Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
+# shadow ray currently rejects its own surface with MIN_HIT_DISTANCE plus a
+# normal offset of 10 * MIN_HIT_DISTANCE -- absolute world-space constants
+# applied to EVERY hit, so a small object resting on a plane loses its contact
+# shadow within 1e-3 of the contact and grazing light on small geometry
+# produces acne. On the sheet route's shadow queue the event's source surface
+# id is available (packed into ``event_msk`` above the material pipeline id),
+# so the acceptance test becomes
+#
+#     accept = (t < max_t) and (hit_mesh != src_mesh ? t > 0 : t > MIN_HIT_DISTANCE)
+#
+# and the cross-mesh threshold goes to zero while self-rejection stays exactly
+# as safe. The rejection is per hit -- "same mesh AND near-zero t", never
+# "same mesh": a concave solid legitimately shadows itself. Events without a
+# usable source id (bezier-originated, or ids that do not fit the packing) and
+# every path outside the sheet route's shadow queue keep today's epsilon.
+# DEFAULT OFF: it moves shadowed output wherever a cross-mesh blocker sits
+# within MIN_HIT_DISTANCE of an event, so it ships behind this gate until the
+# pixel suites qualify it; ALGAN_SHADOW_IDENTITY_REJECT=1 opts in.
+SHADOW_IDENTITY_REJECT = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", False)
+
+
+def set_shadow_identity_reject(enabled):
+    """Toggle self-shadow rejection by mesh identity (see
+    ``SHADOW_IDENTITY_REJECT``). Takes effect at the next render batch.
+    """
+    global SHADOW_IDENTITY_REJECT
+    SHADOW_IDENTITY_REJECT = bool(enabled)
+
+
 # Build the dedicated opaque-only STBVHs only when a rollout that walks them
 # (WF_OPAQUE_CLOSEST / WF_OPAQUE_PREPASS) is live at build time; otherwise
 # alias the main tree -- same kernel ABI, and the opaque-tree reads are
