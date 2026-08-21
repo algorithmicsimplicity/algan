@@ -539,9 +539,11 @@ Refraction
   the surface colour at each interface, not attenuated by the path length
   through the medium, and every wavelength takes the same index of refraction --
   so no coloured fringing at a prism.
-* Refraction requires ``transmission > 0`` and ``ior > 1`` from a
-  :class:`~.MeshPhysicalMaterial`. It routes the batch through the splitting ray
-  path, which is the most expensive configuration Algan has.
+* Refraction needs both ``transmission > 0`` and ``ior > 1``. In practice that
+  means a :class:`~.MeshPhysicalMaterial`, a :class:`~.Surface` with a
+  ``refractive_index_texture``, or an imported model whose material carries
+  them. It routes the batch through the splitting ray path, which is the most
+  expensive configuration Algan has.
 
 The depth budget, and what happens at the end of it
 ----------------------------------------------------
@@ -682,10 +684,13 @@ fractions of the scene's own size:
      - How far off a surface a shadow ray starts (and it stops 2e-3 short of
        the light).
 
-Algan's default camera frames roughly 8 world units of height, so these are
-sub-pixel at ordinary scales. A scene authored at 1000x that size will show
-z-fighting and merged surfaces; one authored at 1/1000 will lose contact shadows
-and self-shadowing. **Scale the scene, not the camera.**
+Algan's default camera sits 7 units back and frames about 7 world units of
+height at the origin, so all four are far below a pixel at ordinary scales. A
+scene authored a thousand times larger will show z-fighting and merged surfaces;
+one authored a thousand times smaller will lose contact shadows and
+self-shadowing. **Scale the scene, not the camera** -- and note that
+:meth:`~.Camera.set_near_orthographic` moves the camera 1e5 units out, which is
+the same problem arriving from the other direction.
 
 
 .. _limits-hard:
@@ -727,14 +732,25 @@ Hard limits
      - Silently resampled down.
    * - :class:`~.Surface` construction grid
      - 200 vertices per axis
-     - ``max_grid_resolution`` clamps the automatic search. Render-time dicing
-       is separate and unbounded.
+     - ``max_grid_resolution`` clamps the automatic search at construction.
+       Render-time dicing is a separate budget, below.
+   * - Subdivision level of one curved patch
+     - 8
+     - The dice stops refining that patch and **warns**
+       (``RuntimeWarning``: "tessellation reached its safety cap before meeting
+       render_tolerance for every patch").
+   * - Diced triangles in one frame
+     - 2 000 000
+     - The level search refuses further promotions and warns, as above. The
+       budget is per frame, not per batch, so a mesh does not pop at batch
+       boundaries.
    * - Polyline samples per Bezier segment
      - 512
      - The flattening search stops refining; a very long curve viewed very close
        can show flattening facets.
 
 Where a limit is marked *silent*, nothing is printed and no exception is raised.
+The two tessellation budgets are the exception: they warn.
 
 
 Not implemented at all

@@ -22,28 +22,38 @@ behaviour or for wall-clock rankings; where that matters it says so.
 
 ---
 
+> **Before anything else: CI is red on `master` right now.**
+> `tests/fast`'s pixel comparison — the only pixel gate CI has, because
+> `tests/full_renders` skips itself when `CI` is set — fails by **40 channel
+> values against a tolerance of 2**, and has been failing since `1e90c87`. It is
+> a stale baseline rather than a broken renderer, and the evidence is in
+> [item 17](#17-the-cpu-baseline-debt). Fixing it is a rebaseline plus a look at
+> the frames, and it should happen before any of the work below, because until
+> it does no change to the renderer can be told from the drift already there.
+
 ## Ranking
 
 | # | Item | Kind | Why here |
 | --- | --- | --- | --- |
 | 1 | [Silent truncations have no instrument](#1-silent-truncations-have-no-instrument) | Correctness | Four ceilings degrade the image with no signal. Cheapest high-value item on the list. |
-| 2 | [§I self-shadow rejection by identity](#2-i-self-shadow-rejection-by-identity) | Correctness | Designed, not built. The absolute epsilons are what couple the renderer to scene scale. |
-| 3 | [Texture minification has no filter](#3-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open. |
-| 4 | [§H nested-IOR refraction](#4-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index. |
-| 5 | [Decide what to do about unlit Bezier circuits](#5-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first. |
-| 6 | [Four materials silently ignore most of the lighting rig](#6-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows without a word. |
-| 7 | [Two public settings are no-ops; a whole path tracer is unreachable](#7-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing. |
-| 8 | [The shadowed resolve runs the resolve kernel twice](#8-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan. Plausibly the largest untargeted render-thread item on shadowed scenes. |
-| 9 | [`AttributeTimeline.get` — the prep pole](#9-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted. |
-| 10 | [T5 — the sparse-discovery host chain](#10-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; half shipped. |
-| 11 | [P9 / P10 — the batched geometry builds](#11-p9--p10--the-batched-geometry-builds) | Performance | Measured, not started. |
-| 12 | [`empty_cache` always collects on a CPU render](#12-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path. |
-| 13 | [Delete the dead render paths](#13-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist. |
-| 14 | [Stale docstrings that describe a renderer that no longer exists](#14-stale-docstrings-that-describe-a-renderer-that-no-longer-exists) | Docs | Each has already misled someone reading the code. |
-| 15 | [Nine experimental toggles are unreachable from `SETTINGS`](#15-nine-experimental-toggles-are-unreachable-from-settings) | API | Includes a route precondition that cannot be flipped from Python. |
-| 16 | [The CPU baseline debt](#16-the-cpu-baseline-debt) | Process | `DESIGN_mesh_identity_open.md` §B, still open, and now further behind. |
-| 17 | [An untracked file on the default path reached master](#17-an-untracked-file-on-the-default-path-reached-master) | Process | Fixed at `2016a26`; the gap that allowed it is not. |
-| 18 | [Open design-doc items with no owner](#18-open-design-doc-items-with-no-owner) | Various | §J, §L, §G, §4.6, P7 — recorded so they are not rediscovered. |
+| 2 | [The verification harnesses the docs and the source name do not exist](#2-the-verification-harnesses-the-docs-and-the-source-name-do-not-exist) | Process | 56 missing, 24 of them cited from inside `algan/`, including the stated gate for eight default-on toggles. Every item below is harder without them. |
+| 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | Designed, not built. The absolute epsilons are what couple the renderer to scene scale. |
+| 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open. |
+| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index. |
+| 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first. |
+| 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows without a word. |
+| 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing. |
+| 9 | [The shadowed resolve runs the resolve kernel twice](#9-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan, and never separated out from "shadows are expensive". Measure before building. |
+| 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted. |
+| 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; half shipped. |
+| 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | Measured, not started. |
+| 13 | [`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path. |
+| 14 | [Delete the dead render paths](#14-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist. |
+| 15 | [Stale docstrings that describe a renderer that no longer exists](#15-stale-docstrings-that-describe-a-renderer-that-no-longer-exists) | Docs | Each has already misled someone reading the code. |
+| 16 | [Nine experimental toggles are unreachable from `SETTINGS`](#16-nine-experimental-toggles-are-unreachable-from-settings) | API | Includes a route precondition that cannot be flipped from Python. |
+| 17 | [The CPU baseline debt](#17-the-cpu-baseline-debt) | Process | **Do this first.** `DESIGN_mesh_identity_open.md` §B, and it is now a red CI on master. |
+| 18 | [An untracked file on the default path reached master](#18-an-untracked-file-on-the-default-path-reached-master) | Process | Fixed at `2016a26`; the gap that allowed it is not. |
+| 19 | [Open design-doc items with no owner](#19-open-design-doc-items-with-no-owner) | Various | §J, §L, §G, §4.6, P7 — recorded so they are not rediscovered. |
 
 ---
 
@@ -62,8 +72,15 @@ them are documented in the code as deliberate bounds; none is counted.
 | Continuation-pool reservation at `pool_ratio == 1` | `tracer.py:1760, 2550` | — | `overflow = pool_ratio > 1 and …` — at ratio 1 the pool's own overflow flag is **not read**, so a failed reservation is dropped silently. `_secondary_split_needed`'s docstring records this; nothing detects it. |
 
 `DESIGN_mesh_identity_open.md` §Y already states the rule this violates: *"an
-instrument that reports zero may not be looking."* The work is a per-batch
-counter for each, reported the way the wavefront pool retries already are
+instrument that reports zero may not be looking."*
+
+**The pattern to copy already exists in the same codebase.** The two
+tessellation budgets — `max_subdivision_level = 8` and
+`max_diced_triangles = 2_000_000` (`primitives.py:1037, 1054`) — do exactly
+this: a patch that cannot meet `render_tolerance` within them raises a
+`RuntimeWarning` naming the cap (`primitives.py:1326`). The four ceilings above
+are the same kind of thing and say nothing. The work is a per-batch counter for
+each, reported the way the wavefront pool retries already are
 (`logger.log(PERF, …)`), plus a `RenderPlan` field so a script can assert on it.
 
 **Done when** a scene built to exceed each ceiling produces a log line naming
@@ -71,7 +88,75 @@ it, and `RenderPlan` carries the counts.
 
 ---
 
-## 2. §I self-shadow rejection by identity
+## 2. The verification harnesses the docs and the source name do not exist
+
+**Status: measured here. Of 89 scripts cited as `benchmarks/...`, 56 are not in
+`benchmarks/` — and 24 of those are cited from the engine source itself.**
+
+This codebase is unusually rigorous about naming the harness behind each claim:
+"validated by `benchmarks/_X.py`", "re-verify with `_X.py` after any resolve
+edit", "`benchmarks/_X.py` is the parity harness". Extracting every such
+reference from both the Markdown and the Python and checking it against the
+tree:
+
+```bash
+grep -rhoE "benchmarks/_[A-Za-z0-9_]+\.py" --include=*.md --include=*.py \
+    --exclude=RENDERER_WORK_QUEUE.md . | grep -v '\.venv' \
+  | sed 's|benchmarks/||' | sort -u \
+  | while read f; do [ -e "benchmarks/$f" ] || echo "$f"; done
+```
+
+**89 cited, 33 present, 56 missing.** Some are plainly historical. But 24 are
+named from inside `algan/` — that is, the shipped source points a future reader
+at a script that is not there. Among them, the stated validation for toggles
+that are **on by default today**:
+
+| Missing script | Cited from | Gates |
+| --- | --- | --- |
+| `_sheet_kernel_check.py` | `sheet_compact_taichi.py` (added this week) | `SHEET_MASK_KERNEL` — "the parity harness" |
+| `_raster_bez_pre_parity.py` | `settings.py` | `RASTER_BEZ_PRECOMPUTE`, `RASTER_TRI_PRECOMPUTE` |
+| `_raster_straddle_clip_parity.py`, `_raster_clip_extents_check.py` | `settings.py` | `RASTER_STRADDLE_CLIP` and its conservativeness proof |
+| `_logical_pn_crack_check.py` | `settings.py`, `logical_pn_taichi.py` | crack-freeness under `PN_CRITERION_KERNEL` |
+| `_rt2_refit_parity.py`, `_rt2_refit_sah.py` | `settings.py`, `refit_bvh.py` | `BVH_REFIT` |
+| `_wf_tile_auto_ab.py` | `settings.py` | `WAVEFRONT_TILE_AUTO` byte-identity |
+| `_wf_gen_fused_ab.py` | `settings.py` | `WF_GEN_FUSED` byte-identity |
+| `_grid_normals_ab.py` | `surface.py` | P11's bit-identical vertex normals |
+| `_query_rowdedup_parity.py`, `_updater_clone_memo_parity.py`, `_collated_fanout_parity.py`, `_p1_zerofill_ab.py` | `timeline.py` | P1/P6/P7/P8 |
+
+The design docs add more, including the whole `_rt2_*` family (14 missing) that
+`DESIGN_hybrid_raster.md` §11 calls "the engagement-asserted parity gates", and
+`_rt2_raster_refract_parity.py`, whose citation is the instruction *"re-verify
+with `_rt2_raster_refract_parity.py` after any resolve edit"* — an instruction
+nobody can follow.
+
+**Why this is ranked second.** Every byte-identity claim in this repository is a
+claim about a comparison somebody ran, and the project's own first rule
+(`DESIGN_mesh_identity_open.md` §Y.1: *"a check must show it REACHES its
+case"*) is about being able to run it again. A default-on toggle whose parity
+harness is gone cannot be re-validated after the next change to the code it
+guards. That makes every correctness item below more expensive than it should
+be, and it is the same failure as
+[item 18](#18-an-untracked-file-on-the-default-path-reached-master) — a file
+that was written, used once, and never `git add`ed — repeated 24 times inside
+`algan/` alone.
+
+Three steps, cheapest first:
+
+1. **Separate lost from never-committed.**
+   `git log --diff-filter=D --name-only -- benchmarks/` says whether any were
+   deleted rather than never added. Anything deleted can be restored.
+2. **Add the untracked-file guard from [item 18](#18-an-untracked-file-on-the-default-path-reached-master)**,
+   widened to `benchmarks/`. It is the same one-line `git status --porcelain`
+   check and it prevents the recurrence directly.
+3. **Fix the citations that cannot be restored.** A measurement whose instrument
+   is gone is still a measurement — the comment should say the number was taken
+   and the harness is not in the tree, rather than send someone looking. The
+   ones cited from `algan/` matter most, because that is where a reader lands.
+
+**Done when** every `benchmarks/_*.py` named from inside `algan/` either exists
+or has had its citation corrected, and a check keeps it that way.
+
+## 3. §I self-shadow rejection by identity
 
 **Status: designed down to the argument list in
 `DESIGN_mesh_identity_open.md` §I. Not started — verified: `raster_shadow_trace`
@@ -97,7 +182,7 @@ mesh", or a concave solid stops shadowing itself.
 
 ---
 
-## 3. Texture minification has no filter
+## 4. Texture minification has no filter
 
 **Status: named as the open residual by `DESIGN_analytic_aa.md` §19 ("what is
 still untouched is texture minification (no mip chain)"). Not started.**
@@ -124,7 +209,7 @@ derivatives. Measure before choosing.
 
 ---
 
-## 4. §H nested-IOR refraction
+## 5. §H nested-IOR refraction
 
 **Status: designed in `DESIGN_mesh_identity_open.md` §H. Not started —
 verified: `_alloc_wavefront_state` is still called with `sca_width = 7`
@@ -146,7 +231,7 @@ Gate the `rs_sca` width on the feature so `test_render_batch_sizing.py` and
 
 ---
 
-## 5. Decide what to do about unlit Bezier circuits
+## 6. Decide what to do about unlit Bezier circuits
 
 **Status: working as built. A decision, not a defect — but the largest
 capability asymmetry in the renderer, and it should be decided deliberately.**
@@ -184,7 +269,7 @@ currently assert (1) as intent and the code offers no path to (3).
 
 ---
 
-## 6. Four materials silently ignore most of the lighting rig
+## 7. Four materials silently ignore most of the lighting rig
 
 **Status: confirmed by reading; no test covers it.**
 
@@ -215,7 +300,7 @@ grid).
 
 ---
 
-## 7. Two public settings are no-ops, and a whole path tracer is unreachable
+## 8. Two public settings are no-ops, and a whole path tracer is unreachable
 
 **Status: confirmed by exhaustive grep.**
 
@@ -244,9 +329,19 @@ Either is fine. Leaving a public setting that provably does nothing is not.
 `INDIRECT_BOUNCE_STRENGTH` is genuinely read, but only by the Monte Carlo path
 (`tracer.py:1440`); that is correct and documented.
 
+**A third public setting reaches only half of what it names.**
+`glossy_reflection` is in `_PUBLIC_FIELDS`, but `_glossy_reflect` is called
+**only from `sheet_resolve_taichi.py`**, and `glossy_reflection_mode()` is
+passed down **only from `raster_pipeline.py`**. So on the supersampled fallback
+— which is a deterministic render, reached by anything in the fallback table of
+the limitations page — turning glossy reflections on does nothing at all, and
+`_mirror_share` is what governs a rough reflector there. Either plumb the mode
+into `wavefront_shade` or say so in the setter's docstring; silently applying to
+one of two paths is the worst of the three options.
+
 ---
 
-## 8. The shadowed resolve runs the resolve kernel twice
+## 9. The shadowed resolve runs the resolve kernel twice
 
 **Status: new. Not in `DESIGN_optimization_targets.md`. Measurement needed —
 this container is CPU-only and cannot rank it.**
@@ -257,37 +352,47 @@ shadow events, then `mode = 2` to shade reading the traced visibility.
 
 That is the right architecture — it is what makes a resolve/shadow desync
 structurally impossible, and `DESIGN_sheet_resolve.md` Phase 4a is explicit that
-it replaced a hand-maintained lockstep pair. But the two passes are not cheap
-and cheap: mode 1 runs the *entire* transport walk, including
+it replaced a hand-maintained lockstep pair. The cost is that a shadowed batch
+walks its sheets twice, and the second walk recomputes everything the first one
+did: mode 1 runs the *entire* transport (`corr`, the one-mesh ceiling, the §4.4
+band arithmetic, the per-sample `svis` writes) plus `_tri_color_g`,
+`_tri_extra_g`, `_tri_ior_transmission_g`, `_tri_shadow_normals` and
+`_pixel_footprint`. Only `_shade_tri_hit` and the `_spawn_pool_ray` calls are
+compiled out of it.
 
-* the per-sheet coverage/`corr`/one-mesh/band arithmetic,
-* `_tri_color_g`, `_tri_extra_g`, `_tri_ior_transmission_g` — every texture
-  fetch,
-* `_tri_shadow_normals` and `_pixel_footprint`,
+**The obvious saving is not available, and it is worth writing down why.** It
+looks as though mode 1 could skip the colour and transport fetches, since it
+shades nothing — but every one of them is load-bearing for the walk itself:
 
-and discards all of it except the event tables. Only `_shade_tri_hit` and the
-`_spawn_pool_ray` calls are compiled out.
+* the colour fetch's **alpha** becomes `mat_alpha` and drives `_run_svis_write`,
+  so it decides the visibility later sheets see;
+* **transmission** is passed to the same write as `trans_share`;
+* **reflectivity** reaches `R`, and `refl_max >= cover_pass` is what `break`s
+  the walk — so it decides which sheets are reached at all.
 
-Two things to try, in order:
+Since the accepted event set depends on all three, cutting them changes the
+shadows. The kernel is already as thin as a mode-gate can make it.
 
-1. **Hoist what mode 2 recomputes.** The event pass already writes per-sheet
-   tables; the material fetches it performs are exactly the ones mode 2 repeats.
-   Widening the event tables to carry them trades bandwidth for arithmetic.
-2. **Or cut mode 1 down.** It needs position, two normals, the sub-pixel mask,
-   the pipeline id and the footprint — the colour and transport fetches are dead
-   in it. `_tri_color_g` is called before the material-id test, so it cannot be
-   gated by `ti.static(mode)` as written; restructuring so the `mode == 1` arm
-   fetches only what it writes should be a compile-time win with no output
-   change.
+What is left is **memoization between the passes**: mode 1 has already computed
+each accepted sheet's colour, alpha, reflectivity, roughness, IOR, transmission
+and normals, and the event tables it writes are indexed by exactly the sheet
+index mode 2 uses. Widening those tables to carry the fetched values and having
+mode 2 read them trades ~15 floats per sheet of bandwidth for six texture
+fetches and their barycentric interpolations. The values are copied verbatim, so
+it is byte-identical, which puts it inside the project's existing A/B
+discipline (`benchmarks/_rt2_raster_shadow_parity.py`).
 
-Both are byte-identical by construction, which makes this measurable with the
-project's existing A/B discipline. On the reference profile shadows are named as
-cost item 4 ("multiplied by the number of lights"); this doubles the *resolve*
-on top of that, and nothing has measured it.
+Whether that pays is unmeasured, and this container cannot rank it. The figure
+to get first is simply the **ratio of mode 1's device time to mode 2's** from
+`utils/profiling_utils.py` on a shadowed scene: if mode 1 is a small fraction of
+mode 2, the walk is cheap next to the shading and there is nothing here. On the
+reference profile shadows are named only as cost item 4 ("multiplied by the
+number of lights") — that this also doubles the *resolve* has never been
+separated out.
 
 ---
 
-## 9. `AttributeTimeline.get` — the prep pole
+## 10. `AttributeTimeline.get` — the prep pole
 
 **`DESIGN_optimization_targets.md`, "What is left, in order", item 1. Unchanged
 by this audit; repeated here so the ranking is complete.**
@@ -301,7 +406,7 @@ figure predates P8, which changed the denominator.
 
 ---
 
-## 10. T5 — the sparse-discovery host chain
+## 11. T5 — the sparse-discovery host chain
 
 **`DESIGN_optimization_targets.md` T5. Half shipped; the shipped half is the one
 that paid.**
@@ -326,7 +431,7 @@ Do the cumsum scan; leave the sorts.
 
 ---
 
-## 11. P9 / P10 — the batched geometry builds
+## 12. P9 / P10 — the batched geometry builds
 
 **`DESIGN_optimization_targets.md` items 2 and 3. Measured, not started.**
 
@@ -347,7 +452,7 @@ P11.
 
 ---
 
-## 12. `empty_cache` always collects on a CPU render
+## 13. `empty_cache` always collects on a CPU render
 
 **Status: new. One-line change; measure before and after.**
 
@@ -375,7 +480,7 @@ measure on a card with headroom before spending anything on the CUDA end.
 
 ---
 
-## 13. Delete the dead render paths
+## 14. Delete the dead render paths
 
 **Status: ~1,600 lines, and two of them import modules that do not exist.**
 
@@ -426,7 +531,7 @@ the dead ones, and that is where the next subtle routing bug will come from.
 
 ---
 
-## 14. Stale docstrings that describe a renderer that no longer exists
+## 15. Stale docstrings that describe a renderer that no longer exists
 
 Each of these is a load-bearing docstring that is now false. Listed with what
 the code actually does.
@@ -444,7 +549,7 @@ the code actually does.
 
 ---
 
-## 15. Nine experimental toggles are unreachable from `SETTINGS`
+## 16. Nine experimental toggles are unreachable from `SETTINGS`
 
 `_FIELD_TO_LEGACY` (`settings/raytracing_settings.py:30`) enumerates 76 fields.
 These renderer globals are **not** among them, so they can only be set through
@@ -474,20 +579,58 @@ While there: `CLAUDE.md` says "~55 kernel/perf switches"; the real count is
 
 ---
 
-## 16. The CPU baseline debt
+## 17. The CPU baseline debt
 
-**`DESIGN_mesh_identity_open.md` §B, open, and further behind than when it was
-written.**
+**`DESIGN_mesh_identity_open.md` §B, and it is now a red CI on `master`.
+Measured here, per commit.**
 
-`tests/*/expected_outputs_cpu/` was last regenerated at `28efe67`. Eight commits
-have touched `algan/rendering` since, at least one of which
-(`c293da3`, "Fixed bug in AAA which caused speckling artefacts") moved output
-and shipped a **CUDA** rebaseline without a CPU one.
+`tests/*/expected_outputs_cpu/` was last regenerated at `28efe67`. This
+container reproduces that lineage exactly — the fast render **passes** there —
+so it is a usable instrument for the drift since. Rendering `tests/fast` at each
+commit that followed (with `sheet_compact_taichi.py` restored from `2016a26` so
+the pre-fix commits can render at all):
 
-This matters more than the design doc's framing suggests, because **CI renders
-on CPU**: `tests/fast` compares against `expected_outputs_cpu/`, and
-`test_full_render_scene` skips itself when `CI` is set. So the CPU fast baseline
-is the only pixel gate CI has, and it is the one drifting.
+| Commit | Worst channel difference vs the committed CPU baseline |
+| --- | --- |
+| `28efe67` — CPU baselines written here | **pass** |
+| `1e90c87` — "Optimized memory usage of sheet resolve…" | **140** |
+| `2b17e16` — "Minor UX pass." | 140 |
+| `c293da3` — "Fixed bug in AAA which caused speckling artefacts" | 140 |
+| `3be97a6` — "Ruff format." | 140 |
+| `ead6dde` — merge of `github/master` (which brings in `28efe67` itself) | **40** |
+| `b24a0c4`, `2e3264b`, `2016a26` (master) | 40 |
+
+The control is what makes this readable: **`28efe67` passes here**, so this
+container is on the same CPU lineage as the committed baselines and the rows
+below measure drift rather than a machine difference. (The exact magnitudes may
+differ on the GitHub runner; the pass/fail structure will not. Running the suite
+writes a diff video to `tests/fast/output_errors/fast.mp4` — gitignored — which
+is what to look at before regenerating anything.)
+
+Tolerance is 2. Three things follow, and the third is the one that matters:
+
+1. **The move starts at `1e90c87`**, a commit whose message describes it as a
+   memory optimization ("combined some PyTorch ops, freed some variables when
+   they are un-needed, implemented some things in Taichi kernels"). No baseline,
+   CPU or CUDA, was regenerated with it.
+2. **It is not the new compaction kernel.** Re-running `1e90c87` with
+   `ALGAN_SHEET_MASK_KERNEL=0` still gives **140**, and HEAD gives **40** with
+   the kernel on and 40 with it off. `sheet_compact_taichi.py`'s bit-identity
+   claim survives this test; the movement is in the torch passes beside it,
+   which is what "combined some PyTorch ops" would be expected to do to float
+   reassociation.
+3. **The merge that halved it is the merge of `28efe67`.** The local line had
+   diverged before the commit whose CPU baselines it is being compared against,
+   so part of the 140 was never a regression at all — it was the two lines
+   disagreeing. That is exactly the situation a rebaseline exists to end.
+
+This matters more than §B's framing suggests, because **CI renders on CPU**:
+`tests/fast` compares against `expected_outputs_cpu/`, and
+`test_full_render_scene` skips itself when `CI` is set. The CPU fast baseline is
+the only pixel gate CI has, and it is the one that has been red since
+`1e90c87`. Until it is green, no renderer change can be distinguished from the
+drift already present — which disarms the project's primary safety net for
+every item above.
 
 The two traps §B records are still traps: `CUDA_VISIBLE_DEVICES=` (empty) does
 not hide the GPU on Windows — use `-1`; and the render suites pick their
@@ -495,9 +638,14 @@ baseline directory from `torch.cuda.is_available()`, not from the render device,
 so a CPU render that can still see a GPU compares against the CUDA set and
 passes.
 
+**Done when** `pytest -q --fast` is green on a CPU machine at `master`, the
+regenerated frames have been looked at (`benchmarks/_diff_frame.py`), and the
+commit says why output moved — per `CLAUDE.md`'s standing rule that a
+rebaseline is never used to turn a red test green.
+
 ---
 
-## 17. An untracked file on the default path reached master
+## 18. An untracked file on the default path reached master
 
 **Fixed at `2016a26`. The gap that allowed it is not.**
 
@@ -533,7 +681,7 @@ all six dangling modules in under a second.
 
 ---
 
-## 18. Open design-doc items with no owner
+## 19. Open design-doc items with no owner
 
 Recorded so they are not rediscovered from scratch. None is started.
 
@@ -591,3 +739,88 @@ place.
   a user post-process is accounted for by running it. The OOM retry is retained
   as the backstop for the one case it cannot see (a batch that densifies later).
   Do not add byte formulas back.
+
+---
+
+## Appendix: where render memory goes
+
+The audit was asked for memory-wasteful sections as well as slow ones. The
+honest headline is that **the render arena is measured rather than modelled**
+(`memory_model.py` fits `peak(n) = a + b*n` to its own high-water mark), so
+there is no stale byte formula to go wrong and no allocation table to
+regenerate. What follows is not a list of leaks; it is where the bytes actually
+are, so a future change knows what it is trading against.
+
+Ranked by how much of a large frame each accounts for.
+
+**1. The whole render chunk's fragment stream, live at once.**
+`prepare_sparse_raster_coverage` runs **once per render chunk, over every frame
+in it**, not per frame. Its own reservation arithmetic states the cost:
+
+```
+discovery_bytes = discovery_frags * 29        # pre-truncation scratch
+                + num_frags      * 28         # the persistent compact result
+                + num_covered    * 8
+                + num_sheets     * 32
+                + (num_covered + 1) * 4
+```
+
+So roughly **57 bytes per emitted fragment**, and a 4K frame is ~3.7 M
+fragments. This is the reason a dense scene's chunks are short, and it is the
+first thing to look at if a scene will not fit. `SPARSE_DISCOVERY_SAFETY` (1.25)
+pads the learned figure so the *next* chunk is sized to fit it.
+
+**2. `compact_sheets`' own peak.** Its comments carry the measurements, all at a
+3840x2160 frame: the popcount's `zeros_like` held 26 MB of int64 for values
+below nine (now int32); `_shade_class`'s `[n, 3]` / `[n, 3, 3]` gathers are 42
+and 126 MB and were the function's allocation peak until each was freed the
+statement after its last read; `_exact_fragment_order`'s two permutations are
+56 MB each and are the discovery peak; the conflict-rank loop's five live `[n]`
+arrays cost 70 MB until they were narrowed to int32. All of that is already
+optimized once. What is left is the eight-pass `torch.cumsum` scan itself
+(item 11).
+
+**3. The frame buffer, and the fallback's multiplier.** Under post-process
+tonemapping (the default) the frame buffer is **float32 rather than uint8** —
+4x — which the settings comment names as the cost of doing bloom in linear HDR.
+`ALGAN_HDR_BUFFER_F16` halves it back but is opt-in because Pascal-class cards
+run f16 torch post-processing far slower than the saving is worth. On top of
+that, any batch that falls off the analytic path renders at `anti_alias_level`
+squared — **another 4x at the default**. The two compound: a fallback batch
+under HDR is 16x the byte-buffer baseline.
+
+**4. Shadow event tables.** With shadows on, `shade_sparse_raster_coverage`
+allocates eight dense per-sheet arrays sized by the *slice's whole sheet count*
+— `sheet_accept`, `event_pos/snrm/fnrm` (3 x 3 floats), `event_frame`,
+`event_msk`, `event_dp` (6 floats when `sec_aa > 1`) and `sheet_event_id` —
+about **76 bytes per sheet**, plus `shadow_vis` at `num_events * num_lights * 4`.
+They are allocated for every sheet and then compacted down to the accepted ones,
+so the peak is set by the sheet count and not by the event count.
+
+**5. `wf_finalize_uncovered`'s full-frame mask.** When the tonemap runs
+in-kernel (`post_process_tonemap=False`) the sparse route allocates a
+`uint8[total_px]` coverage mask over the whole chunk purely to find the pixels
+the covered composite will not touch. One byte per pixel-frame, for a boolean.
+
+**6. Transients the model cannot see.** The merge and `project_to_screen` build
+out of place in *pool headroom*, not in the arena, so the runtime chunk model
+has no visibility into them. They are bounded instead by deliberately generous
+multiples of their packed inputs: `MERGE_GPU_PEAK_FACTOR` **6.0** and
+`PROJECT_GPU_PEAK_FACTOR` **8.0**. Both are estimates with the OOM retry as the
+exact fallback. This is a known, accepted imprecision — do not tighten either
+without re-checking `test_render_batch_sizing.py`.
+
+**7. The STBVH's temporal expansion.** At the confirmed-optimal tightness of
+1.0, moving geometry segments into near-per-frame instances, so the classic tree
+is **~10x the primitive count** (`DESIGN_hybrid_raster.md` §9 — the finding that
+motivated `BVH_REFIT`, now default on). `BVH_DEFER` (default on) avoids building
+trees at all for a batch that provably never traverses one, which is the common
+shadow-free non-reflective case.
+
+**8. `RASTER_FUSED_GATHER`, and why it is off.** The fused six-array gather is
+bit-identical and faster, and it ships **default off** because forcing all six
+outputs to exist before the first is written raises a 4K frame's peak CUDA
+allocation by **50-160 MB** to save 4 ms of a 1.3 s frame. Recorded here because
+it is the clearest example in the codebase of the trade this appendix is about,
+and because the reasoning is easy to lose: turn it on only on a bandwidth-bound
+machine with VRAM to spare.
