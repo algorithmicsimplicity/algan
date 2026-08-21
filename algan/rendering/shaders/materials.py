@@ -31,6 +31,13 @@ sampled; a one-time warning is emitted when such a slot is set. ``wireframe``,
 ``vertexColors`` and non-default ``side`` are likewise unsupported. The matcap,
 normal and depth materials use documented approximations (see
 :mod:`algan.rendering.shaders.material_shaders`).
+
+:class:`MeshToonMaterial`, :class:`MeshNormalMaterial`,
+:class:`MeshMatcapMaterial` and :class:`MeshDepthMaterial` are the four whose
+shading has no in-kernel port: they are baked into vertex colours, which is what
+costs them every light beyond a plain :class:`~.PointLight`, all shadows, and an
+environment map's diffuse contribution. Combining one with a lighting rig that
+asks for any of those warns, both where the material is set and once per render.
 """
 
 from __future__ import annotations
@@ -101,6 +108,76 @@ _TEXTURE_SLOTS = frozenset(
         "displacement_bias",
     }
 )
+
+
+# -- lighting a vertex bake cannot answer -----------------------------------
+# A material is shaded in the render kernel only when its shader has an
+# in-kernel port (raytracing.settings._core_shader_ids). Everything else --
+# MeshToonMaterial, MeshNormalMaterial, MeshMatcapMaterial, MeshDepthMaterial
+# and any custom per-vertex shader -- is baked into vertex colours before the
+# frame renders, and that bake sees only plain point lights
+# (RayTracedTrianglePrimitive._shade_vertex_colors skips every light carrying
+# ``_render_aux``). The same shaders pack the unlit in-kernel material id,
+# which the sheet resolve refuses to build shadow events for, so they receive
+# no shadows either. Neither is recoverable at render time, so the honest
+# thing is to say so at the point the combination is authored.
+#
+# Deliberately a warning rather than raytracing.settings.report_unsupported_features:
+# that policy defaults to raising, and these materials are shipped, documented
+# and render perfectly well -- what they drop is part of the lighting rig, not
+# the render.
+_PER_FRAGMENT_ADVICE = (
+    "Shade per fragment instead -- with MeshLambertMaterial, MeshPhongMaterial, "
+    "MeshStandardMaterial or MeshPhysicalMaterial, or with set_fragment_shader()."
+)
+
+
+def _shades_per_fragment(shader):
+    """Whether ``shader`` is evaluated in the render kernel rather than baked
+    into vertex colours.
+
+    ``None`` counts (no shader, so nothing is baked and nothing is lost), as do
+    the ``set_fragment_shader`` pipelines, which always shade in-kernel.
+    """
+    if shader is None:
+        return True
+    if getattr(shader, "_frag_pipeline_id", None) is not None:
+        return True
+    from algan.rendering.raytracing.settings import _shader_is_core
+
+    return _shader_is_core(shader)
+
+
+def _lighting_beyond_vertex_bake(lights=(), *, shadows=None, environment_map=None):
+    """The parts of a lighting rig that only per-fragment shading delivers.
+
+    Each entry is a phrase naming what is asked for and what becomes of it, for
+    a mob whose shading is baked at vertices. ``shadows`` defaults to the live
+    ``SETTINGS.raytracing.shadows``.
+    """
+    from algan.rendering.lights import light_is_extended
+    from algan.rendering.raytracing import settings as rt_settings
+
+    if shadows is None:
+        shadows = rt_settings.SHADOWS
+
+    # Phrased so each entry reads correctly after both "MeshToonMaterial:
+    # shading is baked ..., so" and "N Mob(s) ... bake into vertex colours, so".
+    features = []
+    extended = sorted({type(_).__name__ for _ in lights if light_is_extended(_)})
+    if extended:
+        features.append(
+            f"lights beyond a plain PointLight are skipped ({', '.join(extended)}) "
+            "-- a vertex bake sees only point lights with no decay, distance or "
+            "shadow_radius"
+        )
+    if shadows:
+        features.append(
+            "no shadow is received, whatever SETTINGS.raytracing.shadows is set to"
+        )
+    if environment_map is not None:
+        features.append("the environment map's diffuse lighting is not applied")
+    return tuple(features)
 
 
 def _to_rgb(value):

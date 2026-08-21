@@ -8,6 +8,7 @@ into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 from __future__ import annotations
 
 import inspect
+import warnings
 from typing import TYPE_CHECKING
 
 from algan.rendering.shaders.pbr_shaders import default_shader
@@ -16,7 +17,11 @@ from algan.utils.tensor_utils import cast_to_tensor
 if TYPE_CHECKING:
     from algan.animatable_base.mob import Mob
 
-from algan.errors import ModifiedProtectedAttributeError
+from algan.errors import (
+    ModifiedProtectedAttributeError,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 
 
 class MobMaterialsMixin:
@@ -210,6 +215,16 @@ class MobMaterialsMixin:
         refraction. This mirrors the Three.js material workflow; there are no
         separate mob-level reflectivity, roughness, or refractive-index setters.
 
+        Four materials --
+        :class:`~algan.rendering.shaders.materials.MeshToonMaterial`,
+        :class:`~algan.rendering.shaders.materials.MeshNormalMaterial`,
+        :class:`~algan.rendering.shaders.materials.MeshMatcapMaterial` and
+        :class:`~algan.rendering.shaders.materials.MeshDepthMaterial` -- are
+        shaded before the frame is rendered rather than in the render kernel, so
+        they are lit only by a plain :class:`~.PointLight` and never receive
+        shadows. Applying one under a lighting rig that asks for more than that
+        warns, rather than quietly dropping the difference.
+
         Animation
         ---------
         Not animated, and **must be called before the Mob is spawned**, since it
@@ -278,8 +293,41 @@ class MobMaterialsMixin:
             d.material = material
 
         material.emit_warnings()
+        self._warn_lighting_beyond_vertex_bake(material)
 
         return self
+
+    def _warn_lighting_beyond_vertex_bake(self, material):
+        """Warn when ``material`` can only be baked into vertex colours and the
+        Scene's lighting rig asks for more than that bake can deliver.
+
+        Checked against the lights registered *now*, so the usual authoring
+        order -- material first, lights later -- is caught by the render's own
+        pass over the whole scene instead (see
+        :meth:`~algan.render_loop.RenderLoopMixin._warn_vertex_baked_lighting`).
+        """
+        from algan.rendering.shaders.materials import (
+            _PER_FRAGMENT_ADVICE,
+            _lighting_beyond_vertex_bake,
+            _shades_per_fragment,
+        )
+
+        if _shades_per_fragment(material.shader):
+            return
+        scene = getattr(self, "scene", None)
+        features = _lighting_beyond_vertex_bake(
+            getattr(scene, "light_sources", None) or (),
+            environment_map=getattr(scene, "environment_map", None),
+        )
+        if not features:
+            return
+        warnings.warn(
+            f"{type(material).__name__}: shading is baked into vertex colours "
+            f"(it has no in-kernel port), so {'; '.join(features)}. "
+            f"{_PER_FRAGMENT_ADVICE}",
+            UnsupportedFeatureWarning,
+            stacklevel=_user_stacklevel(),
+        )
 
     def get_shader_params(self) -> dict:
         """Get this Mob's current shader parameter values, by name.
