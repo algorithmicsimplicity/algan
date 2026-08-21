@@ -465,9 +465,105 @@ half on. §E now exists, which removes one of the two preconditions.
 
 
 ================================================================================
-H. NESTED-IOR REFRACTION — designed to the argument list, NOT BUILT
+H. NESTED-IOR REFRACTION — BUILT (gated off by default)
 ================================================================================
-**STATUS: not started. The design below is new work; the implementation is not.**
+**STATUS: built.** `SETTINGS.raytracing.experimental.nested_ior` /
+`rt_settings.set_nested_ior()` / env `ALGAN_NESTED_IOR` (import-time default;
+the setting itself is runtime-mutable and reaches the kernels as a
+`ti.template()` via `nested_ior_mode()`, so each mode compiles its own
+variant). With the gate off the state keeps its classic width and every stack
+line compiles out — byte-identical by construction. What verifies it:
+`benchmarks/_nested_ior_ab.py` (three frames: a nested pair that MUST move,
+a single sphere and a pane that MUST be byte-identical), the unit suite at
+the default, and the render suites, which are unaffected while the gate is
+off.
+
+The design as built follows the revision below (IOR stack in `rs_sca`
+columns 7+, `_refract_ray` unchanged), with four deliberate deviations:
+
+1. **Overflow rule.** The text below says an overflow must "fall back to
+   today's behaviour (treat the outside as air)" and not push. As specified
+   that shifts every subsequent pop by one, so a nest deeper than N renders
+   wrong at every interface OUTSIDE the overflow as well as at the
+   overflowing one. As built, the depth counter keeps counting past N and
+   only the first N entries are stored (`_write_ior_stack`): entering at
+   depth == N still reads `s[N-1]` as its outside — CORRECT at that
+   interface — and the matching exits pop back onto a stack that is still
+   right, so only the interfaces beyond the cap are wrong. Reads clamp their
+   index to `[0, N-1]`.
+2. **Fresnel stays on the material index.** Only `_refract_ray`'s argument
+   becomes relative; `_material_reflectance` and the `is_glass` gate keep
+   the absolute index. The gate (`ior > 1 + 1e-4`) would reject a relative
+   index of 0.8 outright — killing exactly the inner interface this feature
+   exists to fix — and `_material_reflectance`'s dielectric branch shares
+   that gate, so feeding it rel < 1 zeroes Fresnel reflection instead of
+   computing it. Making Fresnel contrast-relative is correct but touches
+   every material path's r0/gate: **named follow-up work ("nested
+   Fresnel"), its own baseline question.**
+3. **Custom-scatter scenes get no nested IOR.** Once any custom fragment
+   scatter exists it owns every fragment, and the fixed injection signature
+   cannot carry a relative index or a medium outcome. Arm 2c therefore
+   passes the material index unchanged AND copies the parent stack verbatim,
+   which makes it behaviourally identical to the pre-feature kernel whether
+   the gate is on or off. Extending the scatter contract is future work.
+4. **Per-corner IOR approximation.** The pushed value is the hit's
+   interpolated index. On a spatially-varying-IOR mesh the exit hit can
+   interpolate a different value than the entry pushed, so the popped
+   "outside" need not equal what was pushed; constant-IOR materials (the
+   normal case) are exact.
+5. **The stack supplies only the OUTSIDE index; the inside always comes from
+   the hit's own `ior`.** The sketch below reads `n_in` off the stack when
+   exiting. That is wrong in practice for a reason worth recording: `ior` is
+   barycentrically interpolated per hit (`_corner_ior`), so a constant 1.5
+   comes back as `1.5*(w0+w1+w2)` and the value pushed at the entry hit
+   differs in its last bits from the one the exit hit reads. Taking the
+   inside locally is the more honest reading — a spatially varying index
+   really does differ at the two points — and it keeps the entry hit's
+   interpolation out of the exit hit.
+
+**What the gate costs an UN-NESTED scene, measured rather than assumed.** One
+glass solid alone is not byte-identical with the gate on. A cube moves 148
+pixels and a sphere 270, of 278784 at PREVIEW — 0.05% and 0.10% — and only at
+edges and grazing silhouettes. That is neither noise nor the plumbing: each
+arm is bit-reproducible on re-render, the `pane` control (a transmissive
+circuit, which never touches the stack) is exactly identical, and the movement
+survives disabling the entry half of the arithmetic — which means the stack
+reaches **depth ≥ 2 on a CONVEX solid**. Two entries with no exit between them
+is something a straight ray cannot do to a convex shell, so it is the epsilon
+artifact `_offset_transmitted_origin`'s docstring already describes: at a
+shared edge the transmitted origin lands outside the neighbouring face and the
+ray "enters" a solid it never left. With the stack on, that hit reads
+already-inside-1.5-entering-1.5 and does not bend, which is the right answer
+where there is no interface; the air-outside assumption bent it again. So the
+feature quietly fixes a second thing, at the price of un-nested glass no
+longer being pixel-stable across the gate. **§I (mesh identity) is what would
+remove the artifact at its source** — a ray cannot enter a mesh it is already
+inside — which is a reason to want §I beyond its own symptom.
+
+Two further departures from the sketch below, arrived at while chasing that
+measurement. Neither turned out to account for it — the control frames moved
+by the same 660 channels before and after both — but both are right on their
+own terms and are recorded so the next reader does not re-derive them:
+
+* **`entering` is decided by `rd · face_n`, the GEOMETRIC normal**, exactly
+  as written below — not by the shading normal `_refract_ray` picks its own
+  side from. Deciding with the shading normal looks safer (the stack then
+  cannot disagree with the `eta` Snell's law took) but is not: on a diced
+  sphere the interpolated normal tips past the silhouette at grazing angles,
+  so an internal EXIT is classified as an entry, the ray pushes instead of
+  popping, and every interface outside that one gets a wrong outside index.
+  Inside-ness is geometric. This assumes consistent outward winding, the
+  same assumption one-sided shading already makes.
+* **The primary resolve must not assume its refraction spawns are entries.**
+  A partially covering glass fragment lets the primary walk on to the same
+  solid's BACK face, where an unconditional push records a medium the ray is
+  leaving. `_spawn_pool_ray` takes the side and goes through the same
+  `_write_ior_stack` the bounce shader uses.
+
+One further stated limit: the CAMERA is assumed to start in air. The sheet
+resolve's primaries are born with an empty stack (the host zeroes the columns
+per tile), so a camera placed inside a glass solid reads depth 0 at its first
+interface and gets today's behaviour.
 
 `wavefront_kernels_taichi.py` treats a circuit as a thin pane (`is_pane`) and a
 triangle mesh as a solid (`is_glass`), and assumes air outside every interface.
@@ -506,7 +602,8 @@ At an `is_glass` hit, with `entering = (rd · face_n) < 0`:
 then `_refract_ray(rd, normal, rel)` unchanged, and copy the updated stack into
 the continuation's `rs_sca[c, 7..]` beside the six values already written there.
 Overflow at depth N must fall back to today's behaviour (treat the outside as
-air) rather than corrupt.
+air) rather than corrupt. **(As built this rule changed — see deviation 1 in
+the status block above.)**
 
 **What does NOT need touching, and why.** A reflection stays in the same medium
 and a coverage-miss never crossed an interface, so the primary ray's stack is

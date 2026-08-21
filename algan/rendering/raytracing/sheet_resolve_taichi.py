@@ -115,7 +115,15 @@ def sheet_resolve_shade(
         layer_offsets: ti.types.ndarray(),
         frag_shading: ti.template(), frag_pipelines: ti.template(),
         tri_pids: ti.template(),
-        refraction: ti.template(), skip_unlit_normal: ti.template(),
+        refraction: ti.template(),
+        # Nested-IOR media stack gate (wavefront_kernels_taichi module head).
+        # This resolve handles PRIMARY rays only -- they regenerate in-kernel
+        # from the camera and start in air -- so its whole stack duty is the
+        # child stacks handed to _spawn_pool_ray below; every continuation is
+        # drained (and nested) by wavefront_shade. In shadow mode 1 every
+        # spawn compiles out, so the event pass needs no stack logic.
+        ior_stack: ti.template(),
+        skip_unlit_normal: ti.template(),
         has_bez: ti.template(),
         sec_aa: ti.template(), sec_min_energy: ti.f32,
         glossy: ti.template(),
@@ -533,23 +541,37 @@ def sheet_resolve_shade(
                                         pixel_basis_x, pixel_basis_y)
                                 rdt = _refract_ray(rdj, nj, ior)
                                 if ti.static(mode != 1):
+                                    # Refraction off a primary: push or pop the
+                                    # hit medium, the side read from the
+                                    # GEOMETRIC face normal (see
+                                    # _relative_ior). Not assumed to be an
+                                    # entry: a partially covering glass
+                                    # fragment lets the primary walk on to the
+                                    # solid's back face, where an
+                                    # unconditional push would record a medium
+                                    # the ray is leaving.
                                     _spawn_pool_ray(
                                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                         rs_pix, rs_alloc,
                                         _offset_transmitted_origin(
                                             hpj, rdt, face_normal, nj),
                                         rdt, wsub, base_dist + t_hit,
-                                        bounces_left - 1, processed, pixel, r, 1)
+                                        bounces_left - 1, processed, pixel, r, 1,
+                                        ior_stack, 1, ior, rdj.dot(face_normal) < 0.0)
                     else:
                         rdt = _refract_ray(surf_rd, normal, ior)
                         if ti.static(mode != 1):
+                            # Refraction off a primary: push or pop the hit
+                            # medium (see the jittered spawn above).
                             _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
                                 _offset_transmitted_origin(
                                     hp, rdt, face_normal, normal),
                                 rdt, wt, base_dist + t_hit,
-                                bounces_left - 1, processed, pixel, r, 1)
+                                bounces_left - 1, processed, pixel, r, 1,
+                                ior_stack, 1, ior,
+                                surf_rd.dot(face_normal) < 0.0)
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hit_point = surf_pos
@@ -585,7 +607,8 @@ def sheet_resolve_shade(
                                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                             rs_pix, rs_alloc, org, rdr, weight,
                                             base_dist + t_hit, bounces_left - 1,
-                                            processed, pixel, r, 1)
+                                            processed, pixel, r, 1,
+                                            ior_stack, 0, 0.0, 0)
                                 else:
                                     rd = rdr
                                     ro = org
@@ -647,7 +670,7 @@ def sheet_resolve_shade(
                                             hpj + nj * (10.0 * MIN_HIT_DISTANCE),
                                             rdr, rwsub, base_dist + t_hit,
                                             bounces_left - 1, processed, pixel, r,
-                                            1)
+                                            1, ior_stack, 0, 0.0, 0)
                         else:
                             if ti.static(mode != 1):
                                 _spawn_pool_ray(
@@ -655,7 +678,8 @@ def sheet_resolve_shade(
                                     rs_alloc,
                                     rhp + nref * (10.0 * MIN_HIT_DISTANCE),
                                     refl_rd, rwt, base_dist + t_hit,
-                                    bounces_left - 1, processed, pixel, r, 1)
+                                    bounces_left - 1, processed, pixel, r, 1,
+                                    ior_stack, 0, 0.0, 0)
                     if not defer:
                         rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
                         _run_redistribute(svis, own_msk, rr)
@@ -697,7 +721,8 @@ def sheet_resolve_shade(
                                         hpj + nj * (10.0 * MIN_HIT_DISTANCE),
                                         rdr,
                                         wsub, base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, 1)
+                                        processed, pixel, r, 1,
+                                        ior_stack, 0, 0.0, 0)
                     else:
                         if ti.static(mode != 1):
                             _spawn_pool_ray(
@@ -706,7 +731,8 @@ def sheet_resolve_shade(
                                 hp + nref * (10.0 * MIN_HIT_DISTANCE),
                                 refl_rd,
                                 wt, base_dist + t_hit, bounces_left - 1,
-                                processed, pixel, r, 1)
+                                processed, pixel, r, 1,
+                                ior_stack, 0, 0.0, 0)
                 ts_s = w_a_s * trans_share
                 pm = (1.0 - w_a_s) + ts_s
                 if not defer:
@@ -752,7 +778,8 @@ def sheet_resolve_shade(
                                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                         rs_pix, rs_alloc, org, rdr, weight,
                                         base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, 1)
+                                        processed, pixel, r, 1,
+                                        ior_stack, 0, 0.0, 0)
                             else:
                                 rd = rdr
                                 ro = org
@@ -840,6 +867,9 @@ def sheet_resolve_shade(
                 rs_rd[r, k] = rd[k]
             for k in ti.static(range(4)):
                 rs_acc[r, k] = acc[k]
+            # Columns 7+ (nested-IOR stack) stay untouched: a bounced PRIMARY
+            # reflected off this hit and primaries start in air, so its stack
+            # is still the host-zeroed empty one.
             rs_sca[r, 0] = weight[0]
             rs_sca[r, 1] = 0.0
             rs_sca[r, 2] = 1e30

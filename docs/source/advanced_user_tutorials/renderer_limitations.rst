@@ -539,10 +539,21 @@ Reflection
 Refraction
 ----------
 
-* **Nested media are not modelled.** Every interface assumes air on the outside.
-  Glass inside glass, a sphere inside a box, a bubble in a liquid: all take the
-  wrong relative index of refraction at the inner interface. Single closed
-  objects in air are correct.
+* **Nested media are not modelled by default.** Every interface assumes air on
+  the outside. Glass inside glass, a sphere inside a box, a bubble in a
+  liquid: all take the wrong relative index of refraction at the inner
+  interface. Single closed objects in air are correct.
+  ``SETTINGS.raytracing.experimental.nested_ior`` opts into a per-ray media
+  stack that fixes this: each interface then refracts with the relative index
+  of the two media it separates (up to four nested media per ray). It remains
+  an experimental switch with stated limits: Fresnel reflectance still uses
+  the material's own index rather than the relative one, a scene carrying a
+  custom fragment scatter gets no nesting at all, and the camera is assumed
+  to start in air. Turning it on also moves a small number of pixels at the
+  **edges and grazing silhouettes of ordinary un-nested glass** -- around a
+  tenth of a percent of the frame -- because a ray that grazes a shared edge
+  can re-enter the solid it never left, and the stack correctly declines to
+  bend it a second time where the air-outside assumption did not.
 * **A Bezier circuit transmits as a thin pane**: light passes through tinted,
   but is not bent. Only triangle geometry refracts.
 * **No absorption over distance, no dispersion.** Transmitted light is tinted by
