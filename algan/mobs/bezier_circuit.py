@@ -288,19 +288,22 @@ class BezierCircuitCubic(Mob):
         position or morph into something else.
     z_index
         Which of two *exactly coplanar* circuits draws in front: the higher
-        ``z_index`` wins, and ties keep whatever order the renderer would have
-        picked. Defaults to ``0``. Coplanar 2-D geometry is otherwise ordered by
-        an internal index that follows neither creation order nor hierarchy, so
-        this is how a shape is put reliably on top of another at the same depth
-        -- an arrow over a grid, a label over a panel. Setting it propagates to
-        the whole sub-hierarchy (see :attr:`~.BezierCircuitCubic.z_index`).
-        It is *not* a general depth override: it biases the circuit toward the
-        camera by
-        ``z_index`` times the renderer's coplanarity tolerance (1e-4 world
-        units), which is far too small to reorder anything genuinely in front of
-        or behind it. Values are small integers; a few hundred would start to
-        shift the shape visibly. Matches Manim's attribute of the same name,
-        which :class:`~algan.mobs.manim_mob.ManimMob` carries across on import.
+        ``z_index`` wins. Defaults to ``0``, which leaves the shape in author
+        order -- coplanar 2-D geometry draws in the order it was created, each
+        composite Mob kept whole and drawn parent-first, so an arrow crossing a
+        grid authored before it lands on top of that grid without being asked
+        to. Raise it to override that: a label over a panel authored after it,
+        a highlight over the shape it marks. Setting it propagates to the whole
+        sub-hierarchy (see :attr:`~.BezierCircuitCubic.z_index`).
+
+        It is *not* a general depth override. The renderer spends it as a bias
+        of a few ten-thousandths of a world unit toward the camera -- enough to
+        settle a tie between surfaces at the same depth, far too little to
+        reorder anything genuinely in front of or behind. Values are small
+        integers; a few hundred would start to shift the shape visibly. Matches
+        Manim's attribute of the same name, both in meaning and in being a
+        stable sort key over the authored order, and
+        :class:`~algan.mobs.manim_mob.ManimMob` carries it across on import.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         which is the fill colour.
@@ -339,14 +342,26 @@ class BezierCircuitCubic(Mob):
     # would otherwise forward the miss to the backing Manim object).
     _z_index = 0.0
 
+    # Set per batch by ``RenderLoopMixin._authored_draw_order``: the whole draw
+    # order resolved to depth bins, of which the authored ``z_index`` is one
+    # input. ``None`` means no render has resolved one, and a primitive built
+    # directly still honours ``z_index`` on its own.
+    _draw_bias = None
+
+    def _render_draw_bias(self):
+        """Depth-bin bias this circuit renders with."""
+        return self.z_index if self._draw_bias is None else self._draw_bias
+
     @property
     def z_index(self):
         """Which of two exactly coplanar circuits draws in front (higher wins).
 
-        Assigning propagates to every circuit below this one in the hierarchy,
-        matching Manim's ``set_z_index(..., family=True)``: a composite shape --
-        an arrow's shaft and its tip, a labelled axis -- stacks as one thing
-        rather than leaving its parts on opposite sides of whatever they cross.
+        ``0`` (the default) means author order, which already keeps a composite
+        Mob whole and parent-first; this is the override for when that is not
+        what you want. Assigning propagates to every circuit below this one in
+        the hierarchy, matching Manim's ``set_z_index(..., family=True)``, so a
+        composite raises as one thing rather than leaving its parts on opposite
+        sides of whatever they cross.
 
         Animation
         ---------
@@ -1135,9 +1150,9 @@ class BezierCircuitCubic(Mob):
             transmission=transmission,
             z_index=(
                 None
-                if self.z_index == 0.0
+                if (bias := self._render_draw_bias()) == 0.0
                 else torch.full(
-                    (1, bw.shape[-2], 1), self.z_index, dtype=bw.dtype, device=bw.device
+                    (1, bw.shape[-2], 1), bias, dtype=bw.dtype, device=bw.device
                 )
             ),
         )
@@ -1498,7 +1513,7 @@ def build_render_primitives_batched(actors, scene):
 
     # ``_is_batchable_bezier`` guarantees one attribute row -- and therefore one
     # circuit -- per actor here, so the lane is simply the actors' scalars.
-    zs = [float(a.z_index) for a in actors]
+    zs = [float(a._render_draw_bias()) for a in actors]
     mega._has_z_index = any(z != 0.0 for z in zs)
     mega.z_index = (
         torch.tensor(zs, dtype=bw.dtype).view(1, M, 1).to(device)

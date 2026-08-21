@@ -1661,6 +1661,107 @@ class RenderLoopMixin:
             return False
         return True
 
+    def _bezier_block_key(self, actor):
+        """``_bezier_group_key`` for an actor that may not be batchable.
+
+        The draw-order walk keys every circuit by the block it will be merged
+        into, including the packed and non-batchable ones that never reach
+        ``_build_deferred_beziers``; those have no timeline rows for the key's
+        texture-row counts, and are keyed by their batch identifier alone.
+        """
+        try:
+            return self._bezier_group_key(actor)
+        except (KeyError, AttributeError):
+            from algan.rendering.primitives.bezier_circuit_primitive import (
+                BezierCircuitPrimitive,
+            )
+
+            return BezierCircuitPrimitive.batch_identifier_for(
+                actor.num_texture_points, actor.filled
+            )
+
+    def _authored_draw_order(self):
+        """This Scene's actors in Manim's draw order, and what it costs in depth.
+
+        Returns ``(rank, bias)``. ``rank`` orders *every* actor: each authored
+        tree walked parent-first with the roots in creation order -- Manim's
+        flattened family. The sort it replaces was by hierarchy depth
+        descending, which keeps parents ahead of their children but interleaves
+        unrelated trees: a depth-3 node of one tree landed ahead of a depth-2
+        node of another, which is what split an arrow's shaft and tip around a
+        grid they crossed.
+
+        ``bias`` is that order expressed in coplanarity bins, for the circuits
+        only. Coplanar circuits tie on distance and are resolved by their
+        position in the merged arrays, and that position follows the draw order
+        only *within one merge block* -- filled circuits, stroked ones and each
+        distinct texture-grid shape are packed separately, and a block lands
+        wherever its first member did. A bias is therefore needed exactly where
+        the walk crosses a block boundary, and one bin there is enough, so the
+        count is the number of alternations rather than the number of Mobs (23
+        for the 117 circuits of the manim-compatibility scene). It is centred
+        on zero so the scene straddles the plane it was authored on instead of
+        drifting off it.
+
+        Computed over the whole authored Scene rather than the frame window's
+        actors, which is what makes it stable: were it derived from the live
+        set, a despawn elsewhere would renumber the survivors and step their
+        depths mid-render.
+        """
+        from algan.mobs.bezier_circuit import BezierCircuitCubic
+
+        seen = set()
+        order = []
+
+        def visit(root):
+            stack = [root]
+            while stack:
+                mob = stack.pop()
+                if id(mob) in seen:
+                    continue
+                seen.add(id(mob))
+                order.append(mob)
+                children = getattr(mob, "children", None)
+                if children:
+                    stack.extend(reversed(list(children)))
+
+        for actor in self.actors:
+            if not getattr(actor, "parents", None):
+                visit(actor)
+        # An actor registered without ever being reachable from a root keeps
+        # its registration position rather than being dropped from the order.
+        for actor in self.actors:
+            visit(actor)
+
+        rank = {id(mob): i for i, mob in enumerate(order)}
+
+        circuits = [
+            mob
+            for mob in order
+            if isinstance(mob, BezierCircuitCubic)
+            and not mob.empty
+            and hasattr(mob, "get_render_primitives")
+        ]
+        # ``z_index`` is Manim's primary key over the flattened family, and
+        # Python's sort is stable, so equal values keep the walk's order.
+        circuits.sort(key=lambda mob: mob.z_index)
+
+        bias = {}
+        steps = 0
+        previous = None
+        for mob in circuits:
+            # Either half of the key can put this circuit's merged position out
+            # of draw order: a different block packs it elsewhere, and a
+            # different z_index means the sort above moved it relative to the
+            # collection order, which the walk alone still follows.
+            key = (mob.z_index, self._bezier_block_key(mob))
+            if previous is not None and key != previous:
+                steps += 1
+            previous = key
+            bias[id(mob)] = steps
+        centre = steps // 2
+        return rank, {key: value - centre for key, value in bias.items()}
+
     def _bezier_group_key(self, actor):
         from algan.rendering.primitives.bezier_circuit_primitive import (
             BezierCircuitPrimitive,
@@ -1849,9 +1950,26 @@ class RenderLoopMixin:
         ordered_items = []
         deferred_surfaces = []
         deferred_beziers = []
-        for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
+        if env_flag("ALGAN_COPLANAR_DRAW_ORDER", True):
+            draw_rank, draw_bias = self._authored_draw_order()
+            missing = len(draw_rank)
+            collection_order = sorted(
+                actors, key=lambda x: draw_rank.get(id(x), missing)
+            )
+        else:
+            # The historical order: a global sort by hierarchy depth. Kept for
+            # A/B against the draw-order rule, which moves coplanar 2-D output.
+            draw_bias = {}
+            collection_order = sorted(
+                actors, key=lambda x: x.anchor_priority, reverse=True
+            )
+        for actor in collection_order:
             if not hasattr(actor, "get_render_primitives"):
                 continue
+            if id(actor) in draw_bias:
+                # Consumed by the circuit primitive builders; ``None`` leaves a
+                # Mob built outside a render loop on its authored z_index.
+                actor._draw_bias = float(draw_bias[id(actor)])
             if self._is_batchable_surface(actor):
                 entry = {"actor": actor, "prims": None}
                 deferred_surfaces.append(entry)
