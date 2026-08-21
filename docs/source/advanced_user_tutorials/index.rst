@@ -21,5 +21,6 @@ narration, and control over how Algan renders.
    animating_out_of_order
    multi_scene_projects
    performance_and_quality
+   renderer_limitations
    settings
    extending_algan

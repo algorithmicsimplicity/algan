@@ -1,0 +1,809 @@
+.. _renderer-limitations:
+
+====================
+Renderer Limitations
+====================
+
+Algan's renderer is a hybrid: it resolves primary visibility with an exact
+analytic rasterizer and traces rays for shadows, reflection and refraction. That
+combination is fast and noise-free, and it buys those properties by not doing
+some things a full path tracer does. This page is the complete list of what it
+does not do, why, and what to reach for instead.
+
+It is a reference rather than a tutorial. The companion pages --
+:doc:`lighting_and_shadows`, :doc:`reflections_and_glass`,
+:doc:`shaders_and_materials`, :doc:`images_and_textures`,
+:doc:`performance_and_quality` -- describe the features themselves.
+
+.. note::
+
+   Everything below describes the renderer at its default settings. Where a
+   limitation can be lifted by a setting, the setting is named. Names under
+   ``SETTINGS.raytracing.experimental`` are explicitly *not* part of Algan's
+   supported surface: they track the kernels and can change between releases.
+
+
+Feature matrix
+==============
+
+Every renderer feature, and where it is available. "Analytic" is the
+deterministic renderer's default path; "supersampled" is its fallback (both are
+``samples_per_pixel == 1``); "Monte Carlo" is ``samples_per_pixel > 1``. Each
+row links to the section that explains it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 17 17 17 17
+
+   * - Feature
+     - Analytic
+     - Supersampled
+     - Monte Carlo
+     - Notes
+   * - Analytic (exact-coverage) anti-aliasing
+     - Yes
+     - No
+     - No
+     - `Anti-aliasing`_
+   * - Supersampling (``anti_alias_level``)
+     - Ignored
+     - Yes
+     - Folded into the sample count
+     - `Anti-aliasing`_
+   * - Per-fragment materials
+     - Triangles only
+     - Triangles only
+     - **No** (baked per vertex)
+     - `What is lit, and how`_
+   * - Extended lights (all but ``PointLight``)
+     - Triangles only
+     - Triangles only
+     - **Refused**
+     - `What is lit, and how`_
+   * - Ray-traced shadows
+     - Triangles only
+     - Triangles only
+     - **No**
+     - `Shadows`_
+   * - Soft shadows
+     - Yes (8-ray fan)
+     - Yes (8-ray fan)
+     - **No**
+     - `Shadows`_
+   * - Colour / material / normal maps
+     - Triangles only
+     - Triangles only
+     - Colour only
+     - `Texture maps`_
+   * - Mip-mapped texture minification
+     - **No**
+     - **No**
+     - **No**
+     - `Texture maps`_
+   * - Environment map (skybox + reflections)
+     - Yes
+     - Yes
+     - **Refused**
+     - `Texture maps`_
+   * - Environment lighting (image-based)
+     - Order-1 SH
+     - Order-1 SH
+     - **Refused**
+     - `Texture maps`_
+   * - Mirror reflection
+     - Yes
+     - Yes
+     - Yes (stochastic)
+     - `Reflection, refraction and transmission`_
+   * - Blurred (glossy) reflection
+     - Opt-in, 4 taps
+     - **No** (the setting is inert here)
+     - Yes
+     - `Reflection, refraction and transmission`_
+   * - Refraction (glass)
+     - Yes, single medium
+     - Yes, single medium
+     - **Refused**
+     - `Reflection, refraction and transmission`_
+   * - Nested media (glass in glass)
+     - **No**
+     - **No**
+     - **No**
+     - `Reflection, refraction and transmission`_
+   * - Transmission through a 2-D shape
+     - Thin pane, no bending
+     - Thin pane, no bending
+     - Thin pane, no bending
+     - `Reflection, refraction and transmission`_
+   * - Custom fragment-shader pipelines
+     - Yes
+     - Yes
+     - **Refused**
+     - `What is lit, and how`_
+   * - Custom ray scatter (bounce override)
+     - **Falls back**
+     - Yes
+     - No
+     - `Which renderer runs your scene`_
+   * - Near clipping (``camera.near``)
+     - **Falls back**
+     - Yes
+     - Yes
+     - `Camera`_
+   * - Far clipping (``camera.far``)
+     - Yes
+     - Yes
+     - No
+     - `Camera`_
+   * - Transparent background
+     - Yes (not with an env map)
+     - Yes
+     - Yes
+     - `Which renderer runs your scene`_
+   * - Glow / bloom
+     - Yes
+     - Yes
+     - Yes
+     - `Anti-aliasing`_
+   * - FXAA
+     - Yes
+     - Yes
+     - Yes
+     - `Anti-aliasing`_
+   * - Tonemapping (neutral / AgX)
+     - Yes
+     - Yes
+     - Yes
+     - —
+   * - Global illumination / caustics
+     - **No**
+     - **No**
+     - Yes
+     - `Not implemented at all`_
+   * - True orthographic projection
+     - **No**
+     - **No**
+     - **No**
+     - `Camera`_
+   * - Depth of field, motion blur
+     - **No**
+     - **No**
+     - **No**
+     - `Camera`_
+   * - Volumetrics, ambient occlusion, displacement
+     - **No**
+     - **No**
+     - **No**
+     - `Not implemented at all`_
+   * - Auxiliary passes (depth / normal / ID)
+     - **No**
+     - **No**
+     - **No**
+     - `Not implemented at all`_
+
+"Triangles only" means the feature applies to triangle geometry and not to
+Bezier circuits -- see :ref:`limits-lit`. "Refused" means Algan raises rather
+than dropping the feature silently. "Falls back" means the batch is routed off
+the analytic path onto the supersampled one.
+
+
+Which renderer runs your scene
+==============================
+
+``samples_per_pixel``: two renderers
+------------------------------------
+
+``SETTINGS.raytracing.samples_per_pixel`` selects the renderer, not a quality
+dial. ``1`` (the default) is the deterministic renderer; anything above it is
+the Monte Carlo path tracer, which does not implement environment maps,
+refractive materials, custom fragment-shader pipelines or any light other than a
+plain :class:`~.PointLight`. Algan refuses such a combination rather than
+silently dropping it. See :ref:`renderer-capabilities` for the full table.
+
+Two further consequences of the split, not covered there:
+
+* The Monte Carlo renderer shades from **baked per-vertex colour**, so
+  per-fragment material response, normal maps, material-property maps and
+  ray-traced shadows are all absent from it as well. Its lighting comes from the
+  integrator.
+* Its output is stochastic. Two renders of the same frame at the same sample
+  count are not byte-identical, and low sample counts are visibly noisy.
+
+Within the deterministic renderer: two paths
+--------------------------------------------
+
+The deterministic renderer has an **analytic-coverage path** (the default, and
+the one every example in these docs uses) and a **supersampled fallback**. The
+fallback renders the frame at ``anti_alias_level`` times the output resolution
+and box-filters it back down, casting one primary ray per sub-pixel sample.
+
+A batch falls back when any of the following holds:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 55
+
+   * - Condition
+     - Why
+   * - ``samples_per_pixel > 1``
+     - A different renderer entirely.
+   * - ``camera.near > 0``
+     - Near clipping is only implemented in the ray-traversal path.
+   * - A mob whose fragment shader overrides ray bouncing
+     - Custom scatter is only implemented in the ray-traversal path.
+   * - A transparent background **together with** an environment map
+     - The environment prefill would fill the alpha the background owes.
+   * - The batch contains no triangles and no Bezier circuits
+     - Nothing for the rasterizer to emit.
+   * - Any of the analytic-AA or sparse-coverage experimental switches off
+     - They are preconditions of the analytic path, not independent options.
+
+The fallback is a genuine quality *and* cost change, so it is worth knowing when
+you are on it:
+
+* Analytic coverage is off. Edge quality is whatever ``anti_alias_level``
+  (default ``2``) buys.
+* The frame buffer is ``anti_alias_level ** 2`` times larger, so batches shrink
+  by the same factor and the render takes correspondingly longer. At the default
+  that is 4x.
+* Per-fragment shading, shadows, reflection and refraction all still work. Only
+  the way primary visibility and coverage are resolved changes.
+
+The two paths do **not** produce identical images
+--------------------------------------------------
+
+This is deliberate, and the differences are small but enumerable:
+
+* **Anti-aliasing.** Analytic coverage against box-filtered supersampling.
+* **Shading rate.** The analytic path evaluates a material **once per
+  same-surface region per pixel** (see :ref:`limits-shading-rate`); the fallback
+  evaluates it once per ray hit.
+* **Intersection.** The analytic path uses an exact fixed-point screen-space
+  fill rule; the fallback uses a watertight ray/triangle test. They agree to
+  floating-point epsilon on where a surface is, and can disagree about which of
+  two adjacent triangles owns a sample exactly on their shared edge.
+* **Shadow query points** are reconstructed from rasterizer barycentrics on the
+  analytic path (agreement with the traversal path measured at ~5e-5 world
+  units), so a shadow *boundary* can sit about a pixel differently.
+* **Coplanar decals.** On the analytic path a fragment whose depth and layer key
+  exactly equal an opaque winner's is culled; see
+  :ref:`limits-coplanar`.
+
+Do not treat one path as the reference for the other.
+
+
+.. _limits-lit:
+
+What is lit, and how
+====================
+
+Only triangle geometry is lit
+-----------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 14 14 14 14 14
+
+   * - Object family
+     - Lit
+     - Receives shadows
+     - Casts shadows
+     - Reflects / transmits
+     - Image textures
+   * - Anything made of **triangles**: :class:`~.Surface` and its subclasses
+       (:class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.Cone`,
+       :class:`~.Torus`, :class:`~.ImageMob`, :class:`~.Dot3D`, point clouds,
+       …), :class:`~.Polyhedron`, imported 3-D models, and
+       :class:`~.TriangulatedBezierCircuit`
+     - Yes
+     - Yes
+     - Yes
+     - Yes
+     - Yes
+   * - Anything made of **Bezier circuits**: :class:`~.Line`,
+       :class:`~.Polygon`, :class:`~.Circle`, :class:`~.Square`,
+       :class:`~.Dot`, :class:`~.Text`, :class:`~.Tex`, Manim vector mobs
+     - **No**
+     - **No**
+     - Yes
+     - Yes
+     - Colour grid only
+
+A Bezier circuit is drawn with the colour it was authored with. No light source
+touches it, no shadow falls on it, and a normal map or material-property map has
+nothing to perturb. It *is* a full participant in ray transport in the other
+direction: it occludes shadow rays according to its own opacity, and it can be
+made reflective or transmissive with a material, so a mirror will show it.
+
+This is the intended behaviour for flat 2-D content, and it is what keeps text
+legible under any lighting rig. It is a limitation only if you wanted a lit 2-D
+shape. Then use :class:`~.TriangulatedBezierCircuit`, which triangulates a
+bezier outline into a real mesh precisely so that its interior can carry
+per-fragment shading, a texture and 3-D lighting -- at the cost of the analytic
+outline the circuit path gives you for free.
+
+Materials: which are shaded per fragment
+-----------------------------------------
+
+A material is shaded **per fragment**, in the render kernel, only if it has an
+in-kernel implementation. Everything else is baked into vertex colours before
+the frame is rendered.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 22 44
+
+   * - Material
+     - Shading
+     - Consequences
+   * - No material set (Algan's default), :class:`~.MeshLambertMaterial`,
+       :class:`~.MeshPhongMaterial`, :class:`~.MeshStandardMaterial`,
+       :class:`~.MeshPhysicalMaterial`
+     - Per fragment
+     - Full behaviour: every light type, shadows, environment lighting, normal
+       maps, material-property maps.
+   * - A custom pipeline from
+       :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
+     - Per fragment
+     - Same, and it can read shadow visibility itself.
+   * - :class:`~.MeshBasicMaterial` / :class:`~.UnlitMaterial`
+     - Unlit by design
+     - Passes its colour through. Not a limitation — it is the point.
+   * - :class:`~.MeshToonMaterial`, :class:`~.MeshNormalMaterial`,
+       :class:`~.MeshMatcapMaterial`, :class:`~.MeshDepthMaterial`
+     - **Per vertex only**
+     - See below.
+
+The four per-vertex materials are the sharp edge here. Because their shading is
+baked at the mesh's vertices before rendering:
+
+* They are lit **only by** :class:`~.PointLight`. Directional, ambient,
+  hemisphere, spot and rect-area lights are skipped entirely, as is an
+  environment map's diffuse contribution.
+* They **never receive shadows**, whatever ``shadows`` is set to.
+* Their shading resolution is the mesh's resolution. On a coarse mesh a toon
+  band or a matcap gradient is visibly faceted, and raising
+  ``grid_width``/``grid_height`` is the only remedy.
+* :class:`~.MeshMatcapMaterial` never samples a matcap image; it uses a
+  view-facing approximation tinted by the base colour.
+  :class:`~.MeshToonMaterial` never samples a gradient map; its band count comes
+  from the Algan-specific ``bands`` argument.
+
+Three.js material properties that are accepted and ignored
+-----------------------------------------------------------
+
+The material classes mirror Three.js's API, and some of that API has no
+implementation behind it. Setting one of these emits a warning and has no
+effect:
+
+* Every image slot on a :class:`~.Material`: ``map``, ``alpha_map``, ``ao_map``,
+  ``env_map``, ``light_map``, ``bump_map``, ``normal_map``,
+  ``displacement_map``, ``roughness_map``, ``metalness_map``, ``emissive_map``,
+  ``specular_map``, ``gradient_map``, ``matcap``, ``clearcoat_map``,
+  ``clearcoat_normal_map``, ``sheen_color_map``, ``transmission_map``,
+  ``thickness_map``, ``iridescence_map``, ``specular_intensity_map``,
+  ``specular_color_map``, ``normal_scale``, ``displacement_scale``,
+  ``displacement_bias``.
+* ``wireframe``, ``vertex_colors``, and any non-default ``side``
+  (``BackSide`` / ``DoubleSide``). Algan renders all faces; whether a
+  back-facing hit is lit from the viewer's side is decided by the geometry
+  through ``Mob.two_sided``, not by the material.
+
+Textures do work — through a different door. See the next section.
+
+:class:`~.MeshPhysicalMaterial` additionally stores ``thickness``,
+``attenuation_color`` and ``attenuation_distance`` for API parity and does not
+use them: transmitted light is not attenuated by path length through the medium.
+
+
+Texture maps
+============
+
+Algan samples exactly three maps per triangle, bilinearly, in the render kernel.
+They are set on the geometry, not on the material.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 32 42
+
+   * - Map
+     - How to set it
+     - Notes
+   * - Colour (RGB + glow + alpha)
+     - :class:`~.Surface`'s ``color_texture``; :class:`~.ImageMob`; a glTF/FBX
+       base-colour texture
+     - Drives albedo and the glow lane. Alpha is honoured, including by shadow
+       rays.
+   * - Material properties
+     - :class:`~.Surface`'s ``reflectivity_texture``, ``roughness_texture``,
+       ``refractive_index_texture``
+     - Three channels only. There is **no way to author a transmission map**
+       even though the kernel has a channel for one.
+   * - Tangent-space normal
+     - :class:`~.Surface`'s ``normal_texture``; a glTF/FBX normal texture
+     - Tangents are derived per hit from positions and UVs, so a mesh with
+       degenerate UVs falls back to the unperturbed normal.
+
+Everything else about texturing:
+
+* **There is no mip chain and no anisotropic filtering.** A minified texture --
+  a detailed image on a small or steeply angled surface -- aliases and crawls as
+  the camera moves. Bilinear magnification is fine; minification is not
+  filtered at all. Pre-downsample the image to roughly the size it will occupy
+  on screen if this bites.
+* **Bezier circuits carry a colour grid, not a UV-mapped image.** A 2-D shape's
+  ``texture_grid_width`` x ``texture_grid_height`` grid of colour samples is
+  laid over the shape's own frame. It is not an image sampler and it takes no
+  normal or material map. :class:`~.ImageMob` is a :class:`~.Surface`, so it is
+  the way to put a real image on screen.
+* **Imported models collapse two maps to a constant.** glTF base-colour and
+  normal maps are sampled per fragment; a packed **metallic-roughness** map and
+  an **emissive** map are reduced to their *mean* and applied as per-primitive
+  constants. Occlusion maps are ignored.
+* **Environment maps are resampled to at most 2048 pixels wide**, and their
+  diffuse (image-based-lighting) contribution is an **order-1 spherical
+  harmonic** -- four coefficients. That is enough for a directional tint and no
+  more: a map with a small bright sun lights the scene as though the sun were
+  smeared across the sky. The map's *specular* contribution -- the sky itself,
+  and what a mirror or a lens shows of it -- is sampled from the full (resampled)
+  image, so only the diffuse term is band-limited.
+
+
+Shadows
+=======
+
+Shadows are off by default (``SETTINGS.raytracing.set(shadows=True)``).
+
+Who casts and who receives
+--------------------------
+
+* **Casters: everything.** Triangle geometry and Bezier circuits alike are
+  traversed by shadow rays, and a partially transparent occluder attenuates the
+  light by its opacity rather than blocking it. Stacked occluders multiply.
+  Texture alpha counts.
+* **Receivers: fragment-shaded triangle geometry only.** Bezier circuits never
+  receive shadows (see :ref:`limits-lit`), and neither do the four per-vertex
+  materials or :class:`~.MeshBasicMaterial`.
+
+Limits and approximations
+-------------------------
+
+* **At most 16 lights are shadowed** (``ALGAN_MAX_SHADOW_LIGHTS``, set before
+  the first render). Lights past the cap are still lit, just never shadowed, and
+  **each emitter sample of a** :class:`~.RectAreaLight` **counts as one slot**, so
+  a single 4x4 area light fills the default cap on its own.
+* **One shadow query point per same-surface region per pixel.** The query is
+  taken at the region's largest fragment and, by default, at four sub-pixel
+  positions around it
+  (``SETTINGS.raytracing.experimental.analytic_aa_secondary_samples``). Shadow edges are
+  therefore resolved at four positions per pixel, not analytically -- they are
+  the softest edges in an otherwise exactly-antialiased frame.
+* **Soft shadows use a fixed fan of 8 rays** per light per shaded point
+  (``ALGAN_SOFT_SHADOW_SAMPLES``, baked into the kernels, so it must be set
+  before ``import algan``). A wide emitter with 8 samples bands rather than
+  blurs.
+* **Contact shadows have a world-space floor.** A shadow ray starts 1e-3 world
+  units off the surface along its face normal, and stops 2e-3 short of the
+  light. An object resting on a plane loses its shadow within about that
+  distance of the contact, and grazing light on small geometry can produce
+  shadow acne. Both offsets are absolute, so what they cost you depends on your
+  scene's scale: see :ref:`limits-scale`.
+* **No refractive shadow transport.** Light is not bent as it passes through
+  glass, so there are no caustics and a glass object's shadow is simply its
+  silhouette attenuated by its opacity. Caustics need
+  ``samples_per_pixel > 1``, which gives up most of this page's features.
+
+
+Reflection, refraction and transmission
+=======================================
+
+Reflection
+----------
+
+* ``SETTINGS.raytracing.max_bounces`` (default ``8``) caps reflection and
+  refraction depth. Beyond it, a ray stops and contributes its remaining
+  throughput to whatever is behind it.
+* **Roughness does not blur a reflection by default.** A single continuation
+  ray can only honestly stand for a narrow lobe, so a rough reflector's mirror
+  ray carries only the share of its specular lobe that fits inside a cone one
+  direction can represent -- 100% at roughness 0, about 83% at 0.10, 50% at
+  0.15, 3% at 0.35 -- and the remainder goes back to the material's own
+  roughness-correct highlight and ambient term. The result reads as a rough
+  metal; it is not a blurred mirror image.
+
+  ``SETTINGS.raytracing.set(glossy_reflection=True)`` spends the four sub-pixel
+  continuation rays on the lobe instead. It is **off by default because four
+  taps cannot integrate a wide lobe**: with the default screen-space rotation on
+  it resolves a glossy gradient into a handful of levels that crawl as geometry
+  moves, and with the rotation off the four taps land as four discrete ghost
+  copies of the reflected image. Turn it on for a still, or for low-contrast
+  reflected content.
+* **A reflected or refracted image is not analytically antialiased.** Coverage
+  resolves a mirror's own outline exactly, but what the mirror shows is sampled
+  by continuation rays -- four sub-pixel positions at best, and only when the
+  branch carries at least 0.12 of the pixel's energy
+  (``SETTINGS.raytracing.experimental.analytic_aa_secondary_min_energy``). Below
+  that threshold it takes a single ray. A minified reflected image therefore
+  aliases where the surface holding it does not.
+
+Refraction
+----------
+
+* **Nested media are not modelled.** Every interface assumes air on the outside.
+  Glass inside glass, a sphere inside a box, a bubble in a liquid: all take the
+  wrong relative index of refraction at the inner interface. Single closed
+  objects in air are correct.
+* **A Bezier circuit transmits as a thin pane**: light passes through tinted,
+  but is not bent. Only triangle geometry refracts.
+* **No absorption over distance, no dispersion.** Transmitted light is tinted by
+  the surface colour at each interface, not attenuated by the path length
+  through the medium, and every wavelength takes the same index of refraction --
+  so no coloured fringing at a prism.
+* Refraction needs both ``transmission > 0`` and ``ior > 1``. In practice that
+  means a :class:`~.MeshPhysicalMaterial`, a :class:`~.Surface` with a
+  ``refractive_index_texture``, or an imported model whose material carries
+  them. It routes the batch through the splitting ray path, which is the most
+  expensive configuration Algan has.
+
+The depth budget, and what happens at the end of it
+----------------------------------------------------
+
+A primary ray composites **at most 256 surfaces**. Beyond that the ray stops and
+the background shows through the remainder of the stack, with no warning. This
+is a real ceiling only for pathological geometry -- 256 stacked translucent
+sheets in one pixel -- but it is silent when it is reached.
+
+Continuation rays for reflection and refraction are allocated from a shared pool
+sized from an estimate of how many the batch will need. Exceeding the estimate
+costs a discarded and re-rendered tile, which shows up as render time rather
+than as an error. A **single pixel** whose ray tree exceeds the whole pool
+raises ``OutOfRenderMemory``; lowering ``max_bounces`` is the fix.
+
+
+Anti-aliasing
+=============
+
+.. _limits-shading-rate:
+
+Shading is evaluated once per surface region per pixel
+-------------------------------------------------------
+
+The analytic path groups a pixel's fragments into **maximal same-surface
+regions** and evaluates the material once per region, at the region's largest
+fragment. That is what makes analytic coverage affordable, and it is exact
+wherever shading varies smoothly across the region. Where it does not:
+
+* A **hard crease** -- two flat-shaded faces of one solid meeting inside a
+  pixel -- is split so each face shades with its own normal
+  (``SETTINGS.raytracing.experimental.sheet_shade_split``, on by default).
+  This case is handled.
+* A **high-frequency texture** minified into one pixel is not. The region is
+  shaded at one point, so a checkerboard smaller than a pixel resolves to
+  whichever texel that point lands on. This is the same missing mip chain as
+  above, seen from the shading side.
+
+What analytic coverage does and does not resolve
+-------------------------------------------------
+
+* **Exact:** a primitive's own outline, and the way several fragments of one
+  surface tile a pixel between them.
+* **Sampled at 8 sub-pixel positions:** occlusion *between different* surfaces.
+  Silhouette-against-silhouette error is bounded by the contrast divided by 8.
+* **Sampled at 4 sub-pixel positions:** shadow edges, reflected images,
+  refracted images.
+* **Not resolved:** texture minification.
+
+Other anti-aliasing notes
+-------------------------
+
+* ``anti_alias_level`` is **ignored** on the analytic path, which always renders
+  at output resolution. It applies only on the supersampled fallback.
+* FXAA is available (``video_settings.fxaa``). It runs on linear HDR values
+  before tonemapping, where its luma-based edge detection is not the one it was
+  designed around.
+* An SMAA implementation exists in the source tree but is not connected to
+  anything and cannot be enabled.
+* A filled shape's drawn region is given a minimum half-width of 0.3 output
+  pixels so that hairlines, thin glyph stems and degenerate zero-area fills
+  survive at all
+  (``SETTINGS.raytracing.experimental.analytic_aa_bez_min_half_width``).
+  Sub-pixel strokes are therefore slightly heavier than their geometry.
+
+
+Camera
+======
+
+* **True orthographic projection is not implemented.**
+  :meth:`Camera.set_to_orthographic <.Camera.set_to_orthographic>` raises an
+  ``ApproximationWarning`` and falls back to
+  :meth:`~.Camera.set_near_orthographic`, which is an ordinary perspective
+  camera moved 1e5 units back from its screen. It looks orthographic and is not:
+  geometry spanning a large depth range still converges slightly, and the
+  extreme camera distance puts every world-space epsilon in
+  :ref:`limits-scale` a long way from the geometry it is meant to separate.
+* **No depth of field**, no aperture, no focus distance. Everything is in focus.
+* **No motion blur.** Frames are instantaneous samples of the timeline.
+* **No lens distortion, no fisheye, no panoramic projection.**
+* ``camera.near > 0`` forces the supersampled fallback path for the whole batch.
+  Leave it at ``0`` unless you specifically need near clipping.
+* Geometry crossing the camera plane is handled **exactly** -- such a primitive
+  is intersected by ray casting per sub-pixel sample rather than projected --
+  but a primitive whose bounding box *contains the camera origin* cannot be
+  bounded on screen at all and is tested against the whole frame. A camera
+  flying through the middle of a scene puts many primitives in that state at
+  once, and it is the usual cause of a fly-through running out of render memory
+  where the same scene renders fine from outside.
+
+
+.. _limits-coplanar:
+
+Ordering, coplanar geometry and z-fighting
+==========================================
+
+* Hits within **1e-4 world units** of each other along a ray are treated as
+  coplanar and ordered by an internal layer index rather than by depth. That
+  index puts **all Bezier circuits behind all triangle geometry**, and within
+  each kind orders by position in the merged scene, which follows construction
+  order but is not a documented contract.
+* :attr:`BezierCircuitCubic.z_index <.BezierCircuitCubic.z_index>` is the
+  supported way to break such a tie for 2-D shapes: it nudges the circuit
+  toward the camera by one tie-bin (1e-4 world units) per unit of ``z_index``.
+  **Only Bezier circuits have it.** There is no equivalent for 3-D geometry;
+  move it.
+* On the analytic path, a fragment whose depth *and* layer key exactly equal an
+  opaque winner's is culled. A decal placed exactly on an opaque surface
+  therefore disappears unless it sorts in front of it -- which, for a 2-D shape
+  on a 3-D surface, it never does without a ``z_index``.
+
+.. _limits-scale:
+
+The renderer assumes a roughly unit-scale scene
+------------------------------------------------
+
+Several of the renderer's tolerances are **absolute world-space constants**, not
+fractions of the scene's own size:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 20 40
+
+   * - Constant
+     - Value
+     - What it decides
+   * - Minimum hit distance
+     - 1e-4
+     - Self-intersection rejection for bounced and shadow rays.
+   * - Depth-tie epsilon
+     - 1e-4
+     - When two hits count as coplanar; also one ``z_index`` step.
+   * - Triangle edge epsilon
+     - 2e-4
+     - When two hits on a shared mesh edge are merged into one.
+   * - Shadow-ray origin offset
+     - 1e-3
+     - How far off a surface a shadow ray starts (and it stops 2e-3 short of
+       the light).
+
+Algan's default camera sits 7 units back and frames about 7 world units of
+height at the origin, so all four are far below a pixel at ordinary scales. A
+scene authored a thousand times larger will show z-fighting and merged surfaces;
+one authored a thousand times smaller will lose contact shadows and
+self-shadowing. **Scale the scene, not the camera** -- and note that
+:meth:`~.Camera.set_near_orthographic` moves the camera 1e5 units out, which is
+the same problem arriving from the other direction.
+
+
+.. _limits-hard:
+
+Hard limits
+===========
+
+.. list-table::
+   :header-rows: 1
+   :widths: 42 18 40
+
+   * - Limit
+     - Value
+     - What happens if exceeded
+   * - Surfaces composited along one primary ray
+     - 256
+     - The ray stops; the background shows through the rest. Silent.
+   * - Reflection / refraction bounces
+     - 8 (``max_bounces``)
+     - The branch stops and contributes its remaining throughput.
+   * - Shadowed lights
+     - 16 (``ALGAN_MAX_SHADOW_LIGHTS``)
+     - Further lights are lit but never shadowed. Silent.
+   * - Overlapping layers of one surface in one pixel
+     - 16
+     - Further layers merge into the last. Silent.
+   * - Frames in one render batch
+     - 32767
+     - Raises. Not reachable in practice -- memory bounds the batch far below
+       this.
+   * - Bezier circuits in one render batch
+     - 8 388 607
+     - Raises with a clear message.
+   * - Triangles in one render batch
+     - ~1.07e9
+     - Not reachable; memory bounds it far below.
+   * - Environment map width
+     - 2048
+     - Silently resampled down.
+   * - :class:`~.Surface` construction grid
+     - 200 vertices per axis
+     - ``max_grid_resolution`` clamps the automatic search at construction.
+       Render-time dicing is a separate budget, below.
+   * - Subdivision level of one curved patch
+     - 8
+     - The dice stops refining that patch and **warns**
+       (``RuntimeWarning``: "tessellation reached its safety cap before meeting
+       render_tolerance for every patch").
+   * - Diced triangles in one frame
+     - 2 000 000
+     - The level search refuses further promotions and warns, as above. The
+       budget is per frame, not per batch, so a mesh does not pop at batch
+       boundaries.
+   * - Polyline samples per Bezier segment
+     - 512
+     - The flattening search stops refining; a very long curve viewed very close
+       can show flattening facets.
+
+Where a limit is marked *silent*, nothing is printed and no exception is raised.
+The two tessellation budgets are the exception: they warn.
+
+
+Not implemented at all
+======================
+
+Neither renderer does any of these, at any setting:
+
+* **Global illumination** on the deterministic path. Colour bleeding and indirect
+  light need ``samples_per_pixel > 1``.
+* **Caustics.**
+* **Ambient occlusion**, in any form -- no SSAO pass, no AO map.
+* **Volumetrics**: fog, god rays, participating media, smoke, subsurface
+  scattering.
+* **Displacement mapping** or height-map tessellation. Geometry comes from the
+  mob; a texture never moves a vertex.
+* **Wireframe rendering.**
+* **Auxiliary output passes.** There is no depth buffer, normal buffer, object
+  ID buffer, motion-vector buffer or cryptomatte to write out -- only the shaded
+  RGB(A) frame.
+* **Temporal anti-aliasing**, temporal accumulation or denoising of any kind.
+* **A "physical" light-transport mode.** ``SETTINGS.raytracing.light_intensity``
+  and ``SETTINGS.raytracing.ambient_light`` are read by no renderer that user
+  code can select; setting them has no effect on any frame.
+  ``SETTINGS.raytracing.indirect_bounce_strength`` is read only when
+  ``samples_per_pixel > 1``.
+
+
+Determinism and reproducibility
+===============================
+
+The deterministic renderer is designed to render the same frame the same way
+every time, and it does on the paths the project measures. Two caveats:
+
+* **Across machines and devices, no.** Frames rendered on CPU and on CUDA
+  differ, and frames rendered on two different CPUs have been measured to differ
+  as well. Curved surfaces are the sensitive part: their tessellation level is
+  chosen per patch per frame from a projected error, so a patch sitting on a
+  level boundary can round either way depending on the hardware evaluating it,
+  and one level change moves every microtriangle in that patch. Do not diff a
+  render against one produced elsewhere and expect byte-identity; the project's
+  own pixel baselines are kept per device for this reason.
+* **Across batch windows, approximately.** Rendering the same scene in different
+  frame-batch sizes -- which happens automatically when available memory
+  changes -- can move a pixel by a channel value or two, because rate functions
+  are evaluated over different windows.
+
+
+See Also
+========
+
+- :ref:`renderer-capabilities` -- the deterministic/Monte Carlo feature table.
+- :doc:`lighting_and_shadows` -- the light types and how shadows are enabled.
+- :doc:`reflections_and_glass` -- setting up mirrors, metals and glass.
+- :doc:`shaders_and_materials` -- the material classes in full.
+- :doc:`images_and_textures` -- how to get a texture onto a mob.
+- :doc:`performance_and_quality` -- what each of these features costs.

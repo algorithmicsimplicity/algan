@@ -303,6 +303,8 @@ ambient:
 See Also
 ========
 
+- :doc:`renderer_limitations` -- which objects and materials are lit and
+  shadowed at all, and where the shadow approximations show.
 - :doc:`cameras` -- moving the camera through a lit scene.
 - :doc:`shaders_and_materials` -- how materials respond to these lights.
 - :doc:`reflections_and_glass` -- mirrors, metals and refraction.
