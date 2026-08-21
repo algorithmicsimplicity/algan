@@ -15,6 +15,22 @@ source-level audit in `OX_AUDIT.md`, and the Charlie-sheen helper functions in
 installed Three.js r185 source and found exact. Where its conclusions and this
 document's differ, §2.1 and §4.9 say so and why.
 
+## What it found, in one table
+
+| # | Discrepancy | Algan worse? | Done |
+| --- | --- | --- | --- |
+| §4.1 | A clear glass sphere cast a shadow as dark as an opaque one — 1.0% of the open floor where the reference passes 101.9% | yes, badly | **fixed** — 85.1% |
+| §4.2 | Fresnel used the wrong angle leaving a dense medium; at total internal reflection the energy went to the transmitted branch, tinted | yes | **fixed** against the exact equations |
+| §4.3 | A per-light transmission glow was added on top of the traced refracted ray | yes | **fixed** — disc 82.4 → 52.7/255 |
+| §4.4 | Sheen was `(1 − n·v)^k` with no `n·l`: a light behind the surface still lit its rim | yes, worse than both references | **fixed** — Charlie × Neubelt, rim 109 → 3/255 |
+| §4.7 | Two `SETTINGS.raytracing` fields no renderer reads, accepted silently | yes | **fixed** — writing raises |
+| §2.2 | No colour management: lighting arithmetic on display-referred values | yes — the biggest one | not fixed; needs its own change and its own baselines |
+| §4.5 | A rough metal reflects 2.5% of what it should by default | yes, but deliberate | not flipped; one public setting away, reason documented |
+| §4.6 | `attenuation_color` / `attenuation_distance` accepted and dropped: coloured glass has no depth | yes | not fixed; tractable route in §6 |
+| §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention | left alone, on purpose |
+| §4.8 | A flat 10% ambient on every lit surface | yes, but an artistic default | left alone |
+| §3 | Refraction, mirror reflection, clearcoat, bounce exhaustion | **no** — refraction beats stock Three.js outright | — |
+
 ---
 
 ## 1. How the comparison was set up
