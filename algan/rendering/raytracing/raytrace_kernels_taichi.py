@@ -1544,6 +1544,80 @@ def _triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template()):
 
 
 @ti.func
+def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
+                         tri_extra: ti.template(),
+                         circuit_meta: ti.template()):
+    """Fraction of the light a *covered* surface still passes to a shadow ray.
+
+    The march multiplies by ``1 - alpha`` for the part of the pixel a surface
+    does not cover; this is what the covered part does with the light, which
+    for anything transmissive is most of it. Without it a wine glass and a
+    brick are the same object to a shadow ray -- measured against a path
+    tracer, a clear glass sphere's shadow was as dark as an opaque sphere's
+    (1% of the open floor, where the reference passes ~100%).
+
+        pass = transmission * (1 - metalness) * (1 - F0)
+
+    ``metalness < 0`` is the non-PBR sentinel and passes nothing, matching the
+    old behaviour exactly. The metal share never transmits, the same gate
+    ``_material_reflectance`` applies via ``diel_pass``.
+
+    F0 is the *normal-incidence* dielectric reflectance, not an angle-dependent
+    Fresnel: the march has no normals and fetching them would cost the hottest
+    loop in the renderer for a second-order effect. It is also less of an
+    approximation than it looks -- a solid presents the march two surfaces
+    (entry and exit), each taking its own ``1 - F0``, so a glass ball attenuates
+    by 0.96^2 on its own.
+
+    Two things this deliberately does not model, both because the payload
+    cannot carry them:
+
+    * **Refraction.** Real glass bends the light it passes, which is why a
+      glass ball's shadow has a bright caustic core; a shadow ray that
+      continues straight cannot produce one.
+    * **Colour.** Light through green glass should arrive green, but a shadow
+      query returns one scalar visibility per light (``vis[li]``), so the
+      shadow gets brighter and stays grey. Tinting it would mean an RGB
+      visibility payload all the way through the shade path.
+
+    So the honest description is "a transmissive surface stops blocking light",
+    not "glass casts a correct shadow".
+    """
+    metalness = -1.0
+    ior = 0.0
+    transmission = 0.0
+    if hit_type == 1:
+        # Same guard as ``_flat_triangle_extra``: a promoted constant-material
+        # triangle sits past the shrunk ``tri_extra``, and has no per-vertex row.
+        if prim < tri_extra.shape[1]:
+            te = f % tri_extra.shape[0]
+            metalness = (w0 * tri_extra[te, prim, 0]
+                         + w1 * tri_extra[te, prim, 2]
+                         + w2 * tri_extra[te, prim, 4])
+            ior = (w0 * tri_extra[te, prim, 6]
+                   + w1 * tri_extra[te, prim, 7]
+                   + w2 * tri_extra[te, prim, 8])
+            transmission = (w0 * tri_extra[te, prim, 9]
+                            + w1 * tri_extra[te, prim, 10]
+                            + w2 * tri_extra[te, prim, 11])
+    else:
+        cm = f % circuit_meta.shape[0]
+        metalness = circuit_meta[cm, prim, _M_REFLECTIVITY]
+        ior = circuit_meta[cm, prim, _M_IOR]
+        transmission = circuit_meta[cm, prim, _M_TRANSMISSION]
+    out = 0.0
+    if (metalness >= 0.0) and (transmission > 1e-4):
+        m = ti.math.clamp(metalness, 0.0, 1.0)
+        io = ti.abs(ior)
+        f0 = 0.0
+        if io > 1.0 + 1e-4:
+            r0 = (1.0 - io) / (1.0 + io)
+            f0 = r0 * r0
+        out = ti.math.clamp(transmission, 0.0, 1.0) * (1.0 - m) * (1.0 - f0)
+    return ti.math.clamp(out, 0.0, 1.0)
+
+
+@ti.func
 def _triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
                      tri_pos: ti.template()):
     """Interpolated shading normal of a triangle hit, falling back to the
@@ -2530,6 +2604,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
                      tri_colors: ti.template(), tri_uvs: ti.template(),
                      tri_tex_meta: ti.template(), textures: ti.template(),
+                     tri_extra: ti.template(),
                      num_colored_triangles: ti.i32,
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
@@ -2593,7 +2668,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                 has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
-                textures, num_colored_triangles,
+                textures, tri_extra, num_colored_triangles,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, circuit_colors,
                 circuit_border_colors, edges_2d, edge_accel,
@@ -2605,7 +2680,7 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                 has_tri, has_bez,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
-                textures, num_colored_triangles,
+                textures, tri_extra, num_colored_triangles,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, circuit_colors,
                 circuit_border_colors, edges_2d, edge_accel,
@@ -2628,6 +2703,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                            tri_colors: ti.template(), tri_uvs: ti.template(),
                            tri_tex_meta: ti.template(),
                            textures: ti.template(),
+                           tri_extra: ti.template(),
                            num_colored_triangles: ti.i32,
                            b_nodes: ti.template(), b_node_miss: ti.template(),
                            b_leaf_prim: ti.template(),
@@ -2687,8 +2763,18 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             alpha = _circuit_alpha(prim, f, a, b, border, circuit_meta,
                                    circuit_colors, circuit_border_colors)
         alpha = ti.math.clamp(alpha, 0.0, 1.0)
-        transmitted *= 1.0 - alpha
-        if alpha >= 1.0:
+        # What the covered part of the surface passes -- 0 for anything
+        # opaque, so this is byte-identical wherever nothing transmits (see
+        # ``_shadow_pass_through``, and the host gate in ``tracer.py`` that
+        # keeps a transmissive batch off the any-hit modes, which answer a
+        # question this makes no longer equivalent).
+        passed = _shadow_pass_through(f, prim, hit_type, 1.0 - a - b, a, b,
+                                      tri_extra, circuit_meta)
+        transmitted *= 1.0 - alpha * (1.0 - passed)
+        if transmitted <= MIN_ALPHA:
+            transmitted = 0.0
+            break
+        if (alpha >= 1.0) and (passed <= 0.0):
             break
         if ti.static(anyhit == 2):
             # Deferred opaque any-hit: the ray just peeled a partially
@@ -2738,6 +2824,7 @@ def _shadow_gather_occluded(refit: ti.template(),
                             tri_uvs: ti.template(),
                             tri_tex_meta: ti.template(),
                             textures: ti.template(),
+                            tri_extra: ti.template(),
                             num_colored_triangles: ti.i32,
                             b_nodes: ti.template(),
                             b_node_miss: ti.template(),
@@ -2859,8 +2946,16 @@ def _shadow_gather_occluded(refit: ti.template(),
                                                circuit_meta, circuit_colors,
                                                circuit_border_colors)
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                    transmitted *= 1.0 - alpha
-                    if alpha >= 1.0:
+                    # See the march: a transmissive surface passes light
+                    # rather than blocking it.
+                    passed = _shadow_pass_through(
+                        f, prim, hit_type, 1.0 - a - b, a, b,
+                        tri_extra, circuit_meta)
+                    transmitted *= 1.0 - alpha * (1.0 - passed)
+                    if transmitted <= MIN_ALPHA:
+                        transmitted = 0.0
+                        alive = 0
+                    elif (alpha >= 1.0) and (passed <= 0.0):
                         alive = 0
                     else:
                         t_prev = t_hit

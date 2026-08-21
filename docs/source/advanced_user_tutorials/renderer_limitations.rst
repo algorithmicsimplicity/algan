@@ -877,7 +877,12 @@ Neither renderer does any of these, at any setting:
 * **Temporal anti-aliasing**, temporal accumulation or denoising of any kind.
 * **A "physical" light-transport mode.** ``SETTINGS.raytracing.light_intensity``
   and ``SETTINGS.raytracing.ambient_light`` are read by no renderer that user
-  code can select; setting them has no effect on any frame.
+  code can select, so **writing either now raises**
+  :class:`~algan.errors.AlganConfigurationError` rather than accepting a value
+  that would change nothing. Reading them still works, and restoring a captured
+  :meth:`~algan.settings.root_settings.AlganSettings.snapshot` still round-trips
+  them. Scale a light with its own ``intensity=`` and add an
+  :class:`~algan.rendering.lights.AmbientLight` for ambient.
   ``SETTINGS.raytracing.indirect_bounce_strength`` is read only when
   ``samples_per_pixel > 1``.
 

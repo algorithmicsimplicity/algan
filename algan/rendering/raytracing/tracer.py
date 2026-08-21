@@ -1257,6 +1257,16 @@ def render_batch_raytraced(
     if shadow_flag and rt_settings.SHADOW_ANYHIT:
         if rt_settings.SHADOW_ANYHIT == "gather":
             shadow_flag = 4
+        elif merged.get("has_transmissive", True):
+            # Both any-hit modes ask "is anything there", and answer full
+            # occlusion when something is. That was equivalent to the march
+            # while a covered surface always blocked; it is not once a
+            # transmissive one passes light instead (see
+            # ``raytrace_kernels_taichi._shadow_pass_through``) -- a glass
+            # ball is alpha 1, so it does not even read as translucent below.
+            # Such a batch keeps the ordered march, which evaluates the
+            # attenuation exactly.
+            shadow_flag = 1
         else:
             batch_has_translucent = (
                 merged.get("tri_has_translucent", True)

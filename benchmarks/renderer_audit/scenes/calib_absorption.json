@@ -1,0 +1,25 @@
+{
+  "name": "calib_absorption",
+  "_why": "Calibration: three tinted glass spheres of increasing radius against a bright backdrop, all with the same material. Real coloured glass absorbs along the path the light travels inside it, so the big sphere must come out markedly deeper in colour than the small one. A renderer that tints at the surface instead gives all three the same colour whatever their size, which is the whole content of the volumetric-absorption finding.",
+  "render": {"width": 560, "height": 300, "background": [0.0, 0.0, 0.0]},
+  "camera": {"position": [0, 0, 11.0], "target": [0, 0, 0], "up": [0, 1, 0], "fov": 32, "near": 0.1, "far": 200},
+  "lights": [
+    {"type": "directional", "direction": [-0.3, -0.4, -0.86], "color": [1, 1, 1], "intensity": 1.2}
+  ],
+  "objects": [
+    {"name": "backdrop", "geometry": {"type": "box", "size": [24, 12, 0.4]}, "position": [0, 0, -4.0],
+     "material": {"type": "standard", "color": [0.95, 0.95, 0.95], "roughness": 1.0, "metalness": 0.0}},
+    {"name": "small", "geometry": {"type": "sphere", "radius": 0.55, "segments": 96}, "position": [-2.4, 0, 0.6],
+     "material": {"type": "physical", "color": [0.45, 0.85, 0.55], "roughness": 0.0, "metalness": 0.0,
+                  "ior": 1.5, "transmission": 1.0,
+                  "attenuation_color": [0.45, 0.85, 0.55], "attenuation_distance": 1.0}},
+    {"name": "medium", "geometry": {"type": "sphere", "radius": 1.05, "segments": 96}, "position": [0, 0, 0.6],
+     "material": {"type": "physical", "color": [0.45, 0.85, 0.55], "roughness": 0.0, "metalness": 0.0,
+                  "ior": 1.5, "transmission": 1.0,
+                  "attenuation_color": [0.45, 0.85, 0.55], "attenuation_distance": 1.0}},
+    {"name": "large", "geometry": {"type": "sphere", "radius": 1.75, "segments": 96}, "position": [2.9, 0, 0.6],
+     "material": {"type": "physical", "color": [0.45, 0.85, 0.55], "roughness": 0.0, "metalness": 0.0,
+                  "ior": 1.5, "transmission": 1.0,
+                  "attenuation_color": [0.45, 0.85, 0.55], "attenuation_distance": 1.0}}
+  ]
+}

@@ -1,0 +1,421 @@
+// three_render.mjs — Three.js reference renderer for renderer-audit scene specs.
+//
+// Renders one scene-spec JSON (see SPEC.md) to PNG with two independent back ends:
+//   * "raster"     — THREE.WebGLRenderer, ordinary out-of-the-box Three.js
+//   * "pathtrace"  — three-gpu-pathtracer (WebGLPathTracer), physically based ground truth
+//
+// Usage:
+//   node three_render.mjs <scene.json> --out <dir> [--mode raster|pathtrace|both] [--samples N]
+//
+// Prints a one-line JSON summary to stdout: {"scene":...,"outputs":[...],"samples":...,"seconds":...}
+// All diagnostics go to stderr.
+//
+// DEPENDENCIES: this script needs an npm project containing node_modules with
+//   three, three-gpu-pathtracer (+ its peer deps three-mesh-bvh, xatlas-web) and playwright.
+//   Recreate it anywhere with:  npm install three three-gpu-pathtracer playwright
+//   The directory is resolved from (first hit wins):
+//     1. --node-modules <dir> CLI flag
+//     2. $ALGAN_THREE_NODE_MODULES
+//     3. ./node_modules next to this script
+//     4. the scratch project this tool was developed against (path below)
+//   Chromium is found via PLAYWRIGHT_BROWSERS_PATH; if Playwright cannot resolve a
+//   browser binary (revision mismatch) we fall back to globbing /opt/pw-browsers/chromium-*/.
+//   There is no GPU here: Chromium is launched with SwiftShader software WebGL2 via
+//     --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
+//     --no-sandbox --disable-dev-shm-usage --headless=new
+//
+// CONVENTIONS PINNED FOR THE AUDIT (do not change these to make images match):
+//   * Colour management: Three.js defaults — THREE.ColorManagement.enabled = true,
+//     renderer.outputColorSpace = THREE.SRGBColorSpace. Spec colours are authored sRGB
+//     values and are fed to THREE.Color via setRGB(r,g,b,THREE.SRGBColorSpace), so spec
+//     [0.8,0.8,0.8] means "the sRGB value 0.8". The only transfer function in play is
+//     the sRGB OETF at output.
+//   * renderer.toneMapping = THREE.NoToneMapping in both modes.
+//   * Lights: directional -> DirectionalLight(position = -direction*50, target = origin);
+//     point -> PointLight(color, intensity, distance, decay); ambient -> AmbientLight.
+//     Installed three is r185 (0.185.1): since r155 punctual-light intensities are
+//     physical (no legacy PI scaling; useLegacyLights was removed in r165).
+//     PointLight intensity is in candela and the shader attenuation is
+//     1/max(pow(d,decay),0.01), windowed by pow2(saturate(1-pow4(d/distance))) when
+//     distance>0 — so decay=0 & distance=0 is literally attenuation 1 everywhere.
+//     DirectionalLight irradiance = color*intensity*dotNL (no PI factor either).
+
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const FALLBACK_NODE_MODULES =
+  '/tmp/claude-0/-home-user-algan/bef18805-2bd9-5edb-b997-0497104809e3/scratchpad/three/node_modules';
+
+function parseArgs(argv) {
+  const args = { mode: 'both', samples: 64 };
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--out') args.out = argv[++i];
+    else if (a === '--mode') args.mode = argv[++i];
+    else if (a === '--samples') args.samples = Number(argv[++i]);
+    else if (a === '--node-modules') args.nodeModules = argv[++i];
+    else rest.push(a);
+  }
+  if (!rest[0]) die('usage: node three_render.mjs <scene.json> --out <dir> [--mode raster|pathtrace|both] [--samples N]');
+  args.scenePath = path.resolve(rest[0]);
+  if (!['raster', 'pathtrace', 'both'].includes(args.mode)) die(`bad --mode ${args.mode}`);
+  if (!Number.isFinite(args.samples) || args.samples < 1) die('bad --samples');
+  return args;
+}
+
+function die(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+function resolveNodeModules(flagValue) {
+  const candidates = [
+    flagValue,
+    process.env.ALGAN_THREE_NODE_MODULES,
+    path.join(__dirname, 'node_modules'),
+    FALLBACK_NODE_MODULES,
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, 'three', 'build', 'three.module.js'))) return c;
+  }
+  die(`no usable node_modules found (tried:\n  ${candidates.join('\n  ')}\n)` +
+      '\nrecreate with: npm install three three-gpu-pathtracer playwright');
+}
+
+function findChromiumExecutable() {
+  // Playwright's pinned revision may not match what is installed; fall back to any
+  // full chromium binary under /opt/pw-browsers (highest revision wins).
+  const roots = ['/opt/pw-browsers'];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    const dirs = fs.readdirSync(root)
+      .filter(d => d.startsWith('chromium-'))
+      .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
+    for (const d of dirs) {
+      const exe = path.join(root, d, 'chrome-linux', 'chrome');
+      if (fs.existsSync(exe)) return exe;
+    }
+  }
+  return undefined; // let playwright resolve normally
+}
+
+function startServer(nodeModulesDir) {
+  const MIME = {
+    '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json',
+    '.wasm': 'application/wasm', '.map': 'application/json',
+  };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (process.env.ALGAN_THREE_DEBUG) console.error('[srv]', req.url);
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      const html = pageHtml(server.address().port);
+      if (process.env.ALGAN_THREE_DEBUG) fs.writeFileSync('/tmp/opencode/three_page.html', html);
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(html);
+      return;
+    }
+    if (url.pathname.startsWith('/node_modules/')) {
+      const rel = decodeURIComponent(url.pathname.slice('/node_modules/'.length));
+      const file = path.resolve(nodeModulesDir, rel);
+      if (!file.startsWith(path.resolve(nodeModulesDir)) || !fs.existsSync(file)) {
+        res.writeHead(404); res.end('not found'); return;
+      }
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+    res.writeHead(404); res.end('not found');
+  });
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+
+function pageHtml(port) {
+  const base = `http://127.0.0.1:${port}/node_modules`;
+  const imports = {
+    'three': `${base}/three/build/three.module.js`,
+    'three/addons/': `${base}/three/examples/jsm/`,
+    'three/examples/jsm/': `${base}/three/examples/jsm/`,
+    'three-mesh-bvh': `${base}/three-mesh-bvh/build/index.module.js`,
+    'xatlas-web': `${base}/xatlas-web/dist/xatlas-web.js`,
+    // three-gpu-pathtracer's own entry points. Its package `module` field is
+    // `src/index.js`, and its internals import each other by relative path, so
+    // the bare specifier and the `src/` prefix both have to resolve.
+    'three-gpu-pathtracer': `${base}/three-gpu-pathtracer/src/index.js`,
+    'three-gpu-pathtracer/': `${base}/three-gpu-pathtracer/`,
+  };
+  return `<!doctype html><html><head><meta charset="utf-8">
+<script type="importmap">${JSON.stringify({ imports })}</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { WebGLPathTracer } from 'three-gpu-pathtracer';
+
+const col = (c) => new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace);
+
+function buildMaterial(m) {
+  // Spec defaults (SPEC.md): every field optional, these are the defaults both back ends apply.
+  const d = {
+    color: [0.5, 0.5, 0.54], roughness: 0.85, metalness: 0.0, ior: 1.5, transmission: 0.0,
+    clearcoat: 0.0, clearcoat_roughness: 0.0, sheen: 0.0, sheen_roughness: 1.0,
+    sheen_color: [0, 0, 0], emissive: [0, 0, 0], emissive_intensity: 1.0,
+    specular_intensity: 1.0, specular_color: [1, 1, 1], opacity: 1.0,
+    attenuation_color: [1, 1, 1], attenuation_distance: 0,
+  };
+  const p = { ...d, ...(m || {}) };
+  let mat;
+  if (p.type === 'physical') mat = new THREE.MeshPhysicalMaterial();
+  else if (p.type === 'basic') mat = new THREE.MeshBasicMaterial();
+  else mat = new THREE.MeshStandardMaterial();
+  mat.color.copy(col(p.color));
+  if (p.type !== 'basic') {
+    mat.roughness = p.roughness;
+    mat.metalness = p.metalness;
+    mat.emissive.copy(col(p.emissive));
+    mat.emissiveIntensity = p.emissive_intensity;
+  }
+  if (p.type === 'physical') {
+    mat.ior = p.ior;
+    mat.transmission = p.transmission;
+    mat.clearcoat = p.clearcoat;
+    mat.clearcoatRoughness = p.clearcoat_roughness;
+    mat.sheen = p.sheen;
+    mat.sheenRoughness = p.sheen_roughness;
+    mat.sheenColor.copy(col(p.sheen_color));
+    mat.specularIntensity = p.specular_intensity;
+    mat.specularColor.copy(col(p.specular_color));
+    mat.attenuationColor.copy(col(p.attenuation_color));
+    // Spec default attenuation_distance is 0; three.js means "no attenuation" by Infinity
+    // and would divide by zero at 0, so <= 0 maps to Infinity (decision recorded in notes).
+    mat.attenuationDistance = p.attenuation_distance > 0 ? p.attenuation_distance : Infinity;
+    // thickness is NOT in the spec but transmission without it samples the backdrop at the
+    // un-refracted position (thin-film look, no inversion). A competent user modelling a
+    // solid glass object sets it to the volume depth; we use twice the geometry bounding-
+    // sphere radius (= full diameter for spheres). Decision recorded in OX_THREE_NOTES.md.
+    mat.thickness = p.thickness !== undefined ? p.thickness : undefined;
+  }
+  if (p.opacity < 1.0) { mat.opacity = p.opacity; mat.transparent = true; }
+  return mat;
+}
+
+function buildScene(spec) {
+  const scene = new THREE.Scene();
+  scene.background = col(spec.render.background);
+  for (const l of spec.lights || []) {
+    if (l.type === 'directional') {
+      const dl = new THREE.DirectionalLight(col(l.color), l.intensity);
+      dl.position.set(-l.direction[0], -l.direction[1], -l.direction[2]).multiplyScalar(50);
+      dl.target.position.set(0, 0, 0);
+      dl.castShadow = true;
+      dl.shadow.mapSize.set(2048, 2048);
+      dl.shadow.camera.left = -30; dl.shadow.camera.right = 30;
+      dl.shadow.camera.top = 30; dl.shadow.camera.bottom = -30;
+      dl.shadow.camera.near = 0.5; dl.shadow.camera.far = 200;
+      dl.shadow.camera.updateProjectionMatrix();
+      scene.add(dl); scene.add(dl.target);
+    } else if (l.type === 'point') {
+      const pl = new THREE.PointLight(col(l.color), l.intensity, l.distance ?? 0, l.decay ?? 2);
+      pl.position.set(l.position[0], l.position[1], l.position[2]);
+      pl.castShadow = true;
+      pl.shadow.mapSize.set(1024, 1024);
+      pl.shadow.camera.near = 0.5; pl.shadow.camera.far = 200;
+      scene.add(pl);
+    } else if (l.type === 'ambient') {
+      scene.add(new THREE.AmbientLight(col(l.color), l.intensity));
+    } else {
+      throw new Error('unknown light type ' + l.type);
+    }
+  }
+  for (const o of spec.objects || []) {
+    let geo;
+    if (o.geometry.type === 'sphere') {
+      const seg = o.geometry.segments ?? 64;
+      geo = new THREE.SphereGeometry(o.geometry.radius, seg, Math.floor(seg / 2));
+    } else if (o.geometry.type === 'box') {
+      geo = new THREE.BoxGeometry(o.geometry.size[0], o.geometry.size[1], o.geometry.size[2]);
+    } else {
+      throw new Error('unknown geometry type ' + o.geometry.type);
+    }
+    const mesh = new THREE.Mesh(geo, buildMaterial(o.material));
+    mesh.name = o.name || '';
+    mesh.position.set(o.position[0], o.position[1], o.position[2]);
+    mesh.rotation.y = THREE.MathUtils.degToRad(o.rotation_y || 0);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    if (mesh.material.isMeshPhysicalMaterial && mesh.material.thickness === undefined) {
+      geo.computeBoundingSphere();
+      mesh.material.thickness = geo.boundingSphere.radius * 2;
+    }
+    scene.add(mesh);
+  }
+  const cam = new THREE.PerspectiveCamera(
+    spec.camera.fov, spec.render.width / spec.render.height, spec.camera.near, spec.camera.far);
+  cam.up.set(spec.camera.up[0], spec.camera.up[1], spec.camera.up[2]);
+  cam.position.set(spec.camera.position[0], spec.camera.position[1], spec.camera.position[2]);
+  cam.lookAt(new THREE.Vector3(...spec.camera.target));
+  return { scene, camera: cam };
+}
+
+function makeRenderer(width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  document.body.appendChild(canvas);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(width, height, false);
+  renderer.setPixelRatio(1);
+  // Defaults, stated explicitly for the audit (see header comment).
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NoToneMapping;
+  return renderer;
+}
+
+async function renderRaster(spec) {
+  const t0 = performance.now();
+  const renderer = makeRenderer(spec.render.width, spec.render.height);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  const { scene, camera } = buildScene(spec);
+  renderer.render(scene, camera);
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  renderer.dispose();
+  return { dataUrl, ms: performance.now() - t0 };
+}
+
+async function renderPathTrace(spec, samples, opts) {
+  opts = opts || {};
+  const t0 = performance.now();
+  const renderer = makeRenderer(spec.render.width, spec.render.height);
+  const pt = new WebGLPathTracer(renderer);
+  pt.renderToCanvas = true;
+  pt.renderDelay = 0;
+  pt.minSamples = 1;
+  pt.fadeDuration = 0;
+  pt.dynamicLowRes = false;
+  pt.tiles.set(1, 1);
+  // Flat spec-colour background, zero IBL: scene.background as a Color makes the path
+  // tracer use a constant background map; scene.environment stays null so the tracer's
+  // environmentIntensity resolves to 0 (WebGLPathTracer.updateEnvironment). No HDRI, no
+  // DataTexture fallback needed. backgroundBlur comes from scene.backgroundBlurriness = 0.
+  const { scene, camera } = buildScene(spec);
+  // three-gpu-pathtracer's getLights() only picks up rect-area/spot/point/directional
+  // lights — AmbientLight is silently ignored. Flag it so the comparison knows.
+  const ambientIgnored = (spec.lights || []).some(l => l.type === 'ambient');
+  if (ambientIgnored) console.error('WARNING: path tracer does not support AmbientLight; ambient contribution is missing from this pass');
+  await pt.setScene(scene, camera);
+  // renderSample() no-ops while the tracer's shaders are still compiling, and
+  // compilation only progresses when the event loop turns -- so a tight
+  // synchronous loop spins forever at 0 samples. Yield between samples and
+  // bound the pass by wall clock rather than by iteration count (SwiftShader
+  // does tens of seconds per sample on a scene of any size).
+  const budgetMs = Number(opts.budgetMs || 25 * 60 * 1000);
+  const start = performance.now();
+  let lastLog = 0;
+  while (pt.samples < samples) {
+    pt.renderSample();
+    await new Promise(r => setTimeout(r, 0));
+    const elapsed = performance.now() - start;
+    if (elapsed - lastLog > 30000) {
+      lastLog = elapsed;
+      console.log('path tracer: ' + pt.samples + '/' + samples + ' samples, '
+        + (elapsed / 1000).toFixed(0) + 's');
+    }
+    if (elapsed > budgetMs) {
+      console.log('path tracer: budget reached at ' + pt.samples + '/' + samples + ' samples');
+      break;
+    }
+  }
+  if (pt.samples < 1) throw new Error('path tracer produced no samples');
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  renderer.dispose();
+  return { dataUrl, ms: performance.now() - t0, samples: pt.samples, ambientIgnored };
+}
+
+window.renderThreeScene = async function (spec, opts) {
+  const out = {};
+  if (opts.mode === 'raster' || opts.mode === 'both') out.raster = await renderRaster(spec);
+  if (opts.mode === 'pathtrace' || opts.mode === 'both') out.pathtrace = await renderPathTrace(spec, opts.samples, opts);
+  return out;
+};
+window.THREE_VERSION = THREE.REVISION;
+window.dispatchEvent(new Event('three-ready'));
+</script></body></html>`;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const spec = JSON.parse(fs.readFileSync(args.scenePath, 'utf8'));
+  const name = spec.name || path.basename(args.scenePath, '.json');
+  const outDir = path.resolve(args.out || '.');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const nmDir = resolveNodeModules(args.nodeModules);
+  const { chromium } = await import(pathToFileURL(path.join(nmDir, 'playwright', 'index.mjs')));
+
+  const server = await startServer(nmDir);
+  const port = server.address().port;
+
+  const launchOpts = {
+    headless: true,
+    args: [
+      '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+      '--no-sandbox', '--disable-dev-shm-usage', '--headless=new',
+    ],
+  };
+  const exe = findChromiumExecutable();
+  if (exe) launchOpts.executablePath = exe;
+  const browser = await chromium.launch(launchOpts);
+  try {
+    const page = await browser.newPage({
+      viewport: { width: Math.max(spec.render.width, 640) + 80, height: Math.max(spec.render.height, 480) + 80 },
+    });
+    page.on('console', m => console.error('[page]', m.text()));
+    page.on('pageerror', e => console.error('[pageerror]', e.message));
+    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.waitForFunction('typeof window.renderThreeScene === "function"', { timeout: 60000 });
+    const revision = await page.evaluate('window.THREE_VERSION');
+
+    console.error(`rendering ${name} (${spec.render.width}x${spec.render.height}, mode=${args.mode}, samples=${args.samples}) ...`);
+    const t0 = Date.now();
+    const result = await page.evaluate(
+      ({ spec, opts }) => window.renderThreeScene(spec, opts),
+      { spec, opts: { mode: args.mode, samples: args.samples } },
+    );
+    const seconds = (Date.now() - t0) / 1000;
+
+    const outputs = [];
+    if (result.raster) {
+      const p = path.join(outDir, `${name}.three_raster.png`);
+      fs.writeFileSync(p, Buffer.from(result.raster.dataUrl.split(',')[1], 'base64'));
+      outputs.push(p);
+      console.error(`raster: ${result.raster.ms.toFixed(0)} ms -> ${p}`);
+    }
+    if (result.pathtrace) {
+      const p = path.join(outDir, `${name}.three_pathtrace.png`);
+      fs.writeFileSync(p, Buffer.from(result.pathtrace.dataUrl.split(',')[1], 'base64'));
+      outputs.push(p);
+      console.error(`pathtrace: ${result.pathtrace.samples} samples in ${result.pathtrace.ms.toFixed(0)} ms -> ${p}`);
+    }
+
+    const summary = {
+      scene: name,
+      outputs,
+      samples: result.pathtrace ? result.pathtrace.samples : null,
+      seconds,
+      width: spec.render.width,
+      height: spec.render.height,
+      mode: args.mode,
+      three_revision: revision,
+      ambient_ignored_in_pathtrace: result.pathtrace ? result.pathtrace.ambientIgnored : false,
+    };
+    process.stdout.write(JSON.stringify(summary) + '\n');
+  } finally {
+    await browser.close();
+    server.close();
+  }
+}
+
+main().catch(e => { console.error(e); process.exit(1); });

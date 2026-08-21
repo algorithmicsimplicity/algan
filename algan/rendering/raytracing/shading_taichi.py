@@ -119,6 +119,46 @@ def _smith_geometry(n_dot_v, n_dot_l, roughness):
 
 
 @ti.func
+def _d_charlie(n_dot_h, sheen_roughness):
+    """Charlie sheen distribution (Estevez & Kulla 2017; KHR_materials_sheen),
+    as in Three.js ``D_Charlie``: exponentiated-sine micro-cylinder fibres.
+    """
+    alpha = ti.max(sheen_roughness, 1e-4)
+    inv_alpha = 1.0 / (alpha * alpha)
+    # Three.js floors sin2h at 2^-7 rather than at zero, so that sin2h^2 stays
+    # representable in fp16 -- and, here, so that pow(0, large) can never turn
+    # a sheenless material's zero-weighted lobe into a NaN.
+    sin2h = ti.max(1.0 - n_dot_h * n_dot_h, 0.0078125)
+    return ((2.0 + inv_alpha) * ti.pow(sin2h, inv_alpha * 0.5)
+            / (2.0 * 3.14159265))
+
+
+@ti.func
+def _v_neubelt(n_dot_v, n_dot_l):
+    """Ashikhmin-Preoze / Neubelt sheen visibility, as in Three.js
+    ``V_Neubelt``: the cheap stand-in for the Charlie visibility term the
+    KHR spec offers; clamped to [0, 1] like its ``saturate``.
+    """
+    return ti.min(
+        1.0 / (4.0 * (n_dot_l + n_dot_v - n_dot_l * n_dot_v)), 1.0)
+
+
+@ti.func
+def _ibl_sheen_brdf(cos_theta, sheen_roughness):
+    """Three.js ``IBLSheenBRDF``: a curve fit to the Charlie sheen BRDF
+    integrated over the hemisphere, standing in for the spec's E(x) table in
+    the base-layer albedo scaling. The exponent is always negative, so this
+    returns a value in [0, 1].
+    """
+    r2 = sheen_roughness * sheen_roughness
+    r_inv = 1.0 / (sheen_roughness + 0.1)
+    a = -1.9362 + 1.0678 * sheen_roughness + 0.4573 * r2 - 0.8469 * r_inv
+    b = -0.6014 + 0.5538 * sheen_roughness - 0.4670 * r2 - 0.1255 * r_inv
+    dg = ti.exp(a * cos_theta + b)
+    return ti.min(ti.max(dg, 0.0), 1.0)
+
+
+@ti.func
 def _shading_normal(n_interp, face_n, flat):
     """Per-fragment shading normal, optionally blended toward the (geometric)
     face normal for flat shading -- the in-kernel analogue of
@@ -732,22 +772,47 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
         spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
         k_d = (one - fresnel) * ((1.0 - metalness) * (1.0 - transmission))
-        direct = k_d * rgb * lc * n_dot_l + spec * lc * (n_dot_l * spec_w)
+        # SHEEN, and what it takes from the layer underneath. The fibre lobe
+        # is Charlie x Neubelt (KHR_materials_sheen, and Three.js's
+        # ``BRDF_Sheen`` term for term), and Three.js's ``RE_Direct_Physical``
+        # then scales the base layer's irradiance by
+        # ``1 - max3(sheenColor) * max(E(n.v), E(n.l))`` so the fibres cannot
+        # add light the base already spent. ``sheen`` premultiplies the colour
+        # exactly as ``WebGLMaterials`` does. At ``sheen == 0`` the colour is
+        # zero, so the compensation is exactly 1.0 and the lobe exactly 0 --
+        # every material that leaves sheen alone renders bit-for-bit as before.
+        sheen_c = sheen_color * sheen
+        sheen_max = ti.max(sheen_c[0], ti.max(sheen_c[1], sheen_c[2]))
+        sheen_r = ti.math.clamp(sheen_roughness, 1e-4, 1.0)
+        sheen_comp = 1.0 - sheen_max * ti.max(
+            _ibl_sheen_brdf(n_dot_v, sheen_r),
+            _ibl_sheen_brdf(n_dot_l, sheen_r))
+        direct = (k_d * rgb * lc * n_dot_l
+                  + spec * lc * (n_dot_l * spec_w)) * sheen_comp
         # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
+        # Not scaled by the sheen compensation, matching Three.js, which
+        # accumulates the coat before the sheen block touches the irradiance.
         cc_ndf = _ggx_distribution(n_dot_h, clearcoat_roughness)
         cc_geom = _smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
         cc_fresnel = 0.04 + 0.96 * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
         cc_spec = clearcoat * (cc_ndf * cc_geom * cc_fresnel) \
             / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
         direct += lc * (cc_spec * n_dot_l * spec_w)
-        # Sheen: soft retro-reflective rim (Charlie-like, inverted Fresnel).
-        sheen_term = sheen * ti.pow(ti.math.clamp(1.0 - n_dot_v, 0.0, 1.0),
-                                    1.0 + 8.0 * sheen_roughness)
-        direct += sheen_color * lc * sheen_term
-        # Crude transmission: let some base colour through regardless of N.L.
-        # Only the non-metallic share transmits (as in k_d above) -- a metal
-        # at any transmission must shade identically to an opaque one.
-        direct += rgb * lc * (transmission * (1.0 - metalness) * 0.5)
+        # The fibre lobe itself. Gated by ``spec_w`` like every other lobe
+        # here: an ambient-like light arrives along the normal by convention
+        # (see _light_eval) and must not manufacture a directional rim.
+        sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
+        direct += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
+        # NO per-light transmission term. There used to be one here
+        # (``rgb * lc * transmission * (1 - metalness) * 0.5``) and it double
+        # counted: the transmitted share already gets carried, either as the
+        # refracted ray ``_scatter_impl`` splits off or -- when nothing bends,
+        # because the ior is index-matched or the split pool is absent -- as
+        # part of the pass-through it folds into ``pass_w``. Meanwhile this
+        # stage's own output is scaled by ``alpha * (1 - R - trans_share)``
+        # precisely to make room for that. The term also had no ``n.l``, so a
+        # light grazing from behind the surface still lit it, and it scaled
+        # with the number of lights.
         acc += direct * v
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 

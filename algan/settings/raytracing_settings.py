@@ -137,6 +137,30 @@ _PUBLIC_FIELDS = frozenset(
 
 _EXPERIMENTAL_FIELDS = frozenset(_FIELD_TO_LEGACY) - _PUBLIC_FIELDS
 
+# Settings no renderer this package can actually launch reads. Both are
+# consumed only by ``raytrace_kernels_taichi.path_trace_physical_stbvh``, the
+# never-wired "physical mode" Monte Carlo kernel: ``tracer`` launches
+# ``path_trace_scene_stbvh`` for samples_per_pixel > 1 and the wavefront tracer
+# otherwise, and the only other reference to the physical kernel is a unit
+# test. Setting either therefore did nothing at all, silently, which is worse
+# than not offering them -- so writing one says so. Reads keep working: engine
+# code binds this object and reads fields off it on the hot path, and the
+# values are still what the dead kernel would use.
+_INERT_FIELDS = {
+    "light_intensity": (
+        "'light_intensity' is not read by any renderer this build can launch "
+        "(only by the unwired physical-mode Monte Carlo kernel), so setting it "
+        "would silently do nothing. Scale a light with its own intensity= "
+        "instead: PointLight(intensity=2.0), DirectionalLight(intensity=2.0)."
+    ),
+    "ambient_light": (
+        "'ambient_light' is not read by any renderer this build can launch "
+        "(only by the unwired physical-mode Monte Carlo kernel), so setting it "
+        "would silently do nothing. Add an AmbientLight to the Scene instead: "
+        "AmbientLight(color=WHITE, intensity=0.3).spawn()."
+    ),
+}
+
 _SETTER_OVERRIDES = {
     "unsupported_feature_policy": "set_unsupported_feature_policy",
     "wavefront_tile_auto": "set_wavefront_tile_auto",
@@ -364,6 +388,14 @@ class RayTracingSettings:
             # switches; restoring one is not a request to tune them by hand.
             allow_experimental = True
         values.update(kwargs)
+
+        # Only a field the caller named is refused. Restoring a captured
+        # configuration (``source``) still round-trips every field, inert ones
+        # included -- a snapshot is not a request to tune anything.
+        for name in kwargs:
+            message = _INERT_FIELDS.get(_LEGACY_TO_FIELD.get(name, name))
+            if message is not None:
+                raise AlganConfigurationError(message)
 
         normalized = []
         for name, value in values.items():

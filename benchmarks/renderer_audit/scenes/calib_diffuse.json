@@ -1,0 +1,17 @@
+{
+  "name": "calib_diffuse",
+  "_why": "Calibration: one non-metal sphere, one directional light, nothing else. Isolates the diffuse response, the light-intensity scale and the output transfer curve. Any disagreement here contaminates every other scene, so this is the first thing to reconcile.",
+  "render": {"width": 480, "height": 360, "background": [0.0, 0.0, 0.0]},
+  "camera": {"position": [0, 0, 6], "target": [0, 0, 0], "up": [0, 1, 0], "fov": 40, "near": 0.1, "far": 200},
+  "lights": [
+    {"type": "directional", "direction": [0, 0, -1], "color": [1, 1, 1], "intensity": 1.0}
+  ],
+  "objects": [
+    {
+      "name": "ball",
+      "geometry": {"type": "sphere", "radius": 1.5, "segments": 96},
+      "position": [0, 0, 0],
+      "material": {"type": "standard", "color": [0.8, 0.8, 0.8], "roughness": 1.0, "metalness": 0.0}
+    }
+  ]
+}

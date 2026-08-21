@@ -333,7 +333,7 @@ class Cone(Surface):
         to ``1``.
     direction
         Direction the tip points, shape ``(*, 3)``; it need not be normalized.
-        Defaults to ``OUT`` (the +z axis, out of the screen).
+        Defaults to ``OUT`` (out of the screen, towards the viewer).
     show_base
         Whether to cap the base with a filled circle. Defaults to ``False``: the
         cone is open, so the camera can see inside it.

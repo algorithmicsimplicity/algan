@@ -1,0 +1,6 @@
+# The audit's working images are reproducible from the scenes (see REPORT.md
+# section 7) and there are megabytes of them, so only the contact sheets the
+# report embeds are tracked.
+*
+!.gitignore
+!*.compare.jpg
