@@ -27,6 +27,8 @@ function.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -104,6 +106,47 @@ def smith_geometry(n_dot_v, n_dot_l, roughness):
     gv = n_dot_v / (n_dot_v * (1.0 - k) + k).clamp_min(1e-6)
     gl = n_dot_l / (n_dot_l * (1.0 - k) + k).clamp_min(1e-6)
     return gv * gl
+
+
+def _d_charlie(n_dot_h, sheen_roughness):
+    """Charlie sheen distribution (Estevez and Kulla 2017, via Three.js's
+    ``D_Charlie``): exponentiated-sine microfibre lobe. The ``sin2h`` floor is
+    Three.js's, kept so ``pow(0, large)`` cannot appear.
+    """
+    alpha = (
+        max(sheen_roughness, 1e-4)
+        if not torch.is_tensor(sheen_roughness)
+        else sheen_roughness.clamp_min(1e-4)
+    )
+    inv_alpha = 1.0 / (alpha * alpha)
+    sin2h = (1.0 - n_dot_h * n_dot_h).clamp_min(0.0078125)
+    return (2.0 + inv_alpha) * sin2h ** (inv_alpha * 0.5) / (2.0 * math.pi)
+
+
+def _v_neubelt(n_dot_v, n_dot_l):
+    """Neubelt and Pettineo 2013 sheen visibility, as in Three.js's
+    ``V_Neubelt``, clamped to 1 like its ``saturate``.
+    """
+    return (
+        1.0 / (4.0 * (n_dot_l + n_dot_v - n_dot_l * n_dot_v)).clamp_min(1e-6)
+    ).clamp(0.0, 1.0)
+
+
+def _ibl_sheen_brdf(cos_theta, sheen_roughness):
+    """Three.js's ``IBLSheenBRDF``: a curve fit to the Charlie lobe integrated
+    over the hemisphere, used for the base layer's energy compensation.
+    """
+    r = sheen_roughness
+    r2 = r * r
+    r_inv = 1.0 / (r + 0.1)
+    a = -1.9362 + 1.0678 * r + 0.4573 * r2 - 0.8469 * r_inv
+    b = -0.6014 + 0.5538 * r - 0.4670 * r2 - 0.1255 * r_inv
+    dg = (
+        torch.exp(a * cos_theta + b)
+        if torch.is_tensor(cos_theta)
+        else math.exp(a * cos_theta + b)
+    )
+    return dg.clamp(0.0, 1.0) if torch.is_tensor(dg) else min(max(dg, 0.0), 1.0)
 
 
 def _light_geometry(vertex_location, normal, camera_location, light_origin):
@@ -303,8 +346,23 @@ def physical_shader(
     specular = (ndf * geom * fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
 
     k_d = (1.0 - fresnel) * (1.0 - metalness) * (1.0 - transmission)
+
+    # Sheen, and what it takes from the layer underneath -- the in-torch twin
+    # of shading_taichi._stage_physical; see the long comment there for why
+    # the base is scaled and the clearcoat is not.
+    sheen_c = sheen_color * sheen
+    sheen_max = sheen_c.max(-1, keepdim=True).values
+    sheen_r = (
+        sheen_roughness.clamp(1e-4, 1.0)
+        if torch.is_tensor(sheen_roughness)
+        else max(min(sheen_roughness, 1.0), 1e-4)
+    )
+    sheen_comp = 1.0 - sheen_max * torch.maximum(
+        _ibl_sheen_brdf(n_dot_v, sheen_r), _ibl_sheen_brdf(n_dot_l, sheen_r)
+    )
+
     diffuse = k_d * rgb * radiance * n_dot_l
-    direct = diffuse + specular * radiance * n_dot_l
+    direct = (diffuse + specular * radiance * n_dot_l) * sheen_comp
 
     # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
     cc_ndf = ggx_distribution(n_dot_h, clearcoat_roughness)
@@ -317,20 +375,17 @@ def physical_shader(
     )
     direct = direct + clearcoat_spec * radiance * n_dot_l
 
-    # Sheen: soft retro-reflective rim (Charlie-like, inverted Fresnel).
-    sheen_term = sheen * (1.0 - n_dot_v).clamp(0.0, 1.0) ** (
-        1.0 + 8.0 * sheen_roughness
-    )
-    direct = direct + sheen_color * sheen_term * radiance
+    # The Charlie fibre lobe itself (KHR_materials_sheen / Three.js BRDF_Sheen).
+    sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
+    direct = direct + sheen_c * sheen_brdf * radiance * n_dot_l
 
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
         AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
     )
-    # Crude transmission: let some base colour through regardless of N.L.
-    # Only the non-metallic share transmits (as in k_d above) -- a metal
-    # at any transmission must shade identically to an opaque one.
-    transmitted = transmission * (1.0 - metalness) * rgb * radiance * 0.5
-    out = ambient + direct + transmitted + emissive * emissive_intensity
+    # No per-light transmission term: the transmitted share is carried by the
+    # renderer's own continuation, and adding it here again double counted.
+    # See shading_taichi._stage_physical.
+    out = ambient + direct + emissive * emissive_intensity
     return _recombine(out, glow)
 
 

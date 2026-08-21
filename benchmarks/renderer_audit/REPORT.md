@@ -8,6 +8,13 @@ Everything here was measured on this machine (a CPU-only cloud session,
 Ubuntu 24.04, 4 vCPU, no GPU — so Algan ran its CPU path throughout). Nothing is
 quoted from memory or from a design document without saying so.
 
+Part of the work is Ox Alpha's, run as a subagent through OpenCode: it wrote
+`three_render.mjs` (the Three.js back end, both modes), the independent
+source-level audit in `OX_AUDIT.md`, and the Charlie-sheen helper functions in
+`shading_taichi.py` — whose coefficients this audit then checked against the
+installed Three.js r185 source and found exact. Where its conclusions and this
+document's differ, §2.1 and §4.9 say so and why.
+
 ---
 
 ## 1. How the comparison was set up
@@ -277,12 +284,46 @@ its per-light loop — a glow proportional to transmission, with no `n·l`, scal
 with the number of lights — on top of the real refracted ray that the scatter
 already traces. Glass lit from behind its own horizon still gained it.
 
+The term is not needed even in the cases where no refracted ray is spawned (an
+index-matched `ior ≤ 1`, or a batch built without the split pool): the
+transmitted share then continues unbent as part of the pass-through
+(`pass_w = cover3 + trans_energy * tint`), so the light behind the surface still
+reaches the pixel. Meanwhile the stage's own output is already scaled by
+`alpha * (1 - R - trans_share)` to make room for it. Removed from both the
+Taichi stage and its torch twin.
+
+Measured on a `transmission = 0.75, ior = 1.5` sphere under two point lights,
+the mean over its disc drops from **82.4/255 to 52.7/255** — the surface stops
+glowing in the lights' colour and shows what is behind it instead.
+
 ### 4.4 Sheen was an ad-hoc rim, not a BRDF — FIXED
 
-`sheen * (1 - n·v)^k` with no `n·l`, no distribution and no normalisation, so a
-sheen surface gained rim energy from lights that do not reach it. Replaced with
-the Charlie distribution and Neubelt visibility term that glTF and Three.js both
-specify.
+`sheen * (1 - n·v)^k`, with no `n·l`, no distribution, no normalisation and no
+effect on the layer underneath. Replaced with what glTF's KHR_materials_sheen
+and Three.js's `BRDF_Sheen` specify, term for term: the Charlie distribution
+(Estevez & Kulla 2017), the Neubelt visibility term, `n·l`, and the base-layer
+energy compensation `1 − max3(sheenColor) · max(E(n·v), E(n·l))` that stops the
+fibre layer adding light the base already spent. The formulas were taken from
+the installed Three.js r185 source rather than from memory.
+
+The decisive test is a light placed **behind** the sphere, where a physical
+sheen lobe must contribute nothing. Mean rim RGB, and its 99th percentile:
+
+| | rim mean | rim p99 |
+| --- | --- | --- |
+| before, light in front | (41.1, 30.5, 39.3) | (113, 72, 97) |
+| after, light in front | (34.8, 26.2, 33.6) | (46, 31, 40) |
+| before, light behind | (29.7, 19.2, 25.7) | (109, 68, 92) |
+| **after, light behind** | **(3.0, 3.0, 3.0)** | **(3, 3, 3)** |
+
+With the light behind, the rim now sits at the flat ambient floor (§4.8) instead
+of blazing at 109/255. With it in front the lobe is still there but no longer
+spikes into a hard bright ring at the silhouette.
+
+Every material that leaves `sheen` at its default is untouched, and provably so:
+`sheen = 0` makes the compensation exactly `1.0` and the lobe exactly zero, and
+a `MeshPhysicalMaterial` sphere with sheen and transmission at their defaults
+renders **byte-identically** across both fixes (same md5).
 
 ### 4.5 A rough metal reflects almost nothing — NOT FIXED (deliberate, documented)
 
@@ -334,9 +375,9 @@ RGB through the centre of each:
 | 1.75 | (0.032, 0.440, 0.069) | (0.000, 0.025, 0.000) |
 
 Algan's three spheres are **the same colour to three decimal places** whatever
-their size. The path tracer's deepen with the path length, losing a third of
-their transmitted green from the small sphere to the large one and going
-essentially pure green as the red and blue channels are absorbed away.
+their size. The path tracer's deepen with the path length: the large sphere
+keeps barely a third of the small one's transmitted green, and goes essentially
+pure green as the red and blue channels are absorbed away.
 Depth-dependent colour is the most recognisable property of real coloured glass
 and Algan cannot express it at all.
 
@@ -377,6 +418,28 @@ indirect light it double-counts.
 This is an artistic default rather than a physics claim, and changing it would
 darken every existing Algan scene. Left alone; recorded here so it is not
 mistaken for a bug.
+
+### 4.9 Two claims from the independent audit that did not survive checking
+
+`OX_AUDIT.md` was produced by reading the source, not by rendering, and two of
+its findings do not hold once measured. Recorded here so nobody chases them.
+
+**"`samples_per_pixel > 1` silently switches the lighting model."** The switch
+is real and large — the same scene's floor renders at 171/255 with
+`samples_per_pixel = 1` and 20/255 with 4, because the Monte Carlo kernel has no
+explicit lights and treats the vertex-shaded colour as emission. But it is not
+silent. `docs/source/advanced_user_tutorials/renderer_limitations.rst` states
+it in as many words — "`SETTINGS.raytracing.samples_per_pixel` selects the
+renderer, not a quality knob" — with a table of what each renderer gives up. And
+when the scene uses a feature the Monte Carlo path cannot honour, the render
+refuses rather than producing a wrong frame: a directional light raises
+`UnsupportedFeatureError: The Monte Carlo renderer selected by
+samples_per_pixel > 1 cannot honor: extended lights`, naming the fix.
+
+**"`glossy_reflection` is an experimental switch."** It is in `_PUBLIC_FIELDS`
+alongside `shadows` and `max_bounces`; `SETTINGS.raytracing.set(glossy_reflection=True)`
+is the supported spelling. (This audit had it wrong too, until the settings
+module was read rather than guessed at.)
 
 ---
 
@@ -420,7 +483,6 @@ back wall, under a directional key and a blue point light.
 | `metrics.py` | unit-free transport ratios (transmission and reflection efficiency) |
 | `transfer_probe.py` | Algan's authored-colour → pixel transfer curve |
 | `OX_AUDIT.md` | Ox Alpha's independent source-level audit |
-| `../../OX_FIXES.md` | Ox Alpha's implementation report |
 
 Reproduce:
 
