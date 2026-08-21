@@ -1410,6 +1410,41 @@ def glossy_reflection_mode():
     return 2 if GLOSSY_INTERLEAVE else 1
 
 
+# NESTED DIELECTRIC MEDIA for the deterministic tracer: a ray carries the stack
+# of media it is inside (rs_sca columns 7+, see
+# ``wavefront_kernels_taichi.IOR_STACK_DEPTH``) and each glass interface takes
+# the RELATIVE index n_inside/n_outside instead of assuming air outside. This
+# is what makes glass inside glass, a sphere inside a box, or a bubble in a
+# liquid bend light correctly at the inner interfaces; without it every
+# interface refracts as though the outside were air.
+#
+# DEFAULT OFF. The stack widens ``rs_sca`` (+4 f32 per ray), forces a cold
+# recompile of both shade kernels' new template variants, and changes what a
+# nested scene renders -- so it is an opt-in until its output has been lived
+# with. Fresnel reflectance keeps the MATERIAL index even when this is on (the
+# relative index reaches only Snell's law): ``_material_reflectance``'s
+# dielectric branch is itself gated ``ior > 1 + 1e-4``, which a relative index
+# below 1 would silently zero. See DESIGN_mesh_identity_open.md §H.
+NESTED_IOR = env_flag("ALGAN_NESTED_IOR", False)
+
+
+def set_nested_ior(enabled):
+    """Toggle the nested-dielectric IOR stack (see ``NESTED_IOR``)."""
+    global NESTED_IOR
+    NESTED_IOR = bool(enabled)
+
+
+def nested_ior_mode():
+    """Live nested-IOR mode: 0 off, 1 media stack maintained.
+
+    Read at call time (never imported by value) and returned as an int,
+    because it reaches the shade/resolve kernels as a TEMPLATE value: each
+    mode compiles its own kernel variant, so the offline cache cannot serve
+    one mode's kernel for another (see ``glossy_reflection_mode``).
+    """
+    return 1 if NESTED_IOR else 0
+
+
 # Minimum half-width, in pixels, of a filled circuit's drawn region. This
 # replaces the classic ``outline_w = 0.6 * pixel_size`` fill dilation, whose
 # purpose is to keep sub-pixel features (hairlines, thin glyph stems, degenerate

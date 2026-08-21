@@ -39,7 +39,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 2 | [The verification harnesses the docs and the source name do not exist](#2-the-verification-harnesses-the-docs-and-the-source-name-do-not-exist) | Process | 56 missing, 24 of them cited from inside `algan/`, including the stated gate for eight default-on toggles. Every item below is harder without them. |
 | 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | Designed, not built. The absolute epsilons are what couple the renderer to scene scale. |
 | 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open. |
-| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index. |
+| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | **Done** (gated off by default). Nested media now take the correct relative index under `SETTINGS.raytracing.experimental.nested_ior`. |
 | 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first. |
 | 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows without a word. |
 | 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing. |
@@ -145,10 +145,21 @@ derivatives. Measure before choosing.
 
 ## 5. §H nested-IOR refraction
 
-**Status: designed in `DESIGN_mesh_identity_open.md` §H. Not started —
-verified: `_alloc_wavefront_state` is still called with `sca_width = 7`
-(`tracer.py:2476`) and columns 0-6 are fully spoken for, so there is no IOR
-stack.**
+**Status: built** (see `DESIGN_mesh_identity_open.md` §H for the four
+deliberate deviations from the design text: the overflow rule, Fresnel left
+on the material index, custom-scatter scenes excluded, and the per-corner-IOR
+approximation). Off by default; opt in with
+`SETTINGS.raytracing.experimental.nested_ior`. `benchmarks/_nested_ior_ab.py`
+is the four-frame check: a nested pair that must move, a transmissive pane
+that must be byte-identical, and two single solids bounded to the
+edge/silhouette band the design doc accounts for. `tests/unit_tests/
+test_nested_ior.py` pins the stack arithmetic itself.
+
+Worth carrying forward into [item 3](#3-i-self-shadow-rejection-by-identity):
+building this surfaced an epsilon artifact that §I would fix at its source. A
+ray grazing a shared edge can be classified as ENTERING a convex solid it
+never left, which is how a single cube reaches stack depth 2. §I's mesh
+identity is exactly what would let the stack refuse that.
 
 Every interface assumes air outside. Glass in glass, a sphere in a box, a bubble
 in a liquid: all take the wrong relative index at the inner interface. The

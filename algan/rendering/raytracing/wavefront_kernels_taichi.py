@@ -71,6 +71,26 @@ from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 _ACTIVE = 0
 _DONE = 1
 
+# Nested-dielectric media stack (DESIGN_mesh_identity_open.md §H), carried in
+# rs_sca columns beyond the seven the classic layout speaks for. The gate is
+# ``rt_settings.nested_ior_mode()`` read live per batch (see
+# ``tracer.render_batch_raytraced``'s ``ior_stack_flag``); when it is off the
+# state keeps its classic width and every stack line compiles out.
+#
+# rs_sca[r, _SCA_IOR_DEPTH] is HOW MANY media the ray is inside;
+# rs_sca[r, _SCA_IOR_BASE + i] is the i-th medium's index of refraction,
+# outermost first. Depth 0 means air.
+IOR_STACK_DEPTH = 4          # media a ray may be inside at once
+_SCA_IOR_DEPTH = 7           # rs_sca column: stack depth, stored as f32
+_SCA_IOR_BASE = 8            # rs_sca column of stack[0]
+SCA_WIDTH_PLAIN = 7
+SCA_WIDTH_NESTED = _SCA_IOR_BASE + IOR_STACK_DEPTH        # 12
+
+
+def sca_width(nested_ior):
+    """rs_sca row width for a nested-IOR gate value (plain Python)."""
+    return SCA_WIDTH_NESTED if nested_ior else SCA_WIDTH_PLAIN
+
 
 @ti.kernel
 def compact_ray_slots(
@@ -706,6 +726,108 @@ def _refract_ray(rd, n_out, ior):
         cos_t = ti.sqrt(1.0 - sin2_t)
         out = eta * rd + (eta * cos_i - cos_t) * n
     return out.normalized()
+
+
+@ti.func
+def _relative_ior(rs_sca: ti.template(), r, ior, entering,
+                  nested: ti.template()):
+    """The index ratio ``_refract_ray`` wants at row ``r``'s glass interface.
+
+    Returns n_inside/n_outside, which is exactly the reading ``_refract_ray``
+    gives its ``ior`` argument in both directions -- entering ``eta = 1/rel``,
+    exiting ``eta = rel`` -- so ``_refract_ray`` is unchanged.
+
+    **The stack supplies only the OUTSIDE index; the inside always comes from
+    the hit's own ``ior``.** That is what the feature is for -- today's bug is
+    that every interface assumes air outside -- and taking the inside locally
+    is the more honest of the two readings. ``ior`` is barycentrically
+    interpolated per hit (``_corner_ior``), so the value at THIS point is what
+    the material says here; the alternative, reading the inside off the stack,
+    would import the entry hit's interpolation into the exit hit. On a
+    constant-index material those differ in their last bits (a constant 1.5
+    arrives as ``1.5*(w0+w1+w2)``), and on a spatially varying one they differ
+    outright.
+
+    ``entering`` says which side the ray crosses from, and is decided by the
+    GEOMETRIC face normal, not the shading normal ``_refract_ray`` picks its
+    own side from. Inside-ness is a geometric fact; an interpolated shading
+    normal is not, and on a diced surface it tips past the silhouette at
+    grazing angles, where deciding with it would call an EXIT an entry. The
+    two disagreeing costs nothing until something actually encloses the hit,
+    because the stack only supplies the outside. This assumes consistent
+    outward winding -- the same assumption one-sided shading already makes
+    (``Mob.two_sided``).
+
+    With the gate off, or with nothing enclosing this interface, returns
+    ``ior`` ITSELF -- no division at all -- so an un-nested interface is
+    identical to the pre-feature kernel by construction rather than by IEEE
+    argument. That is not the same as an un-nested SCENE being identical: a
+    ray grazing a shared edge can be classified as entering a solid it never
+    left, which puts something on the stack and does change those pixels. See
+    the measurement in DESIGN_mesh_identity_open.md §H, and
+    ``benchmarks/_nested_ior_ab.py``, which bounds it.
+
+    The denominator is clamped to a small positive floor so a corrupt material
+    index cannot produce an inf/NaN direction.
+
+    Entering past ``IOR_STACK_DEPTH`` still reads s[N-1] as its outside --
+    correct at this interface -- and the matching exits pop back onto a stack
+    that is still right, so only the interfaces beyond the cap are wrong (see
+    ``_write_ior_stack`` for the deliberate deviation from the design doc's
+    overflow rule).
+    """
+    rel = ior
+    if ti.static(nested != 0):
+        # Depth of the medium ENCLOSING this interface: entering, that is
+        # everything the ray is already inside; exiting, everything it is
+        # inside except the medium it is leaving.
+        d = ti.cast(rs_sca[r, _SCA_IOR_DEPTH] + 0.5, ti.i32)
+        if entering != 1:
+            d = d - 1
+        if d > 0:
+            n_out = rs_sca[r, _SCA_IOR_BASE
+                           + ti.min(d, IOR_STACK_DEPTH) - 1]
+            rel = ior / ti.max(n_out, 1e-6)
+    return rel
+
+
+@ti.func
+def _write_ior_stack(rs_sca: ti.template(), src, dst, ior, entering,
+                     refracting, nested: ti.template()):
+    """Fill child row ``dst``'s stack columns from parent row ``src``'s.
+
+    ``refracting == 0`` copies depth and all N entries: a reflection and a
+    coverage pass-through stay in the same medium. Refracting while entering
+    pushes the hit's interpolated ``ior`` (depth d+1, entry d stored when
+    d < N); refracting while exiting pops (depth max(d-1, 0)).
+
+    DEVIATION from DESIGN_mesh_identity_open.md §H's overflow rule ("do not
+    push, do not bump"): the depth counter keeps counting past N and only the
+    first N entries are stored. The doc's rule shifts every subsequent pop by
+    one, so a nest deeper than N would render wrong at every interface OUTSIDE
+    the overflow as well as at the overflowing one; counting past N is wrong
+    only at the interfaces past N -- entering at depth == N still reads
+    s[N-1] as its outside, which is CORRECT, and the matching exits come back
+    onto a stack that is still right. Reads clamp their index to [0, N-1]
+    (see ``_relative_ior``), so nothing goes out of bounds.
+
+    Compiles out entirely unless the nested-IOR gate is on.
+    """
+    if ti.static(nested != 0):
+        d = ti.cast(rs_sca[src, _SCA_IOR_DEPTH] + 0.5, ti.i32)
+        nd = d
+        pushed = 0
+        if refracting == 1:
+            if entering == 1:
+                nd = d + 1
+                pushed = 1 if d < IOR_STACK_DEPTH else 0
+            else:
+                nd = ti.max(d - 1, 0)
+        rs_sca[dst, _SCA_IOR_DEPTH] = ti.cast(nd, ti.f32)
+        for k in ti.static(range(IOR_STACK_DEPTH)):
+            rs_sca[dst, _SCA_IOR_BASE + k] = rs_sca[src, _SCA_IOR_BASE + k]
+        if pushed == 1:
+            rs_sca[dst, _SCA_IOR_BASE + d] = ior
 
 
 @ti.func
@@ -2023,6 +2145,9 @@ def wavefront_shade(
         tri_pids: ti.template(),
         shadows: ti.template(),
         refraction: ti.template(),
+        # Nested-IOR media stack gate (module head): 0 compiles every stack
+        # read/write out and keeps the classic rs_sca width.
+        ior_stack: ti.template(),
         refit: ti.template(),
         has_tri: ti.template(), has_bez: ti.template(),
         deferred_shadows: ti.template(),
@@ -2596,7 +2721,17 @@ def wavefront_shade(
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
-                                rdt = _refract_ray(rd, normal, ior)
+                                # Which side of the interface the ray crosses.
+                                # The GEOMETRIC face normal decides, not the
+                                # shading normal _refract_ray picks its own
+                                # side from: inside-ness is geometric, and an
+                                # interpolated normal tips past the silhouette
+                                # at grazing angles (see _relative_ior). Exact
+                                # 0 counts as exiting.
+                                entering = rd.dot(geo_normal) < 0.0
+                                rel = _relative_ior(rs_sca, r, ior, entering,
+                                                    ior_stack)
+                                rdt = _refract_ray(rd, normal, rel)
                                 hp = ro + t_hit * rd
                                 rorig = _offset_transmitted_origin(
                                     hp, rdt, geo_normal, normal)
@@ -2619,6 +2754,12 @@ def wavefront_shade(
                                 rs_pix[c] = pix
                                 if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
+                                # The transmitted ray enters/exits a medium:
+                                # push the hit's interpolated ior / pop (see
+                                # _write_ior_stack; compiles out with the gate
+                                # off).
+                                _write_ior_stack(rs_sca, r, c, ior, entering,
+                                                 True, ior_stack)
                         # Primary carries the heavier of reflection /
                         # coverage-miss; the lighter one takes a pool slot, so
                         # all three continuations are traced. At full coverage
@@ -2676,6 +2817,10 @@ def wavefront_shade(
                                     rs_pix[c] = pix
                                     if ti.static(compact):
                                         rs_int[c, 4] = accum_pix
+                                    # A reflection stays in the medium it was
+                                    # in: copy the parent stack verbatim.
+                                    _write_ior_stack(rs_sca, r, c, ior, False,
+                                                     False, ior_stack)
                             weight *= cover_pass
                             t_prev = t_hit
                             layer_prev = hit_layer
@@ -2712,6 +2857,9 @@ def wavefront_shade(
                                 rs_pix[c] = pix
                                 if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
+                                # Pane reflection: same medium, stack copied.
+                                _write_ior_stack(rs_sca, r, c, ior, False,
+                                                 False, ior_stack)
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -2745,6 +2893,10 @@ def wavefront_shade(
                                 rs_pix[c] = pix
                                 if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
+                                # split_refl reflection: same medium, stack
+                                # copied.
+                                _write_ior_stack(rs_sca, r, c, ior, False,
+                                                 False, ior_stack)
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -2870,6 +3022,21 @@ def wavefront_shade(
                                 rs_pix[c] = pix
                                 if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
+                                # A scene carrying ANY custom fragment scatter
+                                # gets no nested IOR: this arm owns every
+                                # fragment once one exists, and the fixed
+                                # scatter-injection signature cannot carry a
+                                # relative index or say what medium the
+                                # returned trans_dir leaves the ray in. So the
+                                # value passed as ior is unchanged (s_ior, the
+                                # material's own) and the transmitted branch
+                                # copies the parent stack verbatim -- it
+                                # continues in the parent medium. Bookkeeping
+                                # stays sound (a wrong-but-consistent medium
+                                # beats arena noise); extending the contract is
+                                # future work (DESIGN_mesh_identity_open.md §H).
+                                _write_ior_stack(rs_sca, r, c, s_ior, False,
+                                                 False, ior_stack)
                     refl_w_max = ti.max(refl_w[0],
                                         ti.max(refl_w[1], refl_w[2]))
                     if (refl_w_max > 0.0) and (bounces_left > 0):
@@ -2906,6 +3073,12 @@ def wavefront_shade(
                 rs_rd[r, k] = rd[k]
             for k in ti.static(range(4)):
                 rs_acc[r, k] = acc[k]
+            # Columns 7+ (the nested-IOR stack) are deliberately NOT rewritten:
+            # a ray that continues as its own reflection / pass-through stays
+            # in the medium it was in, so its stack survives untouched. That is
+            # only sound because every slot's stack columns are zeroed once per
+            # tile on the host (tracer._run_wavefront_tiles), so an unwritten
+            # stack reads as air rather than as the previous occupant's media.
             rs_sca[r, 0] = weight[0]
             rs_sca[r, 1] = t_prev
             rs_sca[r, 2] = layer_prev

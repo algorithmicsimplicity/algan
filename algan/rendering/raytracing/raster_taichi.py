@@ -77,6 +77,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _reserve_continuation_slot,
     _tri_color_g,
     _tri_normal_g,
+    _write_ior_stack,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
@@ -2506,7 +2507,8 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
                     rs_int: ti.template(), rs_pix: ti.template(),
                     rs_alloc: ti.template(),
                     orig, dirn, wt, dist, bounces_left, processed, pixel, r,
-                    compact: ti.template()):
+                    compact: ti.template(), ior_stack: ti.template(),
+                    refracting: ti.template(), medium_ior, entering):
     """Append one continuation ray to the tile's shared ray pool.
 
     Overflow is not an error and not a per-pixel cap: the host retries the whole
@@ -2514,6 +2516,17 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
     (``REFRACT_INITIAL_POOL_RATIO``). A dropped slot silently loses that
     branch's contribution, which is why the caller must not have already
     committed throughput to it.
+
+    The nested-IOR stack columns (module head of ``wavefront_kernels_taichi``)
+    are written here too whenever the gate is on, through the same
+    ``_write_ior_stack`` the bounce shader uses: ``refracting`` 1 pushes or
+    pops the hit medium according to ``entering``, 0 copies the parent's stack
+    (a reflection stays in the medium it was in). The parent is row ``r``,
+    which for this kernel's only callers -- the sheet resolve -- is a PRIMARY
+    ray, whose stack the host zeroed. ``entering`` still has to be passed
+    rather than assumed: a partially covering glass fragment lets the primary
+    walk on to the same solid's BACK face, and pushing there would record a
+    medium the ray is leaving. Compiles out with the gate off.
     """
     c, have_slot = _reserve_continuation_slot(rs_alloc, rs_ro.shape[0])
     if have_slot:
@@ -2529,6 +2542,8 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
         rs_sca[c, 4] = dist
         rs_sca[c, 5] = wt[1]
         rs_sca[c, 6] = wt[2]
+        _write_ior_stack(rs_sca, r, c, medium_ior, entering, refracting,
+                         ior_stack)
         rs_int[c, 0] = bounces_left
         rs_int[c, 1] = processed
         rs_int[c, 2] = _ACTIVE

@@ -817,6 +817,14 @@ def make_pipeline_func(stages, offsets):
 # covered part passes, ``reflectivity`` packed metalness (negative = non-PBR)
 # and ``ior`` an unsigned magnitude.
 #
+# With the nested-IOR media stack on (``NESTED_IOR``, DESIGN_mesh_identity_
+# open.md §H), a custom scatter's transmitted ray continues in the PARENT
+# medium: the renderer copies the calling ray's media stack onto the split
+# branch unchanged and passes the material's own index as ``ior``, because a
+# scene carrying any custom scatter owns every fragment and the fixed
+# signature above cannot say what medium the returned ``trans_dir`` leaves the
+# ray in -- such scenes get no nested IOR.
+#
 # Transport is full-colour: ray throughput is a vec3 and the branch weights
 # ``pass_w`` / ``refl_w`` / ``trans_w`` are vec3 per-channel multipliers (the
 # built-in scatter tints the metal Fresnel lobe and the transmitted share by

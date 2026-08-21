@@ -88,7 +88,11 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
+    _SCA_IOR_DEPTH,
+    SCA_WIDTH_NESTED,
+    SCA_WIDTH_PLAIN,
     compact_ray_slots,
+    sca_width,
     wavefront_generate_rays,
     wavefront_shade,
     wavefront_traverse,
@@ -533,11 +537,23 @@ _WAVEFRONT_FIXED_BYTES = 24
 
 def _wavefront_state_coefficients():
     """Measured per-slot / per-primary / fixed bytes of the ray-state block."""
-    return {
+    coefficients = {
         "pool": _WAVEFRONT_BYTES_PER_POOL_SLOT,
         "primary": _WAVEFRONT_BYTES_PER_PRIMARY,
         "fixed": _WAVEFRONT_FIXED_BYTES,
     }
+    if rt_settings.nested_ior_mode():
+        # Nested-IOR media stack (DESIGN_mesh_identity_open.md §H): rs_sca
+        # rows grow from SCA_WIDTH_PLAIN to SCA_WIDTH_NESTED f32 columns per
+        # slot when the gate is on (the depth counter plus IOR_STACK_DEPTH
+        # entries), so tile sizing must charge them or every auto tile
+        # overruns the arena it was fitted to. Read live, like the
+        # coefficients' consumers; the measured constants describe the DEFAULT
+        # (gate-off) layout -- re-measure before ever flipping that default.
+        coefficients["pool"] += (
+            SCA_WIDTH_NESTED - SCA_WIDTH_PLAIN
+        ) * torch.float32.itemsize
+    return coefficients
 
 
 def _auto_primary_per_tile(
@@ -1238,6 +1254,19 @@ def render_batch_raytraced(
         )
         else 0
     )
+    # Nested-IOR media stack (DESIGN_mesh_identity_open.md §H). Gated on
+    # ``refraction_flag`` as well as the setting, and that conjunction is
+    # load-bearing beyond "the stack only makes sense where rays split": the
+    # stack rides a WIDER rs_sca and its initialisation story leans on the
+    # split pool existing. Every batch with refraction_flag == 1 has
+    # pool_ratio > 1 (REFRACT_INITIAL_POOL_RATIO >= 2), which is exactly what
+    # excludes the two init paths that cannot write the new columns -- the
+    # host const_fill broadcast (requires pool_ratio == 1) and fused
+    # generation (same). Key this gate on the raw setting alone and those
+    # paths would hand the kernels uninitialised stack columns to read.
+    ior_stack_flag = (
+        1 if (rt_settings.nested_ior_mode() != 0 and refraction_flag) else 0
+    )
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
@@ -1484,6 +1513,7 @@ def render_batch_raytraced(
                             frag_scatters,
                             shadow_flag,
                             refraction_flag,
+                            ior_stack_flag,
                             1 if transparent_background else 0,
                             memory,
                             out,
@@ -1575,6 +1605,7 @@ def _run_wavefront_tiles(
     gen_fused=False,
     global_hits=True,
     analytic_raster=False,
+    sca_width=SCA_WIDTH_PLAIN,
 ):
     """Run deterministic-wavefront screen tiles with a shared split pool.
 
@@ -1609,8 +1640,16 @@ def _run_wavefront_tiles(
     # 0 without a near clip; _ACTIVE == 0 (rs_int cols 1-3 are all zero).
     const_fill = pool_ratio == 1 and near_clip <= 0.0
     if const_fill:
+        # Trailing zeros keep the broadcast copy below shape-safe if the
+        # nested-IOR stack ever widens rs_sca under a const-fill-eligible
+        # batch. Inert today: the stack gate implies refraction_flag, which
+        # forces pool_ratio > 1 and therefore const_fill == 0 (see the
+        # ior_stack_flag definition in render_batch_raytraced).
         sca_init = torch.tensor(
-            [1.0, 0.0, 1e30, -1e30, 0.0, 1.0, 1.0], dtype=f32, device=out.device
+            [1.0, 0.0, 1e30, -1e30, 0.0, 1.0, 1.0]
+            + [0.0] * (sca_width - SCA_WIDTH_PLAIN),
+            dtype=f32,
+            device=out.device,
         )
         int_init = torch.tensor(
             [int(max_bounces), 0, 0, 0], dtype=i32, device=out.device
@@ -1671,7 +1710,7 @@ def _run_wavefront_tiles(
                             global_hits=int(global_hits),
                         ):
                             state = _alloc_wavefront_state(
-                                memory, pool, 7, global_hits=global_hits
+                                memory, pool, sca_width, global_hits=global_hits
                             )
                             rs_pix = memory.get_tensor((pool,), i32)
                             pix_accum = memory.get_tensor((attempt_primary, 7), f32)
@@ -1693,6 +1732,19 @@ def _run_wavefront_tiles(
                             rs_kp,
                             rs_kf,
                         ) = state
+
+                        if sca_width != SCA_WIDTH_PLAIN:
+                            # Nested-IOR stack columns
+                            # (DESIGN_mesh_identity_open.md §H): zeroed once
+                            # per tile on the host so any path that forgets to
+                            # write a stack degrades to today's air-outside
+                            # behaviour instead of reading arena noise. Covers
+                            # primaries and pool slots alike, and costs
+                            # O(pool) floats against a tile that runs orders of
+                            # magnitude more work. The generate kernel is left
+                            # alone: its write_const block only runs when
+                            # pool_ratio == 1, which the stack gate excludes.
+                            rs_sca[:, _SCA_IOR_DEPTH:].zero_()
 
                         if gen_fused:
                             pix_accum.zero_()
@@ -1853,6 +1905,7 @@ def raytrace_render_wavefront(
     frag_scatters,
     shadow_flag,
     refraction_flag,
+    ior_stack_flag,
     transparent,
     memory,
     out,
@@ -1907,6 +1960,12 @@ def raytrace_render_wavefront(
     reference only. The vertex-shaded path below is unaffected either way.
     """
     rt_settings = SETTINGS.raytracing
+    # rs_sca's row width for this batch. A local, not a call at each use site:
+    # ``sca_width`` is also the name of the module-level helper imported from
+    # wavefront_kernels_taichi, so a bare ``sca_width`` inside this function is
+    # the FUNCTION, not a width (that mistake allocated ray state with a
+    # function object as its column count).
+    state_sca_width = sca_width(ior_stack_flag)
     # UNSUPPORTED legacy textured-surface shader (Surface / flat-triangle
     # scenes): shades from three per-triangle texture lookups instead of
     # per-vertex arrays. Only reachable via the opt-in WF_TEXTURED toggle;
@@ -2343,6 +2402,7 @@ def raytrace_render_wavefront(
                     int(tri_pids),
                     int(shadow_flag),
                     int(refraction_flag),
+                    int(ior_stack_flag),
                     bvh_refit,
                     int(has_tri),
                     int(has_bez),
@@ -2473,7 +2533,7 @@ def raytrace_render_wavefront(
                             sparse=1,
                         ):
                             state = _alloc_wavefront_state(
-                                memory, pool, 7, global_hits=False
+                                memory, pool, state_sca_width, global_hits=False
                             )
                             rs_pix = memory.get_tensor((pool,), i32)
                             pix_accum = memory.get_tensor((attempt_primary, 7), f32)
@@ -2481,6 +2541,10 @@ def raytrace_render_wavefront(
                             rs_vis = memory.get_tensor((1,), i32)
                             compactor = _ArenaRayCompactor(memory, pool, i32)
                         rs_int = state[4]
+                        if state_sca_width != SCA_WIDTH_PLAIN:
+                            # Same per-tile stack zeroing as the dense tile
+                            # above (DESIGN_mesh_identity_open.md §H).
+                            state[3][:, _SCA_IOR_DEPTH:].zero_()
                         pix_accum.zero_()
                         rs_int[:, 2].fill_(1)
                         rs_alloc.zero_()
@@ -2510,6 +2574,7 @@ def raytrace_render_wavefront(
                                 int(tri_pids),
                                 int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                                 refraction_flag,
+                                ior_stack_flag,
                                 time_start,
                                 width,
                                 height,
@@ -2761,6 +2826,7 @@ def raytrace_render_wavefront(
                     int(tri_pids),
                     int(shadow_flag),
                     int(refraction_flag),
+                    int(ior_stack_flag),
                     bvh_refit,
                     int(has_tri),
                     int(has_bez),
@@ -2824,6 +2890,7 @@ def raytrace_render_wavefront(
         gen_fused=gen_fused,
         global_hits=False,
         analytic_raster=analytic_raster,
+        sca_width=state_sca_width,
     )
 
 
