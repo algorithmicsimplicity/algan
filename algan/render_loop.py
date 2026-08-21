@@ -44,6 +44,7 @@ from algan.rendering.memory_model import (
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.raytracing.truncation import reset_truncations
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.settings import SETTINGS
 from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
@@ -2375,6 +2376,11 @@ class RenderLoopMixin:
         """
         original_background = self.background_frame
         original_memory = self.memory
+        # A render job is the scope of the truncation instrument: its counters
+        # start at zero here and each ceiling gets one warning per job, so a
+        # second save_video reports its own render rather than inheriting the
+        # first one's totals and its already-spent warnings.
+        reset_truncations()
         try:
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.

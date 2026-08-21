@@ -169,6 +169,7 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 - Shaders (`shaders/`): Three.js-style `Material`s and per-vertex shaders in Python/torch; per-fragment shading and custom fragment pipelines (`fragment_shaders.py`, `FragmentStage`) execute inside the Taichi shade kernel.
 - Feature toggles live in `raytracing/settings.py` as module globals with env-var defaults plus setter functions, surfaced through `SETTINGS.raytracing`. **Read them live** (`rt_settings.X` at call time) — importing them by value at module import freezes them before user code runs (this bug has shipped before).
 - Post-processing (`post_processing/`): bloom/glow, FXAA/SMAA, tonemapping. `Camera` (`camera.py`): perspective/orthographic projection, fov/near/far; render code consumes an immutable camera/light snapshot per batch so batch prep for frame batch N+1 can run on a worker thread while N renders (`ALGAN_PREFETCH_BATCHES=0` disables).
+- **The render path's fixed ceilings are counted, not silent** (`raytracing/truncation.py`): surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`. The counters are unconditional, so a zero is a reading rather than a missing instrument; keep them that way when adding a ceiling.
 
 ### Memory
 

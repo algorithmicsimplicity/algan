@@ -165,6 +165,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _smith_geometry as smith_geometry,
 )
 from algan.rendering.raytracing.tracer import RenderPlan, render_batch_raytraced
+from algan.rendering.raytracing.truncation import TruncationCounts
 from algan.rendering.shaders.fragment_shaders import (
     STAGE_DEFAULT,
     STAGE_LAMBERT,

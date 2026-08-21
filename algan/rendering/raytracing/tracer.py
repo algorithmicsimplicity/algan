@@ -63,13 +63,25 @@ from algan.rendering.raytracing.settings import (
     _scene_has_user_pipeline,
     is_post_process_tonemap_enabled,
 )
+from algan.rendering.raytracing.truncation import (
+    TruncationCounts,
+    attach_truncations,
+    record_truncation,
+    report_truncations,
+    restore_truncations,
+    snapshot_truncations,
+)
 from algan.rendering.taichi_runtime import (
     _set_compile_notice_callback,
 )
 from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
-from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE, ALL_PIDS
+from algan.rendering.raytracing.shading_taichi import (
+    _USER_PIPELINE_BASE,
+    ALL_PIDS,
+    MAX_SHADOW_LIGHTS,
+)
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
 # path (used by benchmarks/_wf_mem_trim_ab.py to confirm the trim actually fired).
@@ -88,6 +100,10 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
+    ALLOC_NEXT,
+    ALLOC_OVERFLOW,
+    ALLOC_TRUNC_SURFACES,
+    ALLOC_WIDTH,
     compact_ray_slots,
     wavefront_generate_rays,
     wavefront_shade,
@@ -123,6 +139,14 @@ class RenderPlan:
     samples_per_pixel: int
     requested_features: tuple[str, ...]
     unsupported_features: tuple[str, ...] = ()
+    #: How often each of the renderer's fixed ceilings bound, cumulative over
+    #: the render job (see
+    #: :mod:`algan.rendering.raytracing.truncation`). Zero everywhere means
+    #: nothing was silently dropped -- the counters are unconditional, so a
+    #: zero is a measurement rather than a missing instrument. Only the plan
+    #: of a *finished* batch carries counts; the one built during validation
+    #: is necessarily empty.
+    truncations: TruncationCounts = TruncationCounts()
 
     @property
     def is_supported(self) -> bool:
@@ -134,6 +158,7 @@ class RenderPlan:
             "samples_per_pixel": self.samples_per_pixel,
             "requested_features": list(self.requested_features),
             "unsupported_features": list(self.unsupported_features),
+            "truncations": self.truncations.as_dict(),
         }
 
 
@@ -352,6 +377,40 @@ def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_ra
 # resolve, so the margin is deliberately generous relative to the ~10% spread
 # in per-pixel demand that a coverage partition produces.
 _POOL_RETRY_SAFETY = 0.85
+
+
+def _read_tile_alloc(rs_alloc):
+    """Copy one tile's ``rs_alloc`` words to the host, in a single transfer.
+
+    Every word is read on every tile now, including the overflow flag on the
+    split-free path that used to short-circuit past it. That short-circuit is
+    what made a failed reservation at ``pool_ratio == 1`` invisible: there is
+    no retry to make there, so the flag was never even looked at, and the
+    dropped branch left no trace (RENDERER_WORK_QUEUE.md item 1). Looking costs
+    one device synchronisation per tile, against the one the ray compactor
+    already forces per wavefront iteration *inside* the tile.
+    """
+    return rs_alloc.tolist()
+
+
+def _record_tile_truncations(alloc, pool):
+    """Fold an ACCEPTED tile attempt's truncation counters into the render's.
+
+    Only accepted attempts: an overflowing tile is discarded and re-run, and
+    counting the discarded attempt would report truncations for frames that
+    were never composited.
+    """
+    record_truncation(
+        "surfaces_per_ray",
+        alloc[ALLOC_TRUNC_SURFACES],
+        cap=MAX_SURFACES_PER_RAY,
+    )
+    # ``rs_alloc[ALLOC_NEXT]`` keeps counting past the capacity (a failed
+    # reservation still does its atomic increment), so the surplus over the
+    # pool IS the number of continuations that found no slot. A splitting
+    # batch retries instead of accepting that, which is why an accepted
+    # attempt can only show a surplus at ``pool_ratio == 1``.
+    record_truncation("dropped_continuations", alloc[ALLOC_NEXT] - pool)
 
 
 def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
@@ -1275,6 +1334,21 @@ def render_batch_raytraced(
         light_col.zero_()
         num_lights = 0
 
+    # The shadow-light ceiling is the one truncation the host can see without
+    # asking a kernel: MAX_SHADOW_LIGHTS is the length of a ``ti.Vector`` and
+    # therefore compile-time, so every light slot past it is simply never
+    # written and the surplus lights render lit-but-shadowless. Counted per
+    # batch, since a light spawning mid-scene can push a later batch over a cap
+    # the first ones sat under. Each RectAreaLight emitter sample already
+    # occupies its own row here (``_pack_lights`` expands them), which is why
+    # the count is of light SLOTS rather than of the author's lights.
+    if shadow_flag and num_lights > MAX_SHADOW_LIGHTS:
+        record_truncation(
+            "shadow_lights",
+            int(num_lights) - MAX_SHADOW_LIGHTS,
+            cap=MAX_SHADOW_LIGHTS,
+        )
+
     # Frame counts of the windows that were actually launched. They differ from
     # the requested window whenever a chunk had to be sub-divided below, and the
     # batching loop's memory model needs the difference: it measures the arena's
@@ -1322,6 +1396,10 @@ def render_batch_raytraced(
             middle = (start + end) // 2
             return render_chunk(start, middle) + render_chunk(middle, end)
         entry_pointers = memory.get_pointers()
+        # Rolled back beside the arena pointers when a chunk is discarded for
+        # memory: the failed attempt's truncations describe frames that are
+        # about to be re-rendered, and counting both attempts would double them.
+        entry_truncations = snapshot_truncations()
         try:
             out_dtype = (
                 torch.float32 if is_post_process_tonemap_enabled() else torch.uint8
@@ -1524,6 +1602,7 @@ def render_batch_raytraced(
                 raise
             logger.log(PERF, f"Reducing the frame batch to fit memory: {start}:{end}")
             rewind_to(entry_pointers)
+            restore_truncations(entry_truncations)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
@@ -1541,6 +1620,12 @@ def render_batch_raytraced(
             return render_chunk(start, middle) + render_chunk(middle, end)
 
     chunks = render_chunk(time_start, time_end)
+    # Whatever the batch truncated is reported now -- once the frames exist and
+    # before the caller can act on them -- and the running totals are grafted
+    # onto the plan the Scene hands back, so a script can assert on them
+    # without parsing logs.
+    report_truncations()
+    scene.last_render_plan = attach_truncations(plan)
     if memory is not None and launched_frames:
         memory.last_launch_frames = max(launched_frames)
     if len(chunks) == 1:
@@ -1628,7 +1713,7 @@ def _run_wavefront_tiles(
         primary_per_tile,
         auto_extra_slot_bytes,
         auto_extra_primary_bytes,
-        auto_fixed_bytes + 2 * torch.int32.itemsize,
+        auto_fixed_bytes + ALLOC_WIDTH * torch.int32.itemsize,
     )
     primary_capacity = min(max(1, int(primary_per_tile)), max(1, int(n)))
     shared_pool_capacity = _shared_pool_slots(
@@ -1675,11 +1760,13 @@ def _run_wavefront_tiles(
                             )
                             rs_pix = memory.get_tensor((pool,), i32)
                             pix_accum = memory.get_tensor((attempt_primary, 7), f32)
-                            # [0] next free shared slot, [1] overflow flag. The
-                            # classic generation kernel initialises both. Fused
-                            # generation is split-free, but zeroing keeps the
-                            # state well-defined.
-                            rs_alloc = memory.get_tensor((2,), i32)
+                            # [0] next free shared slot, [1] overflow flag,
+                            # [2] the compositing-ceiling truncation counter
+                            # (ALLOC_* in wavefront_kernels_taichi). The classic
+                            # generation kernel initialises the first two;
+                            # everything past them is zeroed below, since only
+                            # atomic adds ever touch it.
+                            rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
                         (
                             rs_ro,
                             rs_rd,
@@ -1698,6 +1785,11 @@ def _run_wavefront_tiles(
                             pix_accum.zero_()
                             rs_alloc.zero_()
                         else:
+                            # The generation kernel writes only the allocator's
+                            # own two words; the truncation counters past them
+                            # are accumulate-only and must start at zero.
+                            rs_alloc[ALLOC_OVERFLOW + 1 :].zero_()
+
                             # rs_acc and pix_accum start all-zero, and the
                             # constant rs_sca / rs_int primary init rows are
                             # filled here for the split-free, near-clip-free
@@ -1757,7 +1849,8 @@ def _run_wavefront_tiles(
                         memory.set_pointers(state_ptrs)
                         raise
 
-                    overflow = pool_ratio > 1 and int(rs_alloc[1].item()) != 0
+                    alloc = _read_tile_alloc(rs_alloc)
+                    overflow = pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0
                     if overflow:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:
@@ -1768,7 +1861,7 @@ def _run_wavefront_tiles(
                                 "complexity, or increase WAVEFRONT_TILE_RAYS."
                             )
                         next_primary = _overflow_retry_primary(
-                            attempt_primary, int(rs_alloc[0].item()), pool
+                            attempt_primary, alloc[ALLOC_NEXT], pool
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         logger.log(
@@ -1781,6 +1874,9 @@ def _run_wavefront_tiles(
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
+                    # Past the retry: this attempt is the one that composites,
+                    # so its counters are the ones that count.
+                    _record_tile_truncations(alloc, pool)
 
                     if do_aa:
                         wf_composite_accum_aa(
@@ -2445,7 +2541,7 @@ def raytrace_render_wavefront(
                 memory,
                 pool_ratio,
                 primary_per_tile,
-                fixed_bytes=2 * torch.int32.itemsize,
+                fixed_bytes=ALLOC_WIDTH * torch.int32.itemsize,
             )
             primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
             shared_pool_capacity = _shared_pool_slots(
@@ -2477,7 +2573,7 @@ def raytrace_render_wavefront(
                             )
                             rs_pix = memory.get_tensor((pool,), i32)
                             pix_accum = memory.get_tensor((attempt_primary, 7), f32)
-                            rs_alloc = memory.get_tensor((2,), i32)
+                            rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
                             rs_vis = memory.get_tensor((1,), i32)
                             compactor = _ArenaRayCompactor(memory, pool, i32)
                         rs_int = state[4]
@@ -2547,7 +2643,13 @@ def raytrace_render_wavefront(
                         attempt_primary = next_primary
                         continue
 
-                    overflow = pool_ratio > 1 and int(rs_alloc[1].item()) != 0
+                    # The resolve's own overflow, checked before the bounce
+                    # drain adds to the same counters. Truncations are folded
+                    # in at the ACCEPT point below, once, so this stage keeps
+                    # the split-free short-circuit it always had.
+                    overflow = (
+                        pool_ratio > 1 and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
+                    )
                     if overflow:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:
@@ -2557,7 +2659,7 @@ def raytrace_render_wavefront(
                                 "slots."
                             )
                         next_primary = _overflow_retry_primary(
-                            attempt_primary, int(rs_alloc[0].item()), pool
+                            attempt_primary, int(rs_alloc[ALLOC_NEXT].item()), pool
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
@@ -2604,7 +2706,11 @@ def raytrace_render_wavefront(
                     # Secondary shading can itself split again.  Discard and
                     # retry the whole compact slice before compositing if any
                     # of those later allocations exhausted the shared pool.
-                    if pool_ratio > 1 and int(rs_alloc[1].item()) != 0:
+                    # This is the slice's accept point, so it is also where the
+                    # resolve's and the drain's truncation counters are folded
+                    # into the render's totals.
+                    alloc = _read_tile_alloc(rs_alloc)
+                    if pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:
                             raise OutOfRenderMemory(
@@ -2613,12 +2719,13 @@ def raytrace_render_wavefront(
                                 "slots."
                             )
                         next_primary = _overflow_retry_primary(
-                            attempt_primary, int(rs_alloc[0].item()), pool
+                            attempt_primary, alloc[ALLOC_NEXT], pool
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
                         continue
+                    _record_tile_truncations(alloc, pool)
 
                     wf_composite_accum_sparse(
                         int(time_start),

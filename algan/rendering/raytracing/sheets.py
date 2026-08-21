@@ -75,9 +75,17 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
 )
+from algan.rendering.raytracing.truncation import record_truncation
 
 #: Band rules this module implements. "facing" is the no-depth-split fallback.
 BAND_RULES = ("facing", "prim")
+
+#: Largest conflict rank a sheet key can carry: the rank occupies the four low
+#: bits of ``cid`` (``band_id * 16 + rank``), so one pixel resolves at most 16
+#: overlapping layers of a single surface. It is a fixed ceiling that degrades
+#: the image rather than raising, so ``compact_sheets`` counts what it clamps
+#: (:mod:`algan.rendering.raytracing.truncation`).
+SHEET_RANK_LIMIT = 15
 
 #: Shading-class quantization (``shade_split``): a flat face's unit normal is
 #: rounded to this many bins per component (~0.9 degrees). Mis-binning can only
@@ -809,7 +817,24 @@ def compact_sheets(
         )
         del lane, prior
     del bits_pre, band_first
-    rank.clamp_(max=15)
+    # The rank rides in four bits of the sheet key, so a pixel resolves at most
+    # SHEET_RANK_LIMIT + 1 overlapping layers of ONE surface. Past that the
+    # clamp fuses the surplus into the last sub-band, where they attenuate once
+    # between them instead of once each -- the region renders too light, which
+    # is exactly the defect the conflict rank exists to prevent. Instrumented
+    # rather than raised (RENDERER_WORK_QUEUE.md item 1): the amax is a scalar
+    # reduction over a tensor the ``unique`` two statements down already
+    # synchronises on, and the [n] comparison that counts the fragments is only
+    # materialised in the case that is about to be reported.
+    if n:
+        deepest = int(rank.amax())
+        if deepest > SHEET_RANK_LIMIT:
+            record_truncation(
+                "sheet_layers",
+                int((rank > SHEET_RANK_LIMIT).sum()),
+                cap=SHEET_RANK_LIMIT + 1,
+            )
+    rank.clamp_(max=SHEET_RANK_LIMIT)
     cid = band_id * 16 + rank
     del rank
     uniq_cid, band_id = torch.unique(cid, sorted=True, return_inverse=True)
