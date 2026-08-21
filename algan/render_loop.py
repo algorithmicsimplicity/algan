@@ -33,7 +33,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
 from algan.environment import env_flag
-from algan.errors import _user_stacklevel
+from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
 from algan.logging.logger import PERF, get_logger, resolve_progress_style
 from algan.rendering.memory_model import (
     AffineFrameCost,
@@ -1850,6 +1850,61 @@ class RenderLoopMixin:
             for actor in self.actors
         )
 
+    def _warn_vertex_baked_lighting(self):
+        """Warn about spawned Mobs whose shading can only be baked into vertex
+        colours while this Scene's lighting rig asks for more than that bake
+        delivers (extended lights, shadows, an environment map).
+
+        ``set_material`` makes the same check against the lights that exist when
+        it is called; this one is what catches the ordinary authoring order,
+        where the material is chosen before the lights are spawned or before
+        ``shadows`` is turned on. Cheap: the rig is resolved first, so the
+        ordinary scene never walks its actors at all, and the walk itself reads
+        one attribute before it evaluates a lifespan (which is not free -- see
+        ``get_batch_of_primitives``). No primitives are built.
+        """
+        from algan.rendering.shaders.materials import (
+            _PER_FRAGMENT_ADVICE,
+            _lighting_beyond_vertex_bake,
+            _shades_per_fragment,
+        )
+
+        # A diagnostic must not be able to abort a render, and the render-loop
+        # tests drive this mixin with stub Scenes that carry only the state the
+        # loop itself reads -- so every attribute is optional here.
+        features = _lighting_beyond_vertex_bake(
+            getattr(self, "light_sources", None) or (),
+            environment_map=getattr(self, "environment_map", None),
+        )
+        if not features:
+            return
+        baked = [
+            actor
+            for actor in getattr(self, "actors", None) or ()
+            if hasattr(actor, "get_render_primitives")
+            and not _shades_per_fragment(getattr(actor, "shader", None))
+            and actor.is_spawned()
+        ]
+        if not baked:
+            return
+        # Name what the author chose -- the material -- falling back to the
+        # shader for a Mob shaded through set_shader directly.
+        kinds = sorted(
+            {
+                type(actor.material).__name__
+                if getattr(actor, "material", None) is not None
+                else getattr(actor.shader, "__name__", "a custom shader")
+                for actor in baked
+            }
+        )
+        warnings.warn(
+            f"{len(baked)} spawned Mob(s) use shading Algan can only bake into "
+            f"vertex colours ({', '.join(kinds)}), so {'; '.join(features)}. "
+            f"{_PER_FRAGMENT_ADVICE}",
+            UnsupportedFeatureWarning,
+            stacklevel=_user_stacklevel(),
+        )
+
     def _never_spawned_root_mobs(self):
         """Root actors whose whole subtree never spawned but which own geometry.
 
@@ -2359,6 +2414,7 @@ class RenderLoopMixin:
             self.background_frame = background_color
 
         transparent_background = self.background_is_transparent()
+        self._warn_vertex_baked_lighting()
 
         for light in self.light_sources:
             light.is_primitive = True

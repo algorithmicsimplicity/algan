@@ -438,6 +438,85 @@ def test_texture_and_unsupported_warnings():
 
 
 # ---------------------------------------------------------------------------
+# Warnings for lighting a vertex bake cannot answer
+# ---------------------------------------------------------------------------
+
+
+def _caught(fn):
+    """Run ``fn`` and return every warning message it emitted, as one string."""
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        fn()
+    return " ".join(str(w.message) for w in rec)
+
+
+def test_set_material_warns_when_extended_lights_are_already_spawned():
+    from algan import AmbientLight, DirectionalLight, Scene, Sphere
+
+    with Scene():
+        DirectionalLight(color=WHITE).spawn(animate=False)
+        AmbientLight(color=WHITE, intensity=0.3).spawn(animate=False)
+        text = _caught(lambda: Sphere().set_material(MeshToonMaterial()))
+    assert "MeshToonMaterial" in text
+    assert "DirectionalLight" in text
+    assert "AmbientLight" in text
+    print("ok: a vertex-baked material warns about the extended lights it drops")
+
+
+def test_set_material_warns_when_shadows_are_on():
+    from algan import SETTINGS, Scene, Sphere
+
+    with Scene():
+        SETTINGS.raytracing.set(shadows=True)
+        try:
+            text = _caught(lambda: Sphere().set_material(MeshMatcapMaterial()))
+        finally:
+            SETTINGS.raytracing.set(shadows=False)
+    assert "MeshMatcapMaterial" in text
+    assert "shadow" in text
+    print("ok: a vertex-baked material warns that it receives no shadows")
+
+
+def test_set_material_stays_quiet_for_the_default_rig_and_core_materials():
+    from algan import DirectionalLight, Scene, Sphere
+
+    with Scene():
+        # A vertex-baked material under the default rig (one plain PointLight,
+        # shadows off) loses nothing, so it must not warn.
+        assert _caught(lambda: Sphere().set_material(MeshToonMaterial())) == ""
+        DirectionalLight(color=WHITE).spawn(animate=False)
+        # Core materials and the deliberately unlit one shade in-kernel.
+        assert _caught(lambda: Sphere().set_material(MeshStandardMaterial())) == ""
+        assert _caught(lambda: Sphere().set_material(MeshBasicMaterial())) == ""
+        assert _caught(lambda: Sphere()) == ""
+    print("ok: no lighting warning for a rig that loses nothing")
+
+
+def test_render_rechecks_materials_against_lights_spawned_afterwards():
+    from algan import DirectionalLight, Scene, Sphere
+
+    with Scene() as scene:
+        # The authoring order set_material cannot see: material first, rig
+        # after. The render's own pass is what catches it.
+        baked = Sphere().set_material(MeshDepthMaterial()).spawn(animate=False)
+        Sphere().set_material(MeshStandardMaterial()).spawn(animate=False)
+        Sphere().set_material(MeshNormalMaterial())  # never spawned
+        assert _caught(scene._warn_vertex_baked_lighting) == ""
+
+        DirectionalLight(color=WHITE).spawn(animate=False)
+        text = _caught(scene._warn_vertex_baked_lighting)
+    assert "DirectionalLight" in text
+    # Only the one spawned mob that bakes is named: not the core material
+    # beside it, and not the mob that never reaches a frame. (The advice at the
+    # end of the message names the core materials, so the count and the
+    # parenthesised list are what carry this.)
+    assert "1 spawned Mob(s)" in text
+    assert "(MeshDepthMaterial)" in text
+    assert baked.shader is ms.depth_shader
+    print("ok: the render re-checks vertex-baked materials against the live rig")
+
+
+# ---------------------------------------------------------------------------
 # Backward compatibility
 # ---------------------------------------------------------------------------
 

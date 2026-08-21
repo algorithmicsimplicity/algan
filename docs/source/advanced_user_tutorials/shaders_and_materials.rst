@@ -146,6 +146,18 @@ deterministic renderer evaluates in-kernel at every ray hit. It is on by default
 (``SETTINGS.raytracing.experimental.fragment_shading``), and
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader` forces it on for any scene the Mob appears in.
 
+Four materials have no in-kernel implementation at all and are therefore always
+baked into vertex colours before the frame renders:
+:class:`~algan.rendering.shaders.materials.MeshToonMaterial`,
+:class:`~algan.rendering.shaders.materials.MeshNormalMaterial`,
+:class:`~algan.rendering.shaders.materials.MeshMatcapMaterial` and
+:class:`~algan.rendering.shaders.materials.MeshDepthMaterial`. That bake sees
+only a plain :class:`~.PointLight` and never receives a shadow, so applying one
+in a scene that also has a directional, ambient, hemisphere, spot or rect-area
+light, an environment map, or ``shadows=True``, warns and names what is being
+dropped -- at the ``set_material`` call, and again once per render for the
+lights spawned after it. See :doc:`renderer_limitations`.
+
 For full physically-based light transport -- true global illumination rather than
 direct lighting plus deterministic bounces -- switch to the Monte Carlo path tracer
 by raising the sample count:

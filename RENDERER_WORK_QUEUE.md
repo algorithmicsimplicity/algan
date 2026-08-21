@@ -41,7 +41,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open.                         |
 | 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | Designed, not built. Any nested glass renders with the wrong relative index.                                                                  |
 | 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first.                                                                   |
-| 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows without a word.                                                      |
+| 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows. **No longer without a word** — they warn now; the in-kernel ports are still open. |
 | 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing.                                                                                          |
 | 9 | [The shadowed resolve runs the resolve kernel twice](#9-the-shadowed-resolve-runs-the-resolve-kernel-twice) | Performance | Not in the optimization plan, and never separated out from "shadows are expensive". Measure before building.                                  |
 | 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted.                                                                                                |
@@ -240,7 +240,25 @@ currently assert (1) as intent and the code offers no path to (3).
 
 ## 7. Four materials silently ignore most of the lighting rig
 
-**Status: confirmed by reading; no test covers it.**
+**Status: the silence is fixed. The warning ships;
+`tests/unit_tests/test_materials.py` covers it. The in-kernel ports are not
+done and are still the real fix — see the bottom of this item.**
+
+`set_material` now warns when a material Algan can only bake into vertex
+colours meets a rig that asks for more than the bake delivers (any light beyond
+a plain `PointLight`, `shadows=True`, an environment map), naming the material
+and each thing being dropped. The check keys on the shader rather than on a
+list of four class names, so a custom per-vertex `set_shader` — which loses
+exactly the same things — is covered by construction. Because the usual
+authoring order chooses the material *before* the lights are spawned, every
+render re-runs the same check over the whole scene from `_get_frames_impl`
+(one attribute read per actor, so both `save_video` and `save_frame` pay it).
+It is a warning and not `report_unsupported_features`: that policy defaults to
+raising, and these materials render fine — what they drop is part of the
+lighting rig, not the render. `docs/.../renderer_limitations.rst` and the
+shaders tutorial say the same thing.
+
+The original finding, kept because the in-kernel ports are still open:
 
 `_build_core_shader_ids` (`settings.py:2014`) registers exactly seven shaders.
 `MeshToonMaterial`, `MeshNormalMaterial`, `MeshMatcapMaterial` and
@@ -254,12 +272,10 @@ currently assert (1) as intent and the code offers no path to (3).
   (`sheet_resolve_taichi.py:387`) → they never receive shadows.
 
 So `Sphere().set_material(MeshToonMaterial())` under a `DirectionalLight` plus an
-`AmbientLight` renders unlit-flat, with shadows on, and says nothing.
-
-Cheapest honest fix: **warn at `set_material` time** when a non-core material is
-combined with an extended light or with `shadows=True`, in the same style as the
-existing "textures are not sampled" warning. The real fix is in-kernel ports of
-the four shaders, which is a bigger job and probably only worth it for toon.
+`AmbientLight` renders unlit-flat, with shadows on — which it now says, and
+which is all the warning buys. **The real fix is in-kernel ports of the four
+shaders**, a bigger job and probably only worth it for toon. Nothing about the
+rendered frame has changed.
 
 Note the second-order effect while you are there: because they shade at
 vertices, their output resolution is the mesh's, so a toon band on a

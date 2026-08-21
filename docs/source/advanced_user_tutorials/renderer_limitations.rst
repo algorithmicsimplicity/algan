@@ -369,6 +369,15 @@ baked at the mesh's vertices before rendering:
   :class:`~.MeshToonMaterial` never samples a gradient map; its band count comes
   from the Algan-specific ``bands`` argument.
 
+None of that is silent. Combining one of the four with a lighting rig that asks
+for more than the bake delivers -- any light beyond a plain :class:`~.PointLight`,
+``shadows=True``, or an environment map -- emits a warning naming the material
+and what is being dropped. It fires where
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material` is
+called, against the lights that exist by then, and again once per render over
+the whole scene, which is what catches the usual authoring order of choosing the
+material before spawning the lights.
+
 Three.js material properties that are accepted and ignored
 -----------------------------------------------------------
 
