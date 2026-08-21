@@ -286,6 +286,21 @@ class BezierCircuitCubic(Mob):
         Whether the circuit is invisible: fill and border are forced to zero
         opacity. Defaults to ``False``. Used for shapes that exist only to
         position or morph into something else.
+    z_index
+        Which of two *exactly coplanar* circuits draws in front: the higher
+        ``z_index`` wins, and ties keep whatever order the renderer would have
+        picked. Defaults to ``0``. Coplanar 2-D geometry is otherwise ordered by
+        an internal index that follows neither creation order nor hierarchy, so
+        this is how a shape is put reliably on top of another at the same depth
+        -- an arrow over a grid, a label over a panel. Setting it propagates to
+        the whole sub-hierarchy (see :attr:`~.BezierCircuitCubic.z_index`).
+        It is *not* a general depth override: it biases the circuit toward the
+        camera by
+        ``z_index`` times the renderer's coplanarity tolerance (1e-4 world
+        units), which is far too small to reorder anything genuinely in front of
+        or behind it. Values are small integers; a few hundred would start to
+        shift the shape visibly. Matches Manim's attribute of the same name,
+        which :class:`~algan.mobs.manim_mob.ManimMob` carries across on import.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         which is the fill colour.
@@ -317,6 +332,48 @@ class BezierCircuitCubic(Mob):
 
     _morph_family = "bezier"
 
+    # Plain scalar, deliberately not timeline-backed: it selects between
+    # coplanar draw orders rather than describing a pose, and animating it
+    # would only ever step between discrete orderings. The class default keeps
+    # the property readable on a part-built Mob (``ManimCompatMob.__getattr__``
+    # would otherwise forward the miss to the backing Manim object).
+    _z_index = 0.0
+
+    @property
+    def z_index(self):
+        """Which of two exactly coplanar circuits draws in front (higher wins).
+
+        Assigning propagates to every circuit below this one in the hierarchy,
+        matching Manim's ``set_z_index(..., family=True)``: a composite shape --
+        an arrow's shaft and its tip, a labelled axis -- stacks as one thing
+        rather than leaving its parts on opposite sides of whatever they cross.
+
+        Animation
+        ---------
+        Takes effect immediately and is not animated: it selects between
+        discrete orderings, so there is nothing to interpolate and no context
+        (``Seq``, ``Sync``, ``Off``) changes how it applies. The write reaches
+        every circuit in this Mob's sub-hierarchy; plain Mobs in between, such
+        as a circuit's texture points, have no draw order and are skipped. It
+        may be set before or after :meth:`~.Animatable.spawn` -- the renderer
+        reads it afresh for every frame batch.
+        """
+        return self._z_index
+
+    @z_index.setter
+    def z_index(self, value):
+        value = float(value)
+        self._z_index = value
+        # ``children`` is absent while the base Mob is still initializing, and
+        # a circuit's texture-point children are plain Mobs with no draw order
+        # of their own -- both are skipped rather than special-cased.
+        pending = list(getattr(self, "children", None) or ())
+        while pending:
+            mob = pending.pop()
+            if isinstance(mob, BezierCircuitCubic):
+                mob._z_index = value
+            pending.extend(getattr(mob, "children", None) or ())
+
     def __init__(
         self,
         control_points,
@@ -329,9 +386,11 @@ class BezierCircuitCubic(Mob):
         texture_grid_width=1,
         texture_grid_height=None,
         empty=False,
+        z_index=0,
         **kwargs,
     ):
         self.num_bezier_parameters = 4
+        self.z_index = z_index
         control_points = control_points.view(-1, control_points.shape[-1])
 
         kwargs2 = dict(kwargs.items())
@@ -1074,6 +1133,13 @@ class BezierCircuitCubic(Mob):
             roughness=roughness,
             refractive_index=refractive_index,
             transmission=transmission,
+            z_index=(
+                None
+                if self.z_index == 0.0
+                else torch.full(
+                    (1, bw.shape[-2], 1), self.z_index, dtype=bw.dtype, device=bw.device
+                )
+            ),
         )
         prim.num_texture_points = self.num_texture_points
         return prim
@@ -1429,6 +1495,16 @@ def build_render_primitives_batched(actors, scene):
         return (
             torch.tensor([float(v) for v in vals]).view(1, M, 1).int().expand(T, -1, -1)
         )
+
+    # ``_is_batchable_bezier`` guarantees one attribute row -- and therefore one
+    # circuit -- per actor here, so the lane is simply the actors' scalars.
+    zs = [float(a.z_index) for a in actors]
+    mega._has_z_index = any(z != 0.0 for z in zs)
+    mega.z_index = (
+        torch.tensor(zs, dtype=bw.dtype).view(1, M, 1).to(device)
+        if mega._has_z_index
+        else torch.zeros((1, M, 1), dtype=bw.dtype, device=device)
+    )
 
     mega.mob_center = loc.to(device)
     mega.grid_width = per_actor_int([a.grid_width for a in actors]).to(device)

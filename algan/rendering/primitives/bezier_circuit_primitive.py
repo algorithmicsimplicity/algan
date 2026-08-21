@@ -47,6 +47,18 @@ def batch_arange(lengths, memory=None):
     return inds
 
 
+def _circuit_z_index(primitive):
+    """A member's per-circuit ``z_index`` lane, synthesized if it has none.
+
+    Shape ``[1, C, 1]``: one row per circuit, no time axis, because the lane
+    selects between coplanar draw orders rather than describing a pose.
+    """
+    lane = getattr(primitive, "z_index", None)
+    if lane is None:
+        return torch.zeros_like(primitive.border_width[:1])
+    return lane
+
+
 class BezierCircuitPrimitive(RenderPrimitive):
     def __init__(
         self,
@@ -68,6 +80,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
         num_texture_points=0,
         filled=True,
         num_pixels_per_sample=0.5,
+        z_index=None,
     ):
         # Legacy name retained for compatibility.  The ray tracer uses this as
         # the maximum screen-space curve-to-chord error in pixels.
@@ -106,6 +119,16 @@ class BezierCircuitPrimitive(RenderPrimitive):
             ).to(device)
             self.border_width = torch.cat(
                 [triangle.border_width for triangle in triangle_collection], -2
+            ).to(device)
+            # Per-circuit coplanar draw order. Time-invariant by construction,
+            # so members concatenate on the circuit axis with no time
+            # unification. ``_has_z_index`` is a plain bool so the renderer can
+            # skip the bias without a device->host sync per batch.
+            self._has_z_index = any(
+                getattr(t, "_has_z_index", False) for t in triangle_collection
+            )
+            self.z_index = torch.cat(
+                [_circuit_z_index(t) for t in triangle_collection], -2
             ).to(device)
             border_colors = [
                 triangle.border_color.unsqueeze(-2)
@@ -159,6 +182,13 @@ class BezierCircuitPrimitive(RenderPrimitive):
             ignored_dims=[-1],
         )
         self.border_width = border_width
+        # ``None`` means "every circuit at 0", which is the overwhelmingly
+        # common case; keeping it a Python-level distinction is what lets the
+        # renderer skip the bias without reading a tensor back off the device.
+        self._has_z_index = z_index is not None
+        self.z_index = (
+            z_index if z_index is not None else torch.zeros_like(border_width[:1])
+        )
         self.border_color = border_color.clone()
         self.glow = glow
         self.border_color[..., -2:-1] += border_glow

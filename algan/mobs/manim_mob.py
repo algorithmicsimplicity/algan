@@ -135,6 +135,14 @@ class ManimMob(BezierCircuitCubic):
             torch.as_tensor(fill_opacity).max().item() > 1e-5
         )
 
+        # Manim's own coplanar draw-order key, which its renderer applies as a
+        # stable sort over the flattened family. Algan spends it as a depth bias
+        # instead (see BezierCircuitCubic.z_index), so a script that stacks
+        # Manim Mobjects with ``z_index`` keeps the stacking it asked for.
+        # An explicit keyword wins, so ``ManimMob(m, z_index=...)`` can override
+        # what the source object carries.
+        kwargs.setdefault("z_index", float(getattr(manim_mob, "z_index", 0.0) or 0.0))
+
         super().__init__(
             control_points * manim_scale_factor,
             color=convert_manim_color(manim_mob.fill_color, opacity=fill_opacity),

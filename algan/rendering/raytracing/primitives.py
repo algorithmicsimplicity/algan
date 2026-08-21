@@ -33,7 +33,10 @@ from algan.rendering.raytracing.logical_pn_taichi import (
     pn_edge_chord_error,
     pn_patch_flatness_error,
 )
-from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    DEPTH_TIE_EPSILON,
+    MIN_ALPHA,
+)
 from algan.rendering.raytracing.settings import (
     _MAT_DEFAULTS,
     _MAT_SLOTS,
@@ -2488,6 +2491,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             device
         )
 
+        corners = self._apply_z_index_bias(corners, cam_o, sp)
+
         # Ratio of the internal render resolution to the output resolution: the
         # supersampling factor actually in force for this batch, which is 1 on
         # the analytic-AA route regardless of the requested anti_alias_level.
@@ -2513,6 +2518,43 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # Ensure released geometry is actually freed before rendering.
         empty_cache(force_gc=False)
         return self
+
+    def _apply_z_index_bias(self, corners, cam_o, sp):
+        """Nudge each circuit toward the camera by ``z_index`` tie-bins.
+
+        Exactly coplanar circuits produce the same hit distance, so the resolve
+        ranks them by an internal index that follows neither creation order nor
+        hierarchy (see :attr:`~.BezierCircuitCubic.z_index`). Moving a circuit
+        ``z_index * DEPTH_TIE_EPSILON`` along the view axis puts it that many
+        depth bins nearer, which is the smallest displacement the ordering can
+        see and far below anything the frame can show: at the default camera
+        distance one bin is a relative depth change of ~1.4e-5.
+
+        The shift is applied to the control points *and* the plane origins
+        together, so the polylines, the plane metadata, the frame AABBs and the
+        BVH are all built from the same displaced geometry -- the circuit's own
+        ``(u, v)`` parametrization is unchanged, since the plane only slides
+        along its view ray.
+
+        Displacing along the *view axis* rather than the plane normal keeps the
+        shape where it is on screen (a normal-space offset would slide a tilted
+        circuit sideways). The cost is that a circuit seen nearly edge-on gets a
+        proportionally smaller bias -- ``|dt| = bias * |f.n| / |rd.n|`` -- but
+        such a circuit covers almost no pixels for the ordering to matter in.
+        """
+        if not getattr(self, "_has_z_index", False):
+            return corners
+        # Unit view axis per frame: the screen centre as seen from the eye.
+        forward = F.normalize((sp - cam_o).float(), p=2, dim=-1)  # [T, 3]
+        bias = self.z_index.to(corners.device).float() * DEPTH_TIE_EPSILON  # [1, C, 1]
+        num_segments = self.num_segments_per_object.to(corners.device).view(-1).long()
+        circuit_of_segment = torch.repeat_interleave(
+            torch.arange(num_segments.shape[0], device=corners.device), num_segments
+        )
+        # [T, 1, 3] * [1, S, 1] -> [T, S, 3], one displacement per segment.
+        offset = forward.unsqueeze(-2) * bias[..., circuit_of_segment, :]
+        self.mob_center = self.mob_center - forward.unsqueeze(-2) * bias
+        return corners - offset.unsqueeze(-2)
 
     def _compute_samples_per_segment(
         self, corners, cam_o, sp, sb, screen_h, analytic_raster=False
