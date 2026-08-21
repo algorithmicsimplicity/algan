@@ -1448,12 +1448,72 @@ faster overall.
 
 
 ================================================================================
-20. ROUGHNESS-DRIVEN GLOSSY REFLECTIONS — 2026-07-29 (DISABLED)
+20. ROUGHNESS-DRIVEN GLOSSY REFLECTIONS — 2026-07-29 (OPT-IN)
 ================================================================================
 
-Roughness-driven gloss is currently disabled by setting _GLOSSY_MIN_ROUGHNESS = 100
-because it caused extreme speckling across frames, in the future it may be revisited
-and enabled once it can be made stable across time.
+Roughness-driven gloss is OFF by default (`GLOSSY_REFLECTION`), for the reason
+first recorded here: four taps of a wide lobe speckle, and the speckle crawls
+as geometry slides under a screen-fixed Bayer pattern. §20.7 said so in
+advance ("four taps is four taps") and the shipped default now agrees with it.
+
+**CORRECTED 2026-08-20. It was disabled by `_GLOSSY_MIN_ROUGHNESS = 100`, and
+that mechanism was itself the bug.** A roughness can never exceed 100, so the
+gate was unsatisfiable and no reflection was ever perturbed — while
+`GLOSSY_REFLECTION` still defaulted True and
+`SETTINGS.raytracing.glossy_reflection` still reported the feature on. What
+that left was not "gloss off" but **roughness discarded for reflections
+entirely**: every reflective surface, at every roughness, spent its whole
+Fresnel energy on one mirror direction. §20.1's defect — "a rough metal and a
+mirror produce byte-identical reflections" — was therefore back, and shipped.
+
+The visible cost was NOT a missing blur, it was an alias. A reflection is
+usually a heavily MINIFIED image (the fast suite's Icosahedron reflects a
+5-unit-wide row of shapes into ~40 px, ~12x), and a sharp minified image
+sampled by four continuations is hard-edged noise. On that scene it drew two
+bright wedges and a row of blocky dashes across the solid's upper faces,
+resolution-independent (identical structure at 704x396 and 1280x720) and
+identical on the classic wavefront route, which is what ruled out the sheet
+resolve, the raster front-end and the BVH in turn.
+
+The fix is in two parts, and only the first is new behaviour:
+
+* `_GLOSSY_MIN_ROUGHNESS` is back to `1e-4`, so `GLOSSY_REFLECTION` means what
+  it says, and `GLOSSY_REFLECTION` defaults False, so the speckle stays off.
+* With the lobe off, a continuation carries only the share of the lobe one ray
+  can stand for: `wavefront_kernels_taichi._mirror_share(roughness)`, the GGX
+  CDF mass inside a 1.29° cone (`alpha^2 / (alpha^2 + roughness^4)`, half at
+  roughness 0.15). The remainder is not lost — the caller already shades
+  `alpha * (1 - R - trans_share)` locally, so it returns to the material's own
+  GGX highlight and ambient/environment term. Applied on both routes: in the
+  sheet resolve under `ti.static(glossy == 0)`, unconditionally in the classic
+  wavefront (which has no lobe to spread over at all, §20.7).
+
+Measured on the arms this document already names, at PREVIEW, CPU, lossless:
+
+    arm                                   fast-suite Icosahedron
+    mirror-at-any-roughness (shipped)     bright hard-edged wedges + dashes
+    lobe on, Bayer rotation (§20.5)       correct blur, ordered dither
+                                          (high-frequency energy 3.16 -> 5.61)
+    lobe on, plain fan (§20.5's arm)      smooth here (3.33) but four discrete
+                                          ghost copies on a bright reflected
+                                          source — verified on a rough metal
+                                          wall reflecting a small lamp
+    lobe on, Bayer, 8 taps                dither halved, not removed (5.00)
+    azimuth-only rotation, clamped tail   ghosts gone, dither remains (4.20)
+    _mirror_share (shipped)               artifact gone, no dither, no ghosts
+
+Roughness 0 is byte-identical to the pre-change build (`x/x == 1` exactly):
+verified over a 20-frame mirror render, max|d| 0. Only materials that authored
+a non-zero roughness AND a reflective lobe move, which is the population the
+defect was in.
+
+What is still open is §20.7's wall, unchanged: **four samples cannot integrate
+a wide lobe.** Both failure modes above are that wall seen from two sides, and
+the tail clamp and azimuth-only rotation tried here (measurements above) only
+trade one for the other. The way past it is a reconstruction filter over the
+interleaved taps — a reflection-only buffer resolved spatially — which is the
+piece to build before `GLOSSY_REFLECTION` can default on. `_mirror_share` is
+the stand-in until then, and is what that work would delete.
 
 ...........
 
@@ -1673,8 +1733,25 @@ build, and so is the whole repro sweep with `ALGAN_GLOSSY_REFLECTION=0`.
     existing already-sized mechanism, and is the honest knob; there is no way to
     make four samples of a wide lobe smooth, and this is the same wall §19.5
     describes for the content of any minified secondary image.
-  * **The classic wavefront primary path** gets none of this, like §17 before
-    it: the lobe lives in `raster_first_shade`.
+
+    **This is the paragraph that decided the 2026-08-20 default.** It was
+    written as a caveat and it is really the verdict: the lobe is opt-in until
+    something reconstructs across the taps.
+  * **The classic wavefront primary path** gets no LOBE, like §17 before it:
+    the lobe lives in the raster resolve. Since 2026-08-20 it does get
+    `_mirror_share`, unconditionally — a route that can never blur must never
+    draw a full-strength mirror for a rough material either, or a batch the
+    raster front-end rejects would render the defect this section describes.
+  * **Deeper bounces are unfaded as well as unblurred.** `_mirror_share` is
+    applied where the primary hit spawns its continuation, not inside
+    `_scatter_impl`, whose signature is the user-facing scatter contract. A
+    mirror reflecting a rough metal therefore still shows that metal's own
+    reflection at full strength — the same scope §20.3 gave the lobe, and the
+    same population: second-order and rarely on screen. The one PRIMARY hit
+    that also misses the fade for that reason is the legacy sorted-material
+    wavefront (`wf_shade_event`, which reaches the material only through
+    `_run_frag_scatter`); `use_sorted` calls it unsupported and never selects
+    it unless forced, so it keeps the pre-2026-08-20 reflections.
 
 
 ================================================================================

@@ -24,8 +24,9 @@ Reflections
 ===========
 
 ``metalness`` is how metallic a surface is: ``0`` is a dielectric (plastic, stone,
-painted wood), ``1`` is bare metal. ``roughness`` is how blurred the reflection is:
-``0`` is a perfect mirror, ``1`` is fully diffuse.
+painted wood), ``1`` is bare metal. ``roughness`` is how polished it is: ``0`` is a
+perfect mirror, ``1`` is fully diffuse. Keep it low where you want the scene to
+appear in the surface -- see `Glossy Reflections`_ for what a high one does.
 
 .. algan:: ReflectionsMetalFloor
 
@@ -162,22 +163,40 @@ Lowering it is a good way to speed up a draft render of a scene full of glass.
 Glossy Reflections
 ==================
 
-A non-zero ``roughness`` on a metal blurs its reflections. This is on by default
-(``SETTINGS.raytracing.glossy_reflection``), and it is what makes brushed metal look
-different from chrome:
+``roughness`` decides how much of a surface's specular energy is spent on a
+*traced* reflection at all, and that is what makes brushed metal look different
+from chrome:
 
 .. code-block:: python
 
-    chrome  = MeshStandardMaterial(metalness=1.0, roughness=0.0)   # sharp
-    brushed = MeshStandardMaterial(metalness=1.0, roughness=0.35)  # blurred
+    chrome  = MeshStandardMaterial(metalness=1.0, roughness=0.0)   # mirror
+    brushed = MeshStandardMaterial(metalness=1.0, roughness=0.35)  # no mirror
+
+A mirror (``roughness=0``) reflects the scene exactly. As roughness rises the
+reflected image fades out and the surface's own shading -- its broad specular
+highlight and the ambient/environment term -- takes over: half the reflection is
+still traced at ``roughness=0.15``, almost none of it by ``0.35``. So a rough
+metal reads as a rough metal, but it does not show you a picture of the room.
 
 .. note::
 
-    Under the default single-sample renderer, glossy reflection is an approximation
-    -- roughness blurs the reflection but the bounce direction itself is
-    deterministic. For fully physical rough reflections, raise
-    ``SETTINGS.raytracing.samples_per_pixel`` above 1 to switch to the Monte Carlo
-    path tracer.
+    The reason it fades rather than blurring is a sample budget. The default
+    single-sample renderer spends at most four traced rays per reflective pixel,
+    and four rays cannot integrate a wide lobe: they either dither (and the
+    dither crawls as the object moves) or land as four ghost copies of the
+    reflected image. Drawing the reflection sharp instead is worse still --
+    a reflection is usually a heavily minified image, so a sharp one aliases
+    into hard bright patches across the surface.
+
+    ``SETTINGS.raytracing.glossy_reflection = True`` opts into the real GGX
+    lobe, which does blur the reflection with those four rays. It is off by
+    default because of the dither above; it is worth turning on for a still, or
+    where the reflected content is low-contrast.
+
+    For fully physical rough reflections, raise
+    ``SETTINGS.raytracing.samples_per_pixel`` above 1 to switch to the Monte
+    Carlo path tracer, which jitters every bounce and has the samples to
+    resolve it.
 
     That switch is not free on this page's subject matter: the path tracer supports
     neither refraction nor environment maps, so a glass scene or an
