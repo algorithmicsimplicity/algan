@@ -59,7 +59,6 @@ primitive index breaking ties within the type.
 import taichi as ti
 
 from algan.environment import env_flag, env_int
-from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
 from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_ACCEL_HEADER_SIZE,
     BEZIER_GRID_INV_U,
@@ -75,9 +74,13 @@ from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_SPATIAL_OFFSET_BASE,
 )
 from algan.rendering.raytracing.shading_taichi import (
-    MAX_SHADOW_LIGHTS, _run_frag_pipeline)
-
-
+    # Re-exported: wavefront_kernels_taichi imports MAX_SHADOW_LIGHTS from
+    # here rather than from shading_taichi, so this hop is load-bearing even
+    # though nothing in this module reads the name.
+    MAX_SHADOW_LIGHTS,  # noqa: F401
+    _run_frag_pipeline,
+)
+from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
 from algan.rendering.taichi_runtime import init_taichi
 
 init_taichi()
@@ -676,7 +679,8 @@ def _test_children_refit(row, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
     child or one whose whole subtree is invisible at this frame -- instead of
     a frame-interval test; the bounds are already this frame's exact boxes,
     so no temporal decode remains. The slab test itself is float-for-float
-    the classic one."""
+    the classic one.
+    """
     lox = blocks[row, 0]
     loy = blocks[row, 1]
     loz = blocks[row, 2]
@@ -720,7 +724,8 @@ def _refit_row0(f, num_blocks, blocks: ti.template()):
     stores ``Tb`` frames of ``num_blocks`` rows flattened together (``Tb`` is
     1 for static geometry), mirroring the ``f % shape[0]`` convention of the
     geometry arrays. ``num_blocks`` rides in the walk's ``first_leaf``
-    argument slot."""
+    argument slot.
+    """
     return (f % (blocks.shape[0] // num_blocks)) * num_blocks
 
 
@@ -730,7 +735,8 @@ def _refit_link(row, c, blocks: ti.template()):
     (see refit_bvh.py): ``-1`` invalid, ``< 0`` a leaf child (bits 0-29 the
     primitive index, bit 30 its per-frame full-opacity flag), ``>= 0`` the
     child's own block index. Reads the lanes the caller's group test just
-    fetched, so this is a same-cache-line load."""
+    fetched, so this is a same-cache-line load.
+    """
     ts_a = blocks[row, 6]
     ts_b = blocks[row, 7]
     w = 0
@@ -753,7 +759,8 @@ def _group_test(refit: ti.template(), row0, blk, f, ro, inv_rd, t_lo, t_hi,
                 blocks: ti.template()):
     """Sibling-group test dispatch: the classic frame-gated implicit-heap
     block (``refit == 0``) or the per-frame link-gated refit block. ``row0``
-    is dead in classic mode."""
+    is dead in classic mode.
+    """
     mask = 0
     near = ti.Vector([1e30] * BVH_ARITY)
     if ti.static(refit != 0):
@@ -1547,7 +1554,8 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
     supplies the view DIRECTION, whose sub-pixel error is ~0.05 degrees.
 
     ``pids_present`` is the compile-time bitmask of the material pipeline ids
-    the batch's TRIANGLES carry (see ``shading_taichi._run_frag_pipeline``)."""
+    the batch's TRIANGLES carry (see ``shading_taichi._run_frag_pipeline``).
+    """
     tp = f % tri_pos.shape[0]
     v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
                       tri_pos[tp, prim, 2])
@@ -1818,7 +1826,8 @@ def _nearest_surface(refit: ti.template(),
                      edges_2d: ti.template(), edge_accel: ti.template()):
     """All-geometry-present wrapper of :func:`_nearest_surface_g` for callers
     (Monte-Carlo path tracers + gbuffer) that don't specialize on which geometry
-    types are present. Byte-identical to the pre-gating ``_nearest_surface``."""
+    types are present. Byte-identical to the pre-gating ``_nearest_surface``.
+    """
     return _nearest_surface_g(
         refit, 1, 1,
         ro, rd, inv_rd, f, ff, t_prev, layer_prev,
@@ -2538,7 +2547,8 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                            edge_accel: ti.template()):
     """The classic ordered closest-hit shadow march (the pre-any-hit body of
     :func:`_shadow_occluded`, byte-identical at ``anyhit`` 0/1; 2 adds the
-    deferred opaque any-hit early-out documented there)."""
+    deferred opaque any-hit early-out documented there).
+    """
     transmitted = 1.0
     t_prev = 0.0
     layer_prev = 1e30

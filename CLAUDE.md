@@ -76,7 +76,9 @@ Persistence: the container is ephemeral and nothing outside git survives it. Com
 
 ### Linting — read before running ruff
 - Ruff is configured with `fix = true`: a plain `ruff check` **rewrites files**. Use `ruff check --no-fix` unless you intend to apply fixes.
-- Never let ruff (or anything else) touch `*_taichi.py` files: the auto-inserted `from __future__ import annotations` breaks Taichi kernel compilation. Kernel files are exempted in the config and their filenames MUST end in `_taichi` to keep it that way.
+- **`*_taichi.py` files are linted but never formatted.** They must keep the `_taichi` suffix: the config keys three things off it. `I002` is off there because the `from __future__ import annotations` it would insert turns a kernel's runtime-evaluated annotations (`ti.f32`, `ti.types.ndarray()`) into strings and breaks compilation. `SIM` is off because its advice is unsound in a kernel — `SIM109`'s `x in (a, b)` is a `TaichiSyntaxError`, and `SIM102` collapsing `if ti.static(gate): if cond:` into one `and` turns a compile-time gate into a runtime one. And `[tool.ruff.format]` excludes them outright, so `ruff format` never rewraps a kernel body.
+- Ruff's `F401` fix is the one to watch in kernel modules: they re-export names to each other (`wavefront_kernels_taichi` gets `MAX_SHADOW_LIGHTS` via `raytrace_kernels_taichi`), and dropping an "unused" import breaks the import at load time. Mark a deliberate hop `# noqa: F401` with a comment saying who consumes it.
+- CI runs `ruff format --check` only; the `ruff check` job in `.github/workflows/code_quality.yaml` is commented out.
 
 ## Public API
 

@@ -161,7 +161,6 @@ extend-exclude = [
   "buck-out",
   "media",
   "algan/external_libraries",
-  "**/*_taichi.py",
 ]
 fix = true
 
@@ -230,8 +229,21 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 # Taichi kernels need runtime-evaluated annotations (ti.f32, ti.types.ndarray());
 # `from __future__ import annotations` would turn them into strings and break
 # kernel compilation.
+#
+# SIM is off here because its suggestions are unsound inside a kernel, which is
+# most of what these files are. Two were measured against Taichi 1.7.4:
+#   * SIM109 rewrites `x == a or x == b` to `x in (a, b)`, and `in` is a
+#     TaichiSyntaxError -- the kernel stops compiling.
+#   * SIM102 collapses `if ti.static(gate): if runtime_cond:` to a single
+#     `and`. That turns a compile-time gate into a runtime one, so the guarded
+#     body is compiled even for a batch whose geometry is absent -- exactly the
+#     gating the has_* templates exist to do.
+# (Neither has a *safe* fix, so `fix = true` would not apply them; the ignore is
+# to stop the advice being followed by hand.) Everything else applies: F401,
+# F841, I001, D and E are the point of linting these files at all.
 "**/*_taichi.py" = [
   "I002",
+  "SIM",
 ]
 
 # Same hazard, without the naming convention to key on: a benchmark may define
@@ -291,6 +303,12 @@ convention = "numpy"
 
 [tool.ruff.format]
 docstring-code-format = true
+# The linter reads the kernel files (see per-file-ignores above); the
+# formatter still does not. Reformatting a kernel body is a large rewrite of
+# code whose hand-wrapped layout is load-bearing, and `ruff format --check` is
+# the one ruff job CI gates on -- so keep the formatter's view of these files
+# exactly as it was when they were excluded outright.
+exclude = ["**/*_taichi.py"]
 
 [tool.uv.sources]
 algan = { workspace = true }

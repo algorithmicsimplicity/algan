@@ -64,7 +64,7 @@ Bump the package version in `pyproject.toml` before publishing when that file is
 
 Ruff is configured to apply fixes. Use `ruff check --no-fix` for inspection unless rewriting files is intentional.
 
-Never allow Ruff or another automatic formatter to insert `from __future__ import annotations` into Taichi kernel source files. Taichi kernel modules are named `*_taichi.py` and are excluded for this reason. New kernel modules must preserve that suffix.
+Never allow Ruff or another automatic formatter to insert `from __future__ import annotations` into Taichi kernel source files: it turns a kernel's runtime-evaluated annotations into strings and breaks compilation. Taichi kernel modules are named `*_taichi.py`, and new kernel modules must preserve that suffix -- the ruff config keys off it to disable `I002` and `SIM` there, and to keep the formatter off those files entirely. The rest of the lint rules do apply to them.
 
 ## Core ownership model: Scenes are independent containers
 

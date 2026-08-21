@@ -36,13 +36,13 @@ old design's hand-maintained walk/shadow-walk lockstep.
 import taichi as ti
 
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_FULL_DUST,
     _AA_MASK_ALL,
     _AA_NUM_SAMPLES,
     _AA_ONE_MESH_BIT,
     _AA_SAMPLE_WEIGHT,
     _AA_SEC_JITTER,
     _AA_SLIVER_BIT,
-    _AA_FULL_DUST,
     _GLOSSY_MIN_ROUGHNESS,
     _aa_dump_frag,
     _aa_dump_match,

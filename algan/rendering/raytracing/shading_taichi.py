@@ -111,7 +111,8 @@ def _smith_geometry(n_dot_v, n_dot_l, roughness):
 def _shading_normal(n_interp, face_n, flat):
     """Per-fragment shading normal, optionally blended toward the (geometric)
     face normal for flat shading -- the in-kernel analogue of
-    ``material_shaders._shading_normal``."""
+    ``material_shaders._shading_normal``.
+    """
     n = n_interp.normalized()
     if flat > 1e-4:
         fn = face_n.normalized()
@@ -396,7 +397,8 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
 @ti.func
 def _light_vis(shadows: ti.template(), vis, li):
     """Per-light shadow visibility (1 lit / 0 occluded). Compiled out entirely
-    when shadows are off, and falls back to fully lit beyond the shadow-ray cap."""
+    when shadows are off, and falls back to fully lit beyond the shadow-ray cap.
+    """
     v = 1.0
     if ti.static(shadows != 0):
         if li < MAX_SHADOW_LIGHTS:
@@ -439,7 +441,8 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     For a single light this equals the legacy per-light lerp
     (``out*(1-w) + lc*w``); for many lights it stays stable (an area light's
     sample fan, or a key/fill/rim rig) instead of the old sequential lerp
-    driving the colour toward the last light's."""
+    driving the colour toward the last light's.
+    """
     flat = params[f % params.shape[0], prim, off + 10]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
     out = in_rgb
@@ -601,7 +604,8 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     """MeshPhysicalMaterial: MeshStandard plus ior-driven specular, a clearcoat
     GGX lobe, a sheen rim and (crude) transmission -- the in-kernel port of
     ``material_shaders.physical_shader`` (same terms; ``iridescence`` is
-    accepted but unused, as in the PyTorch shader)."""
+    accepted but unused, as in the PyTorch shader).
+    """
     tm = f % params.shape[0]
     emissive = ti.math.vec3(params[tm, prim, off + 0], params[tm, prim, off + 1],
                             params[tm, prim, off + 2])
@@ -787,7 +791,8 @@ def builtin_pipeline_fn(pid):
     (0 default, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical), for
     injection into a per-material shade kernel of the legacy sorted path
     (unsupported). Lazily created and cached so every render reuses the same
-    func objects (stable Taichi template instantiations)."""
+    func objects (stable Taichi template instantiations).
+    """
     pid = int(pid)
     if pid not in _BUILTIN_PIPELINE_FNS:
         _BUILTIN_PIPELINE_FNS[pid] = make_pipeline_func(

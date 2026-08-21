@@ -27,6 +27,9 @@ still have work -- warps refill as rays drop out, which is the divergence fix.
 import taichi as ti
 
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _M_IOR,
+    _M_REFLECTIVITY,
+    _M_TRANSMISSION,
     DEPTH_TIE_EPSILON,
     KBUF,
     MAX_SHADOW_LIGHTS,
@@ -35,23 +38,20 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
     NODE_ARG,
-    _M_IOR,
-    _M_REFLECTIVITY,
-    _M_TRANSMISSION,
     _axis_cos,
     _bezier_normal,
     _collect_hits,
     _comes_after,
+    _flat_triangle_color,
     _generate_ray,
+    _nearest_surface_g,
     _safe_inverse,
     _sample_circuit_color,
     _shade_tri_hit,
     _shadow_occluded,
     _triangle_color,
-    _flat_triangle_color,
     _triangle_extra,
     _triangle_normal,
-    _nearest_surface_g,
     finalize_pixel_color,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -131,7 +131,8 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
     its base-colour fade accumulates a vis-weighted ``w`` even at
     ``lc == 0`` -- callers gate on the hit's pipeline id. Underflowed (but
     not bitwise-zero) multipliers are treated as live: that only traces a
-    fan whose result multiplies zero, never the reverse."""
+    fan whose result multiplies zero, never the reverse.
+    """
     zero = 0
     if light_col.shape[2] > 3:
         if (ltype == _LT_POINT) or (ltype == _LT_SPOT) \
@@ -204,7 +205,8 @@ def _corner_ior(f, prim, w0, w1, w2, extra: ti.template()):
     """Barycentric index of refraction of a confirmed triangle/PN hit.
     Columns 6-8 of the surface ``extra`` row hold the per-corner refractive
     index (unsigned magnitude, 0 = non-PBR); columns 0-5 are
-    reflectivity/roughness and 9-11 transmission."""
+    reflectivity/roughness and 9-11 transmission.
+    """
     te = f % extra.shape[0]
     return (w0 * extra[te, prim, 6] + w1 * extra[te, prim, 7]
             + w2 * extra[te, prim, 8])
@@ -214,7 +216,8 @@ def _corner_ior(f, prim, w0, w1, w2, extra: ti.template()):
 def _corner_transmission(f, prim, w0, w1, w2, extra: ti.template()):
     """Barycentric transmission of a confirmed triangle/PN hit (columns 9-11 of
     the surface ``extra`` row; 0 = lets no light through). Independent of alpha,
-    which carries coverage only -- see ``_derive_material_surface_params``."""
+    which carries coverage only -- see ``_derive_material_surface_params``.
+    """
     te = f % extra.shape[0]
     return (w0 * extra[te, prim, 9] + w1 * extra[te, prim, 10]
             + w2 * extra[te, prim, 11])
@@ -239,7 +242,8 @@ def _sample_tex_vec5(f, u, v, offset, width_i, height_i,
     """Bilinear sample of all 5 channels of a map placed at ``offset`` in the
     shared flat texel buffer (same filtering as ``_sample_texture``, but
     addressed by an explicit (offset, w, h) triplet so material and normal
-    maps can share the buffer with the color maps)."""
+    maps can share the buffer with the color maps).
+    """
     width = ti.cast(width_i, ti.f32)
     height = ti.cast(height_i, ti.f32)
 
@@ -282,7 +286,8 @@ def _flat_triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template(),
     """(reflectivity, roughness) of a triangle hit: per-vertex barycentric
     values (``_triangle_extra``) unless the triangle carries a material map
     (meta cols 3-5) whose bitmask (col 9) marks the property texture-driven,
-    in which case that property is sampled per fragment instead."""
+    in which case that property is sampled per fragment instead.
+    """
     reflectivity = 0.0
     roughness = 0.0
     # A promoted constant-material triangle (see _merge_scene) carries no
@@ -318,7 +323,8 @@ def _flat_corner_ior_transmission(f, prim, w0, w1, w2, extra: ti.template(),
     ``_corner_transmission``) unless the material map's bitmask marks the
     property texture-driven (bit 2 / channel 2, bit 3 / channel 3). One
     fused map fetch serves both properties -- the separate per-property
-    fetches sampled the same texels of the same map."""
+    fetches sampled the same texels of the same map.
+    """
     # See _flat_triangle_extra: a promoted constant-material triangle has no
     # per-vertex extra row, so these come from the material map instead; the
     # guard is a no-op (always true) for every non-promoted batch.
@@ -353,7 +359,8 @@ def _flat_triangle_material(f, prim, w0, w1, w2, tri_extra: ti.template(),
     single material-map fetch. Exactly ``_flat_triangle_extra`` +
     ``_flat_corner_ior_transmission`` with the redundant repeat samples of
     the same map removed; in a fully constant-promoted batch every hit takes
-    the map path, so the separate fetches tripled the texel traffic."""
+    the map path, so the separate fetches tripled the texel traffic.
+    """
     reflectivity = 0.0
     roughness = 0.0
     ior = 1.0
@@ -393,7 +400,8 @@ def _flat_triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
     is perturbed by the sampled tangent-space vector. The tangent frame is
     derived per hit from the triangle's positions and UVs (x along
     increasing u, y along increasing v, z along the smooth normal), so no
-    extra per-vertex tangent array is needed."""
+    extra per-vertex tangent array is needed.
+    """
     normal = _triangle_normal(f, prim, w0, w1, w2, tri_norm, tri_pos)
     if prim >= num_colored_triangles:
         idx = prim - num_colored_triangles
@@ -499,7 +507,8 @@ def _flat_corner_ior_transmission_trim(f, prim, w0, w1, w2,
                                        tex_meta: ti.template(),
                                        textures: ti.template()):
     """Trim-layout twin of ``_flat_corner_ior_transmission`` (one fused map
-    fetch for both properties)."""
+    fetch for both properties).
+    """
     ior = 1.0
     transmission = 0.0
     cr = col_row[prim]
@@ -632,7 +641,8 @@ def _tri_material_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
                     textures: ti.template(), num_colored: ti.template()):
     """All four material properties of a triangle hit in one call: a single
     map fetch on the baseline path (the adjacent per-property calls it
-    replaces fetched the same map up to three times per hit)."""
+    replaces fetched the same map up to three times per hit).
+    """
     reflectivity = 0.0
     roughness = 0.0
     ior = 1.0
@@ -674,7 +684,8 @@ def _refract_ray(rd, n_out, ior):
     refraction ``ior`` (relative to air). Snell's law, with the air<->medium
     side chosen from the sign of ``rd . n_out`` (entering when the ray opposes
     the outward normal, exiting otherwise). On total internal reflection the
-    ray is mirror-reflected instead, so it always continues sensibly."""
+    ray is mirror-reflected instead, so it always continues sensibly.
+    """
     cosi = rd.dot(n_out)
     n = n_out
     eta = 1.0 / ior          # entering: air (1) -> medium (ior)
@@ -995,7 +1006,8 @@ def default_scatter(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     """Built-in scatter for solid geometry (triangles / PN patches): a
     transmissive surface refracts. This is the signature the scatter contract
     fixes (see ``shading_taichi``), shared with user scatters and injected as
-    the sorted pipeline's ``scatter_fn``. See :func:`_scatter_impl`."""
+    the sorted pipeline's ``scatter_fn``. See :func:`_scatter_impl`.
+    """
     return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo,
                          alpha, reflectivity, ior, transmission, params, f,
                          prim, bounces_left, refraction, 0)
@@ -1007,7 +1019,8 @@ def circuit_scatter(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
                     f, prim, bounces_left, refraction: ti.template()):
     """Built-in scatter for bezier circuits: a transmissive circuit is a thin
     pane, so it transmits unbent rather than refracting. See
-    :func:`_scatter_impl`."""
+    :func:`_scatter_impl`.
+    """
     return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo,
                          alpha, reflectivity, ior, transmission, params, f,
                          prim, bounces_left, refraction, 1)
@@ -1024,7 +1037,8 @@ def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
     return its 8-tuple. Built-in materials and user pipelines without a custom
     scatter use :func:`default_scatter`; a user pid whose pipeline supplied a
     scatter uses it. The pid switch mirrors ``_run_frag_pipeline``; ``None``
-    entries of ``frag_scatters`` (scatterless user pipelines) compile out."""
+    entries of ``frag_scatters`` (scatterless user pipelines) compile out.
+    """
     pid = pid_arr[f % pid_arr.shape[0], prim]
     (contrib, pass_w, refl_orig, refl_dir, refl_w,
      trans_orig, trans_dir, trans_w) = default_scatter(
@@ -1055,7 +1069,8 @@ def wf_composite(
         out: ti.types.ndarray()):
     """Composite each ray's premultiplied accumulator over the pre-filled
     background. State is indexed tile-locally by ``r``; the global ray is
-    ``ray_offset + r``."""
+    ``ray_offset + r``.
+    """
     pixels_per_frame = width * height
     num_rays = rs_acc.shape[0]
     for r in range(num_rays):
@@ -1091,7 +1106,8 @@ def wf_composite_aa(
         out: ti.types.ndarray(), aa_accum: ti.types.ndarray()):
     """Like ``wf_composite`` but accumulates into a float buffer for in-place
     AA averaging. Each call adds one sub-pixel sample's composited value;
-    ``wf_finalize_aa`` averages after all ``aa^2`` passes."""
+    ``wf_finalize_aa`` averages after all ``aa^2`` passes.
+    """
     pixels_per_frame = width * height
     num_rays = rs_acc.shape[0]
     for r in range(num_rays):
@@ -1142,7 +1158,8 @@ def wf_composite_accum(
     list the resolve used and this loop runs one thread per covered pixel
     (``r = covered_idx[t]``); the untouched empty pixels keep their
     pre-filled background. Only valid with ``tonemapping == 3`` (in-kernel
-    tonemap would owe every empty pixel ``tonemap(bg) != bg``)."""
+    tonemap would owe every empty pixel ``tonemap(bg) != bg``).
+    """
     pixels_per_frame = width * height
     num_primary = pix_accum.shape[0]
     loop_n = num_primary
@@ -1265,7 +1282,8 @@ def wf_composite_accum_aa(
         pix_accum: ti.types.ndarray(), out: ti.types.ndarray(),
         aa_accum: ti.types.ndarray()):
     """Like ``wf_composite_accum`` but accumulates into a float buffer for
-    in-place AA averaging."""
+    in-place AA averaging.
+    """
     pixels_per_frame = width * height
     num_primary = pix_accum.shape[0]
     for r in range(num_primary):
@@ -1292,7 +1310,8 @@ def wf_finalize_aa(
         aa_accum: ti.types.ndarray(), out: ti.types.ndarray()):
     """Average the AA float accumulator and write the final uint8 output.
     Called once after all ``aa^2`` sub-pixel passes have been accumulated by
-    ``wf_composite_aa`` or ``wf_composite_accum_aa``."""
+    ``wf_composite_aa`` or ``wf_composite_accum_aa``.
+    """
     pixels_per_frame = width * height
     num_pixels = aa_accum.shape[0]
     for idx in range(num_pixels):
@@ -1344,7 +1363,8 @@ def wavefront_generate_rays(
     retries an overflowing tile with fewer primaries; branches are never silently
     dropped. Each ray records its target local pixel in ``rs_pix`` and commits
     premultiplied colour/background weight into that row of ``pix_accum`` when it
-    terminates."""
+    terminates.
+    """
     pixels_per_frame = width * height
     num_rays = rs_ro.shape[0]
     for r in range(num_rays):
@@ -1458,7 +1478,8 @@ def wavefront_traverse(
     (reuses the unchanged general ``_collect_hits``, Matrix Pencil solver
     included). The frame is taken from the ray's *pixel* (``rs_pix``), not its
     slot index -- a spawned (split) ray lives in a spare slot whose index is not
-    its pixel; the global cell is ``ray_offset + rs_pix[r]``."""
+    its pixel; the global cell is ``ray_offset + rs_pix[r]``.
+    """
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -1808,7 +1829,8 @@ def wavefront_shadow(
     elements per iteration and launch this kernel inside the same temporary
     arena scope as the surface-event batch, between traverse and shade. The
     tracer's current 1-element ``rs_vis`` placeholder is only valid while
-    ``wavefront_shade`` is compiled with ``deferred_shadows == 0``."""
+    ``wavefront_shade`` is compiled with ``deferred_shadows == 0``.
+    """
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -1985,7 +2007,8 @@ def wavefront_shade(
     raster path stores the compact accumulator row in ``rs_int[:, 4]`` while
     retaining the real local pixel in ``rs_pix`` for frame/ray addressing;
     the ``compact`` template selects that representation without consuming
-    another runtime argument."""
+    another runtime argument.
+    """
     pixels_per_frame = width * height
     # Unpack the layer offset (packed into one ndarray to stay within the
     # 64-arg ceiling); the body below references this name unchanged.

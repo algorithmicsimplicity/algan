@@ -46,60 +46,39 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_BORDER_W,
     _M_CENTER,
     _M_FILLED,
-    _M_IOR,
     _M_NORMAL,
-    _M_REFLECTIVITY,
-    _M_ROUGHNESS,
-    _M_TRANSMISSION,
     BARYCENTRIC_EPSILON,
-    DEPTH_TIE_EPSILON,
     INV_DEPTH_TIE_EPSILON,
-    MAX_SHADOW_LIGHTS,
-    MAX_SURFACES_PER_RAY,
     MIN_ALPHA,
     MIN_HIT_DISTANCE,
-    MIN_WEIGHT,
     NODE_ARG,
-    TRIANGLE_EDGE_EPSILON,
-    _bezier_normal,
     _axis_cos,
     _bezier_point_metrics,
     _circuit_point_region,
     _circuit_query_radius,
     _generate_ray,
     _sample_circuit_color_blend,
-    _shade_tri_hit,
     _shadow_occluded,
     _tri_hit,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MID_DEFAULT,
-    _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
-    _reflect_frame,
 )
-from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
-    _DONE,
+    _GOLDEN_ANGLE,
     _LT_AMBIENT,
     _LT_DIRECTIONAL,
     _LT_ENV_SH,
     _LT_HEMISPHERE,
-    _GOLDEN_ANGLE,
     _light_zero_radiance,
-    _material_reflectance,
-    _offset_transmitted_origin,
-    _refract_ray,
     _reserve_continuation_slot,
-    _sample_env_map,
     _tri_color_g,
-    _tri_extra_g,
-    _tri_ior_transmission_g,
-    _tri_material_g,
     _tri_normal_g,
 )
+from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
 # most this many pixels, bounding load imbalance for large bboxes.
@@ -389,14 +368,16 @@ def _tri_repr(aa):
     """Triangle representation carried in the geometry kernels' ``aa`` value:
     0 sampled points, 1 retired (the deleted cells emission; the value is not
     reissued), 2 run-corrected exact areas (``1 + sliver_mode + 4 * repr``,
-    see :func:`_sliver_mode`)."""
+    see :func:`_sliver_mode`).
+    """
     return max(int(aa) - 1, 0) // 4
 
 
 def _tri_run(aa):
     """Whether the geometry kernels emit run-corrected payloads (repr 2):
     exact clipped areas in ``frag_cov`` beside the untouched sample masks,
-    slivers emitted as area donors at their clipped centroid."""
+    slivers emitted as area donors at their clipped centroid.
+    """
     return _tri_repr(aa) == 2
 
 
@@ -815,7 +796,8 @@ def _run_svis_write(svis: ti.template(), slots, a_s, trans_share, cfac,
 def _run_redistribute(svis: ti.template(), run_U, resid):
     """Rule B's run-end step: remove the clamped residue from the samples the
     run did NOT own, capping at zero (residue beyond their total is dropped
-    -- the owned samples are already at zero and cannot give more)."""
+    -- the owned samples are already at zero and cannot give more).
+    """
     if resid > 0.0:
         tot = 0.0
         for s in ti.static(range(_AA_NUM_SAMPLES)):
