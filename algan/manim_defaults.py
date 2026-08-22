@@ -214,10 +214,12 @@ def apply_manim_defaults(
         # The light above still shades any Mob given an explicitly lit material,
         # and it shades it from where Manim's own light sits.
         SETTINGS.style.set(default_shader=basic_material_shader)
-        # Manim writes its colours straight out; Algan tonemaps by default, which
-        # darkens every fill by about 10/255 -- uniformly, so it reads as a colour
-        # error rather than as a highlight roll-off. Off, a flat fill comes out
-        # byte-identical to Manim's.
+        # Manim writes its colours straight out. Algan does too now -- this is
+        # its own default since 2026-08-22 -- so this is belt-and-braces against
+        # a Scene that turned tonemapping on. With the curve on, every fill
+        # darkens by about 10/255 and white lands on 222, uniformly enough to
+        # read as a colour error rather than as a highlight roll-off. Off, a
+        # flat fill comes out byte-identical to Manim's.
         SETTINGS.raytracing.set(tonemapping=False)
 
     if shape_defaults:

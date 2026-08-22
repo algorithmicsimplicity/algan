@@ -1450,9 +1450,24 @@ def render_batch_raytraced(
         # about to be re-rendered, and counting both attempts would double them.
         entry_truncations = snapshot_truncations()
         try:
-            out_dtype = (
-                torch.float32 if is_post_process_tonemap_enabled() else torch.uint8
-            )
+            post_tonemap = is_post_process_tonemap_enabled()
+            if rt_settings.LINEAR_COLOR_SPACE and not post_tonemap:
+                # The in-composite route's frame buffer is uint8, and linear
+                # values must never be stored in 8 bits: linear 0.033 -- an
+                # ordinary dark grey -- quantises to byte 8, and the darks fall
+                # apart. Display encoding is *why* an 8-bit buffer holds
+                # encoded values. Rather than silently render a crushed frame,
+                # say so; post_process_tonemap is on by default, so reaching
+                # this means someone turned it off deliberately.
+                rt_settings.report_unsupported_features(
+                    "linear_color_space needs the float HDR frame buffer, which "
+                    "post_process_tonemap provides; with it off the buffer is "
+                    "uint8 and linear values would be quantised to 8 bits, "
+                    "crushing the darks. Leave post_process_tonemap on (the "
+                    "default), or set "
+                    "SETTINGS.raytracing.set(linear_color_space=False)."
+                )
+            out_dtype = torch.float32 if post_tonemap else torch.uint8
             # Drivers are element counts, not the resolution: the buffers scale
             # linearly, so keying on width/height would make the table useless
             # at any resolution the corpus happened not to cover.

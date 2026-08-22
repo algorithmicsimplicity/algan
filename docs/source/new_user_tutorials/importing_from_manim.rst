@@ -231,8 +231,9 @@ colour it comes out:
   perspective.
 * **The lighting.** Manim's single light, in Manim's position, and flat unlit
   colour as the default shading -- which is what Manim's renderer actually does
-  to a vector Mobject -- with tonemapping off, so a flat fill comes out
-  byte-identical to Manim's.
+  to a vector Mobject -- with tonemapping off (Algan's own default, and set
+  explicitly here so an enabling Scene cannot break parity), so a flat fill
+  comes out byte-identical to Manim's.
 * **The z axis.** Manim's ``OUT`` is ``+z`` and Algan's is ``-z``, so
   ``use_manim_defaults()`` also mirrors imported geometry in z. Without that a
   converted 3-D scene renders back-to-front; flat ``z = 0`` geometry is

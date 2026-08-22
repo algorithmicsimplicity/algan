@@ -18,6 +18,7 @@ compilation).
 
 import taichi as ti
 
+from algan.rendering.raytracing.color_space_taichi import linear_to_srgb_v3
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     agx_tonemap,
     pbr_neutral_tonemap,
@@ -27,7 +28,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 @ti.kernel
 def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
                   method: ti.template(), exposure: ti.f32,
-                  transparent: ti.template()):
+                  transparent: ti.template(), linear_color: ti.template()):
     """Tonemap a linear-HDR frame (channels 0-2 in [0, 1+HDR]) to uint8.
 
     ``frame`` is ``[N, H, W, C]`` float (C = 4 opaque [R,G,B,glow] or 5
@@ -46,7 +47,31 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
         elif ti.static(method == 2):
             c = agx_tonemap(c * exposure)
         else:
-            c = ti.math.clamp(c, 0.0, 1.0)
+            # Exposure applies here too, not just under a curve: it is the
+            # documented "the whole scene is too dark" control, and with
+            # tonemapping off (the default) it is the only one. Exact at the
+            # default exposure of 1.0, so this moves no pixel by itself.
+            c = ti.math.clamp(c * exposure, 0.0, 1.0)
+        if ti.static(linear_color):
+            # The OETF, last, after exposure and after any curve -- the order
+            # three.js uses (`tonemapping_fragment` then `colorspace_fragment`).
+            if ti.static(transparent):
+                # RGB arrives premultiplied by coverage while alpha is carried
+                # separately in channel 4, and the transfer function is not
+                # linear, so encoding the premultiplied value is wrong: a
+                # half-covered white pixel would store encode(0.5) = 188 where
+                # the premultiplied-correct answer is 0.5 * encode(1.0) = 127.
+                # Unpremultiply, encode, re-premultiply.
+                a = ti.math.clamp(frame[f, y, x, 4] * (1.0 / 255.0), 0.0, 1.0)
+                if a > 1e-6:
+                    c = linear_to_srgb_v3(c * (1.0 / a)) * a
+                else:
+                    # Fully transparent: nothing is visible through it, and
+                    # dividing by ~0 would blow the colour up before the
+                    # multiply brought it back.
+                    c = ti.math.vec3(0.0, 0.0, 0.0)
+            else:
+                c = linear_to_srgb_v3(c)
         for ci in ti.static(range(3)):
             out[f, y, x, ci] = ti.cast(
                 ti.math.clamp(c[ci] * 255.0 + 0.5, 0.0, 255.0), ti.u8)

@@ -34,6 +34,8 @@ import torch.nn.functional as F
 from algan.animatable_base.mob import Mob
 from algan.constants.spatial import ORIGIN, UP
 from algan.errors import AlganConfigurationError
+from algan.rendering.raytracing import settings as rt_settings
+from algan.utils.color_space import srgb_to_linear
 
 __all__ = [
     "Light",
@@ -409,7 +411,15 @@ class HemisphereLight(Light):
             gc = torch.zeros(3)
         if not torch.is_tensor(gc):
             gc = torch.tensor(gc, dtype=torch.float32)
-        aux[..., 9:12] = gc.float().reshape(-1)[:3] * self.intensity
+        # Decoded before the intensity multiply, not after: intensity is a
+        # linear scalar, and srgb_to_linear(c * i) is not srgb_to_linear(c) * i.
+        # This is the hemisphere's ground colour -- an authored colour like any
+        # other, and the one radiance-bearing aux column, so it has to make the
+        # same trip into linear light the RGB columns do.
+        ground = gc.float().reshape(-1)[:3]
+        if rt_settings.LINEAR_COLOR_SPACE:
+            ground = srgb_to_linear(ground)
+        aux[..., 9:12] = ground * self.intensity
         return aux
 
 

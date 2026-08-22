@@ -209,18 +209,37 @@ Algan anti-aliases in two independent ways:
 Tonemapping
 -----------
 
-The renderer composites in linear HDR and tonemaps as the last step of
-post-processing, so bloom and downsampling all happen in linear light -- which is
-why a bright glow keeps its colour instead of clipping to white.
+The renderer composites in linear HDR, and bloom and downsampling happen in
+linear light -- which is why a bright glow keeps its colour instead of clipping
+to white. Encoding to the output frame is the last step.
+
+**Tonemapping is off by default**, so an authored colour lands on the pixel it
+names: ``WHITE`` renders as 255, ``RED`` renders as ``(255, 0, 0)``, and a
+background you chose comes back byte for byte. Values above 1.0 are clipped.
 
 .. code-block:: python
 
-    SETTINGS.raytracing.set(tonemapping=True)        # on by default
+    SETTINGS.raytracing.set(tonemapping=True)        # off by default
     SETTINGS.raytracing.set(tonemap_method="agx")    # "neutral" (default) or "agx"
     SETTINGS.raytracing.set(tonemap_exposure=1.2)    # brighten the whole render
 
-``tonemap_exposure`` is the right control for "the whole scene is too dark" -- reach
-for it before you start raising every light's intensity.
+Turning tonemapping on applies a filmic curve, which buys highlight roll-off:
+values above 1.0 stay distinguishable from one another instead of all clipping
+to 255, which suits a scene carrying real HDR -- strong glow, bright speculars,
+an environment map.
+
+It costs a shift on *every* value, not just the ones above 1.0. The curve is
+not the identity anywhere except at 0: mid-tones lose about 10/255, an authored
+255 renders as 222, and saturated colours desaturate slightly. That is inherent
+rather than a tuning problem -- a curve that is the identity on ``[0, 1]`` has
+nowhere left to put anything above 1.0, so display white and highlight headroom
+compete for the same top byte and you can have one or the other. Which is why
+the default is off: most Algan frames are flat fills and text, where the
+authored colour matters more than roll-off in the highlights.
+
+``tonemap_exposure`` is the right control for "the whole scene is too dark" --
+reach for it before you start raising every light's intensity. It applies
+whether or not tonemapping is on.
 
 Writing your own pass
 ---------------------

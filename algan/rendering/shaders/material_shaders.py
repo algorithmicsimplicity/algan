@@ -40,10 +40,42 @@ from algan.utils.tensor_utils import dot_product
 # with no AmbientLight).
 AMBIENT_STRENGTH = 0.1
 
+# The same fill in linear light. 0.1 was chosen as a display-referred
+# coefficient; carrying it unchanged into the linear working space would make
+# the ambient nearly nine times brighter, because 0.1 of linear light encodes
+# to byte 89 where 0.1 of an encoded value is byte 26. srgb_to_linear(0.1) =
+# 0.01003, so 0.01 delivers the fill the old pipeline delivered -- the number
+# changes because the units changed, not because the look was retuned. Twin of
+# shading_taichi.AMBIENT_STRENGTH_LINEAR.
+AMBIENT_STRENGTH_LINEAR = 0.01
+
+
+def _ambient_strength():
+    """The ambient coefficient for the active working space."""
+    return AMBIENT_STRENGTH_LINEAR if _linear_color_space() else AMBIENT_STRENGTH
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _linear_color_space():
+    """True when shading runs in the linear working colour space.
+
+    Gates this module's two gamma-era compensations -- ``_energy_scale``'s
+    illumination budget and ``_recombine``'s peak bound, the torch twins of
+    ``shading_taichi._linear_color_space``'s gates. They normalise away an
+    overshoot that only exists when sRGB-encoded values are summed; in linear
+    light lights genuinely add, so both are off.
+
+    The import is local and read is through the module object so the value is
+    live at every call -- whatever the setting holds when a shader runs,
+    never a value frozen into this module at import time.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    return bool(rt_settings.LINEAR_COLOR_SPACE)
 
 
 def _split_albedo(albedo_color):
@@ -51,9 +83,56 @@ def _split_albedo(albedo_color):
     return albedo_color[..., :3], albedo_color[..., 3:]
 
 
+def _energy_scale(weight):
+    """Reciprocal of the illumination budget -- the torch twin of
+    ``shading_taichi._energy_scale``.
+
+    ``weight`` is the total illumination arriving at the surface: the ambient
+    fill's coefficient plus this light's ``n.l``. A reflective surface cannot
+    send out more light than arrives, so once the incident weight passes unity
+    the reflected terms are scaled back by it. Exactly 1.0 below unity, so an
+    under-lit surface is untouched.
+
+    These shaders see one light at a time -- the vertex path loops over lights
+    outside them (``primitives.py``) -- so this bounds the ambient-on-top-of-
+    direct overshoot here, and the fragment path's twin is what bounds the
+    multi-light sum.
+
+    Off under ``_linear_color_space()``: there lights sum plainly and this
+    returns exactly 1.0, since normalising would make them stop adding.
+    """
+    if _linear_color_space():
+        return 1.0
+    return 1.0 / weight.clamp_min(1.0)
+
+
 def _recombine(rgb, glow_tail):
-    """Clamp the RGB result to ``[0, 1]`` and re-attach the glow channel."""
-    return torch.cat((rgb.clamp(0.0, 1.0), glow_tail), -1)
+    """Bound the RGB result to ``[0, 1]`` and re-attach the glow channel.
+
+    Lights accumulate without normalisation, so several of them drive a fully
+    lit surface past 1.0. Scaling all three channels by the peak keeps the hue,
+    where the per-channel clamp this replaced truncated each independently and
+    slid an over-range saturated colour toward white. Identity below 1.0, so
+    anything already in range is untouched; ``glow_tail`` is never bounded,
+    which leaves glow the one route to above-1.0 output for bloom.
+
+    Kept in step with ``_run_frag_pipeline`` in
+    ``algan/rendering/raytracing/shading_taichi.py``, which does the same thing
+    for the fragment path.
+
+    The peak bound is off under ``_linear_color_space()``: in linear light the
+    sum is physically additive and the sRGB OETF at the byte write owns the
+    range, so scaling by the peak would make lights stop adding. The negative
+    clamp stays either way -- it is not part of the bound; it stops a negative
+    reaching the encoder's pow.
+    """
+    rgb = rgb.clamp_min(0.0)
+    if not _linear_color_space():
+        # clamp_min(1.0) makes the divisor exactly 1 whenever nothing is over
+        # range, so the in-range case is a bit-identical no-op and there is no
+        # divide-by-zero on black.
+        rgb = rgb / rgb.amax(-1, keepdim=True).clamp_min(1.0)
+    return torch.cat((rgb, glow_tail), -1)
 
 
 def _normalize(v):
@@ -203,9 +282,12 @@ def lambert_shader(
     n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
     radiance = light_color[..., :3] * light_intensity
 
-    ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity)
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
+    ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
-    out = ambient + diffuse + emissive * emissive_intensity
+    out = (ambient + diffuse) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -234,12 +316,15 @@ def phong_shader(
     )
     radiance = light_color[..., :3] * light_intensity
 
-    ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity)
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
+    ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
     # Blinn-Phong specular: (N.H)^shininess, gated by N.L so back faces stay dark.
     spec_term = n_dot_h.clamp_min(1e-4) ** shininess.clamp_min(1e-3)
     specular_out = specular * radiance * spec_term * (n_dot_l > 0)
-    out = ambient + diffuse + specular_out + emissive * emissive_intensity
+    out = (ambient + diffuse + specular_out) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -285,10 +370,11 @@ def standard_shader(
     direct = diffuse + specular * radiance * n_dot_l
 
     # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
-    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
-        AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
-    )
-    out = ambient + direct + emissive * emissive_intensity
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
+    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
+    out = (ambient + direct) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -379,13 +465,14 @@ def physical_shader(
     sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
     direct = direct + sheen_c * sheen_brdf * radiance * n_dot_l
 
-    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
-        AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
-    )
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
+    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
     # No per-light transmission term: the transmitted share is carried by the
     # renderer's own continuation, and adding it here again double counted.
     # See shading_taichi._stage_physical.
-    out = ambient + direct + emissive * emissive_intensity
+    out = (ambient + direct) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -418,9 +505,12 @@ def toon_shader(
         num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
     )
     stepped = torch.ceil(n_dot_l * bands) / bands
-    ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity)
+    kA = _ambient_strength() * ambient_light_intensity
+    ambient = rgb * kA
     diffuse = rgb * light_color[..., :3] * light_intensity * stepped
-    out = ambient + diffuse + emissive * emissive_intensity
+    out = (ambient + diffuse) * _energy_scale(
+        stepped * (light_color[..., :3] * light_intensity).amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 

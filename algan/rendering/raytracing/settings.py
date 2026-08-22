@@ -60,7 +60,34 @@ def report_unsupported_features(message):
     raise UnsupportedFeatureError(message)
 
 
-TONEMAPPING = True
+# Decode authored colour to linear light at the render boundary, do all shading
+# and compositing arithmetic there, and apply the sRGB OETF at the byte write.
+# This is what three.js does (a LinearSRGBColorSpace working space, then
+# `colorspace_fragment` unconditionally at the end of the shader), and it is
+# what makes lights additive: sRGB encoding is concave, so summing encoded
+# values overshoots badly -- two lights that should land a white surface on byte
+# 188 land it on 255 instead. Without it the arithmetic is provably
+# display-referred: a swept light intensity fits byte/255 = 0.1009 + 1.0000*i
+# with a max residual of 0.0011.
+#
+# Unlit flat content is untouched, because decode-then-encode with no arithmetic
+# between is the identity. Set ALGAN_LINEAR_COLOR=0 to restore the previous
+# display-referred pipeline for A/B; that arm is byte-identical to the tree
+# before the working space landed. See LINEAR_COLOR_WORK.md.
+LINEAR_COLOR_SPACE = env_flag("ALGAN_LINEAR_COLOR", True)
+
+# Off by default: an authored colour lands on the pixel it names. That is now
+# true because the working space is linear and the OETF runs at the byte write
+# (see LINEAR_COLOR_SPACE above), so this default is the same choice three.js
+# makes with NoToneMapping rather than a workaround for a missing conversion.
+# The curve (Khronos PBR Neutral) reserves headroom by design: it maps linear
+# 1.0 to 0.869, so even with the OETF applied afterwards an authored white
+# renders 240 rather than 255. Measured over the six full-render scenes, 98.52%
+# of colour channels are already inside the display range and 1.45% are above
+# it. Bloom runs *before* the tonemap on the unclamped HDR buffer, so over-range
+# energy is a visible halo before anything clamps. Turn it on for a filmic look,
+# accepting that every SDR value shifts. See TONEMAP_FINDINGS.md.
+TONEMAPPING = False
 TONEMAP_EXPOSURE = 1.0
 TONEMAP_METHOD = "neutral"
 # Tonemap in post-processing (composite writes linear HDR float) rather than
@@ -2156,26 +2183,69 @@ def set_indirect_bounce_strength(strength):
     INDIRECT_BOUNCE_STRENGTH = float(strength)
 
 
+def set_linear_color_space(enabled):
+    """Enable or disable the linear working colour space.
+
+    **On by default.** Authored colour is decoded from sRGB to linear light at
+    the render boundary, every shading and compositing operation happens in
+    linear, and the sRGB transfer function is applied once at the byte write.
+    This is the arrangement three.js uses, and it is what makes lights add:
+    sRGB encoding is concave, so adding encoded values overshoots the encoded
+    sum -- two lights that should put a white surface on byte 188 put it on 255.
+
+    Unlit flat 2-D content is unaffected either way, because decoding and then
+    encoding with no arithmetic in between is the identity. What moves is
+    anything the renderer actually computes: lit surfaces (mid-tones lift, a
+    surface at half illumination going from byte 128 to 188), antialiased edges,
+    alpha compositing and the supersample downsample.
+
+    Turning it off restores the previous display-referred pipeline exactly,
+    including the illumination-budget normalisation that had to exist to stop
+    gamma-space light sums running away. It is there for A/B comparison and for
+    reproducing pre-change output; ``LINEAR_COLOR_WORK.md`` has the
+    measurements.
+    """
+    global LINEAR_COLOR_SPACE
+    LINEAR_COLOR_SPACE = bool(enabled)
+
+
 def set_tonemapping(enabled):
     """Enable or disable tonemapping of the rendered frame.
 
-    The curve is selected by :func:`set_tonemap_method` ("neutral", the Khronos
-    PBR Neutral mapper, or "agx") -- not ACES, whatever the old docstring said.
+    **Off by default**, which makes output linear: an authored colour lands on
+    the pixel it names, white renders as 255, and a primary stays primary.
 
-    Disabling it makes output **linear**: an authored colour lands on the pixel
-    it names, which is what you want when matching a reference image. This flag
-    is honoured wherever the tonemap actually runs, so it works on its own --
-    with ``post_process_tonemap`` on (the default) the composite writes linear
-    HDR and the post stage simply clamps instead of applying a curve. There is
-    no need to also disable ``post_process_tonemap``, and doing so costs HDR
-    headroom (see :func:`set_post_process_tonemap`).
+    Enabling it applies the curve selected by :func:`set_tonemap_method`
+    ("neutral", the Khronos PBR Neutral mapper, or "agx") -- not ACES, whatever
+    the old docstring said. That buys highlight roll-off, so values above 1.0
+    stay distinguishable instead of clipping flat, and it costs a shift on
+    *every* value: the curve is not the identity anywhere except at 0, an
+    authored 255 renders as 222, and saturated colours desaturate. The two are
+    not separable -- a curve that is the identity on ``[0, 1]`` must clamp
+    above it -- so this is a choice about which you would rather have.
+    ``TONEMAP_FINDINGS.md`` has the measurements.
+
+    This flag is honoured wherever the tonemap actually runs, so it works on
+    its own -- with ``post_process_tonemap`` on (the default) the composite
+    writes linear HDR and the post stage simply clamps instead of applying a
+    curve. There is no need to also disable ``post_process_tonemap``, and doing
+    so costs HDR headroom (see :func:`set_post_process_tonemap`).
     """
     global TONEMAPPING
     TONEMAPPING = bool(enabled)
 
 
 def set_tonemap_exposure(exposure):
-    """Set the exposure multiplier for the ACES Filmic Tonemapper."""
+    """Set the exposure multiplier applied to the frame before it is encoded.
+
+    The colour is multiplied by this before the tonemap curve runs, and --
+    since tonemapping is off by default -- before the plain clamp too, so it
+    brightens or darkens the whole render either way. Defaults to ``1.0``,
+    which is exact: it moves no pixel.
+
+    This is the right control for "the whole scene is too dark". Reach for it
+    before raising every light's intensity.
+    """
     global TONEMAP_EXPOSURE
     TONEMAP_EXPOSURE = float(exposure)
 
