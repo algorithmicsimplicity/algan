@@ -10,11 +10,12 @@ the debt that gates other work, §C onward is the queue in priority order, §Y i
 the handful of rules this subsystem keeps re-learning, and §Z is the list of
 things that are CLOSED so nobody rebuilds them.
 
-**If you read nothing else:** two items remain unbuilt — §H (nested-IOR
-refraction) and §I (self-shadow rejection by identity). Both are designed down
-to the argument list in this file; neither has been started. Everything else in
-the previous revision of this queue is now measured, decided, or shipped, and
-the entries below say which.
+**If you read nothing else:** §H (nested-IOR refraction) and §I (self-shadow
+rejection by identity) are both **built and on by default** — that sentence
+used to say neither had been started. So is the shadow-terminator offset that
+§I's acne claim turned out to need (`RENDERER_WORK_QUEUE.md` item 20).
+Everything else in the previous revision of this queue is measured, decided, or
+shipped, and the entries below say which.
 
 
 ================================================================================
@@ -465,18 +466,32 @@ half on. §E now exists, which removes one of the two preconditions.
 
 
 ================================================================================
-H. NESTED-IOR REFRACTION — BUILT (gated off by default)
+H. NESTED-IOR REFRACTION — BUILT, DEFAULT ON
 ================================================================================
-**STATUS: built.** `SETTINGS.raytracing.experimental.nested_ior` /
-`rt_settings.set_nested_ior()` / env `ALGAN_NESTED_IOR` (import-time default;
-the setting itself is runtime-mutable and reaches the kernels as a
-`ti.template()` via `nested_ior_mode()`, so each mode compiles its own
-variant). With the gate off the state keeps its classic width and every stack
-line compiles out — byte-identical by construction. What verifies it:
+**STATUS: built, and the default since the item-20 session.**
+`SETTINGS.raytracing.experimental.nested_ior` / `rt_settings.set_nested_ior()`
+/ env `ALGAN_NESTED_IOR` (import-time default; the setting itself is
+runtime-mutable and reaches the kernels as a `ti.template()` via
+`nested_ior_mode()`, so each mode compiles its own variant). With the gate off
+the state keeps its classic width and every stack line compiles out —
+byte-identical by construction. What verifies it:
 `benchmarks/_nested_ior_ab.py` (three frames: a nested pair that MUST move,
 a single sphere and a pane that MUST be byte-identical), the unit suite at
-the default, and the render suites, which are unaffected while the gate is
-off.
+the default, and the render suites.
+
+**What flipping the default reaches — wider than "scenes with glass".**
+`ior_stack_flag` is `nested_ior_mode() != 0 and refraction_flag`, and
+`refraction_flag` is set not only by refractive or reflective-transparent
+material but by ANY reflective primitive under analytic AA
+(`_secondary_split_needed`, tracer.py) — and `scene_builder` marks every PBR
+triangle reflective. So the wider `rs_sca` and the stack's kernel variants
+reach ordinary `MeshStandardMaterial` scenes with no transmission at all,
+`tests/fast` among them. They cost those scenes state and a cold compile, not
+pixels: with nothing transmissive, no transmitted child is spawned and nothing
+pushes or pops the stack. Measured: `tests/fast` and five of the six
+`tests/full_renders` scenes are byte-identical with the gate off and on. The
+one that moves is `materials_and_lighting`, the only scene carrying
+transmission — 49 of 179 frames, worst 42 channel values.
 
 The design as built follows the revision below (IOR stack in `rs_sca`
 columns 7+, `_refract_ray` unchanged), with four deliberate deviations:
@@ -653,8 +668,13 @@ rejection erases.
 **And one claim this section should not have made.** The acne half of the
 "Care needed" framing below is not reachable by any identity test: acne is a
 mesh shadowing itself, so every scheme keeps a floor there by construction, and
-the hits are not near-zero `t` in the first place. That is now item 20 of
-`RENDERER_WORK_QUEUE.md` (the shadow terminator fix), not this section.
+the hits are not near-zero `t` in the first place. That was item 20 of
+`RENDERER_WORK_QUEUE.md` (the shadow terminator fix), and it is **built and on
+by default**: the shadow-ray origin is displaced onto the smooth surface the
+vertex normals imply before the epsilon tiers here are applied, so the two
+mechanisms compose rather than compete. A lit torus goes from 41 speckle pixels
+to 4; a flat facet's displacement is exactly zero, so nothing this section
+measured moved.
 
 The body below is preserved as the original costing.
 

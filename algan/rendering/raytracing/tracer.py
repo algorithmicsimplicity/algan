@@ -101,7 +101,6 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _SCA_IOR_DEPTH,
-    SCA_WIDTH_NESTED,
     SCA_WIDTH_PLAIN,
     ALLOC_NEXT,
     ALLOC_OVERFLOW,
@@ -560,7 +559,10 @@ def effective_anti_alias_level(
 
 
 def _wavefront_state_bytes_per_primary(
-    pool_ratio, extra_bytes_per_slot=0, extra_bytes_per_primary=0
+    pool_ratio,
+    extra_bytes_per_slot=0,
+    extra_bytes_per_primary=0,
+    state_sca_width=SCA_WIDTH_PLAIN,
 ):
     """Bytes charged to one initial primary when sizing a wavefront tile.
 
@@ -571,7 +573,7 @@ def _wavefront_state_bytes_per_primary(
     (for example the sorted path's event record/key arrays) are passed in so
     adaptive tile sizing can account for them.
     """
-    coefficients = _wavefront_state_coefficients()
+    coefficients = _wavefront_state_coefficients(state_sca_width)
     per_slot = coefficients["pool"] + extra_bytes_per_slot
     per_primary = coefficients["primary"] + extra_bytes_per_primary
     return pool_ratio * per_slot + per_primary
@@ -594,24 +596,31 @@ _WAVEFRONT_BYTES_PER_PRIMARY = 28
 _WAVEFRONT_FIXED_BYTES = 24
 
 
-def _wavefront_state_coefficients():
-    """Measured per-slot / per-primary / fixed bytes of the ray-state block."""
+def _wavefront_state_coefficients(state_sca_width=SCA_WIDTH_PLAIN):
+    """Measured per-slot / per-primary / fixed bytes of the ray-state block,
+    for a tile whose ``rs_sca`` rows carry ``state_sca_width`` f32 columns.
+
+    The measured constants describe the classic ``SCA_WIDTH_PLAIN`` layout, so
+    a wider row is charged its difference per pool slot. The width is the
+    BATCH's (``sca_width(ior_stack_flag)``), not the nested-IOR setting's:
+    ``ior_stack_flag`` is the setting AND ``refraction_flag``, and the two part
+    company for any batch the flag leaves clear. Charging the setting instead
+    -- which is what this did while the nested-IOR gate was off by default,
+    where the two agreed -- shrinks every such tile the moment that default
+    flips, for state those tiles never allocate.
+    """
     coefficients = {
         "pool": _WAVEFRONT_BYTES_PER_POOL_SLOT,
         "primary": _WAVEFRONT_BYTES_PER_PRIMARY,
         "fixed": _WAVEFRONT_FIXED_BYTES,
     }
-    if rt_settings.nested_ior_mode():
-        # Nested-IOR media stack (DESIGN_mesh_identity_open.md §H): rs_sca
-        # rows grow from SCA_WIDTH_PLAIN to SCA_WIDTH_NESTED f32 columns per
-        # slot when the gate is on (the depth counter plus IOR_STACK_DEPTH
-        # entries), so tile sizing must charge them or every auto tile
-        # overruns the arena it was fitted to. Read live, like the
-        # coefficients' consumers; the measured constants describe the DEFAULT
-        # (gate-off) layout -- re-measure before ever flipping that default.
-        coefficients["pool"] += (
-            SCA_WIDTH_NESTED - SCA_WIDTH_PLAIN
-        ) * torch.float32.itemsize
+    extra_columns = int(state_sca_width) - SCA_WIDTH_PLAIN
+    if extra_columns > 0:
+        # Nested-IOR media stack (DESIGN_mesh_identity_open.md §H): rs_sca rows
+        # grow to SCA_WIDTH_NESTED f32 columns per slot in a refracting batch
+        # (the depth counter plus IOR_STACK_DEPTH entries), so tile sizing must
+        # charge them or every auto tile overruns the arena it was fitted to.
+        coefficients["pool"] += extra_columns * torch.float32.itemsize
     return coefficients
 
 
@@ -622,6 +631,7 @@ def _auto_primary_per_tile(
     extra_bytes_per_slot=0,
     extra_bytes_per_primary=0,
     fixed_bytes=0,
+    state_sca_width=SCA_WIDTH_PLAIN,
 ):
     """Primary rays per wavefront tile, sized from the render pool's free
     bytes when ``settings.WAVEFRONT_TILE_AUTO`` is on (see settings.py for the
@@ -634,7 +644,7 @@ def _auto_primary_per_tile(
     if not rt_settings.WAVEFRONT_TILE_AUTO or not getattr(memory, "managed", False):
         return static_primary
     bytes_per_primary = _wavefront_state_bytes_per_primary(
-        pool_ratio, extra_bytes_per_slot, extra_bytes_per_primary
+        pool_ratio, extra_bytes_per_slot, extra_bytes_per_primary, state_sca_width
     )
     free = memory.get_num_bytes_remaining()
     # Every per-tile allocation is f32/i32.  The output immediately before it
@@ -1763,6 +1773,10 @@ def _run_wavefront_tiles(
         auto_extra_slot_bytes,
         auto_extra_primary_bytes,
         auto_fixed_bytes + ALLOC_WIDTH * torch.int32.itemsize,
+        # This batch's own rs_sca width, not the nested-IOR setting's: the
+        # rows allocated below are `sca_width` wide, so that is what the tile
+        # has to be charged for.
+        sca_width,
     )
     primary_capacity = min(max(1, int(primary_per_tile)), max(1, int(n)))
     shared_pool_capacity = _shared_pool_slots(
@@ -2513,6 +2527,9 @@ def raytrace_render_wavefront(
                     int(has_tri),
                     int(has_bez),
                     0,
+                    # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
+                    # read live per batch like the other shadow toggles.
+                    int(rt_settings.shadow_terminator_mode()),
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                     int(mem_trim),
                     opaque_closest,
@@ -2612,6 +2629,8 @@ def raytrace_render_wavefront(
                 pool_ratio,
                 primary_per_tile,
                 fixed_bytes=ALLOC_WIDTH * torch.int32.itemsize,
+                # The width this route's own _alloc_wavefront_state uses below.
+                state_sca_width=state_sca_width,
             )
             primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
             shared_pool_capacity = _shared_pool_slots(
@@ -2948,6 +2967,9 @@ def raytrace_render_wavefront(
                     int(has_tri),
                     int(has_bez),
                     0,
+                    # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
+                    # read live per batch like the other shadow toggles.
+                    int(rt_settings.shadow_terminator_mode()),
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                     int(mem_trim),
                     opaque_closest,

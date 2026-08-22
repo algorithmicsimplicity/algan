@@ -341,6 +341,110 @@ def _orient_hit_normals(snrm, fnrm, rd):
 
 
 @ti.func
+def _shadow_terminator_delta(f, prim, w0, a, b, p, snrm,
+                             tri_pos: ti.template(),
+                             tri_norm: ti.template()):
+    """Hanika's shadow-terminator displacement (Ray Tracing Gems II ch. 4):
+    how far the smooth surface implied by the hit triangle's three VERTEX
+    normals rises above the flat facet at its hit point ``p``, returned as
+    the vector to displace a shadow-ray origin BY::
+
+        d_i   = min(0, (p - p_i) . n_i)          for i in 0,1,2   (n_i unit)
+        delta = -(w0 * d_0 * n_0 + a * d_1 * n_1 + b * d_2 * n_2)
+
+    with ``(w0, a, b)`` the hit's barycentrics against ``(p_0, p_1, p_2)``
+    and ``n_i`` the per-vertex normals out of ``tri_norm``. A diced PN patch
+    or smooth-shaded mesh reaches the renderer as FLAT triangles under a
+    quadratic normal field, so the facet is a chord below the surface it
+    approximates and today's face-normal origin lift leaves neighbouring
+    facets above it -- near the terminator the shadow ray then grazes away
+    and strikes one of them far from the origin: acne no acceptance epsilon
+    can reject (RENDERER_WORK_QUEUE.md item 20). This is what moves the
+    origin onto the smooth surface instead.
+
+    A FLAT facet returns the zero vector BY CONSTRUCTION: after normalizing,
+    if the three vertex normals agree -- ``n0 . n1 > 1 - 1e-6`` and
+    ``n0 . n2 > 1 - 1e-6`` -- the normal field IS constant, such a facet has
+    no smooth surface to be displaced onto (that agreement is the definition
+    of the flat case here, not a tolerance shortcut), and the formula is not
+    evaluated at all. The equality test is what makes flat-shaded geometry
+    keep the caller's origin bit for bit; trusting the arithmetic would not,
+    since ``d_i`` below is evaluated in float and could leave ulp-scale dust
+    on a constant field, which would set ``lifted`` in the callers and relax
+    the horizon cull on geometry that never moved. Otherwise the result is
+    bounded by the facet, so it needs no clamp and no epsilon.
+    Each vertex normal is normalized here, and a DEGENERATE one (norm <
+    1e-9) returns the zero vector: an unreadable normal field must not move
+    the origin. So does a ``prim`` past a trimmed ``tri_norm``: on the
+    classic wavefront path that array may be the compacted needs-normal
+    prefix (:func:`_flat_triangle_normal_trim`), whose second dimension is
+    shorter than ``tri_pos``'s, and a prim past it never consumes its
+    shading normal.
+
+    SIGN RULE: ``snrm`` is the hit's ORIENTED shading normal
+    (:func:`_orient_hit_normals` may negate both normals so they face back
+    along the incoming ray), while the ``n_i`` read here are in the raw mesh
+    orientation. Negating the finished ``delta`` is NOT equivalent to
+    negating the normals -- the ``min(0, .)`` clamp is not odd -- so the
+    vertex normals are negated BEFORE the formula, by ONE sign shared by all
+    three: ``sgn = +1 if snrm . (w0*n_0 + a*n_1 + b*n_2) >= 0 else -1``,
+    tested on the raw interpolated vertex normal (never on a normal-mapped
+    ``_tri_normal_g`` result).
+
+    The caller STILL adds the face-normal lift on top of this displacement
+    (``sorigin = spos + delta + fnrm * (10 * MIN_HIT_DISTANCE)``); the lift
+    is what keeps flat facets working exactly as they always have.
+    """
+    tn = f % tri_norm.shape[0]
+    tp = f % tri_pos.shape[0]
+    delta = ti.math.vec3(0.0, 0.0, 0.0)
+    # ``tri_norm`` may be the compacted needs-normal prefix on the classic
+    # wavefront path (_flat_triangle_normal_trim), so ``prim`` can index past
+    # its second dimension while indexing tri_pos fine. Such a prim never
+    # consumes its shading normal -- that trim guards its own read for exactly
+    # that reason -- so return zero rather than read out of bounds. On an
+    # untrimmed ``tri_norm`` shape[1] is the full triangle count and this
+    # never fires: one guard here covers every caller.
+    if prim < tri_norm.shape[1]:
+        n0 = ti.math.vec3(tri_norm[tn, prim, 0], tri_norm[tn, prim, 1],
+                          tri_norm[tn, prim, 2])
+        n1 = ti.math.vec3(tri_norm[tn, prim, 3], tri_norm[tn, prim, 4],
+                          tri_norm[tn, prim, 5])
+        n2 = ti.math.vec3(tri_norm[tn, prim, 6], tri_norm[tn, prim, 7],
+                          tri_norm[tn, prim, 8])
+        if (n0.norm() > 1e-9) and (n1.norm() > 1e-9) and (n2.norm() > 1e-9):
+            n0 = n0.normalized()
+            n1 = n1.normalized()
+            n2 = n2.normalized()
+            # Agreement of all three vertex normals is the DEFINITION of a
+            # constant normal field -- a facet with one has no smooth surface
+            # to be displaced onto. Testing it directly (instead of trusting
+            # d_i below) is what keeps such a facet's delta EXACTLY zero:
+            # float evaluation of d_i could otherwise leave ulp-scale dust,
+            # which would set lifted = 1 in the callers and relax the horizon
+            # cull on flat geometry.
+            if (n0.dot(n1) <= 1.0 - 1e-6) or (n0.dot(n2) <= 1.0 - 1e-6):
+                raw = w0 * n0 + a * n1 + b * n2
+                sgn = 1.0
+                if snrm.dot(raw) < 0.0:
+                    sgn = -1.0
+                n0 = n0 * sgn
+                n1 = n1 * sgn
+                n2 = n2 * sgn
+                v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                                  tri_pos[tp, prim, 2])
+                v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                                  tri_pos[tp, prim, 5])
+                v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                                  tri_pos[tp, prim, 8])
+                d0 = ti.min(0.0, (p - v0).dot(n0))
+                d1 = ti.min(0.0, (p - v1).dot(n1))
+                d2 = ti.min(0.0, (p - v2).dot(n2))
+                delta = -(w0 * d0 * n0 + a * d1 * n1 + b * d2 * n2)
+    return delta
+
+
+@ti.func
 def _reflect_frame(rd, snrm, fnrm):
     """Mirror direction for a ray ``rd`` reflecting off a hit, plus the outward
     normal its new origin must be offset along. Returns ``(dir, offset_n)``.
