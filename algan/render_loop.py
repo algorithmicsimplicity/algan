@@ -48,6 +48,7 @@ from algan.rendering.raytracing.truncation import reset_truncations
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.settings import SETTINGS
 from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
+from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ManualMemory,
@@ -2408,7 +2409,22 @@ class RenderLoopMixin:
                 continue
             light_objects.append(light)
             loc = light.location
-            col = light.color[..., :-1] * light.color[..., -1:] * light.opacity
+            # The one ingest point for light colour, and the decode has to
+            # happen here rather than at the pack: alpha, opacity and intensity
+            # below are all linear scalars, and srgb_to_linear(c * k) is not
+            # srgb_to_linear(c) * k. Channel 3 is glow, not colour, so only
+            # 0:3 is decoded. This is what three.js does too -- its Color is
+            # already linear by the time WebGLLights multiplies in intensity.
+            light_rgba = light.color
+            if rt_settings_module.LINEAR_COLOR_SPACE:
+                light_rgba = torch.cat(
+                    (
+                        srgb_to_linear(light_rgba[..., :3]),
+                        light_rgba[..., 3:],
+                    ),
+                    -1,
+                )
+            col = light_rgba[..., :-1] * light_rgba[..., -1:] * light.opacity
             intensity = float(getattr(light, "intensity", 1.0))
             if intensity != 1.0:
                 col = col * intensity

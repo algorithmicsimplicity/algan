@@ -7,6 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
 )
@@ -34,6 +35,7 @@ from algan.rendering.raytracing.utils import (
 )
 from algan.settings import SETTINGS
 from algan.settings._startup import _RENDER_DEVICE
+from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     begin_cuda_peak,
@@ -1822,8 +1824,41 @@ def _merge_scene(primitives):
         scene["_gpu_merge_peak_bytes"] = int(end_cuda_peak(peak_token))
     else:
         scene["_gpu_merge_peak_bytes"] = -1
+    _decode_merged_colors(scene)
     first._rt_merged_scene = scene
     return scene
+
+
+#: The merged arrays holding authored colour. Each is ``[..., 5]`` --
+#: ``[r, g, b, glow, alpha]`` -- so only channels 0:3 are colour. Glow is an
+#: additive emissive strength and alpha is coverage; neither is a colour and
+#: neither is decoded.
+_MERGED_COLOR_KEYS = ("tri_colors", "circuit_colors", "circuit_border_colors")
+
+
+def _decode_merged_colors(scene):
+    """Decode the batch's authored colour into the linear working space.
+
+    This is the geometry half of the render boundary -- the single point where
+    every primitive's colour crosses from display-referred (what the author
+    typed, and what ``Mob.color`` still reads back) into the linear light the
+    shading and compositing arithmetic needs. It runs once per batch, on the
+    merged arrays, just before they are cached.
+
+    Deliberately *not* done in :class:`~algan.constants.color.Color`: that is a
+    ``torch.Tensor`` subclass which flows through the animation timeline, so
+    decoding there would change what ``mob.color`` reads back and would make
+    colour tweens interpolate in linear light. three.js does decode at its
+    ``Color``; Algan does not, and a red-to-blue tween staying perceptually
+    even is the reason.
+    """
+    if not rt_settings.LINEAR_COLOR_SPACE:
+        return
+    for key in _MERGED_COLOR_KEYS:
+        arr = scene.get(key)
+        if arr is None or arr.shape[-1] < 3:
+            continue
+        arr[..., :3] = srgb_to_linear(arr[..., :3])
 
 
 def prewarm_merge_cache(primitives):
@@ -2050,8 +2085,21 @@ def _prefill_background(
     # writing the arena-backed output. ``copy_`` below performs device and dtype
     # conversion directly into the reserved destination instead.
     bg = background_color
+    linear = rt_settings.LINEAR_COLOR_SPACE
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
-        vals = (bg.float().flatten()[:5] * 255).round_().clamp_(0, 255)
+        vals = bg.float().flatten()[:5]
+        if linear:
+            # The background is the second colour ingest, and it composites
+            # against linear geometry (``rs_acc * 255 + weight * bg``), so it
+            # has to be linear too. Only 0:3 -- channel 3 is glow and the last
+            # is alpha. Not rounded to integers under the linear space: this
+            # buffer is float32 here (the linear space requires the float HDR
+            # buffer, see the guard in tracer.py) and rounding a linear value
+            # to a byte grid would crush the darks, which is exactly why 8-bit
+            # buffers hold *encoded* values in the first place.
+            vals = torch.cat((srgb_to_linear(vals[:3]), vals[3:]), 0) * 255
+        else:
+            vals = (vals * 255).round_().clamp_(0, 255)
         k = min(vals.shape[0], C_out)
         out[..., :k].copy_(vals[:k])
         if C_out > k:
@@ -2074,7 +2122,16 @@ def _prefill_background(
         ]
         rows = rows.view(num_frames, num_pixels, -1)
         k = min(rows.shape[-1], C_out)
-        out[..., :k].copy_(rows[..., :k])
+        if linear:
+            # An image background is 8-bit sRGB like any other texture, so it
+            # decodes the same way the solid colour above does. Done in float
+            # at 0-255 scale to match what the composite expects.
+            head = rows[..., : min(3, k)].float() * (1.0 / 255.0)
+            out[..., : min(3, k)].copy_(srgb_to_linear(head) * 255.0)
+            if k > 3:
+                out[..., 3:k].copy_(rows[..., 3:k])
+        else:
+            out[..., :k].copy_(rows[..., :k])
         if C_out > k:
             out[..., k:].copy_(rows[..., -1:])
 

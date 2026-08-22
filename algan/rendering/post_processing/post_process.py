@@ -4,6 +4,7 @@ import torch
 
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
 from algan.settings import SETTINGS
+from algan.utils.color_space import linear_to_srgb
 
 __all__ = [
     "post_process_frames",
@@ -221,7 +222,12 @@ def _finalize_on_device(
         if tonemapping and tonemap_method not in ("neutral", "agx"):
             raise ValueError(f"Unknown tonemapping method: {tonemap_method}")
         tonemap_to_u8(
-            frame, output, method_id, float(exposure), 1 if frame.shape[-1] == 5 else 0
+            frame,
+            output,
+            method_id,
+            float(exposure),
+            1 if frame.shape[-1] == 5 else 0,
+            1 if _rt.linear_color_space else 0,
         )
         return output
 
@@ -253,6 +259,21 @@ def _finalize_on_device(
                 if exposure != 1.0:
                     rgb_tonemapped.mul_(exposure)
                 rgb_tonemapped.clamp_(0.0, 1.0)
+
+            if _rt.linear_color_space:
+                # Twin of the OETF in ``tonemap_to_u8``; kept in step with it.
+                # Applied last, after exposure and after any curve.
+                if stripped.shape[-1] == 4:
+                    # RGB is premultiplied by coverage with alpha carried
+                    # separately, and the transfer function is not linear, so
+                    # the premultiplied value cannot be encoded directly --
+                    # unpremultiply, encode, re-premultiply. See the same
+                    # reasoning in ``tonemap_to_u8``.
+                    a = stripped[..., 3:].float().div(255.0).clamp_(0.0, 1.0)
+                    safe = a.clamp_min(1e-6)
+                    rgb_tonemapped = linear_to_srgb(rgb_tonemapped / safe) * a
+                else:
+                    rgb_tonemapped = linear_to_srgb(rgb_tonemapped)
 
             scaled = memory.clone(rgb_tonemapped)
             scaled.mul_(255.0).add_(0.5).clamp_(0.0, 255.0)

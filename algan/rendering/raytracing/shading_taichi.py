@@ -82,6 +82,26 @@ _USER_PIPELINE_BASE = 6
 AMBIENT_STRENGTH = 0.1
 
 
+def _linear_color_space():
+    """True when shading runs in the linear working colour space.
+
+    Gates the two gamma-era compensations defined here -- ``_energy_scale``'s
+    illumination budget and ``_run_frag_pipeline``'s peak bound. They exist to
+    normalise away the overshoot that summing sRGB-encoded light creates; in
+    linear light lights genuinely add (as three.js accumulates them), so both
+    mechanisms are off and this is their shared gate.
+
+    The import is local *on purpose*: ``settings.py`` imports this module (for
+    ``_USER_PIPELINE_BASE``), so a module-level import back would be circular.
+    Reading through the module object keeps the value live at every call --
+    whatever the setting holds when a kernel containing the gate is compiled,
+    never a value frozen at import time.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    return bool(rt_settings.LINEAR_COLOR_SPACE)
+
+
 @ti.func
 def _energy_scale(weight):
     """Reciprocal of the illumination budget, for energy-conserving shading.
@@ -107,8 +127,16 @@ def _energy_scale(weight):
     output is display-referred (tonemapping defaults off) there is nowhere for
     the second lamp's extra radiance to go, so the budget is normalised instead
     of the result being clipped. See TONEMAP_FINDINGS.md.
+
+    Off under the linear working colour space (:func:`_linear_color_space`):
+    there lights sum plainly and this returns exactly 1.0, since normalising
+    would make them stop adding. The gate is compile-time (``ti.static``), so
+    the off arm is not compiled into the kernel at all.
     """
-    return 1.0 / ti.max(weight, 1.0)
+    scale = 1.0
+    if ti.static(bool(not _linear_color_space())):
+        scale = 1.0 / ti.max(weight, 1.0)
+    return scale
 
 
 # Maximum number of lights that can cast deterministic ray-traced shadows.
@@ -1159,8 +1187,15 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
     # bit-identical and only pixels that were going to clip anyway change.
     # ``g`` (glow) is returned untouched, so glow remains the one thing that
     # can produce above-1.0 output for bloom to work with.
+    #
+    # Off under the linear working colour space (:func:`_linear_color_space`):
+    # there light sums are physically additive and the sRGB OETF at the byte
+    # write owns the range, so scaling by the peak would make lights stop
+    # adding. The ``max(out, 0.0)`` clamp stays either way -- it is not part
+    # of the bound; it stops a negative reaching the encoder's pow.
     out = ti.math.max(out, 0.0)
-    peak = ti.max(out[0], ti.max(out[1], out[2]))
-    if peak > 1.0:
-        out = out / peak
+    if ti.static(bool(not _linear_color_space())):
+        peak = ti.max(out[0], ti.max(out[1], out[2]))
+        if peak > 1.0:
+            out = out / peak
     return ti.math.vec4(out[0], out[1], out[2], g)

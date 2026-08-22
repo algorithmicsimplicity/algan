@@ -46,6 +46,24 @@ AMBIENT_STRENGTH = 0.1
 # ---------------------------------------------------------------------------
 
 
+def _linear_color_space():
+    """True when shading runs in the linear working colour space.
+
+    Gates this module's two gamma-era compensations -- ``_energy_scale``'s
+    illumination budget and ``_recombine``'s peak bound, the torch twins of
+    ``shading_taichi._linear_color_space``'s gates. They normalise away an
+    overshoot that only exists when sRGB-encoded values are summed; in linear
+    light lights genuinely add, so both are off.
+
+    The import is local and read is through the module object so the value is
+    live at every call -- whatever the setting holds when a shader runs,
+    never a value frozen into this module at import time.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    return bool(rt_settings.LINEAR_COLOR_SPACE)
+
+
 def _split_albedo(albedo_color):
     """Split ``[..., 4]`` albedo into ``(rgb[..., 3], glow_tail[..., 1])``."""
     return albedo_color[..., :3], albedo_color[..., 3:]
@@ -65,7 +83,12 @@ def _energy_scale(weight):
     outside them (``primitives.py``) -- so this bounds the ambient-on-top-of-
     direct overshoot here, and the fragment path's twin is what bounds the
     multi-light sum.
+
+    Off under ``_linear_color_space()``: there lights sum plainly and this
+    returns exactly 1.0, since normalising would make them stop adding.
     """
+    if _linear_color_space():
+        return 1.0
     return 1.0 / weight.clamp_min(1.0)
 
 
@@ -82,12 +105,19 @@ def _recombine(rgb, glow_tail):
     Kept in step with ``_run_frag_pipeline`` in
     ``algan/rendering/raytracing/shading_taichi.py``, which does the same thing
     for the fragment path.
+
+    The peak bound is off under ``_linear_color_space()``: in linear light the
+    sum is physically additive and the sRGB OETF at the byte write owns the
+    range, so scaling by the peak would make lights stop adding. The negative
+    clamp stays either way -- it is not part of the bound; it stops a negative
+    reaching the encoder's pow.
     """
     rgb = rgb.clamp_min(0.0)
-    # clamp_min(1.0) makes the divisor exactly 1 whenever nothing is over
-    # range, so the in-range case is a bit-identical no-op and there is no
-    # divide-by-zero on black.
-    rgb = rgb / rgb.amax(-1, keepdim=True).clamp_min(1.0)
+    if not _linear_color_space():
+        # clamp_min(1.0) makes the divisor exactly 1 whenever nothing is over
+        # range, so the in-range case is a bit-identical no-op and there is no
+        # divide-by-zero on black.
+        rgb = rgb / rgb.amax(-1, keepdim=True).clamp_min(1.0)
     return torch.cat((rgb, glow_tail), -1)
 
 
