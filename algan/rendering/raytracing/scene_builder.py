@@ -22,6 +22,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.refit_bvh import build_refit_bvh
 from algan.rendering.raytracing.settings import (
+    _MAT_SLOTS,
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
 )
@@ -586,7 +587,7 @@ def _split_promotable(p, _append_texture, device, scene):
         rep = int(promo_all[int((inv == gid).nonzero()[0])])
         cmap = _dedup_time(colors[:, rep : rep + 1, 0, :].contiguous())  # [T',1,5]
         color_meta = _append_texture(
-            cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous()
+            cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous(), is_color=True
         )
         e0 = extra[:, rep : rep + 1, :]
         z = torch.zeros_like(e0[..., 0])
@@ -1233,11 +1234,33 @@ def _merge_scene(primitives):
     _texture_tensors = []
     _texel_offset = [0]
 
-    def _append_texture(tex):
+    def _append_texture(tex, is_color=False):
+        """Append one texture map and return its ``(offset, w, h)`` placement.
+
+        ``is_color`` says the map holds authored COLOUR, so it crosses the same
+        render boundary ``_decode_merged_colors`` takes the merged colour
+        arrays across and is decoded into linear light here. A material map
+        (metalness / roughness / IOR / transmission) or a normal map is not
+        colour and must not be touched, which is why the caller declares it
+        rather than the decode guessing from the buffer.
+
+        Decoded on the way IN rather than by ``_decode_merged_colors`` on the
+        assembled ``scene["textures"]``: a promoted 1x1 colour map is sliced out
+        of the primitive's own per-vertex colours and may share storage with
+        them (``_cat_collections`` also passes a lone collection through
+        uncopied), so decoding the assembled buffer in place could decode the
+        same values twice. ``srgb_to_linear`` returns a fresh tensor, which
+        breaks any such aliasing. Only channels 0:2 are colour -- 3 is additive
+        glow and 4 is coverage.
+        """
         if tex is None:
             return (-1, 0, 0)
         if tex.dim() == 3:  # [W, H, C]
             tex = tex.unsqueeze(0)  # [1, W, H, C]
+        if is_color and rt_settings.LINEAR_COLOR_SPACE and tex.shape[-1] >= 3:
+            tex = torch.cat(
+                (srgb_to_linear(tex[..., :3].float()), tex[..., 3:].float()), -1
+            )
         w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
         if c < 5:
             tex = torch.cat((tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
@@ -1453,7 +1476,7 @@ def _merge_scene(primitives):
         # map -> per-vertex fallback).
         meta_parts, uvs_parts = [], []
         for p in textured_triangles:
-            color_meta = _append_texture(p._rt_texture_map)
+            color_meta = _append_texture(p._rt_texture_map, is_color=True)
             mtex = getattr(p, "_rt_material_texture", None)
             material_meta = _append_texture(mtex)
             normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
@@ -1835,6 +1858,16 @@ def _merge_scene(primitives):
 #: neither is decoded.
 _MERGED_COLOR_KEYS = ("tri_colors", "circuit_colors", "circuit_border_colors")
 
+#: Colour-valued entries of the built-in material parameter block, by name in
+#: ``_MAT_SLOTS`` (resolved rather than hard-coded so a renumbered slot map
+#: carries this with it). Authored like every other colour, and consumed by
+#: arithmetic that runs in linear light: emissive is light the surface adds to
+#: the frame, and the two specular tints and the sheen tint multiply lobes the
+#: shading stages compute. Everything else in the block is a scalar coefficient
+#: -- roughness, metalness, an IOR, an absorption coefficient -- and decoding
+#: one would corrupt it.
+_MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color")
+
 
 def _decode_merged_colors(scene):
     """Decode the batch's authored colour into the linear working space.
@@ -1851,6 +1884,20 @@ def _decode_merged_colors(scene):
     colour tweens interpolate in linear light. three.js does decode at its
     ``Color``; Algan does not, and a red-to-blue tween staying perceptually
     even is the reason.
+
+    Three kinds of authored colour reach the renderer and all three cross here:
+
+    * the per-vertex colour arrays (``_MERGED_COLOR_KEYS``);
+    * the **colour texture maps**, which are decoded as they are appended
+      (``_append_texture(..., is_color=True)``) because a promoted map can alias
+      the per-vertex array it came from -- and this is not a corner: with
+      constant-property promotion on (the default) a mob whose colour and
+      material are uniform is rendered from a 1x1 colour map, so most content
+      arrives that way rather than through ``tri_colors``;
+    * the **colour slots of the material parameter block**
+      (``_MAT_COLOR_SLOT_NAMES``), for primitives on a built-in pipeline. A
+      custom fragment pipeline's block is its own layout, so those slots are not
+      colours there and are left alone.
     """
     if not rt_settings.LINEAR_COLOR_SPACE:
         return
@@ -1859,6 +1906,32 @@ def _decode_merged_colors(scene):
         if arr is None or arr.shape[-1] < 3:
             continue
         arr[..., :3] = srgb_to_linear(arr[..., :3])
+    _decode_material_block_colors(scene)
+
+
+def _decode_material_block_colors(scene):
+    """Decode the colour slots of ``tri_mat`` for built-in-pipeline primitives.
+
+    ``tri_mat`` is ``[Tm, N, MAT_W]`` and ``tri_mat_id`` ``[Tm', N]``; a
+    primitive whose pipeline id is at or above ``_USER_PIPELINE_BASE`` carries a
+    custom layout in the same array and is excluded. Nothing happens at all when
+    every material leaves emissive black and the three tints white, which decode
+    to themselves -- so the ordinary scene is untouched by this.
+    """
+    mat = scene.get("tri_mat")
+    mat_id = scene.get("tri_mat_id")
+    if mat is None or mat_id is None or mat.numel() == 0:
+        return
+    builtin = (mat_id < _USER_PIPELINE_BASE).all(0)  # [N]
+    if not bool(builtin.any()):
+        return
+    idx = builtin.nonzero(as_tuple=True)[0]
+    for name in _MAT_COLOR_SLOT_NAMES:
+        start, width = _MAT_SLOTS[name]
+        if start + width > mat.shape[-1]:
+            continue
+        block = mat[:, idx, start : start + width]
+        mat[:, idx, start : start + width] = srgb_to_linear(block)
 
 
 def prewarm_merge_cache(primitives):
