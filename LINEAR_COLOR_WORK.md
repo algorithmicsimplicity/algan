@@ -60,6 +60,11 @@ before this change, at exposure 0.4:
 **Past a total of 1.0, extra light changes nothing.** `_energy_scale`'s
 `1 / max(budget, 1)` pins every over-unity rig to exactly albedo.
 
+The harness is **deterministic**: two independent runs on this container
+produced byte-identical tables on every row. That is what makes "the `off` arm
+must reproduce the previous numbers exactly" a legitimate regression gate for
+D2 rather than a tolerance judgement.
+
 Note what this does to a naive test of additivity. "N lights at intensity i must
 render as one light at N*i" holds *perfectly* here — split and single agreed in
 every case above — because a rule that depends only on the total satisfies it
