@@ -34,10 +34,12 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P8** collating the per-descendant fan-out | **shipped** -- 99.5% of s05's 25 582 recorded events were per-descendant fan-out of a few hundred subtree-wide operations. Spawn/despawn now record **one** animation for the whole set: s05 25 582 -> 12 659 events, **1.64x on `set_state_to_times`**, 1.25x on prep. **Not byte-identical** -- it restores `Text`/`Tex` wave exits an ancestor's fade used to overwrite; two full-render baselines move. See P8 |
 | **P8b** the `dim_mobs` family, collated in the video project | **shipped** -- `map_animated_attribute` replaced the per-descendant loops. With P8 this took `save_video` 396.7 s -> **348.75 s** and `set_state_to_times` own time 92.5 s -> **56.4 s (1.64x)**, reproducing the harness prediction end to end. See the 2026-08-16 re-profile |
 | **P10** the batched surface build | **measured -- the top item.** `get_batch_of_primitives`' own time was never orchestration: **85.35 s (21.9%)** is `get_render_primitives_batched`, which **had no profiler hook**. With the hook added the stage's own time drops 23.8% -> **4.5%**. Inside it, 59.8% is `compute_grid_vertex_normals` and only 24.2% is the per-surface tail. See P10 |
+| **P10b** the re-split, after P11 | **measured, and it re-ranks P10.** `compute_grid_vertex_normals` 59.8% -> **44.9%**, of which **76.8% is "sides + crosses"** -- the seam merges and pole fans item 12 named are ~4% of the function and cannot matter. The per-surface tail grew 24.2% -> **31.0%**, its largest row the **primitive construction (13.5%)**, which no plan named. The whole-stack gather fell to 9.5%, so fusing the two buys ~2%, not the 13.7% the queue implies. One candidate tried and **rejected on measurement**: batching the per-surface colour gather is bit-identical and **1.002x**. See P10b |
+| **P11b** the sides written without a materialized roll | **shipped**, bit-identical (same `gridnormals` arm, so `_grid_normals_ab.py` covers it across 13 topologies). `roll`-then-subtract wrote the grid twice per side; writing the difference straight into its buffer, plus accumulating the four crosses in place, is **1.33x** on the sides-and-crosses block at `[120, 50, 24, 12, 3]` (1.44x on the sides alone), predicting ~1.09x on the stage. See P11b |
 | **P11** pairwise triangle sides in `compute_grid_vertex_normals` | **shipped and confirmed end to end** -- **2.0-2.2x** on the function, **1.51x on the whole stage** (85.35 s / 21.9% -> 56.62 s / 15.8%), **bit-identical** (asserted on bit patterns, incl. NaN payloads and signed zeros). Removes an 8-copy stack, an 8-wide subtract, two stride-2 gathers and a length-4 reduction. See P11 |
 | **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
 | **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
-| **P9** widening the batched bezier build | **measured, not started** -- it reaches **18.4%** of s05's circuits; **51.5% are reverted by the all-or-nothing group clash** the code calls "rare". ~19 s, ~1.04x. See P9 |
+| **P9** widening the batched bezier build | **shipped**, byte-identical (a lossless two-arm render: 0 differing pixels), gated by `ALGAN_BEZIER_GROUP_RUNS`. A clashing group is split into **maximal runs of consecutive batchable actors** instead of reverted wholesale -- the layout constraint is positional, not group-wide. On a clashing scene, 97.6% of circuits move from the per-actor build to the batched one and `get_batch_of_primitives` runs at **0.43-0.48x**. It also turned up a real defect in the builder it widens: it flattened curves to twice the per-actor path's chord tolerance, masked by the analytic-AA route's clamp. See P9 |
 | **T5** sparse-coverage host chain | **the host loops are done; T5's own item is the one that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame), and the conflict-rank scan followed on 2026-08-21 (`SHEET_RANK_KERNEL`, default on, bit-identical, 33 -> 6 ms of a 1080p frame on CPU). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Three measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
 | **T3**, **T6** | untouched; both shrank in share |
 
@@ -263,9 +265,31 @@ already been wrapping correctly all along (it just predated the helper), and
   the clause that rejected it (P9). **All three wrap shared helpers, so they
   scope their timers to the function under test** -- an unscoped wrapper times
   the whole prep pass and produced one wrong reading already (see P10).
-* `benchmarks/_grid_normals_ab.py` (P11: bit-pattern equality of the vertex
-  normals across 13 grid topologies plus timing; read its `REAL` rows, the small
+* `benchmarks/_grid_normals_ab.py` (P11 **and P11b**: bit-pattern equality of the
+  vertex normals across 13 grid topologies plus timing. It A/Bs *whatever the
+  paired arm currently is* against the legacy stacked form, so it covers later
+  work inside that block without a new harness. Read its `REAL` rows, the small
   cases are dispatch-bound).
+* `benchmarks/_bez_batch_parity.py` (the guarantee the whole batched bezier
+  build rests on: every attribute of a merged group, bitwise, against the
+  per-actor build. It had rotted past running and was repaired for P9; it is
+  what caught the chord-tolerance drift).
+* `benchmarks/_bezier_batchability.py` (P9: every circuit attributed to
+  batched / group-reverted / gate-rejected under **both** arms of
+  `ALGAN_BEZIER_GROUP_RUNS`, by watching which builder it reached rather than
+  by re-deriving the predicate, plus an alternating-arm wall clock. The
+  repo-local replacement for `videos/rl2/animations/_bezier_batchability_s05.py`.
+  Note it also constructs a clashing scene, because the repo's own benchmark
+  scene has no clash and measures nothing).
+* `benchmarks/_bezier_run_split_ab.py` (P9: the clashing scene rendered twice in
+  one process, lossless, arms flipped between renders; asserts 0 differing
+  pixels, identical batch windows, and non-vacuous arms).
+* `benchmarks/_surface_build_split.py` (P10b: the current split of
+  `get_render_primitives_batched` and of `compute_grid_vertex_normals`, from
+  instrumented copies it verifies bit-identical to the shipped functions before
+  timing them. Reports per-pass **shares** with their ranges and names the rows
+  it cannot separate. The repo-local replacement for
+  `videos/rl2/animations/_surface_build_probe_s05.py`).
 * **Where the recorded events come from** (P8), both in
   `videos/rl2/animations/`: `_authored_funcs_s05.py` attributes every recorded
   `FunctionApplicationEvent` to its authoring site, the algan-internal chain
@@ -1662,6 +1686,117 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > document), not a change in the code, and it is the sharpest illustration of it
 > yet -- a CPU harness cannot see that item at all.
 
+### P10b -- the re-split, after P11 (measured, and it moves the ranking)
+
+> **Every share in the P10 table above was measured before P11 halved
+> `compute_grid_vertex_normals`.** `RENDERER_WORK_QUEUE.md` item 12 asks for a
+> re-split before anything inside P10 is chosen; this is it, from
+> `benchmarks/_surface_build_split.py` -- a repo-local probe (the
+> `videos/rl2/` one is not in this repo), self-checking: it measures
+> instrumented **copies** of `get_render_primitives_batched` and
+> `compute_grid_vertex_normals` and aborts unless each copy's output is
+> bit-identical to the shipped function's, on bit patterns.
+>
+> 220 independent `Sphere` actors at the reference shape, 40 per batched call,
+> `[40, 50, 24, 12, 3]`, CPU, medians of per-pass **shares** over 6 timed passes
+> (share-of-medians does not sum to 100% under this much jitter), taken with the
+> box otherwise idle:
+>
+> | section | pre-P11 (P10 table) | now |
+> | --- | --- | --- |
+> | `compute_grid_vertex_normals` | 59.8% | **44.9%** |
+> | per-surface `grid_to_triangle_vertices` | 8.1% | **10.5%** |
+> | per-surface primitive construction | 8.9% | **13.5%** |
+> | whole-stack `grid_to_triangle_vertices` (both gathers) | 13.7% | **9.5%** |
+> | per-surface residual + timeline reads | 6.7% | **6.9%** |
+> | grid materialize + stack, weld flags | (in "everything else") | 2.6% |
+> | unattributed | 2.8% | 9.0% |
+> | **shared prefix / per-surface tail** | **74.8% / 24.2%** | **57.0% / 31.0%** |
+>
+> **Three things follow, and two of them contradict the work queue's guesses.**
+>
+> 1. **`compute_grid_vertex_normals` is still the top item**, and inside it
+>    **"sides + crosses" is 76.8%** -- the rolls, the four differences, the four
+>    cross products, the boundary zeroing and the sum. Everything item 12 named
+>    as "the rest of `compute_grid_vertex_normals`" is small: pole fans 5.5%,
+>    final normalize 4.3%, the two seam merges 2.6% combined. **Optimizing the
+>    seam merges or the pole fans cannot matter** -- together they are ~4% of
+>    the function, under 2% of the stage.
+> 2. **The whole-stack gather is no longer the second target.** Item 12 names it
+>    ("two gathers sharing one permutation"); at 9.5% of the stage, fusing the
+>    two into one buys at most half of that, ~2%.
+> 3. **The per-surface tail grew to 31%**, and its largest single row is the
+>    primitive **construction** (13.5%), which no plan named. That is
+>    `TrianglePrimitive.__init__`'s non-collection branch: a full clone of the
+>    `[T, M, 5]` colours plus two full-size in-place passes, per surface.
+>
+> **One candidate was tried and does not pay: batching the per-surface colour
+> gather.** Stacking every surface's colour grid and gathering once is exactly
+> what the grids already do, it is bit-identical (asserted over 480 tensors),
+> and it is **1.002x** -- a dead wash. Measured in isolation over 16 alternated
+> rounds at 120 surfaces, because the whole-function A/B could not resolve it
+> (three runs read 0.83x, 0.95x, 1.08x on a component worth a tenth of the
+> function -- a textbook case of the noise this document keeps warning about).
+> The reason is structural and will not change: a `Surface` allocates one colour
+> row per grid point whatever the colour is, so the `torch.stack` that feeds the
+> single gather copies exactly the bytes the saved dispatches were worth. **Do
+> not re-try it on CPU.** On a CUDA animation device, where a dispatch costs far
+> more than the copy, the balance may differ -- that is unmeasured here.
+>
+> **What to do next inside P10**, ranked by these numbers:
+>
+> * **The remaining "sides + crosses" (~35% of the stage).** The only *large*
+>   win available is the identity
+>   `cross(xm,ym) + cross(ym,xp) + cross(xp,yp) + cross(yp,xm) = cross(xm - xp, ym - yp)`
+>   -- four cross products collapsing to one. It is exact in real arithmetic and
+>   **not bit-identical in floating point**, and the boundary zeroing breaks the
+>   algebra at the grid's edges, so it is a deliberate decision with baselines to
+>   regenerate, not a patch. P11b below took the byte-identical part of this
+>   block instead.
+> * **The per-surface primitive construction (13.5%).** The colour clone and its
+>   two in-place passes are per surface and elementwise; they are the same shape
+>   of work the grids batched successfully. Unlike the gather, there is no extra
+>   copy to pay for -- the clone already exists.
+> * **Fusing the two whole-stack gathers (~2%).** Cheap, byte-identical (a
+>   gather is a permutation), and small. Do it when touching that code anyway.
+
+### P11b -- the sides written without a materialized roll (shipped)
+
+> **Shipped**, bit-identical, inside the same `gridnormals` arm P11 introduced,
+> so `benchmarks/_grid_normals_ab.py` covers it across all 13 grid topologies
+> without a new harness.
+>
+> P11 left the four sides as `grid.roll(shift, axis) - grid`. `roll` allocates
+> and fills a whole copy of the grid that the subtraction then reads once and
+> throws away: **two full-size writes where one will do**, four times over.
+> `_wrapped_difference` writes the difference straight into one output buffer,
+> in the two pieces the wrap-around splits it into. The four crossed pairs are
+> then accumulated in place instead of through three temporaries.
+>
+> Bit-identical, and not by an argument about associativity: every element is
+> the same subtraction of the same two elements written to a different place,
+> and `t = a + b; t += c; t += d` is the same three additions in the same order
+> as `a + b + c + d`. Asserted on bit patterns across open / x-closed / pole
+> grids, single-column and two-row degenerates, collapsed columns, float64, NaN,
+> inf and signed zeros.
+>
+> | | measured |
+> | --- | --- |
+> | the four sides alone, `[120, 50, 24, 12, 3]` | **1.44x** |
+> | sides + crosses + accumulate, `[120, 50, 24, 12, 3]` | **1.33x** |
+> | the same at `[40, 50, 24, 12, 3]` | 1.065x |
+> | `_grid_normals_ab.py` REAL rows, paired arm vs the legacy stack | 2.20x -> **2.99x** and 2.04x -> **2.12x** |
+>
+> **Read the large rows.** The small-grid cases are dispatch-bound and the
+> paired form runs *more* torch calls there, exactly the caveat P11 records; two
+> of them read below 1.0x and say nothing about the win.
+>
+> Predicted effect on the stage from the re-split above: sides+crosses is 76.8%
+> of a function that is 44.9% of `get_render_primitives_batched`, so
+> `0.232 + 0.768/1.33 = 0.81` on the function and **~1.09x on the stage**. Not
+> confirmed end to end -- that needs the reference machine, and a CPU-only box
+> cannot speak for it.
+
 ### P11 -- pairwise triangle sides in `compute_grid_vertex_normals` (shipped)
 
 > **Shipped**, bit-identical, gated by `ALGAN_OPT_DISABLE=gridnormals`.
@@ -1782,8 +1917,80 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > is an unimplemented contract.** Grep for callers before trusting a docstring
 > that describes a mechanism.
 
-### P9 -- the batched bezier build reaches 18.4% of the circuits (measured, not started)
+### P9 -- the batched bezier build reaches 18.4% of the circuits (shipped)
 
+> **Shipped**, byte-identical, gated by `ALGAN_BEZIER_GROUP_RUNS` (default on;
+> `=0` restores the all-or-nothing revert so both arms run in one process).
+> The measurement that motivated it is kept below, unchanged, because it is the
+> evidence for why the revert had to go.
+>
+> **What was built.** A clashing group is no longer given up wholesale. The
+> insight is that the layout constraint is *positional*, not group-wide: within
+> one batch identifier, each deferred circuit sits after some number of raw
+> primitives of that identifier and before the rest, so splitting the group into
+> **maximal runs of consecutive batchable actors** and merging each run on its
+> own puts every merged collection on exactly the span its circuits' raw
+> primitives would have occupied. `get_batch_of_primitives` stamps each deferred
+> entry with that position -- the count of raw primitives of its identifier seen
+> so far in one ordered walk -- and `_build_deferred_beziers` groups by
+> `(group key, run)`. A `grouped_primitives` bucket became an ordered list that
+> may hold merged collections *and* raw primitives; the emission walk flushes
+> each maximal raw run through the per-class emission that used to run over the
+> whole bucket (factored out unchanged as `_emit_primitive_collections`). With
+> no raw primitives of an identifier present, every entry gets run 0 and the
+> grouping is what it always was. `_PREBUILT_COLLECTION` is gone: a bucket no
+> longer needs a single class marker, which is what forced the revert.
+>
+> **Measured** (`benchmarks/_bezier_batchability.py`, which replaces the
+> `videos/rl2/` probe named below and does not exist in this repo). Two scenes,
+> six 8-frame windows each, outcomes measured by watching which builder each
+> circuit actually reached rather than by re-deriving the predicate:
+>
+> | scene | arm | batched | reverted by the clash |
+> | --- | --- | --- | --- |
+> | `benchmarks/bezier_rendering.py` | either | 99.9% (15 006 / 15 018) | 0 |
+> | a packed `Text` sharing an identifier with 40 circles/squares | `=0` | 0 | **97.6% (240)** |
+> | the same | `=1` | **97.6% (240)** | 0 |
+>
+> On the clashing scene `get_batch_of_primitives` goes from ~38 ms to ~17 ms per
+> window, **0.43-0.48x, consistently across all six** (medians, arms alternated
+> per round). **The benchmark scene in this repo has no clash at all**, which is
+> worth knowing before anyone A/Bs on it: the payoff is entirely scene-shaped,
+> and an A/B there measures two arms doing identical work.
+>
+> **Byte-identity** is settled by a render, not by an argument
+> (`benchmarks/_bezier_run_split_ab.py`): the clashing scene rendered twice in
+> one process, lossless, arms flipped between renders -- **max channel
+> difference 0, 0 differing pixels over 10/10 frames**, with both arms asserted
+> to have seen the same batch windows and the arms asserted non-vacuous (41
+> per-actor circuit builds under `=0` against 1 under `=1`).
+> `tests/unit_tests/test_bezier_group_runs.py` is the standing guard.
+>
+> **What widening the path turned up.** `build_render_primitives_batched`
+> documents itself as a byte-identical replacement for the per-actor
+> constructor, and it was not: it set `num_pixels_per_sample = 1` where
+> `BezierCircuitPrimitive`'s constructor defaults to `0.5`. That value is the
+> maximum screen-space curve-to-chord error in pixels, so every batched circuit
+> was flattened to twice the per-actor path's tolerance. The **default
+> analytic-AA route hides it** -- it clamps the tolerance to
+> `ANALYTIC_AA_CHORD_TOLERANCE = 0.25`, and 0.5 and 1 both land on 0.25 -- and
+> the classic supersampled route does not. It shipped in the same commit as the
+> function (`8e29beb`), and `benchmarks/_bez_batch_parity.py` was written
+> expecting the two to be equal, which is how it surfaced. Both now read one
+> named constant, `DEFAULT_CHORD_TOLERANCE_PIXELS`. Harmless while the batched
+> build reached a fifth of a scene's circuits; not harmless once a clash stops
+> sending the rest down the other path.
+>
+> **`benchmarks/_bez_batch_parity.py` did not run at `HEAD`** and was repaired
+> as part of this: `set_render_settings`, `AnimationManager.instance()` /
+> `TimelineManager.instance()` (managers are per-Scene now) and
+> `scene.actors[-1]` (actors is a flat list) had all been gone for some time,
+> and its `ATTRS` named attributes the primitive no longer has. It is the
+> harness that guarantees the builder this item widens, so it was not optional.
+> It now passes on a 2513-circuit group.
+>
+> ---
+>
 > **Measured first** (`videos/rl2/animations/_bezier_batchability_s05.py`, six
 > windows spread across the scene, prep only, no render). The vectorized
 > `build_render_primitives_batched` -- which reads each attribute from the
@@ -1871,29 +2078,35 @@ every round has left alone.
    `get/full` vs `get/replay` split first (`_prep_timeslice_ab_s05.py` reports
    it): the old "two thirds in the geometry build" figure predates P8, which
    changed the denominator.
-2. **P9 -- widen the batched bezier build** -- measured: it reaches **18.4%** of
-   s05's circuits, and **51.5% are reverted by the all-or-nothing group clash**
-   that the code calls "rare". Batched is ~5x cheaper per circuit. The per-actor
-   build is 40.97 s (11.4%) of own time and every one of those builds makes its
-   own accessor round trips, so this cuts item 1 as well. Read P9 for the layout
-   constraint that makes it non-trivial.
+2. ~~**P9 -- widen the batched bezier build**~~ -- **shipped.** The
+   all-or-nothing group revert is gone: a clashing group is split into maximal
+   runs of consecutive batchable actors, because the layout constraint is
+   positional rather than group-wide. Byte-identical (0 differing pixels on a
+   lossless two-arm render); 0.43-0.48x on `get_batch_of_primitives` on a
+   clashing scene. It removes the per-actor build's accessor round trips for
+   those circuits, so it cuts item 1 as well. See P9.
 3. **The rest of the batched surface build (P10)** -- **56.62 s (15.8%)** after
-   P11 took 1.51x off it. What is left, in the proportions measured *before*
-   P11 (so re-split it before choosing):
+   P11 took 1.51x off it. **Re-split (P10b), and the re-split re-ranks it** --
+   the proportions this list used to quote were measured before P11 and were
+   wrong about which parts matter:
 
-   * **the per-surface tail, 24.2%** -- colours, shader parameters and
-     primitive construction are still done one surface at a time, each with its
-     own timeline reads and its own gather of the same shape as the corners that
-     were just batched. The lever is to stack them exactly as the grids already
-     are, and it is the part that also cuts item 1. Smaller than it looks, which
-     is itself the finding: the obvious hypothesis was that this *was* the cost.
-   * **the rest of `compute_grid_vertex_normals`** -- P11 took the side
-     construction; the seam merge, the two pole fans and the final
-     `F.normalize` are untouched.
-   * **`grid_to_triangle_vertices` on the whole stack, 13.7%** -- an
-     advanced-index gather expanding `[..., W*H, C]` to `[..., 3*T, C]`, run
-     twice per call (corners and normals) on the same index tensor: the same
-     "two gathers sharing one permutation" shape as T5.
+   * **`compute_grid_vertex_normals`, still 44.9% of the stage, and 76.8% of
+     that is "sides + crosses".** P11b took the byte-identical part of that
+     block (the materialized `roll`s and the accumulation temporaries, 1.33x).
+     What is left needs the four-crosses-to-one identity, which is exact in
+     real arithmetic and **not bit-identical**, so it is a decision with
+     baselines to regenerate rather than a patch. **The seam merges and pole
+     fans are ~4% of the function and are not worth touching** -- this list
+     used to name them.
+   * **the per-surface tail, now 31.0%**, whose largest row is the **primitive
+     construction (13.5%)**: a full clone of the `[T, M, 5]` colours plus two
+     in-place passes, per surface. No plan named it before the re-split.
+     Batching the colour *gather* was tried and is a wash (1.002x, bit-identical
+     -- see P10b before repeating it); the construction has no such extra copy
+     to pay for.
+   * **`grid_to_triangle_vertices` on the whole stack, now 9.5%, not 13.7%** --
+     the same "two gathers sharing one permutation" shape as T5, but fusing them
+     buys at most ~2% of the stage. Do it when in that code anyway.
 4. **`set_state_to_times` own time** -- 64.21 s (17.9%), down from 92.5 s.
    **Measured section by section** (P7), which killed the plan an earlier
    revision put here (a batched `[F, T]` window-test and interpolant pass):
