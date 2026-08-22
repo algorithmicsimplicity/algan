@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -87,6 +88,15 @@ def _build_material(mat):
         sheen_color=_color(mat.get("sheen_color"), (0.0, 0.0, 0.0)),
         specular_intensity=mat.get("specular_intensity", 1.0),
         specular_color=_color(mat.get("specular_color"), (1.0, 1.0, 1.0)),
+        # Spec default attenuation_distance is 0; three.js means "no
+        # attenuation" by Infinity and would divide by zero at 0, so <= 0 maps
+        # to Infinity -- matching three_render.mjs.
+        attenuation_distance=(
+            mat["attenuation_distance"]
+            if mat.get("attenuation_distance", 0) > 0
+            else math.inf
+        ),
+        attenuation_color=_color(mat.get("attenuation_color"), (1.0, 1.0, 1.0)),
         **common,
     )
 

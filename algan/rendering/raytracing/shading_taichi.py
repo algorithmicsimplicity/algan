@@ -41,6 +41,13 @@ single-stage pipeline)::
     21..23 sheen_color   24 transmission   25 iridescence (accepted, unused --
     matches the PyTorch shader)      26 one_sided (declared by the GEOMETRY,
     not by the material -- see ``_MAT_ONE_SIDED``)
+    27..29 attenuation_sigma (Beer-Lambert absorption coefficient over the
+    segment a ray spends inside a transmissive solid; applied by the wavefront
+    bounce loop, not by the shading stages)
+
+Every slot above carries a 0.0 default that means "the behaviour that existed
+before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
+block of a custom pipeline keeps its historical look slot by slot.
 
 The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
 terms, ``AMBIENT_STRENGTH``, ``light_intensity == ambient == 1``) and reproduces
@@ -54,17 +61,26 @@ import taichi as ti
 from algan.environment import env_int
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 27
+MAT_W = 30
 
 # Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
 # so a back-facing hit is shaded with its own normal instead of the viewer's
 # side (``Mob.two_sided`` False). Not a material property -- the MOB declares
-# it -- so it is not in ``_MAT_SLOTS``, and it is deliberately the LAST slot
-# with 0.0 ("two-sided", the historical behaviour) as its default: a custom
+# it -- so it is not in ``_MAT_SLOTS``. Its 0.0 default ("two-sided", the
+# historical behaviour) is safe because of THE PADDING RULE this block lives
+# by: every slot's 0.0 must mean "the behaviour that existed before". A custom
 # fragment pipeline's block is a different layout entirely and is zero-padded
-# to this width when the two share a scene, so the padding reads as the
-# behaviour that pipeline already had.
+# to this width when the two share a scene, so a zero read from the padding
+# has to be the pre-existing behaviour of whatever reads that slot. That rule,
+# not slot position, is what makes appending slots after this one safe -- new
+# entries must carry a 0.0 that means "as before" (slots 27..29 do: 0.0 is no
+# volumetric absorption, which is what every material did before they existed).
 _MAT_ONE_SIDED = 26
+
+# Slots 27..29 of that block: the Beer-Lambert absorption coefficient of the
+# medium a transmissive solid encloses, per channel. Read by the wavefront
+# bounce loop over the segment a ray spends inside, never by a shading stage.
+_MAT_ATTENUATION_SIGMA = 27
 
 # Built-in single-stage pipeline ids.
 _MID_DEFAULT = 0

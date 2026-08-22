@@ -59,6 +59,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_pixel_color,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_ATTENUATION_SIGMA,
     _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
@@ -2826,6 +2827,43 @@ def wavefront_shade(
                         # gated by ``diel_pass`` -- see ``_scatter_impl``.
                         R = ti.math.vec3(0.0, 0.0, 0.0)
 
+                    # Volumetric absorption (Beer-Lambert; glTF
+                    # KHR_materials_volume semantics): this hit LEAVES a
+                    # transmissive medium when the material transmits and the
+                    # ray runs along the shading normal (rd . normal > 0) --
+                    # the same side test ``_material_reflectance`` applies. The
+                    # segment spent inside is ``t_hit - t_prev``, the distance
+                    # from the surface the ray last crossed to this one: for a
+                    # refracted ray, spawned AT the entry surface with
+                    # ``t_prev = 0``, that is exactly its interior chord, and
+                    # for a ray that walked through a partly-covering entry
+                    # face without a bounce it is still the chord rather than
+                    # the whole distance back to the camera. Exact for a single
+                    # convex solid; nested media each attenuate by their own
+                    # sigma over their own segment, which approximates the path
+                    # integral through both. Multiplied into the running
+                    # throughput BEFORE this hit's shading is accumulated and
+                    # before any continuation weight is derived, so the surface
+                    # itself and both branches are dimmed by the medium the
+                    # light crossed to reach them. Built-in pipelines only: a
+                    # custom fragment pipeline's parameter block is its own
+                    # layout, so those slots of one are not a sigma.
+                    if (T > 1e-4) and (htype == 1):
+                        pid_a = tri_mat_id[f % tri_mat_id.shape[0], prim]
+                        if pid_a < _USER_PIPELINE_BASE:
+                            tma = f % tri_mat.shape[0]
+                            sa = _MAT_ATTENUATION_SIGMA
+                            sigma_a = ti.math.vec3(
+                                tri_mat[tma, prim, sa],
+                                tri_mat[tma, prim, sa + 1],
+                                tri_mat[tma, prim, sa + 2])
+                            if rd.dot(normal) > 0.0:
+                                seg = ti.max(t_hit - t_prev, 0.0)
+                                weight *= ti.math.vec3(
+                                    ti.exp(-sigma_a[0] * seg),
+                                    ti.exp(-sigma_a[1] * seg),
+                                    ti.exp(-sigma_a[2] * seg))
+
                     # A transmissive surface refracts if it is solid geometry
                     # (is_glass) and transmits unbent if it is a zero-thickness
                     # circuit (is_pane); mutually exclusive by htype. Mirrors
@@ -3128,6 +3166,29 @@ def wavefront_shade(
                             s_ior = circuit_meta[cmr, prim, _M_IOR]
                             s_trans = circuit_meta[cmr, prim, _M_TRANSMISSION]
                     hit_point = ro + t_hit * rd
+                    # Volumetric absorption, identical rule to the inline
+                    # branch above (see it for the side test, the segment
+                    # length and the built-in-pipeline-only slot layout): the
+                    # attenuation wraps the scatter call -- applied to the
+                    # running throughput before its contribution accumulates
+                    # and before any continuation weight is derived -- because
+                    # the scatter contract's injected signature is fixed and
+                    # must not grow an argument.
+                    if (s_trans > 1e-4) and (htype == 1):
+                        pid_a = tri_mat_id[f % tri_mat_id.shape[0], prim]
+                        if pid_a < _USER_PIPELINE_BASE:
+                            tma = f % tri_mat.shape[0]
+                            sa = _MAT_ATTENUATION_SIGMA
+                            sigma_a = ti.math.vec3(
+                                tri_mat[tma, prim, sa],
+                                tri_mat[tma, prim, sa + 1],
+                                tri_mat[tma, prim, sa + 2])
+                            if rd.dot(sni.normalized()) > 0.0:
+                                seg = ti.max(t_hit - t_prev, 0.0)
+                                weight *= ti.math.vec3(
+                                    ti.exp(-sigma_a[0] * seg),
+                                    ti.exp(-sigma_a[1] * seg),
+                                    ti.exp(-sigma_a[2] * seg))
                     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
                     contrib = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     pass_w = zero3

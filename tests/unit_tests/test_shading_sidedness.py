@@ -167,10 +167,15 @@ def test_the_blocks_default_is_the_historical_behaviour():
     """Zero is two-sided, and zero is what both the defaults row and the
     zero-padding of a narrower custom block supply -- so anything that does not
     declare keeps the lighting it had.
+
+    The padding rule here has outgrown "one_sided is the LAST slot": slots may
+    be appended after it, each safe for exactly one reason -- its own 0.0 also
+    means the behaviour that existed before (slots 27..29 attenuation_sigma:
+    0.0 is no absorption, what every material did before they existed).
     """
     assert len(_MAT_DEFAULTS) == MAT_W
     assert _MAT_DEFAULTS[_MAT_ONE_SIDED] == 0.0
-    assert _MAT_ONE_SIDED == MAT_W - 1
+    assert all(v == 0.0 for v in _MAT_DEFAULTS[_MAT_ONE_SIDED:])
 
 
 def test_moving_a_solid_keeps_its_declaration():

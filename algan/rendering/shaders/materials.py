@@ -185,6 +185,44 @@ def _to_rgb(value):
     return _to_color5(value)[..., :3]
 
 
+def _attenuation_sigma(attenuation_color, attenuation_distance):
+    """The Beer-Lambert absorption coefficient ``sigma_rgb`` of a transmissive
+    medium, from glTF ``KHR_materials_volume`` fields::
+
+        sigma = -ln(clamp(linear(attenuation_color), 1e-6, 1)) / attenuation_distance
+
+    so a ray crossing path length ``d`` leaves ``exp(-sigma * d)`` of its
+    throughput: at ``d == attenuation_distance`` that is exactly
+    ``attenuation_color``, and white attenuates nothing at any distance.
+    Packed as a coefficient rather than as the two authored fields because it
+    makes "no absorption" the all-zeros value, which is what a zero-padded
+    custom-pipeline material block must mean (see ``shading_taichi.MAT_W``).
+    No attenuation (white colour, or an infinite / non-positive distance)
+    therefore packs as zeros.
+
+    The log is taken in the working colour space: authored colour is
+    display-referred, and under the linear working space it is decoded first --
+    the same decode ``scene_builder._decode_merged_colors`` gives every other
+    colour, gated on the same setting -- so three.js's "decode at Color, take
+    the log of linear" behaviour is reproduced.
+    """
+    import torch
+
+    if (
+        attenuation_distance is None
+        or math.isinf(attenuation_distance)
+        or attenuation_distance <= 0
+    ):
+        return torch.zeros(3)
+    c = _to_rgb(attenuation_color).detach().float()
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.utils.color_space import srgb_to_linear
+
+    if rt_settings.LINEAR_COLOR_SPACE:
+        c = srgb_to_linear(c)
+    return -torch.log(c.clamp(1e-6, 1.0)) / float(attenuation_distance)
+
+
 def _to_color5(value):
     """Parse a colour into a 5-channel :class:`Color` ``[R, G, B, glow, opacity]``.
 
@@ -473,6 +511,11 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
             "sheen_color": _to_rgb(self.sheen_color),
             "transmission": self.transmission,
             "iridescence": self.iridescence,
+            # Beer-Lambert absorption coefficient (see _attenuation_sigma);
+            # zeros when the material does not attenuate.
+            "attenuation_sigma": _attenuation_sigma(
+                self.attenuation_color, self.attenuation_distance
+            ),
         }
 
 
