@@ -479,7 +479,85 @@ at all.
 
 ### What this does not do
 
-It bounds the result, it does not make the lighting energy-conserving. A three-light rig still saturates a white surface
+**Done in §12.** It bounds the result, it does not make the lighting
+energy-conserving. A three-light rig still saturates a white surface
 where a physically-based one would not; it now saturates without changing hue.
 Normalising the light accumulation itself would be the deeper fix and would
 change every multi-light scene's shading, not just its clipped pixels.
+
+## 12. Energy-conserving lighting
+
+§11 bounded the *result*; this bounds the *illumination*, which is what stops a
+three-light rig saturating a white surface in the first place.
+
+### What was not conserving energy
+
+The BRDFs already were: `_stage_standard` and `_stage_physical` carry the
+Cook-Torrance `k_d = (1 - F)(1 - metalness)`, so diffuse and specular already
+share one budget. Two things above the BRDF did not:
+
+1. **Ambient was added on top of a full direct term.** A fully lit surface
+   reflected `albedo * 1.1` -- 10% more light than arrived.
+2. **Lights summed unnormalised.** N lights meant N times the reflected light,
+   linear and unbounded.
+
+### The change
+
+Every stage now accumulates an illumination budget alongside its reflected
+terms -- the ambient coefficient plus, per light, `(n.l) * visibility *
+peak(colour)` -- and scales the reflected total by `1 / max(budget, 1)`.
+Emissive stays outside it: emission is not reflection, and dimming a glowing
+surface because a lamp was added would be wrong.
+
+Applied to all five kernel stages (`shading_taichi.py`) and their five torch
+twins (`material_shaders.py`), which the AgX defect is a standing reminder to
+keep in step.
+
+**Weighting the budget by the light's own colour is load-bearing, and I got it
+wrong first.** Counting geometry alone (`n.l * visibility`) charges a rig for
+how many lights it has rather than how much light they emit, so
+`tests/fast`'s three dim lights (0.45 / 0.85 / 0.6) were billed as three full
+ones and the solids came out far too dark -- the metal icosahedron nearly
+black. Weighting by `peak(colour)` makes three lights at 0.3 cost what one at
+0.9 costs. This was caught by looking at the render, not by the invariant,
+which was satisfied either way.
+
+### Verification
+
+The probe cannot tell "bounded by conservation" from "bounded by §11's clip",
+since both land on 1.000. So the check is to **disable §11's bound and
+re-measure**: if conservation is structural the peak stays in range without it.
+
+| lights, glow = 0 | before §12 | §12, with §11's bound disabled |
+| --- | ---: | ---: |
+| default rig | 1.000 | 1.000 |
+| + Ambient | 1.325 | **1.000** |
+| + Ambient + Directional | 1.744 | **1.000** |
+| + Ambient + Directional + Point | 2.154 | **1.000** |
+| metal + transmissive spheres, 3 lights | -- | **1.000** |
+
+So the bound in §11 is now a backstop for specular spikes rather than the
+mechanism. For a white Lambert surface the arithmetic is exact: reflected and
+incident are the same sum, so it lands on precisely 1.0.
+
+### What it costs, and it is not small
+
+This makes lighting **normalised, not physically additive**, and that is a
+deliberate departure. Two lamps on a white wall really do deliver twice the
+radiance; the engine used to render that and rely on the tonemap to compress
+it. With display-referred output there is nowhere for the second lamp's extra
+radiance to go, so the budget is normalised instead of the result clipped.
+
+The visible consequence: **a scene authored for additive lights is dimmer
+now.** `algan_outputs/tonemap_check/fast_f30_energy_conserving.png` against
+`fast_f30_ldr_bound.png` -- mean difference 1.61 channel values, peak 150. The
+flat 2-D content is untouched; the lit solids are lit by one rig's worth
+instead of three lights' worth. The metal icosahedron is much darker, which is
+the honest answer for a 0.4-metalness surface with narrow specular lobes and no
+environment map to reflect -- but it *is* a large change from what that scene
+looked like.
+
+The upshot for authoring is that light intensities now mean something
+predictable: a rig summing to 1.0 fully lights a surface, and past that the
+lights share the budget rather than compounding. Scenes tuned against the old
+additive behaviour will want their intensities raised.

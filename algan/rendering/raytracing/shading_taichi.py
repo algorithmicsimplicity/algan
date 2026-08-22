@@ -81,6 +81,36 @@ _USER_PIPELINE_BASE = 6
 # Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
 AMBIENT_STRENGTH = 0.1
 
+
+@ti.func
+def _energy_scale(weight):
+    """Reciprocal of the illumination budget, for energy-conserving shading.
+
+    ``weight`` is the total illumination arriving at the surface: the ambient
+    fill's coefficient plus, per light, ``(n.l) * visibility * peak(colour)``.
+    Weighting by the light's own colour is what stops a rig of dim lights being
+    penalised for its light *count*: three lights at 0.5 spend the same budget
+    as one at 1.5, not three times as much.
+    A reflective surface cannot send out more light than arrives, so once the
+    incident weight passes unity the reflected terms are scaled back by it --
+    the surface then reflects its albedo and no more, however many lights are
+    on it.
+
+    Below unity this is exactly 1.0, so a scene lit the way Algan lights one by
+    default is bit-identical; only over-lit surfaces move. Emissive is *not*
+    scaled by it: emission is not reflection, and dimming a glowing surface
+    because a lamp was added would be wrong.
+
+    Note this makes lighting normalised rather than physically additive. Two
+    lamps on a white wall really do deliver twice the radiance, and the engine
+    used to render that -- relying on the tonemap to compress it back. Now that
+    output is display-referred (tonemapping defaults off) there is nowhere for
+    the second lamp's extra radiance to go, so the budget is normalised instead
+    of the result being clipped. See TONEMAP_FINDINGS.md.
+    """
+    return 1.0 / ti.max(weight, 1.0)
+
+
 # Maximum number of lights that can cast deterministic ray-traced shadows.
 # Each shaded fragment collects one visibility scalar per light (1 = lit,
 # 0 = occluded) into a fixed-size ``ti.Vector`` -- Taichi vector lengths are
@@ -568,6 +598,7 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     out = in_rgb
     acc = ti.math.vec3(0.0, 0.0, 0.0)
     wsum = 0.0
+    esum = 0.0
     tl0 = f % light_col.shape[0]
     for li in range(num_lights):
         # A zero-colour light row is a light outside its lifespan (or
@@ -597,6 +628,7 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
             d = ti.max(ld.dot(n), 0.0)
             w = d * d * d * d * d * 0.5 * v
             acc += lc * w
+            esum += w * ti.max(lc[0], ti.max(lc[1], lc[2]))
             # The base fade-out counts each row by its *power fraction* (1/K
             # for an area light's K emitter samples, 1 otherwise), so one area
             # light displaces at most as much base colour as one point light
@@ -608,7 +640,13 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
             # the K dim samples each faded the base as a whole light while
             # only delivering 1/K of the colour.
             wsum += w * frac
-    out = out * (1.0 - ti.min(wsum, 1.0)) + acc
+    # The base fade was already bounded by ``min(wsum, 1)``; ``acc`` was not,
+    # so past a total weight of 1 the two stopped being a blend and the sum ran
+    # away with the extra lights. Scaling ``acc`` by the same budget makes the
+    # pair a genuine convex combination of the albedo and the light colours.
+    # ``max(wsum, 1)`` is exactly 1 for a single light (whose weight peaks at
+    # 0.5), so the default rig is bit-identical.
+    out = out * (1.0 - ti.min(wsum, 1.0)) + acc * _energy_scale(esum)
     return ti.math.vec4(out[0], out[1], out[2], in_glow)
 
 
@@ -630,14 +668,16 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     # the legacy expression; for many lights it sums correctly (the old
     # per-light overwrite collapsed the colour and re-added ambient/emissive
     # per light -- e.g. an area light's sample fan came out wrong).
-    acc = (in_rgb * (AMBIENT_STRENGTH * env)
-           + emissive * emissive_intensity)
+    refl = in_rgb * (AMBIENT_STRENGTH * env)
+    wsum = AMBIENT_STRENGTH * env
     for li in range(num_lights):
         ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                              pos, n)
         v = _light_vis(shadows, vis, li)
         n_dot_l = ti.max(n.dot(ld), 0.0)
-        acc += in_rgb * lc * (n_dot_l * v)
+        refl += in_rgb * lc * (n_dot_l * v)
+        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+    acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
@@ -659,8 +699,8 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     n = _prep_normal(n_interp, face_n, flat, view_dir)
     # Additive over lights (see _stage_lambert): ambient + emissive once, then
     # each light's Blinn-Phong diffuse + specular.
-    acc = (in_rgb * (AMBIENT_STRENGTH * env)
-           + emissive * emissive_intensity)
+    refl = in_rgb * (AMBIENT_STRENGTH * env)
+    wsum = AMBIENT_STRENGTH * env
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
@@ -670,8 +710,10 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         n_dot_h = ti.max(n.dot(half), 0.0)
         spec_term = ti.pow(ti.max(n_dot_h, 1e-4), ti.max(shininess, 1e-3))
         gate = spec_w if n_dot_l > 0.0 else 0.0
-        acc += (in_rgb * lc * n_dot_l
-                + specular * lc * spec_term * gate) * v
+        refl += (in_rgb * lc * n_dot_l
+                 + specular * lc * spec_term * gate) * v
+        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+    acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
@@ -695,8 +737,8 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     one = ti.math.vec3(1.0, 1.0, 1.0)
     rgb = in_rgb
     f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metalness) + rgb * metalness
-    acc = ((rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
-           + emissive * emissive_intensity)
+    refl = (rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
+    wsum = AMBIENT_STRENGTH * env
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
@@ -712,7 +754,9 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
         k_d = (one - fresnel) * (1.0 - metalness)
         diffuse = k_d * rgb * lc * n_dot_l
-        acc += (diffuse + spec * lc * (n_dot_l * spec_w)) * v
+        refl += (diffuse + spec * lc * (n_dot_l * spec_w)) * v
+        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+    acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
@@ -756,8 +800,8 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
           * (1.0 - metalness) + rgb * metalness)
     # Additive over lights (see _stage_lambert): the metalness/F0 ambient +
     # emissive base once, then each light's direct terms.
-    acc = ((rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
-           + emissive * emissive_intensity)
+    refl = (rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
+    wsum = AMBIENT_STRENGTH * env
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
@@ -803,6 +847,7 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         # (see _light_eval) and must not manufacture a directional rim.
         sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
         direct += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
+        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
         # NO per-light transmission term. There used to be one here
         # (``rgb * lc * transmission * (1 - metalness) * 0.5``) and it double
         # counted: the transmitted share already gets carried, either as the
@@ -813,7 +858,8 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         # precisely to make room for that. The term also had no ``n.l``, so a
         # light grazing from behind the surface still lit it, and it scaled
         # with the number of lights.
-        acc += direct * v
+        refl += direct * v
+    acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 

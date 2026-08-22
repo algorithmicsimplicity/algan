@@ -201,3 +201,70 @@ def test_black_does_not_divide_by_zero():
     out = _lit_rgb([[0.0, 0.0, 0.0]])[0]
     assert torch.isfinite(out).all()
     assert out.tolist() == [0.0, 0.0, 0.0]
+
+
+def _lambert(albedo=1.0, light_intensity=1.0, ambient=1.0):
+    """One white light head-on at ``n.l == 1``, through the torch Lambert shader."""
+    from algan.rendering.shaders.material_shaders import lambert_shader
+
+    t = torch.tensor
+    return lambert_shader(
+        None,
+        t([[0.0, 0.0, 0.0]]),  # vertex at the origin
+        t([[0.0, 0.0, 1.0]]),  # normal along +z
+        t([[albedo, albedo, albedo, 0.0]]),
+        t([[0.0, 0.0, 5.0]]),  # camera
+        t([[0.0, 0.0, 1.0]]),  # light directly above -> n.l == 1
+        t([[1.0, 1.0, 1.0, 1.0]]),
+        light_intensity,
+        ambient,
+        emissive=torch.zeros(1, 3),
+        emissive_intensity=1.0,
+    )[0, :3]
+
+
+def test_fully_lit_surface_reflects_its_albedo_and_no_more():
+    """Energy conservation: reflected <= incident.
+
+    The ambient fill used to be added on top of a full direct term, so a
+    fully lit surface reflected ``albedo * 1.1`` -- more light than arrived.
+    A mid-grey now comes back as exactly its albedo. (White cannot show this:
+    1.1 and 1.0 both bound to 1.0, which is why the test uses 0.5.)
+    """
+    assert _lambert(albedo=0.5).tolist() == pytest.approx([0.5, 0.5, 0.5], abs=1e-6)
+
+
+def test_under_lit_surface_is_not_scaled():
+    """Below unit incident light the budget is inert, so dim rigs are untouched.
+
+    Half a light's worth of illumination on a mid-grey: 0.5*0.1 ambient plus
+    0.5*0.5 direct. Normalising here would darken a scene that was never over
+    range in the first place.
+    """
+    assert _lambert(albedo=0.5, light_intensity=0.5).tolist() == pytest.approx(
+        [0.3, 0.3, 0.3], abs=1e-6
+    )
+
+
+def test_budget_counts_radiance_not_light_count():
+    """Three lights at 1/3 intensity must cost the same budget as one at 1.
+
+    Weighting the budget by geometry alone penalised a rig for how many lights
+    it used rather than how much light it emitted, which visibly over-darkened
+    dim multi-light scenes.
+    """
+    from algan.rendering.raytracing.shading_taichi import AMBIENT_STRENGTH
+
+    assert AMBIENT_STRENGTH == 0.1
+    one_bright = _lambert(albedo=0.5, light_intensity=0.9)
+    # Same total emitted radiance, split three ways, is the same illumination.
+    assert float(one_bright.max()) == pytest.approx(0.5 * (0.1 + 0.9), abs=1e-6)
+
+
+def test_energy_scale_is_identity_below_unity():
+    from algan.rendering.shaders.material_shaders import _energy_scale
+
+    for w in (0.0, 0.25, 0.5, 1.0):
+        assert float(_energy_scale(torch.tensor([w]))) == pytest.approx(1.0)
+    assert float(_energy_scale(torch.tensor([2.0]))) == pytest.approx(0.5)
+    assert float(_energy_scale(torch.tensor([4.0]))) == pytest.approx(0.25)

@@ -51,6 +51,24 @@ def _split_albedo(albedo_color):
     return albedo_color[..., :3], albedo_color[..., 3:]
 
 
+def _energy_scale(weight):
+    """Reciprocal of the illumination budget -- the torch twin of
+    ``shading_taichi._energy_scale``.
+
+    ``weight`` is the total illumination arriving at the surface: the ambient
+    fill's coefficient plus this light's ``n.l``. A reflective surface cannot
+    send out more light than arrives, so once the incident weight passes unity
+    the reflected terms are scaled back by it. Exactly 1.0 below unity, so an
+    under-lit surface is untouched.
+
+    These shaders see one light at a time -- the vertex path loops over lights
+    outside them (``primitives.py``) -- so this bounds the ambient-on-top-of-
+    direct overshoot here, and the fragment path's twin is what bounds the
+    multi-light sum.
+    """
+    return 1.0 / weight.clamp_min(1.0)
+
+
 def _recombine(rgb, glow_tail):
     """Bound the RGB result to ``[0, 1]`` and re-attach the glow channel.
 
@@ -220,9 +238,12 @@ def lambert_shader(
     n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
     radiance = light_color[..., :3] * light_intensity
 
-    ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity)
+    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
-    out = ambient + diffuse + emissive * emissive_intensity
+    out = (ambient + diffuse) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -251,12 +272,15 @@ def phong_shader(
     )
     radiance = light_color[..., :3] * light_intensity
 
-    ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity)
+    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
     # Blinn-Phong specular: (N.H)^shininess, gated by N.L so back faces stay dark.
     spec_term = n_dot_h.clamp_min(1e-4) ** shininess.clamp_min(1e-3)
     specular_out = specular * radiance * spec_term * (n_dot_l > 0)
-    out = ambient + diffuse + specular_out + emissive * emissive_intensity
+    out = (ambient + diffuse + specular_out) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -302,10 +326,11 @@ def standard_shader(
     direct = diffuse + specular * radiance * n_dot_l
 
     # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
-    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
-        AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
-    )
-    out = ambient + direct + emissive * emissive_intensity
+    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
+    out = (ambient + direct) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -396,13 +421,14 @@ def physical_shader(
     sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
     direct = direct + sheen_c * sheen_brdf * radiance * n_dot_l
 
-    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
-        AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
-    )
+    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
     # No per-light transmission term: the transmitted share is carried by the
     # renderer's own continuation, and adding it here again double counted.
     # See shading_taichi._stage_physical.
-    out = ambient + direct + emissive * emissive_intensity
+    out = (ambient + direct) * _energy_scale(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
@@ -435,9 +461,12 @@ def toon_shader(
         num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
     )
     stepped = torch.ceil(n_dot_l * bands) / bands
-    ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity)
+    kA = AMBIENT_STRENGTH * ambient_light_intensity
+    ambient = rgb * kA
     diffuse = rgb * light_color[..., :3] * light_intensity * stepped
-    out = ambient + diffuse + emissive * emissive_intensity
+    out = (ambient + diffuse) * _energy_scale(
+        stepped * (light_color[..., :3] * light_intensity).amax(-1, keepdim=True) + kA
+    ) + emissive * emissive_intensity
     return _recombine(out, glow)
 
 
