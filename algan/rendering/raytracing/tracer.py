@@ -1310,9 +1310,16 @@ def render_batch_raytraced(
             build_frag_scatters,
         )
 
-        frag_pipelines = build_frag_pipelines()
+        # Narrowed to the pipelines THIS batch's primitives carry. The registry
+        # behind them is process-global and append-only, so handing over all of
+        # it would specialize this render's shade kernel on every pipeline the
+        # process ever registered -- a scene with no custom shader at all would
+        # compile its own uncached kernel variant just because some earlier
+        # scene had one.
+        batch_pids = _batch_user_pipeline_ids(merged)
+        frag_pipelines = build_frag_pipelines(batch_pids)
         frag_scatters = (
-            build_frag_scatters() if _scene_has_custom_scatter(merged) else ()
+            build_frag_scatters(batch_pids) if _scene_has_custom_scatter(merged) else ()
         )
     else:
         frag_pipelines = ()
@@ -3316,6 +3323,34 @@ def _scene_has_custom_scatter(merged):
     return False
 
 
+def _batch_user_pipeline_ids(merged):
+    """The user fragment-pipeline ids this batch's primitives carry, for
+    narrowing the injected pipeline / scatter tuples to what the batch can
+    reach (``fragment_shaders.build_frag_pipelines``).
+
+    Returns ``None`` -- "the whole registry", the safe answer -- when a
+    geometry type is present but the merged scene cannot enumerate its
+    material ids, for the same reason ``_frag_pid_mask`` returns ``ALL_PIDS``
+    there: dropping a pipeline the kernel can still dispatch to would shade
+    that surface with no material at all. Reads only the merge-time host-side
+    id lists, so it costs no device reduction.
+    """
+    ids = set()
+    for prefix in ("tri", "pn"):
+        material_ids = merged.get(f"{prefix}_material_ids")
+        if material_ids:
+            ids.update(
+                pid
+                for pid in (int(value) for value in material_ids)
+                if pid >= _USER_PIPELINE_BASE
+            )
+            continue
+        arr = merged.get(f"{prefix}_mat_id")
+        if arr is not None and arr.numel():
+            return None
+    return frozenset(ids)
+
+
 def _frag_pid_mask(merged, prefix, active, _record=True):
     """Compile-time bitmask of the material pipeline ids ``prefix`` geometry
     carries in this batch (bit ``p`` = pipeline id ``p``), for the shade
@@ -3421,8 +3456,11 @@ def _raytrace_render_wavefront_sorted(
     def _resolve(pid):
         if pid < _USER_PIPELINE_BASE:
             return builtin_pipeline_fn(pid), default_scatter
-        fn = frag_pipelines[pid - _USER_PIPELINE_BASE]
-        sc = scatters[pid - _USER_PIPELINE_BASE]
+        i = pid - _USER_PIPELINE_BASE
+        fn = frag_pipelines[i]
+        # Both tuples are trimmed after their last live entry, so a pipeline
+        # past the end of the scatter list is simply scatterless.
+        sc = scatters[i] if i < len(scatters) else None
         return fn, (sc if sc is not None else default_scatter)
 
     buckets = []

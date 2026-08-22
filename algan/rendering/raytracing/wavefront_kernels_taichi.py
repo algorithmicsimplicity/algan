@@ -1299,7 +1299,10 @@ def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
     return its 8-tuple. Built-in materials and user pipelines without a custom
     scatter use :func:`default_scatter`; a user pid whose pipeline supplied a
     scatter uses it. The pid switch mirrors ``_run_frag_pipeline``; ``None``
-    entries of ``frag_scatters`` (scatterless user pipelines) compile out.
+    entries of ``frag_scatters`` compile out -- a slot is None both for a
+    scatterless user pipeline and for one this batch does not use (the tuple is
+    narrowed to the batch, see ``fragment_shaders.build_frag_scatters``), and
+    either way the default scatter is what that id would have got.
     """
     pid = pid_arr[f % pid_arr.shape[0], prim]
     (contrib, pass_w, refl_orig, refl_dir, refl_w,

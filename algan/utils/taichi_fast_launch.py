@@ -28,7 +28,7 @@ perf half of that item, with no kernel-signature changes).
 The fast key is at least as fine as Taichi's own mapper key over the
 supported argument universe: template values are restricted to the types
 the mapper keys by value/identity (int/bool/float/str/None, functions, flat
-tuples of those), external arrays contribute (torch dtype, ndim,
+tuples of those, None included), external arrays contribute (torch dtype, ndim,
 requires_grad) -- the mapper's (element_type, ndim, needs_grad) features
 for scalar-dtype ndarrays -- and scalar args are excluded from both keys.
 Vector/matrix-element ndarrays (every BVH-taking kernel: the node arrays
@@ -251,8 +251,13 @@ def apply():
                     key_parts.append(v)
                 elif tv is tuple:
                     for item in v:
+                        # ``None`` is a live element here, not a missing one:
+                        # the injected pipeline / scatter tuples are indexed by
+                        # material id, so a slot this batch does not use is a
+                        # None the mapper keys by value like any other.
                         if not (
                             type(item) in _scalar_key_types
+                            or item is None
                             or (callable(item) and not hasattr(item, "_data_oriented"))
                         ):
                             return _orig_call(self, *args, **kwargs)

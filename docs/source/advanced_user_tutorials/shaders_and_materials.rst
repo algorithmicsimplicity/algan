@@ -263,6 +263,12 @@ A custom stage is a Taichi ``@ti.func`` plus its parameter specs -- see
 ``cosine_color`` in ``algan/rendering/shaders/fragment_shaders.py`` for the
 template.
 
+A pipeline is compiled into the shade kernel, so the first render that uses one
+pays a kernel compile for it (cached afterwards, like every other Algan kernel).
+That cost is scoped to the scenes that actually use the shader: a scene rendered
+from the same script without it compiles the ordinary kernel and reuses the
+cached one.
+
 The Built-in Lighting Stages
 ----------------------------
 
