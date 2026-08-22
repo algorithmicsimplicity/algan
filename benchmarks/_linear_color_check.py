@@ -110,6 +110,16 @@ def _linear_arm_supported():
 
 
 def _set_linear(enabled):
+    """Select the arm.
+
+    **Each arm must be run in its own process.** The shading kernels gate the
+    illumination budget and the peak bound with ``ti.static``, which Taichi
+    evaluates when it compiles the kernel and then caches. Flipping the setting
+    after a render therefore does not recompile: the second arm silently reuses
+    the first arm's kernel and reports its numbers. ``main()`` runs one arm per
+    invocation for that reason -- see ``ALGAN_LINEAR_COLOR`` in
+    ``_IMPORT_TIME_VARIABLES``, which is the same category of setting.
+    """
     SETTINGS.raytracing.set(linear_color_space=bool(enabled))
 
 
@@ -246,8 +256,12 @@ def run_additivity(arms):
         "\n## additivity -- N lights at i must render as one light at N*i"
         f"  (exposure {ADDITIVITY_EXPOSURE})\n"
     )
-    print(f"| {'split':>18} | {'single':>8} | arm | {'split px':>15} | {'single px':>15} | ok |")
-    print("| " + " | ".join(["-" * 18, "-" * 8, "---", "-" * 15, "-" * 15, "--"]) + " |")
+    print(
+        f"| {'split':>18} | {'single':>8} | arm | {'split px':>15} | {'single px':>15} | ok |"
+    )
+    print(
+        "| " + " | ".join(["-" * 18, "-" * 8, "---", "-" * 15, "-" * 15, "--"]) + " |"
+    )
 
     failures = []
     by_arm = {label: [] for label, _ in arms}
@@ -356,8 +370,25 @@ def run_encoding(arms):
 
 
 def main():
+    """Measure one arm, in this process.
+
+    Deliberately not both. The shading kernels gate their gamma-era
+    compensations with ``ti.static``, so the arm is baked in when Taichi
+    compiles the kernel and a second arm in the same process would silently
+    reuse the first one's code. Run the comparison as two processes::
+
+        ALGAN_LINEAR_COLOR = 0 < venv - python > benchmarks / _linear_color_check.py
+        ALGAN_LINEAR_COLOR = 1 < venv - python > benchmarks / _linear_color_check.py
+    """
     if _linear_arm_supported():
-        arms = [("off", False), ("on", True)]
+        label = "on" if SETTINGS.raytracing.linear_color_space else "off"
+        print(
+            f"Measuring the '{label}' arm only (ALGAN_LINEAR_COLOR"
+            f"={'1' if label == 'on' else '0'}).\n"
+            "Run the other arm in a separate process -- the kernel gate is\n"
+            "compile-time, so both arms in one process report the first one.\n"
+        )
+        arms = [(label, None)]
     else:
         print(
             "NOTE: SETTINGS.raytracing.linear_color_space does not exist on this\n"
