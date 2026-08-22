@@ -2,6 +2,10 @@ import torch
 
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing import tracer
+from algan.rendering.raytracing.wavefront_kernels_taichi import (
+    SCA_WIDTH_NESTED,
+    SCA_WIDTH_PLAIN,
+)
 from algan.utils.memory_utils import ManualMemory
 
 
@@ -103,3 +107,28 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     tracer._ArenaRayCompactor(memory, pool)
     # The tile is maximal: everything fit, and one more primary would not have.
     assert 0 <= memory.get_num_bytes_remaining() < per_primary
+
+
+def test_state_charge_follows_sca_width_argument_not_nested_ior_setting(monkeypatch):
+    """The wider ``rs_sca`` row is charged per the WIDTH argument alone.
+
+    This pins a defect the nested-IOR default flip exposed:
+    ``_wavefront_state_coefficients`` used to charge the wider row whenever the
+    ``NESTED_IOR`` *setting* was on, but ``ior_stack_flag`` is the setting AND
+    ``refraction_flag``, so a batch with no transmissive geometry keeps the
+    classic ``SCA_WIDTH_PLAIN`` state and never allocates the charged words.
+    That is not a wrong image -- every auto-sized wavefront tile in every
+    non-refracting scene is silently smaller than the arena allows, which no
+    pixel comparison can see. The per-slot charge must follow the batch's
+    actual width (what the caller passes), whatever the setting says.
+    """
+    plain_pool = tracer._WAVEFRONT_BYTES_PER_POOL_SLOT
+    nested_extra = (SCA_WIDTH_NESTED - SCA_WIDTH_PLAIN) * torch.float32.itemsize
+    for nested_ior in (False, True):
+        monkeypatch.setattr(rt_settings, "NESTED_IOR", nested_ior)
+        got = tracer._wavefront_state_coefficients(SCA_WIDTH_PLAIN)
+        # A plain-width tile pays nothing for a setting it does not allocate.
+        assert got["pool"] == plain_pool
+        got = tracer._wavefront_state_coefficients(SCA_WIDTH_NESTED)
+        # A nested-width tile is charged exactly its five extra f32 columns.
+        assert got["pool"] == plain_pool + nested_extra

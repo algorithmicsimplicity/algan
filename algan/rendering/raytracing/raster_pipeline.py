@@ -2038,6 +2038,13 @@ def shade_sparse_raster_coverage(
     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
     dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
     dummy_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
+    # Shadow terminator (RENDERER_WORK_QUEUE.md item 20), read live like the
+    # other shadow gates. It is read before the mode split because all three
+    # sheet_resolve_shade launches take it as a template and the shadow arm's
+    # event_toff size depends on it (full-size only in mode 1, whose trace is
+    # what reads rows back).
+    term_mode = int(rt_settings.shadow_terminator_mode())
+    term_on = term_mode == 1
     if shadow_flag:
         S = max(1, num_slice_sheets)
         sheet_accept = _arena_tensor(memory, (S,), torch.int32, 0)
@@ -2047,10 +2054,12 @@ def shade_sparse_raster_coverage(
         event_frame = _arena_tensor(memory, (S,), torch.int32, 0)
         event_msk = _arena_tensor(memory, (S,), torch.int32, 0xF)
         event_dp = _arena_tensor(memory, (S if sec_aa > 1 else 1, 6), torch.float32)
+        event_toff = _arena_tensor(memory, (S if term_on else 1, 3), torch.float32)
         sheet_event_id = _arena_tensor(memory, (S,), torch.int32, -1)
         sheet_resolve_shade(
             *pre_args,
             1,
+            term_mode,
             sheet_accept,
             event_pos,
             event_snrm,
@@ -2058,6 +2067,7 @@ def shade_sparse_raster_coverage(
             event_frame,
             event_msk,
             event_dp,
+            event_toff,
             sheet_event_id,
             dummy_vis,
             *post_args,
@@ -2099,6 +2109,7 @@ def shade_sparse_raster_coverage(
                 ev_src_prim = dummy_i
                 eps_self, eps_near = float(MIN_HIT_DISTANCE), 0.0
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
+            ev_toff = event_toff.index_select(0, acc_idx) if term_on else event_toff
             from algan.rendering.raytracing.refit_bvh import RefitBVH
 
             raster_shadow_trace(
@@ -2139,6 +2150,7 @@ def shade_sparse_raster_coverage(
                 1 if int(merged.get("num_triangles", 0)) > 0 else 0,
                 1 if int(merged.get("num_circuits", 0)) > 0 else 0,
                 ev_dp,
+                ev_toff,
                 sec_aa,
                 shadow_vis,
                 int(shadow_flag),
@@ -2153,10 +2165,12 @@ def shade_sparse_raster_coverage(
                 eps_self,
                 eps_near,
                 1 if identity_on else 0,
+                term_mode,
             )
         sheet_resolve_shade(
             *pre_args,
             2,
+            term_mode,
             sheet_accept,
             event_pos,
             event_snrm,
@@ -2164,13 +2178,21 @@ def shade_sparse_raster_coverage(
             event_frame,
             event_msk,
             event_dp,
+            event_toff,
             sheet_event_id,
             shadow_vis,
             *post_args,
         )
     else:
+        # Shadow-free resolve: mode 0 compiles no shadow logic at all, so the
+        # terminator gate cannot change this launch's output -- but it is a
+        # ti.template(), and forwarding the live setting here would compile a
+        # second variant of this kernel per gate value for nothing. Pass a
+        # literal 0; only the mode 1 / mode 2 launches above take a meaningful
+        # gate.
         sheet_resolve_shade(
             *pre_args,
+            0,
             0,
             dummy_i,
             dummy_f3,
@@ -2179,6 +2201,7 @@ def shade_sparse_raster_coverage(
             dummy_i,
             dummy_i,
             dummy_f6,
+            dummy_f3,
             dummy_i,
             dummy_vis,
             *post_args,

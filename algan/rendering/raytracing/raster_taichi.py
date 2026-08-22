@@ -2605,11 +2605,18 @@ def raster_shadow_trace(
         layer_offset_triangles: ti.f32,
         refit: ti.template(),
         has_tri: ti.template(), has_bez: ti.template(),
-        event_dp: ti.types.ndarray(), sec_aa: ti.template(),
+        event_dp: ti.types.ndarray(), event_toff: ti.types.ndarray(),
+        sec_aa: ti.template(),
         shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template(),
         tri_obj: ti.types.ndarray(), event_src_prim: ti.types.ndarray(),
         eps_self: ti.f32, eps_near: ti.f32,
-        shadow_identity: ti.template()):
+        shadow_identity: ti.template(),
+        # Shadow-terminator gate (rt_settings.shadow_terminator_mode()):
+        # 0 = today's origin and today's horizon cull; 1 = add each event's
+        # stored Hanika displacement (``event_toff``, written by the mode-1
+        # sheet_resolve_shade build) AND relax the cull where it moved;
+        # 2 = relax the cull WITHOUT moving anything (diagnostic arm).
+        shadow_term: ti.template()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
 
     A zero-radius point/spot/directional light emits one hard-shadow ray.
@@ -2658,7 +2665,28 @@ def raster_shadow_trace(
                             event_snrm[e, 2])
         fnrm = ti.math.vec3(event_fnrm[e, 0], event_fnrm[e, 1],
                             event_fnrm[e, 2])
+        # The face-normal lift every shadow origin keeps. With the
+        # shadow-terminator offset on (shadow_term == 1) the event build has
+        # also stored each event's Hanika displacement onto the smooth
+        # surface its vertex normals imply (_shadow_terminator_delta,
+        # RENDERER_WORK_QUEUE.md item 20); ``lifted`` records whether this
+        # origin GENUINELY moved (a flat facet's delta is exactly zero by
+        # construction -- _shadow_terminator_delta short-circuits a constant
+        # normal field), and is what licenses the horizon-cull relaxation in
+        # the sample loop below. shadow_term == 2 lifts nothing -- that
+        # diagnostic arm exists to show what relaxing alone does.
         sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+        lifted = 0
+        if ti.static(shadow_term != 0):
+            if ti.static(shadow_term == 1):
+                dx = event_toff[e, 0]
+                dy = event_toff[e, 1]
+                dz = event_toff[e, 2]
+                if (dx != 0.0) or (dy != 0.0) or (dz != 0.0):
+                    sorigin = sorigin + ti.math.vec3(dx, dy, dz)
+                    lifted = 1
+            else:
+                lifted = 1
         dpx = ti.math.vec3(0.0, 0.0, 0.0)
         dpy = ti.math.vec3(0.0, 0.0, 0.0)
         if ti.static(sec_aa > 1):
@@ -2777,8 +2805,23 @@ def raster_shadow_trace(
                         wis = tls / ldn
                     else:
                         ok = 0
-                if (ok == 1) and (fnrm.dot(wis) > 1e-3) \
-                        and (snrm.dot(wis) > 1e-4):
+                # Horizon cull. Today's guard is BOTH normals, and the face
+                # normal's > 1e-3 term is precisely what suppresses the
+                # terminator band today (a near-tangent ray strikes a
+                # neighbouring facet far from the origin: RENDERER_WORK_QUEUE.md
+                # item 20). Where this sample's origin GENUINELY moved onto
+                # the smooth surface its vertex normals imply (lifted == 1,
+                # shadow_term != 0), the face normal's horizon is not that
+                # surface's, so the fnrm term drops and only the shading
+                # normal's cull remains. A flat facet stores an exactly-zero
+                # delta and the gate-off path never lifts, so both keep the
+                # two-sided test EXACTLY as written first.
+                horizon_ok = (fnrm.dot(wis) > 1e-3) \
+                    and (snrm.dot(wis) > 1e-4)
+                if ti.static(shadow_term != 0):
+                    if lifted == 1:
+                        horizon_ok = snrm.dot(wis) > 1e-4
+                if (ok == 1) and horizon_ok:
                     n_valid += 1.0
                     occ_sum += _shadow_occluded(
                         refit, shadow_anyhit, sorg, wis, f, ff,
