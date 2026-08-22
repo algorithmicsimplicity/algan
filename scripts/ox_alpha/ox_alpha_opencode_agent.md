@@ -342,3 +342,52 @@ Still open:
   without complaint, and nothing in the output reports the effort used, so there
   is no positive confirmation that `max` changes anything.
 - Whether Ox Alpha is still free after its announced one-week window.
+
+**UPDATE: REVIEW FROM A FOURTH TASK (tonemapping investigation, 2026-08-22)**
+
+Two runs, both at `--variant max`, both driven from a file per §4.1.
+
+The **read-only audit** is the best result this agent has produced here. One
+invocation, ~56 steps, no continuation needed, and a 307-line report
+(`scratch_ox_tonemap_audit.md`) whose every checkable claim held up when I
+re-ran it independently. It was more precise than my own reading in one place I
+had got sloppy: I described the neutral curve's compression as "starting at
+0.76", and it pointed out that 0.76 is compared against the peak *after* the
+pedestal subtraction, so in input terms the onset is at 0.80. It also flagged a
+divergence I had not considered (the torch path computes in the buffer's dtype,
+so f16 under `ALGAN_HDR_BUFFER_F16=1`, while the Taichi kernel is always f32),
+and it labelled its own limits without being asked: "§3's comparison is source
+reading, not execution; ULP-level claims are reasoned, not measured."
+
+**The sharp lesson is what it did not find.** I asked it (question 3) whether
+the three tonemap implementations agree *with each other*. It answered that
+exactly and correctly: algebraically identical, divergences only at ULP level.
+Meanwhile the AgX output matrix was **transposed in both implementations** —
+neutral grey renders as saturated magenta — and it did not notice, even though
+its §5 transcribed the matrix coefficients into the report. It checked internal
+consistency because internal consistency was what I asked for, and two wrong
+implementations agree perfectly.
+
+So: **ask it to check against an external invariant, not just for
+self-consistency.** "Do these agree?" and "is either right?" are different
+questions and it will only answer the one posed. The invariant here was a
+one-liner — a colour-space conversion between two spaces sharing a white point
+must map white to white, so every matrix row must sum to 1 — and had the brief
+said "verify each matrix preserves white" it would almost certainly have caught
+it. This is the same shape as §4's "it treats a spec as a claim to check":
+that instinct is real, but it fires on the claims you put in front of it, not
+on the ones you leave out.
+
+Mechanics worth recording:
+
+- A **container restart is not a fresh container.** After one mid-session,
+  `/opt/node22/bin/opencode` was still installed and working and
+  `/root/.local/share/opencode/log/` still had its history. Only the running
+  process died. Do not reinstall reflexively — check `opencode --version`
+  first.
+- The background `opencode run` process does die with the container, and it
+  dies silently having written nothing. `git status --porcelain` before and
+  after is the cheap way to find out whether it got anywhere.
+- `grep -c "message=loop" /root/.local/share/opencode/log/opencode.log` counts
+  steps **cumulatively across invocations**, not per run. Note the count when
+  you launch, or you will misread a fresh run as a long one.
