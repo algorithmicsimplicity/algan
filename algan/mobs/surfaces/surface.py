@@ -3096,6 +3096,15 @@ class Surface(Mob):
             primitive.mesh_ids = torch.arange(
                 packed, dtype=torch.int32, device=corners.device
             ).repeat_interleave(per_grid)
+        # A solid built from several Surfaces -- a capped Cylinder is a tube
+        # plus two discs -- says so by giving every part the same ``mesh_key``,
+        # which merges them into one surface for the analytic-AA run rule
+        # instead of leaving each joint a boundary between two (see
+        # ``primitives._mesh_ids_from_collection``). Only consecutive members
+        # merge, which the authored draw order provides: it walks each tree
+        # parent-first, so a part's own caps follow it.
+        if getattr(self, "mesh_key", None) is not None:
+            primitive.mesh_key = self.mesh_key
         # A plain Surface is a two-sided sheet; the shapes of revolution built
         # on it declare an outside (Mob.two_sided).
         primitive.declare_one_sided(not self.two_sided)

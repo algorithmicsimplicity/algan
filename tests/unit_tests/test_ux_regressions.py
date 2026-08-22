@@ -1266,3 +1266,39 @@ def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
 
         with pytest.raises(UnsupportedFeatureError, match=expected):
             scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)
+
+
+def test_arrow3d_endpoints_follow_the_arrow():
+    """``get_start`` / ``get_end`` report where the arrow IS, not where it was.
+
+    They read two ``opacity=0`` marker Mobs, and those used to be built loose:
+    registered into whichever Scene happened to be active rather than the
+    arrow's, and attached to nothing -- so a moved or rotated arrow still
+    reported its construction endpoints, and ``get_vector`` still pointed the
+    way it was first built.
+    """
+    with algan.Scene() as scene, algan.Off():
+        arrow = algan.Arrow3D(start=algan.ORIGIN, end=algan.RIGHT * 1.1, thickness=0.05)
+        arrow.spawn()
+
+        assert arrow.start_point.scene is scene
+        assert arrow.end_point.scene is scene
+
+        arrow.move(algan.UP * 2 + algan.RIGHT * 0.5)
+        assert torch.allclose(
+            arrow.get_start().reshape(-1),
+            torch.tensor((0.5, 2.0, 0.0)),
+            atol=1e-5,
+        )
+        assert torch.allclose(
+            arrow.get_end().reshape(-1),
+            torch.tensor((1.6, 2.0, 0.0)),
+            atol=1e-5,
+        )
+
+        arrow.rotate(90, algan.OUT, about_point=arrow.get_start())
+        assert torch.allclose(
+            arrow.get_vector().reshape(-1),
+            torch.tensor((0.0, 1.1, 0.0)),
+            atol=1e-4,
+        )

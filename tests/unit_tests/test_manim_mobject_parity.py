@@ -83,7 +83,10 @@ def test_native_3d_geometry_families_build_renderable_meshes():
     arrow = algan.Arrow3D(add_to_scene=False)
     arrow_primitives = arrow.get_render_primitives()
     assert arrow_primitives is not None
-    assert len(arrow_primitives) == 2
+    # Shaft, its two end discs, head, its base disc. The arrow aggregates its
+    # whole subtree because the discs are children of the shaft and the head
+    # and are not Scene actors, so nothing else would ask them to build.
+    assert len(arrow_primitives) == 5
 
 
 def test_point_cloud_and_image_apis_are_native():

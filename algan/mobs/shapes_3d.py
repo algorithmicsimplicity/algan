@@ -34,7 +34,6 @@ from algan.constants.math import PI
 from algan.constants.spatial import LEFT, ORIGIN, OUT, RIGHT, UP
 from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
 from algan.mobs.group import Group
-from algan.mobs.shapes_2d import Circle
 from algan.mobs.surfaces.surface import Surface
 from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.tensor_utils import cast_to_tensor
@@ -184,6 +183,93 @@ def _radial_and_axial_coordinates(points, center, axis):
     return radial, axial
 
 
+class _CapDisc(Surface):
+    """The flat disc that closes a ``Cylinder``'s end or a ``Cone``'s base.
+
+    Private: it is what ``bottom_cap`` / ``top_cap`` / ``base_circle`` hold, not
+    a shape to build directly -- ``Circle`` is the 2-D disc and ``Surface`` the
+    general lit one.
+
+    A :class:`~algan.mobs.surfaces.surface.Surface` rather than a 2-D
+    :class:`~algan.mobs.shapes_2d.Circle`, so that a cap is the same kind of
+    geometry as the body it closes: a triangle mesh that responds to light,
+    and one that can carry the body's ``mesh_key`` so the renderer treats the
+    rim as an interior edge of a single surface rather than the boundary where
+    two independently antialiased surfaces meet.
+
+    The grid is a fan over the body's own ring: ``segments`` samples around the
+    rim and two along the radius, the inner row collapsing to the centre
+    (welded like a sphere's pole). The rim comes from ``rim_function``, which
+    the body supplies from the same expression its own ring is sampled at, so
+    the two land on each other vertex for vertex and the joint is watertight.
+    That is also why the resolution is passed in rather than searched from
+    ``geometry_tolerance``: a disc's flat interior is exact at any resolution,
+    so the search would answer "two" and leave a triangle.
+
+    Parameters
+    ----------
+    rim_function
+        Maps an azimuth parameter of shape ``(*, 1)`` in ``[0, 1]`` to rim
+        offsets from the disc's centre, shape ``(*, 3)``, in the body's current
+        frame. Read live, so re-basing the body and rebuilding the cap's grid
+        keeps the two rings together.
+    direction
+        The way the disc faces -- the outward normal of the solid it closes,
+        shape ``(*, 3)``; it need not be normalized. Defaults to ``OUT``.
+    segments
+        Samples around the rim. Defaults to ``25``.
+    *args, **kwargs
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
+    """
+
+    # A cap is part of a closed solid's skin, so its back face is that solid's
+    # inside; see Mob.two_sided.
+    two_sided = False
+
+    def __init__(
+        self,
+        rim_function,
+        direction=OUT,
+        segments=25,
+        *args,
+        **kwargs,
+    ):
+        self._rim_function = rim_function
+        self.direction = cast_to_tensor(direction)
+        # A body sweeps its ring whichever way its own coord_function does, and
+        # the two built-ins disagree (Cylinder negates its azimuth, Cone does
+        # not). Sweeping the fan the wrong way round winds its triangles into
+        # the solid, so the direction is measured against the outward normal
+        # here rather than assumed, once, from the rim function itself.
+        self._reverse = not self._sweep_faces(direction)
+        kwargs.setdefault("grid_width", max(3, int(segments)))
+        kwargs.setdefault("grid_height", 2)
+        super().__init__(*args, **kwargs)
+
+    def _sweep_faces(self, direction):
+        """True if the rim, swept forwards, winds a fan facing ``direction``."""
+        outward = F.normalize(cast_to_tensor(direction).reshape(1, 3), p=2, dim=-1)
+        first = self._rim_function(torch.zeros(1, 1))
+        quarter = self._rim_function(torch.full((1, 1), 0.25))
+        turn = torch.cross(first.reshape(1, 3), quarter.reshape(1, 3), dim=-1)
+        return bool((turn * outward).sum() > 0)
+
+    def coord_function(self, uv):
+        azimuth = uv[..., :1]
+        if self._reverse:
+            azimuth = 1 - azimuth
+        # Radius on the second component: 0 at the welded centre, 1 at the rim.
+        return uv[..., 1:] * self._rim_function(azimuth)
+
+    def normal_function(self, uv):
+        outward = F.normalize(self.direction.reshape(1, 3), p=2, dim=-1)
+        return outward.expand(*uv.shape[:-1], 3)
+
+    def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
+        """Zero: the disc is planar, so its PN patches lie on it exactly."""
+        return torch.zeros_like(pn_points[..., 0])
+
+
 class Sphere(Surface):
     """A 3-D sphere, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
 
@@ -320,9 +406,10 @@ class Sphere(Surface):
 class Cone(Surface):
     """A circular cone, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
 
-    The cone is open at its base by default; ``show_base`` caps it with a
-    :class:`~algan.mobs.shapes_2d.Circle` added as a child. The uncapped base
-    circle is always built and available as ``base_circle``.
+    The cone is open at its base by default; ``show_base`` closes it with a
+    flat disc added as a child -- a lit triangle mesh carrying the cone's own
+    mesh identity, so the rim is an interior edge of one surface. The uncapped
+    disc is always built and available as ``base_circle``.
 
     Parameters
     ----------
@@ -411,19 +498,45 @@ class Cone(Surface):
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         with Off(animation_manager=self.animation_manager):
             self.look(direction_t, axis=1)
-        self.base_circle = Circle(
+        # A capped cone's base has to be a Scene actor to be drawn at all: the
+        # render loop collects primitives from ``Scene.actors``, not by walking
+        # the hierarchy, and ``add_children`` does not register anything. Left
+        # unregistered when the cone is open, so ``base_circle`` stays available
+        # (it is documented as always built) without appearing in the render --
+        # and when the cone itself is detached, so a morph target stays one.
+        # The cone's own azimuth runs on the SECOND uv component (see
+        # coord_function), so ``grid_height`` is its count around the axis and
+        # is what puts the base's rim vertices on the cone's own.
+        self.mesh_key = ("solid", self.id)
+        self.base_circle = _CapDisc(
+            rim_function=self._cap_ring_offsets,
             scene=self.scene,
-            radius=base_radius,
+            direction=-direction_t,
+            segments=self.grid_height,
             color=self.color,
-            add_to_scene=False,
+            add_to_scene=bool(show_base) and self._added_to_scene,
         )
+        self.base_circle.mesh_key = self.mesh_key
         with Off(animation_manager=self.animation_manager):
-            self.base_circle.look(-direction_t, axis=2)
             self.base_circle.move_to(-direction_t * height * 0.5)
         if show_base:
             self.add_children(self.base_circle)
         self.start_point = -direction_t * height * 0.5
         self.end_point = direction_t * height * 0.5
+
+    def _cap_ring_offsets(self, azimuth):
+        """The base ring, as offsets from its centre, for the base disc.
+
+        The same expression ``coord_function`` samples the ring at, swept over
+        the whole circle whatever ``v_range`` is -- a partial cone still gets a
+        whole base, matching Manim -- and read off the live basis, so it follows
+        the cone.
+        """
+        phi = azimuth * 2 * PI
+        return (
+            phi.sin() * self.radius * self.get_right_basis()
+            + phi.cos() * self.radius * self.get_forward_basis()
+        )
 
     def coord_function(self, uv):
         u = uv[..., :1]
@@ -491,8 +604,9 @@ class Cone(Surface):
 class Cylinder(Surface):
     """A cylinder, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
 
-    Only the curved side is built by default; ``show_ends`` adds the two end caps
-    as children (:meth:`add_bases` does the same after construction).
+    Only the curved side is built by default; ``show_ends`` adds the two end
+    discs as children and as Scene actors (:meth:`add_bases` does the same after
+    construction).
 
     Parameters
     ----------
@@ -512,9 +626,11 @@ class Cylinder(Surface):
         ``(0, 2 * PI)``, the closed tube. The extent *along* the axis comes from
         ``height``, which is where Manim also gets its ``u_range`` from.
     show_ends
-        Whether to cap both ends with filled circles. Defaults to ``False``: the
-        tube is open at both ends. The caps are whole circles even when
-        ``v_range`` is partial, matching Manim.
+        Whether to close both ends with flat discs -- lit triangle meshes
+        carrying the tube's own mesh identity, so each rim is an interior edge
+        of one surface. Defaults to ``False``: the tube is open at both ends.
+        The discs are whole circles even when ``v_range`` is partial, matching
+        Manim.
     resolution
         Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
         both; each value becomes ``grid_width``/``grid_height`` plus one, since
@@ -596,20 +712,83 @@ class Cylinder(Surface):
     def add_bases(self, direction=None):
         if direction is None:
             direction = F.normalize(cast_to_tensor(self.direction), p=2, dim=-1)
-        self.bottom_cap = Circle(
-            scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
-        )
-        self.top_cap = Circle(
-            scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
-        )
-        self.bottom_cap.look(-direction, axis=2)
-        self.top_cap.look(direction, axis=2)
-        self.bottom_cap.move_to(-direction * self.height * 0.5)
-        self.top_cap.move_to(direction * self.height * 0.5)
+        offset = direction * self.height * 0.5
+        if getattr(self, "bottom_cap", None) is not None:
+            # Idempotent, like ``add_children``: a second call re-aims the caps
+            # this cylinder already has rather than building a second pair that
+            # would stay attached and registered behind the first.
+            return self._place_bases(direction, -offset, offset)
+        # Scene actors, not merely children: the render loop collects
+        # primitives from ``Scene.actors`` and never walks the hierarchy, so a
+        # cap that is only ``add_children``-ed is never drawn and the cylinder
+        # renders as an open tube (see Cone.__init__ for the same reason). A
+        # detached cylinder's caps stay detached with it.
+        registered = self._added_to_scene
+        # ``grid_width`` is the tube's own count around the axis (its azimuth
+        # runs on the FIRST uv component, see coord_function), so giving the
+        # discs the same puts their rim vertices on the tube's.
+        self.mesh_key = ("solid", self.id)
+        caps = {
+            "rim_function": self._cap_ring_offsets,
+            "scene": self.scene,
+            "segments": self.grid_width,
+            "color": self.color,
+            "add_to_scene": registered,
+        }
+        self.bottom_cap = _CapDisc(direction=-direction, **caps)
+        self.top_cap = _CapDisc(direction=direction, **caps)
+        self.bottom_cap.mesh_key = self.mesh_key
+        self.top_cap.mesh_key = self.mesh_key
         self.base_bottom = self.bottom_cap
         self.base_top = self.top_cap
         self.add_children(self.bottom_cap, self.top_cap)
+        self._place_bases(direction, -offset, offset)
+        if self.is_spawned():
+            # Called after the tube was spawned, which the class docstring
+            # invites. Spawn is recursive from the parent, so a cap attached
+            # afterwards never gets one of its own -- and an actor that never
+            # spawned is dropped by the render loop's window index, which is
+            # the open tube again. Unanimated: the solid is already on screen.
+            for cap in (self.bottom_cap, self.top_cap):
+                cap.spawn(animate=False)
         return self
+
+    def _place_bases(self, direction, start, end):
+        """Sit the end caps on ``start`` and ``end``, each facing outward.
+
+        Called again by :meth:`_move_between_points`, which writes ``basis``
+        directly rather than through a transform -- so the children do not
+        follow it, and a cap left where it was built ends up floating beside
+        the tube it is supposed to close.
+        """
+        if getattr(self, "bottom_cap", None) is None:
+            return self
+        for cap, centre, outward in (
+            (self.bottom_cap, start, -direction),
+            (self.top_cap, end, direction),
+        ):
+            cap.direction = cast_to_tensor(outward)
+            cap.move_to(centre)
+            # Rebuilt rather than rotated: the disc's rim is this tube's own
+            # ring, so re-sampling it off the live basis is what keeps the two
+            # on each other -- the same thing _move_between_points does to the
+            # tube one line above.
+            cap.set_location_by_function(cap.coord_function)
+        return self
+
+    def _cap_ring_offsets(self, azimuth):
+        """An end ring, as offsets from its centre, for the end discs.
+
+        The same expression ``coord_function`` samples the tube's rings at --
+        negation included -- swept over the whole circle whatever ``v_range``
+        is, since the discs are whole circles even on a half-pipe (matching
+        Manim). Read off the live basis, so it follows the tube.
+        """
+        u = -(azimuth * 2 * PI)
+        return (
+            u.sin() * self.radius * self.get_right_basis()
+            + u.cos() * self.radius * self.get_forward_basis()
+        )
 
     def coord_function(self, uv):
         uv[..., 1:] /= uv[..., 1:].amax()
@@ -719,6 +898,7 @@ class Cylinder(Surface):
                 ),
             )
             self.set_location_by_function(self.coord_function)
+            self._place_bases(up_b, start, end)
         self.direction = up_b
         return self
 
@@ -818,18 +998,48 @@ class Arrow3D(Mob):
         )
         self.head.move_to(end - direction * height * 0.5)
         self.cone = self.head
-        self.start_point = Mob(location=start, opacity=0)
-        self.end_point = Mob(location=end, opacity=0)
+        # Markers, not geometry: they carry no primitives and exist so that
+        # get_start/get_end report the arrow's ends. Children of this arrow, and
+        # in its Scene rather than whichever one happened to be active, so that
+        # they travel with it -- before, a moved arrow still reported the
+        # endpoints it was built with.
+        self.start_point = Mob(scene=self.scene, location=start, opacity=0)
+        self.end_point = Mob(scene=self.scene, location=end, opacity=0)
         self.length = length
-        self.add_children(self.tail, self.head)
+        self.add_children(self.tail, self.head, self.start_point, self.end_point)
+
+    def _renderable_descendants(self):
+        """This arrow's geometry, each part immediately followed by its own caps.
+
+        Depth-first and parent-first, which is what lets a part and its caps
+        share a ``mesh_key``: only consecutive members merge.
+        """
+        parts = []
+
+        def visit(mob):
+            if hasattr(mob, "get_render_primitives"):
+                parts.append(mob)
+            for child in mob.children:
+                visit(child)
+
+        for child in self.children:
+            visit(child)
+        return parts
 
     def _get_memory_used_per_timestep(self):
-        return sum(child._get_memory_used_per_timestep() for child in self.children)
+        return sum(
+            part._get_memory_used_per_timestep()
+            for part in self._renderable_descendants()
+        )
 
     def get_render_primitives(self):
+        # The whole subtree, not just the shaft and the head: their end discs
+        # are children of theirs and are not Scene actors, so this is the only
+        # thing that asks them to build. Emitting each part's discs directly
+        # after it is what makes their shared mesh_key merge.
         primitives = []
-        for child in self.children:
-            primitive = child.get_render_primitives()
+        for part in self._renderable_descendants():
+            primitive = part.get_render_primitives()
             if primitive is None:
                 continue
             primitives.extend(primitive if isinstance(primitive, list) else [primitive])

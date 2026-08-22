@@ -245,6 +245,11 @@ class Animatable:
             scene = active_scene_for_new_mob()
         self.scene = scene
         self.id = self.scene.get_new_id()
+        # Whether this Mob was registered with the Scene, kept because a
+        # composite that builds sub-parts has to make the same decision for
+        # them: a Mob built with ``add_to_scene=False`` is one nobody intends to
+        # show, and its parts must not register themselves into the render.
+        self._added_to_scene = bool(add_to_scene)
         if add_to_scene:
             self.scene.add_actor(self)
 
@@ -1220,6 +1225,10 @@ class Animatable:
         else:
             # Share the original's timeline rows and lifespan.
             clone.id = self.id
+        # The attribute copy below would otherwise hand the clone the source's
+        # registration flag, and a clone is registered by this policy, not by
+        # whatever the source was built with.
+        object.__setattr__(clone, "_added_to_scene", bool(add_to_scene))
         if add_to_scene:
             self.scene.add_actor(clone)
             self.animation_manager.context.add_mob(clone)
@@ -1256,6 +1265,8 @@ class Animatable:
                 "id",
                 "animation_manager",
                 "_animation_manager",
+                # Set above from the clone policy, not inherited from the source.
+                "_added_to_scene",
                 # Version-checked caches; clones rebuild their own lazily.
                 "_attr_inds_cache",
                 "_descendants_cache",
