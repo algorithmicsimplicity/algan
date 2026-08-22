@@ -1,0 +1,16 @@
+{
+  "name": "calib_glossy",
+  "_why": "Calibration: a rough metal wall reflecting one small bright emitter against black. This is the case SETTINGS.raytracing's glossy_reflection comment says the four-tap lobe fan cannot do -- a high-contrast point source is what turns too few taps into discrete ghost copies or an ordered dither, where a broad low-contrast floor (calib_mirror) hides both. The reflection is the ONLY light in the scene, so nothing else can mask it.",
+  "render": {"width": 480, "height": 360, "background": [0.0, 0.0, 0.0]},
+  "camera": {"position": [0, 0, 7.0], "target": [0, 0, 0], "up": [0, 1, 0], "fov": 40, "near": 0.1, "far": 200},
+  "lights": [
+    {"type": "ambient", "color": [1, 1, 1], "intensity": 0.02}
+  ],
+  "objects": [
+    {"name": "wall", "geometry": {"type": "box", "size": [16, 10, 0.5]}, "position": [0, 0, -1.0],
+     "material": {"type": "physical", "color": [0.9, 0.9, 0.9], "roughness": 0.3, "metalness": 1.0}},
+    {"name": "emitter", "geometry": {"type": "sphere", "radius": 0.28, "segments": 64}, "position": [1.9, 1.5, 4.2],
+     "material": {"type": "standard", "color": [0.0, 0.0, 0.0], "roughness": 1.0, "metalness": 0.0,
+                  "emissive": [1.0, 0.95, 0.85], "emissive_intensity": 1.0}}
+  ]
+}

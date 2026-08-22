@@ -404,6 +404,11 @@ def physical_shader(
     sheen_color=(0.0, 0.0, 0.0),
     transmission: float = 0.0,
     iridescence: float = 0.0,
+    # Registered so the packed name reaches the material block's
+    # attenuation_sigma slots; deliberately unused HERE -- absorption acts on
+    # the segment a ray travels inside the medium, which a per-vertex surface
+    # pass does not see (the wavefront bounce loop applies it).
+    attenuation_sigma=(0.0, 0.0, 0.0),
 ):
     """MeshPhysicalMaterial: MeshStandard plus clearcoat, sheen, ior-driven
     specular and (approximate) transmission.
@@ -414,6 +419,8 @@ def physical_shader(
     adds the ``clearcoat``. ``sheen`` adds a soft inverted-Fresnel rim. The
     ``transmission`` and ``iridescence`` parameters are approximated (no
     refraction / thin-film spectral model in a per-vertex pass).
+    Volumetric absorption is not approximated here at all: it is applied along
+    the refracted path in the renderer, driven by this parameter's packed slot.
     """
     rgb, glow = _split_albedo(albedo_color)
     n = _shading_normal(vertex_location, vertex_normal, flat_shading)

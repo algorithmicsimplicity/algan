@@ -400,9 +400,20 @@ effect:
 
 Textures do work — through a different door. See the next section.
 
-:class:`~.MeshPhysicalMaterial` additionally stores ``thickness``,
-``attenuation_color`` and ``attenuation_distance`` for API parity and does not
-use them: transmitted light is not attenuated by path length through the medium.
+:class:`~.MeshPhysicalMaterial`'s ``attenuation_color`` and
+``attenuation_distance`` *are* honoured: light crossing a transmissive solid is
+absorbed along the path it actually travels, following
+``KHR_materials_volume``'s ``attenuation_color ** (d / attenuation_distance)``,
+so a thick piece of coloured glass comes out deeper than a thin one. Two limits
+are worth knowing. The path length is measured from the surface the ray last
+crossed, which is exact for a single convex solid and an approximation for
+nested transmissive media. And ``thickness`` is stored for API parity and unused
+— three.js's rasterizer needs it because it has no ray to measure, and Algan
+does not.
+
+Shadows are not tinted by what they pass through: a shadow ray carries one
+scalar per light, so the shadow under green glass gets *brighter* (see
+``transmission`` above) but stays grey where a path tracer's turns green.
 
 
 Texture maps
