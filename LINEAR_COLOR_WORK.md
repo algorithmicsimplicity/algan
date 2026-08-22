@@ -231,3 +231,45 @@ Traps specific to this change, written before reading any diff:
 10. **Shadowed locals / wrong-arg plumbing** — read every changed signature and
     call site, not just the logic. This is the defect class that has twice got
     past an adversarial re-read on this repo.
+
+## 8. What the checklist missed: two ingest routes, found by re-running the audit
+
+Item 6 above says "a route left un-**encoded**". The defect that shipped was a
+route left un-**decoded**, and there were two of them. Found on 2026-08-22 by
+re-running `benchmarks/renderer_audit`, not by any test:
+
+* **Colour texture maps.** Constant-property promotion (`PROMOTE_CONSTANTS`, on
+  by default) renders a mob whose colour and material are uniform from a shared
+  1×1 colour map in `scene["textures"]` instead of per-vertex `tri_colors`. §6's
+  list names `tri_colors` / `circuit_colors` / `circuit_border_colors`; the
+  promoted map is none of them, and neither is a real `ImageMob` texture. So
+  **most** geometry — every plainly-coloured 3-D mob — reached the kernel
+  display-referred and was then encoded on the way out.
+* **The material parameter block's colour slots** — `emissive`, `specular`,
+  `specular_color`, `sheen_color`. Same shape of miss: the block is not a colour
+  array, so it was not on the list.
+
+Measured: an unlit slab authored 0.5 grey rendered **188** (`encode(0.5)`), and
+`ALGAN_PROMOTE_CONSTANTS=0` rendered the same slab at **128**, which is the A/B
+that names the cause without any instrumentation. An authored emissive of
+(0.5, 0.25, 0.75) rendered (188, 137, 225) instead of (128, 64, 191).
+
+### Why the acceptance gate passed anyway
+
+§6's table says "authored flat fill round-trip: **exact**", and it was — for the
+thing it measured. `_flat_fill` builds a `Square`, which is a bezier circuit, and
+`circuit_colors` was on the decode list. The gate tested one of three ingest
+routes and generalised to all of them.
+
+The harness now runs the round trip through **two** routes, a circuit and a
+triangle mesh (`_flat_mesh_fill`), and `tests/unit_tests/test_color_decode_boundary.py`
+pins the rendered round trip for both a promoted uniform colour and an emissive.
+Both fail on the pre-fix tree with exactly the numbers above, which is the check
+that the guard is real.
+
+**The general lesson, worth carrying to the next pipeline change:** an invariant
+of the form "X survives the pipeline" is only as strong as the number of ways X
+can *enter* the pipeline, and that count is a property of the engine's plumbing
+rather than of the invariant. Enumerate the ingest routes first, then write one
+case per route. A single case passing tells you one route works, and says
+nothing whatever about the others.

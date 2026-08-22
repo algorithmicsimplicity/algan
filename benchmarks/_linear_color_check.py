@@ -61,7 +61,9 @@ from algan import (
     Color,
     Cube,
     DirectionalLight,
+    MeshBasicMaterial,
     MeshLambertMaterial,
+    Prism,
     Scene,
     Square,
 )
@@ -176,28 +178,52 @@ def _flat_fill(rgb_bytes):
     return build
 
 
+def _flat_mesh_fill(rgb_bytes):
+    """The same fill as a TRIANGLE MESH rather than a bezier circuit.
+
+    Both must round-trip, and they are not the same test: a circuit's colour
+    rides ``circuit_colors``, while a uniformly-coloured, uniformly-shaded mesh
+    is promoted to a 1x1 colour map in ``scene["textures"]`` and never touches
+    ``tri_colors`` at all. This arm exists because the first version of this
+    harness checked only the circuit, which was the one route the decode
+    reached -- so it passed while every 3-D mesh in the engine rendered
+    ``encode(authored)``. A round-trip invariant is only as good as the number
+    of ingest routes it covers.
+    """
+
+    def build(scene):
+        Prism(dimensions=(60.0, 60.0, 1.0)).set_material(
+            MeshBasicMaterial(color=_col(rgb_bytes))
+        ).spawn()
+
+    return build
+
+
 def run_roundtrip(arms):
     print("\n## roundtrip -- unlit flat fills must reproduce authored bytes\n")
-    header = f"| {'colour':>7} | {'authored':>15} |" + "".join(
+    header = f"| {'colour':>7} | {'route':>8} | {'authored':>15} |" + "".join(
         f" {label:>15} |" for label, _ in arms
     )
     print(header)
-    print("| " + " | ".join(["-" * 7, "-" * 15] + ["-" * 15] * len(arms)) + " |")
+    print(
+        "| " + " | ".join(["-" * 7, "-" * 8, "-" * 15] + ["-" * 15] * len(arms)) + " |"
+    )
 
     failures = []
     for name, rgb in PATCHES:
-        cells = []
-        for label, enabled in arms:
-            if enabled is not None:
-                _set_linear(enabled)
-            got = _render(_flat_fill(rgb), f"roundtrip_{name}_{label}")
-            cells.append(got)
-            if got != tuple(rgb):
-                failures.append((name, label, tuple(rgb), got))
-        print(
-            f"| {name:>7} | {str(tuple(rgb)):>15} |"
-            + "".join(f" {str(c):>15} |" for c in cells)
-        )
+        for route, factory in (("circuit", _flat_fill), ("mesh", _flat_mesh_fill)):
+            cells = []
+            for label, enabled in arms:
+                if enabled is not None:
+                    _set_linear(enabled)
+                got = _render(factory(rgb), f"roundtrip_{name}_{route}_{label}")
+                cells.append(got)
+                if got != tuple(rgb):
+                    failures.append((f"{name}/{route}", label, tuple(rgb), got))
+            print(
+                f"| {name:>7} | {route:>8} | {str(tuple(rgb)):>15} |"
+                + "".join(f" {str(c):>15} |" for c in cells)
+            )
 
     if failures:
         print("\n  FAIL -- authored colour did not survive the pipeline:")
