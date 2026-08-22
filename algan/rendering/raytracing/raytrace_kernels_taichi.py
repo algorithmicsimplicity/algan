@@ -1844,9 +1844,14 @@ def agx_tonemap(color: ti.math.vec3) -> ti.math.vec3:
     g_out = -0.1413297634984383 * r_curve + 1.157823702216272 * g_curve - 0.016493938717834257 * b_curve
     b_out = -0.14132976349843826 * r_curve - 0.11060664309660294 * g_curve + 1.2519364065950405 * b_curve
     
-    r_srgb = 1.6605 * r_out - 0.1246 * g_out - 0.0182 * b_out
-    g_srgb = -0.5876 * r_out + 1.1329 * g_out - 0.1006 * b_out
-    b_srgb = -0.0728 * r_out - 0.0083 * g_out + 1.1187 * b_out
+    # Linear Rec.2020 -> linear Rec.709. Both spaces share the D65 white point,
+    # so this must map white to white and every row must therefore sum to 1.
+    # It was written transposed until 2026-08-22, giving row sums of
+    # 1.5177 / 0.4447 / 1.0376 -- a fixed +52% red, -56% green on any neutral,
+    # which rendered authored grey (128,128,128) as magenta (255,77,180).
+    r_srgb = 1.6605 * r_out - 0.5876 * g_out - 0.0728 * b_out
+    g_srgb = -0.1246 * r_out + 1.1329 * g_out - 0.0083 * b_out
+    b_srgb = -0.0182 * r_out - 0.1006 * g_out + 1.1187 * b_out
     
     return ti.math.clamp(ti.math.vec3(r_srgb, g_srgb, b_srgb), 0.0, 1.0)
 

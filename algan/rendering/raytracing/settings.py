@@ -60,7 +60,18 @@ def report_unsupported_features(message):
     raise UnsupportedFeatureError(message)
 
 
-TONEMAPPING = True
+# Off by default: an authored colour lands on the pixel it names. The curve
+# (Khronos PBR Neutral) is display-white-destroying when fed display-referred
+# values, which is all Algan has -- there is no sRGB<->linear conversion in the
+# colour path, so an authored 255 reaches it as 1.0 and leaves as 222. It also
+# subtracts a flat 0.04 pedestal from every mid-tone and desaturates primaries.
+# Measured over the six full-render scenes, 98.52% of colour channels are
+# already inside the display range and 1.45% are above it, so the curve was
+# spending a colour error on 68 already-correct channels for every one it
+# rescued. Bloom runs *before* the tonemap on the unclamped HDR buffer, so
+# over-range energy is a visible halo before anything clamps. Turn it on for a
+# filmic look, accepting that every SDR value shifts. See TONEMAP_FINDINGS.md.
+TONEMAPPING = False
 TONEMAP_EXPOSURE = 1.0
 TONEMAP_METHOD = "neutral"
 # Tonemap in post-processing (composite writes linear HDR float) rather than
@@ -2049,23 +2060,40 @@ def set_indirect_bounce_strength(strength):
 def set_tonemapping(enabled):
     """Enable or disable tonemapping of the rendered frame.
 
-    The curve is selected by :func:`set_tonemap_method` ("neutral", the Khronos
-    PBR Neutral mapper, or "agx") -- not ACES, whatever the old docstring said.
+    **Off by default**, which makes output linear: an authored colour lands on
+    the pixel it names, white renders as 255, and a primary stays primary.
 
-    Disabling it makes output **linear**: an authored colour lands on the pixel
-    it names, which is what you want when matching a reference image. This flag
-    is honoured wherever the tonemap actually runs, so it works on its own --
-    with ``post_process_tonemap`` on (the default) the composite writes linear
-    HDR and the post stage simply clamps instead of applying a curve. There is
-    no need to also disable ``post_process_tonemap``, and doing so costs HDR
-    headroom (see :func:`set_post_process_tonemap`).
+    Enabling it applies the curve selected by :func:`set_tonemap_method`
+    ("neutral", the Khronos PBR Neutral mapper, or "agx") -- not ACES, whatever
+    the old docstring said. That buys highlight roll-off, so values above 1.0
+    stay distinguishable instead of clipping flat, and it costs a shift on
+    *every* value: the curve is not the identity anywhere except at 0, an
+    authored 255 renders as 222, and saturated colours desaturate. The two are
+    not separable -- a curve that is the identity on ``[0, 1]`` must clamp
+    above it -- so this is a choice about which you would rather have.
+    ``TONEMAP_FINDINGS.md`` has the measurements.
+
+    This flag is honoured wherever the tonemap actually runs, so it works on
+    its own -- with ``post_process_tonemap`` on (the default) the composite
+    writes linear HDR and the post stage simply clamps instead of applying a
+    curve. There is no need to also disable ``post_process_tonemap``, and doing
+    so costs HDR headroom (see :func:`set_post_process_tonemap`).
     """
     global TONEMAPPING
     TONEMAPPING = bool(enabled)
 
 
 def set_tonemap_exposure(exposure):
-    """Set the exposure multiplier for the ACES Filmic Tonemapper."""
+    """Set the exposure multiplier applied to the frame before it is encoded.
+
+    The colour is multiplied by this before the tonemap curve runs, and --
+    since tonemapping is off by default -- before the plain clamp too, so it
+    brightens or darkens the whole render either way. Defaults to ``1.0``,
+    which is exact: it moves no pixel.
+
+    This is the right control for "the whole scene is too dark". Reach for it
+    before raising every light's intensity.
+    """
     global TONEMAP_EXPOSURE
     TONEMAP_EXPOSURE = float(exposure)
 

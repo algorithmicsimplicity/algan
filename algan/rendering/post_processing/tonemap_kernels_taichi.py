@@ -46,7 +46,11 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
         elif ti.static(method == 2):
             c = agx_tonemap(c * exposure)
         else:
-            c = ti.math.clamp(c, 0.0, 1.0)
+            # Exposure applies here too, not just under a curve: it is the
+            # documented "the whole scene is too dark" control, and with
+            # tonemapping off (the default) it is the only one. Exact at the
+            # default exposure of 1.0, so this moves no pixel by itself.
+            c = ti.math.clamp(c * exposure, 0.0, 1.0)
         for ci in ti.static(range(3)):
             out[f, y, x, ci] = ti.cast(
                 ti.math.clamp(c[ci] * 255.0 + 0.5, 0.0, 255.0), ti.u8)

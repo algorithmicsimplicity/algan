@@ -314,3 +314,64 @@ Related, smaller: `set_tonemap_exposure`'s docstring
 Tonemapper". There is no ACES curve in the codebase --- `set_tonemapping`'s own
 docstring already corrects this ("not ACES, whatever the old docstring said").
 
+
+## 9. What turning it off costs, measured after the fact
+
+The flip was decided on §5's occupancy figures. Rendering `tests/fast/scene.py`
+both ways afterwards showed a cost those figures do not capture, and it is
+worth stating plainly because it is visible rather than subtle.
+
+Compare `algan_outputs/tonemap_check/fast_f30_curve_{on,off}.png`:
+
+* **The flat content gets better, exactly as intended.** The title text and the
+  white circle border render white instead of grey; the 2-D fills land on their
+  authored colours.
+* **The lit 3-D solids blow out.** The orange cube's front face becomes a flat
+  yellow-white and the purple cube's becomes near-white. Peak difference
+  between the two renders is 125 channel values, at a pixel over range in two
+  channels: the curve gives `(242, 130, 64)`, clamping gives `(255, 255, 95)`.
+  2.51% of that frame's pixels differ by more than 33.
+
+The mechanism matters, because it is not really about the tonemap. The curve
+divides *all three* channels by `peak / newPeak`, so when one channel is over
+range the others come down with it and the colour keeps its hue. A clamp
+truncates each channel independently, so an over-range saturated colour loses
+its hue and slides toward white. That is why the blowout reads as a different
+colour rather than merely a brighter one.
+
+And the reason anything is over range at all: **the default light intensities
+were implicitly calibrated with the tonemap in the loop.** The fast scene peaks
+at 2.397 linear, with 0.55% of channels above 1.0 and 0.11% above 2.0 -- lit
+surfaces were relying on the curve to compress an overshoot the lighting
+creates. Removing the curve does not create that overshoot, it exposes it.
+
+So the change as it stands is right for flat 2-D and text -- which is most of
+what Algan renders, and what prompted the investigation -- and is a regression
+for lit 3-D. Three ways to close that gap, in increasing order of effort:
+
+1. **Re-tune the default light intensities** so a fully lit diffuse surface
+   lands at or just below 1.0. This is the honest fix: it makes the lighting
+   independent of the encoder, which it should always have been. It moves every
+   baseline again, so it wants doing in the same pass as the re-baselining.
+2. **Ship a default `tonemap_exposure` below 1.0.** Cheap, but it darkens the
+   flat content too, giving back some of what the flip just won.
+3. **Option C from §6** -- tonemap lit geometry only, leave flat fills alone.
+   The only one that gets both, and much the largest change.
+
+None of these is done here. The default is off, the two genuine bugs (§7, §8)
+are fixed, and this is on record as the next thing.
+
+## 10. Baseline state
+
+Deliberately not regenerated, per §6. For whoever picks that up:
+
+* `tests/fast` on this cloud container fails at **115 channel values, frame
+  32** (tolerance 2).
+* There is a **pre-existing failure of 32 channel values at frame 6** on this
+  container, reproduced on a completely clean tree with every change of this
+  work stashed. It is not caused by anything here -- an earlier session
+  recorded the same frame at 40 -- and it means this container's CPU baseline
+  was not generated on hardware matching it. Do not read the 115 as purely the
+  tonemap: 32 of it was already there.
+* `tests/unit_tests` is unaffected: 1541 passed, 93 skipped, 0 failed.
+* `tests/full_renders` skips itself under `CI`, and was not run here.

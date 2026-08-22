@@ -139,13 +139,18 @@ def _agx_tonemap(rgb, exposure, memory):
         ),
         scratch,
     )
+    # Linear Rec.2020 -> linear Rec.709. Both spaces share the D65 white point,
+    # so this must map white to white and every row must therefore sum to 1.
+    # It was written transposed until 2026-08-22, giving row sums of
+    # 1.5177 / 0.4447 / 1.0376 -- a fixed +52% red, -56% green on any neutral,
+    # which rendered authored grey (128,128,128) as magenta (255,77,180).
     _linear_rgb(
         a,
         b,
         (
-            (1.6605, -0.1246, -0.0182),
-            (-0.5876, 1.1329, -0.1006),
-            (-0.0728, -0.0083, 1.1187),
+            (1.6605, -0.5876, -0.0728),
+            (-0.1246, 1.1329, -0.0083),
+            (-0.0182, -0.1006, 1.1187),
         ),
         scratch,
     )
@@ -239,7 +244,14 @@ def _finalize_on_device(
                 else:
                     raise ValueError(f"Unknown tonemapping method: {tonemap_method}")
             else:
+                # Exposure applies here too, not just under a curve: it is the
+                # documented "the whole scene is too dark" control, and with
+                # tonemapping off (the default) it is the only one. Exact at
+                # the default exposure of 1.0, so this moves no pixel by
+                # itself.
                 rgb_tonemapped = memory.clone(rgb)
+                if exposure != 1.0:
+                    rgb_tonemapped.mul_(exposure)
                 rgb_tonemapped.clamp_(0.0, 1.0)
 
             scaled = memory.clone(rgb_tonemapped)

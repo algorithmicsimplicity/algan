@@ -104,9 +104,12 @@ experiment:
   `ThreeDCamera` scales by `f / (f - z)` with `f = 20`, which is a pinhole eye 20
   units from the frame plane. Manim's *2-D* camera is orthographic instead, but
   the two agree exactly at `z = 0`, so one Algan perspective camera serves both.
-- **Tonemapping off.** Algan's default tonemap darkens every flat fill by a
-  uniform 10/255 — it reads as a colour error, not a highlight roll-off. Off, a
-  flat fill is byte-identical to Manim's.
+- **Tonemapping off.** This is now Algan's own default too (it was not when
+  `use_manim_defaults()` was written), so the call is belt-and-braces against a
+  Scene that turned it on. The tonemap darkens every flat fill by a uniform
+  10/255 and lands white on 222 — it reads as a colour error, not a highlight
+  roll-off. Off, a flat fill is byte-identical to Manim's. `TONEMAP_FINDINGS.md`
+  has the measurements and why the default moved.
 - **The z mirror.** Manim's `OUT` is `+z` and Algan's is `-z`, so the two screen
   bases are mirror images and no camera placement can reconcile them; the
   geometry and the camera are both mirrored (`Scene.manim_coordinates`, read by
