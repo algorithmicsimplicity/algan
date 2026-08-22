@@ -602,6 +602,12 @@ class Cylinder(Surface):
     def add_bases(self, direction=None):
         if direction is None:
             direction = F.normalize(cast_to_tensor(self.direction), p=2, dim=-1)
+        offset = direction * self.height * 0.5
+        if getattr(self, "bottom_cap", None) is not None:
+            # Idempotent, like ``add_children``: a second call re-aims the caps
+            # this cylinder already has rather than building a second pair that
+            # would stay attached and registered behind the first.
+            return self._place_bases(direction, -offset, offset)
         # Scene actors, not merely children: the render loop collects
         # primitives from ``Scene.actors`` and never walks the hierarchy, so a
         # cap that is only ``add_children``-ed is never drawn and the cylinder
@@ -623,9 +629,15 @@ class Cylinder(Surface):
         self.base_bottom = self.bottom_cap
         self.base_top = self.top_cap
         self.add_children(self.bottom_cap, self.top_cap)
-        self._place_bases(
-            direction, -direction * self.height * 0.5, direction * self.height * 0.5
-        )
+        self._place_bases(direction, -offset, offset)
+        if self.is_spawned():
+            # Called after the tube was spawned, which the class docstring
+            # invites. Spawn is recursive from the parent, so a cap attached
+            # afterwards never gets one of its own -- and an actor that never
+            # spawned is dropped by the render loop's window index, which is
+            # the open tube again. Unanimated: the solid is already on screen.
+            for cap in (self.bottom_cap, self.top_cap):
+                cap.spawn(animate=False)
         return self
 
     def _place_bases(self, direction, start, end):

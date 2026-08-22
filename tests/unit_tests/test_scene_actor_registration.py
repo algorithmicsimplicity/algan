@@ -234,6 +234,41 @@ def test_capped_solids_draw_their_caps(name):
     assert unbuilt_geometry(mob) == []
 
 
+def test_add_bases_after_spawn_draws_the_caps():
+    """``Cylinder`` documents ``add_bases()`` as a post-construction capping.
+
+    Spawning is recursive from the parent, so a cap attached after the tube has
+    spawned never gets a spawn of its own -- and ``_actor_window_index`` drops a
+    never-spawned actor, which is the open tube again. ``invisible_geometry``
+    cannot see that on its own: it only considers spawned descendants.
+    """
+    cylinder = _spawned(algan.Cylinder(radius=0.4, height=1.0))
+
+    cylinder.add_bases()
+
+    assert cylinder.bottom_cap.is_spawned()
+    assert cylinder.top_cap.is_spawned()
+    assert invisible_geometry(cylinder) == []
+    assert unbuilt_geometry(cylinder) == []
+
+
+def test_add_bases_twice_keeps_one_pair_of_caps():
+    """A second call re-aims the caps rather than stacking a second pair.
+
+    The replaced pair would stay attached and registered behind the new one,
+    drawing twice at the same depth.
+    """
+    cylinder = _spawned(algan.Cylinder(radius=0.4, height=1.0, show_ends=True))
+    caps = (cylinder.bottom_cap, cylinder.top_cap)
+    before = len(cylinder.scene.actors)
+
+    cylinder.add_bases()
+
+    assert (cylinder.bottom_cap, cylinder.top_cap) == caps
+    assert len(cylinder.scene.actors) == before
+    assert sum(1 for child in cylinder.children if child in caps) == 2
+
+
 def test_uncapped_cone_registers_no_base():
     """``base_circle`` is built for every cone; only a capped one draws it."""
     cone = _spawned(algan.Cone(base_radius=0.5, height=1.0))
