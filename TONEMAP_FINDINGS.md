@@ -561,3 +561,49 @@ The upshot for authoring is that light intensities now mean something
 predictable: a rig summing to 1.0 fully lights a surface, and past that the
 lights share the budget rather than compounding. Scenes tuned against the old
 additive behaviour will want their intensities raised.
+
+## 13. Superseded: the working space, not the compensations
+
+§11 and §12 are now history rather than current behaviour. Both were treatments
+for a symptom whose cause is named in §3 and then left alone: *"there is no
+sRGB<->linear conversion anywhere in the colour path."* `LINEAR_COLOR_WORK.md`
+is the change that fixes the cause, and it removes both treatments.
+
+The measurement that settles it: sweep one light's intensity over a white
+Lambert surface and fit both models to the byte that comes back. Before, it fit
+`byte/255 = 0.1009 + 1.0000*i` with a max residual of 0.0011 -- a *perfect*
+straight line in the encoded space, which is what "the arithmetic is
+display-referred" looks like when you measure it instead of arguing it.
+
+That is also why §12 had to exist. sRGB encoding is concave, so summing encoded
+values overshoots the encoded sum badly -- two lights that should land a white
+surface on byte 188 land it on 255 -- and `_energy_scale` was the dam. With the
+working space linear, lights add without a dam, and both mechanisms are gated
+off under `linear_color_space` (on by default) while the display-referred arm
+keeps them exactly.
+
+Three things §9 through §12 got right and one they did not:
+
+* **The default tonemap really was wrong for display-referred input** (§1-§3),
+  and the flip to off was correct.
+* **The bound in §11 really did keep hue** where a clamp did not. It is still
+  what the display-referred arm does.
+* **§12 was honest that it made lighting "normalised, not physically
+  additive".** It named the cost precisely.
+* **What none of them questioned was whether the display-referred pipeline was
+  the thing to build on.** §12's closing line -- "with display-referred output
+  there is nowhere for the second lamp's extra radiance to go" -- is true of a
+  pipeline with no transfer function and false of every other renderer, because
+  the place for it to go is above 1.0 in a linear buffer that gets encoded at
+  the end.
+
+**The tonemap default does not change, and the reason it does not is worth
+recording.** With the OETF in place the curve finally receives what it was
+designed for, so it is no longer *wrong* -- but Khronos Neutral reserves
+headroom by mapping linear 1.0 to 0.869, and no encode puts that back. An
+authored white still renders 240 rather than 255 with the curve on. The bill
+falls from 33 bytes to 15 and that is all. Off stays the default, which is now
+the same choice three.js makes with `NoToneMapping` rather than a workaround
+for a missing conversion.
+
+§8's exposure fix and the AgX matrix fix in §7 are unaffected and still stand.

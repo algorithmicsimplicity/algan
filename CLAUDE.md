@@ -106,10 +106,15 @@ experiment:
   the two agree exactly at `z = 0`, so one Algan perspective camera serves both.
 - **Tonemapping off.** This is now Algan's own default too (it was not when
   `use_manim_defaults()` was written), so the call is belt-and-braces against a
-  Scene that turned it on. The tonemap darkens every flat fill by a uniform
-  10/255 and lands white on 222 — it reads as a colour error, not a highlight
-  roll-off. Off, a flat fill is byte-identical to Manim's. `TONEMAP_FINDINGS.md`
-  has the measurements and why the default moved.
+  Scene that turned it on. Off, a flat fill is byte-identical to Manim's — and
+  it stays that way under the linear working space, because decode-then-encode
+  with no arithmetic between is the identity. On, an authored white cannot
+  render 255: Khronos Neutral reserves headroom by mapping linear 1.0 to 0.869,
+  which lands white on 240 with the transfer function applied and 222 without.
+  `TONEMAP_FINDINGS.md` has the measurements and why the default moved.
+  What *does* diverge from Manim under the linear space is antialiased edges
+  and alpha compositing, which Cairo does in gamma space and Algan now does in
+  linear light; flat interiors are unaffected.
 - **The z mirror.** Manim's `OUT` is `+z` and Algan's is `-z`, so the two screen
   bases are mirror images and no camera placement can reconcile them; the
   geometry and the camera are both mirrored (`Scene.manim_coordinates`, read by
@@ -195,6 +200,7 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 - Kernels live in `*_taichi.py` files. Material pipelines and custom scatter (ray-continuation) functions are injected as `ti.template()` parameters — compose user `@ti.func`s into one func and pass **flat** tuples (nested tuples fail).
 - Shaders (`shaders/`): Three.js-style `Material`s and per-vertex shaders in Python/torch; per-fragment shading and custom fragment pipelines (`fragment_shaders.py`, `FragmentStage`) execute inside the Taichi shade kernel.
 - Feature toggles live in `raytracing/settings.py` as module globals with env-var defaults plus setter functions, surfaced through `SETTINGS.raytracing`. **Read them live** (`rt_settings.X` at call time) — importing them by value at module import freezes them before user code runs (this bug has shipped before).
+- **The working colour space is linear.** Authored colour is display-referred (`Mob.color` reads back what you set, and colour tweens interpolate there), decoded to linear light where it is packed for the renderer, and encoded with the sRGB OETF once at the byte write — after exposure and after any tonemap curve, which is three.js's order. This is what makes lights additive: sRGB encoding is concave, so summing encoded values overshoots badly. Unlit flat 2-D is unaffected, because decode-then-encode with no arithmetic between is the identity; what moves is anything the renderer computes — lit surfaces, antialiased edges, alpha compositing, the supersample downsample. `SETTINGS.raytracing.linear_color_space` / `ALGAN_LINEAR_COLOR=0` restores the display-referred pipeline (and with it the illumination-budget normalisation and the peak-scale bound, which only exist to tame gamma-space light sums). `AMBIENT_STRENGTH` is 0.01 under the linear space and 0.1 under the other — the same fill, different units. `LINEAR_COLOR_WORK.md` is the reference; `benchmarks/_linear_color_check.py` is the acceptance harness, one process per arm.
 - Post-processing (`post_processing/`): bloom/glow, FXAA/SMAA, tonemapping. `Camera` (`camera.py`): perspective/orthographic projection, fov/near/far; render code consumes an immutable camera/light snapshot per batch so batch prep for frame batch N+1 can run on a worker thread while N renders (`ALGAN_PREFETCH_BATCHES=0` disables).
 - **The render path's fixed ceilings are counted, not silent** (`raytracing/truncation.py`): surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`. The counters are unconditional, so a zero is a reading rather than a missing instrument; keep them that way when adding a ceiling.
 
@@ -218,6 +224,7 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.
 - Keep Taichi debug mode off (`ALGAN_TI_DEBUG=1` opts in); debug mode makes the megakernels ~11x slower.
 - In kernels, use `ti.static(bool(x))` rather than `is not None` for template gates.
+- **A `ti.static` gate is resolved when the kernel compiles, so flipping the setting behind it mid-process does nothing.** The second arm silently reuses the first arm's code and reports its numbers as its own — it does not error, and clearing the offline cache does not help because that is not the cause. This bit the linear-colour work twice: an A/B harness whose two arms were both really the first arm, and a probe where an ambient change appeared to do nothing (the shadow floor sat at `encode(0.1)`, the other arm's value). **Run one process per arm for anything a `ti.static` gate controls.** A gate passed as a `ti.template()` *argument* is fine — Taichi specialises on those, which is why `tonemap_to_u8` can be flipped in-process and the shading stages cannot.
 
 ### Environment variables
 Every `ALGAN_` variable the package honors is declared in `algan/environment.py`, and every read goes through that module's `env_flag` / `env_int` / `env_float` / `env_str` / `env_is_set` accessors, which **reject an undeclared name** — that is what lets `import algan` tell a real option from a misspelled one (it warns about `ALGAN_` variables it does not know). Adding a knob is therefore two steps: put the name in the right tuple in `algan/environment.py`, then read it with an accessor at the point of use, where the default lives next to the comment explaining it. Values parse leniently: an unusable one warns and falls back to the caller's default rather than aborting the render. `tests/unit_tests/test_environment.py` enforces the rule that nothing in the package reaches an `ALGAN_` variable through `os` directly.
