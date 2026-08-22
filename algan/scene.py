@@ -48,6 +48,7 @@ from algan.animation_timeline.timeline import TimelineManager
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 
+from algan.logging.logger import get_logger
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
 # re-exported here for backwards compatibility.
 from algan.render_loop import (  # noqa: F401
@@ -60,6 +61,8 @@ from algan.settings import SETTINGS
 from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
 from algan.utils.file_utils import get_image
+
+logger = get_logger()
 
 if TYPE_CHECKING:  # algan_utils imports Scene, so only for annotations.
     from algan.utils.algan_utils import RenderResult
@@ -1169,6 +1172,10 @@ class Scene(RenderLoopMixin):
                         continue
                     started = time.perf_counter()
                     self._render_still(target, time_stamp, post_processes)
+                    duration = time.perf_counter() - started
+                    logger.info(
+                        "Finished rendering %s in %.1f s", target.name, duration
+                    )
                     # The same plan ``save_video`` reports, and for the same
                     # reason: it is how a script reads back which renderer ran,
                     # what it could not honor, and what it truncated. The field
@@ -1178,7 +1185,7 @@ class Scene(RenderLoopMixin):
                         RenderResult(
                             "rendered",
                             target,
-                            time.perf_counter() - started,
+                            duration,
                             getattr(self, "last_render_plan", None),
                         )
                     )

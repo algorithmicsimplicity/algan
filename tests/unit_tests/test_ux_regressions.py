@@ -157,6 +157,53 @@ def test_save_frame_rejects_negative_at_before_scene_start(monkeypatch, tmp_path
         scene.save_frame(tmp_path / "before_start", at=-0.5)
 
 
+def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
+    import logging
+    import re
+
+    algan_logger = logging.getLogger("algan")
+    algan_logger.addHandler(caplog.handler)
+    try:
+        scene = SceneManager.instance().current_scene
+        scene.set_video_settings(VideoSettings((17, 13), 10, anti_alias_level=1))
+        _stub_out_frame_writing(monkeypatch, scene)
+
+        scene.save_frame(tmp_path / "single_still", at=0.0)
+
+        pattern = re.compile(r"^Finished rendering single_still\.png in \d+\.\d+ s$")
+        assert any(
+            pattern.match(record.message)
+            for record in caplog.records
+            if record.levelno == logging.INFO
+        )
+
+        caplog.clear()
+        scene.save_frame(tmp_path / "single_still", at=0.0, overwrite=False)
+
+        assert not any(
+            "Finished rendering single_still.png" in record.message
+            for record in caplog.records
+        )
+
+        caplog.clear()
+        scene.save_frame(tmp_path / "multi_still", at=[0.0, 1.0])
+
+        assert any(
+            re.match(r"^Finished rendering multi_still_0\.0\.png in \d+\.\d+ s$", record.message)
+            for record in caplog.records
+            if record.levelno == logging.INFO
+        )
+        assert any(
+            re.match(r"^Finished rendering multi_still_1\.0\.png in \d+\.\d+ s$", record.message)
+            for record in caplog.records
+            if record.levelno == logging.INFO
+        )
+    finally:
+        algan_logger.removeHandler(caplog.handler)
+
+
+
+
 def test_text_creates_manim_directories_inside_algan_cache(monkeypatch, tmp_path):
     from algan.mobs import text as text_module
 
