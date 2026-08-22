@@ -473,6 +473,43 @@ render exactly as 8:
     32      0.5555    0.1334      21.3      <- identical to 8
 ```
 
+**Update: fixed** (work-queue item 3). Two things capped it, and only fixing
+both helps: the position table had entries at 1/2/4/8 only, *and* each of the
+eight coverage samples owned its single nearest position, so no fragment could
+own more than eight positions however long the table was. Counts outside the
+hand-written four now generate their positions from a Hammersley set and assign
+each position to its nearest coverage sample (the inverse of the old rule, used
+only above eight — the two rules disagree on 208 of the 256 coverage masks at
+`n = 8`, so swapping it wholesale would have moved the default). Re-measured on
+the same scene, with a prefiltered row for comparison:
+
+```
+  taps  efficiency   speckle  contrast   seconds
+   off      0.0468    0.0653    2.7060      22.8
+   pre      0.2594    0.0293    0.7741      24.7
+     4      0.5546    0.1905    0.7443      24.4
+     8      0.5555    0.1334    0.7404      42.5
+    16      0.5566    0.0865    0.7338      94.9
+```
+
+4 and 8 reproduce their historical rows exactly, and **16 is now a different
+render**: speckle 0.1334 → 0.0865, for 2.2x the time. Which is also the point
+the section makes — 16 taps buys a `sqrt(2)` improvement in the residual and
+costs more than double, where the prefiltered row is smoother than any of them
+(0.0293) at the four-tap price.
+
+Two honest readings of that `pre` row. Its **speckle is the lowest measured
+anywhere in this audit**, reference included (the path tracer's is 0.373 — it
+is Monte Carlo). Its **efficiency, 0.2594, is half the reference's 0.523**, and
+that is the screen-space limit showing: `calib_mirror`'s ball is small and its
+lobe at roughness 0.35 is 14 degrees wide, so the prefilter's footprint covers
+most of the ball's own screen area and averages the parts of it that reflect
+black background together with the parts that reflect floor. A per-point
+hemisphere integral does not. The fan's 0.555 is not "more correct" here — it
+is one-tap-per-direction on the same lobe with the energy unthrottled — but on
+this measurement it lands closer, and a small reflector under a wide lobe is
+where the screen-space route is weakest.
+
 (`speckle` is the RMS of the ball's high-pass residual over its own mean;
 `seconds` is wall clock on a contended 4-vCPU box and should be read as an order
 of magnitude, not a benchmark.)
@@ -514,7 +551,54 @@ plain fan is eight discrete ghost copies of the emitter, and the interleaved
 variant is a regular grid of dotted blocks: the 4×4 Bayer tile, unfiltered. Both
 glossy arms have the right total energy and neither has the right shape.
 
-#### 4.5.1 What would actually fix it
+#### 4.5.1 What would actually fix it — NOW BUILT
+
+**Update: this is implemented.** `glossy_reflection` now selects the split-sum
+route described below by default, and the tap fan only on request
+(`set(glossy_reflection=True, prefilter=False)`). The design of record is
+`algan/rendering/raytracing/DESIGN_glossy_prefilter.md`; what the section below
+specified is what was built, with one scoping decision worth naming — **one
+prefiltered glossy event per pixel**, the first sheet that qualifies, with every
+later reflective sheet and every deeper bounce keeping the `_mirror_share`
+throttle.
+
+The crawl measurement that closed §4.5 is the one that reopens it, on the same
+scene and at the same half-pixel camera nudge:
+
+| | `calib_glossy` (small bright source) |
+| --- | --- |
+| glossy off (control) | 0.0001 |
+| **glossy, prefiltered** | **0.0005** |
+| glossy, interleaved fan | 0.0320 |
+| glossy, plain fan | 0.0331 |
+
+64x less motion than either fan, and within a factor of five of a control that
+draws almost nothing at all. The remaining 0.0005 is the reflection ray's own
+hit point sliding across geometry, which is the same thing the control's 0.0001
+is and is what a deterministic mirror ray has always done.
+
+`out/calib_glossy.compare.jpg` is the shape half of the answer: the prefiltered
+panel is a soft glow with a core, against the path tracer's soft glow with a
+core, where the plain fan is eight discrete copies of the emitter and the
+interleaved one a grid of Bayer blocks. Its brightness is not comparable across
+engines (§2.1) but its **shape** is, and the shape is what four taps could not
+get.
+
+Two traits of the built version that the specification below did not anticipate:
+
+* **It is screen space, so a rough metal reads darker than it used to.** With
+  the throttle a metal keeps its ambient fill in place of the reflection it
+  declines to draw; with split-sum that energy is spent on the reflection, and
+  the reflection of a nearly black room is nearly black. On `calib_glossy` the
+  wall's own shading drops to `1 - E` = 0.34 of what it was. That is the correct
+  answer and it is also a visible change: pair it with an environment map.
+* **The blur radius is discontinuous where the reflected content is.** Contact
+  hardening scales the radius by how far past the reflector the reflection
+  landed, and that distance jumps at the silhouette of whatever is being
+  reflected, so the filter width jumps with it. Prefiltering the radius field
+  itself would smooth it; nothing does today.
+
+The original specification follows.
 
 Worth stating plainly, because "use more taps" is the obvious move and it is the
 wrong one. The variance of a stratified estimator falls as `1/sqrt(k)`; going
@@ -566,9 +650,10 @@ the first part only, and the visible dither is what the missing second part is f
 The reconstruction pass needs the reflection isolated in its own buffer, which is
 the same prerequisite as the split-sum route above.
 
-None of this is shipped here. It is a renderer feature — new arrays, a
-compositing pass, a settings gate, the memory model — not a patch, and this audit
-measures it and specifies it rather than half-doing it.
+None of this was shipped in the audit run itself. It is a renderer feature — new
+arrays, a compositing pass, a settings gate, the memory model — not a patch, and
+this audit measured it and specified it rather than half-doing it. It has since
+been built to this specification; see the update at the head of this section.
 
 ### 4.6 No volumetric absorption — FIXED
 
@@ -710,19 +795,26 @@ reference refracts it as a solid), the gold sphere's missing blurred surrounding
 The first run's items 1 and 2 are done (§2.2, §4.6). What is left, re-ordered by
 what the second run learned:
 
-1. **A first-bounce glossy reflection buffer with a screen-space prefilter**
-   (§4.5.1). This is now the largest remaining visible error and the only open
-   item whose shape is fully worked out: the split-sum DFG term fixes the energy
-   analytically and a roughness-driven blur of an isolated reflection buffer
-   fixes the shape, with no extra rays and nothing that can crawl. It would also
-   let `glossy_reflection` become the default rather than an escape hatch.
+1. ~~**A first-bounce glossy reflection buffer with a screen-space prefilter**
+   (§4.5.1).~~ **DONE** — see the update at §4.5.1. The remaining question it
+   leaves is whether `glossy_reflection` should now become the default rather
+   than an escape hatch. It is a defensible move on the numbers (it crawls 64x
+   less than the fan and 5x more than a control that draws nothing), and it is
+   *not* a free one: it moves every render with a rough reflector in it, in both
+   directions — the reflection appears, and the ambient fill standing in for it
+   goes away. That needs the CPU and CUDA baselines regenerated together, on a
+   CUDA machine, and a look at what it does to a scene with no environment map.
 2. **Coloured shadows through coloured glass** (§4.10). The natural completion of
    §4.1 and §4.6, and the one thing `calib_absorption` still shows: needs an RGB
    visibility payload where there is one scalar per light today.
-3. **Let the secondary tap count go above 8** (§4.5), or say that it cannot.
-   `ALGAN_ANALYTIC_AA_SECONDARY=32` is accepted and silently rendered as 8. Even
-   done properly it is the wrong lever — see §4.5.1 — but silently ignoring a
-   number a user typed is its own small defect.
+3. ~~**Let the secondary tap count go above 8** (§4.5), or say that it cannot.~~
+   **DONE** — see the update in §4.5. It is still the wrong lever (§4.5.1), and
+   the measurement now says so with numbers instead of with an argument. One
+   wart is pinned rather than fixed and is stated in
+   `tests/unit_tests/test_secondary_tap_counts.py`: at exactly 8 taps, position
+   1 is nobody's nearest coverage sample, so a fully covered fragment spawns
+   seven rays. Fixing it would change what an existing measured configuration
+   renders, on the arm that is now legacy.
 4. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
    conformance rather than Three.js parity is the goal.
 5. **Consider decoding the legacy textured-wavefront colour banks**

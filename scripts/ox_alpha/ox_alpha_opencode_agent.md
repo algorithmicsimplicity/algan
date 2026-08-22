@@ -391,3 +391,51 @@ Mechanics worth recording:
 - `grep -c "message=loop" /root/.local/share/opencode/log/opencode.log` counts
   steps **cumulatively across invocations**, not per run. Note the count when
   you launch, or you will misread a fresh run as a long one.
+
+**UPDATE: REVIEW FROM A FIFTH TASK (split-sum glossy reflections, 2026-08-22)**
+
+Two runs, both `--variant max`, both driven from a file. Both landed
+mergeable work; the shape of the session is the thing worth recording.
+
+**Budget for an hour, not for twenty minutes.** The first run took **63
+minutes** and did not touch a file for the first **45** of them — 60+ steps of
+reading and cross-checking before the first edit. §4.1's hang test (log stops
+at `init`, no `loop ... step=N`) says nothing about this case: the steps *were*
+climbing the whole time, one every 10–120 seconds. So the liveness check is
+"is the step counter still moving", not "has it edited anything yet", and the
+patience is worth it — see the next paragraph for what it bought.
+
+**It checks the premise you hand it, when the premise is checkable.** The brief
+told it to replace a forward-nearest ownership rule with the inverse one and to
+verify the swap reproduced today's behaviour for the four counts render
+baselines pin. It wrote a throwaway script, measured that the two rules
+**disagree on 208 of the 256 possible coverage masks at n=8**, and kept the
+forward rule below the ceiling and the inverse one above it rather than doing
+what it was told. That is the §4 instinct firing on exactly the claim the brief
+put in front of it. It also found, unprompted, that the old table left one of
+the eight positions unowned, so 8 taps had always fired 7 rays — and asked
+before touching it, because the brief forbade changing behaviour at 8.
+
+**And it still needs reviewing.** A mid-run read of its diff caught
+`return _AA_SEC_MAX` in a module that never imports the name — a NameError on
+the clamp path. It fixed that itself before finishing (its own test covered
+it), so the lesson is narrower than last session's: read the diff *when it
+finishes*, not while it works, or you will re-report things it is about to
+catch.
+
+**Two sessions can share one tree if they stay in disjoint files.** This whole
+task ran with a parallel Claude session implementing a renderer feature in the
+same checkout, which committed mid-run. Nothing collided: its edit tool is
+targeted string replacement, and it re-reads before each edit. It flagged the
+overlap in its own report without being asked, and correctly declined to
+`git stash` for failure triage because that would have discarded the other
+session's uncommitted work. Do keep the file sets disjoint anyway — and note
+that `git status` is not a progress bar for it, since it may read for 45
+minutes before writing anything.
+
+**The verification split held again.** It measured what the brief asked and
+reported it verbatim; the two defects the session actually found — a pyramid
+that dropped odd rows, and a bilinear fetch that derived its second tap from
+an already-clamped index — came from *looking at the rendered frames*, which
+neither of us would have found from the source. Specify the experiment; look at
+the picture yourself.

@@ -188,10 +188,29 @@ metal reads as a rough metal, but it does not show you a picture of the room.
     a reflection is usually a heavily minified image, so a sharp one aliases
     into hard bright patches across the surface.
 
-    ``SETTINGS.raytracing.glossy_reflection = True`` opts into the real GGX
-    lobe, which does blur the reflection with those four rays. It is off by
-    default because of the dither above; it is worth turning on for a still, or
-    where the reflected content is low-contrast.
+    ``SETTINGS.raytracing.set(glossy_reflection=True)`` opts into a real blur,
+    and it does not spend more rays to get one -- it spends **one**. The
+    reflection is traced in the mirror direction into a buffer of its own, and
+    that buffer is blurred by how wide the lobe is on screen before it is
+    composited back with the lobe's exact energy (the split-sum approximation:
+    ``DESIGN_glossy_prefilter.md`` in the renderer, Karis 2013 for the theory).
+    Blurring a picture is what a wide lobe does; sampling it four times is not.
+    Nothing dithers, nothing ghosts, and nothing crawls when the object moves,
+    because a blur radius is a smooth function of position where a four-tap fan
+    is not.
+
+    Two things to know before turning it on. It reflects **what is on screen**,
+    so a reflector shows the background where it should show something behind
+    the camera or outside the frame -- give the scene an environment map (below)
+    and it has something to reflect either way. And a rough metal will read
+    *darker* than it does with this off: with it off the surface keeps its
+    ambient fill in place of the reflection it is not drawing, and with it on
+    that energy goes into the reflection, which is only as bright as the room
+    around it.
+
+    The four-tap fan is still there for comparison --
+    ``set(glossy_reflection=True, prefilter=False)`` -- but it is not the
+    recommended path.
 
     For fully physical rough reflections, raise
     ``SETTINGS.raytracing.samples_per_pixel`` above 1 to switch to the Monte

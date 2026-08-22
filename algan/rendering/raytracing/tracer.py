@@ -99,6 +99,17 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    _BOX_SIGMA,
+    GL_MAIN_SIGMA,
+    GL_MAIN_WIDTH,
+    GL_PYR_WIDTH,
+    GL_ROW_DIST,
+    GL_ROW_WIDTH,
+    gloss_composite,
+    gloss_pyramid_level,
+    gloss_scatter,
+)
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _SCA_IOR_DEPTH,
     SCA_WIDTH_PLAIN,
@@ -242,6 +253,88 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     return core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)
 
 
+def _gloss_pyramid_levels(width, height, max_levels):
+    """Offsets and dimensions of the reflection pyramid's levels.
+
+    Returns ``([(offset, w, h), ...], total_texels)``. Halving stops at 1x1 or
+    at ``max_levels``, whichever comes first; the top level is the whole
+    frame's glossy pixels averaged into one texel, which is what a lobe wide
+    enough to reflect everything in view should read.
+    """
+    levels = []
+    w, h, off = max(1, int(width)), max(1, int(height)), 0
+    while True:
+        levels.append((off, w, h))
+        off += w * h
+        if (w == 1 and h == 1) or len(levels) >= max(1, int(max_levels)):
+            break
+        # CEILING, not floor. A floor-halved odd dimension leaves its last
+        # row or column with no destination texel at all, and the reduction's
+        # clamp cannot reach it -- 3 columns reduce to 1, whose 2x2 window
+        # covers columns 0 and 1 and drops column 2 entirely. Harmless-looking
+        # in the middle of the chain and fatal at the top of it: measured on
+        # calib_glossy, the 3x2 level held the whole reflection in its last
+        # column and the 1x1 above it came out pure black with a validity
+        # weight of 1, so every wide-lobe pixel prefiltered to nothing.
+        w = max(1, -(-w // 2))
+        h = max(1, -(-h // 2))
+    return levels, off
+
+
+def _gloss_frame_bounds(covered_idx, pixels_per_frame, num_frames):
+    """Where each frame's covered pixels start and end in ordinal space.
+
+    ``covered_idx`` is ascending global pixel indices over the whole window,
+    and a global index is ``frame * pixels_per_frame + pixel``, so a frame owns
+    a contiguous ordinal range and one searchsorted finds every boundary. The
+    tile loop clamps to these so a per-frame reflection buffer is complete
+    before it is prefiltered.
+    """
+    edges = torch.arange(
+        num_frames + 1, device=covered_idx.device, dtype=covered_idx.dtype
+    ) * int(pixels_per_frame)
+    return torch.searchsorted(covered_idx, edges).tolist()
+
+
+def _gloss_clear(gl_main, gl_pyr):
+    """Reset the per-frame reflection buffers.
+
+    The blur radius column is initialised NEGATIVE, not zero: it is what marks
+    a pixel as having a prefiltered glossy branch at all, and zero is a legal
+    radius (a reflection in contact with its reflector).
+    """
+    gl_main.zero_()
+    gl_main[:, GL_MAIN_SIGMA] = -1.0
+    gl_pyr.zero_()
+
+
+def _gloss_finish_frame(
+    frame_rel, gl_levels, gl_main, gl_pyr, width, height, tonemapping, out
+):
+    """Prefilter one frame's reflection buffer and composite it.
+
+    The pyramid is built bottom-up (each level from the one below), then every
+    glossy pixel fetches it trilinearly at the level matching its own blur
+    radius and overwrites the value the tile composite wrote for it.
+    """
+    num_levels = int(gl_levels.shape[0])
+    for lvl in range(1, num_levels):
+        gloss_pyramid_level(lvl - 1, lvl, gl_levels, gl_pyr)
+    gloss_composite(
+        int(width) * int(height),
+        int(width),
+        int(height),
+        num_levels,
+        int(frame_rel),
+        int(tonemapping),
+        float(rt_settings.TONEMAP_EXPOSURE),
+        gl_levels,
+        gl_main,
+        gl_pyr,
+        out,
+    )
+
+
 def _secondary_split_needed(merged, analytic_raster=False):
     """Does analytic AA make this scene's reflectors a SPLITTING path?
 
@@ -284,6 +377,14 @@ def _secondary_split_needed(merged, analytic_raster=False):
         rt_settings.analytic_aa_tri_active()
         or rt_settings.analytic_aa_bez_active()
         or int(rt_settings.effective_analytic_aa_secondary_samples()) > 1
+        # 3. THE SPLIT-SUM GLOSSY ROUTE, which always sends its reflection to a
+        #    pool slot (it accumulates into a different row than the pixel's
+        #    own, so it cannot continue in the primary's slot). One spare slot
+        #    per primary is enough and ``_split_pool_ratio``'s weakest arm
+        #    already allocates two -- but only if this says the batch splits.
+        #    At ratio 1 the host ignores the pool's overflow flag, so getting
+        #    this wrong would drop every glossy reflection in silence.
+        or int(rt_settings.glossy_reflection_mode()) == 3
     )
 
 
@@ -2374,6 +2475,12 @@ def raytrace_render_wavefront(
             float(ei),
             float(far_clip),
             float(max_bounces),
+            # [7] the split-sum glossy route's first glossy accumulator row,
+            # rewritten per tile by the sparse loop below and 0 (inert)
+            # everywhere else. It rides here rather than as a kernel argument
+            # for the same reason the env placement does -- see the comment
+            # above and DESIGN_glossy_prefilter.md §4.3.
+            0.0,
         ]
         with memory.scope(
             "batch_metadata",
@@ -2661,9 +2768,47 @@ def raytrace_render_wavefront(
             learned_primary_cap = primary_capacity
             covered_start = 0
 
+            # SPLIT-SUM GLOSSY (DESIGN_glossy_prefilter.md). Two buffers per
+            # FRAME -- never per batch, which is many frames and would make
+            # these the render's dominant allocation. Covered ordinals are
+            # ordered by global pixel index, so a frame's covered pixels are a
+            # contiguous ordinal range and the tile loop can be clamped to one
+            # frame at a time and flushed at the boundary. Both come from the
+            # arena, so the runtime memory model measures them like everything
+            # else and the batch size adapts on its own.
+            gl_active = int(rt_settings.glossy_reflection_mode()) == 3
+            gl_main = gl_pyr = gl_levels = None
+            gl_sigma_max = 0.0
+            gl_bounds = None
+            if gl_active:
+                levels, pyr_texels = _gloss_pyramid_levels(
+                    width, height, int(rt_settings.GLOSSY_PREFILTER_MAX_LEVELS)
+                )
+                gl_main = memory.get_tensor(
+                    (int(width) * int(height), GL_MAIN_WIDTH), f32
+                )
+                gl_pyr = memory.get_tensor((pyr_texels, GL_PYR_WIDTH), f32)
+                gl_levels = _arena_values(
+                    memory, [c for row in levels for c in row], torch.int32
+                ).view(len(levels), 3)
+                gl_sigma_max = _BOX_SIGMA * float(1 << (len(levels) - 1))
+                gl_bounds = _gloss_frame_bounds(
+                    coverage["covered_idx"],
+                    int(width) * int(height),
+                    int(time_end) - int(time_start),
+                )
+                _gloss_clear(gl_main, gl_pyr)
+            gl_frame = 0
+
             while covered_start < num_covered_total:
                 remaining = num_covered_total - covered_start
                 attempt_primary = min(learned_primary_cap, remaining)
+                if gl_active:
+                    while gl_bounds[gl_frame + 1] <= covered_start:
+                        gl_frame += 1
+                    attempt_primary = min(
+                        attempt_primary, gl_bounds[gl_frame + 1] - covered_start
+                    )
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
@@ -2683,7 +2828,19 @@ def raytrace_render_wavefront(
                                 memory, pool, state_sca_width, global_hits=False
                             )
                             rs_pix = memory.get_tensor((pool,), i32)
-                            pix_accum = memory.get_tensor((attempt_primary, 7), f32)
+                            # The glossy route doubles the rows (a second
+                            # accumulator per pixel for the reflection alone)
+                            # and widens them (the reflection's energy, blur
+                            # scale and distances) rather than spending a
+                            # kernel argument on any of it -- both kernels
+                            # involved are at 72 parameters against Taichi's
+                            # 64 runtime ones. See DESIGN_glossy_prefilter.md.
+                            pix_accum = memory.get_tensor(
+                                (attempt_primary * 2, GL_ROW_WIDTH)
+                                if gl_active
+                                else (attempt_primary, 7),
+                                f32,
+                            )
                             rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
                             rs_vis = memory.get_tensor((1,), i32)
                             compactor = _ArenaRayCompactor(memory, pool, i32)
@@ -2693,6 +2850,14 @@ def raytrace_render_wavefront(
                             # above (DESIGN_mesh_identity_open.md §H).
                             state[3][:, _SCA_IOR_DEPTH:].zero_()
                         pix_accum.zero_()
+                        if gl_active:
+                            # A glossy ray that never hits anything writes no
+                            # distance at all, and that has to read as "the
+                            # reflection is infinitely far", i.e. fully
+                            # blurred -- not as the zero a cleared buffer
+                            # would give, which is a contact reflection.
+                            pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
+                            layer_offsets_t[7] = float(attempt_primary)
                         rs_int[:, 2].fill_(1)
                         rs_alloc.zero_()
                         rs_alloc[0] = attempt_primary
@@ -2843,6 +3008,24 @@ def raytrace_render_wavefront(
                         continue
                     _record_tile_truncations(alloc, pool)
 
+                    if gl_active:
+                        # BEFORE the composite: both read the frame buffer's
+                        # raw prefilled background, and the composite
+                        # overwrites it with the finalized pixel.
+                        gloss_scatter(
+                            int(attempt_primary),
+                            int(attempt_primary),
+                            gl_frame * int(width) * int(height),
+                            gl_frame,
+                            int(width),
+                            float(gl_sigma_max),
+                            covered_idx,
+                            pix_accum,
+                            gl_main,
+                            gl_pyr,
+                            out,
+                        )
+
                     wf_composite_accum_sparse(
                         int(time_start),
                         int(width),
@@ -2850,13 +3033,28 @@ def raytrace_render_wavefront(
                         1 if transparent else 0,
                         0,
                         covered_idx,
-                        pix_accum,
+                        pix_accum[:attempt_primary] if gl_active else pix_accum,
                         t_val_sparse,
                         float(rt_settings.TONEMAP_EXPOSURE),
                         out,
                     )
                     memory.set_pointers(state_ptrs)
                     covered_start += attempt_primary
+                    if gl_active and covered_start >= gl_bounds[gl_frame + 1]:
+                        # Frame complete: prefilter its reflection buffer and
+                        # composite the glossy pixels over the values the tile
+                        # composites just wrote for them.
+                        _gloss_finish_frame(
+                            gl_frame,
+                            gl_levels,
+                            gl_main,
+                            gl_pyr,
+                            int(width),
+                            int(height),
+                            t_val_sparse,
+                            out,
+                        )
+                        _gloss_clear(gl_main, gl_pyr)
                     break
         return
 

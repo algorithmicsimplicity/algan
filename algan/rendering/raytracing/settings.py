@@ -21,6 +21,7 @@ import warnings
 
 from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 from algan.settings._startup import _HDR_BUFFER_F16, _RENDER_DEVICE
 
@@ -1600,16 +1601,55 @@ GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", False)
 GLOSSY_INTERLEAVE = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 
 
-def set_glossy_reflection(enabled, *, interleave=None):
-    """Toggle roughness-driven glossy reflections (see ``GLOSSY_REFLECTION``)."""
-    global GLOSSY_REFLECTION, GLOSSY_INTERLEAVE
+# SPLIT-SUM PREFILTERING for glossy reflections, the answer to why the tap fan
+# above ships disabled (renderer audit REPORT.md §4.5.1,
+# DESIGN_glossy_prefilter.md). Instead of N taps over the lobe, ONE
+# deterministic ray in the mirror direction with throughput 1, accumulated into
+# a per-pixel reflection buffer; the lobe's ENERGY comes from the analytic
+# split-sum DFG term (which replaces ``_mirror_share``'s throttle outright) and
+# its SHAPE from prefiltering that buffer by the lobe's screen footprint before
+# compositing.
+#
+# It fixes both halves of what the fan gets wrong. Nothing crawls, because the
+# ray direction is a smooth function of position rather than a screen-fixed
+# dither pattern; nothing ghosts, because a wide lobe is a wide filter rather
+# than N discrete copies; and it costs FEWER rays than the fan, not more --
+# more taps was never the lever, since the artefact the throttle exists to hide
+# is minification aliasing and no amount of point sampling fixes that.
+#
+# DEFAULT ON, gated behind ``GLOSSY_REFLECTION``, which is still default off.
+# So the default render is byte-identical, turning glossy reflections on gets
+# the prefiltered route, and the old tap fan is reachable for comparison with
+# ``set_glossy_reflection(True, prefilter=False)``.
+GLOSSY_PREFILTER = env_flag("ALGAN_GLOSSY_PREFILTER", True)
+
+# How many mip levels the prefilter's reflection pyramid may have. Each level
+# doubles the blur radius it can represent, so 10 covers a sigma of ~148 px --
+# past a frame's own height at every preset below UHD, and a lobe wider than
+# the frame reads as the average of everything glossy in it either way. Lower
+# it only to cap the pyramid's memory; the buffers are per FRAME, not per
+# batch, and the runtime memory model measures them like everything else.
+GLOSSY_PREFILTER_MAX_LEVELS = env_int("ALGAN_GLOSSY_PREFILTER_LEVELS", 10)
+
+
+def set_glossy_reflection(enabled, *, interleave=None, prefilter=None):
+    """Toggle roughness-driven glossy reflections (see ``GLOSSY_REFLECTION``).
+
+    ``prefilter`` selects the split-sum route (default) over the tap fan;
+    ``interleave`` only means anything to the fan.
+    """
+    global GLOSSY_REFLECTION, GLOSSY_INTERLEAVE, GLOSSY_PREFILTER
     GLOSSY_REFLECTION = bool(enabled)
     if interleave is not None:
         GLOSSY_INTERLEAVE = bool(interleave)
+    if prefilter is not None:
+        GLOSSY_PREFILTER = bool(prefilter)
 
 
 def glossy_reflection_mode():
-    """Live glossy-lobe mode: 0 off, 1 fan only, 2 fan + per-pixel rotation.
+    """Live glossy-lobe mode: 0 off, 1 fan only, 2 fan + per-pixel rotation,
+    3 split-sum prefilter (``GLOSSY_PREFILTER``, the default when glossy
+    reflections are on at all).
 
     Read at call time (never imported by value) and returned as an int, because
     it reaches the resolve as a TEMPLATE value: each mode compiles its own
@@ -1619,7 +1659,35 @@ def glossy_reflection_mode():
     """
     if not GLOSSY_REFLECTION:
         return 0
+    if GLOSSY_PREFILTER:
+        return 3
     return 2 if GLOSSY_INTERLEAVE else 1
+
+
+def glossy_blur_sigma_px(roughness, d_reflected, d_primary, theta_px):
+    """The prefilter's blur radius in pixels, in pure Python.
+
+    The kernels compute this inline (``sheet_resolve_taichi`` produces the
+    per-pixel scale, ``glossy_prefilter_taichi.gloss_scatter`` applies the cone
+    factor); this is the same arithmetic in one place, for tests and for
+    anything on the host that needs to predict it. See
+    ``DESIGN_glossy_prefilter.md`` §3 for where each term comes from.
+
+    ``d_reflected`` is how far past the primary hit the reflected content sits;
+    ``inf`` (a ray that escaped) is a reflection of the sky and blurs by the
+    full lobe angle, and 0 (a reflection in contact with its reflector) does
+    not blur at all.
+    """
+    alpha = float(roughness) * float(roughness)
+    sigma_angle = 2.0 * alpha
+    d_r = float(d_reflected)
+    d_p = float(d_primary)
+    if d_r == float("inf"):
+        cone = 1.0
+    else:
+        total = d_p + d_r
+        cone = 0.0 if total <= 0.0 else max(0.0, min(1.0, d_r / total))
+    return cone * sigma_angle / float(theta_px)
 
 
 # NESTED DIELECTRIC MEDIA for the deterministic tracer: a ray carries the stack
@@ -1747,18 +1815,57 @@ def set_analytic_aa(
 
 
 def analytic_aa_secondary_samples():
-    """Live continuation-ray sample count; 1 (off) unless analytic AA is on.
+    """Live continuation-ray tap count; 1 (off) unless analytic AA is on.
 
-    Snapped to a supported set size, because the sub-pixel positions are a
-    compile-time table and N reaches the resolve as a template value.
+    Clamped to ``[1, _AA_SEC_MAX]`` and otherwise returned unchanged: every
+    count in that range has real sub-pixel positions (hand-written for 1/2/4/8,
+    generated for the rest), so there is no supported set left to snap to. N
+    still reaches the resolve as a template value, which is why a value above
+    the ceiling is clamped with a warning rather than honoured -- the position
+    mask is an i32 bitfield, and each extra distinct tap count also pays a
+    kernel compile of its own (see the warning text).
     """
     if not ANALYTIC_AA:
         return 1
     n = int(ANALYTIC_AA_SECONDARY_SAMPLES)
-    for k in (8, 4, 2):
-        if n >= k:
-            return k
-    return 1
+    if n > _secondary_tap_ceiling():
+        _warn_secondary_clamped(n)
+        return _secondary_tap_ceiling()
+    return max(1, n)
+
+
+def _secondary_tap_ceiling():
+    """The tap ceiling, from the kernel module that owns the bitfield.
+
+    Imported at call time rather than at module import: importing
+    ``raster_taichi`` from here at module level would make this module's
+    import depend on the whole geometry-kernel family loading in a fixed
+    order, and this function runs once per batch prep, not once per pixel.
+    """
+    from algan.rendering.raytracing.raster_taichi import _AA_SEC_MAX
+
+    return _AA_SEC_MAX
+
+
+#: Set by the first clamp warning; a misconfigured tap count clamps every
+#: batch of every render, and one notice per process is what a reader needs.
+_SECONDARY_CLAMP_WARNED = False
+
+
+def _warn_secondary_clamped(requested):
+    """Warn once per process that an over-ceiling tap count was clamped."""
+    global _SECONDARY_CLAMP_WARNED
+    if _SECONDARY_CLAMP_WARNED:
+        return
+    _SECONDARY_CLAMP_WARNED = True
+    get_logger("raytracing").warning(
+        f"ANALYTIC_AA_SECONDARY_SAMPLES={requested} exceeds the ceiling of "
+        f"{_secondary_tap_ceiling()} and was clamped to it: the "
+        f"continuation-position mask is a 32-bit field, one bit per tap, and "
+        f"every extra distinct count is paid again in kernel compile time "
+        f"because the resolve unrolls ti.static(range(sec_aa)) at four call "
+        f"sites."
+    )
 
 
 def analytic_aa_sliver_mode():

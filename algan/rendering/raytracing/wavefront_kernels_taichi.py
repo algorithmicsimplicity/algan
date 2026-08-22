@@ -26,6 +26,9 @@ still have work -- warps refill as rays drop out, which is the divergence fix.
 """
 import taichi as ti
 
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    GL_ROW_DIST as _GL_ROW_DIST,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
@@ -962,6 +965,97 @@ def _mirror_share(roughness):
     """
     a = roughness * roughness
     return _MIRROR_SHARE_A2 / (_MIRROR_SHARE_A2 + a * a)
+
+
+@ti.func
+def _env_brdf_approx(f0, n_dot_v, roughness):
+    """Directional albedo of a GGX specular lobe -- the DFG half of the
+    split-sum approximation (Karis 2013), in ``[0, 1]`` per channel.
+
+    ``integral L(l) f(l,v) dl`` factors into a prefiltered radiance and a BRDF
+    integral that depends on nothing but ``(n.v, roughness)``. This is that
+    second factor: the fraction of arriving light the lobe reflects, summed
+    over every direction in it. It is EXACT energy where ``_mirror_share`` is
+    a throttle -- the throttle asks "how much of this lobe may one ray stand
+    for", which is a question about sampling, and answers it by throwing the
+    rest at the material's own shading (for a metal, the ambient fill: a rough
+    metal reflecting 4.7% of what it should, measured in the renderer audit
+    ss4.5). The split-sum asks "how much does this lobe reflect", which is a
+    question about the material, and the answer costs no rays at all.
+
+    The analytic fit rather than the usual 2-D LUT: a LUT is another texture to
+    pack, upload and address inside the shade kernel for what is a four-term
+    polynomial (Karis 2014, "Mobile"), whose error against the numerically
+    integrated table is under 1% over the whole ``(n.v, roughness)`` square.
+
+    It degenerates to Schlick as roughness goes to zero -- ``f0`` at normal
+    incidence, 1 at grazing -- which is what lets the mirror path below
+    ``_GLOSSY_MIN_ROUGHNESS`` keep using ``_material_reflectance`` unchanged
+    while the glossy path above it uses this: the two agree across the
+    threshold instead of stepping.
+    """
+    nv = ti.math.clamp(n_dot_v, 0.0, 1.0)
+    r = ti.math.clamp(roughness, 0.0, 1.0)
+    cx = r * -1.0 + 1.0
+    cy = r * -0.0275 + 0.0425
+    cz = r * -0.572 + 1.04
+    cw = r * 0.022 - 0.04
+    # exp2(-9.28 * nv), spelled in ti.exp: Taichi has no exp2 (checked, 1.7.4),
+    # and 9.28 * ln 2 = 6.4324058.
+    a004 = ti.min(cx * cx, ti.exp(-6.4324058 * nv)) * cx + cy
+    term_a = -1.04 * a004 + cz
+    term_b = 1.04 * a004 + cw
+    return ti.math.clamp(f0 * term_a + term_b, 0.0, 1.0)
+
+
+@ti.func
+def _material_env_brdf(rd, normal, metalness, packed_ior, albedo, roughness):
+    """Split-sum directional albedo of a Three.js-style material's specular
+    lobe -- the drop-in for ``_material_reflectance``'s ``R`` on the
+    PREFILTERED glossy route (``DESIGN_glossy_prefilter.md`` ss2.1).
+
+    ``_material_reflectance`` evaluates Schlick at the incident angle, which is
+    the reflectance of the *mirror direction*; a lobe wide enough to need
+    prefiltering does not reflect that. This integrates the lobe instead, from
+    the same F0: ``mix(dielectric_f0, albedo, metalness)``, the identical blend
+    that function performs before Schlick's tail, so a mirror and a rough metal
+    of the same material still describe one material.
+
+    ``metalness < 0`` is the same legacy/unlit sentinel, and returns zero: an
+    unlit material has no specular lobe to integrate. An IOR at or below 1 is
+    index-matched with the air around it, so its dielectric lobe vanishes and
+    only the metal share survives -- the same explicit gate, for the same
+    reason (Schlick cannot express that limit; any f0 still reflects fully at
+    grazing).
+
+    The two lobes are integrated SEPARATELY and blended after, where
+    ``_material_reflectance`` may blend F0 first. ``E`` is affine in F0
+    (``F0*A + B``) so the two are algebraically identical wherever both lobes
+    exist -- but the index-matched gate has to remove the dielectric lobe
+    ENTIRELY, and a blended F0 of zero still carries the ``B`` bias term, i.e.
+    a grazing sheen on a surface that has no interface to reflect from.
+
+    TRANSMISSION IS NOT AN ARGUMENT, deliberately. The caller applies this only
+    to the opaque reflective branch: glass keeps Schlick and the side-aware
+    total-internal-reflection logic ``_material_reflectance`` documents, whose
+    correctness depends on evaluating a single interface at a single angle.
+    """
+    result = ti.math.vec3(0.0, 0.0, 0.0)
+    if metalness >= 0.0:
+        m = ti.math.clamp(metalness, 0.0, 1.0)
+        ior = ti.abs(packed_ior)
+        n = normal.normalized()
+        nv = ti.abs(rd.dot(n))
+        e_diel = ti.math.vec3(0.0, 0.0, 0.0)
+        if ior > 1.0 + 1e-4:
+            r0 = (1.0 - ior) / (1.0 + ior)
+            f0d = r0 * r0
+            e_diel = _env_brdf_approx(
+                ti.math.vec3(f0d, f0d, f0d), nv, roughness)
+        e_metal = _env_brdf_approx(
+            ti.math.clamp(albedo, 0.0, 1.0), nv, roughness)
+        result = e_diel * (1.0 - m) + e_metal * m
+    return result
 
 
 @ti.func
@@ -2350,6 +2444,15 @@ def wavefront_shade(
         env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
         env_intensity = layer_offsets[4]
         far_clip = layer_offsets[5]
+    # First accumulator row belonging to the split-sum glossy half of
+    # ``pix_accum`` (DESIGN_glossy_prefilter.md §4.3), or 0 when the route is
+    # not active -- which is every render but an opt-in glossy one, and the
+    # reason this rides in ``layer_offsets`` rather than as a kernel argument:
+    # this kernel is at 72 parameters against Taichi's 64 runtime ones, the
+    # same ceiling that put the environment map's placement in here.
+    gloss_base = 0
+    if layer_offsets.shape[0] > 7:
+        gloss_base = ti.cast(layer_offsets[7] + 0.5, ti.i32)
     for i in range(num_active):
         r = active[i]
         pix = r
@@ -2358,6 +2461,9 @@ def wavefront_shade(
         accum_pix = pix
         if ti.static(compact):
             accum_pix = rs_int[r, 4]
+        # Per RAY, hoisted out of the hit loop: a glossy reflection ray and
+        # everything it goes on to spawn share the glossy accumulator row.
+        is_gloss_ray = (gloss_base > 0) and (accum_pix >= gloss_base)
         num_hits = rs_int[r, 3]
         if num_hits > 0:
             f = time_start + (ray_offset + pix) // pixels_per_frame
@@ -2444,6 +2550,18 @@ def wavefront_shade(
                         kb_prim[q] = -1
                 drained += 1
                 processed += 1
+                if is_gloss_ray:
+                    # SPLIT-SUM PREFILTER (DESIGN_glossy_prefilter.md §4.3):
+                    # how far past its reflector this reflection turned out to
+                    # be, which is what sets its blur radius. The TOTAL camera
+                    # path length, not the segment: a descendant's is always
+                    # larger than its parent's, so the minimum over the whole
+                    # sub-tree is exactly the first hit of the reflection ray
+                    # itself. A short segment three bounces in would win a
+                    # ``t_hit`` minimum and report a distant reflection as
+                    # being in contact.
+                    ti.atomic_min(pix_accum[accum_pix, _GL_ROW_DIST],
+                                  base_dist + t_hit)
                 htype = flags & 3
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1

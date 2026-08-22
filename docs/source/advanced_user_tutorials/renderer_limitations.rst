@@ -96,7 +96,7 @@ row links to the section that explains it.
      - Yes (stochastic)
      - `Reflection, refraction and transmission`_
    * - Blurred (glossy) reflection
-     - Opt-in, 4 taps
+     - Opt-in, screen-space prefilter
      - **No** (the setting is inert here)
      - Yes
      - `Reflection, refraction and transmission`_
@@ -546,13 +546,31 @@ Reflection
   roughness-correct highlight and ambient term. The result reads as a rough
   metal; it is not a blurred mirror image.
 
-  ``SETTINGS.raytracing.set(glossy_reflection=True)`` spends the four sub-pixel
-  continuation rays on the lobe instead. It is **off by default because four
-  taps cannot integrate a wide lobe**: with the default screen-space rotation on
-  it resolves a glossy gradient into a handful of levels that crawl as geometry
-  moves, and with the rotation off the four taps land as four discrete ghost
-  copies of the reflected image. Turn it on for a still, or for low-contrast
-  reflected content.
+  ``SETTINGS.raytracing.set(glossy_reflection=True)`` replaces that throttle
+  with the **split-sum approximation**, which is what a real-time renderer uses
+  to get a wide lobe out of one deterministic ray. The lobe's energy becomes
+  analytic -- the environment-BRDF term, exact and ray-free -- and its shape
+  comes from tracing one mirror ray per pixel into a reflection buffer, blurring
+  that buffer by the lobe's screen footprint, and compositing. It is still
+  opt-in, and it has two limits of its own:
+
+  * **It is screen space.** The reflection can only show what the frame
+    contains. A reflector pointed at something behind the camera, or off the
+    edge of the frame, reflects the background instead. An environment map
+    covers exactly that gap and is the right pairing.
+  * **A rough metal gets darker, correctly.** With the throttle, a metal keeps
+    its ambient fill in place of the reflection it declines to draw. With
+    split-sum that energy is spent on the reflection, which is as bright as the
+    surroundings actually are -- dark, in a dark room.
+
+  Blur radius, contact hardening and the mip prefilter are described in
+  ``algan/rendering/raytracing/DESIGN_glossy_prefilter.md``. The older four-tap
+  lobe fan remains reachable as
+  ``set(glossy_reflection=True, prefilter=False)``; it is **not** recommended,
+  because four taps cannot integrate a wide lobe -- with the screen-space
+  rotation on it resolves a glossy gradient into a handful of levels that crawl
+  as geometry moves, and with the rotation off the taps land as discrete ghost
+  copies of the reflected image.
 * **A reflected or refracted image is not analytically antialiased.** Coverage
   resolves a mirror's own outline exactly, but what the mirror shows is sampled
   by continuation rays -- four sub-pixel positions at best, and only when the
