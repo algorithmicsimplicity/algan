@@ -58,6 +58,25 @@ def test_triangulated_circuit_conversion_is_planar_and_fills_the_circle():
 
 
 def test_surface_and_pn_conversion_render_pixel_identically(tmp_path):
+    """A ``Sphere`` and its PN soup are the same surface, so they draw the same.
+
+    Asserted to within one channel value rather than byte-for-byte, and the
+    distinction is worth recording because this test asserted exact equality
+    until the render boundary started decoding authored colour into linear
+    light. The two paths are **not** bit-identical in float -- they build and
+    traverse their geometry differently -- and exact byte equality was
+    incidental: it held only because their last-bit disagreement happened to
+    round the same way. Decoding moves every colour, and on this scene it puts
+    one pixel's red channel on a rounding boundary, where the two render 128 and
+    129. Measured: **one** pixel of 5184, one channel, one value; with
+    ``ALGAN_LINEAR_COLOR=0`` (which puts the colour back where it was) the two
+    are byte-identical again.
+
+    So the tolerance is one value, and the fraction of pixels allowed to use it
+    is capped well below what any structural divergence would produce -- a
+    reflection in the wrong place, a normal flipped, a patch missing would move
+    hundreds of pixels by tens of values, and still fails.
+    """
     settings = SMOKE_TEST.set(resolution=(96, 54))
 
     def render(name, convert):
@@ -88,4 +107,7 @@ def test_surface_and_pn_conversion_render_pixel_identically(tmp_path):
     finally:
         SceneManager.reset()
 
-    assert np.array_equal(surface, soup)
+    difference = np.abs(surface.astype(np.int32) - soup.astype(np.int32))
+    assert difference.max() <= 1, f"max channel deviation {difference.max()}"
+    differing = float((difference.max(axis=2) > 0).mean())
+    assert differing < 0.005, f"{differing:.3%} of pixels differ"
