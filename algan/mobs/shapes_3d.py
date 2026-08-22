@@ -411,11 +411,17 @@ class Cone(Surface):
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         with Off(animation_manager=self.animation_manager):
             self.look(direction_t, axis=1)
+        # A capped cone's base has to be a Scene actor to be drawn at all: the
+        # render loop collects primitives from ``Scene.actors``, not by walking
+        # the hierarchy, and ``add_children`` does not register anything. Left
+        # unregistered when the cone is open, so ``base_circle`` stays available
+        # (it is documented as always built) without appearing in the render --
+        # and when the cone itself is detached, so a morph target stays one.
         self.base_circle = Circle(
             scene=self.scene,
             radius=base_radius,
             color=self.color,
-            add_to_scene=False,
+            add_to_scene=bool(show_base) and self._added_to_scene,
         )
         with Off(animation_manager=self.animation_manager):
             self.base_circle.look(-direction_t, axis=2)
@@ -596,19 +602,46 @@ class Cylinder(Surface):
     def add_bases(self, direction=None):
         if direction is None:
             direction = F.normalize(cast_to_tensor(self.direction), p=2, dim=-1)
+        # Scene actors, not merely children: the render loop collects
+        # primitives from ``Scene.actors`` and never walks the hierarchy, so a
+        # cap that is only ``add_children``-ed is never drawn and the cylinder
+        # renders as an open tube (see Cone.__init__ for the same reason). A
+        # detached cylinder's caps stay detached with it.
+        registered = self._added_to_scene
         self.bottom_cap = Circle(
-            scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
+            scene=self.scene,
+            radius=self.radius,
+            color=self.color,
+            add_to_scene=registered,
         )
         self.top_cap = Circle(
-            scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
+            scene=self.scene,
+            radius=self.radius,
+            color=self.color,
+            add_to_scene=registered,
         )
-        self.bottom_cap.look(-direction, axis=2)
-        self.top_cap.look(direction, axis=2)
-        self.bottom_cap.move_to(-direction * self.height * 0.5)
-        self.top_cap.move_to(direction * self.height * 0.5)
         self.base_bottom = self.bottom_cap
         self.base_top = self.top_cap
         self.add_children(self.bottom_cap, self.top_cap)
+        self._place_bases(
+            direction, -direction * self.height * 0.5, direction * self.height * 0.5
+        )
+        return self
+
+    def _place_bases(self, direction, start, end):
+        """Sit the end caps on ``start`` and ``end``, each facing outward.
+
+        Called again by :meth:`_move_between_points`, which writes ``basis``
+        directly rather than through a transform -- so the children do not
+        follow it, and a cap left where it was built ends up floating beside
+        the tube it is supposed to close.
+        """
+        if getattr(self, "bottom_cap", None) is None:
+            return self
+        self.bottom_cap.look(-direction, axis=2)
+        self.top_cap.look(direction, axis=2)
+        self.bottom_cap.move_to(start)
+        self.top_cap.move_to(end)
         return self
 
     def coord_function(self, uv):
@@ -719,6 +752,7 @@ class Cylinder(Surface):
                 ),
             )
             self.set_location_by_function(self.coord_function)
+            self._place_bases(up_b, start, end)
         self.direction = up_b
         return self
 
@@ -822,6 +856,14 @@ class Arrow3D(Mob):
         self.end_point = Mob(location=end, opacity=0)
         self.length = length
         self.add_children(self.tail, self.head)
+        # The shaft and the head are drawn through this Arrow3D's own
+        # get_render_primitives, which is why they are not actors themselves.
+        # That builder emits their grids only, so the caps that close them
+        # reach the render the ordinary way, as actors -- and they were built
+        # detached, following the parts they belong to.
+        if self._added_to_scene:
+            for cap in (self.tail.bottom_cap, self.tail.top_cap, self.head.base_circle):
+                self.scene.add_actor(cap)
 
     def _get_memory_used_per_timestep(self):
         return sum(child._get_memory_used_per_timestep() for child in self.children)

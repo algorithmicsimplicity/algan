@@ -164,3 +164,108 @@ def test_image_mobject_display_frame_is_registered():
 )
 def test_composites_leave_no_invisible_geometry(build):
     assert invisible_geometry(_spawned(build())) == []
+
+
+def unbuilt_geometry(mob):
+    """Spawned geometry of ``mob`` that the actor walk never asks to build.
+
+    ``invisible_geometry`` above excuses a descendant whose ancestor is an
+    actor carrying ``get_render_primitives``, which assumes that builder
+    reaches down to it.  The two stock builders do not: ``Surface`` and
+    ``BezierCircuitCubic`` emit their own geometry and nothing else, so a part
+    attached to a Cylinder is not drawn just because the Cylinder is -- which
+    is how the cylinder and cone caps stayed unregistered and undetected.
+
+    Spying on the builders answers the question exactly instead of assuming:
+    run the collection the render loop runs (``get_render_primitives`` on each
+    Scene actor, never a walk of the hierarchy) and see who gets asked.
+    """
+    geometry = [
+        descendant
+        for descendant in mob.get_descendants()
+        if hasattr(descendant, "get_render_primitives") and descendant.is_spawned()
+    ]
+    asked = set()
+    for part in geometry:
+        original = part.get_render_primitives
+
+        def spy(part=part, original=original):
+            asked.add(id(part))
+            return original()
+
+        part.get_render_primitives = spy
+    try:
+        for actor in list(mob.scene.actors):
+            builder = getattr(actor, "get_render_primitives", None)
+            if builder is not None:
+                builder()
+    finally:
+        for part in geometry:
+            del part.get_render_primitives
+    return [part for part in geometry if id(part) not in asked]
+
+
+# ``show_ends``/``show_base`` promise a closed solid, and an open one is not
+# merely a shading difference: a ray enters through the missing cap and hits
+# whatever is inside.  That is what put a white speck of the axis Line3D on the
+# red Arrow3D of ``tests/full_renders/solids_and_camera`` at the seam between
+# its shaft and its head.
+_CAPPED = {
+    "cylinder": lambda **kw: algan.Cylinder(
+        radius=0.4, height=1.0, show_ends=True, **kw
+    ),
+    "cone": lambda **kw: algan.Cone(base_radius=0.5, height=1.0, show_base=True, **kw),
+    # Line3D is a capped Cylinder, and Arrow3D is one plus a capped Cone --
+    # whose caps hang off parts that are not actors themselves.
+    "line3d": lambda **kw: algan.Line3D(
+        start=algan.LEFT, end=algan.RIGHT, thickness=0.08, **kw
+    ),
+    "arrow3d": lambda **kw: algan.Arrow3D(
+        start=algan.ORIGIN, end=algan.RIGHT * 1.1, thickness=0.05, **kw
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_CAPPED))
+def test_capped_solids_draw_their_caps(name):
+    mob = _spawned(_CAPPED[name]())
+
+    assert invisible_geometry(mob) == []
+    assert unbuilt_geometry(mob) == []
+
+
+def test_uncapped_cone_registers_no_base():
+    """``base_circle`` is built for every cone; only a capped one draws it."""
+    cone = _spawned(algan.Cone(base_radius=0.5, height=1.0))
+
+    assert cone.base_circle is not None
+    assert not any(child is cone.base_circle for child in cone.children)
+    assert id(cone.base_circle) not in {id(actor) for actor in cone.scene.actors}
+
+
+@pytest.mark.parametrize("name", sorted(_CAPPED))
+def test_detached_capped_solids_register_nothing(name):
+    """A cap must not register itself when its solid was built detached.
+
+    ``add_to_scene=False`` marks a Mob nobody intends to show -- a morph target,
+    a measurement -- and a cap that registered anyway would draw a disc with no
+    tube behind it.
+
+    Counted over geometry rather than over every actor: ``Arrow3D`` also
+    registers two ``opacity=0`` marker Mobs for ``get_start``/``get_end``, which
+    predate this and draw nothing.
+    """
+    square = algan.Square()
+
+    def renderable_actors():
+        return [
+            actor
+            for actor in square.scene.actors
+            if hasattr(actor, "get_render_primitives")
+        ]
+
+    before = len(renderable_actors())
+
+    _CAPPED[name](scene=square.scene, add_to_scene=False)
+
+    assert len(renderable_actors()) == before
