@@ -36,8 +36,7 @@ def srgb_to_linear(u8):
 
 def linear_to_srgb(lin):
     lin = np.clip(np.asarray(lin, dtype=np.float64), 0.0, None)
-    return np.where(lin <= 0.0031308, lin * 12.92,
-                    1.055 * lin ** (1 / 2.4) - 0.055)
+    return np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
 
 
 def _load(path):
@@ -70,26 +69,35 @@ def compare(path_a, path_b, out_dir=None, label_a="A", label_b="B"):
     lb_matched = lb * k
 
     raw8 = np.abs(a.astype(np.int32) - b.astype(np.int32))
-    matched8 = np.abs(a.astype(np.int32)
-                      - np.round(linear_to_srgb(lb_matched) * 255.0).astype(np.int32))
+    matched8 = np.abs(
+        a.astype(np.int32)
+        - np.round(linear_to_srgb(lb_matched) * 255.0).astype(np.int32)
+    )
 
     stats = {
-        "a": str(path_a), "b": str(path_b),
+        "a": str(path_a),
+        "b": str(path_b),
         "resolution": [int(a.shape[1]), int(a.shape[0])],
         "content_pixels": n,
         "exposure_factor_b_to_a": round(k, 4),
         "raw": {
             "mean_abs_8bit": round(float(raw8[content].mean()) if n else 0.0, 2),
-            "p95_abs_8bit": round(float(np.percentile(raw8[content], 95)) if n else 0.0, 1),
+            "p95_abs_8bit": round(
+                float(np.percentile(raw8[content], 95)) if n else 0.0, 1
+            ),
             "max_abs_8bit": int(raw8.max()),
             "mean_linear_ratio_a_over_b": round(
-                float(fa.mean() / max(fb.mean(), 1e-12)) if n else 0.0, 3),
+                float(fa.mean() / max(fb.mean(), 1e-12)) if n else 0.0, 3
+            ),
         },
         "exposure_matched": {
             "mean_abs_8bit": round(float(matched8[content].mean()) if n else 0.0, 2),
-            "p95_abs_8bit": round(float(np.percentile(matched8[content], 95)) if n else 0.0, 1),
+            "p95_abs_8bit": round(
+                float(np.percentile(matched8[content], 95)) if n else 0.0, 1
+            ),
             "frac_pixels_over_16": round(
-                float((matched8[content].max(axis=-1) > 16).mean()) if n else 0.0, 4),
+                float((matched8[content].max(axis=-1) > 16).mean()) if n else 0.0, 4
+            ),
         },
     }
 
@@ -97,7 +105,9 @@ def compare(path_a, path_b, out_dir=None, label_a="A", label_b="B"):
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         name = Path(path_a).name.split(".")[0]
-        bm = np.round(np.clip(linear_to_srgb(lb_matched) * 255.0, 0, 255)).astype(np.uint8)
+        bm = np.round(np.clip(linear_to_srgb(lb_matched) * 255.0, 0, 255)).astype(
+            np.uint8
+        )
         # Difference panels are amplified 3x: at 1x an interesting structural
         # difference is often invisible next to the images it came from.
         d_raw = np.clip(raw8 * 3, 0, 255).astype(np.uint8)
@@ -105,14 +115,24 @@ def compare(path_a, path_b, out_dir=None, label_a="A", label_b="B"):
         top = np.concatenate([a, b], axis=1)
         bottom = np.concatenate([d_mat, bm], axis=1)
         sheet = np.concatenate([top, bottom], axis=0)
-        sheet = _annotate(sheet, a.shape[1], a.shape[0],
-                          [label_a, label_b,
-                           f"|{label_a} - {label_b}x{k:.2f}| x3",
-                           f"{label_b} x{k:.2f}"])
+        sheet = _annotate(
+            sheet,
+            a.shape[1],
+            a.shape[0],
+            [
+                label_a,
+                label_b,
+                f"|{label_a} - {label_b}x{k:.2f}| x3",
+                f"{label_b} x{k:.2f}",
+            ],
+        )
         # JPEG for the contact sheet: it is a figure to look at, not a baseline
         # to compare against, and path-traced noise makes it a 2 MB PNG.
-        cv2.imwrite(str(out_dir / f"{name}.compare.jpg"), sheet[:, :, ::-1],
-                    [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        cv2.imwrite(
+            str(out_dir / f"{name}.compare.jpg"),
+            sheet[:, :, ::-1],
+            [int(cv2.IMWRITE_JPEG_QUALITY), 88],
+        )
         cv2.imwrite(str(out_dir / f"{name}.diff_raw.png"), d_raw[:, :, ::-1])
         stats["contact_sheet"] = str(out_dir / f"{name}.compare.jpg")
 
@@ -124,10 +144,26 @@ def _annotate(sheet, w, h, labels):
     for i, text in enumerate(labels):
         x = (i % 2) * w + 6
         y = (i // 2) * h + 18
-        cv2.putText(sheet, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                    (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(sheet, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                    (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            sheet,
+            text,
+            (x, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            sheet,
+            text,
+            (x, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
     return sheet
 
 
@@ -139,8 +175,11 @@ def main(argv=None):
     ap.add_argument("--label-a", default="algan")
     ap.add_argument("--label-b", default="three")
     args = ap.parse_args(argv)
-    print(json.dumps(compare(args.a, args.b, args.out, args.label_a, args.label_b),
-                     indent=2))
+    print(
+        json.dumps(
+            compare(args.a, args.b, args.out, args.label_a, args.label_b), indent=2
+        )
+    )
 
 
 if __name__ == "__main__":

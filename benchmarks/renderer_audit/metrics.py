@@ -81,20 +81,25 @@ def mirror_reflection(name):
         return None
     h, w = lin.shape[:2]
     out = {}
-    floor = lin[int(0.88 * h):int(0.96 * h), int(0.40 * w):int(0.60 * w)]
+    floor = lin[int(0.88 * h) : int(0.96 * h), int(0.40 * w) : int(0.60 * w)]
     out["floor_mean_linear"] = round(float(floor.mean()), 5)
     # Ball centres measured from the scene: r=1.2 at (-1.5,-0.2,0.6) and
     # (1.5,-0.2,0.6), camera (0,1.4,8) fov 40 -> roughly these image points.
     for label, fx in (("mirror", 0.34), ("gold_rough", 0.66)):
         cx, cy = fx * w, 0.60 * h
-        patch = lin[int(cy + 0.03 * h):int(cy + 0.09 * h),
-                    int(cx - 0.04 * w):int(cx + 0.04 * w)]
+        patch = lin[
+            int(cy + 0.03 * h) : int(cy + 0.09 * h),
+            int(cx - 0.04 * w) : int(cx + 0.04 * w),
+        ]
         out[f"{label}_lower_half_mean_linear"] = round(float(patch.mean()), 5)
         out[f"{label}_reflection_efficiency"] = round(
-            float(patch.mean() / max(floor.mean(), 1e-9)), 4)
+            float(patch.mean() / max(floor.mean(), 1e-9)), 4
+        )
         # Spread of the reflected image: a mirror shows a sharp horizon (high
         # variance across the ball), a rough metal a blurred one (low variance).
-        ball = lin[int(0.44 * h):int(0.76 * h), int(cx - 0.09 * w):int(cx + 0.09 * w)]
+        ball = lin[
+            int(0.44 * h) : int(0.76 * h), int(cx - 0.09 * w) : int(cx + 0.09 * w)
+        ]
         g = ball.mean(axis=2)
         out[f"{label}_ball_contrast"] = round(float(g.std() / max(g.mean(), 1e-9)), 4)
     return out
@@ -102,8 +107,10 @@ def mirror_reflection(name):
 
 def main():
     report = {}
-    for scene, fn in (("calib_glass", glass_transmission),
-                      ("calib_mirror", mirror_reflection)):
+    for scene, fn in (
+        ("calib_glass", glass_transmission),
+        ("calib_mirror", mirror_reflection),
+    ):
         report[scene] = {}
         for suffix in ("algan", "algan_glossy", "three_pathtrace", "three_raster"):
             res = fn(f"{scene}.{suffix}.png")

@@ -230,8 +230,11 @@ def main(argv=None):
         help="turn Algan's default PBR-Neutral tonemapper off, so the only "
         "transfer curve in play is the one the comparison is measuring",
     )
-    ap.add_argument("--glossy", action="store_true",
-                    help="turn on roughness-blurred reflections (off by default)")
+    ap.add_argument(
+        "--glossy",
+        action="store_true",
+        help="turn on roughness-blurred reflections (off by default)",
+    )
     ap.add_argument("--bounces", type=int, default=None)
     ap.add_argument("--no-shadows", dest="shadows", action="store_false")
     args = ap.parse_args(argv)

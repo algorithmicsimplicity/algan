@@ -89,7 +89,7 @@ check the hosts directly instead. Second, `UnknownError` from Zen means "not
 available to you", and reads identically whether the model is paid, retired, or
 misspelled; it is not a signal you can debug a model ID from.
 
-### 2.2 Reasoning effort — always set it to `max`
+### 2.2 Reasoning effort — set it to `max` for best performance
 
 Ox Alpha is a reasoning model, and **OpenCode does not run it at full effort
 unless you ask.** The catalog entry declares:
@@ -99,7 +99,7 @@ unless you ask.** The catalog entry declares:
 "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]
 ```
 
-So there are three levels and `max` is the top one. Set it on every run:
+So there are three levels and `max` is the top one.
 
 ```bash
 opencode run --variant max --model opencode/x-preview-f-free "..."
@@ -127,7 +127,7 @@ Both forms were verified end to end. Two traps:
   `--thinking` the log shows tool calls and prose only, which makes a run at
   the wrong effort indistinguishable from one at the right effort.
 
-The one substantial task in §7 was run at the **default** effort, not `max`, so
+The one substantial task in §4 was run at the **default** effort, not `max`, so
 that assessment is a floor on the model's ability rather than a ceiling.
 
 ## 3. Driving the agent
@@ -288,6 +288,21 @@ output until the process exits and shows you nothing in the meantime: tail
 `message=loop ... step=N` lines that keep climbing. A hung one stops at
 `message=init` and the `cleanup prune=7.days` line a minute later, and never
 logs a step. Check that before waiting another half hour.
+
+**UPDATE: REVIEW FROM A SECOND TASK**
+I used it for the read-only audit and the bulk of the implementation, and it earned it: its call-site inventory corrected my sketch in several places (the Monte Carlo megakernel has no refraction at all; two orchestrators tracer.py imports don't exist; const_fill/gen_fused are inert in refraction batches). It also flagged the per-hit IOR interpolation as a caveat — which is exactly what the control frame later tripped on.
+
+Two things to add to scripts/ox_alpha/ox_alpha_opencode_agent.md for the next session:
+
+It ran out of steps twice, both times just before the report — same as last session, so budget two continuation calls, not one.
+It declared its adversarial diff re-read complete with "no defects found" while a real one was sitting in the diff: sca_width shadowed — the imported helper passed as a width to _alloc_wavefront_state, which would have crashed the sparse sheet route on every render, gate or no gate. It ran ruff and an import check and neither could see it. §4's "read git diff yourself: the report is accurate but it is not a review" is still the right advice, and this is a sharper example than the last one.
+
+The verification split worked: it did the plumbing, I designed and ran the experiments, and the experiments are what found both the shadowing bug and the edge artifact.
+
+**UPDATE: REVIEW FROM A THIRD TASK**
+It did nearly all of it: the kernel, the wiring, the settings/env registration, the harness and test coverage, and every measurement. It reads a large unfamiliar codebase well and reports honestly — its claims re-ran exactly as written when I checked them independently.
+
+Two things worth recording for the next session. It needs continuations, often — the step budget per opencode run invocation is small (~15–25 tool calls), and one invocation burned itself entirely on reading a report. Short, directive prompts get more work per call. And the review is still yours: my read of its first diff found a latent defect it had not (the kernel left rank uninitialised for any stream whose first band flag is clear — unreachable through compact_sheets, but _conflict_rank is now a directly-callable helper) and one small regression (its torch arm re-allocated an arange the caller deliberately shares, falsifying the comment that documents the sharing). Handing both back with a test requirement worked well — it fixed them and wrote the regression case.
 
 ## 5. Settled, and still open
 

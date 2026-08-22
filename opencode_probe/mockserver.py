@@ -4,6 +4,7 @@ Turn 1 (no tool result in history) -> emit a tool_calls delta for the client's
 own `bash` tool. Turn 2 (a role:"tool" message present) -> emit plain text.
 That exercises the full OpenCode loop with no external credential.
 """
+
 import json
 import os
 import time
@@ -35,11 +36,19 @@ class H(BaseHTTPRequestHandler):
         req = json.loads(body or b"{}")
 
         with open(LOG, "a") as f:
-            f.write(json.dumps({
-                "path": self.path,
-                "tools": [t.get("function", {}).get("name") for t in req.get("tools", [])],
-                "roles": [m.get("role") for m in req.get("messages", [])],
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "path": self.path,
+                        "tools": [
+                            t.get("function", {}).get("name")
+                            for t in req.get("tools", [])
+                        ],
+                        "roles": [m.get("role") for m in req.get("messages", [])],
+                    }
+                )
+                + "\n"
+            )
 
         saw_tool_result = any(m.get("role") == "tool" for m in req.get("messages", []))
         names = [t.get("function", {}).get("name") for t in req.get("tools", [])]
@@ -52,24 +61,40 @@ class H(BaseHTTPRequestHandler):
 
         if saw_tool_result:
             self.wfile.write(sse(chunk({"role": "assistant", "content": ""})))
-            self.wfile.write(sse(chunk({"content": "LOOP_VERIFIED: tool ran and its result came back."})))
+            self.wfile.write(
+                sse(
+                    chunk(
+                        {"content": "LOOP_VERIFIED: tool ran and its result came back."}
+                    )
+                )
+            )
             self.wfile.write(sse(chunk({}, "stop")))
         else:
-            self.wfile.write(sse(chunk({
-                "role": "assistant",
-                "tool_calls": [{
-                    "index": 0,
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": tool,
-                        "arguments": json.dumps({
-                            "command": "echo OPENCODE_TOOL_EXECUTED",
-                            "description": "loop probe",
-                        }),
-                    },
-                }],
-            })))
+            self.wfile.write(
+                sse(
+                    chunk(
+                        {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool,
+                                        "arguments": json.dumps(
+                                            {
+                                                "command": "echo OPENCODE_TOOL_EXECUTED",
+                                                "description": "loop probe",
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                )
+            )
             self.wfile.write(sse(chunk({}, "tool_calls")))
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
