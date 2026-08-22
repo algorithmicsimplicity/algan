@@ -455,8 +455,31 @@ produces HDR.**
 pair. The flat content keeps everything the tonemap flip won -- white title,
 white borders -- and the lit solids keep their hue.
 
-One thing this does *not* do: it bounds the result, it does not make the
-lighting energy-conserving. A three-light rig still saturates a white surface
+### Checked: secondary rays
+
+`OX_LIGHTING_AUDIT.md` is the companion code map for this section, and it
+raised the one caveat worth testing: the bound sits on each *shading event*,
+but a pixel carrying reflection or refraction composites several of them, so
+the sum could in principle exceed 1.0 even though every term is in range.
+
+Measured, on a mirror-metal sphere and a transmissive one over a white
+backdrop under the same three-light rig: **peak 1.000, 0.000% over**. The
+composite is a weighted blend rather than an unweighted sum, so bounded events
+stay bounded through it. That is one scene rather than a proof, but the
+specific concern does not reproduce.
+
+That audit also independently confirms three things this section asserts: that
+`light_intensity` and `ambient_light` reach only a kernel no renderer launches
+(and are already declared inert, pinned by
+`tests/unit_tests/test_inert_settings.py`), that the live paths hard-code
+`light_intensity == ambient == 1` at `primitives.py:620-621`, and that the two
+shading paths genuinely disagreed before this change -- the torch side
+truncating per channel at every lit vertex while the kernel side never bounded
+at all.
+
+### What this does not do
+
+It bounds the result, it does not make the lighting energy-conserving. A three-light rig still saturates a white surface
 where a physically-based one would not; it now saturates without changing hue.
 Normalising the light accumulation itself would be the deeper fix and would
 change every multi-light scene's shading, not just its clipped pixels.

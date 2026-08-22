@@ -24,8 +24,11 @@ from algan import (
     Cube,
     DirectionalLight,
     MeshLambertMaterial,
+    MeshPhysicalMaterial,
+    MeshStandardMaterial,
     PointLight,
     Scene,
+    Sphere,
     Square,
 )
 from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUT, RIGHT, UP
@@ -149,6 +152,50 @@ SCENARIOS = [
 ]
 
 
+def _three_lights():
+    return (
+        lambda: AmbientLight(color=WHITE_C, intensity=0.45),
+        lambda: DirectionalLight(
+            location=RIGHT * 5 + UP * 5 + OUT * 4,
+            target=ORIGIN,
+            color=WHITE_C,
+            intensity=0.85,
+        ),
+        lambda: PointLight(
+            location=LEFT * 3 + UP * 2 + OUT * 3, color=WHITE_C, intensity=0.6
+        ),
+    )
+
+
+def scene_secondary_rays(scene, glow):
+    """Mirror-like and transmissive surfaces under the same three-light rig.
+
+    These spawn continuation rays, so a pixel composites several shading
+    events. The pipeline tail bounds each event; this checks whether their
+    sum stays in range too.
+    """
+    mirror = Sphere(radius=1.0)
+    mirror.set_material(
+        MeshStandardMaterial(color=WHITE_C, roughness=0.05, metalness=1.0)
+    )
+    mirror.move(LEFT * 1.6)
+    mirror.spawn()
+
+    glassy = Sphere(radius=1.0)
+    glassy.set_material(
+        MeshPhysicalMaterial(color=WHITE_C, roughness=0.05, transmission=0.9, ior=1.5)
+    )
+    glassy.move(RIGHT * 1.6)
+    glassy.spawn()
+
+    backdrop = Square(side_length=12, color=WHITE_C)
+    backdrop.move(OUT * -4)
+    backdrop.spawn()
+
+    for light in _three_lights():
+        light().spawn(animate=False)
+
+
 def main():
     import os
 
@@ -162,6 +209,14 @@ def main():
     for name, build in SCENARIOS:
         p = measure(build)
         print(f"{name:>52} {p.peak:8.3f} {p.over_pct:7.3f}%")
+
+    print()
+    print("Secondary rays: does the per-event bound survive compositing?")
+    p = measure(scene_secondary_rays)
+    print(
+        f"{'metal + transmissive spheres, 3 lights, glow=0':>52} "
+        f"{p.peak:8.3f} {p.over_pct:7.3f}%"
+    )
 
     print()
     print("Is there a 'default light intensity' to turn down?")
