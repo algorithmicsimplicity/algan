@@ -2507,6 +2507,7 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
                     rs_int: ti.template(), rs_pix: ti.template(),
                     rs_alloc: ti.template(),
                     orig, dirn, wt, dist, bounces_left, processed, pixel, r,
+                    accum_row,
                     compact: ti.template(), ior_stack: ti.template(),
                     refracting: ti.template(), medium_ior, entering):
     """Append one continuation ray to the tile's shared ray pool.
@@ -2527,6 +2528,14 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
     rather than assumed: a partially covering glass fragment lets the primary
     walk on to the same solid's BACK face, and pushing there would record a
     medium the ray is leaving. Compiles out with the gate off.
+
+    ``accum_row`` is which row of ``pix_accum`` this continuation retires into,
+    and is ``r`` for every branch that belongs to the pixel itself. It is a
+    parameter rather than ``r`` because the split-sum glossy route
+    (``DESIGN_glossy_prefilter.md``) routes ONE continuation per pixel into a
+    SECOND accumulator row, so its radiance can be prefiltered before it is
+    composited; every ray that continuation goes on to spawn inherits the row
+    through ``rs_int[:, 4]`` and stays part of the same reflection.
     """
     c, have_slot = _reserve_continuation_slot(rs_alloc, rs_ro.shape[0])
     if have_slot:
@@ -2550,7 +2559,7 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
         rs_int[c, 3] = 0
         rs_pix[c] = pixel
         if ti.static(compact):
-            rs_int[c, 4] = r
+            rs_int[c, 4] = accum_row
     return have_slot
 
 

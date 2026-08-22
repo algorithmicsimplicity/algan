@@ -1600,16 +1600,55 @@ GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", False)
 GLOSSY_INTERLEAVE = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 
 
-def set_glossy_reflection(enabled, *, interleave=None):
-    """Toggle roughness-driven glossy reflections (see ``GLOSSY_REFLECTION``)."""
-    global GLOSSY_REFLECTION, GLOSSY_INTERLEAVE
+# SPLIT-SUM PREFILTERING for glossy reflections, the answer to why the tap fan
+# above ships disabled (renderer audit REPORT.md §4.5.1,
+# DESIGN_glossy_prefilter.md). Instead of N taps over the lobe, ONE
+# deterministic ray in the mirror direction with throughput 1, accumulated into
+# a per-pixel reflection buffer; the lobe's ENERGY comes from the analytic
+# split-sum DFG term (which replaces ``_mirror_share``'s throttle outright) and
+# its SHAPE from prefiltering that buffer by the lobe's screen footprint before
+# compositing.
+#
+# It fixes both halves of what the fan gets wrong. Nothing crawls, because the
+# ray direction is a smooth function of position rather than a screen-fixed
+# dither pattern; nothing ghosts, because a wide lobe is a wide filter rather
+# than N discrete copies; and it costs FEWER rays than the fan, not more --
+# more taps was never the lever, since the artefact the throttle exists to hide
+# is minification aliasing and no amount of point sampling fixes that.
+#
+# DEFAULT ON, gated behind ``GLOSSY_REFLECTION``, which is still default off.
+# So the default render is byte-identical, turning glossy reflections on gets
+# the prefiltered route, and the old tap fan is reachable for comparison with
+# ``set_glossy_reflection(True, prefilter=False)``.
+GLOSSY_PREFILTER = env_flag("ALGAN_GLOSSY_PREFILTER", True)
+
+# How many mip levels the prefilter's reflection pyramid may have. Each level
+# doubles the blur radius it can represent, so 10 covers a sigma of ~148 px --
+# past a frame's own height at every preset below UHD, and a lobe wider than
+# the frame reads as the average of everything glossy in it either way. Lower
+# it only to cap the pyramid's memory; the buffers are per FRAME, not per
+# batch, and the runtime memory model measures them like everything else.
+GLOSSY_PREFILTER_MAX_LEVELS = env_int("ALGAN_GLOSSY_PREFILTER_LEVELS", 10)
+
+
+def set_glossy_reflection(enabled, *, interleave=None, prefilter=None):
+    """Toggle roughness-driven glossy reflections (see ``GLOSSY_REFLECTION``).
+
+    ``prefilter`` selects the split-sum route (default) over the tap fan;
+    ``interleave`` only means anything to the fan.
+    """
+    global GLOSSY_REFLECTION, GLOSSY_INTERLEAVE, GLOSSY_PREFILTER
     GLOSSY_REFLECTION = bool(enabled)
     if interleave is not None:
         GLOSSY_INTERLEAVE = bool(interleave)
+    if prefilter is not None:
+        GLOSSY_PREFILTER = bool(prefilter)
 
 
 def glossy_reflection_mode():
-    """Live glossy-lobe mode: 0 off, 1 fan only, 2 fan + per-pixel rotation.
+    """Live glossy-lobe mode: 0 off, 1 fan only, 2 fan + per-pixel rotation,
+    3 split-sum prefilter (``GLOSSY_PREFILTER``, the default when glossy
+    reflections are on at all).
 
     Read at call time (never imported by value) and returned as an int, because
     it reaches the resolve as a TEMPLATE value: each mode compiles its own
@@ -1619,7 +1658,35 @@ def glossy_reflection_mode():
     """
     if not GLOSSY_REFLECTION:
         return 0
+    if GLOSSY_PREFILTER:
+        return 3
     return 2 if GLOSSY_INTERLEAVE else 1
+
+
+def glossy_blur_sigma_px(roughness, d_reflected, d_primary, theta_px):
+    """The prefilter's blur radius in pixels, in pure Python.
+
+    The kernels compute this inline (``sheet_resolve_taichi`` produces the
+    per-pixel scale, ``glossy_prefilter_taichi.gloss_scatter`` applies the cone
+    factor); this is the same arithmetic in one place, for tests and for
+    anything on the host that needs to predict it. See
+    ``DESIGN_glossy_prefilter.md`` §3 for where each term comes from.
+
+    ``d_reflected`` is how far past the primary hit the reflected content sits;
+    ``inf`` (a ray that escaped) is a reflection of the sky and blurs by the
+    full lobe angle, and 0 (a reflection in contact with its reflector) does
+    not blur at all.
+    """
+    alpha = float(roughness) * float(roughness)
+    sigma_angle = 2.0 * alpha
+    d_r = float(d_reflected)
+    d_p = float(d_primary)
+    if d_r == float("inf"):
+        cone = 1.0
+    else:
+        total = d_p + d_r
+        cone = 0.0 if total <= 0.0 else max(0.0, min(1.0, d_r / total))
+    return cone * sigma_angle / float(theta_px)
 
 
 # NESTED DIELECTRIC MEDIA for the deterministic tracer: a ray carries the stack

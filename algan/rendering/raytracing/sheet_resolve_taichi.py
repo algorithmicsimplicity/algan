@@ -35,6 +35,11 @@ old design's hand-maintained walk/shadow-walk lockstep.
 
 import taichi as ti
 
+from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    GL_ROW_DP,
+    GL_ROW_SIGMA_SCALE,
+    GL_ROW_W,
+)
 from algan.rendering.raytracing.raster_taichi import (
     _AA_FULL_DUST,
     _AA_MASK_ALL,
@@ -84,6 +89,7 @@ from algan.rendering.raytracing.shading_taichi import (
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     ALLOC_TRUNC_SURFACES,
+    _material_env_brdf,
     _material_reflectance,
     _mirror_share,
     _offset_transmitted_origin,
@@ -204,8 +210,33 @@ def sheet_resolve_shade(
             dmatch = _aa_dump_match(dump_out, px, py, f)
         g_roff = 0.5
         g_aoff = 0.0
-        if ti.static(glossy != 0):
+        if ti.static(glossy == 1 or glossy == 2):
             g_roff, g_aoff = _glossy_rotation(px, py, ti.static(glossy == 2))
+
+        # SPLIT-SUM PREFILTER (DESIGN_glossy_prefilter.md): pixels-per-radian
+        # for this pixel's ray, which is what turns the lobe's angular width
+        # into the blur radius its reflection buffer will be prefiltered at.
+        #
+        # ``pixel_basis_x`` is world-per-SCREEN-UNIT and a pixel is
+        # ``1 / half_screen_h`` of one, so the world size of a pixel at unit
+        # perpendicular depth is ``|pbx| / (half_h * focal)``. A ray parameter
+        # is a SLANT range, so the conversion also carries the optical-axis
+        # cosine, exactly as ``_axis_cos`` documents for every other width
+        # derived from a pixel size. Computed here rather than taken as an
+        # argument: this kernel is at 72 parameters and Taichi's ceiling is 64
+        # runtime ones, which is why the env map's placement already rides
+        # inside ``layer_offsets``.
+        gl_px_per_rad = 0.0
+        gl_taken = False
+        if ti.static(glossy == 3):
+            sp_c = ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                                screen_point[f, 2])
+            pbx_c = ti.math.vec3(pixel_basis_x[f, 0], pixel_basis_x[f, 1],
+                                 pixel_basis_x[f, 2])
+            focal = (sp_c - ro).norm()
+            axis_cos = rd.dot((sp_c - ro).normalized())
+            px_per_depth = pbx_c.norm() / (gen_meta[3] * ti.max(focal, 1e-6))
+            gl_px_per_rad = 1.0 / ti.max(px_per_depth * axis_cos, 1e-9)
 
         acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         weight = ti.math.vec3(1.0, 1.0, 1.0)
@@ -489,6 +520,28 @@ def sheet_resolve_shade(
             R, diel_pass = _material_reflectance(surf_rd, normal,
                                                  reflectivity,
                                                  ior, albedo3, T)
+            prefilter_take = False
+            if ti.static(glossy == 3):
+                # THE SPLIT-SUM SUBSTITUTION. One prefiltered glossy event per
+                # pixel (the first sheet that qualifies); for it, the lobe's
+                # exact directional albedo replaces both the Schlick mirror
+                # reflectance AND the ``_mirror_share`` throttle that stands in
+                # for a sampled lobe. Everything else on the pixel -- a second
+                # reflective sheet, a mirror below the roughness threshold,
+                # glass -- keeps the throttle, unchanged.
+                #
+                # Made in BOTH shading modes and in the event-build mode: the
+                # three walks have to agree about transport or the shadow
+                # events would be built for a different image than the one
+                # shaded.
+                if (not gl_taken) and (reflectivity >= 0.0) \
+                        and (T <= 1e-4) and (rough > _GLOSSY_MIN_ROUGHNESS) \
+                        and (bounces_left > 0):
+                    R = _material_env_brdf(surf_rd, normal, reflectivity,
+                                           ior, albedo3, rough)
+                    prefilter_take = True
+                else:
+                    R *= _mirror_share(rough)
             if ti.static(glossy == 0):
                 # No lobe to spread the continuations over, so the mirror ray
                 # keeps only the share of the lobe it can honestly stand for
@@ -587,7 +640,7 @@ def sheet_resolve_shade(
                                         _offset_transmitted_origin(
                                             hpj, rdt, face_normal, nj),
                                         rdt, wsub, base_dist + t_hit,
-                                        bounces_left - 1, processed, pixel, r, 1,
+                                        bounces_left - 1, processed, pixel, r, r, 1,
                                         ior_stack, 1, ior, rdj.dot(face_normal) < 0.0)
                     else:
                         rdt = _refract_ray(surf_rd, normal, ior)
@@ -600,7 +653,7 @@ def sheet_resolve_shade(
                                 _offset_transmitted_origin(
                                     hp, rdt, face_normal, normal),
                                 rdt, wt, base_dist + t_hit,
-                                bounces_left - 1, processed, pixel, r, 1,
+                                bounces_left - 1, processed, pixel, r, r, 1,
                                 ior_stack, 1, ior,
                                 surf_rd.dot(face_normal) < 0.0)
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
@@ -638,7 +691,7 @@ def sheet_resolve_shade(
                                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                             rs_pix, rs_alloc, org, rdr, weight,
                                             base_dist + t_hit, bounces_left - 1,
-                                            processed, pixel, r, 1,
+                                            processed, pixel, r, r, 1,
                                             ior_stack, 0, 0.0, 0)
                                 else:
                                     rd = rdr
@@ -700,7 +753,7 @@ def sheet_resolve_shade(
                                             rs_pix, rs_alloc,
                                             hpj + nj * (10.0 * MIN_HIT_DISTANCE),
                                             rdr, rwsub, base_dist + t_hit,
-                                            bounces_left - 1, processed, pixel, r,
+                                            bounces_left - 1, processed, pixel, r, r,
                                             1, ior_stack, 0, 0.0, 0)
                         else:
                             if ti.static(mode != 1):
@@ -709,12 +762,61 @@ def sheet_resolve_shade(
                                     rs_alloc,
                                     rhp + nref * (10.0 * MIN_HIT_DISTANCE),
                                     refl_rd, rwt, base_dist + t_hit,
-                                    bounces_left - 1, processed, pixel, r, 1,
+                                    bounces_left - 1, processed, pixel, r, r, 1,
                                     ior_stack, 0, 0.0, 0)
                     if not defer:
                         rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
                         _run_redistribute(svis, own_msk, rr)
                         band_p = 0.0
+            elif prefilter_take:
+                # ONE ray, the mirror direction, throughput 1, accumulating
+                # into this pixel's GLOSSY row (``r + num_covered``) instead of
+                # its own. The energy is factored out and parked in the same
+                # row for the composite; the blur radius the prefilter will use
+                # is the lobe's angular width in pixels, scaled at composite
+                # time by how far past the reflector the reflected content
+                # turned out to be. No ``sec_aa`` fan: the taps are exactly
+                # what the prefilter replaces, and one deterministic ray in a
+                # direction that is a smooth function of position is what stops
+                # the reflection crawling under motion (REPORT.md §4.5).
+                #
+                # The primary does NOT become the reflection here. It carries
+                # on down the sheet list as the pass-through, which is what
+                # gives a partially covering reflector both its reflection and
+                # what is behind it -- the same split ``split_refl`` performs
+                # for a transparent one, now unconditional because the
+                # reflection always has a pool slot of its own.
+                wt = weight * refl_energy
+                wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                if wt_max > MIN_WEIGHT:
+                    # Claimed here rather than on a successful spawn, so the
+                    # event-build walk (mode 1, which spawns nothing) and the
+                    # shading walk agree about which sheet took the pixel's one
+                    # prefiltered event. They must: the substitution above
+                    # changes ``share`` and therefore the running weight, and a
+                    # walk that ran its weight out one sheet earlier than the
+                    # other would build shadow events for a different image
+                    # than the one being shaded.
+                    gl_taken = True
+                    refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
+                    if ti.static(mode != 1):
+                        gl_row = r + num_covered
+                        if _spawn_pool_ray(
+                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
+                                rs_alloc,
+                                surf_pos + nref * (10.0 * MIN_HIT_DISTANCE),
+                                refl_rd, one3, base_dist + t_hit,
+                                bounces_left - 1, processed, pixel, r, gl_row,
+                                1, ior_stack, 0, 0.0, 0):
+                            for k in ti.static(range(3)):
+                                pix_accum[gl_row, GL_ROW_W + k] = wt[k]
+                            pix_accum[gl_row, GL_ROW_SIGMA_SCALE] = (
+                                2.0 * rough * rough * gl_px_per_rad)
+                            pix_accum[gl_row, GL_ROW_DP] = base_dist + t_hit
+                if not defer:
+                    rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
+                    _run_redistribute(svis, own_msk, rr)
+                    band_p = 0.0
             elif is_pane or split_refl:
                 wt = weight * refl_energy
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
@@ -752,7 +854,7 @@ def sheet_resolve_shade(
                                         hpj + nj * (10.0 * MIN_HIT_DISTANCE),
                                         rdr,
                                         wsub, base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, 1,
+                                        processed, pixel, r, r, 1,
                                         ior_stack, 0, 0.0, 0)
                     else:
                         if ti.static(mode != 1):
@@ -762,7 +864,7 @@ def sheet_resolve_shade(
                                 hp + nref * (10.0 * MIN_HIT_DISTANCE),
                                 refl_rd,
                                 wt, base_dist + t_hit, bounces_left - 1,
-                                processed, pixel, r, 1,
+                                processed, pixel, r, r, 1,
                                 ior_stack, 0, 0.0, 0)
                 ts_s = w_a_s * trans_share
                 pm = (1.0 - w_a_s) + ts_s
@@ -809,7 +911,7 @@ def sheet_resolve_shade(
                                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                         rs_pix, rs_alloc, org, rdr, weight,
                                         base_dist + t_hit, bounces_left - 1,
-                                        processed, pixel, r, 1,
+                                        processed, pixel, r, r, 1,
                                         ior_stack, 0, 0.0, 0)
                             else:
                                 rd = rdr
