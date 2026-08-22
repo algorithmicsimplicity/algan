@@ -64,6 +64,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
     _reflect_frame,
+    _shadow_terminator_delta,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
@@ -2067,6 +2068,9 @@ def wavefront_shadow(
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float,
         refit: ti.template(),
+        # Shadow-terminator gate (rt_settings.shadow_terminator_mode()), same
+        # semantics as raster_shadow_trace's.
+        shadow_term: ti.template(),
         has_tri: ti.template(), has_bez: ti.template(),
         light_pos: ti.types.ndarray(), num_lights: int,
         time_start: int, width: int, height: int, ray_offset: int,
@@ -2140,7 +2144,30 @@ def wavefront_shadow(
                             fnrm = (v1 - v0).cross(v2 - v0)
                             snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
                             spos = ro + t_hit * rd
+                            # Shadow-terminator origin (Hanika; RTGems II ch.
+                            # 4), identical to raster_shadow_trace's: the
+                            # face-normal lift stays, the stored/computed
+                            # displacement onto the smooth surface rides on
+                            # top of it, and ``lifted`` records whether the
+                            # origin genuinely moved (a flat facet's delta is
+                            # exactly zero by construction:
+                            # _shadow_terminator_delta short-circuits a
+                            # constant normal field) to license the
+                            # horizon-cull relaxation below.
+                            # RENDERER_WORK_QUEUE.md item 20.
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+                            lifted = 0
+                            if ti.static(shadow_term != 0):
+                                if ti.static(shadow_term == 1):
+                                    delta = _shadow_terminator_delta(
+                                        f, prim, 1.0 - a - b, a, b, spos,
+                                        snrm, tri_pos, tri_norm)
+                                    if (delta[0] != 0.0) or (delta[1] != 0.0) \
+                                            or (delta[2] != 0.0):
+                                        sorigin = sorigin + delta
+                                        lifted = 1
+                                else:
+                                    lifted = 1
                             for li in range(num_lights):
                                 if li < _DEFERRED_SHADOW_LIGHTS:
                                     lp = ti.math.vec3(light_pos[tl, li, 0],
@@ -2150,8 +2177,16 @@ def wavefront_shadow(
                                     ldist = to_light.norm()
                                     if ldist > 1e-5:
                                         wi = to_light / ldist
-                                        if (fnrm.dot(wi) > 1e-3) and \
-                                                (snrm.dot(wi) > 1e-4):
+                                        # Horizon cull, relaxed only where the
+                                        # origin moved onto the smooth surface
+                                        # (see raster_shadow_trace).
+                                        horizon_ok = (fnrm.dot(wi) > 1e-3) \
+                                            and (snrm.dot(wi) > 1e-4)
+                                        if ti.static(shadow_term != 0):
+                                            if lifted == 1:
+                                                horizon_ok = \
+                                                    snrm.dot(wi) > 1e-4
+                                        if horizon_ok:
                                             occ = _shadow_occluded(
                                                 refit, 1, sorigin, wi, f, ff,
                                                 ldist - 20.0 * MIN_HIT_DISTANCE,
@@ -2231,6 +2266,11 @@ def wavefront_shade(
         refit: ti.template(),
         has_tri: ti.template(), has_bez: ti.template(),
         deferred_shadows: ti.template(),
+        # Shadow-terminator gate (rt_settings.shadow_terminator_mode()):
+        # != 0 relaxes the face-normal horizon cull where the origin moved,
+        # == 1 additionally applies the Hanika offset inline; 0 keeps
+        # today's origin and guard exactly (see raster_shadow_trace).
+        shadow_term: ti.template(),
         skip_unlit_normal: ti.template(),
         mem_trim: ti.template(),
         opaque_closest: ti.template(),
@@ -2514,7 +2554,30 @@ def wavefront_shade(
                             fnrm = (v1 - v0).cross(v2 - v0)
                             snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
                             spos = ro + t_hit * rd
+                            # Shadow-terminator origin (Hanika; RTGems II ch.
+                            # 4), identical to raster_shadow_trace's: the
+                            # face-normal lift stays, the displacement onto
+                            # the smooth surface the vertex normals imply
+                            # rides on top of it, and ``lifted`` records
+                            # whether the origin genuinely moved (a flat
+                            # facet's delta is exactly zero by construction:
+                            # _shadow_terminator_delta short-circuits a
+                            # constant normal field) to license the
+                            # horizon-cull relaxation in the sample loop
+                            # below. RENDERER_WORK_QUEUE.md item 20.
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+                            lifted = 0
+                            if ti.static(shadow_term != 0):
+                                if ti.static(shadow_term == 1):
+                                    delta = _shadow_terminator_delta(
+                                        f, prim, 1.0 - a - b, a, b, spos,
+                                        snrm, tri_pos, tri_norm)
+                                    if (delta[0] != 0.0) or (delta[1] != 0.0) \
+                                            or (delta[2] != 0.0):
+                                        sorigin = sorigin + delta
+                                        lifted = 1
+                                else:
+                                    lifted = 1
                             tl = f % light_pos.shape[0]
                             for li in range(num_lights):
                                 if (li < MAX_SHADOW_LIGHTS) and (
@@ -2610,10 +2673,24 @@ def wavefront_shade(
                                             # Skip samples below the geometric/
                                             # shading horizon (self-shadow acne
                                             # / no direct light to occlude
-                                            # anyway).
-                                            if (ok == 1) \
-                                                    and (fnrm.dot(wis) > 1e-3) \
-                                                    and (snrm.dot(wis) > 1e-4):
+                                            # anyway). Where the origin moved
+                                            # onto the smooth surface its
+                                            # vertex normals imply (lifted == 1,
+                                            # shadow_term != 0) the FACE
+                                            # normal's horizon is not that
+                                            # surface's, so its term drops and
+                                            # only the shading normal's cull
+                                            # remains; flat facets keep delta
+                                            # == 0 and both keep the two-sided
+                                            # test EXACTLY as written first.
+                                            horizon_ok = (
+                                                fnrm.dot(wis) > 1e-3) \
+                                                and (snrm.dot(wis) > 1e-4)
+                                            if ti.static(shadow_term != 0):
+                                                if lifted == 1:
+                                                    horizon_ok = \
+                                                        snrm.dot(wis) > 1e-4
+                                            if (ok == 1) and horizon_ok:
                                                 n_valid += 1.0
                                                 occ_sum += _shadow_occluded(
                                                     refit, shadows,

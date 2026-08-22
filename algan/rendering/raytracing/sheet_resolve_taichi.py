@@ -79,6 +79,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _reflect_frame,
+    _shadow_terminator_delta,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
@@ -138,10 +139,23 @@ def sheet_resolve_shade(
         # impossible — the two fragment walks this replaces had to be kept
         # in lockstep by hand and grew a harness just to check it.
         mode: ti.template(),
+        # Shadow-terminator gate (rt_settings.shadow_terminator_mode()):
+        # == 1 makes THIS pass compute the Hanika offset per accepted event
+        # and store it in ``event_toff``; raster_shadow_trace relaxes its
+        # face-normal horizon cull whenever the gate is != 0 but applies the
+        # stored offset only at == 1 (0 keeps today's origin and today's
+        # guard; 2 is the diagnostic relax-only arm and never reads
+        # ``event_toff``).
+        shadow_term: ti.template(),
         sheet_accept: ti.types.ndarray(),
         event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
         event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
         event_msk: ti.types.ndarray(), event_dp: ti.types.ndarray(),
+        # Per-event shadow-terminator displacement (vec3), written by the
+        # mode-1 build exactly when ``sheet_accept`` is set; uninitialised
+        # arena memory otherwise, so nothing may read a row that was not
+        # written this frame.
+        event_toff: ti.types.ndarray(),
         sheet_event_id: ti.types.ndarray(), shadow_vis: ti.types.ndarray(),
         covered_idx: ti.types.ndarray(),
         time_start: int, width: int, height: int,
@@ -403,6 +417,23 @@ def sheet_resolve_shade(
                             event_pos[idx, k] = surf_pos[k]
                             event_snrm[idx, k] = snrm[k]
                             event_fnrm[idx, k] = fnrm[k]
+                        # Shadow-terminator displacement of the origin
+                        # raster_shadow_trace starts from (RENDERER_WORK_
+                        # QUEUE.md item 20). Written on exactly the
+                        # sheet_accept condition above -- the arena tensor is
+                        # uninitialised, so an accepted event without a write
+                        # would trace from garbage. snrm here is the ORIENTED
+                        # shading normal the sign rule in
+                        # _shadow_terminator_delta asks for. Gate is == 1,
+                        # NOT != 0: ``event_toff`` is full-size only in mode
+                        # 1 (see raster_pipeline), so the relax-only arm --
+                        # which never reads rows back -- must not write it.
+                        if ti.static(shadow_term == 1):
+                            delta = _shadow_terminator_delta(
+                                f, prim, w0, a, b, surf_pos, snrm,
+                                tri_pos, tri_norm)
+                            for k in ti.static(range(3)):
+                                event_toff[idx, k] = delta[k]
                         event_frame[idx] = f
                         shadow_msk = 0xF
                         if (not sliver) and (msk_low != 0):

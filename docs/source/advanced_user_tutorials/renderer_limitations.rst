@@ -495,9 +495,23 @@ Limits and approximations
 * **Contact shadows have a world-space floor.** A shadow ray starts 1e-3 world
   units off the surface along its face normal, and stops 2e-3 short of the
   light. An object resting on a plane loses its shadow within about that
-  distance of the contact, and grazing light on small geometry can produce
-  shadow acne. Both offsets are absolute, so what they cost you depends on your
-  scene's scale: see :ref:`limits-scale`.
+  distance of the contact. Both offsets are absolute, so what they cost you
+  depends on your scene's scale: see :ref:`limits-scale`.
+* **A curved surface's shadow terminator is corrected, and a flat one's is not
+  in need of it.** A sphere, cylinder, cone, torus or parametric
+  :class:`~algan.mobs.surfaces.surface.Surface` is diced to flat triangles under
+  a smooth normal field, so each facet is a chord *below* the surface it stands
+  for and a shadow ray leaving it near the terminator can strike a neighbouring
+  facet that rises above it -- speckled false self-shadow, which no acceptance
+  epsilon can reject. The origin is therefore displaced onto the smooth surface
+  the vertex normals imply before the ray is traced (Hanika, *Ray Tracing Gems
+  II* ch. 4). A flat-shaded mesh has no smooth surface to be displaced onto --
+  a :class:`~algan.mobs.shapes_3d.Polyhedron` carries no vertex normals at all,
+  an imported flat mesh carries the same normal at every corner of a face --
+  so its displacement is exactly zero and nothing about it changes. Turn it off
+  with
+  ``SETTINGS.raytracing.experimental.set(shadow_terminator=False)`` if you need
+  to compare against the old behaviour.
 * **No refractive shadow transport.** Light is not bent as it passes through
   glass, so there are no caustics and a glass object's shadow is simply its
   silhouette attenuated by its opacity. Caustics need
@@ -539,21 +553,21 @@ Reflection
 Refraction
 ----------
 
-* **Nested media are not modelled by default.** Every interface assumes air on
-  the outside. Glass inside glass, a sphere inside a box, a bubble in a
-  liquid: all take the wrong relative index of refraction at the inner
-  interface. Single closed objects in air are correct.
-  ``SETTINGS.raytracing.experimental.nested_ior`` opts into a per-ray media
-  stack that fixes this: each interface then refracts with the relative index
-  of the two media it separates (up to four nested media per ray). It remains
-  an experimental switch with stated limits: Fresnel reflectance still uses
-  the material's own index rather than the relative one, a scene carrying a
-  custom fragment scatter gets no nesting at all, and the camera is assumed
-  to start in air. Turning it on also moves a small number of pixels at the
-  **edges and grazing silhouettes of ordinary un-nested glass** -- around a
-  tenth of a percent of the frame -- because a ray that grazes a shared edge
-  can re-enter the solid it never left, and the stack correctly declines to
-  bend it a second time where the air-outside assumption did not.
+* **Nested media are modelled, up to four deep.** A ray carries the stack of
+  media it is inside, so each interface refracts with the relative index of the
+  two media it separates: glass inside glass, a sphere inside a box, a bubble
+  in a liquid. Only a ray that enters a **fifth** medium without leaving one
+  loses track. Three limits stand: Fresnel reflectance uses the material's own
+  index rather than the relative one, a scene carrying a custom fragment
+  scatter gets no nesting at all (every interface there still assumes air
+  outside), and the camera is assumed to start in air.
+  ``SETTINGS.raytracing.experimental.set(nested_ior=False)`` returns to the
+  air-outside assumption, which is worth knowing about for one reason: with the
+  stack on, a ray grazing a shared edge of an *un-nested* solid is no longer
+  bent a second time as though re-entering, so a tenth of a percent of pixels
+  at edges and grazing silhouettes differ from older renders. That is the
+  physically right answer at a hit where there is no interface, but it is a
+  difference.
 * **A Bezier circuit transmits as a thin pane**: light passes through tinted,
   but is not bent. Only triangle geometry refracts.
 * **No absorption over distance, no dispersion.** Transmitted light is tinted by

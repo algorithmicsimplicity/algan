@@ -39,7 +39,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 2 | [The verification harnesses the docs and the source name do not exist](#2-the-verification-harnesses-the-docs-and-the-source-name-do-not-exist) | Process | 56 missing, 24 of them cited from inside `algan/`, including the stated gate for eight default-on toggles. Every item below is harder without them. |
 | 3 | [§I self-shadow rejection by identity](#3-i-self-shadow-rejection-by-identity) | Correctness | **Built, default on.**       |
 | 4 | [Texture minification has no filter](#4-texture-minification-has-no-filter) | Quality | The largest remaining image-quality gap on the default path, and the one the analytic-AA design explicitly left open.                         |
-| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | **Done** (gated off by default). Nested media now take the correct relative index under `SETTINGS.raytracing.experimental.nested_ior`. |
+| 5 | [§H nested-IOR refraction](#5-h-nested-ior-refraction) | Correctness | **Done, default on.** Nested media take the correct relative index; only a batch that refracts pays the wider ray state. |
 | 6 | [Decide what to do about unlit Bezier circuits](#6-decide-what-to-do-about-unlit-bezier-circuits) | Capability | Scoped decision, not a bug — but it is the capability gap users meet first.                                                                   |
 | 7 | [Four materials silently ignore most of the lighting rig](#7-four-materials-silently-ignore-most-of-the-lighting-rig) | Correctness | `MeshToonMaterial` and friends drop every extended light and all shadows. **No longer without a word** — they warn now; the in-kernel ports are still open. |
 | 8 | [Two public settings are no-ops; a whole path tracer is unreachable](#8-two-public-settings-are-no-ops-and-a-whole-path-tracer-is-unreachable) | API / dead code | `light_intensity` and `ambient_light` reach nothing.                                                                                          |
@@ -54,7 +54,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 17 | [The CPU baseline debt](#17-the-cpu-baseline-debt) | Process | **Do this first.** `DESIGN_mesh_identity_open.md` §B, and it is now a red CI on master.                                                       |
 | 18 | [An untracked file on the default path reached master](#18-an-untracked-file-on-the-default-path-reached-master) | Process | Fixed at `2016a26`; the gap that allowed it is not.                                                                                           |
 | 19 | [Open design-doc items with no owner](#19-open-design-doc-items-with-no-owner) | Various | §J, §L, §G, §4.6, P7 — recorded so they are not rediscovered.                                                                                 |
-| 20 | [The shadow terminator on diced surfaces](#20-the-shadow-terminator-on-diced-surfaces) | Correctness | The acne half of item 3, which item 3 could never have fixed. Split out once that was established.                                            |
+| 20 | [The shadow terminator on diced surfaces](#20-the-shadow-terminator-on-diced-surfaces) | Correctness | **Built, default on.** Hanika's offset onto the smooth surface; a lit torus goes from 41 speckle pixels to 4. Flat geometry is byte-identical by construction. |
 
 ---
 
@@ -216,15 +216,35 @@ derivatives. Measure before choosing.
 
 ## 5. §H nested-IOR refraction
 
-**Status: built** (see `DESIGN_mesh_identity_open.md` §H for the four
-deliberate deviations from the design text: the overflow rule, Fresnel left
-on the material index, custom-scatter scenes excluded, and the per-corner-IOR
-approximation). Off by default; opt in with
-`SETTINGS.raytracing.experimental.nested_ior`. `benchmarks/_nested_ior_ab.py`
-is the four-frame check: a nested pair that must move, a transmissive pane
-that must be byte-identical, and two single solids bounded to the
-edge/silhouette band the design doc accounts for. `tests/unit_tests/
-test_nested_ior.py` pins the stack arithmetic itself.
+**Status: built, and now DEFAULT ON** (see `DESIGN_mesh_identity_open.md` §H
+for the four deliberate deviations from the design text: the overflow rule,
+Fresnel left on the material index, custom-scatter scenes excluded, and the
+per-corner-IOR approximation). Turn it off with
+`SETTINGS.raytracing.experimental.set(nested_ior=False)`.
+`benchmarks/_nested_ior_ab.py` is the four-frame check: a nested pair that must
+move, a transmissive pane that must be byte-identical, and two single solids
+bounded to the edge/silhouette band the design doc accounts for.
+`tests/unit_tests/test_nested_ior.py` pins the stack arithmetic itself.
+
+**What the default costs, and who pays it — read `refraction_flag` before
+answering.** `tracer`'s `ior_stack_flag` is `nested_ior_mode() != 0 and
+refraction_flag`, and the obvious reading of that ("only scenes with glass")
+is wrong: `refraction_flag` is also set by a *reflective* primitive under
+analytic AA, through `_secondary_split_needed`, which is what gives a mirror
+the split pool it needs — and every PBR triangle is reflective. So an ordinary
+`MeshStandardMaterial` scene with no transmission anywhere takes the wider
+`rs_sca` (5 extra f32 per ray: `IOR_STACK_DEPTH` entries plus the depth
+counter — `settings.py`'s own comment said 4 while the gate was off and nobody
+was paying it) and compiles the stack's kernel variants.
+
+What such a scene does *not* get is different pixels, and that is measured
+rather than argued: with nothing transmissive no transmitted child is ever
+spawned, so nothing pushes or pops the stack. `tests/fast` — itself a
+`MeshStandardMaterial` scene, hence a widened one — renders byte-identically
+with the gate off and on, as do five of the six `tests/full_renders` scenes.
+Only `materials_and_lighting`, the one scene carrying transmission, moves: 49
+of 179 frames, worst 42 channel values, ~18 pixels a frame. Of the pixel suites, only `tests/full_renders`' `materials_and_lighting`
+carries transmission at all.
 
 Worth carrying forward into [item 3](#3-i-self-shadow-rejection-by-identity):
 building this surfaced an epsilon artifact that §I would fix at its source. A
@@ -806,9 +826,12 @@ Recorded so they are not rediscovered from scratch. None is started.
 
 ## 20. The shadow terminator on diced surfaces
 
-**Status: not started. This is the half of item 3 that item 3 could never have
-delivered, split out once that was established rather than left attached to a
-mechanism that cannot address it.**
+**Status: built, default on** (`SETTINGS.raytracing.experimental.shadow_terminator`
+/ `ALGAN_SHADOW_TERMINATOR`). This is the half of item 3 that item 3 could never
+have delivered, split out once that was established rather than left attached to
+a mechanism that cannot address it. What the section below diagnosed was right
+about the mechanism and wrong about the symptom's visibility; the correction is
+under "What building it found" at the end.
 
 Item 3 named two symptoms: contact shadows erased by an absolute epsilon, and
 shadow acne at grazing light angles. Only the first is an epsilon problem. Acne
@@ -849,6 +872,47 @@ any of this. Use a concave single mesh (a `Torus` is the cheap one).
 **Done when** a diced curved surface under a grazing light shows no acne with
 the guard angles relaxed, and item 3's feature can be turned on without
 introducing speckle at seams.
+
+### What building it found
+
+**The acne was never hidden. It is on the default path today, and the offset
+removes it.** A lit `Torus` under a side-on point light at LD carries 41 speckle
+pixels (darker than their own 3x3 neighbourhood median by more than 6 levels)
+with the feature off and **4** with it on -- and the diagnostic arm that relaxes
+the cull *without* moving the origin carries 38, sitting with the off arm rather
+than the on arm. That is the attribution: relaxing the cull is not what cleans
+the image, the offset is. `benchmarks/_shadow_terminator_ab.py` is the run.
+
+Three corrections to the diagnosis above, all found by measuring it:
+
+* **"The terminator band does not trace shadow rays at all" overstates the
+  cull.** `fnrm.dot(wis) > 1e-3` rejects a ray only within 0.06 degrees of the
+  facet's own plane. It is a hair, not a band, and it was never what kept acne
+  off a convex solid -- adaptive dicing was, by keeping facets near a pixel
+  wide. Relaxing it moves 177 pixels of a torus and 24 of a sphere; the offset
+  moves the other ~40 speckle pixels that the cull never touched.
+* **A convex solid does show the symptom**, just less of it: on a diced sphere
+  the relax arm darkens 20 of the 24 pixels it moves, and the on arm darkens
+  none of them. So "a convex solid cannot be used to test any of this" is too
+  strong -- it is a weaker instrument than a concave mesh, not a blind one.
+* **A flat facet is untouched by construction, not by tolerance** — by either
+  of two guards, and for Algan's own flat family it is the one you would not
+  guess. A `Polyhedron` packs no vertex normals at all (its corner normals are
+  literally zero), so the degenerate-normal guard returns the zero vector; a
+  mesh that does carry a duplicated face normal per corner trips the
+  constant-normal-field test instead. Either way `delta` is the zero vector and
+  neither the origin nor the cull moves. `Cube` and a 2-D circuit scene are
+  byte-identical in all three arms, which is why every flat-shaded scene cannot
+  move — and `tests/fast`, which has no shadows at all, could not have anyway.
+
+The one thing the cull relaxation is for is stated where it is done: with the
+origin on the smooth surface, the *face* normal's horizon is no longer the
+surface's, so keeping it would refuse rays the corrected origin can now trace
+honestly.
+
+**Not covered.** The Monte Carlo megakernel (`samples_per_pixel > 1`) keeps the
+old origin; so does every reflection/refraction continuation. `wavefront_shadow`
+carries the change but has no caller, so it is compiled by nothing.
 
 ---
 

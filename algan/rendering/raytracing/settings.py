@@ -638,6 +638,92 @@ def set_shadow_identity_reject(enabled):
     SHADOW_IDENTITY_REJECT = bool(enabled)
 
 
+# Shadow-terminator offset for diced / smooth-shaded surfaces (Hanika, "A
+# Microfacet-Based Shadow Terminator", Ray Tracing Gems II ch. 4). A PN patch
+# or any smooth-shaded mesh reaches the renderer as FLAT triangles carrying a
+# smooth per-vertex normal field, and every shadow ray starts from the FACE
+# normal's fixed lift (``10 * MIN_HIT_DISTANCE`` in ``raster_shadow_trace``).
+# The facet is a chord BELOW the smooth surface it approximates, so
+# neighbouring facets rise above the plane the origin was lifted from: near
+# the terminator the shadow ray leaves almost tangentially and strikes a
+# neighbouring facet a long way away -- acne no acceptance epsilon can reject
+# (RENDERER_WORK_QUEUE.md item 20). With this on, the shadow-event build
+# displaces the origin onto the smooth surface implied by the three vertex
+# normals, by an amount derived from the hit's barycentrics:
+#
+#     d_i   = min(0, (p - p_i) . n_i)          for i in 0,1,2   (n_i unit)
+#     delta = -(w0 * d_0 * n_0 + a * d_1 * n_1 + b * d_2 * n_2)
+#
+# On a genuinely FLAT facet ``delta`` is exactly the zero vector BY
+# CONSTRUCTION, by either of two guards in the helper. Algan's own flat family
+# (``Polyhedron`` and everything built on it) packs no vertex normals at all --
+# the corner normals are literally zero -- and the degenerate-normal guard
+# (``norm > 1e-9``) returns zero for it. A mesh that DOES carry a duplicated
+# face normal at each corner (an import, an authored mesh) instead trips the
+# constant-field test: after normalizing, the three normals agree
+# (``n0 . n1 > 1 - 1e-6`` and ``n0 . n2 > 1 - 1e-6``) and the formula is
+# skipped outright, so float evaluation cannot leave ulp-scale dust on flat
+# geometry. Either way today's origin stays bit for bit. ``delta`` is bounded
+# by the facet, so it needs no clamp and no epsilon. It therefore cannot help
+# a genuinely flat mesh (there delta IS zero); what it buys is that the trace
+# side may RELAX its face-normal horizon cull wherever the origin actually
+# moved onto the smooth surface: that cull exists to keep terminator-band rays
+# off the geometry, and once the origin sits on the smooth surface the face
+# normal's horizon is not the surface's.
+#
+# Tri-state, like SHADOW_ANYHIT's "gather" string; ``shadow_terminator_mode``
+# is the int the kernels see:
+#   0  off -- today's origin, today's guard. The A/B control.
+#   1  on (the default) -- Hanika offset AND the relaxed guard.
+#   2  ALGAN_SHADOW_TERMINATOR=relax -- DIAGNOSTIC ONLY, not a supported
+#      configuration: the guard is relaxed but the origin is NOT offset.
+#      This is the arm that makes the acne visible, and therefore the only
+#      thing that can prove the offset is what removes it.
+SHADOW_TERMINATOR = (
+    2
+    if env_str("ALGAN_SHADOW_TERMINATOR", "1").strip().lower() in ("relax", "2")
+    else env_flag("ALGAN_SHADOW_TERMINATOR", True)
+)
+
+
+def set_shadow_terminator(enabled):
+    """Toggle the shadow-terminator offset (see ``SHADOW_TERMINATOR``).
+
+    ``True``/``False`` switch it on/off; the string ``"relax"`` (or a value
+    equal to ``2``) selects mode 2, the diagnostic guard-relaxation-only arm.
+    Anything else is read for truth: ``None`` and ``0`` are off, other numbers
+    are on. Takes effect at the next render batch.
+
+    Selecting mode 2 needs an EXACT 2, and that is deliberate. It is the arm
+    whose images are knowingly wrong, so nothing should land on it by rounding:
+    an earlier version truncated with ``int(enabled) == 2`` and quietly put
+    ``2.5`` there, while routing ``np.int32(2)`` and ``np.float64(2.0)`` --
+    the same number in two dtypes -- to different arms, because only the
+    latter passes ``isinstance(x, float)``. Comparing by value fixes both.
+    """
+    global SHADOW_TERMINATOR
+    if isinstance(enabled, str):
+        SHADOW_TERMINATOR = 2 if enabled.strip().lower() == "relax" else bool(enabled)
+    elif enabled is not None and enabled == 2 and not isinstance(enabled, bool):
+        SHADOW_TERMINATOR = 2
+    else:
+        SHADOW_TERMINATOR = bool(enabled)
+
+
+def shadow_terminator_mode():
+    """Live shadow-terminator mode as an int: 0 off, 1 Hanika offset + the
+    relaxed guard (the default), 2 the diagnostic relax-only arm.
+
+    Read at call time (never imported by value) and returned as an int,
+    because it reaches the resolve/shade kernels as a TEMPLATE value: each
+    mode compiles its own kernel variant, so the offline cache cannot serve
+    one mode's kernel for another (see ``glossy_reflection_mode``).
+    """
+    if not SHADOW_TERMINATOR:
+        return 0
+    return 2 if SHADOW_TERMINATOR == 2 else 1
+
+
 # The acceptance floor a shadow ray keeps against its OWN primitive, as a
 # fraction of the batch's scene scale (the diagonal of the merged triangle
 # bounding box over every frame of the batch). This is what retires the last
@@ -1517,14 +1603,38 @@ def glossy_reflection_mode():
 # liquid bend light correctly at the inner interfaces; without it every
 # interface refracts as though the outside were air.
 #
-# DEFAULT OFF. The stack widens ``rs_sca`` (+4 f32 per ray), forces a cold
-# recompile of both shade kernels' new template variants, and changes what a
-# nested scene renders -- so it is an opt-in until its output has been lived
-# with. Fresnel reflectance keeps the MATERIAL index even when this is on (the
-# relative index reaches only Snell's law): ``_material_reflectance``'s
+# DEFAULT ON. It shipped opt-in until its output had been lived with; it has
+# been. The stack widens ``rs_sca`` by 5 f32 per ray (``IOR_STACK_DEPTH`` = 4
+# entries plus the depth counter) and compiles its own template variants of
+# both shade kernels, in any batch whose ``ior_stack_flag`` is set --
+# ``nested_ior_mode() != 0 and refraction_flag``. Read ``refraction_flag``
+# before assuming that means "a scene with glass in it": it is also set by a
+# reflective primitive under analytic AA (``_secondary_split_needed``, which
+# is what gives a mirror the split pool it needs), and every PBR triangle is
+# reflective. So an ordinary ``MeshStandardMaterial`` scene takes the wider
+# state and the new variants with no transmission anywhere.
+#
+# What that costs such a scene is the state and a cold compile, not its
+# pixels: with nothing transmissive, no transmitted child is ever spawned, so
+# nothing pushes or pops the stack and every interface still reads air. That
+# is measured, not assumed -- `tests/fast` (a `MeshStandardMaterial` scene,
+# hence a widened one) and five of the six `tests/full_renders` scenes render
+# byte-identically with the gate off and on; only `materials_and_lighting`,
+# the one scene carrying transmission, moves.
+#
+# What it changes there is a nested scene, which was simply wrong before, plus
+# a thin edge/silhouette band on an un-nested solid where a ray grazing a
+# shared edge used to be classified as ENTERING a solid it never left; the
+# stack declines to bend it a second time, which is the physically right
+# answer at a hit where there is no interface.
+#
+# Two limits stand with it on. Fresnel reflectance keeps the MATERIAL index
+# (the relative index reaches only Snell's law): ``_material_reflectance``'s
 # dielectric branch is itself gated ``ior > 1 + 1e-4``, which a relative index
-# below 1 would silently zero. See DESIGN_mesh_identity_open.md §H.
-NESTED_IOR = env_flag("ALGAN_NESTED_IOR", False)
+# below 1 would silently zero. And a scene carrying a custom fragment scatter
+# gets no nesting at all. See DESIGN_mesh_identity_open.md §H for both, and
+# ``benchmarks/_nested_ior_ab.py`` for the four frames that bound this.
+NESTED_IOR = env_flag("ALGAN_NESTED_IOR", True)
 
 
 def set_nested_ior(enabled):
