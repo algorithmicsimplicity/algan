@@ -80,11 +80,13 @@ Algan's tonemapper was checked against the Khronos curve and is a faithful
 implementation of it. It now sits in the right place as well as being the right
 curve: under the linear working space it takes linear input and the OETF runs
 after it, which is three.js's order (`tonemapping_fragment` then
-`colorspace_fragment`). Measured on a flat slab, an authored 0.5 grey renders 181
-with the curve on and 128 with it off; an authored 0.1 renders 2, because linear
-0.01 is genuinely near-black and PBR Neutral's 0.04 pedestal is scaled for
-scene-referred values. That is parity, not a discrepancy — three.js does the same
-thing to the same input.
+`colorspace_fragment`). Measured on a flat slab, an authored 0.5 grey renders
+**116** with the curve on and 128 with it off — `encode(neutral(linear(0.5)))`
+predicts 117 — and an authored 0.1 renders **2**, because linear 0.01 is
+genuinely near-black and PBR Neutral's 0.04 pedestal is scaled for scene-referred
+values. That is parity, not a discrepancy: three.js does the same thing to the
+same input. It is also a reason the default is off, and §2.2 is what made it a
+faithful composition rather than a curve applied to already-encoded numbers.
 
 ### Two things had to be reconciled before any pixel comparison meant anything
 

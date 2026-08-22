@@ -4,3 +4,6 @@
 *
 !.gitignore
 !*.compare.jpg
+# Not a contact sheet: two committed baselines side by side, which no scene in
+# this tree reproduces (see REPORT.md section 2.2).
+!colour_decode_before_after.jpg
