@@ -54,6 +54,7 @@ from algan import (
     Tetrahedron,
     Torus,
 )
+from algan.mobs.shapes_3d import _CapDisc
 
 _DEGENERATE = 1e-6
 
@@ -67,9 +68,11 @@ def _revolved_parts(mob):
     which part built which triangle -- the aggregate returns its descendants'
     primitives under its own name.
     """
-    if isinstance(mob, (Sphere, Cylinder, Cone, Torus)):
-        return [mob]
-    return [
+    parts = [mob] if isinstance(mob, (Sphere, Cylinder, Cone, Torus, _CapDisc)) else []
+    # Descend even into a solid that matched: a capped one carries its end
+    # discs as children, and they are skin too -- an inward-facing cap lights
+    # the inside of the solid exactly as an inside-out tube would.
+    return parts + [
         part
         for child in list(getattr(mob, "children", []) or [])
         for part in _revolved_parts(child)
@@ -113,6 +116,10 @@ def _outward(mob, points):
     """
     centre = mob.location.reshape(-1, 3)[0]
     delta = points - centre
+    if isinstance(mob, _CapDisc):
+        # A flat disc faces one way everywhere, and it is the way it was told
+        # to: the outward normal of the solid it closes.
+        return F.normalize(mob.direction.reshape(1, 3), dim=-1).expand_as(points)
     if isinstance(mob, Sphere):  # Dot3D is a Sphere
         return delta
     axis_source = (
@@ -241,6 +248,15 @@ _REVOLVED = {
     ),
     "cone": lambda: Cone(base_radius=0.6, height=1.0),
     "cone-capped": lambda: Cone(base_radius=0.6, height=1.0, show_base=True),
+    "cone-capped-tilted": lambda: Cone(
+        base_radius=0.5, height=1.2, direction=(0.4, -1.0, 0.7), show_base=True
+    ),
+    "cylinder-capped-tilted": lambda: Cylinder(
+        radius=0.4, height=1.1, direction=(1.0, 0.3, -0.6), show_ends=True
+    ),
+    "line3d-capped-rebased": lambda: Line3D(
+        start=LEFT + IN * 0.4, end=RIGHT * 1.3 + UP * 0.5, thickness=0.15
+    ).move_between_points(LEFT * 0.6 + UP, RIGHT + IN * 0.9),
     "cone-direction": lambda: Cone(base_radius=0.5, height=1.1, direction=RIGHT),
     "torus": lambda: Torus(major_radius=0.6, minor_radius=0.25),
     "torus-partial": lambda: Torus(
@@ -277,6 +293,63 @@ def test_polyhedron_winds_outward(name):
         mob = _POLYHEDRA[name]()
         mob.spawn(animate=False)
         _closed_mesh_is_outward(mob, name)
+
+
+_RIMS = {
+    "cylinder": (
+        lambda: Cylinder(radius=0.45, height=1.0, show_ends=True),
+        lambda m: (m.bottom_cap, m.top_cap),
+    ),
+    "cylinder-tilted": (
+        lambda: Cylinder(
+            radius=0.3, height=1.2, direction=(1.0, 0.4, -0.7), show_ends=True
+        ),
+        lambda m: (m.bottom_cap, m.top_cap),
+    ),
+    "cone": (
+        lambda: Cone(base_radius=0.55, height=1.1, show_base=True),
+        lambda m: (m.base_circle,),
+    ),
+    "cone-tilted": (
+        lambda: Cone(
+            base_radius=0.4, height=0.9, direction=(0.2, -1.0, 0.5), show_base=True
+        ),
+        lambda m: (m.base_circle,),
+    ),
+    "line3d-rebased": (
+        lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.2).move_between_points(
+            LEFT * 0.7 + IN * 0.5, RIGHT * 1.2 + UP * 0.8
+        ),
+        lambda m: (m.bottom_cap, m.top_cap),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_RIMS))
+def test_an_end_discs_rim_sits_on_the_bodys_own_ring(name):
+    """A cap is a fan over the body's ring, not an independently sampled circle.
+
+    Two circles of the same radius sampled from different parameterizations are
+    polygons rotated against each other: the cone's base used to miss its own
+    ring by half a segment, which scallops the rim. Sampling the body's own
+    expression is what makes the joint watertight -- and it has to survive
+    re-basing, which rebuilds both.
+    """
+    build, discs_of = _RIMS[name]
+    with Scene(), Off():
+        body = build()
+        body.spawn(animate=False)
+        ring = body.grid.location.reshape(-1, 3)
+        for disc in discs_of(body):
+            points = disc.grid.location.reshape(-1, 3)
+            radius = (points - disc.location.reshape(-1)).norm(dim=-1)
+            rim = points[radius > radius.max() - 1e-4]
+            assert len(rim) > 2, f"{name}: no rim found on the disc"
+            gap = torch.cdist(rim, ring).min(dim=-1).values.max()
+            assert float(gap) < 1e-3, (
+                f"{name}: a rim vertex sits {float(gap):.2e} from the nearest "
+                "vertex of the body's ring, so the joint is not watertight"
+            )
 
 
 def test_moving_a_solid_does_not_reorient_it():

@@ -25,9 +25,15 @@ import torch
 
 from algan import (
     LD,
+    LEFT,
     RIGHT,
+    UP,
+    Arrow3D,
+    Cone,
     Cube,
+    Cylinder,
     Icosahedron,
+    Line3D,
     Off,
     Scene,
     Sphere,
@@ -192,6 +198,55 @@ def test_two_spheres_in_one_collection_stay_two_surfaces():
         ids, n = _tri_obj(_primitives(a) + _primitives(b))
         assert n == 2
         assert ids[0].item() != ids[-1].item()
+
+
+_CAPPED_SOLIDS = {
+    "cylinder": lambda: Cylinder(radius=0.4, height=1.0, show_ends=True),
+    "cone": lambda: Cone(base_radius=0.5, height=1.0, show_base=True),
+    "line3d": lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.15),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_CAPPED_SOLIDS))
+def test_a_capped_solid_is_one_surface_including_its_end_discs(name):
+    """A cap is a separate Surface, and one surface WITH the body it closes.
+
+    Two surfaces meeting at the rim are antialiased independently, and their
+    coverages composite rather than sum -- which leaves a seam along the joint.
+    Sharing the key makes the rim an interior edge instead. Only consecutive
+    members merge, so this also pins that the discs are emitted next to the
+    body rather than wherever the actor walk puts them.
+    """
+    with Scene():
+        with Off():
+            solid = _CAPPED_SOLIDS[name]().spawn()
+        prims = _primitives(solid) + _primitives(
+            solid.bottom_cap if name != "cone" else solid.base_circle
+        )
+        if name != "cone":
+            prims += _primitives(solid.top_cap)
+        ids, n = _tri_obj(prims)
+        assert n == 1, f"a capped {name} must be one surface, got {n}"
+        assert set(ids.tolist()) == {0}
+
+
+def test_an_arrow_is_two_surfaces_each_with_its_own_discs():
+    """The shaft and the head interpenetrate rather than tiling one skin, so
+    they stay separate -- but each merges with the discs that close it, which
+    is what the emission order in ``Arrow3D.get_render_primitives`` is for.
+    """
+    with Scene():
+        with Off():
+            arrow = Arrow3D(start=LEFT, end=RIGHT + UP, thickness=0.06).spawn()
+        prims = arrow.get_render_primitives()
+        assert len(prims) == 5, "shaft + 2 discs + head + 1 disc"
+        ids, n = _tri_obj(prims)
+        assert n == 2, f"an arrow is a shaft and a head, got {n} surfaces"
+        per_member, seen = [], 0
+        for prim in prims:
+            per_member.append(int(ids[seen].item()))
+            seen += prim.corners.shape[1] // 3
+        assert per_member == [0, 0, 0, 1, 1]
 
 
 def test_mesh_identity_is_off_switchable():

@@ -154,6 +154,15 @@ class Mob(
     #: Mob is spawned, since the render primitive reads it once.
     two_sided = True
 
+    #: Opaque hashable identifying the SURFACE this Mob's geometry belongs to,
+    #: stamped onto the primitives it builds. Parts of one solid that carry the
+    #: same key -- a ``Cylinder``'s tube and its two end discs -- merge into a
+    #: single surface for the renderer, so the joint between them is an interior
+    #: edge rather than a boundary two independently antialiased surfaces meet
+    #: at. ``None`` (the default) leaves each part its own surface. Only
+    #: consecutive parts merge; see ``primitives._mesh_ids_from_collection``.
+    mesh_key = None
+
     def __init__(
         self,
         location: torch.Tensor = ORIGIN,
