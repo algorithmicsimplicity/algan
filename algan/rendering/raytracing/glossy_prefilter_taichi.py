@@ -30,6 +30,24 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 _BOX_SIGMA = 0.28867513459481287
 _LOG2_INV_BOX_SIGMA = 1.7924812503605778  # log2(1 / _BOX_SIGMA)
 
+# A GGX lobe is NOT a Gaussian: it has a sharp core and a long tail, and a
+# single blur at its median radius reproduces neither. Inverting the NDF's
+# radial CDF gives the reflected deflection at quantile ``u`` as
+# ``R50 * sqrt(u / (1 - u))``, so in units of the median radius the lobe puts
+# its 10th/25th/75th/90th percentiles at 0.333 / 0.577 / 1.732 / 3.0 -- where a
+# 2-D Gaussian matched at the median would put them at 0.645 / 0.759(ish) /
+# 1.414 / 1.82. The tail is more than 1.6x too short and the core far too flat.
+#
+# Two Gaussians fix it for one extra pyramid fetch. Weights 0.6/0.4 at 0.6 and
+# 1.8 times the median radius reproduce that quantile list to within 0.01 of
+# probability at every one of those five points (0.0925 / 0.242 / 0.507 /
+# 0.739 / 0.900 against 0.1 / 0.25 / 0.5 / 0.75 / 0.9). That is what makes the
+# rendered reflection read as a bright core inside a wide halo -- the shape the
+# path tracer draws -- instead of a flat disc of the right total energy.
+_LOBE_CORE_SIGMA = 0.6
+_LOBE_HALO_SIGMA = 1.8
+_LOBE_CORE_WEIGHT = 0.6
+
 # Columns of a glossy accumulator row (``pix_accum[r + gloss_base]``). The
 # drain owns 0..7, the resolve owns 8..12; see DESIGN_glossy_prefilter.md §4.2.
 GL_ROW_DIST = 7
@@ -76,10 +94,19 @@ def _sample_pyramid_level(gl_pyr: ti.template(), level_meta: ti.template(),
     y0f = ti.floor(fy)
     tx = fx - x0f
     ty = fy - y0f
-    x0 = ti.math.clamp(ti.cast(x0f, ti.i32), 0, lw - 1)
-    y0 = ti.math.clamp(ti.cast(y0f, ti.i32), 0, lh - 1)
-    x1 = ti.math.clamp(x0 + 1, 0, lw - 1)
-    y1 = ti.math.clamp(y0 + 1, 0, lh - 1)
+    # Both taps clamp from the UNCLAMPED index. Deriving the second from the
+    # clamped first is the classic edge bug and it is not a fringe effect at
+    # the coarse end of a pyramid, where "the edge" is half the level: a
+    # sample left of texel centre 0 has an unclamped index of -1, so the two
+    # taps must both be texel 0 and the weight must not matter -- clamping
+    # 0 + 1 instead reads texel 1 and interpolates the wrong way across the
+    # whole outer half of every level.
+    x0i = ti.cast(x0f, ti.i32)
+    y0i = ti.cast(y0f, ti.i32)
+    x0 = ti.math.clamp(x0i, 0, lw - 1)
+    y0 = ti.math.clamp(y0i, 0, lh - 1)
+    x1 = ti.math.clamp(x0i + 1, 0, lw - 1)
+    y1 = ti.math.clamp(y0i + 1, 0, lh - 1)
     i00 = off + y0 * lw + x0
     i10 = off + y0 * lw + x1
     i01 = off + y1 * lw + x0
@@ -92,6 +119,41 @@ def _sample_pyramid_level(gl_pyr: ti.template(), level_meta: ti.template(),
     for k in ti.static(range(GL_PYR_WIDTH)):
         out[k] = (gl_pyr[i00, k] * w00 + gl_pyr[i10, k] * w10
                   + gl_pyr[i01, k] * w01 + gl_pyr[i11, k] * w11)
+    return out
+
+
+@ti.func
+def _prefilter_at(gl_pyr: ti.template(), level_meta: ti.template(),
+                  sigma, num_levels, px, py, width, height):
+    """One prefiltered radiance fetch at Gaussian width ``sigma`` pixels.
+
+    Trilinear: the two levels whose box widths bracket ``sigma``, each fetched
+    bilinearly, lerped by the fractional level. Returns a vec4 (radiance +
+    glow) already divided by the validity weight; a footprint that found no
+    valid texel at all returns zero.
+    """
+    lvl = 0.0
+    if sigma > _BOX_SIGMA:
+        lvl = ti.log(sigma) * 1.4426950408889634 + _LOG2_INV_BOX_SIGMA
+    lvl = ti.math.clamp(lvl, 0.0, ti.cast(num_levels - 1, ti.f32))
+    l0 = ti.cast(lvl, ti.i32)
+    l1 = ti.min(l0 + 1, num_levels - 1)
+    frac = lvl - ti.cast(l0, ti.f32)
+
+    s0 = _sample_pyramid_level(gl_pyr, level_meta, l0, px, py, width, height)
+    s1 = s0
+    if l1 != l0:
+        s1 = _sample_pyramid_level(gl_pyr, level_meta, l1, px, py,
+                                   width, height)
+    out = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    for k in ti.static(range(4)):
+        a = 0.0
+        if s0[4] > 1e-6:
+            a = s0[k] / s0[4]
+        b = 0.0
+        if s1[4] > 1e-6:
+            b = s1[k] / s1[4]
+        out[k] = a * (1.0 - frac) + b * frac
     return out
 
 
@@ -212,12 +274,12 @@ def gloss_composite(
     redundant finalize per glossy pixel, which is a handful of arithmetic on a
     small subset of the frame.
 
-    The prefilter is a trilinear fetch of the mip pyramid at the level whose
-    box width matches the pixel's blur radius. A box mip is the shape of the
-    FOOTPRINT, not of the GGX lobe: that is the standard approximation for the
-    radiance half of split-sum, and it is what makes the cost O(pixels) instead
-    of O(pixels * radius^2) -- at roughness 0.35 the radius is ~300 px on a
-    PREVIEW frame, which no direct blur can afford.
+    The prefilter is two trilinear fetches of the mip pyramid, a narrow core
+    and a wide halo, mixed to the GGX radial profile (see ``_LOBE_CORE_SIGMA``).
+    A pyramid rather than a direct blur because the radii involved are enormous:
+    at roughness 0.35 the lobe's median deflection is ~300 px on a PREVIEW
+    frame, which no separable blur can afford and no strided approximation of
+    one can sample without aliasing.
     """
     for p in range(num_pixels):
         sigma = gl_main[p, GL_MAIN_SIGMA]
@@ -226,29 +288,11 @@ def gloss_composite(
         py = p // width
         px = p - py * width
 
-        lvl = 0.0
-        if sigma > _BOX_SIGMA:
-            lvl = ti.log(sigma) * 1.4426950408889634 + _LOG2_INV_BOX_SIGMA
-        lvl = ti.math.clamp(lvl, 0.0, ti.cast(num_levels - 1, ti.f32))
-        l0 = ti.cast(lvl, ti.i32)
-        l1 = ti.min(l0 + 1, num_levels - 1)
-        frac = lvl - ti.cast(l0, ti.f32)
-
-        s0 = _sample_pyramid_level(gl_pyr, level_meta, l0, px, py,
-                                   width, height)
-        s1 = s0
-        if l1 != l0:
-            s1 = _sample_pyramid_level(gl_pyr, level_meta, l1, px, py,
-                                       width, height)
-        refl = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-        for k in ti.static(range(4)):
-            a = 0.0
-            if s0[4] > 1e-6:
-                a = s0[k] / s0[4]
-            b = 0.0
-            if s1[4] > 1e-6:
-                b = s1[k] / s1[4]
-            refl[k] = a * (1.0 - frac) + b * frac
+        core = _prefilter_at(gl_pyr, level_meta, sigma * _LOBE_CORE_SIGMA,
+                             num_levels, px, py, width, height)
+        halo = _prefilter_at(gl_pyr, level_meta, sigma * _LOBE_HALO_SIGMA,
+                             num_levels, px, py, width, height)
+        refl = core * _LOBE_CORE_WEIGHT + halo * (1.0 - _LOBE_CORE_WEIGHT)
 
         w_energy = ti.math.vec3(gl_main[p, GL_MAIN_W],
                                 gl_main[p, GL_MAIN_W + 1],

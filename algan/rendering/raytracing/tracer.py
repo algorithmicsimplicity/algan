@@ -100,6 +100,7 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    _BOX_SIGMA,
     GL_MAIN_SIGMA,
     GL_MAIN_WIDTH,
     GL_PYR_WIDTH,
@@ -252,13 +253,6 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     return core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)
 
 
-# A box filter of width w has standard deviation w/sqrt(12); mip level L is a
-# box of 2**L level-0 pixels. Kept in step with the same constant in
-# ``glossy_prefilter_taichi`` (which cannot be imported for a scalar without
-# dragging a kernel module into this one's import-time cost).
-_BOX_SIGMA = 0.28867513459481287
-
-
 def _gloss_pyramid_levels(width, height, max_levels):
     """Offsets and dimensions of the reflection pyramid's levels.
 
@@ -314,8 +308,9 @@ def _gloss_clear(gl_main, gl_pyr):
     gl_pyr.zero_()
 
 
-def _gloss_finish_frame(frame_rel, gl_levels, gl_main, gl_pyr, width, height,
-                        tonemapping, out):
+def _gloss_finish_frame(
+    frame_rel, gl_levels, gl_main, gl_pyr, width, height, tonemapping, out
+):
     """Prefilter one frame's reflection buffer and composite it.
 
     The pyramid is built bottom-up (each level from the one below), then every
@@ -382,6 +377,14 @@ def _secondary_split_needed(merged, analytic_raster=False):
         rt_settings.analytic_aa_tri_active()
         or rt_settings.analytic_aa_bez_active()
         or int(rt_settings.effective_analytic_aa_secondary_samples()) > 1
+        # 3. THE SPLIT-SUM GLOSSY ROUTE, which always sends its reflection to a
+        #    pool slot (it accumulates into a different row than the pixel's
+        #    own, so it cannot continue in the primary's slot). One spare slot
+        #    per primary is enough and ``_split_pool_ratio``'s weakest arm
+        #    already allocates two -- but only if this says the batch splits.
+        #    At ratio 1 the host ignores the pool's overflow flag, so getting
+        #    this wrong would drop every glossy reflection in silence.
+        or int(rt_settings.glossy_reflection_mode()) == 3
     )
 
 
@@ -2783,7 +2786,8 @@ def raytrace_render_wavefront(
                 ).view(len(levels), 3)
                 gl_sigma_max = _BOX_SIGMA * float(1 << (len(levels) - 1))
                 gl_bounds = _gloss_frame_bounds(
-                    coverage["covered_idx"], int(width) * int(height),
+                    coverage["covered_idx"],
+                    int(width) * int(height),
                     int(time_end) - int(time_start),
                 )
                 _gloss_clear(gl_main, gl_pyr)
@@ -2845,9 +2849,7 @@ def raytrace_render_wavefront(
                             # reflection is infinitely far", i.e. fully
                             # blurred -- not as the zero a cleared buffer
                             # would give, which is a contact reflection.
-                            pix_accum[attempt_primary:, GL_ROW_DIST] = (
-                                float("inf")
-                            )
+                            pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
                             layer_offsets_t[7] = float(attempt_primary)
                         rs_int[:, 2].fill_(1)
                         rs_alloc.zero_()

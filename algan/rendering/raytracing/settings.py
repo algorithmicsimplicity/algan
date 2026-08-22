@@ -21,6 +21,7 @@ import warnings
 
 from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 from algan.settings._startup import _HDR_BUFFER_F16, _RENDER_DEVICE
 
@@ -1814,18 +1815,57 @@ def set_analytic_aa(
 
 
 def analytic_aa_secondary_samples():
-    """Live continuation-ray sample count; 1 (off) unless analytic AA is on.
+    """Live continuation-ray tap count; 1 (off) unless analytic AA is on.
 
-    Snapped to a supported set size, because the sub-pixel positions are a
-    compile-time table and N reaches the resolve as a template value.
+    Clamped to ``[1, _AA_SEC_MAX]`` and otherwise returned unchanged: every
+    count in that range has real sub-pixel positions (hand-written for 1/2/4/8,
+    generated for the rest), so there is no supported set left to snap to. N
+    still reaches the resolve as a template value, which is why a value above
+    the ceiling is clamped with a warning rather than honoured -- the position
+    mask is an i32 bitfield, and each extra distinct tap count also pays a
+    kernel compile of its own (see the warning text).
     """
     if not ANALYTIC_AA:
         return 1
     n = int(ANALYTIC_AA_SECONDARY_SAMPLES)
-    for k in (8, 4, 2):
-        if n >= k:
-            return k
-    return 1
+    if n > _secondary_tap_ceiling():
+        _warn_secondary_clamped(n)
+        return _secondary_tap_ceiling()
+    return max(1, n)
+
+
+def _secondary_tap_ceiling():
+    """The tap ceiling, from the kernel module that owns the bitfield.
+
+    Imported at call time rather than at module import: importing
+    ``raster_taichi`` from here at module level would make this module's
+    import depend on the whole geometry-kernel family loading in a fixed
+    order, and this function runs once per batch prep, not once per pixel.
+    """
+    from algan.rendering.raytracing.raster_taichi import _AA_SEC_MAX
+
+    return _AA_SEC_MAX
+
+
+#: Set by the first clamp warning; a misconfigured tap count clamps every
+#: batch of every render, and one notice per process is what a reader needs.
+_SECONDARY_CLAMP_WARNED = False
+
+
+def _warn_secondary_clamped(requested):
+    """Warn once per process that an over-ceiling tap count was clamped."""
+    global _SECONDARY_CLAMP_WARNED
+    if _SECONDARY_CLAMP_WARNED:
+        return
+    _SECONDARY_CLAMP_WARNED = True
+    get_logger("raytracing").warning(
+        f"ANALYTIC_AA_SECONDARY_SAMPLES={requested} exceeds the ceiling of "
+        f"{_secondary_tap_ceiling()} and was clamped to it: the "
+        f"continuation-position mask is a 32-bit field, one bit per tap, and "
+        f"every extra distinct count is paid again in kernel compile time "
+        f"because the resolve unrolls ti.static(range(sec_aa)) at four call "
+        f"sites."
+    )
 
 
 def analytic_aa_sliver_mode():

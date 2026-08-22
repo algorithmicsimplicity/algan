@@ -293,11 +293,33 @@ capped it:
    position, so a fragment covering all 8 samples could never own more than 8
    positions — a 16-entry table alone would still have fired at most 8 rays.
 
-Both are fixed: positions for counts outside `{1, 2, 4, 8}` are generated at
-import from a Hammersley set (the four hand-written tables stay verbatim, so
-1/2/4/8 are byte-identical), and each coverage sample owns *every* position
-nearest to it, so `n > 8` gives a fully covered fragment `n` taps. The cap is
-32, because the position mask is an `i32` bitfield and the resolve unrolls
-`ti.static(range(sec_aa))` at four call sites — a high count is paid in kernel
-compile time. A value above the cap clamps and warns once instead of silently
-snapping.
+Both are fixed:
+
+* Positions for counts outside `{1, 2, 4, 8}` are generated at import from a
+  Hammersley set. The four hand-written tables stay verbatim, because the
+  render baselines were taken through them.
+* **The ownership direction changes above eight**, and that asymmetry is
+  deliberate rather than tidy. Up to eight taps the rule stays the forward one
+  — each coverage sample owns its single nearest position — because the inverse
+  rule does *not* reproduce it: the two disagree on 208 of the 256 possible
+  coverage masks at `n = 8` alone, so swapping it wholesale would move renders
+  at the default tap count. Above eight the direction flips to the inverse rule
+  — each *position* assigned to its nearest coverage sample, which may own
+  several — because forward ownership can never exceed one position per sample
+  and there are only eight samples. That cap, not the table's length, is what
+  rendered 16 and 32 as 8.
+
+The ceiling is 32: the position mask is an `i32` bitfield, and the resolve
+unrolls `ti.static(range(sec_aa))` at four call sites, so a high count is also
+paid in kernel compile time. A value above it clamps and warns once per process
+instead of silently snapping.
+
+One wart the forward rule carries, found while pinning it and **deliberately
+left**: at `n = 8`, position 1 is nobody's nearest, so a fully covered fragment
+spawns seven rays where eight were asked for. (1, 2 and 4 partition their
+positions completely; only 8 has the gap.) It is left because the fan is now
+the legacy arm — `glossy_reflection` selects the prefilter — and changing what
+an existing, measured configuration renders to tidy a path nothing recommends
+is a bad trade against byte-identity. `tests/unit_tests/test_secondary_tap_
+counts.py` asserts it rather than hiding it, so it cannot drift unnoticed and
+whoever wants it fixed will find it stated.

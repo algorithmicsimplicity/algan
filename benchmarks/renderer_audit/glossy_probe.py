@@ -9,8 +9,12 @@ copies (plain) or an ordered dither (interleaved). That artefact, not the
 energy, is why the setting ships off.
 
 The tap count is a live env int, so the question "does raising it fix the
-speckle, and what does it cost" is answerable by measurement. This renders one
-scene at a series of tap counts and reports, per render:
+speckle, and what does it cost" is answerable by measurement. The answer is no:
+prefiltering does (``DESIGN_glossy_prefilter.md``), and it is what
+``glossy_reflection`` selects by default now -- the fan is reachable with
+``prefilter=False`` and is what the tap rows below measure. This renders one
+scene at a series of tap counts, plus one prefiltered row, and reports per
+render:
 
 * **reflection efficiency** -- the mean linear radiance of the reflected floor
   in the sphere over the same floor seen directly. Unit-free, so it can be
@@ -120,10 +124,11 @@ def _crawl(render, scene_path, nudge):
     shifted.write_text(json.dumps(spec))
 
     out = {}
-    for label, taps, glossy, interleave in (
-        ("glossy off", None, False, None),
-        ("glossy, interleaved", 8, True, "1"),
-        ("glossy, plain fan", 8, True, "0"),
+    for label, taps, glossy, interleave, prefilter in (
+        ("glossy off", None, False, None, False),
+        ("glossy, prefiltered", None, True, None, True),
+        ("glossy, interleaved fan", 8, True, "1", False),
+        ("glossy, plain fan", 8, True, "0", False),
     ):
         a, _ = render(
             f"crawl_{label.replace(' ', '_').replace(',', '')}_a",
@@ -131,6 +136,7 @@ def _crawl(render, scene_path, nudge):
             glossy,
             interleave,
             scene_path,
+            prefilter,
         )
         b, _ = render(
             f"crawl_{label.replace(' ', '_').replace(',', '')}_b",
@@ -138,6 +144,7 @@ def _crawl(render, scene_path, nudge):
             glossy,
             interleave,
             shifted,
+            prefilter,
         )
         out[label] = _pair_difference(a, b)
     return out
@@ -168,7 +175,7 @@ def _pair_difference(a, b, floor=6.0):
 
 
 def _figure(render, scene_path, out_path):
-    """A 2x2 contact sheet of the three Algan arms against the path tracer.
+    """A contact sheet of every Algan glossy arm against the path tracer.
 
     The numbers in the crawl table say the arms differ; this says *how*. Each
     panel is labelled and left at its own exposure -- the point is the shape of
@@ -179,12 +186,15 @@ def _figure(render, scene_path, out_path):
 
     spec = json.loads(Path(scene_path).read_text())
     panels = []
-    for label, taps, glossy, interleave in (
-        ("algan: default (mirror share)", None, False, None),
-        ("algan: glossy, plain fan", 8, True, "0"),
-        ("algan: glossy, interleaved", 8, True, "1"),
+    for label, taps, glossy, interleave, prefilter in (
+        ("algan: default (mirror share)", None, False, None, False),
+        ("algan: glossy, prefiltered", None, True, None, True),
+        ("algan: glossy, plain fan", 8, True, "0", False),
+        ("algan: glossy, interleaved fan", 8, True, "1", False),
     ):
-        path, _ = render(f"fig_{len(panels)}", taps, glossy, interleave, scene_path)
+        path, _ = render(
+            f"fig_{len(panels)}", taps, glossy, interleave, scene_path, prefilter
+        )
         panels.append((label, cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[..., :3]))
     ref = _HERE / "out" / f"{spec['name']}.three_pathtrace.png"
     if ref.exists():
@@ -196,9 +206,11 @@ def _figure(render, scene_path, out_path):
             ),
         )
     h, w = panels[0][1].shape[:2]
-    sheet = np.zeros((h * 2, w * 2, 3), np.uint8)
-    for i, (label, im) in enumerate(panels[:4]):
-        y, x = (i // 2) * h, (i % 2) * w
+    cols = 2
+    rows = -(-len(panels) // cols)
+    sheet = np.zeros((h * rows, w * cols, 3), np.uint8)
+    for i, (label, im) in enumerate(panels):
+        y, x = (i // cols) * h, (i % cols) * w
         sheet[y : y + h, x : x + w] = im[:h, :w]
         cv2.putText(
             sheet,
@@ -252,12 +264,16 @@ def main(argv=None):
     OUT.mkdir(parents=True, exist_ok=True)
     rows = []
 
-    def _render(suffix, taps, glossy, interleave=None, scene=None):
+    def _render(suffix, taps, glossy, interleave=None, scene=None, prefilter=None):
         env = dict(os.environ)
         if taps is not None:
             env["ALGAN_ANALYTIC_AA_SECONDARY"] = str(taps)
         if interleave is not None:
             env["ALGAN_GLOSSY_INTERLEAVE"] = interleave
+        # ALWAYS explicit. The prefiltered split-sum route is the DEFAULT half
+        # of glossy_reflection now, so a tap-fan arm that leaves this unset
+        # silently measures the prefilter instead and reports it as the fan.
+        env["ALGAN_GLOSSY_PREFILTER"] = "1" if prefilter else "0"
         cmd = [
             sys.executable,
             str(_HERE / "algan_render.py"),
@@ -298,6 +314,14 @@ def main(argv=None):
 
     path, seconds = _render("mirror_off", None, False)
     rows.append(dict(taps=0, glossy=False, seconds=seconds, **_measure(path)))
+    # The tap sweep is about the FAN, so every row above pins the route to it.
+    # The prefiltered route takes one ray whatever the tap count, so it is one
+    # row rather than a column of identical ones -- and it is the row the sweep
+    # exists to be compared against.
+    path, seconds = _render("mirror_prefilter", None, True, prefilter=True)
+    rows.append(
+        dict(taps=1, glossy=True, prefilter=True, seconds=seconds, **_measure(path))
+    )
     for taps in args.taps:
         path, seconds = _render(f"mirror_glossy{taps}", taps, True)
         rows.append(dict(taps=taps, glossy=True, seconds=seconds, **_measure(path)))
@@ -307,6 +331,8 @@ def main(argv=None):
     )
     for r in rows:
         label = "off" if not r["glossy"] else str(r["taps"])
+        if r.get("prefilter"):
+            label = "pre"
         print(
             f"{label:>6} {r['efficiency']:11.4f} {r['speckle']:9.4f} "
             f"{r['ball_contrast']:9.4f} {r['seconds']:8.1f}"

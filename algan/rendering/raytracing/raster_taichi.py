@@ -2140,20 +2140,87 @@ def raster_bez_write(
                 w += 1
 
 
-# Sub-pixel positions for continuation-ray supersampling, by sample count. At 4
+# Sub-pixel positions for continuation-ray supersampling, by tap count. At 4
 # these are exactly where anti_alias_level=2 puts its supersamples, so a
 # reflected image sampled at these positions matches that reference arm's
 # geometry rather than merely resembling it. Regular grids, not random jitter:
 # the renderer's output must stay deterministic and frame-independent
 # (DESIGN_analytic_aa.md ss12), and a random offset would also make a mirror
 # hiss between frames.
-_AA_SEC_JITTER = {
+#
+# The four hand-written sets are pinned BYTE-IDENTICAL -- render baselines were
+# taken at them -- and every other count up to _AA_SEC_MAX is generated once at
+# import from a Hammersley point set, so any requested count has real positions
+# instead of silently snapping down to the nearest hand-written one.
+_AA_SEC_JITTER_HANDWRITTEN = {
     1: ((0.5, 0.5),),
     2: ((0.25, 0.25), (0.75, 0.75)),
     4: ((0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)),
     8: ((0.1875, 0.3125), (0.6875, 0.1875), (0.3125, 0.8125),
         (0.8125, 0.6875), (0.0625, 0.5625), (0.5625, 0.4375),
         (0.4375, 0.9375), (0.9375, 0.0625)),
+}
+
+# Ceiling on the configured tap count (ANALYTIC_AA_SECONDARY_SAMPLES). The
+# position mask ``_sec_positions`` returns is an i32 bitfield, one bit per
+# position, so bit 32 would be unreadable; and each distinct count reaches the
+# resolve as its own template value whose ``ti.static(range(sec_aa))`` unrolls
+# at four call sites, so every extra tap is also paid in kernel compile time.
+_AA_SEC_MAX = 32
+
+
+def _radical_inverse_base2(i):
+    """Van der Corput radical inverse of ``i`` in base 2: its bits reversed
+    past the binary point. i = 0 -> 0.0, 1 -> 0.5, 2 -> 0.25, 3 -> 0.75 ...
+    """
+    out = 0.0
+    f = 0.5
+    while i:
+        if i & 1:
+            out += f
+        f *= 0.5
+        i >>= 1
+    return out
+
+
+def _hammersley_secondary_positions(n):
+    """A deterministic stratified set of ``n`` positions in the unit square.
+
+    Hammersley: x runs through ``(i + 0.5) / n``, y through the radical inverse
+    of ``i`` base 2. No randomness anywhere -- these tuples are baked into the
+    compiled kernels, so anything stochastic here would make the render
+    nondeterministic or drift between frames.
+    """
+    return tuple(
+        ((i + 0.5) / n, _radical_inverse_base2(i)) for i in range(n)
+    )
+
+
+def secondary_jitter_positions(n):
+    """The sub-pixel continuation-position tuple for a tap count.
+
+    Hand-written for 1/2/4/8 (the counts the render baselines pin); generated
+    from a Hammersley set for every other count up to ``_AA_SEC_MAX``. Memoised
+    by the import-time dict below, so every caller shares one tuple object and
+    nothing regenerates after import.
+    """
+    n = int(n)
+    if not 1 <= n <= _AA_SEC_MAX:
+        raise ValueError(
+            f"analytic-AA secondary taps must be between 1 and {_AA_SEC_MAX}, "
+            f"got {n}"
+        )
+    return _AA_SEC_JITTER[n]
+
+
+# Every supported count materialises its positions once, at import: the
+# kernels index this table statically, so there is no path that could hit a
+# missing key.
+_AA_SEC_JITTER = {
+    n: (_AA_SEC_JITTER_HANDWRITTEN[n]
+        if n in _AA_SEC_JITTER_HANDWRITTEN
+        else _hammersley_secondary_positions(n))
+    for n in range(1, _AA_SEC_MAX + 1)
 }
 
 
@@ -2169,11 +2236,59 @@ def _nearest_jitter(k, n):
     return best
 
 
-# Which continuation position each coverage sample belongs to, per sample count.
-# Pure Python, evaluated at import: the kernel only ever indexes it statically.
+def _sample_nearest_to_position(j, n):
+    """Index of the coverage sample nearest to continuation position ``j``."""
+    jx, jy = _AA_SEC_JITTER[n][j]
+    best, bd = 0, 1e9
+    for k in range(_AA_NUM_SAMPLES):
+        sx = 0.5 + _AA_SAMPLES[k][0] / _AA_FIXED_SCALE
+        sy = 0.5 + _AA_SAMPLES[k][1] / _AA_FIXED_SCALE
+        d = (sx - jx) ** 2 + (sy - jy) ** 2
+        if d < bd:
+            bd, best = d, k
+    return best
+
+
+# Which continuation positions each coverage sample owns, per tap count; pure
+# Python, evaluated at import: the kernel only ever indexes it statically.
+# Entry k is a TUPLE of the position indices owned by coverage sample k.
+#
+# The ownership DIRECTION differs between the two regimes, deliberately:
+#
+# The four hand-written counts keep today's FORWARD rule -- each coverage
+# sample owns the single position nearest it -- because the inverse rule does
+# not reproduce it: measured over all 256 coverage masks, the two disagree at
+# every hand-written count (208 masks at n=8 alone), and the render baselines
+# pin those tables through this mapping. That includes today's quirks: under
+# the forward rule a position can be nobody's nearest (at n = 8 position 1
+# is), so a FULLY covered fragment there owns 7 positions and spawns 7 rays,
+# not 8 -- pinned behaviour, not an accident to fix on the side.
+#
+# Every OTHER count uses the INVERSE rule: each POSITION is assigned to its
+# nearest coverage sample, which may own several, and the assignment always
+# covers every position. Two things force the flip. Forward ownership can
+# never exceed one position per coverage sample, so with only _AA_NUM_SAMPLES
+# (= 8) samples no fragment could ever own more than 8 positions however fine
+# the tap table was -- that cap is what silently rendered 16 and 32 taps as 8
+# rays. And a generated set cannot keep the forward rule either: its positions
+# are not chosen so that each has a nearest sample (measured at n = 5, where
+# one position is nobody's nearest), so some fully covered fragment would own
+# fewer than n positions. Inverse ownership partitions all n positions across
+# the samples, so a fully covered fragment always owns all n and spawns all n
+# rays.
 _AA_SEC_OWNER = {
-    n: tuple(_nearest_jitter(k, n) for k in range(_AA_NUM_SAMPLES))
-    for n in _AA_SEC_JITTER
+    n: (
+        # Forward rule, wrapped as 1-tuples so both regimes share one shape.
+        tuple((_nearest_jitter(k, n),) for k in range(_AA_NUM_SAMPLES))
+        if n in _AA_SEC_JITTER_HANDWRITTEN
+        # Inverse rule: group the positions by their nearest coverage sample.
+        else tuple(
+            tuple(j for j in range(n)
+                  if _sample_nearest_to_position(j, n) == k)
+            for k in range(_AA_NUM_SAMPLES)
+        )
+    )
+    for n in range(1, _AA_SEC_MAX + 1)
 }
 
 
@@ -2189,12 +2304,26 @@ def _sec_positions(msk, n: ti.template()):
     switched secondary sampling off almost everywhere and cost a glass scene its
     entire refracted-image quality.
 
+    A covered sample contributes EVERY position it owns (see ``_AA_SEC_OWNER``
+    for why the ownership direction differs between the hand-written counts and
+    the generated ones), so a fully covered fragment owns all N positions and
+    spawns N rays.
+
     Returns ``(position_mask, count)``; count is zero only for an empty mask.
     """
-    pm = 0
+    # The accumulator is i64 because at 32 taps the top bit has no positive
+    # i32 literal ((1 << 31) is out of range); the final cast back to i32
+    # truncates, which IS the wrap the bitfield wants -- a fully covered
+    # 32-tap fragment returns -1, every bit set.
+    acc = ti.cast(0, ti.i64)
     for k in ti.static(range(_AA_NUM_SAMPLES)):
         if (msk >> k) & 1:
-            pm |= 1 << ti.static(_AA_SEC_OWNER[n][k])
+            for j in ti.static(_AA_SEC_OWNER[n][k]):
+                acc |= ti.cast(1, ti.i64) << ti.static(j)
+    pm = ti.cast(acc, ti.i32)
+    # Read back one bit at a time and never compare pm itself: at n = 32 the
+    # top bit makes pm NEGATIVE as an i32, and the arithmetic shift still
+    # reads every bit correctly -- a `pm > 0`-style test would not.
     cnt = 0
     for j in ti.static(range(n)):
         if (pm >> j) & 1:
