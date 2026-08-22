@@ -206,18 +206,55 @@ def register_pipeline(stages):
     return pid, total_width, layout
 
 
-def build_frag_pipelines():
-    """Flat tuple of every registered composed pipeline func, ordered by id, for
-    injection as the shade kernel's ``frag_pipelines`` template argument.
+def _select_by_pid(entries, pids):
+    """``entries`` (a registry list indexed by ``pid - _USER_PIPELINE_BASE``)
+    narrowed to the pipeline ids in ``pids``, or the whole list when ``pids``
+    is None.
+
+    Slots outside ``pids`` become ``None`` -- the position of a pipeline IS its
+    id, so the slots cannot be closed up without renumbering every packed
+    per-primitive material id -- and the tuple is then trimmed after its last
+    live entry. Both kernel-side dispatches already compile a ``None`` slot out
+    (``ti.static(bool(fn))``), so a narrowed tuple costs the kernel nothing it
+    would not have paid anyway.
     """
-    return tuple(_PIPELINE_LIST)
+    if pids is None:
+        selected = list(entries)
+    else:
+        keep = {int(pid) - _USER_PIPELINE_BASE for pid in pids}
+        selected = [entry if i in keep else None for i, entry in enumerate(entries)]
+    while selected and selected[-1] is None:
+        selected.pop()
+    return tuple(selected)
 
 
-def build_frag_scatters():
-    """Per-registered-pipeline custom scatter funcs (None = default scatter),
-    ordered by id, for the sorted-material wavefront's per-bucket dispatch.
+def build_frag_pipelines(pids=None):
+    """Composed pipeline funcs to inject as the shade kernel's
+    ``frag_pipelines`` template argument, indexed by ``pid -
+    _USER_PIPELINE_BASE`` and ordered by id.
+
+    ``pids`` is the set of material pipeline ids the batch being rendered
+    actually carries; everything else is dropped (see :func:`_select_by_pid`).
+    Pass it. **The registry is process-global and append-only, and Taichi
+    specialises the shade kernels on this tuple**, so handing over the whole
+    registry puts every render in a process that ever registered a pipeline
+    onto its own uncached kernel variant -- including renders with no custom
+    shader at all, which is both the pathology this argument exists to close
+    and the reason a batch-narrowed tuple is what the tracer passes. ``None``
+    (the whole registry) is the conservative fallback for a batch whose merged
+    scene cannot enumerate its ids.
     """
-    return tuple(_PIPELINE_SCATTERS)
+    return _select_by_pid(_PIPELINE_LIST, pids)
+
+
+def build_frag_scatters(pids=None):
+    """Per-pipeline custom scatter funcs (None = default scatter), ordered by
+    id, for the monolithic wavefront's per-material continuation dispatch.
+
+    Narrowed by ``pids`` exactly as :func:`build_frag_pipelines` is, and for
+    the same reason.
+    """
+    return _select_by_pid(_PIPELINE_SCATTERS, pids)
 
 
 class FragmentPipelineShader:

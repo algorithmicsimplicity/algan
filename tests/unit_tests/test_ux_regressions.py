@@ -29,14 +29,6 @@ from algan.scene_manager import SceneManager
 from algan.settings.video_settings import PREVIEW, VideoSettings
 from algan.utils import algan_utils
 
-#: TEMPORARY -- see ``_LEAKS_A_PIPELINE`` in ``test_fragment_shaders.py`` for
-#: why, and grep this name to find every test disabled for the same reason.
-_LEAKS_A_PIPELINE = (
-    "TEMPORARY: registers a fragment pipeline into the process-global registry, "
-    "which specialises every later render's shade kernel in the same process. "
-    "See test_fragment_shaders._LEAKS_A_PIPELINE."
-)
-
 # Marked per test rather than for the module, unlike the other fast-suite
 # files. Those are each about one mechanism, so a new test in them is the same
 # kind of test. This one is a catch-all for whatever last bit the authoring
@@ -1219,11 +1211,7 @@ def test_internal_helpers_are_importable_but_not_star_exported():
     [
         ("environment_map", "environment maps"),
         ("refraction", "refractive materials"),
-        pytest.param(
-            "fragment_pipeline",
-            "custom fragment-shader pipelines",
-            marks=pytest.mark.skip(reason=_LEAKS_A_PIPELINE),
-        ),
+        ("fragment_pipeline", "custom fragment-shader pipelines"),
         ("extended_light", "extended lights"),
     ],
 )

@@ -1135,7 +1135,7 @@ _BUILTIN_PIPELINE_FNS = {}
 ALL_PIDS = -1
 
 
-def solo_pid(pids_present, num_user_pipelines):
+def solo_pid(pids_present, frag_pipelines):
     """The one pipeline id a batch can hit, or -1 when more than one can.
 
     ``pids_present`` is the host's compile-time bitmask of the material
@@ -1143,17 +1143,32 @@ def solo_pid(pids_present, num_user_pipelines):
     :data:`ALL_PIDS` means "unknown, assume all". A batch whose triangles (or
     PN patches) all share one material lets the shade kernel call that
     material's stage unconditionally -- no per-hit id fetch and no compare.
+
+    ``frag_pipelines`` is the injected user-pipeline tuple (a plain count is
+    also accepted, for tests that have no funcs to hand). Its ``None`` slots
+    are pipelines the batch does not use, which have no func to call
+    unconditionally, so they keep the runtime switch just like an id past the
+    end of the tuple does.
     """
     mask = int(pids_present)
     if mask < 0:
         return -1
-    top = _USER_PIPELINE_BASE + int(num_user_pipelines)
+    if isinstance(frag_pipelines, int):
+        injected = [True] * frag_pipelines
+    else:
+        injected = [fn is not None for fn in frag_pipelines]
+    top = _USER_PIPELINE_BASE + len(injected)
     if mask >> top:
         # An id with no injected pipeline behind it: keep the runtime switch
         # (it matches nothing and passes the colour through, as before).
         return -1
     live = [pid for pid in range(top) if (mask >> pid) & 1]
-    return live[0] if len(live) == 1 else -1
+    if len(live) != 1:
+        return -1
+    pid = live[0]
+    if pid >= _USER_PIPELINE_BASE and not injected[pid - _USER_PIPELINE_BASE]:
+        return -1
+    return pid
 
 
 def builtin_pipeline_fn(pid):
@@ -1185,6 +1200,11 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
     raw base RGB (``glow`` the passthrough 4th channel). Returns the shaded
     RGB + glow as a ``vec4``.
 
+    ``frag_pipelines`` carries only the pipelines *this batch* uses (see
+    ``fragment_shaders.build_frag_pipelines``); an unused slot is ``None`` and
+    compiles out, so the registry's other pipelines cost this kernel nothing
+    and, more to the point, do not change its Taichi specialization.
+
     ``pids_present`` (compile-time) is the host's bitmask of the ids this
     batch's primitives actually carry, and selects one of three dispatches:
 
@@ -1202,7 +1222,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
     """
     out = ti.math.vec3(albedo[0], albedo[1], albedo[2])
     g = glow
-    solo = ti.static(solo_pid(pids_present, len(frag_pipelines)))
+    solo = ti.static(solo_pid(pids_present, frag_pipelines))
     # THE SHADING SIDE, decided once per hit rather than once per stage (see
     # _sided_shading_normal). Only a BUILT-IN pipeline's parameter block has a
     # one_sided slot -- a custom fragment pipeline lays its block out itself --
@@ -1277,13 +1297,18 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
             pass  # passthrough: colour returned unchanged (raw or baked).
         else:
             for pi in ti.static(range(len(frag_pipelines))):
-                if pid == _USER_PIPELINE_BASE + pi:
-                    fn = ti.static(frag_pipelines[pi])
-                    r = fn(pos, view_dir, shade_n, face_n, out, g,
-                           params, f, prim,
-                           light_pos, light_col, num_lights, shadows, vis)
-                    out = ti.math.vec3(r[0], r[1], r[2])
-                    g = r[3]
+                # ``bool(func) is True`` / ``bool(None) is False``: a slot the
+                # batch does not use has no func, and compiles its branch (and
+                # the None "call") out. Always true when every slot is live,
+                # so the emitted branch structure is unchanged there.
+                if ti.static(bool(frag_pipelines[pi])):
+                    if pid == _USER_PIPELINE_BASE + pi:
+                        fn = ti.static(frag_pipelines[pi])
+                        r = fn(pos, view_dir, shade_n, face_n, out, g,
+                               params, f, prim,
+                               light_pos, light_col, num_lights, shadows, vis)
+                        out = ti.math.vec3(r[0], r[1], r[2])
+                        g = r[3]
     else:
         pid = pid_arr[f % pid_arr.shape[0], prim]
         if pid < _USER_PIPELINE_BASE:
@@ -1304,7 +1329,8 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                     out = ti.math.vec3(r[0], r[1], r[2])
                     g = r[3]
         for pi in ti.static(range(len(frag_pipelines))):
-            if ti.static((pids_present >> (_USER_PIPELINE_BASE + pi)) & 1):
+            if ti.static(bool(frag_pipelines[pi])
+                         and ((pids_present >> (_USER_PIPELINE_BASE + pi)) & 1)):
                 fn = ti.static(frag_pipelines[pi])
                 if pid == _USER_PIPELINE_BASE + pi:
                     r = fn(pos, view_dir, shade_n, face_n, out, g,

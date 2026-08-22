@@ -21,24 +21,6 @@ from algan.rendering.shaders.fragment_shaders import (
     resolve_stage,
 )
 
-#: TEMPORARY. Registering a fragment pipeline appends to
-#: ``fragment_shaders._PIPELINE_LIST``, which is **process-global and
-#: append-only**, and ``build_frag_pipelines()`` hands that whole list to the
-#: shade kernel as a ``ti.template()`` tuple. Taichi specialises on it, so an
-#: empty tuple and a non-empty one are different kernels: once any test in a
-#: process has registered one pipeline, every later render in that process --
-#: including scenes with no custom shader at all -- compiles a bigger kernel
-#: that inlines all of them, and that variant is in nobody's offline cache.
-#: Measured: ``pytest -q tests/fast`` alone takes 37 s, and the same test run
-#: after ``tests/unit_tests`` in one process spends ~6 minutes in
-#: ``timed_compile_kernel`` on ``shade_sparse_raster_coverage`` before it
-#: starts. These are skipped while that is being fixed; grep this name to find
-#: all of them (there is a twin in ``test_ux_regressions.py``).
-_LEAKS_A_PIPELINE = (
-    "TEMPORARY: registers a fragment pipeline into the process-global registry, "
-    "which specialises every later render's shade kernel in the same process."
-)
-
 
 def test_builtin_fragment_pipeline_is_available_to_star_imports():
     assert {"cosine_color", "phong_shader"} <= set(algan.__all__)
@@ -53,7 +35,6 @@ def test_resolve_builtin_shader_to_stage():
         resolve_stage(lambda: None)
 
 
-@pytest.mark.skip(reason=_LEAKS_A_PIPELINE)
 def test_registry_single_composed_and_dedup():
     m1, specs1 = build_fragment_pipeline(cosine_color)
     assert m1._frag_pipeline_id >= _USER_PIPELINE_BASE
@@ -70,7 +51,6 @@ def test_registry_single_composed_and_dedup():
     assert len(build_frag_pipelines()) >= 2
 
 
-@pytest.mark.skip(reason=_LEAKS_A_PIPELINE)
 def test_set_fragment_shader_registers_animatable_params():
     SceneManager.reset()
     s = Sphere().set_fragment_shader([cosine_color, phong_shader])
@@ -81,9 +61,115 @@ def test_set_fragment_shader_registers_animatable_params():
     assert hasattr(s, "shininess")
 
 
-@pytest.mark.skip(reason=_LEAKS_A_PIPELINE)
 def test_set_fragment_shader_after_spawn_raises():
     SceneManager.reset()
     s = Sphere().spawn()
     with pytest.raises(ModifiedProtectedAttributeError):
         s.set_fragment_shader(phong_shader)
+
+
+# --------------------------------------------------------------------------
+# Batch narrowing of the injected pipeline tuple.
+#
+# The registry is process-global and append-only, and Taichi specialises the
+# shade kernels on the injected tuple, so a render that handed over the whole
+# registry compiled -- and cache-missed on -- a kernel variant carrying every
+# pipeline the *process* had ever registered. That made one custom shader
+# anywhere in a script slow every render in it, and turned the test suite from
+# 3 minutes into 37 (most of it in ``timed_compile_kernel``). These assert the
+# narrowing that closes it, and the safety rule it must never break.
+# --------------------------------------------------------------------------
+def test_a_batch_without_a_user_pipeline_injects_nothing():
+    """The whole point: a scene with no custom shader compiles the ordinary
+    shade kernel however many pipelines the process has registered.
+    """
+    build_fragment_pipeline(cosine_color)
+    assert build_frag_pipelines() != ()  # the registry is not empty
+    assert build_frag_pipelines(frozenset()) == ()
+
+
+def test_a_batch_injects_only_the_pipelines_it_uses():
+    first, _ = build_fragment_pipeline(cosine_color)
+    second, _ = build_fragment_pipeline([cosine_color, phong_shader])
+
+    only_second = build_frag_pipelines(frozenset({second._frag_pipeline_id}))
+    # Slot position IS the pipeline id, so an unused slot is None rather than
+    # closed up; the tuple is trimmed after the last one used.
+    assert len(only_second) == second._frag_pipeline_id - _USER_PIPELINE_BASE + 1
+    assert only_second[first._frag_pipeline_id - _USER_PIPELINE_BASE] is None
+    assert only_second[second._frag_pipeline_id - _USER_PIPELINE_BASE] is not None
+
+    both = build_frag_pipelines(
+        frozenset({first._frag_pipeline_id, second._frag_pipeline_id})
+    )
+    assert None not in both
+
+
+def test_solo_dispatch_never_calls_an_uninjected_pipeline():
+    """``solo_pid`` promises the kernel it may call that one stage with no id
+    fetch at all, so it must not name a slot the batch narrowed away.
+    """
+    from algan.rendering.raytracing.shading_taichi import solo_pid
+
+    mask = 1 << (_USER_PIPELINE_BASE + 1)
+    assert solo_pid(mask, (object(), object())) == _USER_PIPELINE_BASE + 1
+    assert solo_pid(mask, (object(), None)) == -1
+
+
+def test_unenumerable_ids_fall_back_to_the_whole_registry():
+    """Narrowing is only safe where the merged scene can list its material ids.
+    A geometry type present without one keeps every pipeline compiled in, for
+    the same reason ``_frag_pid_mask`` falls back to ``ALL_PIDS``: dropping a
+    pipeline the kernel still dispatches to would shade that surface with no
+    material at all.
+    """
+    import torch
+
+    from algan.rendering.raytracing.tracer import _batch_user_pipeline_ids
+
+    build_fragment_pipeline(cosine_color)
+    ids = torch.zeros((1, 4), dtype=torch.int32)
+    assert _batch_user_pipeline_ids({"tri_mat_id": ids}) is None
+    assert build_frag_pipelines(None) != ()
+
+    # Enumerable: built-in ids are not pipelines, and PN patches contribute
+    # alongside triangles.
+    merged = {
+        "tri_material_ids": (0, 3, _USER_PIPELINE_BASE),
+        "pn_material_ids": (_USER_PIPELINE_BASE + 1,),
+    }
+    assert _batch_user_pipeline_ids(merged) == frozenset(
+        {_USER_PIPELINE_BASE, _USER_PIPELINE_BASE + 1}
+    )
+
+
+def test_a_render_after_registering_a_pipeline_injects_nothing(tmp_path, monkeypatch):
+    """The wiring, end to end: the pathology was a *render* -- one with no
+    custom shader in it at all -- picking up the registry and compiling its own
+    shade kernel variant. Registering a pipeline and then rendering a plain
+    scene is the shape that regressed, so it is the shape that guards it.
+    """
+    from algan.rendering.shaders import fragment_shaders
+    from algan.settings.video_settings import SMOKE_TEST
+
+    build_fragment_pipeline(cosine_color)
+    assert fragment_shaders.build_frag_pipelines() != ()
+
+    injected = []
+    original = fragment_shaders.build_frag_pipelines
+
+    def _spy(pids=None):
+        result = original(pids)
+        injected.append(result)
+        return result
+
+    monkeypatch.setattr(fragment_shaders, "build_frag_pipelines", _spy)
+
+    SceneManager.reset()
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(SMOKE_TEST)
+    Sphere().spawn()
+    scene.save_frame(str(tmp_path / "plain"))
+
+    assert injected, "the render never reached the fragment-pipeline dispatch"
+    assert all(pipelines == () for pipelines in injected), injected
