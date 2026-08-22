@@ -189,19 +189,23 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
         scene.save_frame(tmp_path / "multi_still", at=[0.0, 1.0])
 
         assert any(
-            re.match(r"^Finished rendering multi_still_0\.0\.png in \d+\.\d+ s$", record.message)
+            re.match(
+                r"^Finished rendering multi_still_0\.0\.png in \d+\.\d+ s$",
+                record.message,
+            )
             for record in caplog.records
             if record.levelno == logging.INFO
         )
         assert any(
-            re.match(r"^Finished rendering multi_still_1\.0\.png in \d+\.\d+ s$", record.message)
+            re.match(
+                r"^Finished rendering multi_still_1\.0\.png in \d+\.\d+ s$",
+                record.message,
+            )
             for record in caplog.records
             if record.levelno == logging.INFO
         )
     finally:
         algan_logger.removeHandler(caplog.handler)
-
-
 
 
 def test_text_creates_manim_directories_inside_algan_cache(monkeypatch, tmp_path):

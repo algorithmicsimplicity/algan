@@ -49,6 +49,7 @@ from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 
 from algan.logging.logger import get_logger
+
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
 # re-exported here for backwards compatibility.
 from algan.render_loop import (  # noqa: F401
