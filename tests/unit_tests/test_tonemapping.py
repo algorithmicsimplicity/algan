@@ -29,6 +29,61 @@ from algan.utils.memory_utils import ManualMemory
 # Both implementations, as (id, use_taichi_kernel).
 IMPLEMENTATIONS = [("kernel", True), ("torch", False)]
 
+# Several guards below run in both colour working spaces, because the post
+# stage's job differs between them: under the linear space it applies the sRGB
+# OETF at the byte write, so it is an *encoder*, and under the display-referred
+# space it is a passthrough. The statements they make about a colour surviving
+# the pipeline stay true in both -- they are just written in different spaces.
+#
+# Safe to flip in-process, unlike the shading kernels: the post stage takes
+# ``linear_color`` as a ``ti.template()`` argument, so Taichi specialises on it
+# instead of baking it in at first compile.
+
+
+def _srgb_to_linear(c):
+    """The sRGB EOTF, from the specification.
+
+    Written out rather than imported from ``algan.utils.color_space`` so these
+    guards measure the renderer against the standard instead of against its own
+    transcription of it -- the lesson of the AgX matrix that was transposed in
+    both implementations and agreed with itself perfectly.
+    """
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _linear_to_srgb(c):
+    """The sRGB OETF, from the specification."""
+    return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+
+
+def _authored(byte_value, linear):
+    """The value the post stage receives for an authored byte.
+
+    Upstream of the post stage the renderer has already decoded authored colour
+    into the working space, so under the linear space the post stage is handed
+    linear light and hands back the byte it started from.
+    """
+    v = byte_value / 255.0
+    return _srgb_to_linear(v) if linear else v
+
+
+def _expect_byte(working_value, linear):
+    """The byte a working-space value should land on, with no curve."""
+    v = min(max(working_value, 0.0), 1.0)
+    return round(255 * (_linear_to_srgb(v) if linear else v))
+
+
+@pytest.fixture
+def color_space(request):
+    """Select the working space for one test, restoring it afterwards."""
+    enabled = request.param
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(enabled)
+    try:
+        yield enabled
+    finally:
+        rt_settings.set_linear_color_space(previous)
+
 
 def encode(values, *, tonemapping, exposure=1.0, method="neutral", kernel=True):
     """Push a list of neutral linear-HDR values through the post stage.
@@ -68,25 +123,50 @@ def test_tonemapping_is_off_by_default():
     assert SETTINGS.raytracing.tonemapping is False
 
 
+@pytest.mark.parametrize(
+    "color_space", [True, False], indirect=True, ids=["linear", "display"]
+)
 @pytest.mark.parametrize(("impl", "kernel"), IMPLEMENTATIONS)
-def test_off_is_exact_passthrough_of_authored_bytes(impl, kernel):
+def test_off_is_exact_passthrough_of_authored_bytes(impl, kernel, color_space):
+    """An authored colour lands on the pixel it names.
+
+    The intent is unchanged by the working space; only the value handed to the
+    post stage is. Under the linear space the renderer decodes authored colour
+    upstream, so the post stage receives linear light and its OETF returns the
+    authored byte -- decode-then-encode with no arithmetic between is the
+    identity, which is the whole reason flat 2-D content is unaffected by the
+    linear working space.
+    """
     authored = [0, 1, 17, 64, 128, 191, 254, 255]
-    got = encode([k / 255.0 for k in authored], tonemapping=False, kernel=kernel)
+    got = encode(
+        [_authored(k, color_space) for k in authored],
+        tonemapping=False,
+        kernel=kernel,
+    )
     assert [c[0] for c in got] == authored
 
 
+@pytest.mark.parametrize(
+    "color_space", [True, False], indirect=True, ids=["linear", "display"]
+)
 @pytest.mark.parametrize(("impl", "kernel"), IMPLEMENTATIONS)
-def test_exposure_applies_with_tonemapping_off(impl, kernel):
+def test_exposure_applies_with_tonemapping_off(impl, kernel, color_space):
     # Regression: exposure used to be dropped on the floor whenever the curve
     # was off, so every exposure produced identical bytes. It is the documented
     # brightness control and -- with tonemapping off by default -- the only one.
+    #
+    # Expectations are computed from the rule rather than tabulated, so the
+    # test states what the post stage owes (multiply in the working space, then
+    # encode) instead of a set of bytes that has to be re-derived per space.
     values = [0.25, 0.5, 0.75]
     at_half = encode(values, tonemapping=False, exposure=0.5, kernel=kernel)
     at_one = encode(values, tonemapping=False, exposure=1.0, kernel=kernel)
     at_two = encode(values, tonemapping=False, exposure=2.0, kernel=kernel)
 
-    assert [c[0] for c in at_one] == [64, 128, 191]
-    assert [c[0] for c in at_half] == [32, 64, 96]
+    for exposure, got in ((1.0, at_one), (0.5, at_half), (2.0, at_two)):
+        want = [_expect_byte(v * exposure, color_space) for v in values]
+        assert [c[0] for c in got] == pytest.approx(want, abs=1), f"exposure={exposure}"
+
     assert at_half != at_one
     assert at_two != at_one
 
@@ -140,9 +220,42 @@ def test_neutral_curve_transfer_is_unchanged():
     """
     values = [0.0, 0.08, 0.25, 0.5, 0.76, 1.0, 2.0, 4.0]
     expected = [0, 10, 54, 117, 184, 222, 245, 251]
-    for kernel in (True, False):
-        got = [c[0] for c in encode(values, tonemapping=True, kernel=kernel)]
-        assert got == expected, f"kernel={kernel}"
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    # Pinned in the display-referred space, where the byte *is* the curve's
+    # output: that keeps this a pin on the curve itself rather than on the
+    # curve composed with the OETF. What the linear space does to these same
+    # numbers is the subject of the test below.
+    rt_settings.set_linear_color_space(False)
+    try:
+        for kernel in (True, False):
+            got = [c[0] for c in encode(values, tonemapping=True, kernel=kernel)]
+            assert got == expected, f"kernel={kernel}"
+    finally:
+        rt_settings.set_linear_color_space(previous)
+
+
+def test_neutral_curve_is_encoded_after_the_curve_under_the_linear_space():
+    """The OETF runs last, after the curve -- three.js's order.
+
+    Composing the pinned curve outputs above with the sRGB OETF must reproduce
+    what the linear arm actually emits. That is what makes this an ordering
+    check: applying the transfer function *before* the curve, or in place of
+    it, would not land on these bytes.
+    """
+    values = [0.0, 0.08, 0.25, 0.5, 0.76, 1.0, 2.0, 4.0]
+    curve_out = [0, 10, 54, 117, 184, 222, 245, 251]
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(True)
+    try:
+        got = [c[0] for c in encode(values, tonemapping=True)]
+    finally:
+        rt_settings.set_linear_color_space(previous)
+
+    # +-1 because the pinned column is already quantised, so re-deriving the
+    # curve's output from it carries up to half a byte of rounding into the
+    # (non-linear) encode.
+    want = [round(255 * _linear_to_srgb(c / 255.0)) for c in curve_out]
+    assert got == pytest.approx(want, abs=1)
 
 
 def test_curve_moves_values_that_were_already_in_range():
@@ -154,12 +267,24 @@ def test_curve_moves_values_that_were_already_in_range():
     curve can be tuned into doing.
     """
     values = [0.08, 0.25, 0.5, 0.75, 1.0]
-    on = [c[0] for c in encode(values, tonemapping=True)]
-    off = [c[0] for c in encode(values, tonemapping=False)]
-    assert all(a < b for a, b in zip(on, off)), (on, off)
-    # White is the worst of them, and by a wide margin over the ~10/255 that
-    # was previously on record.
-    assert off[-1] - on[-1] == 33
+    # Compared within one working space, so this measures the curve rather
+    # than the difference between the two spaces.
+    white_cost = {True: 15, False: 33}
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    try:
+        for linear in (True, False):
+            rt_settings.set_linear_color_space(linear)
+            on = [c[0] for c in encode(values, tonemapping=True)]
+            off = [c[0] for c in encode(values, tonemapping=False)]
+            assert all(a < b for a, b in zip(on, off)), (linear, on, off)
+            # White is the worst of them either way. The linear space does not
+            # rescue the curve, it only changes the size of the bill: an
+            # authored white still cannot render 255 with the curve on, because
+            # Khronos Neutral reserves headroom by mapping linear 1.0 to 0.869
+            # and the OETF cannot put that back.
+            assert off[-1] - on[-1] == white_cost[linear], linear
+    finally:
+        rt_settings.set_linear_color_space(previous)
 
 
 def _lit_rgb(values):
@@ -184,13 +309,44 @@ def test_over_range_lit_colour_keeps_its_hue():
 
     Scaling by the peak is what keeps a lit orange face orange instead of
     turning it flat yellow-white. The guard is the ratio between channels.
+
+    Display-referred only. Under the linear working space the bound is off by
+    design -- see the test below.
     """
-    out = _lit_rgb([[2.0, 1.0, 0.4]])[0]
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(False)
+    try:
+        out = _lit_rgb([[2.0, 1.0, 0.4]])[0]
+    finally:
+        rt_settings.set_linear_color_space(previous)
     assert float(out.max()) == pytest.approx(1.0)
     # Ratios preserved: 2.0 : 1.0 : 0.4 -> 1.0 : 0.5 : 0.2
     assert out.tolist() == pytest.approx([1.0, 0.5, 0.2])
     # What the old per-channel clamp would have produced, for contrast.
     assert out.tolist() != pytest.approx([1.0, 1.0, 0.4])
+
+
+def test_linear_space_does_not_bound_the_lit_colour():
+    """Under the linear space the shader hands over its radiance untouched.
+
+    The peak bound exists to keep an over-range colour's hue when the encoder
+    is a bare clamp. In linear light the range belongs to the display
+    transform at the end of the pipeline -- the tonemap, or the clamp the OETF
+    is applied through -- and bounding here instead would make lights stop
+    adding, which is the thing the working space exists to fix. Values above
+    1.0 pass through as radiance.
+    """
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(True)
+    try:
+        out = _lit_rgb([[2.0, 1.0, 0.4]])[0]
+        floored = _lit_rgb([[-0.5, 0.25, 0.5]])[0]
+    finally:
+        rt_settings.set_linear_color_space(previous)
+    assert out.tolist() == pytest.approx([2.0, 1.0, 0.4])
+    # The negative floor is *not* part of the bound and must survive: it is
+    # what stops a negative reaching the encoder's pow, which would be NaN.
+    assert floored.tolist() == pytest.approx([0.0, 0.25, 0.5])
 
 
 def test_negative_lit_colour_is_floored_not_flipped():
@@ -230,8 +386,44 @@ def test_fully_lit_surface_reflects_its_albedo_and_no_more():
     fully lit surface reflected ``albedo * 1.1`` -- more light than arrived.
     A mid-grey now comes back as exactly its albedo. (White cannot show this:
     1.1 and 1.0 both bound to 1.0, which is why the test uses 0.5.)
+
+    Display-referred only. Normalising the illumination budget is what makes
+    lights stop adding, and the linear working space removes it deliberately --
+    see the test below.
     """
-    assert _lambert(albedo=0.5).tolist() == pytest.approx([0.5, 0.5, 0.5], abs=1e-6)
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(False)
+    try:
+        assert _lambert(albedo=0.5).tolist() == pytest.approx([0.5, 0.5, 0.5], abs=1e-6)
+    finally:
+        rt_settings.set_linear_color_space(previous)
+
+
+def test_linear_space_lets_light_accumulate():
+    """Lights add, which is the point of the working space.
+
+    In linear light two lamps really do deliver twice the radiance, and the
+    display transform at the end of the pipeline is what decides where that
+    lands on a pixel. The budget normalisation made the surface reflect its
+    albedo and no more however much light arrived, so a second lamp changed
+    nothing -- measured on a real render, totals of 1.2, 1.5 and 1.8 all
+    produced the same byte.
+
+    Ambient sits on top of the direct term here rather than sharing a budget
+    with it, so a fully lit mid-grey reflects more than its albedo. That is
+    over-exposure, and it is the author's to fix with intensities or exposure,
+    not something to normalise away behind their back.
+    """
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(True)
+    try:
+        lit = float(_lambert(albedo=0.5)[0])
+        brighter = float(_lambert(albedo=0.5, light_intensity=2.0)[0])
+    finally:
+        rt_settings.set_linear_color_space(previous)
+
+    assert lit > 0.5, "ambient must not be absorbed into a shared budget"
+    assert brighter > lit, "more light must make the surface brighter"
 
 
 def test_under_lit_surface_is_not_scaled():
@@ -262,9 +454,36 @@ def test_budget_counts_radiance_not_light_count():
 
 
 def test_energy_scale_is_identity_below_unity():
+    """Display-referred: below unity the budget divisor changes nothing.
+
+    Above it the divisor is what stopped gamma-space light sums running away.
+    """
     from algan.rendering.shaders.material_shaders import _energy_scale
 
-    for w in (0.0, 0.25, 0.5, 1.0):
-        assert float(_energy_scale(torch.tensor([w]))) == pytest.approx(1.0)
-    assert float(_energy_scale(torch.tensor([2.0]))) == pytest.approx(0.5)
-    assert float(_energy_scale(torch.tensor([4.0]))) == pytest.approx(0.25)
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(False)
+    try:
+        for w in (0.0, 0.25, 0.5, 1.0):
+            assert float(_energy_scale(torch.tensor([w]))) == pytest.approx(1.0)
+        assert float(_energy_scale(torch.tensor([2.0]))) == pytest.approx(0.5)
+        assert float(_energy_scale(torch.tensor([4.0]))) == pytest.approx(0.25)
+    finally:
+        rt_settings.set_linear_color_space(previous)
+
+
+def test_energy_scale_is_identity_everywhere_under_the_linear_space():
+    """No budget at all in linear light -- the divisor is 1.0 for any weight.
+
+    This is the mechanism behind ``test_linear_space_lets_light_accumulate``:
+    the scale being unconditionally 1.0 is what makes N lights deliver N
+    lights' worth instead of one rig's worth.
+    """
+    from algan.rendering.shaders.material_shaders import _energy_scale
+
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(True)
+    try:
+        for w in (0.0, 0.25, 1.0, 2.0, 4.0, 100.0):
+            assert float(_energy_scale(torch.tensor([w]))) == pytest.approx(1.0), w
+    finally:
+        rt_settings.set_linear_color_space(previous)
