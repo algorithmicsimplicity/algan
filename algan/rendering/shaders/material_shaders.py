@@ -40,6 +40,20 @@ from algan.utils.tensor_utils import dot_product
 # with no AmbientLight).
 AMBIENT_STRENGTH = 0.1
 
+# The same fill in linear light. 0.1 was chosen as a display-referred
+# coefficient; carrying it unchanged into the linear working space would make
+# the ambient nearly nine times brighter, because 0.1 of linear light encodes
+# to byte 89 where 0.1 of an encoded value is byte 26. srgb_to_linear(0.1) =
+# 0.01003, so 0.01 delivers the fill the old pipeline delivered -- the number
+# changes because the units changed, not because the look was retuned. Twin of
+# shading_taichi.AMBIENT_STRENGTH_LINEAR.
+AMBIENT_STRENGTH_LINEAR = 0.01
+
+
+def _ambient_strength():
+    """The ambient coefficient for the active working space."""
+    return AMBIENT_STRENGTH_LINEAR if _linear_color_space() else AMBIENT_STRENGTH
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -268,7 +282,7 @@ def lambert_shader(
     n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
     radiance = light_color[..., :3] * light_intensity
 
-    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
     ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
     out = (ambient + diffuse) * _energy_scale(
@@ -302,7 +316,7 @@ def phong_shader(
     )
     radiance = light_color[..., :3] * light_intensity
 
-    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
     ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
     # Blinn-Phong specular: (N.H)^shininess, gated by N.L so back faces stay dark.
@@ -356,7 +370,7 @@ def standard_shader(
     direct = diffuse + specular * radiance * n_dot_l
 
     # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
-    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
     out = (ambient + direct) * _energy_scale(
         n_dot_l * radiance.amax(-1, keepdim=True) + kA
@@ -451,7 +465,7 @@ def physical_shader(
     sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
     direct = direct + sheen_c * sheen_brdf * radiance * n_dot_l
 
-    kA = AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
+    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
     # No per-light transmission term: the transmitted share is carried by the
     # renderer's own continuation, and adding it here again double counted.
@@ -491,7 +505,7 @@ def toon_shader(
         num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
     )
     stepped = torch.ceil(n_dot_l * bands) / bands
-    kA = AMBIENT_STRENGTH * ambient_light_intensity
+    kA = _ambient_strength() * ambient_light_intensity
     ambient = rgb * kA
     diffuse = rgb * light_color[..., :3] * light_intensity * stepped
     out = (ambient + diffuse) * _energy_scale(

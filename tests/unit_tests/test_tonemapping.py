@@ -432,10 +432,19 @@ def test_under_lit_surface_is_not_scaled():
     Half a light's worth of illumination on a mid-grey: 0.5*0.1 ambient plus
     0.5*0.5 direct. Normalising here would darken a scene that was never over
     range in the first place.
+
+    Display-referred: the budget only exists there, and so does the 0.1 ambient
+    coefficient this arithmetic assumes -- in linear light the same fill is
+    0.01, because the units changed (AMBIENT_STRENGTH_LINEAR).
     """
-    assert _lambert(albedo=0.5, light_intensity=0.5).tolist() == pytest.approx(
-        [0.3, 0.3, 0.3], abs=1e-6
-    )
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(False)
+    try:
+        assert _lambert(albedo=0.5, light_intensity=0.5).tolist() == pytest.approx(
+            [0.3, 0.3, 0.3], abs=1e-6
+        )
+    finally:
+        rt_settings.set_linear_color_space(previous)
 
 
 def test_budget_counts_radiance_not_light_count():
@@ -444,13 +453,21 @@ def test_budget_counts_radiance_not_light_count():
     Weighting the budget by geometry alone penalised a rig for how many lights
     it used rather than how much light it emitted, which visibly over-darkened
     dim multi-light scenes.
+
+    Display-referred, for the same two reasons as the test above.
     """
     from algan.rendering.raytracing.shading_taichi import AMBIENT_STRENGTH
 
     assert AMBIENT_STRENGTH == 0.1
-    one_bright = _lambert(albedo=0.5, light_intensity=0.9)
-    # Same total emitted radiance, split three ways, is the same illumination.
-    assert float(one_bright.max()) == pytest.approx(0.5 * (0.1 + 0.9), abs=1e-6)
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(False)
+    try:
+        one_bright = _lambert(albedo=0.5, light_intensity=0.9)
+        # Same total emitted radiance, split three ways, is the same
+        # illumination.
+        assert float(one_bright.max()) == pytest.approx(0.5 * (0.1 + 0.9), abs=1e-6)
+    finally:
+        rt_settings.set_linear_color_space(previous)
 
 
 def test_energy_scale_is_identity_below_unity():

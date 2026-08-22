@@ -81,6 +81,25 @@ _USER_PIPELINE_BASE = 6
 # Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
 AMBIENT_STRENGTH = 0.1
 
+# The same fill, expressed in linear light. 0.1 was chosen as a display-referred
+# coefficient, and moving the working space without moving it would have made
+# the ambient nearly nine times brighter: 0.1 of linear light encodes to byte
+# 89, where 0.1 of an encoded value is byte 26, so every shadowed and unlit
+# region would have lifted. srgb_to_linear(0.1) = 0.01003, so 0.01 is the same
+# fill the old pipeline delivered -- the constant changes because the units
+# changed, not because the look was retuned.
+AMBIENT_STRENGTH_LINEAR = 0.01
+
+
+def _ambient_strength():
+    """The ambient coefficient for the active working space.
+
+    A Python-level function rather than a constant because the two spaces need
+    different numbers for the same result; call it inside ``ti.static`` so the
+    value is folded in when the kernel compiles.
+    """
+    return AMBIENT_STRENGTH_LINEAR if _linear_color_space() else AMBIENT_STRENGTH
+
 
 def _linear_color_space():
     """True when shading runs in the linear working colour space.
@@ -696,8 +715,9 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     # the legacy expression; for many lights it sums correctly (the old
     # per-light overwrite collapsed the colour and re-added ambient/emissive
     # per light -- e.g. an area light's sample fan came out wrong).
-    refl = in_rgb * (AMBIENT_STRENGTH * env)
-    wsum = AMBIENT_STRENGTH * env
+    amb = ti.static(_ambient_strength())
+    refl = in_rgb * (amb * env)
+    wsum = amb * env
     for li in range(num_lights):
         ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                              pos, n)
@@ -727,8 +747,9 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     n = _prep_normal(n_interp, face_n, flat, view_dir)
     # Additive over lights (see _stage_lambert): ambient + emissive once, then
     # each light's Blinn-Phong diffuse + specular.
-    refl = in_rgb * (AMBIENT_STRENGTH * env)
-    wsum = AMBIENT_STRENGTH * env
+    amb = ti.static(_ambient_strength())
+    refl = in_rgb * (amb * env)
+    wsum = amb * env
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
@@ -765,8 +786,9 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     one = ti.math.vec3(1.0, 1.0, 1.0)
     rgb = in_rgb
     f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metalness) + rgb * metalness
-    refl = (rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
-    wsum = AMBIENT_STRENGTH * env
+    amb = ti.static(_ambient_strength())
+    refl = (rgb * (1.0 - metalness) + f0 * metalness) * (amb * env)
+    wsum = amb * env
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
@@ -828,8 +850,9 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
           * (1.0 - metalness) + rgb * metalness)
     # Additive over lights (see _stage_lambert): the metalness/F0 ambient +
     # emissive base once, then each light's direct terms.
-    refl = (rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
-    wsum = AMBIENT_STRENGTH * env
+    amb = ti.static(_ambient_strength())
+    refl = (rgb * (1.0 - metalness) + f0 * metalness) * (amb * env)
+    wsum = amb * env
     for li in range(num_lights):
         ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
                                             pos, n)
