@@ -160,3 +160,44 @@ def test_curve_moves_values_that_were_already_in_range():
     # White is the worst of them, and by a wide margin over the ~10/255 that
     # was previously on record.
     assert off[-1] - on[-1] == 33
+
+
+def _lit_rgb(values):
+    """Run ``values`` through the torch shaders' output bound."""
+    from algan.rendering.shaders.material_shaders import _recombine
+
+    rgb = torch.tensor(values, dtype=torch.float32).reshape(-1, 3)
+    glow = torch.zeros((rgb.shape[0], 1), dtype=torch.float32)
+    return _recombine(rgb, glow)[..., :3]
+
+
+def test_lit_colour_below_one_is_untouched():
+    # The bound must be the identity in range, or enabling it would have
+    # re-baselined every scene rather than only the pixels that were clipping.
+    values = [[0.0, 0.0, 0.0], [0.25, 0.5, 0.75], [1.0, 1.0, 1.0], [1.0, 0.0, 0.5]]
+    out = _lit_rgb(values)
+    assert torch.equal(out, torch.tensor(values, dtype=torch.float32))
+
+
+def test_over_range_lit_colour_keeps_its_hue():
+    """A clamp truncates channels independently and slides colour to white.
+
+    Scaling by the peak is what keeps a lit orange face orange instead of
+    turning it flat yellow-white. The guard is the ratio between channels.
+    """
+    out = _lit_rgb([[2.0, 1.0, 0.4]])[0]
+    assert float(out.max()) == pytest.approx(1.0)
+    # Ratios preserved: 2.0 : 1.0 : 0.4 -> 1.0 : 0.5 : 0.2
+    assert out.tolist() == pytest.approx([1.0, 0.5, 0.2])
+    # What the old per-channel clamp would have produced, for contrast.
+    assert out.tolist() != pytest.approx([1.0, 1.0, 0.4])
+
+
+def test_negative_lit_colour_is_floored_not_flipped():
+    assert _lit_rgb([[-0.5, 0.25, 0.5]])[0].tolist() == pytest.approx([0.0, 0.25, 0.5])
+
+
+def test_black_does_not_divide_by_zero():
+    out = _lit_rgb([[0.0, 0.0, 0.0]])[0]
+    assert torch.isfinite(out).all()
+    assert out.tolist() == [0.0, 0.0, 0.0]

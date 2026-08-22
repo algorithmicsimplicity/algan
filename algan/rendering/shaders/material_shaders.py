@@ -52,8 +52,25 @@ def _split_albedo(albedo_color):
 
 
 def _recombine(rgb, glow_tail):
-    """Clamp the RGB result to ``[0, 1]`` and re-attach the glow channel."""
-    return torch.cat((rgb.clamp(0.0, 1.0), glow_tail), -1)
+    """Bound the RGB result to ``[0, 1]`` and re-attach the glow channel.
+
+    Lights accumulate without normalisation, so several of them drive a fully
+    lit surface past 1.0. Scaling all three channels by the peak keeps the hue,
+    where the per-channel clamp this replaced truncated each independently and
+    slid an over-range saturated colour toward white. Identity below 1.0, so
+    anything already in range is untouched; ``glow_tail`` is never bounded,
+    which leaves glow the one route to above-1.0 output for bloom.
+
+    Kept in step with ``_run_frag_pipeline`` in
+    ``algan/rendering/raytracing/shading_taichi.py``, which does the same thing
+    for the fragment path.
+    """
+    rgb = rgb.clamp_min(0.0)
+    # clamp_min(1.0) makes the divisor exactly 1 whenever nothing is over
+    # range, so the in-range case is a bit-identical no-op and there is no
+    # divide-by-zero on black.
+    rgb = rgb / rgb.amax(-1, keepdim=True).clamp_min(1.0)
+    return torch.cat((rgb, glow_tail), -1)
 
 
 def _normalize(v):

@@ -1095,5 +1095,26 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                            light_pos, light_col, num_lights, shadows, vis)
                     out = ti.math.vec3(r[0], r[1], r[2])
                     g = r[3]
-    #out = ti.math.clamp(out, 0.0, 1.0)
+    # Bound the shaded colour to the display range. Lights accumulate here
+    # without any normalisation -- each one adds its diffuse, ambient and
+    # specular terms to the running colour -- so a scene with more than one
+    # light drives a fully lit surface past 1.0 even though every individual
+    # light is at or below unit intensity. Algan's own default rig (one white
+    # PointLight) lands exactly on 1.0; tests/fast's three lights reach 2.15.
+    #
+    # That used to be the tonemap's problem. With tonemapping off by default
+    # the encoder clamps instead, and a per-channel clamp truncates each
+    # channel independently, so an over-range saturated colour loses its hue
+    # and slides toward white -- a lit orange face turning flat yellow-white.
+    # Scaling all three channels by the peak instead keeps the hue and only
+    # gives up the brightness that had nowhere to go.
+    #
+    # Deliberately identity below 1.0, so everything already in range is
+    # bit-identical and only pixels that were going to clip anyway change.
+    # ``g`` (glow) is returned untouched, so glow remains the one thing that
+    # can produce above-1.0 output for bloom to work with.
+    out = ti.math.max(out, 0.0)
+    peak = ti.max(out[0], ti.max(out[1], out[2]))
+    if peak > 1.0:
+        out = out / peak
     return ti.math.vec4(out[0], out[1], out[2], g)

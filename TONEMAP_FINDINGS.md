@@ -358,8 +358,7 @@ for lit 3-D. Three ways to close that gap, in increasing order of effort:
 3. **Option C from §6** -- tonemap lit geometry only, leave flat fills alone.
    The only one that gets both, and much the largest change.
 
-None of these is done here. The default is off, the two genuine bugs (§7, §8)
-are fixed, and this is on record as the next thing.
+**Followed up in §11**, and none of the three turned out to be the fix.
 
 ## 10. Baseline state
 
@@ -375,3 +374,89 @@ Deliberately not regenerated, per §6. For whoever picks that up:
   tonemap: 32 of it was already there.
 * `tests/unit_tests` is unaffected: 1541 passed, 93 skipped, 0 failed.
 * `tests/full_renders` skips itself under `CI`, and was not run here.
+
+## 11. Bounding the lit colour, and why it was not a light-intensity change
+
+§9's follow-up was "re-tune the default light intensities". Measuring first
+showed that premise was wrong in two ways, and the real fix is neither of the
+three options listed there.
+
+`benchmarks/_light_ldr_probe.py` renders a white Lambert cube and a white flat
+fill, adding one light at a time, and reports the peak linear value the post
+stage receives:
+
+| lights on the scene | peak | % > 1.0 |
+| --- | ---: | ---: |
+| Algan's own default rig (one white `PointLight`) | **1.000** | 0.000% |
+| + `AmbientLight(0.45)` | 1.325 | 5.13% |
+| + `DirectionalLight(0.85)` | 1.744 | 5.42% |
+| + `PointLight(0.6)` -- this is `tests/fast`'s rig | 2.154 | 5.42% |
+
+**The default lighting was already exactly LDR.** One default light lands a
+fully lit white surface on 1.000 and not a fraction over. There was no default
+intensity that needed turning down.
+
+**And there is no such knob anyway.** `SETTINGS.raytracing.light_intensity`
+(the `LIGHT_INTENSITY = pi` at `raytracing/settings.py:94`) is refused by the
+settings layer, which says so itself:
+
+    'light_intensity' is not read by any renderer this build can launch (only
+    by the unwired physical-mode Monte Carlo kernel), so setting it would
+    silently do nothing. Scale a light with its own intensity= instead.
+
+What actually breaks the invariant is that **light contributions accumulate
+without normalisation**. Each light adds its diffuse, ambient and specular
+terms to the running colour, so any scene with more than one light drives a
+fully lit surface past 1.0 even when every individual light is at or below unit
+intensity. Nothing bounded that: `_run_frag_pipeline`
+(`raytracing/shading_taichi.py`) ended with its clamp **commented out** --
+correct while the tonemap was compressing the overshoot, and a hole the moment
+it stopped.
+
+The fix bounds the shaded colour at that one point, and in the torch vertex
+path's `_recombine` (`shaders/material_shaders.py`) to match:
+
+    out = max(out, 0)
+    if peak(out) > 1:  out /= peak(out)
+
+Scaling by the peak rather than clamping per channel is the whole point. A
+clamp truncates each channel independently, so an over-range orange
+`(2.0, 1.0, 0.4)` becomes `(1.0, 1.0, 0.4)` -- a different, yellower colour.
+Scaling gives `(1.0, 0.5, 0.2)`, the same colour at the brightness that fits.
+That is what turns the blown yellow-white cube face of §9 back into an orange
+one.
+
+It is **the identity below 1.0**, so everything already in range is
+bit-identical and only pixels that were going to clip anyway move. And `glow`
+is returned untouched, so it stays the one route to above-1.0 output.
+
+Measured after the change, with the probe unchanged:
+
+| lights on the scene | peak | % > 1.0 |
+| --- | ---: | ---: |
+| default rig | 1.000 | 0.000% |
+| + Ambient | **1.000** | 0.000% |
+| + Ambient + Directional | **1.000** | 0.000% |
+| + Ambient + Directional + Point | **1.000** | 0.000% |
+
+and glow still does what it is for:
+
+| | peak |
+| --- | ---: |
+| `glow = 0.0` | 1.000 |
+| `glow = 0.5` | 5.593 |
+| `glow = 1.5` | 124.999 |
+
+So the invariant holds exactly as asked: **a surface with `glow == 0` never
+exceeds the display range however many lights are on it, and only `glow > 0`
+produces HDR.**
+
+`algan_outputs/tonemap_check/fast_f30_ldr_bound.png` is the same frame as §9's
+pair. The flat content keeps everything the tonemap flip won -- white title,
+white borders -- and the lit solids keep their hue.
+
+One thing this does *not* do: it bounds the result, it does not make the
+lighting energy-conserving. A three-light rig still saturates a white surface
+where a physically-based one would not; it now saturates without changing hue.
+Normalising the light accumulation itself would be the deeper fix and would
+change every multi-light scene's shading, not just its clipped pixels.
