@@ -158,7 +158,7 @@ with Seq():
     with Sync(run_time=1.6):
         flat.rotate(-14, OUT, about_point=flat_center)
         # Travel out along a curved path and back, so the row is restored.
-        curved[0].move_to_point_along_arc(curved[0].get_center(), 360, arc_normal=OUT)
+        curved[0].move_to_point_along_arc(curved[0].get_center(), 180, arc_normal=OUT)
         curved[3].scale(1.3)
         key_light.move(RIGHT * 9)
     with Sync(run_time=0.8):
