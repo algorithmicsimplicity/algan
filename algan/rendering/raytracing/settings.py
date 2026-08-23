@@ -638,6 +638,37 @@ def set_shadow_anyhit(enabled):
         SHADOW_ANYHIT = bool(enabled)
 
 
+# Coloured shadow payloads. The deterministic shadow query's visibility value
+# is an RGB triple end to end; with this on, a transmissive surface TINTS the
+# light it passes (by its albedo, matching what the bounce loop does to its
+# transmitted share) and absorbs Beer-Lambert over the interior chord of any
+# solid it crosses, instead of passing one achromatic fraction -- measured
+# against a Three.js path tracer, green glass cast a grey shadow before this
+# (renderer_audit REPORT.md ss4.10). DEFAULT ON.
+#
+# This gates only the tinting and the absorption, NOT the payload width: with
+# it off every channel carries today's scalar value unchanged, so renders are
+# byte-identical while the plumbing stays exercised. Every kernel use sits
+# behind ti.static, which resolves at COMPILE time -- flipping this
+# mid-process recompiles nothing, so the two arms must be separate processes.
+# Declaring the variable import-time is what makes that honest: a warm daemon
+# refuses a client whose value differs rather than serving kernels compiled
+# for the other arm.
+RGB_SHADOW_TINT = env_flag("ALGAN_RGB_SHADOW_TINT", True)
+
+
+def set_rgb_shadow_tint(enabled):
+    """Toggle coloured shadow tinting/absorption (see ``RGB_SHADOW_TINT``).
+
+    Because the gate compiles into the kernels, this takes effect for kernels
+    compiled AFTER the call -- existing variants are reused. For a guaranteed
+    switch, set ``ALGAN_RGB_SHADOW_TINT`` before importing algan or run the
+    other arm in its own process.
+    """
+    global RGB_SHADOW_TINT
+    RGB_SHADOW_TINT = bool(enabled)
+
+
 # Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
 # shadow ray currently rejects its own surface with MIN_HIT_DISTANCE plus a
 # normal offset of 10 * MIN_HIT_DISTANCE -- absolute world-space constants

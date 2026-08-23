@@ -39,7 +39,7 @@ this run.
 | §4.5 | **[2]** A rough metal reflects 4.7% of what it should by default; `glossy_reflection=True` gets the energy right (0.555 against 0.523) but its four taps speckle | yes | not flipped — §4.5 measures what the tap count can and cannot buy, and what would actually fix it |
 | §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention, now measurable as exactly π | left alone, on purpose |
 | §4.8 | **[2]** A flat ambient on every lit surface, 0.01 in linear light | yes, but an artistic default | left alone |
-| §4.10 | **[2]** Coloured glass casts a grey shadow where the reference's is green | yes | not fixed; needs an RGB shadow payload (§6) |
+| §4.10 | **[2]** Coloured glass casts a grey shadow where the reference's is green | yes | **fixed** — the payload is RGB; green/red 1.00 → 22.3, and the falloff across three sphere sizes matches Beer-Lambert |
 | §3 | Refraction, mirror reflection, clearcoat, bounce exhaustion | **no** — refraction beats stock Three.js outright | — |
 
 ---
@@ -702,16 +702,90 @@ are `2r` = 1.1 / 2.1 / 3.5 and `sigma_green = -ln(linear(0.85)) = 0.368`, so pur
 Beer-Lambert predicts green transmittance ratios of 1.00 / 0.69 / 0.41 relative
 to the small sphere. Measured: **1.00 / 0.69 / 0.42**.
 
-### 4.10 Coloured glass still casts a grey shadow — NOT FIXED
+### 4.10 Coloured glass cast a grey shadow — FIXED
 
-`out/calib_absorption.compare.jpg`'s exposure-matched difference panel is now
+`out/calib_absorption.compare.jpg`'s exposure-matched difference panel was
 near-black over the spheres themselves and bright magenta under them, which
-isolates what is left: the path tracer's glass spheres cast **green** shadows,
-because what reaches the floor has been through the glass. Algan's are pale
-rather than black — §4.1's fix lets the light through — but they stay grey,
-because a shadow query returns one scalar per light. Fixing it needs an RGB
-visibility payload where there is one float today; it is the natural completion
-of §4.1 and §4.6 and it is a bigger change than either (§6).
+isolated what was left: the path tracer's glass spheres cast **green** shadows,
+because what reaches the floor has been through the glass. Algan's were pale
+rather than black — §4.1's fix lets the light through — but stayed grey,
+because a shadow query returned one scalar per light.
+
+The shadow visibility payload is now **RGB end to end** — producers, storage
+and the shading stages — so a transmissive blocker can dim the channels
+unequally. Two things then tint the light, and they are the same two the *view*
+ray already applied, which is what makes a shadow agree with what the camera
+sees through the same glass:
+
+* **the albedo, at each interface**, matching `_scatter_impl`'s
+  `trans_w = trans_energy * tint`; and
+* **Beer-Lambert over the interior chord**, from §4.6's
+  `sigma = -ln(linear(attenuation_color)) / attenuation_distance`, now carried
+  to the shadow march in `tri_extra` columns 12-14.
+
+The march has no normals, so it cannot use §4.6's `rd · n > 0` exit test. It
+pairs hits instead: a fully-covering hit with non-zero sigma opens a medium or
+closes the open one, and closing multiplies by `exp(-sigma · (t_exit - t_entry))`.
+Exact for a single convex solid — the same guarantee §4.6 makes for the view ray.
+
+`shadow_tint_probe.py` measures the result. Each sphere's shadow as a fraction
+of the open backdrop, in linear light:
+
+| radius | Algan, before | **Algan, after** | Three.js path tracer | Beer-Lambert |
+| --- | --- | --- | --- | --- |
+| 0.55 | (0.927, 0.927, 0.927) | **(0.014, 0.305, 0.025)** | (0.022, 0.398, 0.054) | (0.004, 0.294, 0.015) |
+| 1.05 | (0.927, 0.927, 0.927) | **(0.011, 0.214, 0.014)** | (0.005, 0.278, 0.015) | (0.001, 0.204, 0.004) |
+| 1.75 | (0.927, 0.927, 0.927) | **(0.010, 0.132, 0.011)** | (0.002, 0.168, 0.005) | (0.000, 0.122, 0.001) |
+
+Before, the three shadows were **the same grey to four decimal places whatever
+the sphere's size** — the scalar payload could carry neither the tint nor the
+chord. After, green/red goes from 1.00 to 22.3 / 19.7 / 13.0, and the green
+channel falls off across the three spheres as **1.00 / 0.70 / 0.43**, against
+Beer-Lambert's predicted 1.00 / 0.69 / 0.41 and the path tracer's measured
+1.00 / 0.70 / 0.42. That falloff is the whole content of the fix: it is what
+§4.6 gave the view ray and what §4.10 was missing.
+
+Everything still sits *below* the reference, and that residual is refraction:
+the path tracer's sphere is a lens that concentrates light into its own shadow
+(the same reason §4.1's clear-glass patch exceeds 100% there), which a march
+travelling in a straight line cannot reproduce. So there is still no caustic
+core — the umbra is uniformly tinted where the reference brightens toward the
+middle. "Glass tints and absorbs the light it passes" is the honest
+description; "glass casts a correct shadow" is not.
+
+**One defect found by looking at the frame rather than the numbers**, recorded
+because the numbers alone hid it. The pairing first used `alpha >= 1.0` to mean
+"a solid's surface". A hit's alpha is the barycentric blend
+`w0·a0 + w1·a1 + w2·a2` with `w0 = 1 - a - b`, and `(1-a-b) + a + b` is not
+associative in f32, so the sum can land one ulp below 1.0 with every corner
+alpha exactly 1.0. Such a hit fails to open (or close) the medium, and that ray
+loses its **whole** absorption — never part of it, and only ever in the bright
+direction:
+
+| | small | medium | large |
+| --- | --- | --- | --- |
+| green relative deviation, `>= 1.0` | 5.8% | 14.5% | **28.2%** |
+| green relative deviation, `_SOLID_COVERAGE_MIN` | 0.7% | 0.6% | 1.0% |
+
+The pre-RGB renderer was uniform over the same disc to `std = 0.00000`, so on a
+deterministic renderer any speckle at all is the defect. Widening the floor to
+`1.0 - 1e-6` — the slack `_pack_frame_visibility` already uses to call a
+primitive opaque — also moved the *mean* onto the Beer-Lambert line (large
+sphere 0.142 → 0.132 against 0.122 predicted). That second effect is what
+identifies the bright pixels as dropped chords rather than a sampling artefact,
+and it is why a mean-only check misread this as a modest bias: measuring the
+variance is what found it.
+
+How large a share of barycentrics is affected depends on operand order and on
+whether the backend contracts the blend into an FMA — a Python model in the
+kernel's order says a few percent, the same model with two operands swapped
+says under one — so the number is not quoted here. The A/B above is the
+evidence that the floor needs slack, and it does not depend on the share.
+
+`ALGAN_RGB_SHADOW_TINT=0` restores the achromatic shadow exactly. The payload
+stays RGB either way; the gate covers only the tint and the absorption, so with
+it off every channel carries the old scalar and the render is byte-identical
+(`calib_mirror` renders to the same md5 on this branch and on stock `main`).
 
 ### 4.7 Two settings that silently do nothing — FIXED
 
@@ -788,6 +862,11 @@ items and nothing else: the glass cube (Algan resolves it as thin panes where th
 reference refracts it as a solid), the gold sphere's missing blurred surroundings
 (§4.5), and the shadow under the green sphere (§4.10).
 
+**The composite above predates §4.10's fix and has not been regenerated**, so
+the green sphere's shadow in it is the old grey one. §4.10 measures the change
+on `calib_absorption`, which isolates it; what a re-rendered showcase would add
+is how it reads in a scene with several lights, and that has not been looked at.
+
 ---
 
 ## 6. What a follow-up should do, in order
@@ -804,9 +883,14 @@ what the second run learned:
    directions — the reflection appears, and the ambient fill standing in for it
    goes away. That needs the CPU and CUDA baselines regenerated together, on a
    CUDA machine, and a look at what it does to a scene with no environment map.
-2. **Coloured shadows through coloured glass** (§4.10). The natural completion of
-   §4.1 and §4.6, and the one thing `calib_absorption` still shows: needs an RGB
-   visibility payload where there is one scalar per light today.
+2. ~~**Coloured shadows through coloured glass** (§4.10). The natural completion
+   of §4.1 and §4.6, and the one thing `calib_absorption` still shows: needs an
+   RGB visibility payload where there is one scalar per light today.~~
+   **DONE** — see §4.10. What it leaves open is the half the payload cannot
+   reach: a straight march still cannot bend light, so there is no caustic core
+   and the umbra is flat where the reference brightens toward its middle. That
+   needs the shadow ray to refract, which is a different change from this one
+   and a much larger one.
 3. ~~**Let the secondary tap count go above 8** (§4.5), or say that it cannot.~~
    **DONE** — see the update in §4.5. It is still the wrong lever (§4.5.1), and
    the measurement now says so with numbers instead of with an argument. One

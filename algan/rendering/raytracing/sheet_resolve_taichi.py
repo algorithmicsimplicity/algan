@@ -85,6 +85,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _reflect_frame,
     _shadow_terminator_delta,
+    light_vis_index,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
@@ -398,13 +399,18 @@ def sheet_resolve_shade(
                     tri_tex_meta, textures, num_colored_triangles)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
                 if ti.static(frag_shading != 0 and mode != 1):
-                    lvis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
+                    # RGB payload, channel-major per light (see
+                    # shading_taichi.light_vis_index).
+                    lvis = ti.Vector([1.0] * (3 * MAX_SHADOW_LIGHTS))
                     if ti.static(mode == 2):
                         event_id = sheet_event_id[idx]
                         if event_id >= 0:
                             for li in range(num_lights):
                                 if li < MAX_SHADOW_LIGHTS:
-                                    lvis[li] = shadow_vis[event_id, li]
+                                    base = light_vis_index(li, 0)
+                                    for c in ti.static(range(3)):
+                                        lvis[base + c] = \
+                                            shadow_vis[event_id, li, c]
                     sn = ti.math.vec3(0.0, 0.0, 0.0)
                     if ti.static(skip_unlit_normal != 0):
                         if tri_mat_id[f % tri_mat_id.shape[0], prim] \

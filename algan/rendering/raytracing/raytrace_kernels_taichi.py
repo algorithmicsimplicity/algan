@@ -40,9 +40,9 @@ separate from cold data (what only confirmed hits touch):
 
 * triangles: positions ``tri_pos [Tp, N, 9]`` (hot); shading normals
   ``tri_norm [Tn, N, 9]`` (cold: fetched only for mirror bounces or Monte
-  Carlo scattering), ``tri_extra [Te, N, 9]`` (per-corner reflectivity +
-  roughness pairs, then per-corner IOR, then per-corner transmission;
-  usually single-frame) and
+  Carlo scattering), ``tri_extra`` (per-corner reflectivity +
+  roughness pairs, then per-corner IOR, then per-corner transmission, then
+  the per-primitive RGB absorption coefficient; usually single-frame) and
   ``tri_colors [Tc, N, 3, 5]``
   (RGB, glow, alpha per corner);
 * planar bezier circuits: ``circuit_meta [Tm, C, 24]`` (plane frame, border
@@ -79,9 +79,34 @@ from algan.rendering.raytracing.shading_taichi import (
     # though nothing in this module reads the name.
     MAX_SHADOW_LIGHTS,  # noqa: F401
     _run_frag_pipeline,
+    _vis_max_component,
 )
 from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
 from algan.rendering.taichi_runtime import init_taichi
+
+
+def rgb_shadow_tint():
+    """Whether shadow rays carry coloured payloads end to end (the
+    ``ALGAN_RGB_SHADOW_TINT`` gate, default on): a transmissive surface tints
+    the light it passes with its albedo and absorbs over its interior chord,
+    instead of passing an achromatic fraction.
+
+    Read live through the module object -- never import the value by value --
+    because every use is behind ``ti.static``: the branch is resolved when the
+    kernel COMPILES, so flipping the setting mid-process does nothing for any
+    kernel already compiled. An A/B between the two arms must therefore be one
+    process per arm. The variable is declared import-time in
+    ``algan/environment.py`` precisely so a warm daemon refuses a client whose
+    value differs instead of silently reusing the first arm's kernels.
+
+    The gate covers only the TINTING and the ABSORPTION. The payload itself is
+    RGB unconditionally: with the gate off each channel carries today's scalar
+    value unchanged, which keeps the render byte-identical while the plumbing
+    stays exercised.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    return bool(rt_settings.RGB_SHADOW_TINT)
 
 init_taichi()
 
@@ -302,8 +327,41 @@ else:
 
 # tri_extra surface-transport block (see ``_pack_surface_extra``):
 # per-corner (reflectivity, roughness) pairs in 0-5, per-corner IOR in 6-8,
-# per-corner transmission in 9-11.
-_EXTRA_W = 12
+# per-corner transmission in 9-11, and the per-primitive Beer-Lambert
+# absorption coefficient (RGB) in 12-14 -- per-primitive rather than
+# per-corner because one primitive is one material, so there is nothing to
+# interpolate across the face.
+_EXTRA_W = 15
+
+# tri_extra columns holding that absorption coefficient (see _shadow_hit_sigma).
+_EXTRA_SIGMA = 12
+
+# Coverage floor for "this hit is a solid's surface", used by the shadow
+# march's interior-absorption pairing.
+#
+# It is NOT ``alpha >= 1.0``, and the difference is visible in the frame. A
+# hit's alpha is the barycentric blend ``w0*a0 + w1*a1 + w2*a2`` with
+# ``w0 = 1 - a - b``, and ``(1-a-b) + a + b`` is not associative in f32, so the
+# sum can land one ulp BELOW 1.0 even when all three corner alphas are exactly
+# 1.0. A hit that misses the floor does not OPEN the medium (or does not CLOSE
+# it), and that ray then loses its whole interior absorption -- never part of
+# it, and never in the other direction, so every affected pixel comes out
+# BRIGHTER than its neighbours.
+#
+# What that measured, on calib_absorption's three glass spheres: salt-and-
+# pepper speckle across every umbra, at 5.8% / 14.5% / 28.2% relative
+# deviation in green, worsening with the chord being dropped, where the
+# pre-RGB renderer was uniform to std exactly 0. Widening the floor to the
+# tolerance below took those to 0.7% / 0.6% / 1.0% AND moved the mean onto the
+# Beer-Lambert line (large sphere 0.142 -> 0.132 against 0.122 predicted) --
+# which is what identifies the bright pixels as dropped chords rather than as
+# a sampling artefact. That A/B is the evidence the floor needs slack; the
+# exact share of barycentrics affected depends on how the backend rounds and
+# contracts the blend, so it is not worth quoting a percentage here.
+#
+# 1e-6 is the same slack ``_pack_frame_visibility`` already uses to decide a
+# primitive is opaque, so "fully covering" means one thing across the package.
+_SOLID_COVERAGE_MIN = 1.0 - 1e-6
 
 # circuit_meta channel layout.
 _M_CENTER = 0      # 0-2   plane origin
@@ -1468,67 +1526,6 @@ def _flat_triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template(),
 
 
 @ti.func
-def _flat_triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template(),
-                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
-                         textures: ti.template(), num_colored_triangles: ti.i32) -> ti.f32:
-    alpha = 0.0
-    # Same per-vertex fallback as _flat_triangle_color for textured triangles
-    # without a color map (meta offset -1).
-    if (prim < num_colored_triangles) or (
-            tri_tex_meta[ti.max(prim - num_colored_triangles, 0), 0] < 0):
-        tc = f % tri_colors.shape[0]
-        alpha = (w0 * tri_colors[tc, prim, 0, 4]
-                 + w1 * tri_colors[tc, prim, 1, 4]
-                 + w2 * tri_colors[tc, prim, 2, 4])
-    else:
-        prim_uv_index = prim - num_colored_triangles
-        tu = f % tri_uvs.shape[0]
-        u = (w0 * tri_uvs[tu, prim_uv_index, 0]
-             + w1 * tri_uvs[tu, prim_uv_index, 2]
-             + w2 * tri_uvs[tu, prim_uv_index, 4])
-        v = (w0 * tri_uvs[tu, prim_uv_index, 1]
-             + w1 * tri_uvs[tu, prim_uv_index, 3]
-             + w2 * tri_uvs[tu, prim_uv_index, 5])
-
-        offset = tri_tex_meta[prim_uv_index, 0]
-        width = tri_tex_meta[prim_uv_index, 1]
-        height = tri_tex_meta[prim_uv_index, 2]
-
-        px = u * (width - 1.0)
-        py = v * (height - 1.0)
-
-        px = ti.math.clamp(px, 0.0, ti.max(width - 1.0, 0.0))
-        py = ti.math.clamp(py, 0.0, ti.max(height - 1.0, 0.0))
-
-        x_floor = ti.floor(px)
-        y_floor = ti.floor(py)
-        xr = px - x_floor
-        yr = py - y_floor
-
-        sum_w = 0.0
-        tc = f % textures.shape[0]
-        num_points = textures.shape[1]
-
-        for corner in ti.static(range(4)):
-            cx = ti.cast(x_floor + (corner % 2), ti.i32)
-            cy = ti.cast(y_floor + (corner // 2), ti.i32)
-            w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
-                yr if (corner // 2) == 1 else 1.0 - yr)
-
-            cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
-            cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
-
-            local_idx = cx * ti.cast(height, ti.i32) + cy
-            abs_idx = offset + local_idx
-            abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
-
-            alpha += w * textures[tc, abs_idx, 4]
-            sum_w += w
-        alpha /= ti.max(sum_w, 1e-6)
-    return alpha
-
-
-@ti.func
 def _triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template()):
     """Barycentric (reflectivity, roughness) of a confirmed triangle hit.
     ``tri_extra`` rows hold per-corner (reflectivity, roughness) pairs.
@@ -1546,8 +1543,9 @@ def _triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template()):
 @ti.func
 def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
                          tri_extra: ti.template(),
-                         circuit_meta: ti.template()):
-    """Fraction of the light a *covered* surface still passes to a shadow ray.
+                         circuit_meta: ti.template(), tint):
+    """Fraction of the light a *covered* surface still passes to a shadow ray,
+    per RGB channel.
 
     The march multiplies by ``1 - alpha`` for the part of the pixel a surface
     does not cover; this is what the covered part does with the light, which
@@ -1556,7 +1554,7 @@ def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
     tracer, a clear glass sphere's shadow was as dark as an opaque sphere's
     (1% of the open floor, where the reference passes ~100%).
 
-        pass = transmission * (1 - metalness) * (1 - F0)
+        pass = transmission * (1 - metalness) * (1 - F0)   [* albedo]
 
     ``metalness < 0`` is the non-PBR sentinel and passes nothing, matching the
     old behaviour exactly. The metal share never transmits, the same gate
@@ -1569,19 +1567,24 @@ def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
     (entry and exit), each taking its own ``1 - F0``, so a glass ball attenuates
     by 0.96^2 on its own.
 
-    Two things this deliberately does not model, both because the payload
-    cannot carry them:
+    The albedo tint (the bracketed factor above) is new with the RGB payload
+    and gated behind :func:`rgb_shadow_tint`: it matches what the bounce loop
+    does to its transmitted share (``trans_w = trans_energy * tint`` in
+    ``_scatter_impl``, with ``tint = clamp(albedo, 0, 1)``), so light through
+    green glass now arrives green instead of grey. ``tint`` arrives from the
+    caller's colour fetch -- the march reads the surface colour row anyway for
+    its alpha, so this reuses that fetch rather than issuing a second one.
+    With the gate off the scalar pass-through is broadcast to all three
+    channels unchanged, byte-identical to the pre-RGB renderer.
+
+    One thing this still deliberately does not model:
 
     * **Refraction.** Real glass bends the light it passes, which is why a
       glass ball's shadow has a bright caustic core; a shadow ray that
       continues straight cannot produce one.
-    * **Colour.** Light through green glass should arrive green, but a shadow
-      query returns one scalar visibility per light (``vis[li]``), so the
-      shadow gets brighter and stays grey. Tinting it would mean an RGB
-      visibility payload all the way through the shade path.
 
-    So the honest description is "a transmissive surface stops blocking light",
-    not "glass casts a correct shadow".
+    So the honest description is "a transmissive surface stops blocking light
+    and tints what it passes", not "glass casts a correct shadow".
     """
     metalness = -1.0
     ior = 0.0
@@ -1605,7 +1608,7 @@ def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
         metalness = circuit_meta[cm, prim, _M_REFLECTIVITY]
         ior = circuit_meta[cm, prim, _M_IOR]
         transmission = circuit_meta[cm, prim, _M_TRANSMISSION]
-    out = 0.0
+    out = ti.math.vec3(0.0)
     if (metalness >= 0.0) and (transmission > 1e-4):
         m = ti.math.clamp(metalness, 0.0, 1.0)
         io = ti.abs(ior)
@@ -1613,8 +1616,39 @@ def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
         if io > 1.0 + 1e-4:
             r0 = (1.0 - io) / (1.0 + io)
             f0 = r0 * r0
-        out = ti.math.clamp(transmission, 0.0, 1.0) * (1.0 - m) * (1.0 - f0)
+        # The scalar arithmetic is today's, unchanged; the payload just carries
+        # it per channel, so an equal-channel input reduces exactly (and the
+        # gate-off arm never touches ``tint``, keeping every render it gates
+        # byte-identical).
+        p = ti.math.clamp(transmission, 0.0, 1.0) * (1.0 - m) * (1.0 - f0)
+        if ti.static(rgb_shadow_tint()):
+            out = p * tint
+        else:
+            out = ti.math.vec3(p)
     return ti.math.clamp(out, 0.0, 1.0)
+
+
+@ti.func
+def _shadow_hit_sigma(f, prim, hit_type, tri_extra: ti.template()):
+    """Per-primitive Beer-Lambert absorption coefficient at a shadow hit
+    (tri_extra columns 12..14; see ``_pack_surface_extra``). Zero for circuits,
+    which are zero-thickness panes with no interior to absorb over, and zero
+    for anything whose material does not attenuate.
+
+    Called only from the gated medium-pairing blocks in the shadow march and
+    gather, so the fetch compiles out entirely when :func:`rgb_shadow_tint`
+    is off.
+    """
+    sigma = ti.math.vec3(0.0, 0.0, 0.0)
+    if hit_type == 1:
+        # Same promoted-triangle guard as ``_shadow_pass_through``.
+        if prim < tri_extra.shape[1]:
+            te = f % tri_extra.shape[0]
+            sigma = ti.math.vec3(
+                tri_extra[te, prim, _EXTRA_SIGMA],
+                tri_extra[te, prim, _EXTRA_SIGMA + 1],
+                tri_extra[te, prim, _EXTRA_SIGMA + 2])
+    return sigma
 
 
 @ti.func
@@ -2626,7 +2660,9 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                      edges_2d: ti.template(), edge_accel: ti.template(),
                      src_sid, src_prim, eps_self, eps_near,
                      tri_obj: ti.template(), ident: ti.template()):
-    """Fraction of light occluded along a deterministic shadow ray.
+    """Fraction of light occluded along a deterministic shadow ray, per RGB
+    channel (a transmissive blocker can dim them unequally; an opaque one is
+    1 in all three).
 
     Every surface between the shaded point and the light attenuates the
     remaining light by its opacity, matching the physical path tracer's
@@ -2660,18 +2696,20 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     """
     inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                           _safe_inverse(rd[2]))
-    occluded = 0.0
+    occluded = ti.math.vec3(0.0)
     if ti.static(anyhit == 3):
-        occluded = ti.cast(
-            _shadow_anyhit_opaque(
-                refit, has_tri, has_bez, ro, rd, inv_rd, f,
-                -DEPTH_TIE_EPSILON, max_t,
-                pixel_size_per_t, base_dist,
-                t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
-                b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, edges_2d, edge_accel,
-                src_sid, src_prim, eps_self, eps_near, tri_obj, ident),
-            ti.f32)
+        # The any-hit answer is binary, so its RGB payload is that one bit
+        # broadcast: a blocker blocks every channel (which is exactly what the
+        # old scalar 0/1 meant once a payload existed to carry it).
+        opaque_hit = _shadow_anyhit_opaque(
+            refit, has_tri, has_bez, ro, rd, inv_rd, f,
+            -DEPTH_TIE_EPSILON, max_t,
+            pixel_size_per_t, base_dist,
+            t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+            b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, edges_2d, edge_accel,
+            src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+        occluded = ti.math.vec3(ti.cast(opaque_hit, ti.f32))
     else:
         if ti.static(anyhit == 4):
             occluded = _shadow_gather_occluded(
@@ -2731,8 +2769,44 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
     """The classic ordered closest-hit shadow march (the pre-any-hit body of
     :func:`_shadow_occluded`, byte-identical at ``anyhit`` 0/1; 2 adds the
     deferred opaque any-hit early-out documented there).
+
+    The payload is RGB: each channel carries its own transmittance, so a
+    coloured transmissive blocker tints what it passes. With every channel
+    equal -- which is exactly the pre-RGB world, and always the case while
+    :func:`rgb_shadow_tint` is off -- the per-channel arithmetic is today's
+    scalar arithmetic, operation for operation.
+
+    Under the same gate, the march applies Beer-Lambert absorption over the
+    chord a ray spends inside a solid, from the per-primitive sigma in
+    ``tri_extra`` (see :func:`_shadow_hit_sigma`). The march has no normals,
+    so it cannot use the bounce loop's ``rd . n > 0`` exit test; it pairs
+    hits instead: the first fully-covering attenuating hit OPENS a medium
+    (recording sigma and entry depth) and the next one CLOSES it, multiplying
+    the payload by ``exp(-sigma * (t_exit - t_entry))``. That is exact for a
+    single convex solid -- entry then exit, one chord -- which is the same
+    guarantee the view path's absorption makes. Two solids along one ray pair
+    nearest-entry with next-hit (the second solid's entry closes the first's
+    medium), and a medium still open when the ray retires loses its trailing
+    absorption; both are approximations, stated here rather than hidden.
+    Only FULL-COVERAGE hits participate (``_SOLID_COVERAGE_MIN``): coverage
+    and transmission are independent channels -- the glass ball this is for is
+    alpha 1 with transmission 1 -- so requiring full coverage keeps half-faded
+    panes, which are not solids, from opening a medium their far side may never
+    close. That floor carries a one-ulp tolerance for a reason the constant's
+    own comment gives: an exact ``>= 1.0`` speckles every coloured shadow,
+    because barycentric alpha misses 1.0 by an ulp often enough to drop whole
+    chords at random.
     """
-    transmitted = 1.0
+    transmitted = ti.math.vec3(1.0)
+    one3 = ti.math.vec3(1.0)
+    # Interior-absorption state: three floats plus the open flag. Every READ
+    # sits behind the compile-time rgb_shadow_tint gate below, so with the
+    # gate off nothing here is ever touched and the values compile away;
+    # declared unconditionally because Taichi does not carry a name CREATED
+    # inside one ti.static block into another.
+    medium_open = 0
+    medium_sigma = ti.math.vec3(0.0)
+    medium_t_entry = 0.0
     t_prev = 0.0
     layer_prev = 1e30
     seam_t = -1e30
@@ -2767,26 +2841,61 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             layer_prev = hit_layer
             continue
         seam_t = t_hit if edge_hit == 1 else -1e30
+        # Colour + alpha from ONE fetch: alpha gates the covered share, and
+        # the RGB (clamped, like ``_scatter_impl``'s tint) is what a
+        # transmissive surface tints the light it passes with. This replaces
+        # the alpha-only helpers, whose loads this subsumes -- no extra array
+        # access, wider rows on the textured paths (see the report).
+        color4 = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         alpha = 0.0
         if hit_type == 1:
-            alpha = _flat_triangle_alpha(f, prim, 1.0 - a - b, a, b, tri_colors,
-                                         tri_uvs, tri_tex_meta, textures, num_colored_triangles)
+            color4, alpha = _flat_triangle_color(
+                f, prim, 1.0 - a - b, a, b, tri_colors, tri_uvs, tri_tex_meta,
+                textures, num_colored_triangles)
         else:
-            alpha = _circuit_alpha(prim, f, a, b, border, circuit_meta,
-                                   circuit_colors, circuit_border_colors)
+            color4, alpha = _sample_circuit_color(
+                prim, f, a, b, border, circuit_meta, circuit_colors,
+                circuit_border_colors)
         alpha = ti.math.clamp(alpha, 0.0, 1.0)
+        tint = ti.math.clamp(
+            ti.math.vec3(color4[0], color4[1], color4[2]), 0.0, 1.0)
+        if ti.static(rgb_shadow_tint()):
+            # Beer-Lambert over the interior chord (docstring): a hit with
+            # full coverage AND a non-zero sigma either closes the open
+            # medium or opens one. Absorption multiplies before this hit's
+            # own interface factor, matching ray order -- the chord ends AT
+            # the exit surface, whose pass-through applies to what leaves it.
+            sigma = _shadow_hit_sigma(f, prim, hit_type, tri_extra)
+            if (alpha >= _SOLID_COVERAGE_MIN) \
+                    and (_vis_max_component(sigma) > 0.0):
+                if medium_open == 1:
+                    seg = ti.max(t_hit - medium_t_entry, 0.0)
+                    transmitted *= ti.math.vec3(
+                        ti.exp(-medium_sigma[0] * seg),
+                        ti.exp(-medium_sigma[1] * seg),
+                        ti.exp(-medium_sigma[2] * seg))
+                    medium_open = 0
+                else:
+                    medium_open = 1
+                    medium_sigma = sigma
+                    medium_t_entry = t_hit
         # What the covered part of the surface passes -- 0 for anything
         # opaque, so this is byte-identical wherever nothing transmits (see
         # ``_shadow_pass_through``, and the host gate in ``tracer.py`` that
         # keeps a transmissive batch off the any-hit modes, which answer a
         # question this makes no longer equivalent).
         passed = _shadow_pass_through(f, prim, hit_type, 1.0 - a - b, a, b,
-                                      tri_extra, circuit_meta)
-        transmitted *= 1.0 - alpha * (1.0 - passed)
-        if transmitted <= MIN_ALPHA:
-            transmitted = 0.0
+                                      tri_extra, circuit_meta, tint)
+        transmitted *= one3 - alpha * (one3 - passed)
+        # Scalar early-outs become max-component tests: reducing a colour
+        # weight to its maximum component is this codebase's convention
+        # (``_scatter_impl``, see shading_taichi._vis_max_component), and the
+        # max of equal channels IS the old scalar, so both tests fire at the
+        # exact same steps they always did.
+        if _vis_max_component(transmitted) <= MIN_ALPHA:
+            transmitted = ti.math.vec3(0.0)
             break
-        if (alpha >= 1.0) and (passed <= 0.0):
+        if (alpha >= 1.0) and (_vis_max_component(passed) <= 0.0):
             break
         if ti.static(anyhit == 2):
             # Deferred opaque any-hit: the ray just peeled a partially
@@ -2812,11 +2921,11 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                         b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                         circuit_meta, edges_2d, edge_accel,
                         src_sid, src_prim, eps_self, eps_near, tri_obj, ident) == 1:
-                    transmitted = 0.0
+                    transmitted = ti.math.vec3(0.0)
                     break
         t_prev = t_hit
         layer_prev = hit_layer
-    return 1.0 - transmitted
+    return one3 - transmitted
 
 
 @ti.func
@@ -2875,7 +2984,17 @@ def _shadow_gather_occluded(refit: ti.template(),
     into an earlier coincident edge hit was pruned by the opaque window,
     where the march would have peeled on through the merged surface.
     """
-    transmitted = 1.0
+    transmitted = ti.math.vec3(1.0)
+    one3 = ti.math.vec3(1.0)
+    # The march's interior-absorption state, declared OUTSIDE both loops: a
+    # medium may open in one gather window and close in a later one, so it
+    # must survive across KBUF refills (see the march docstring for the
+    # pairing rule and its single-convex-solid guarantee). Every READ sits
+    # behind the compile-time gate; see the march's note on why the
+    # declaration itself is unconditional.
+    medium_open = 0
+    medium_sigma = ti.math.vec3(0.0)
+    medium_t_entry = 0.0
     t_prev = 0.0
     layer_prev = 1e30
     seam_t = -1e30
@@ -2948,26 +3067,50 @@ def _shadow_gather_occluded(refit: ti.template(),
                     layer_prev = hit_layer
                 else:
                     seam_t = t_hit if edge_hit == 1 else -1e30
+                    # Colour + alpha from one fetch, exactly like the march.
+                    color4 = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     alpha = 0.0
                     if hit_type == 1:
-                        alpha = _flat_triangle_alpha(
+                        color4, alpha = _flat_triangle_color(
                             f, prim, 1.0 - a - b, a, b, tri_colors, tri_uvs,
                             tri_tex_meta, textures, num_colored_triangles)
                     else:
-                        alpha = _circuit_alpha(prim, f, a, b, border,
-                                               circuit_meta, circuit_colors,
-                                               circuit_border_colors)
+                        color4, alpha = _sample_circuit_color(
+                            prim, f, a, b, border, circuit_meta,
+                            circuit_colors, circuit_border_colors)
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
+                    tint = ti.math.clamp(
+                        ti.math.vec3(color4[0], color4[1], color4[2]), 0.0, 1.0)
+                    if ti.static(rgb_shadow_tint()):
+                        # The march's Beer-Lambert pairing; state persists
+                        # across gather windows (declared above).
+                        sigma = _shadow_hit_sigma(f, prim, hit_type, tri_extra)
+                        if (alpha >= _SOLID_COVERAGE_MIN) \
+                                and (_vis_max_component(sigma) > 0.0):
+                            if medium_open == 1:
+                                seg = ti.max(t_hit - medium_t_entry, 0.0)
+                                transmitted *= ti.math.vec3(
+                                    ti.exp(-medium_sigma[0] * seg),
+                                    ti.exp(-medium_sigma[1] * seg),
+                                    ti.exp(-medium_sigma[2] * seg))
+                                medium_open = 0
+                            else:
+                                medium_open = 1
+                                medium_sigma = sigma
+                                medium_t_entry = t_hit
                     # See the march: a transmissive surface passes light
-                    # rather than blocking it.
+                    # rather than blocking it, tinted by its albedo under the
+                    # rgb_shadow_tint gate.
                     passed = _shadow_pass_through(
                         f, prim, hit_type, 1.0 - a - b, a, b,
-                        tri_extra, circuit_meta)
-                    transmitted *= 1.0 - alpha * (1.0 - passed)
-                    if transmitted <= MIN_ALPHA:
-                        transmitted = 0.0
+                        tri_extra, circuit_meta, tint)
+                    transmitted *= one3 - alpha * (one3 - passed)
+                    # Max-component early-outs, same reasoning as the march.
+                    if _vis_max_component(transmitted) <= MIN_ALPHA:
+                        transmitted = ti.math.vec3(0.0)
                         alive = 0
-                    elif (alpha >= 1.0) and (passed <= 0.0):
+                    elif (alpha >= 1.0) \
+                            and (_vis_max_component(passed) <= 0.0):
                         alive = 0
                     else:
                         t_prev = t_hit
@@ -2977,7 +3120,7 @@ def _shadow_gather_occluded(refit: ti.template(),
         # would find nothing (or only beyond-light hits it breaks on).
         if (alive == 1) and (num_hits < KBUF):
             alive = 0
-    return 1.0 - transmitted
+    return one3 - transmitted
 
 
 @ti.kernel
