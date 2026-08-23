@@ -23,6 +23,7 @@ attached, it was measured that way rather than reasoned about.
 | `benchmarks/_become_endstate_check.py` | renders the last frame of a morph and the target alone, compares at the repo's +-2 channel tolerance |
 | `benchmarks/_become_pairing_probe.py` | intercepts the assignment and prints which source paired with which target, and why |
 | `benchmarks/_become_pairing_aesthetics.py` | renders morph filmstrips under each pairing rule so they can be judged by eye |
+| `benchmarks/_become_chain_filmstrip.py` | film-strips `Cylinder -> Sphere -> Arrow`, because nothing else looks at the middle of a morph |
 | `tests/unit_tests/test_morph_become_audit.py` | each defect below as a regression test |
 
 Everything ran on CPU in a cloud session. There is no CUDA here, so no claim
@@ -178,7 +179,33 @@ fix would be to spawn the replacement a hair before the soup despawns rather tha
 at the same timestamp, which risks the double-draw
 `test_pn_swap_uses_half_open_lifespans_with_no_gap_or_double_draw` guards.
 
-### 9. Reported by Ox, not independently reproduced here
+### 9. A morph into a stroke-only shape goes blank in the middle
+
+This is the worst-looking thing in the audit, and no assertion anywhere covers
+it, because every check looks at the endpoints. Film-strip
+`Cylinder -> Sphere -> Arrow` (`benchmarks/_become_chain_filmstrip.py`) and the
+second morph is **empty for roughly a third of its duration**: the sphere fades
+away, several frames show nothing at all, and the arrow pops in near the end.
+
+`_bezier_to_pn_soup` zeroes an unfilled circuit's opacity, correctly -- there is
+no fill to convert, and the stroke is not in the soup. But that makes the whole
+target soup transparent, so the cross-family route tweens the *source's* opacity
+down to zero and the morph has nothing to show until the real target spawns.
+Every morph into a `Line`, `Arrow`, `Axes`, unfilled `Square` or any other
+stroke-only shape does this, and so does the reverse.
+
+Two ways out, neither a small patch: convert the stroke to a ribbon of triangles
+so it is genuinely in the soup, or -- much cheaper -- give the target soup the
+circuit's own opacity rather than zero, so the morph travels through a filled
+silhouette of the target and the border phase then opens it out into an outline.
+The second is a choreography change and wants a decision rather than a guess.
+
+The same strip shows the documented seam caveat in its first row: a solid
+becoming a solid tears into visibly separated strips mid-flight, because the PN
+triangles are paired independently. That one *is* in `become`'s docstring; its
+severity is not.
+
+### 10. Reported by Ox, not independently reproduced here
 
 * **#2** the same-kind endpoint keeps the source's `color_texture` when the two
   sides' texel counts differ (the attribute name encodes `W*H`).
