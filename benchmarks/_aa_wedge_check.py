@@ -30,8 +30,6 @@ import numpy as np  # noqa: E402
 import taichi as ti  # noqa: E402
 import torch  # noqa: E402
 
-ti.init(arch=ti.cpu, default_fp=ti.f32)
-
 # Benchmarks must never be measured inside a warm daemon: it keeps adaptive
 # renderer state (the memory model's batch-size fit) across runs, so one
 # benchmark would be timed against whatever ran before it.
@@ -44,6 +42,14 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _halfplane_clip_area,
     _two_halfplane_area,
 )
+from algan.rendering.taichi_runtime import init_taichi  # noqa: E402
+
+# Algan's own Taichi configuration, not Taichi's defaults: a check of a shipped
+# kernel has to compile it the way the renderer does. A bare ``ti.init`` differs
+# in ``advanced_optimization`` alone, and that one is enough to change what a
+# kernel computes (see tests/unit_tests/test_taichi_runtime_config.py).
+# Idempotent -- the imports above have already brought Taichi up.
+init_taichi()
 
 FAILS = []
 

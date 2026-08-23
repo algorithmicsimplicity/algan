@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.scene_builder import (
     _prefill_background,
     _projected_scene_device,
@@ -147,39 +148,94 @@ def test_unmanaged_scene_upload_keeps_regular_copy_fallback_and_aliases():
     assert torch.equal(uploaded["view"].cpu(), view)
 
 
-def test_prefill_background_copies_and_casts_directly_into_arena():
-    memory = _cpu_arena()
+def _reference_to_linear(c):
+    """The sRGB EOTF, written out from the specification.
 
-    solid_out = memory.get_tensor((2, 3, 5), dtype=torch.uint8)
-    _prefill_background(
-        solid_out, torch.tensor([0.0, 0.5, 1.0]), 0, torch.device("cpu")
-    )
-    expected_solid = torch.tensor([0, 128, 255, 255, 255], dtype=torch.uint8)
-    assert torch.equal(solid_out, expected_solid.expand_as(solid_out))
+    Not imported from ``algan.utils.color_space``, so this states what the
+    ingest owes rather than agreeing with the renderer's own transcription of
+    the standard.
+    """
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
-    # Animated/image backgrounds carry one padding row followed by flattened
-    # frame/pixel rows. Exercise a nonzero frame offset, uint8 -> float32 copy,
-    # and missing-channel fill from the source's final channel.
-    rows = torch.tensor(
-        [
-            [99, 99, 99],  # leading padding row
-            [1, 2, 3],
-            [4, 5, 6],
-            [7, 8, 9],
-            [10, 11, 12],
-            [13, 14, 15],
-            [16, 17, 18],
-        ],
-        dtype=torch.uint8,
-    )
-    animated_out = memory.get_tensor((2, 2, 4), dtype=torch.float32)
-    _prefill_background(animated_out, rows, 1, torch.device("cpu"))
-    expected_animated = torch.tensor(
-        [
-            [[7, 8, 9, 9], [10, 11, 12, 12]],
-            [[13, 14, 15, 15], [16, 17, 18, 18]],
-        ],
-        dtype=torch.float32,
-    )
-    assert torch.equal(animated_out, expected_animated)
-    assert animated_out.untyped_storage()._cdata == memory.data.untyped_storage()._cdata
+
+@pytest.mark.parametrize("linear", [False, True], ids=["display", "linear"])
+def test_prefill_background_copies_and_casts_directly_into_arena(linear):
+    """The arena mechanics, in whichever colour space the renderer composites in.
+
+    A background is authored display-referred either way. Under the linear
+    working space it is decoded on the way in -- it composites against geometry
+    that has already been decoded, so it has to arrive in the same space --
+    while the display-referred space copies the authored value through. What
+    both arms check is the same: the copy casts straight into the reserved
+    destination, a nonzero frame offset selects the right rows, and a missing
+    channel is filled from the source's last one.
+    """
+    previous = rt_settings.LINEAR_COLOR_SPACE
+    rt_settings.set_linear_color_space(linear)
+    try:
+        memory = _cpu_arena()
+
+        # Under the linear space the destination is the float HDR buffer, never
+        # a byte one: ``_prefill_background`` deliberately does not round a
+        # linear value onto the byte grid (that is what would crush the darks),
+        # and the tracer makes the float buffer a precondition of the space.
+        solid_out = memory.get_tensor(
+            (2, 3, 5), dtype=torch.float32 if linear else torch.uint8
+        )
+        _prefill_background(
+            solid_out, torch.tensor([0.0, 0.5, 1.0]), 0, torch.device("cpu")
+        )
+        authored = [0.0, 0.5, 1.0]
+        if linear:
+            # 0.5 decodes to 0.21404 -- the anchor anyone can look up.
+            channels = [255 * _reference_to_linear(c) for c in authored]
+            expected_solid = torch.tensor(channels + channels[-1:] * 2)
+            assert torch.allclose(
+                solid_out, expected_solid.expand_as(solid_out), atol=1e-3
+            )
+        else:
+            channels = [round(255 * c) for c in authored]
+            expected_solid = torch.tensor(
+                channels + channels[-1:] * 2, dtype=torch.uint8
+            )
+            assert torch.equal(solid_out, expected_solid.expand_as(solid_out))
+
+        # Animated/image backgrounds carry one padding row followed by flattened
+        # frame/pixel rows. Exercise a nonzero frame offset, uint8 -> float32 copy,
+        # and missing-channel fill from the source's final channel.
+        rows = torch.tensor(
+            [
+                [99, 99, 99],  # leading padding row
+                [1, 2, 3],
+                [4, 5, 6],
+                [7, 8, 9],
+                [10, 11, 12],
+                [13, 14, 15],
+                [16, 17, 18],
+            ],
+            dtype=torch.uint8,
+        )
+        animated_out = memory.get_tensor((2, 2, 4), dtype=torch.float32)
+        _prefill_background(animated_out, rows, 1, torch.device("cpu"))
+
+        def colour(byte):
+            """An image background is 8-bit sRGB like any other texture."""
+            return 255 * _reference_to_linear(byte / 255.0) if linear else byte
+
+        # The fourth channel is the missing-channel fill, and it is a raw copy
+        # of the source's last channel in both spaces: it stands in for alpha,
+        # which is a coverage weight rather than a colour, so it is not decoded.
+        expected_animated = torch.tensor(
+            [
+                [[*map(colour, (7, 8, 9)), 9], [*map(colour, (10, 11, 12)), 12]],
+                [[*map(colour, (13, 14, 15)), 15], [*map(colour, (16, 17, 18)), 18]],
+            ],
+            dtype=torch.float32,
+        )
+        assert torch.allclose(animated_out, expected_animated, atol=1e-3)
+        assert (
+            animated_out.untyped_storage()._cdata
+            == memory.data.untyped_storage()._cdata
+        )
+    finally:
+        rt_settings.set_linear_color_space(previous)

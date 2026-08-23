@@ -393,17 +393,22 @@ def test_prefilter_setting_is_inert_while_glossy_reflection_is_off(calib_arms):
     """The prefilter setting must not move a pixel until glossy reflections on.
 
     What cannot be tested directly is the property the design actually claims
-    (DESIGN_glossy_prefilter.md, first paragraph): nothing here changes the
-    DEFAULT render, i.e. today's default frame equals a frame rendered by the
-    build BEFORE the feature existed. A test inside the tree cannot diff
-    against "before", so this does the next best thing and holds the two
-    settings the feature introduced up against each other: with
-    ``glossy_reflection`` off -- its default, and off in both arms -- rendering
-    with ``ALGAN_GLOSSY_PREFILTER=1`` must be byte-identical to rendering with
-    ``ALGAN_GLOSSY_PREFILTER=0``. With the route off, every kernel gate below
-    it compiles out and no reflection buffer is allocated, so there is nothing
-    left for the flag to touch; a difference here means something reads it on
-    the default path.
+    (DESIGN_glossy_prefilter.md, first paragraph): nothing here changes a render
+    with the route off, i.e. such a frame equals one rendered by the build
+    BEFORE the feature existed. A test inside the tree cannot diff against
+    "before", so this does the next best thing and holds the two settings the
+    feature introduced up against each other: with ``glossy_reflection`` off in
+    both arms, rendering with ``ALGAN_GLOSSY_PREFILTER=1`` must be
+    byte-identical to rendering with ``ALGAN_GLOSSY_PREFILTER=0``. With the
+    route off, every kernel gate below it compiles out and no reflection buffer
+    is allocated, so there is nothing left for the flag to touch; a difference
+    here means something reads it on the route-off path.
+
+    ``glossy_reflection`` is no longer off by default, so both arms have to say
+    so and be *rendered* that way -- which is why ``algan_render.py`` sets the
+    setting from its flag rather than only ever turning it on. While it did the
+    latter, both arms here rendered glossy and this test failed for the one
+    reason it is not about.
     """
     on = calib_arms("gl_off_pf1", glossy=False, prefilter=True)
     off = calib_arms("gl_off_pf0", glossy=False, prefilter=False)

@@ -1578,9 +1578,9 @@ GLOSSY_INTERLEAVE = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 # more taps was never the lever, since the artefact the throttle exists to hide
 # is minification aliasing and no amount of point sampling fixes that.
 #
-# DEFAULT ON, gated behind ``GLOSSY_REFLECTION``, which is still default off.
-# So the default render is byte-identical, turning glossy reflections on gets
-# the prefiltered route, and the old tap fan is reachable for comparison with
+# DEFAULT ON, gated behind ``GLOSSY_REFLECTION`` -- which is now default on too,
+# so this is the route a rough reflector takes unless something says otherwise.
+# The old tap fan is still reachable for comparison with
 # ``set_glossy_reflection(True, prefilter=False)``.
 GLOSSY_PREFILTER = env_flag("ALGAN_GLOSSY_PREFILTER", True)
 
