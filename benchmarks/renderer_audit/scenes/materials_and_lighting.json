@@ -1,0 +1,43 @@
+{
+  "name": "materials_and_lighting",
+  "_why": "Port of tests/full_renders/scenes/materials_and_lighting.py, act 1: every material class on identical spheres so only the shading differs between columns. Row A (lit): basic, lambert, phong, standard, toon, normal. Row B: matcap, depth, physical (clearcoat+transmission), glass, mirror, copper. The depth and matcap columns are informational (see SPEC.md); toon's band edges are engine-defined by construction.",
+  "render": {"width": 960, "height": 540, "background": [0.133333, 0.133333, 0.133333]},
+  "camera": {
+    "position": [0, 0, 7], "target": [0, 0, 0], "up": [0, 1, 0],
+    "fov": 53.13010235415598, "near": 0.1, "far": 200
+  },
+  "lights": [
+    {"type": "ambient", "color": [1, 1, 1], "intensity": 0.35},
+    {"type": "directional", "position": [4, 5, 4], "target": [0, 0, 0],
+     "color": [1, 1, 1], "intensity": 1.0}
+  ],
+  "objects": [
+    {"name": "basic",    "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [-4.05, 1.3, 0],
+     "material": {"type": "basic", "color": [0.345098, 0.768627, 0.866667]}},
+    {"name": "lambert",  "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [-2.43, 1.3, 0],
+     "material": {"type": "lambert", "color": [0.513726, 0.756863, 0.403922]}},
+    {"name": "phong",    "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [-0.81, 1.3, 0],
+     "material": {"type": "phong", "color": [1.0, 0.52549, 0.184314], "specular": [1, 1, 1], "shininess": 80}},
+    {"name": "standard", "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [0.81, 1.3, 0],
+     "material": {"type": "standard", "color": [0.988235, 0.384314, 0.333333], "roughness": 0.2, "metalness": 0.75}},
+    {"name": "toon",     "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [2.43, 1.3, 0],
+     "material": {"type": "toon", "color": [0.360784, 0.815686, 0.701961], "bands": 4}},
+    {"name": "normal",   "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [4.05, 1.3, 0],
+     "material": {"type": "normal", "color": [1, 1, 1]}},
+
+    {"name": "matcap",   "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [-4.05, -0.5, 0],
+     "material": {"type": "matcap", "color": [0.941176, 0.67451, 0.372549]}},
+    {"name": "depth",    "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [-2.43, -0.5, 0],
+     "material": {"type": "depth", "near": 4.0, "far": 11.0}},
+    {"name": "physical", "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [-0.81, -0.5, 0],
+     "material": {"type": "physical", "color": [0.780392, 0.913725, 0.945098], "roughness": 0.1,
+                  "clearcoat": 0.85, "transmission": 0.5, "ior": 1.45}},
+    {"name": "glass",    "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [0.81, -0.5, 0],
+     "material": {"type": "physical", "color": [0.788235, 0.886275, 0.682353], "roughness": 0.05,
+                  "metalness": 0.0, "transmission": 1.0, "ior": 1.5}},
+    {"name": "mirror",   "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [2.43, -0.5, 0],
+     "material": {"type": "standard", "color": [1, 1, 1], "roughness": 0.0, "metalness": 1.0}},
+    {"name": "copper",   "geometry": {"type": "sphere", "radius": 0.5, "segments": 64}, "position": [4.05, -0.5, 0],
+     "material": {"type": "standard", "color": [0.721569, 0.45098, 0.2], "roughness": 0.22, "metalness": 1.0}}
+  ]
+}

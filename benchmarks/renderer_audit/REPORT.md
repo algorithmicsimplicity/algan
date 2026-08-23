@@ -25,6 +25,17 @@ the renderer, and until this run an authored 0.5 grey rendered 188. That, and
 §4.6, are what moved; everything marked **[2]** below is new or re-measured in
 this run.
 
+**The third run added §6**, and it is a different kind of addition: the first
+two runs audited *transport* — glass, mirrors, shadows, colour — on scenes
+written for this suite. The third audits *materials and lights*, by porting one
+of the render suite's own scenes,
+`tests/full_renders/scenes/materials_and_lighting.py`, into the spec. Six
+material types and three light types are new to `SPEC.md`, and everything
+marked **[3]** below comes from them. Two of the four things it found are
+new defects rather than known conventions, and the largest is that four of
+Algan's twelve material classes were not being shaded at all under this
+scene's lighting rig.
+
 ## What it found, in one table
 
 | # | Discrepancy | Algan worse? | Done |
@@ -37,7 +48,10 @@ this run.
 | §4.4 | Sheen was `(1 − n·v)^k` with no `n·l`: a light behind the surface still lit its rim | yes, worse than both references | **fixed** — Charlie × Neubelt, rim 109 → 3/255 |
 | §4.7 | Two `SETTINGS.raytracing` fields no renderer reads, accepted silently | yes | **fixed** — writing raises |
 | §4.5 | **[2]** A rough metal reflects 4.7% of what it should by default; `glossy_reflection=True` gets the energy right (0.555 against 0.523) but its four taps speckle | yes | not flipped — §4.5 measures what the tap count can and cannot buy, and what would actually fix it |
-| §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention, now measurable as exactly π | left alone, on purpose |
+| §6.2 | **[3]** `MeshToonMaterial`, `MeshNormalMaterial`, `MeshMatcapMaterial` and `MeshDepthMaterial` have no in-kernel port, so a rig without a plain `PointLight` leaves them unshaded — four flat discs, disc variance exactly 0.0000 | yes — the biggest one this run | see §6.2 |
+| §6.3 | **[3]** Phong's specular lobe has no `(shininess·0.5+1)·0.25` normalization, no multiplicative `n·l` and no Fresnel — the one lit material whose ratio to three.js is not a uniform π | yes | see §6.3 |
+| §6.6 | **[3]** `RectAreaLight` is a mean of point samples, not a solid-angle integral: with the default `decay = 0` it has no distance falloff at all, so it floods a wall where the reference pools under the rectangle (32× under the light, 145× at the wall's edge) | yes — not a unit convention, a falloff shape | not fixed — the correction is specified in §6.6 and needs its own baselines |
+| §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention, now measurable as exactly π (§6.5 measures it as 3.15 at every pixel of a hemisphere-lit wall) | left alone, on purpose |
 | §4.8 | **[2]** A flat ambient on every lit surface, 0.01 in linear light | yes, but an artistic default | left alone |
 | §4.10 | **[2]** Coloured glass casts a grey shadow where the reference's is green | yes | **fixed** — the payload is RGB; green/red 1.00 → 22.3, and the falloff across three sphere sizes matches Beer-Lambert |
 | §3 | Refraction, mirror reflection, clearcoat, bounce exhaustion | **no** — refraction beats stock Three.js outright | — |
@@ -869,7 +883,217 @@ is how it reads in a scene with several lights, and that has not been looked at.
 
 ---
 
-## 6. What a follow-up should do, in order
+## 6. The material zoo and the light zoo — **[3]**
+
+The third run ported `tests/full_renders/scenes/materials_and_lighting.py` into
+the suite. That scene exists to make shading the *only* variable — identical
+spheres, one material each — and to be the one place the render suite exercises
+every light type. Neither of those had a Three.js counterpart before, so
+everything in this section is new coverage rather than a re-measurement.
+
+It arrives as two scenes, because the ported original is an animation in four
+acts and a spec is one still frame:
+
+| scene | what it is |
+| --- | --- |
+| `scenes/materials_and_lighting.json` | act 1 — twelve identical spheres, one material class each, under an ambient + directional rig |
+| `scenes/calib_lights.json` | act 3 — four neutral probes in front of a wall, one per new light type |
+
+`SPEC.md` grew six material types (`lambert`, `phong`, `toon`, `normal`,
+`matcap`, `depth`) and three light types (`spot`, `rect_area`, `hemisphere`)
+plus a position+target spelling for `directional`. `material_probe.py` is the
+new measurement: it projects each object in the *spec* into pixel space with
+the spec's own camera and reports statistics per object, so the disc a number
+is taken over is decided by the scene description rather than by finding blobs
+in either image.
+
+**Here the rasterizer is the reference, not the path tracer** — the reverse of
+§1. Algan's material classes are declared copies of Three.js's
+(`materials.py`: "the same material types, property names and default
+settings"), so for Lambert, Phong, Toon, Normal, Matcap and Depth the question
+is not "what would physics do" but "what does the material three.js defines
+do". `three-gpu-pathtracer` cannot answer that: it reduces every material to a
+physical one and drops `AmbientLight` entirely.
+
+**One thing to know before comparing against the render suite's own frames.**
+The audit harness replaces Algan's scene initializer with one that spawns only
+a camera, so both engines see exactly the lights the spec names (§1). Algan's
+*default* Scene ships a white `PointLight` beside the camera — and that light,
+it turns out, is the only thing shading four of the twelve materials in the
+committed baseline video. The audit's frames are not the baseline's frames, and
+§6.2 is why.
+
+### 6.1 The calibration anchor: `basic` is byte-identical
+
+The unlit sphere renders **(88, 196, 221) in both engines**, at the centre and
+as the mean over its disc, with a standard deviation of exactly zero on each
+side. Authored colour in, the same eight-bit triple out. That is §2.2's
+transfer curve holding on a second scene, and it means everything else in the
+frame is shading rather than colour management or geometry.
+
+### 6.2 Four materials are not shaded at all
+
+`MeshToonMaterial`, `MeshNormalMaterial`, `MeshMatcapMaterial` and
+`MeshDepthMaterial` have no in-kernel port. They are baked into vertex colours
+before the frame renders, by a loop
+(`RayTracedTrianglePrimitive._shade_vertex_colors`) that **skips every light
+carrying `_render_aux`** — which is every light except a plain `PointLight`.
+Under this scene's `AmbientLight` + `DirectionalLight` rig the loop body never
+executes, the mob keeps its raw albedo, and the primitive packs the unlit
+in-kernel material id.
+
+The sharpest way to say it is the variance. Mean over each sphere's disc, and
+the standard deviation of its linear luminance:
+
+| | Algan mean | Algan std | three mean | three std |
+| --- | --- | --- | --- | --- |
+| toon | (92, 208, 179) | **0.0000** | (50, 120, 103) | 0.0324 |
+| normal | (255, 255, 255) | **0.0000** | (71, 107, 227) | 0.0754 |
+| matcap | (240, 172, 95) | **0.0000** | (175, 124, 67) | 0.0451 |
+| depth | (255, 255, 255) | **0.0000** | (4, 4, 4) | 0.0000 |
+
+A deterministic renderer that reports zero variance across a sphere under a
+directional light did not shade it. The three means are not approximations
+either: (92, 208, 179) is `TEAL` exactly and (240, 172, 95) is `GOLD` exactly —
+the authored albedo, untouched. Every other material in the frame has non-zero
+variance and agrees with three.js up to a single factor.
+
+Algan warns about this, clearly, twice — once at `set_material` and once at
+render time, naming the lights it is dropping. It is documented behaviour, not
+a silent failure. But "documented" is not "right": a `MeshToonMaterial` under a
+`DirectionalLight` is an ordinary thing to author, and it renders as a flat
+disc.
+
+The fix is an in-kernel fragment stage for each of the four, which is a
+renderer change rather than a patch — new pipeline ids, new material-block
+slots, and the camera position threaded into the stage signature so the depth
+ramp can measure a distance. It is being built; this paragraph records the
+state before it.
+
+### 6.3 Phong's specular lobe is not normalized
+
+Phong is the one *lit* material whose disagreement is not the uniform factor of
+§2.1. Mean linear radiance over the disc, and the ratio per channel:
+
+| | R | G | B |
+| --- | --- | --- | --- |
+| Algan | 0.734 | 0.222 | 0.063 |
+| three raster | 0.302 | 0.133 | 0.086 |
+| ratio | **2.43** | **1.67** | **0.73** |
+
+Compare Lambert on the same frame, where the ratio is **3.20 / 3.18 / 3.19** —
+one number, all three channels, which is what a unit convention looks like.
+Phong's is not one number, so something other than the light unit differs.
+
+It is the specular lobe. Three.js's `BRDF_BlinnPhong` is
+`F_Schlick(specularColor, 1, v·h) · G_implicit · D_BlinnPhong` with
+`G_implicit = 0.25` and
+`D = (1/π)·(shininess·0.5 + 1)·(n·h)^shininess`, and the whole thing is scaled
+by the irradiance's `n·l`. Algan's is `specular · lightColor · (n·h)^shininess`,
+gated by `n·l > 0` as a boolean — **no normalization factor, no multiplicative
+`n·l`, no Fresnel**, in both the kernel stage and its torch twin. At this
+scene's `shininess = 80` the missing `0.25·(s·0.5+1) = 10.25` is most of the
+highlight.
+
+The relative contrast of the disc says the same thing without any cross-engine
+units: the standard deviation of the disc's luminance over its own mean is
+**0.47 in Algan and 1.31 in three.js**. Three's sphere is a dim body with a
+tight blazing highlight; Algan's is a bright body with a broad soft one. That is
+visible in the frame without measuring anything.
+
+### 6.4 What matches
+
+* **`copper`** — a roughness-0.22 metal, mean linear (0.018, 0.008, 0.002) in
+  Algan against (0.017, 0.008, 0.002) in three.js. Essentially exact.
+* **`physical`** — clearcoat 0.85, transmission 0.5: ratio 1.60 / 1.65 / 1.67,
+  uniform across channels and below π because much of the response is specular
+  and transmitted rather than diffuse.
+* **`lambert`** — the ratio is π and the *shape* is unchanged: the disc's
+  relative standard deviation is 0.325 in Algan and 0.329 in three.js.
+* **`mirror`** — Algan reflects its neighbours; three.js's rasterizer has no
+  environment map and reflects nothing (0.024 against 0.007 linear). Algan is
+  better here, as §3 already recorded for `calib_mirror`.
+
+### 6.5 The light zoo: three of four light types differ by exactly π; the fourth is a different function
+
+`calib_lights.json` puts one probe per light type in front of a wall. The
+probes themselves are useless as photometry — Algan's clip at 255 under this
+scene's authored intensities, which is §2.1 arriving at the top of the range —
+so the measurement is taken on the **wall**, which neither engine saturates,
+with each light rendered in isolation (four extra renders per engine).
+
+Ratio of Algan's linear wall radiance to three.js's, across the lit wall:
+
+| light | median ratio | p10 – p90 | shape |
+| --- | --- | --- | --- |
+| point (decay 1) | 2.82 | 2.74 – 3.05 | matches; falloff agrees to ~3% of peak |
+| spot (22°, penumbra 0.35) | 2.67 | 2.66 – 2.91 | matches; the cone lands in the same place |
+| hemisphere | **3.15** | 3.15 – 3.15 | flat, to four decimals, everywhere |
+| **rect-area** | **54** | **32 – 102** | **does not match** |
+
+The hemisphere row is the cleanest single confirmation of §2.1 anywhere in this
+audit: π = 3.1416, measured as 3.15 at every pixel of the wall. Point and spot
+sit slightly under π because three.js's `MeshStandardMaterial` adds a broad GGX
+lobe at roughness 1 that Algan's ambient-and-diffuse does not match term for
+term.
+
+Reading the source alongside confirms why the first three agree: Algan packs
+`cos(angle)` and `cos(angle·(1−penumbra))` and applies `t·t·(3−2t)` on the
+clamped ratio — which is `smoothstep(coneCos, penumbraCos, angleCos)`, three's
+`getSpotAttenuation` term for term. The range window `(1 − (d/range)^4)^2` is
+three's exactly, and the hemisphere blend `mix(ground, sky, 0.5·n·up + 0.5)` is
+three's exactly.
+
+### 6.6 The rect-area light is a mean of samples, not an integral
+
+The fourth row is the finding. Three.js integrates the whole rectangle
+analytically (linearly-transformed cosines): the result is a solid-angle form
+factor, so it falls off as the surface recedes. Algan expands the rectangle
+into a `k × k` grid of point emitters each carrying `1/K` of the colour, with a
+one-sided cosine — a **mean over the rectangle**, not an integral over it,
+because a sample carries a power fraction rather than an area element. With
+Algan's default `decay = 0` there is then no distance term at all.
+
+The ratio is not a scalar and its drift is the evidence: **32× at the wall
+point directly under the light, 145× at the wall's edge 8 units away.** Algan's
+rect-area light floods the whole wall where three's pools under the rectangle.
+Normalized to each engine's own peak, at world x = −7.3 Algan is still at 0.24
+of its maximum where three.js is at 0.05.
+
+This is not the π convention. §2.1's argument for leaving a constant factor
+alone is that nothing observable distinguishes it from a choice of unit — but a
+falloff with the wrong *shape* is observable, and it is a physical claim rather
+than a unit. **Not fixed here**: the correction is to give each sample an area
+element and an inverse-square term, `L · (A/K) · cosθₑ · cosθᵢ / d²`, which
+converges to the reference as `K` grows — and which changes what `intensity`
+means for every existing `RectAreaLight`, so it wants its own change with its
+own baselines rather than riding along with this one.
+
+Two smaller things the same scene shows:
+
+* **Algan's rect-area light casts shadows and three.js's cannot** — three
+  restricts rect-area lighting to `MeshPhysicalMaterial` and gives it no shadow
+  map at all. Algan is ahead here, but at `samples = 4` the penumbra is four
+  discrete overlapping copies rather than a gradient, which is visible in the
+  frame as banded ellipses.
+* **A three.js rect-area light does not illuminate a `lambert`, `phong` or
+  `toon` surface at all.** `calib_lights.json` therefore gives its wall a
+  `standard` material where the ported scene used Lambert; with Lambert the
+  panel would have measured that three.js limit instead of the light. Recorded
+  in `SPEC.md`.
+
+### 6.7 What the port does not cover
+
+The ported scene has four acts and this is two of them. Not carried over, and
+not measured: act 2's *animation* of material parameters (a still frame cannot
+show it), act 4's emissive glow through the bloom post-process and its opacity
+ramp, and the `Text` labels — the spec has no text primitive, and glyph
+rendering is a different audit from shading. Act 1's own `shadow_angle = 0.4`
+soft key light is dropped too, so both engines cast hard shadows here.
+
+---
+
+## 7. What a follow-up should do, in order
 
 The first run's items 1 and 2 are done (§2.2, §4.6). What is left, re-ordered by
 what the second run learned:
@@ -899,14 +1123,32 @@ what the second run learned:
    1 is nobody's nearest coverage sample, so a fully covered fragment spawns
    seven rays. Fixing it would change what an existing measured configuration
    renders, on the arm that is now legacy.
-4. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
+4. **Make `RectAreaLight` an integral rather than a mean** (§6.6). The one
+   finding of the third run that is left open, and the only measured
+   disagreement in this audit that is neither a fixed defect nor a unit
+   convention: the falloff has the wrong *shape*, so no choice of intensity
+   reconciles it. Give each emitter sample the rectangle's area element and an
+   inverse-square term instead of a flat `1/K`, so the sum converges to the
+   solid-angle form factor as `samples` grows. It redefines what `intensity`
+   means for every existing `RectAreaLight`, which is why it did not ride along
+   with the third run's fixes.
+5. **Bring `MeshNormalMaterial` and `MeshMatcapMaterial` onto three.js's
+   definitions** (`OX_MATLIGHT_AUDIT.md` F3, F4), now that §6.2 has put them in
+   the kernel where a camera basis is reachable. Normal packs *world*-space
+   normals where three packs view-space, so Algan's camera-facing normal encodes
+   blue = 0 against three's blue = 1, and the colours rotate with the world
+   instead of staying screen-fixed. Matcap's rim term is additive where three's
+   fallback ramp is multiplicative, so a black mob gets a bright halo in Algan
+   and none in three. Both are documented approximations rather than accidents,
+   which is why they are a follow-up and not a defect.
+6. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
    conformance rather than Three.js parity is the goal.
-5. **Consider decoding the legacy textured-wavefront colour banks**
+7. **Consider decoding the legacy textured-wavefront colour banks**
    (`_build_textured_scene`, `WF_TEXTURED`, off by default and marked
    unsupported): they are promoted from `tri_colors` *before* the decode runs, so
    if that path is ever revived it will have §2.2's bug.
 
-## 7. Files
+## 8. Files
 
 | file | what it is |
 | --- | --- |
@@ -918,7 +1160,9 @@ what the second run learned:
 | `metrics.py` | unit-free transport ratios (transmission and reflection efficiency) |
 | `transfer_probe.py` | Algan's authored-colour → pixel transfer curve |
 | `glossy_probe.py` | glossy reflection: tap sweep, half-pixel crawl test, contact sheet |
-| `OX_AUDIT.md` | Ox Alpha's independent source-level audit |
+| `material_probe.py` | **[3]** per-object statistics, with each object's disc located by projecting the *spec* through the spec's camera |
+| `OX_AUDIT.md` | Ox Alpha's independent source-level audit (runs 1–2) |
+| `OX_MATLIGHT_AUDIT.md` | **[3]** Ox Alpha's material-shader audit against the installed Three.js r185 source, finding by finding with file:line on both sides |
 
 Reproduce:
 
@@ -942,3 +1186,24 @@ measurements in §4.5:
 <venv-python> benchmarks/renderer_audit/glossy_probe.py --figure \
     --scene benchmarks/renderer_audit/scenes/calib_glossy.json
 ```
+
+The §6 scenes render in the rasterizer alone (`--mode raster`, about a second
+each — the path tracer is not the reference there, see §6), and the per-object
+numbers come from `material_probe.py`:
+
+```
+<venv-python> benchmarks/renderer_audit/algan_render.py \
+    benchmarks/renderer_audit/scenes/materials_and_lighting.json --out out --no-tonemap
+node benchmarks/renderer_audit/three_render.mjs \
+    benchmarks/renderer_audit/scenes/materials_and_lighting.json --out out --mode raster
+<venv-python> benchmarks/renderer_audit/material_probe.py \
+    benchmarks/renderer_audit/scenes/materials_and_lighting.json \
+    --images out/materials_and_lighting.algan.png \
+             out/materials_and_lighting.three_raster.png \
+    --labels algan three_raster
+```
+
+§6.5's per-light attribution renders `calib_lights.json` once per light with the
+other three removed, and reads a horizontal band of the wall above the probes
+(the probes themselves clip in Algan). §6.6's spot row uses a band below them,
+where the cone actually lands.
