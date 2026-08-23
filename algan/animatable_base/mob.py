@@ -166,6 +166,20 @@ class Mob(
     #: vertex-and-edge graph).
     draws_descendants = False
 
+    def morph_soup_parts(self) -> list:
+        """The Mobs an aggregate's PN conversion should convert and concatenate.
+
+        Only meaningful for a Mob whose ``_morph_family`` is ``"aggregate"``.
+        The default -- every descendant that answers ``get_render_primitives``
+        -- is what ``Arrow3D`` and the point-cloud family draw, so neither has
+        to override it.
+        """
+        return [
+            descendant
+            for descendant in self.get_descendants(include_self=False)
+            if hasattr(descendant, "get_render_primitives")
+        ]
+
     def owned_subtrees(self) -> list:
         """The child subtrees this Mob built for itself, when it aggregates.
 
@@ -385,9 +399,26 @@ class Mob(
         total = current_value.shape[-2]
         if members == 1 or members == total:
             return value
+        owners = self._member_owner_index(key, members, total)
+        if owners is None:
+            return value
+        return value.index_select(-2, owners.to(value.device))
+
+    def _member_owner_index(self, key, members, total, partial=False):
+        """Map each buffered row of ``key`` over this Mob's packed subtree to
+        the member that owns it, in buffer order.
+
+        Returns a 1-D index tensor of length ``total``, or ``None`` when the
+        subtree cannot be described exactly -- an attribute with no timeline, a
+        descendant missing rows, a ragged ``parent_batch_sizes`` block. With
+        ``partial=True`` an individual inconsistency no longer aborts the whole
+        map: that descendant's rows come back owned by nobody (``-1``), which
+        lets callers leave just those rows alone instead of giving up on the
+        write. See :meth:`_distribute_over_packed_subtree`.
+        """
         timeline = self.scene.timeline_manager.attr_to_timeline.get(key)
         if timeline is None:
-            return value
+            return None
         descendants = [
             mob
             for mob in self.get_descendants(include_self=True)
@@ -396,26 +427,78 @@ class Mob(
         rows, owners = [], []
         for mob in descendants:
             if mob.id not in timeline.mob_id_to_inds:
-                return value
+                if partial:
+                    continue
+                return None
             mob_rows = attr_ranges_for_mob(timeline, mob).tensor()
             if mob is self:
                 owner = torch.arange(members, device=mob_rows.device)
             else:
                 sizes = mob.parent_batch_sizes
                 if sizes is None or sizes.shape[-1] != members:
-                    return value
+                    if not partial:
+                        return None
+                    owners.append(
+                        torch.full(
+                            (mob_rows.numel(),),
+                            -1,
+                            dtype=torch.long,
+                            device=mob_rows.device,
+                        )
+                    )
+                    rows.append(mob_rows)
+                    continue
                 owner = torch.arange(members, device=mob_rows.device).repeat_interleave(
                     sizes.to(mob_rows.device)
                 )
             if mob_rows.numel() != owner.numel():
-                return value
+                if not partial:
+                    return None
+                owner = torch.full(
+                    (mob_rows.numel(),),
+                    -1,
+                    dtype=torch.long,
+                    device=mob_rows.device,
+                )
             rows.append(mob_rows)
             owners.append(owner)
         rows = torch.cat(rows)
         if rows.numel() != total:
-            return value
-        owners = torch.cat(owners)[torch.argsort(rows)]
-        return value.index_select(-2, owners.to(value.device))
+            return None
+        return torch.cat(owners)[torch.argsort(rows)]
+
+    def _spread_change_over_packed_rows(self, key, change, current_value, neutral):
+        """Spread a per-member change across a packed subtree's own rows,
+        leaving rows that belong to no single member untouched.
+
+        The exact-cover variant (:meth:`_distribute_over_packed_subtree`) is
+        right for values that exist once per point -- a location row for every
+        vertex. Rows of attributes a pack does not replicate per point cannot
+        be covered that way: a packed circuit's control points share **one**
+        basis row across all of its members, and no single member's change may
+        claim it. Those rows receive ``neutral`` (the identity element of the
+        change's composition) instead, so the write stays well-defined rather
+        than aborting the whole transform.
+        """
+        members = change.shape[-2]
+        total = current_value.shape[-2]
+        if members == 1 or members == total:
+            return change
+        owners = self._member_owner_index(key, members, total, partial=True)
+        if owners is None:
+            return change
+        gathered_change = change.index_select(-2, owners.clamp(min=0).to(change.device))
+        # Every owner's neutral block is the same identity element, so rows
+        # with no owner can take their gathered neighbour's neutral freely.
+        gathered_neutral = neutral.index_select(
+            -2, owners.clamp(min=0).to(neutral.device)
+        )
+        known = (owners >= 0).to(change.device)
+        # A (..., total, 1) mask keeps this correct for any batch rank.
+        known = known.reshape((1,) * (change.dim() - 2) + (total, 1)).expand(
+            *change.shape[:-2], total, 1
+        )
+        return torch.where(known, gathered_change, gathered_neutral)
 
     @animated_function(
         animated_args={"interpolation": 0.0},
@@ -1219,17 +1302,28 @@ class Mob(
             "location", include_descendants=recursive, copy=False
         )
 
-        # A packed Mob turns about one pivot per member, so the pivot and the
-        # change are spread over each component's rows the same way an ordinary
-        # recursive write is. Unbatched Mobs get these back unchanged.
-        def spread(key, value, reference):
+        # A packed Mob turns about one pivot per member, so the pivots are
+        # spread over each component's rows the same way an ordinary recursive
+        # write is. Unbatched Mobs get these back unchanged.
+        #
+        # The expansion follows the subtree's **location** rows, because that
+        # is what a pivot meets: ``map_global_to_local_coords`` evaluates it
+        # against ``child_loc``, and those rows enumerate locations. Spreading
+        # the pivot basis over *basis* rows instead used to work only where the
+        # two layouts happen to mirror each other; a packed circuit's control
+        # points carry one location row per point but share a single basis row,
+        # so the basis-keyed spread could not cover the subtree, came back
+        # unchanged, and left a 5-row pivot against 371 child rows -- which is
+        # why ``rotate``/``scale`` died on such a pack while ``move`` (whose
+        # change spreads over location rows) worked.
+        def spread(value):
             if not recursive:
                 return value
-            return self._distribute_over_packed_subtree(key, value, reference)
+            return self._distribute_over_packed_subtree("location", value, child_loc)
 
-        pivot_loc = spread("location", my_loc, child_loc)
-        pivot_basis = spread("basis", my_basis, child_loc)
-        pivot_new_basis = spread("basis", new_basis, child_loc)
+        pivot_loc = spread(my_loc)
+        pivot_basis = spread(my_basis)
+        pivot_new_basis = spread(new_basis)
         local_coords = map_global_to_local_coords(pivot_loc, pivot_basis, child_loc)
         new_child_location = map_local_to_global_coords(
             pivot_loc, pivot_new_basis, local_coords
@@ -1238,8 +1332,14 @@ class Mob(
         child_basis = self.get_animated_attribute(
             "basis", include_descendants=recursive, copy=False
         )
+        # Unlike the pivots, this composition targets the subtree's own basis
+        # rows, so it spreads over those -- tolerantly: a row shared by several
+        # members takes no change at all rather than an arbitrary member's.
         new_child_basis = relation(
-            child_basis, spread("basis", interpolated_change, child_basis)
+            child_basis,
+            self._spread_change_over_packed_rows(
+                "basis", interpolated_change, child_basis, identity
+            ),
         )
 
         self._apply_set("location", new_child_location, recursive=recursive)
