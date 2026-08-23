@@ -1115,6 +1115,67 @@ def set_sheet_mask_kernel(enabled):
     SHEET_MASK_KERNEL = bool(enabled)
 
 
+# Order a sheet by its nearest POSITIONED fragment -- one that owns at least
+# one sub-pixel sample -- instead of by its nearest fragment of any kind
+# (sheets.compact_sheets).
+#
+# The emission also emits AREA DONORS: fragments whose clipped area is real
+# but which own no sample, because the triangle slips between the sample
+# positions (raster_taichi's sliver policy, "an EMPTY mask is EMITTED as an
+# area donor"). A donor carries area and no position, and the design says so
+# in as many words -- an all-donor sheet is "areal, position-less" (§4.4).
+# The compaction nevertheless let a donor set the sheet's DEPTH, which is a
+# position: it is what the pixel's sheets are sorted by, and what the resolve
+# reads back as ``t_hit``.
+#
+# That only matters where two sheets' depth ranges INTERLEAVE -- two opaque
+# surfaces crossing inside one pixel -- because there the whole pixel goes to
+# whichever sheet sorts first, both of them claiming exact area 1 and the
+# full sample union. A donor at the leading corner of the pixel then carries
+# its whole surface in front of one that is nearer at every sample.
+#
+# Measured on ``solids_and_camera``'s axis triad, where each ``Arrow3D``
+# shaft starts buried inside the ``Dot3D`` marker and punches out through it.
+# At one pixel of the sphere:
+#
+#     sample:      0        1        2        3        4        5     ...
+#     shaft:    7.52637  7.52637  7.51145  7.53989  7.51917  7.53989
+#     sphere:   7.50552  7.50552  7.50552  7.50640  7.50411  7.50384
+#
+# the sphere is nearer at all eight samples, and its area-weighted depth
+# (7.5055) is well in front of the shaft's (7.5275). The shaft sorted first
+# anyway, on a 0.017-area donor at t=7.49997 that owns no sample at all, and
+# took the pixel whole -- a supersampled reference gives that pixel ~100%
+# sphere. Those are the stray arrow-coloured specks inside the marker sphere,
+# and the same mechanism speckles any thin mob running inside a thicker one
+# (a ``Line3D`` inside an ``Arrow3D`` shaft).
+#
+# THE BLAST RADIUS IS THE INTERLEAVING CASE ONLY, and within it only sheets
+# that own a sample AND have a donor nearer than their nearest sampled
+# fragment. The walk order is a fragment's place in the emission's (depth
+# bin, descending layer) stream, so two sheets keep their relative order
+# under either rule whenever every fragment of one precedes every fragment of
+# the other there -- ordinary nested and stacked geometry, untouched. A sheet
+# with no sampled fragment at all keeps its nearest donor's depth: it is
+# position-less, there is nothing better, and the resolve already treats it
+# as a uniform veil.
+#
+# What this does NOT do is antialias the interpenetration seam: the pixel
+# still goes whole to one surface, as a z-buffer would, and only the choice
+# is repaired. Blending it needs per-sample depth in the resolve (a depth
+# plane per sheet), which is not built -- DESIGN_sheet_resolve.md §6.1.1 is
+# where that limit is declared.
+SHEET_POSITIONED_DEPTH = env_flag("ALGAN_SHEET_POSITIONED_DEPTH", True)
+
+
+def set_sheet_positioned_depth(enabled):
+    """Toggle positioned-fragment sheet ordering (see
+    ``SHEET_POSITIONED_DEPTH``). Takes effect at the next batch's emission.
+    """
+    global SHEET_POSITIONED_DEPTH
+    SHEET_POSITIONED_DEPTH = bool(enabled)
+
+
 # Kernel conflict-rank scan in the compaction
 # (sheet_compact_taichi.sheet_conflict_rank). A fragment's conflict rank --
 # the largest, over the sample lanes it claims, of how many EARLIER fragments

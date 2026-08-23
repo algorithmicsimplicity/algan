@@ -1792,6 +1792,7 @@ def prepare_sparse_raster_coverage(
             band_c=2.0,
             tri_screen=tri_screen,
             shade_split=bool(rt_settings.SHEET_SHADE_SPLIT),
+            positioned_depth=bool(rt_settings.SHEET_POSITIONED_DEPTH),
         )
         ns = int(stream["num_sheets"])
         sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)

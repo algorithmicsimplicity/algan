@@ -7,8 +7,11 @@ siblings (see ``compact_sheets``) — with each bezier circuit fragment alone
 (circuits never group; their border/fill blend is already packed per
 fragment). The compaction turns the emission's depth-sorted fragment stream
 into the sheet stream: exact area as a sum over the sheet's fragments, the
-union of sub-pixel sample masks, the nearest fragment's depth, and a dominant
-(largest-area) fragment as the shading reference.
+union of sub-pixel sample masks, a dominant (largest-area) fragment as the
+shading reference, and the depth of the nearest fragment that owns a sample
+(``SHEET_POSITIONED_DEPTH``; off, the nearest fragment of any kind, which
+lets a position-less area donor decide which of two interpenetrating
+surfaces takes the pixel).
 
 Everything here is a sort plus a segmented reduction — no bounded lookahead,
 no per-thread walk, and no budget, which is the point: the ``_AA_MAX_RUN_SCAN``
@@ -705,6 +708,7 @@ def compact_sheets(
     band_c=4.0,
     tri_screen=None,
     shade_split=False,
+    positioned_depth=True,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -738,6 +742,17 @@ def compact_sheets(
     pixels. Bands whose claim has no exact partition are left whole
     (``_band_composite``). Off, no band subdivides and the output is
     bit-identical to before the parameter existed.
+
+    ``positioned_depth`` (``SHEET_POSITIONED_DEPTH``) reads a sheet's depth
+    and its place in the walk off its nearest POSITIONED fragment — one that
+    owns at least one sub-pixel sample — rather than off its nearest fragment
+    of any kind. An area donor owns no sample and so has no position among
+    the N points at which the resolve compares sheets; letting one set the
+    sheet's depth hands a whole pixel to a surface that is behind at every
+    one of those points. Two sheets keep their relative order under either
+    rule whenever every fragment of one precedes every fragment of the other
+    in the emission stream, so only interleaved (interpenetrating) sheets can
+    move.
 
     Returns a dict of per-sheet arrays, ordered by ``(pixel, classic order of
     the sheet's nearest fragment)`` so a walk over them front-to-back matches
@@ -933,7 +948,6 @@ def compact_sheets(
         band_id, msk_o, cov_o, nb, want_sliver=False
     )
     sheet_cov.clamp_min_(0.0)
-    del msk_o
 
     # Nearest fragment (minimum sorted position -- the stream is depth-sorted
     # within a group, and a rank-split sheet's members need not be
@@ -944,11 +958,47 @@ def compact_sheets(
     first_sorted.scatter_reduce_(
         0, band_id, positions, reduce="amin", include_self=True
     )
-    del positions
     nearest_orig = pos_o.index_select(0, first_sorted)
     sheet_pix = pix_o.index_select(0, first_sorted)
     min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
     min_pos.scatter_reduce_(0, band_id, pos_o, reduce="amin", include_self=True)
+
+    # Under ``positioned_depth`` the same two quantities, restricted to the
+    # POSITIONED fragments -- the ones that own at least one sub-pixel sample.
+    # An area donor owns none: it is a real piece of the surface with a real
+    # area, but it has no position among the N sample points at which the
+    # resolve compares one sheet against another, so it must not be what
+    # decides that comparison. Falls back to the unrestricted values for a
+    # sheet with no positioned fragment at all -- an areal, position-less
+    # sheet, where there is nothing better to order by. See
+    # ``rt_settings.SHEET_POSITIONED_DEPTH`` for the defect this repairs.
+    # ``big`` is 0-d so masking a lane costs a broadcast rather than a second
+    # [n] array, and each masked copy is freed before the next is built: this
+    # is the function's memory peak and a per-fragment array is 28 MB at 4K.
+    if positioned_depth:
+        big = torch.full((), n, dtype=torch.int64, device=device)
+        posn = (msk_o & AA_MASK_ALL) != 0
+        masked = torch.where(posn, positions, big)
+        first_sorted_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+        first_sorted_p.scatter_reduce_(
+            0, band_id, masked, reduce="amin", include_self=True
+        )
+        del masked
+        has_pos = first_sorted_p < n
+        nearest_orig = torch.where(
+            has_pos,
+            pos_o.index_select(0, first_sorted_p.clamp_max(max(n - 1, 0))),
+            nearest_orig,
+        )
+        del first_sorted_p
+        masked = torch.where(posn, pos_o, big)
+        del posn, big
+        min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+        min_pos_p.scatter_reduce_(0, band_id, masked, reduce="amin", include_self=True)
+        del masked
+        min_pos = torch.where(has_pos, min_pos_p, min_pos)
+        del min_pos_p, has_pos
+    del positions, msk_o
 
     # Dominant fragment: largest exact area, earliest original position on
     # ties (deterministic argmax).
