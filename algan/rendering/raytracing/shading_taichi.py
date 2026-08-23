@@ -174,9 +174,29 @@ def _energy_scale(weight):
     return scale
 
 
+# Channel count of one light's entry in the per-hit shadow-visibility payload:
+# the payload is RGB so a transmissive blocker can tint the light it passes,
+# channel-major (light ``li`` occupies indices ``3*li .. 3*li + 2``).
+SHADOW_VIS_CHANNELS = 3
+
+
+@ti.func
+def light_vis_index(li, c):
+    """Flat index of channel ``c`` of light ``li`` in a packed per-hit
+    shadow-visibility payload (``vis``/``lvis``, length ``SHADOW_VIS_CHANNELS *
+    MAX_SHADOW_LIGHTS``).
+
+    One module-level helper rather than an inline ``3 * li + c`` at every site
+    so the producers and consumers of the payload cannot disagree about the
+    layout. A ``@ti.func`` because every use is inside a kernel.
+    """
+    return SHADOW_VIS_CHANNELS * li + c
+
+
 # Maximum number of lights that can cast deterministic ray-traced shadows.
-# Each shaded fragment collects one visibility scalar per light (1 = lit,
-# 0 = occluded) into a fixed-size ``ti.Vector`` -- Taichi vector lengths are
+# Each shaded fragment collects one RGB visibility triple per light (each
+# channel: 1 = lit, 0 = occluded; see ``_light_vis``) into a fixed-size
+# ``ti.Vector`` of flat channels -- Taichi vector lengths are
 # compile-time, so this is a compile-time cap, not a runtime one. Lights past
 # the cap are still *lit*, just never shadowed. The visibility vector is
 # dead-code-eliminated when shadows are off (the default), so a larger cap
@@ -713,14 +733,34 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
 
 @ti.func
 def _light_vis(shadows: ti.template(), vis, li):
-    """Per-light shadow visibility (1 lit / 0 occluded). Compiled out entirely
-    when shadows are off, and falls back to fully lit beyond the shadow-ray cap.
+    """Per-light shadow visibility as an RGB triple (each channel 1 lit /
+    0 occluded; a transmissive blocker can dim the channels unequally).
+    Compiled out entirely when shadows are off, and falls back to fully lit
+    beyond the shadow-ray cap.
     """
-    v = 1.0
+    v = ti.math.vec3(1.0, 1.0, 1.0)
     if ti.static(shadows != 0):
         if li < MAX_SHADOW_LIGHTS:
-            v = vis[li]
+            base = light_vis_index(li, 0)
+            v = ti.math.vec3(vis[base], vis[base + 1], vis[base + 2])
     return v
+
+
+@ti.func
+def _vis_max_component(v):
+    """Scalar reduction of an RGB visibility triple, for the energy-budget
+    sums (``wsum``/``esum``) that stay scalar on purpose.
+
+    Why MAX and not the mean: max of equal channels IS the channel value
+    exactly -- no arithmetic, so a scene whose blockers are achromatic (every
+    payload channel equal) reproduces today's scalar number bit for bit,
+    which is the invariant the RGB payload is built around. A mean would
+    divide by three and move every ordinary render. It is also this codebase's
+    established convention for reducing a colour weight to a decision scalar:
+    ``_scatter_impl`` in ``wavefront_kernels_taichi.py`` takes the max
+    component of its colour weights for exactly the same reason.
+    """
+    return ti.max(v[0], ti.max(v[1], v[2]))
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +772,8 @@ def _light_vis(shadows: ti.template(), vis, li):
 # stage); ``in_glow`` is the passthrough 4th channel; ``view_dir`` is the unit
 # direction from the surface back toward the viewer. ``params`` is the
 # per-primitive parameter ndarray and ``off`` this stage's base slot offset.
-# When ``shadows`` is enabled, ``vis`` carries one visibility scalar per light;
+# When ``shadows`` is enabled, ``vis`` carries one RGB visibility triple per
+# light (see ``_light_vis``);
 # only the direct diffuse/specular response is gated by it (ambient/emissive
 # stay lit). Stages loop the lights internally, exactly as the single-light
 # vertex path overwrites the colour per light.
@@ -795,7 +836,13 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
             d = ti.max(ld.dot(n), 0.0)
             w = d * d * d * d * d * 0.5 * v
             acc += lc * w
-            esum += w * ti.max(lc[0], ti.max(lc[1], lc[2]))
+            # The energy budget stays scalar: it normalises a total
+            # illumination weight, which has no per-channel meaning. Reducing
+            # the RGB weight to its max component reproduces the old scalar
+            # sum bit for bit whenever the visibility channels are equal (see
+            # _vis_max_component).
+            esum += _vis_max_component(w) \
+                * ti.max(lc[0], ti.max(lc[1], lc[2]))
             # The base fade-out counts each row by its *power fraction* (1/K
             # for an area light's K emitter samples, 1 otherwise), so one area
             # light displaces at most as much base colour as one point light
@@ -806,7 +853,7 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
             # than the dimly-lit surroundings, a "bright shadow"), because
             # the K dim samples each faded the base as a whole light while
             # only delivering 1/K of the colour.
-            wsum += w * frac
+            wsum += _vis_max_component(w) * frac
     # The base fade was already bounded by ``min(wsum, 1)``; ``acc`` was not,
     # so past a total weight of 1 the two stopped being a blend and the sum ran
     # away with the extra lights. Scaling ``acc`` by the same budget makes the
@@ -844,7 +891,10 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         v = _light_vis(shadows, vis, li)
         n_dot_l = ti.max(n.dot(ld), 0.0)
         refl += in_rgb * lc * (n_dot_l * v)
-        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+        # Scalar energy budget, reduced as in _stage_default (see
+        # _vis_max_component).
+        wsum += n_dot_l * _vis_max_component(v) \
+            * ti.max(lc[0], ti.max(lc[1], lc[2]))
     acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
@@ -881,7 +931,10 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         gate = spec_w if n_dot_l > 0.0 else 0.0
         refl += (in_rgb * lc * n_dot_l
                  + specular * lc * spec_term * gate) * v
-        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+        # Scalar energy budget, reduced as in _stage_default (see
+        # _vis_max_component).
+        wsum += n_dot_l * _vis_max_component(v) \
+            * ti.max(lc[0], ti.max(lc[1], lc[2]))
     acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
@@ -925,7 +978,10 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         k_d = (one - fresnel) * (1.0 - metalness)
         diffuse = k_d * rgb * lc * n_dot_l
         refl += (diffuse + spec * lc * (n_dot_l * spec_w)) * v
-        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+        # Scalar energy budget, reduced as in _stage_default (see
+        # _vis_max_component).
+        wsum += n_dot_l * _vis_max_component(v) \
+            * ti.max(lc[0], ti.max(lc[1], lc[2]))
     acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
@@ -1018,7 +1074,10 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         # (see _light_eval) and must not manufacture a directional rim.
         sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
         direct += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
-        wsum += n_dot_l * v * ti.max(lc[0], ti.max(lc[1], lc[2]))
+        # Scalar energy budget, reduced as in _stage_default (see
+        # _vis_max_component).
+        wsum += n_dot_l * _vis_max_component(v) \
+            * ti.max(lc[0], ti.max(lc[1], lc[2]))
         # NO per-light transmission term. There used to be one here
         # (``rgb * lc * transmission * (1 - metalness) * 0.5``) and it double
         # counted: the transmitted share already gets carried, either as the

@@ -2038,7 +2038,8 @@ def shade_sparse_raster_coverage(
     dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
     dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
-    dummy_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
+    # RGB visibility payload: one triple per (event, light), channel-last.
+    dummy_vis = _arena_tensor(memory, (1, 1, 3), torch.float32, 1.0)
     # Shadow terminator (RENDERER_WORK_QUEUE.md item 20), read live like the
     # other shadow gates. It is read before the mode split because all three
     # sheet_resolve_shade launches take it as a template and the shadow arm's
@@ -2075,9 +2076,12 @@ def shade_sparse_raster_coverage(
         )
         acc_idx = sheet_accept[:num_slice_sheets].nonzero(as_tuple=True)[0]
         num_events = int(acc_idx.numel())
+        # RGB visibility: one triple per (event, light), channel-last -- the
+        # layout raster_shadow_trace writes and sheet_resolve_shade's mode 2
+        # reads back.
         shadow_vis = _arena_tensor(
             memory,
-            (max(1, num_events), max(1, int(num_lights))),
+            (max(1, num_events), max(1, int(num_lights)), 3),
             torch.float32,
             1.0,
         )
