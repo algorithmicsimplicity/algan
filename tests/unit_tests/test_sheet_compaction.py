@@ -80,7 +80,14 @@ def _coverage(frags, num_tris=8, tri_norm=None):
     return coverage, merged, cam, pws
 
 
-def _compact(frags, band_rule="prim", band_c=4.0, shade_split=False, tri_norm=None):
+def _compact(
+    frags,
+    band_rule="prim",
+    band_c=4.0,
+    shade_split=False,
+    tri_norm=None,
+    positioned_depth=True,
+):
     coverage, merged, cam, pws = _coverage(frags, tri_norm=tri_norm)
     return compact_sheets(
         coverage,
@@ -93,7 +100,14 @@ def _compact(frags, band_rule="prim", band_c=4.0, shade_split=False, tri_norm=No
         band_rule=band_rule,
         band_c=band_c,
         shade_split=shade_split,
+        positioned_depth=positioned_depth,
     )
+
+
+def _t(out, i):
+    """The distance packed into sheet ``i``'s key."""
+    bits = (out["sheet_key"][i] & 0xFFFFFFFF).to(torch.int32)
+    return float(bits.view(torch.float32))
 
 
 def test_one_sheet_tiling_sums_exact_area_and_unions_masks():
@@ -662,3 +676,88 @@ def test_interleaved_fragments_keep_exact_key_depth():
     )
     t0 = (out["sheet_key"][0] & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
     assert float(t0) == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Positioned-fragment depth (rt_settings.SHEET_POSITIONED_DEPTH)
+# ---------------------------------------------------------------------------
+#
+# Two surfaces crossing inside one pixel, in the shape the axis triad of
+# ``tests/full_renders/scenes/solids_and_camera.py`` makes: an Arrow3D shaft
+# buried in a Dot3D and punching out through it. Both sheets end up claiming
+# the whole pixel, so which one paints it is decided entirely by which sheet
+# sorts first -- and the shaft's only claim to being in front is a sample-less
+# AREA DONOR at the leading corner of the pixel. The sphere is nearer at every
+# sample the resolve actually compares them at.
+_CROSSING = [
+    # surface 0 (refs 0-3): a donor with no samples, then the real thing,
+    # which is BEHIND surface 1 at both of the sample groups it owns.
+    (0, 1.0000, 0, 0.02, 0),
+    # surface 1 (refs 4-7): nearer at every sample.
+    (0, 1.0050, 4, 0.50, 0b00001111),
+    (0, 1.0060, 5, 0.50, 0b11110000),
+    (0, 1.0120, 1, 0.49, 0b00001111),
+    (0, 1.0130, 2, 0.49, 0b11110000),
+]
+
+
+def test_a_sampleless_donor_does_not_decide_which_surface_paints_the_pixel():
+    out = _compact(_CROSSING, band_rule="facing")
+    assert out["num_sheets"] == 2
+    # Surface 1 sorts first: its nearest POSITIONED fragment (1.005) leads
+    # surface 0's (1.012). The 1.0 donor no longer speaks for surface 0.
+    assert [int(r) for r in out["sheet_ref"]] == [4, 1]
+    assert _t(out, 0) == pytest.approx(1.005)
+    assert _t(out, 1) == pytest.approx(1.012)
+
+
+def test_the_legacy_arm_lets_the_donor_decide():
+    # The defect, pinned so the toggle is known to reach the behaviour and not
+    # merely to exist: off, surface 0 leads on a fragment that owns no sample.
+    out = _compact(_CROSSING, band_rule="facing", positioned_depth=False)
+    assert [int(r) for r in out["sheet_ref"]] == [1, 4]
+    assert _t(out, 0) == pytest.approx(1.0)
+
+
+def test_a_donor_only_sheet_keeps_its_donor_depth():
+    # Nothing better exists for a position-less sheet, so the fallback must
+    # keep the nearest donor rather than leaving the sheet unordered.
+    out = _compact(
+        [
+            (0, 1.0000, 0, 0.20, 0),
+            (0, 1.0010, 1, 0.10, 0),
+            (0, 1.0050, 4, 1.00, MASK_ALL),
+        ],
+        band_rule="facing",
+    )
+    assert out["num_sheets"] == 2
+    assert _t(out, 0) == pytest.approx(1.0)
+    assert int(out["sheet_msk"][0]) & SLIVER != 0
+
+
+def test_positioned_depth_is_inert_when_every_fragment_owns_a_sample():
+    # The common case must be byte-identical, which is what bounds the change:
+    # only a sheet whose nearest fragment is a donor can move.
+    frags = [
+        (0, 1.0000, 0, 0.40, 0b00001111),
+        (0, 1.0010, 1, 0.60, 0b11110000),
+        (0, 1.0050, 4, 1.00, MASK_ALL),
+    ]
+    on = _compact(frags, band_rule="facing")
+    off = _compact(frags, band_rule="facing", positioned_depth=False)
+    for field in ("sheet_key", "sheet_ref", "sheet_cov", "sheet_msk", "sheet_wgt"):
+        assert torch.equal(on[field], off[field]), field
+
+
+def test_sheet_positioned_depth_setting_reaches_the_live_module():
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.SHEET_POSITIONED_DEPTH
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_positioned_depth=False)
+        assert rt.SHEET_POSITIONED_DEPTH is False
+        SETTINGS.raytracing.experimental.set(sheet_positioned_depth=True)
+        assert rt.SHEET_POSITIONED_DEPTH is True
+    finally:
+        rt.SHEET_POSITIONED_DEPTH = old

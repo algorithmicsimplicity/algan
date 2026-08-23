@@ -823,6 +823,47 @@ Recorded so they are not rediscovered from scratch. None is started.
   coverage budget can pay for, which makes it a path-tracer feature; record it
   as such rather than as a tuning problem.
 
+* **One `set_material` anywhere in a Scene silences every other mob's
+  `color=`.** Found 2026-08-23 while attributing the axis-triad specks, not
+  yet diagnosed — recorded here so the next person starts from the repro
+  rather than from the symptom. A mob built with `color=` and no material
+  renders it correctly *until* some other mob in the same Scene carries an
+  explicit material; then it renders default white instead. It is scene-wide,
+  not per merge block: a `Cube` carrying the material does it to a `Line3D`
+  just as an `Arrow3D` does.
+
+  ```python
+  from algan import *
+  Scene.set_background_color(DARKER_GRAY)
+  with Off():
+      AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)
+      # Comment this ONE line out and the line below renders magenta.
+      Cube(side_length=1.0).set_material(MeshBasicMaterial(color=RED)).spawn()
+      Line3D(start=LEFT * 2, end=RIGHT * 2, thickness=0.2,
+             color=MAGENTA).spawn()
+  Scene.save_frame("material_color_bleed")
+  ```
+
+  `Mob.color` still reads back MAGENTA throughout, so the loss is in what the
+  merge or the shade path packs, not in the timeline. It is live in
+  `tests/full_renders/scenes/solids_and_camera.py` today: the triad's
+  `Line3D(..., color=GRAY_A)` and `Dot3D(..., color=WHITE)` are both inert
+  because the three `Arrow3D`s beside them carry materials, so the line
+  renders white rather than `#DDDDDD`. Fixing it will move that baseline.
+
+* **`DESIGN_sheet_resolve.md` §6.1.1 — interpenetration is not antialiased.**
+  Added 2026-08-23. Two opaque surfaces crossing inside one pixel both claim
+  exact area 1 and the full sample union, and a sheet carries one scalar
+  depth, so the whole pixel goes to whichever sheet sorts first. Which one
+  that is has been repaired (`SHEET_POSITIONED_DEPTH`: an area donor, which
+  owns no sample, no longer sets a sheet's depth), so the pixel now lands on
+  the surface that is nearer at the samples — but the seam is still a hard
+  z-buffer edge where a supersampled reference blends. Blending it needs a
+  depth plane per sheet and a per-sample tie-break in the resolve;
+  `OX_SHEET_INTERPENETRATION_AUDIT.md` §6 scopes the seven call sites and
+  says plainly which datum does not exist yet (no sheet field describes a
+  depth *extent*). Unowned.
+
 
 ## 20. The shadow terminator on diced surfaces
 

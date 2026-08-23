@@ -185,6 +185,12 @@ with Off():
         Arrow3D(start=ORIGIN, end=OUT * 1.1, thickness=0.05, color=BLUE).set_material(
             MeshBasicMaterial(color=BLUE)
         ),
+        # NOT a rendering artifact, though it reads as one: this line is
+        # coaxial with the red arrow and ends exactly at its tip, so its
+        # 0.03 radius shows past the cone's apex and again at the head's
+        # shoulder, where the cone has tapered to about the same width. A
+        # supersampled reference renders both the same way. Shorten the line
+        # or thin it if the white on the red arrow is ever unwanted.
         Line3D(start=LEFT * 1.1, end=RIGHT * 1.1, thickness=0.03, color=GRAY_A),
         Dot3D(point=ORIGIN, radius=0.14, color=WHITE),
     )

@@ -439,3 +439,48 @@ that dropped odd rows, and a bilinear fetch that derived its second tap from
 an already-clamped index — came from *looking at the rendered frames*, which
 neither of us would have found from the source. Specify the experiment; look at
 the picture yourself.
+
+**UPDATE: REVIEW FROM A SIXTH TASK (axis-triad rendering artifacts, 2026-08-23)**
+
+One run, `--variant max`, driven from a 5.5 KB file per §4.1. **No continuation
+needed** — 21 steps over 17 minutes, and a 436-line report
+(`OX_SHEET_INTERPENETRATION_AUDIT.md`) that was correct everywhere I checked it
+independently against the source. Two mechanics worth adding to §4.1's liveness
+advice: this run's steps arrived roughly one a minute with no long stall, and
+`opencode --version` was already 1.18.21 from a plain `npm install -g
+opencode-ai` in a fresh container, so §1 is still accurate.
+
+**It answered the question I asked, precisely and correctly.** The brief handed
+it a hypothesis ("a sheet carries one representative depth, so an
+interpenetration goes whole-pixel to whichever sorts first") and six numbered
+questions. It returned YES with the line numbers: the fragment depth is
+evaluated at the centroid of the samples the fragment owns; the sheet takes its
+nearest fragment's; `final = torch.argsort(min_pos)` is the entire ordering
+mechanism; there is no per-sample depth anywhere downstream of emission;
+nothing bands or splits across meshes. Its §6 scoping was the most useful part
+— it answered the datum question head-on ("does any sheet field describe its
+depth EXTENT? No") and found that the nearest thing to it, `_prim_split_after`'s
+per-pixel slope, is computed and thrown away.
+
+**And it missed the fix, for the reason §4's fourth-task update predicts.** The
+defect did not need per-sample depth at all. The sheet's representative depth
+was being set by an AREA DONOR — a fragment with real area that owns no sample —
+so a 0.017-area sliver at the pixel's leading corner carried a whole surface in
+front of one that was nearer at all eight samples. Excluding donors from the
+sheet's depth fixes the reported artifact in four lines. Ox's report quotes
+"the nearest fragment's depth" in §2 and quotes §4.4's "areal, position-less"
+description of donors in §4, on adjacent pages, and never puts the two
+together. It could not: the brief asked "where would a fix have to go", which
+frames the answer as new machinery, and it answered that. **The question that
+would have found it is "is the fragment that sets a sheet's depth entitled to
+speak for it?"** — an entitlement question about existing data, not a design
+question about missing data. Worth adding to the brief template alongside the
+fourth task's "check against an external invariant, not just self-consistency":
+before asking where to add a datum, ask whether the datum already there is
+being read by something that has no right to it.
+
+The split that worked, again: it read the pipeline and told me exactly what
+each stage carries; the diagnosis came from instrumenting one pixel
+(`benchmarks/_triad_sheet_probe.py`, which dumps a pixel's fragments and
+sheets) and reading the eight per-sample depths off the dump. Ask it for the
+map; measure the territory yourself.

@@ -407,6 +407,31 @@ not empty-pixel optimizations.
     lived (notches, truncation, wobble). Silhouette-against-silhouette error
     is bounded by contrast/N and was never the measured problem; N is cheap
     to raise per-sheet (8 -> 16) if it ever is.
+
+    6.1.1 INTERPENETRATION is the one place that bound does not hold, and it
+    is a DEPTH limit rather than a coverage one. Two opaque surfaces crossing
+    inside one pixel both claim exact area 1 and the full sample union; a
+    sheet carries one scalar depth and the walk order is fixed on the host,
+    so the whole pixel goes to whichever sheet sorts first. There is no
+    per-sample depth anywhere downstream of emission — not even per fragment,
+    whose one depth is evaluated at the centroid of the samples it owns — so
+    nothing can blend the crossing. Blending it needs a depth plane per sheet
+    (a min/max or a gradient) and a per-sample tie-break in the resolve;
+    `OX_SHEET_INTERPENETRATION_AUDIT.md` scopes that, and it is NOT built.
+
+    What IS repaired (2026-08-23, `SHEET_POSITIONED_DEPTH`, default on) is
+    which surface the whole-pixel decision picks. The depth was the nearest
+    fragment of any kind, AREA DONORS included — fragments that carry exact
+    area but own no sample, which §4.4 elsewhere calls position-less. A donor
+    at the leading corner of a pixel therefore carried its whole surface in
+    front of one that was nearer at every sample the resolve compares them
+    at. Measured on `solids_and_camera`'s axis triad (an `Arrow3D` shaft
+    buried in a `Dot3D`): a 0.017-area donor at t=7.49997 beat the sphere's
+    0.54-area fragment at t=7.50552 and took the pixel, where a supersampled
+    reference gives it ~100% sphere. Ordering on the nearest POSITIONED
+    fragment leaves the disjoint-range case untouched and makes the crossing
+    pixel land on the majority surface — a z-buffer's answer, not an
+    antialiased one.
 6.2 The band rule is a new heuristic (relative, but a heuristic). Its failure
     mode is a concave surface's two sheets fusing (over-claims coverage) or
     one sheet splitting (composites additively — benign by §4.4). Phase 1
