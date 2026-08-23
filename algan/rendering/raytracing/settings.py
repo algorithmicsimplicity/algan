@@ -1415,6 +1415,39 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 
 
+# What ``Mob.opacity`` MEANS on a closed solid. ``opacity`` is documented as a
+# property of the Mob, so rendering at opacity ``a`` over a backdrop must give
+# ``a * (the Mob rendered opaque) + (1 - a) * backdrop`` in linear light. A flat
+# Circle satisfies it exactly. A closed solid does not: a camera ray crosses its
+# shell twice, both crossings composite, and the measured consequence is that
+# every built-in solid under-delivers -- an authored 0.55 sphere renders 0.679,
+# an authored 0.55 cube renders 0.744 (benchmarks/_opacity_alpha_check.py, the
+# harness this switch is verified against).
+#
+# ON, the sheet compaction caps a DECLARED-closed surface's cumulative exact
+# coverage per (pixel, surface) at max(front, back) -- the larger of its two
+# shells' own areas -- walking its sheets in depth order and shrinking later
+# sheets' area as the allowance is spent. An interior pixel of a convex shell
+# holds front = back = 1, so the far sheet is left with nothing regardless of
+# runtime sample visibility, which is exactly the one-attenuation composite; at
+# the silhouette the cap is the shell's own footprint, so no ink is lost at the
+# rim (the harness's ``ink`` column is the instrument for that). The cap is NOT
+# clamped to 1: a ray crossing a declared shell MORE than twice (a torus hole,
+# a mid-morph self-overlap) legitimately attenuates per crossing -- the
+# conflict-rank machinery's measured behaviour (sheets.py) -- and front sums
+# past 1 keep it.
+#
+# Exempt, by construction rather than by special case: surfaces that do not
+# declare closed (open cones/cylinders, partial sweeps, unprovable Polyhedra,
+# all 2-D shapes), and transmissive materials, whose declaration folds away at
+# pack time because refraction visits both shells as physical transport.
+#
+# OFF restores today's behaviour exactly: the ceiling lives entirely in the
+# compaction, gated on this flag read at batch time, so no pixel, sheet or
+# kernel variant changes.
+SOLID_SHELL_ALPHA = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
+
+
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
 # triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
 # A space-filling curve is cheap but packs spatially distant instances into the

@@ -83,6 +83,7 @@ _FIELD_TO_LEGACY = {
         "ANALYTIC_AA_SEAM",
         "ANALYTIC_AA_RUN_FULL",
         "ANALYTIC_AA_ONE_MESH",
+        "SOLID_SHELL_ALPHA",
         "BEZ_BVH_SPLIT",
         "WELD_SURFACE_SEAMS",
         "ANALYTIC_AA_SLIVER",

@@ -3106,8 +3106,14 @@ class Surface(Mob):
         if getattr(self, "mesh_key", None) is not None:
             primitive.mesh_key = self.mesh_key
         # A plain Surface is a two-sided sheet; the shapes of revolution built
-        # on it declare an outside (Mob.two_sided).
+        # on it declare an outside (Mob.two_sided). A solid among them
+        # (:class:`~algan.mobs.shapes_3d.Sphere` with full ranges, a capped
+        # :class:`~algan.mobs.shapes_3d.Cylinder`, ...) also declares its
+        # triangles a closed shell, which is what lets ``opacity`` composite
+        # once instead of once per shell crossing; the base Surface stays open,
+        # as does any partial sweep that cuts the shell.
         primitive.declare_one_sided(not self.two_sided)
+        primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
         return primitive
 
     def coord_function(self, uv: torch.Tensor):
