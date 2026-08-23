@@ -994,6 +994,10 @@ def compact_sheets(
         # first, whichever bit it carries. (The cap itself is unaffected --
         # ``max(front, back)`` is symmetric under the swap.)
         t_all = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+        # ``frag_key`` is the ORIGINAL stream; every other operand here is in
+        # the compaction's sorted order, so the depth key must be gathered to
+        # match before it can break ties within a segment.
+        t_all = t_all.index_select(0, order)
         o2 = _lexsort(key, t_all)
         del t_all
         k2 = key.index_select(0, o2)
@@ -1042,14 +1046,6 @@ def compact_sheets(
         # its sheet falls out at the resolve's ``eff <= MIN_ALPHA`` branch,
         # claiming nothing and occluding nothing.
         cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
-        import os as _os
-        if _os.environ.get("ALGAN_DBG_CLAMP"):
-            print("DBG n", n, "nseg", int(seg[-1].item()) + 1)
-            print("DBG o2", o2.tolist())
-            print("DBG c2", c2.tolist())
-            print("DBG spent", spent.tolist())
-            print("DBG cap", cap.tolist())
-            print("DBG scale", scale.tolist())
         del scale, c2, o2
         closed_s = None
     # ``band_id`` is now the BAND -- the sheet this compaction would build

@@ -297,6 +297,42 @@ def _mesh_ids_from_collection(members, counts):
     return torch.cat(blocks).contiguous(), next_id
 
 
+def closed_shell_ceiling_flag(closed_shell, transmission):
+    """Fold a closed-shell declaration with its transmission exemption.
+
+    Returns a per-triangle float32 tensor: 1.0 where the surface's coverage may
+    be ceilinged as a closed shell (``SOLID_SHELL_ALPHA``), 0.0 anywhere the
+    declaration is absent or the material transmits. Transmission exempts
+    because refraction visits both shells as physical transport -- capping the
+    second crossing would eat the refracted path -- and is taken amax over
+    corners and frames, so a material that transmits at ANY authored moment
+    stays exempt everywhere (conservative: it errs toward today's behaviour,
+    never toward a wrongly-capped shell).
+
+    ``closed_shell`` / ``transmission`` are the packed per-corner values,
+    ``[T?, N, 3, 1]``-shaped or ``None`` (undeclared / non-PBR material).
+    """
+    if closed_shell is None:
+        return None
+    closed_v = closed_shell.float()
+    if closed_v.dim() >= 4:  # [T?, N, 3, 1] -> per-triangle corner 0
+        closed_v = closed_v[:, :, 0, :]
+    closed_any = closed_v.reshape(closed_v.shape[0], -1).amax(0) > 0.5
+    if transmission is None:
+        transmits = torch.zeros_like(closed_any)
+    else:
+        trans_v = transmission.float()
+        if trans_v.dim() >= 4:
+            trans_v = trans_v[..., 0, :]
+        transmits = trans_v.reshape(trans_v.shape[0], -1).amax(0) > 1e-6
+    return (
+        (closed_any & ~transmits)
+        .to(torch.float32)
+        .reshape(1, -1)
+        .to(closed_shell.device)
+    )
+
+
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
@@ -915,38 +951,16 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
         # The closed-shell declaration folded with its one exemption, as one
         # per-triangle flag the merge carries and the sheet compaction reads
-        # (``tri_closed``): 1.0 = this surface's coverage may be ceilinged as a
-        # closed shell. A surface that TRANSMITS folds back to 0.0 -- refraction
-        # visits both shells as physical transport, so the ceiling must not eat
-        # the second one -- taken amax over corners and frames, so a material
-        # that transmits at ANY authored moment stays exempt everywhere
-        # (conservative: it errs toward today's behaviour, never toward a
-        # wrongly-capped shell).
-        closed = getattr(self, "closed_shell", None)
-        if closed is None:
-            closed_flag = torch.zeros(
+        # (``tri_closed``); see ``closed_shell_ceiling_flag`` for the folding.
+        self._rt_tri_closed = closed_shell_ceiling_flag(
+            getattr(self, "closed_shell", None),
+            getattr(self, "transmission", None),
+        )
+        if self._rt_tri_closed is None:
+            self._rt_tri_closed = torch.zeros(
                 (1, corners.shape[1]), dtype=torch.float32, device=corners.device
             )
-        else:
-            closed_v = closed.float()
-            if closed_v.dim() >= 4:  # [T?, N, 3, 1] -> per-triangle corner 0
-                closed_v = closed_v[:, :, 0, :]
-            closed_any = closed_v.reshape(closed_v.shape[0], -1).amax(0) > 0.5
-            transmission = getattr(self, "transmission", None)
-            if transmission is None:
-                transmits = torch.zeros_like(closed_any)
-            else:
-                trans_v = transmission.float()
-                if trans_v.dim() >= 4:
-                    trans_v = trans_v[..., 0, :]
-                transmits = trans_v.reshape(trans_v.shape[0], -1).amax(0) > 1e-6
-            closed_flag = (
-                (closed_any & ~transmits)
-                .to(torch.float32)
-                .reshape(1, -1)
-                .to(corners.device)
-            )
-        self._rt_tri_closed = closed_flag.contiguous()
+        self._rt_tri_closed = self._rt_tri_closed.contiguous()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
         # Per-triangle SOURCE-SURFACE id, [1, N] (or [T, N] for diced logical
