@@ -35,11 +35,8 @@ from algan import (
     DOWN,
     LEFT,
     ORIGIN,
-    OUT,
     RIGHT,
-    WHITE,
     Cube,
-    PointLight,
     Scene,
     Sphere,
     Torus,
@@ -62,16 +59,12 @@ def main(arm):
         # Camera, background, coordinates and lighting all move together; the
         # shading half is the one under test.
         Scene.use_manim_defaults()
-    else:
-        # Algan's stock defaults have no lights at all, so give the arm the one
-        # light Manim's profile installs. Without it there is nothing for a lit
-        # default material to respond to and the two arms would differ by the
-        # rig rather than by the shading.
-        # Manim's own light position, mirrored into Algan's coordinates
-        # (manim_defaults.MANIM_LIGHT_SOURCE through from_manim_coordinates).
-        PointLight(location=LEFT * 7 + DOWN * 9 + OUT * 10, color=WHITE).spawn(
-            animate=False
-        )
+    # Neither arm adds a light. Each profile brings its own and they are part
+    # of what is being compared: Algan's stock Scene carries one PointLight
+    # near the camera (``default_scene_initializer``), and
+    # ``use_manim_defaults`` clears that and installs Manim's, down and to the
+    # left. Adding one here would have made the arms differ by the rig on top
+    # of the shading.
     build_scene()
     result = Scene.save_frame(f"default_shading_{arm}")
     print(f"{arm}: {result.output_path}")
