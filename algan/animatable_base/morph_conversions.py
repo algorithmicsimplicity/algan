@@ -23,6 +23,16 @@ class MorphConversionError(RuntimeError):
     """A registered family could not be converted to the PN morph medium."""
 
 
+#: What torch says when the bezier tiler hands it an empty tiling. Two spellings
+#: because the tiler reaches torch through ``cat`` on one path and ``stack`` on
+#: the other, depending on where it runs out of tiles; matching only the first
+#: left the second re-raising the crash this fallback exists to prevent.
+_EMPTY_TILING_MESSAGES = (
+    "non-empty list of Tensors",
+    "non-empty TensorList",
+)
+
+
 @dataclass(frozen=True)
 class MorphConversion:
     to_pn_soup: Callable
@@ -303,20 +313,39 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
 
         extent = (projected.amax((-3, -2)) - projected.amin((-3, -2))).clamp_min(1e-4)
         tile_size = float(extent.max() / sqrt(triangle_budget / 2))
-        triangulated = TriangulatedBezierCircuit(
-            params,
-            invert=False,
-            border_width=0,
-            tile_size=max(tile_size, 1e-4),
-            hash_keys=params,
-            use_cache=True,
-            reverse_points=False,
-            scene=circuit.scene,
-            add_to_scene=False,
-        )
-        triangle_root = triangulated.tiles.children[0]
-        local = triangle_root.corners.location[0].reshape(-1, 3, 3)
-        local_2d = local[..., :2]
+        try:
+            triangulated = TriangulatedBezierCircuit(
+                params,
+                invert=False,
+                border_width=0,
+                tile_size=max(tile_size, 1e-4),
+                hash_keys=params,
+                use_cache=True,
+                reverse_points=False,
+                scene=circuit.scene,
+                add_to_scene=False,
+            )
+        except RuntimeError as exc:
+            # A PATH THAT ENCLOSES NOTHING IS AN EMPTY FILL, NOT A FAILURE.
+            # Two crossed lines, a Cross, a DashedLine, an Axes, the rule of a
+            # MathTex: the tiler emits no tiles and its packing step cannot
+            # concatenate an empty list, so the whole conversion used to raise
+            # and `Axes().become(Sphere())` was simply unavailable. What such a
+            # circuit draws is its stroke, and the soup zeroes an unfilled
+            # circuit's opacity a few lines below in any case -- so stand one
+            # degenerate triangle at the path's centroid, which contributes the
+            # rows the morph interpolates and no visible area. Matched on the
+            # message so an unrelated RuntimeError still reaches the caller --
+            # and on BOTH messages an empty tiling can produce, since the tiler
+            # reaches torch through `cat` on one path and `stack` on the other
+            # depending on where it runs out of tiles.
+            if not any(marker in str(exc) for marker in _EMPTY_TILING_MESSAGES):
+                raise
+            local_2d = projected.reshape(-1, 2).mean(0).expand(1, 3, 2)
+        else:
+            triangle_root = triangulated.tiles.children[0]
+            local = triangle_root.corners.location[0].reshape(-1, 3, 3)
+            local_2d = local[..., :2]
         world = (
             location + local_2d[..., 0:1] * e0 * scale + local_2d[..., 1:2] * e1 * scale
         ).reshape(1, -1, 3)
@@ -371,6 +400,50 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
     )
 
 
+def _aggregate_to_pn_soup(mob, *, add_to_scene=False):
+    """Convert a Mob that draws its own descendants by converting each of them.
+
+    An ``Arrow3D`` is a Cylinder, a Cone and their end discs; a point cloud is
+    one packed batch of spheres. Both hand the renderer that whole subtree
+    themselves and none of the parts is a Scene actor, which is what
+    ``draws_descendants`` says -- so the thing to convert is the union, exactly
+    as the thing to *draw* is the union. Without this they had no family at all,
+    and ``become`` decomposed them into parts it then had to publish separately;
+    ``Arrow3D().become(Sphere())`` raised outright.
+    """
+    parts = mob.morph_soup_parts()
+    soups = [convert_to_pn_soup(part, add_to_scene=False) for part in parts]
+    soups = [soup for soup in soups if soup.location.shape[-2]]
+    if not soups:
+        raise MorphConversionError(f"{type(mob).__name__} draws no geometry to convert")
+    if len(soups) == 1:
+        return soups[0]
+
+    def joined(name):
+        return torch.cat([getattr(soup, name) for soup in soups], dim=-2)
+
+    first = soups[0]
+    shared = set(first.get_shader_params())
+    for soup in soups[1:]:
+        shared &= set(soup.get_shader_params())
+    return PNMesh(
+        joined("location"),
+        joined("normals"),
+        color=joined("color").as_subclass(Color),
+        opacity=joined("opacity"),
+        glow=joined("glow"),
+        shader=first.shader,
+        shader_params={
+            name: torch.cat([soup.get_shader_params()[name] for soup in soups], dim=-2)
+            for name in shared
+        },
+        render_tolerance=min(soup.render_tolerance for soup in soups),
+        render_tolerance_pixels=min(soup.render_tolerance_pixels for soup in soups),
+        scene=mob.scene,
+        add_to_scene=add_to_scene,
+    )
+
+
 def _pn_soup_identity(mob, *, add_to_scene=False):
     return PNMesh(
         mob.location.clone(),
@@ -404,3 +477,4 @@ register_morph_conversion(
     post_animate=_border_to_target,
 )
 register_morph_conversion("pn_soup", to_pn_soup=_pn_soup_identity)
+register_morph_conversion("aggregate", to_pn_soup=_aggregate_to_pn_soup)

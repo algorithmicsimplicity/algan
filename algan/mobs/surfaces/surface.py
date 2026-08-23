@@ -815,6 +815,33 @@ class Surface(Mob):
 
     _morph_family = "grid"
 
+    def _adopt_structural_attrs(self, target):
+        """Take the target's image at the end of a morph.
+
+        A surface's texture is stored under an attribute name encoding its own
+        ``W * H``, so two surfaces with differently-sized textures share no
+        attribute for the same-kind morph's ``animatable_attrs`` intersection
+        to copy -- and the result kept the SOURCE's picture. A 4x4 red texture
+        becoming an 8x4 blue one ended red.
+
+        Assigned through the property rather than the generic
+        ``_MORPH_ADOPTED_ATTRS`` list because the two are not symmetric: the
+        getter hands back the stored ``[1, 1, W*H*5]`` row and the setter wants
+        the ``[W, H, 5]`` image, so the value has to be reshaped on the way
+        across. The setter is also what detaches history when the two
+        resolutions cannot be interpolated.
+        """
+        super()._adopt_structural_attrs(target)
+        if getattr(target, "_color_texture_attr", None) is None:
+            if getattr(self, "_color_texture_attr", None) is not None:
+                self.color_texture = None
+            return self
+        stored = target._color_texture_uncopied()
+        self.color_texture = stored.reshape(
+            int(target.texture_height), int(target.texture_width), 5
+        )
+        return self
+
     #: Handedness of this surface's ``(u, v)`` parameterization: ``1`` when
     #: ``du x dv`` already points out of the solid, ``-1`` when it points in.
     #: A ``-1`` surface has its v axis reversed on the way to the renderer

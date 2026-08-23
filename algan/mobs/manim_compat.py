@@ -320,6 +320,34 @@ def to_manim(value: Any):
     return value
 
 
+def _scale_factor_to_manim(scale_factor):
+    """Convert a scale factor for a delegated Manim ``scale``.
+
+    This is deliberately *not* ``to_manim``, and not only because a bare torch
+    tensor passed through it poisons Manim's point arithmetic: NumPy defers to
+    the tensor's own multiplication, so ``mob.points`` comes back a torch
+    tensor and ``torch.from_numpy`` rejects it when the Mob converts back
+    (``TypeError: expected np.ndarray (got Tensor)``). A factor is a
+    multiplier, not a coordinate: ``to_manim`` is the converter for values that
+    *mean* something in Algan's coordinate system (points, directions, edges),
+    and coupling a per-axis multiplier to that conversion would be wrong by
+    category -- Algan's ``OUT`` is ``-z`` where Manim's is ``+z`` (see
+    "The z mirror" in CLAUDE.md), so any coordinate-style treatment of the
+    forward component would negate the one stretch the user asked for.
+
+    The result is also flattened to a bare ``(3,)`` array (or a scalar): Algan
+    tensors carry leading batch dimensions Manim's geometry does not, and a
+    ``(1, 1, 3)`` factor would broadcast ``points`` from ``(N, 3)`` into
+    ``(1, N, 3)``, reshaping the very geometry the stretch was meant to resize.
+    """
+    if isinstance(scale_factor, torch.Tensor):
+        scale_factor = scale_factor.detach().cpu()
+        if scale_factor.ndim == 0:
+            return scale_factor.item()
+        return scale_factor.reshape(-1).numpy()
+    return scale_factor
+
+
 def _wrapper_type_for(source) -> type[ManimCompatMob]:
     for cls in type(source).__mro__:
         wrapper = _MANIM_WRAPPER_REGISTRY.get(cls.__name__)
@@ -522,7 +550,7 @@ class ManimCompatMob(ManimMob):
     def scale(self, scale_factor, **kwargs):
         before, source = self._prepare_manim_edit()
         source.scale(
-            scale_factor,
+            _scale_factor_to_manim(scale_factor),
             **{key: to_manim(value) for key, value in kwargs.items()},
         )
         return self._animate_to_manim(source, before_source=before)

@@ -1040,6 +1040,19 @@ class Arrow3D(Mob):
         self.length = length
         self.add_children(self.tail, self.head, self.start_point, self.end_point)
 
+    #: The arrow hands the renderer the shaft, the tip and their end discs
+    #: itself -- as ``get_render_primitives`` below says, none of them is a
+    #: Scene actor and it is the only thing that asks them to build. So it is
+    #: one unit to ``become`` as well: one morph unit, converted through the
+    #: "aggregate" adapter, with its parts kept out of the actor list. Without
+    #: the family it had no converter at all and ``Arrow3D().become(Sphere())``
+    #: raised; without ``draws_descendants`` its parts were published twice.
+    _morph_family = "aggregate"
+    draws_descendants = True
+
+    def morph_soup_parts(self):
+        return self._renderable_descendants()
+
     def _renderable_descendants(self):
         """This arrow's geometry, each part immediately followed by its own caps.
 
@@ -1578,6 +1591,25 @@ class Polyhedron(Mob):
             vertices, self.edges, scene=self.scene, add_to_scene=False
         )
         self.add_children(self.faces, self.graph)
+
+    #: ``get_render_primitives`` below hands the renderer every face under one
+    #: ``mesh_key``, and nothing else -- so the faces are this Mob's internals
+    #: rather than Mobs of their own, and the vertex ``Dot3D``s and edge Mobs
+    #: under ``self.graph`` (kept for Manim parity, where ``graph_config``
+    #: styles them) are geometry it owns but never puts on screen. Both facts
+    #: matter to :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`:
+    #: without this flag a morphed Polyhedron grew a wireframe and eight vertex
+    #: beads a spawned one does not have, and drew each of its faces twice.
+    draws_descendants = True
+
+    def owned_subtrees(self):
+        """The faces this Polyhedron draws and the graph it declines to draw.
+
+        Both are its own construction and neither is a Mob in its own right.
+        Anything else below it is a user's, and stays a Scene actor -- speaking
+        for a user's child too would make their geometry vanish from a morph.
+        """
+        return [self.faces, self.graph]
 
     def _face_primitive_mobs(self):
         return [
