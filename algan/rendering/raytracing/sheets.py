@@ -891,9 +891,7 @@ def compact_sheets(
     # accumulate, float32 round) because the cap feeds a threshold.
     closed_s = None
     shell_sid = shell_back = None
-    tri_closed_arr = (
-        merged.get("tri_closed") if rt_settings.SOLID_SHELL_ALPHA else None
-    )
+    tri_closed_arr = merged.get("tri_closed") if rt_settings.SOLID_SHELL_ALPHA else None
     if tri_closed_arr is not None and bool(is_tri.any()):
         closed_flag = (
             tri_closed_arr[

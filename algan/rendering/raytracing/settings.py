@@ -1442,6 +1442,26 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 # all 2-D shapes), and transmissive materials, whose declaration folds away at
 # pack time because refraction visits both shells as physical transport.
 #
+# KNOWN LIMIT, and it is a CROSS-ROUTE one. This rule lives in the sheet
+# compaction, which feeds the resolve that serves PRIMARY visibility.
+# Reflection and refraction continuations leave that resolve through
+# ``_spawn_pool_ray`` into the classic wavefront bounce loop, and
+# ``wavefront_shade`` composites every hit it drains with no ceiling of any
+# kind -- it does not even receive ``tri_obj``, so it holds no surface identity
+# to key one on (the comment at wavefront_kernels_taichi.py says so in as many
+# words). A half-transparent solid therefore composites at its authored opacity
+# when the camera looks at it directly, and at the old doubled opacity in a
+# MIRROR's image of it. The same gap applies to the Monte Carlo megakernel
+# (``samples_per_pixel > 1``), whose stochastic transparency gives each shell an
+# independent interaction chance and so reproduces ``(1 - a)^2`` in
+# expectation, and to any batch the sheet route rejects and the classic
+# wavefront serves instead (``analytic_raster_route_active``). Measured before
+# this rule existed, the two primary routes agreed: sphere 0.55 delivered 0.679
+# on the sheet route and 0.677 on the wavefront one, so what the fallback still
+# does is exactly the old behaviour rather than some third thing. Closing
+# either needs surface identity plumbed into ray or path state, which is a
+# wider change than this one and is not attempted here.
+#
 # OFF restores today's behaviour exactly: the ceiling lives entirely in the
 # compaction, gated on this flag read at batch time, so no pixel, sheet or
 # kernel variant changes.

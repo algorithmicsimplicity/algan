@@ -188,12 +188,32 @@ def _ink_ratio(opaque, faded, background_byte):
     backdrop)``, so taking the magnitude first keeps the ratio linear in alpha
     while removing the cancellation. The ``circle`` arm is what caught this:
     when the control fails, the metric is wrong.
+
+    CHANNELS THAT CLIPPED IN THE REFERENCE ARE EXCLUDED, per channel. Where the
+    opaque frame reached 255 its true radiance is unknown and larger, so the
+    denominator is truncated while the faded frame -- darker by construction --
+    still reports honestly; the ratio is then inflated by an amount that has
+    nothing to do with the renderer. On the lit sphere this is most of the
+    highlight: 6698 of 23716 window pixels clip and carry 68% of the reference
+    ink, and including them read 0.621 against an authored 0.55 on geometry
+    whose interior deviation was 0.31 of a channel value. The exclusion is per
+    CHANNEL rather than per pixel so a highlight that blew only the blue
+    channel still contributes its red and green.
+
+    This does not blunt what the column is for. Clipping happens where the
+    shape is brightest, which is its interior; the silhouette is partial
+    coverage against the backdrop and cannot clip, so every rim pixel survives
+    the exclusion and an under-covered edge still shows up here.
     """
     bg = _srgb_to_linear(float(background_byte))
-    ink_opaque = np.abs(_srgb_to_linear(opaque) - bg).sum()
+    # A channel is usable when the reference is inside the display range at
+    # both ends -- 250/4 rather than 255/0 because the encode rounds.
+    usable = (opaque < 250) & (opaque > 4)
+    ink_opaque = np.where(usable, np.abs(_srgb_to_linear(opaque) - bg), 0.0).sum()
     if abs(ink_opaque) < 1e-9:
         return float("nan")
-    return float(np.abs(_srgb_to_linear(faded) - bg).sum() / ink_opaque)
+    ink_faded = np.where(usable, np.abs(_srgb_to_linear(faded) - bg), 0.0).sum()
+    return float(ink_faded / ink_opaque)
 
 
 def _score(opaque, faded, background_byte, alpha):

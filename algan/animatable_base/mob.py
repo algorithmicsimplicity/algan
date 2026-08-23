@@ -171,6 +171,13 @@ class Mob(
     #: ``tests/unit_tests/test_closed_shell_declaration.py`` for the proof that
     #: each declaration matches the geometry. Like ``two_sided``, set it before
     #: the Mob is spawned: the render primitive reads it once.
+    #:
+    #: Known limit: the rule reaches PRIMARY visibility only. A REFLECTION of a
+    #: half-transparent solid -- its image in a mirror -- still composites both
+    #: shells and so reads more opaque than the authored value, because the
+    #: bounce loop that shades reflections carries no surface identity. The same
+    #: is true of any render at ``samples_per_pixel > 1``, which routes to the
+    #: Monte Carlo tracer instead.
     closed_shell = False
 
     #: Opaque hashable identifying the SURFACE this Mob's geometry belongs to,
