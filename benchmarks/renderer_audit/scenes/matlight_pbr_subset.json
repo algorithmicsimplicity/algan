@@ -1,0 +1,161 @@
+{
+ "name": "matlight_pbr_subset",
+ "_why": "materials_and_lighting's row B with only the four PBR spheres kept, so three-gpu-pathtracer can accept it: the full scene aborts its material table on MeshNormalMaterial/MeshDepthMaterial, which have no .color (see REPORT.md section 6). A subset rather than a crop because the mirror reflects its neighbours, so both engines must be given the same four. Note the path tracer ignores AmbientLight, which this scene has.",
+ "render": {
+  "width": 960,
+  "height": 540,
+  "background": [
+   0.133333,
+   0.133333,
+   0.133333
+  ]
+ },
+ "camera": {
+  "position": [
+   0,
+   0,
+   7
+  ],
+  "target": [
+   0,
+   0,
+   0
+  ],
+  "up": [
+   0,
+   1,
+   0
+  ],
+  "fov": 53.13010235415598,
+  "near": 0.1,
+  "far": 200
+ },
+ "lights": [
+  {
+   "type": "ambient",
+   "color": [
+    1,
+    1,
+    1
+   ],
+   "intensity": 0.35
+  },
+  {
+   "type": "directional",
+   "position": [
+    4,
+    5,
+    4
+   ],
+   "target": [
+    0,
+    0,
+    0
+   ],
+   "color": [
+    1,
+    1,
+    1
+   ],
+   "intensity": 1.0
+  }
+ ],
+ "objects": [
+  {
+   "name": "physical",
+   "geometry": {
+    "type": "sphere",
+    "radius": 0.5,
+    "segments": 64
+   },
+   "position": [
+    -0.81,
+    -0.5,
+    0
+   ],
+   "material": {
+    "type": "physical",
+    "color": [
+     0.780392,
+     0.913725,
+     0.945098
+    ],
+    "roughness": 0.1,
+    "clearcoat": 0.85,
+    "transmission": 0.5,
+    "ior": 1.45
+   }
+  },
+  {
+   "name": "glass",
+   "geometry": {
+    "type": "sphere",
+    "radius": 0.5,
+    "segments": 64
+   },
+   "position": [
+    0.81,
+    -0.5,
+    0
+   ],
+   "material": {
+    "type": "physical",
+    "color": [
+     0.788235,
+     0.886275,
+     0.682353
+    ],
+    "roughness": 0.05,
+    "metalness": 0.0,
+    "transmission": 1.0,
+    "ior": 1.5
+   }
+  },
+  {
+   "name": "mirror",
+   "geometry": {
+    "type": "sphere",
+    "radius": 0.5,
+    "segments": 64
+   },
+   "position": [
+    2.43,
+    -0.5,
+    0
+   ],
+   "material": {
+    "type": "standard",
+    "color": [
+     1,
+     1,
+     1
+    ],
+    "roughness": 0.0,
+    "metalness": 1.0
+   }
+  },
+  {
+   "name": "copper",
+   "geometry": {
+    "type": "sphere",
+    "radius": 0.5,
+    "segments": 64
+   },
+   "position": [
+    4.05,
+    -0.5,
+    0
+   ],
+   "material": {
+    "type": "standard",
+    "color": [
+     0.721569,
+     0.45098,
+     0.2
+    ],
+    "roughness": 0.22,
+    "metalness": 1.0
+   }
+  }
+ ]
+}

@@ -918,13 +918,43 @@ the spec's own camera and reports statistics per object, so the disc a number
 is taken over is decided by the scene description rather than by finding blobs
 in either image.
 
-**Here the rasterizer is the reference, not the path tracer** — the reverse of
-§1. Algan's material classes are declared copies of Three.js's
-(`materials.py`: "the same material types, property names and default
-settings"), so for Lambert, Phong, Toon, Normal, Matcap and Depth the question
-is not "what would physics do" but "what does the material three.js defines
-do". `three-gpu-pathtracer` cannot answer that: it reduces every material to a
-physical one and drops `AmbientLight` entirely.
+**Which reference answers which question, because it is not the same one
+throughout.** §1 makes the path tracer the reference and says why: the
+rasterizer cannot reflect without an environment map and cannot refract at all.
+That reasoning still holds for anything about *transport*, and §6.5 and §6.7
+use the path tracer accordingly.
+
+It does not hold for the material-class questions, and there the rasterizer is
+the reference instead. Algan's material classes are declared copies of
+Three.js's (`materials.py`: "the same material types, property names and
+default settings"), so for Lambert, Phong, Toon, Normal, Matcap and Depth the
+question is not "what would physics do" but "what does the material three.js
+defines do" — and `three-gpu-pathtracer` cannot answer that, because it has no
+such materials. It converts every material to its own PBR model, so there is no
+toon banding, no normal packing, no matcap and no depth ramp in it at all, and
+it drops `AmbientLight` silently besides. On those columns the rasterizer is
+not a weaker reference than the path tracer; it is the only implementation of
+the thing being audited.
+
+That is not an inference. Pointed at
+`scenes/materials_and_lighting.json`, `three-gpu-pathtracer` **does not
+render it** — it aborts while building its material table:
+
+```
+WARNING: path tracer does not support AmbientLight; ambient contribution is
+  missing from this pass
+TypeError: Cannot read properties of undefined (reading 'r')
+  at MaterialsTexture.updateFrom (three-gpu-pathtracer/src/uniforms/MaterialsTexture.js:193)
+```
+
+It is reading `material.color.r`, and `MeshNormalMaterial` and
+`MeshDepthMaterial` have no `color` — they are not surface descriptions.
+Giving them one to get the pass to run would be inventing a reference for a
+material the reference does not implement, so the back end does not.
+
+Where the path tracer *is* the right reference, it is used: §6.7 puts it
+against the rect-area light, and §6.5 against the four PBR spheres of row B,
+rendered from a subset scene the path tracer can accept.
 
 **One thing to know before comparing against the render suite's own frames.**
 The audit harness replaces Algan's scene initializer with one that spawns only
@@ -1152,9 +1182,33 @@ lit in it has a name in this section:
   and transmitted rather than diffuse.
 * **`lambert`** — the ratio is π and the *shape* is unchanged: the disc's
   relative standard deviation is 0.325 in Algan and 0.329 in three.js.
-* **`mirror`** — Algan reflects its neighbours; three.js's rasterizer has no
-  environment map and reflects nothing (0.024 against 0.007 linear). Algan is
-  better here, as §3 already recorded for `calib_mirror`.
+Row B's four PBR spheres also get the path-traced reference, from a subset
+scene with the six non-PBR materials removed — which is not the same scene, so
+Algan was re-rendered on the subset too: the mirror reflects its neighbours,
+and taking eight of them away changes what it reflects. Mean linear radiance
+over each disc:
+
+| | Algan | three path tracer |
+| --- | --- | --- |
+| glass | (0.006, 0.010, 0.004) | **(0.006, 0.010, 0.004)** |
+| copper | (0.018, 0.008, 0.002) | (0.014, 0.007, 0.001) |
+| physical | (0.135, 0.199, 0.216) | (0.038, 0.060, 0.068) |
+| mirror | (0.016, 0.017, 0.016) | (0.002, 0.002, 0.002) |
+
+**Glass agrees with the path tracer to three decimal places on every channel**,
+and copper is close. The other two rows should not be read as disagreement of
+the same kind: `three-gpu-pathtracer` ignores `AmbientLight`, and this scene has
+one at intensity 0.35, so the reference is missing fill that Algan has — on top
+of §2.1's π, which the `physical` row's uniform 3.5 / 3.3 / 3.2 is mostly made
+of. This scene cannot separate the two, and it is not the scene that should try.
+
+* **`mirror`** — the earlier reading against the rasterizer (0.024 against
+  0.007) is not evidence of anything, because a rasterizer with no environment
+  map cannot reflect at all; that was §1's whole reason for preferring the path
+  tracer. Against the path tracer Algan is brighter, but by an amount this
+  scene cannot attribute, for the reason just given. `calib_mirror` is the
+  scene that settles it and already has: reflection efficiency **0.900 in
+  Algan against 0.879** in the path tracer (§3).
 
 ### 6.6 The light zoo: three of four light types differ by exactly π; the fourth is a different function
 
@@ -1207,8 +1261,27 @@ Algan's default `decay = 0` there is then no distance term at all.
 The ratio is not a scalar and its drift is the evidence: **32× at the wall
 point directly under the light, 145× at the wall's edge 8 units away.** Algan's
 rect-area light floods the whole wall where three's pools under the rectangle.
-Normalized to each engine's own peak, at world x = −7.3 Algan is still at 0.24
-of its maximum where three.js is at 0.05.
+
+**Checked against the path tracer, not just against three's LTC.** An LTC
+integral is itself an analytic *approximation*, so a claim about falloff shape
+should not rest on it. `three-gpu-pathtracer` integrates the rectangle for
+real, and it agrees with the rasterizer closely — which both validates the
+reference and leaves Algan the odd one out. Normalized to each arm's own peak,
+across the wall:
+
+| world x | Algan | three raster (LTC) | three path tracer |
+| --- | --- | --- | --- |
+| −7.31 | **0.244** | 0.054 | 0.020 |
+| −3.83 | **0.476** | 0.213 | 0.224 |
+| −0.35 | 0.904 | 0.849 | 0.804 |
+| +1.39 (under the light) | 1.000 | 0.993 | 0.970 |
+| +4.87 | **0.633** | 0.368 | 0.409 |
+| +6.61 | **0.443** | 0.204 | 0.203 |
+
+The two references track each other to a few hundredths at every sample.
+Algan is at 0.24 of its peak where both of them are at 0.02–0.05 — it is
+roughly twice as wide, in the same direction, against both. Against the path
+tracer the absolute ratio runs **42.8 to 119.3, median 67**.
 
 This is not the π convention. §2.1's argument for leaving a constant factor
 alone is that nothing observable distinguishes it from a choice of unit — but a
