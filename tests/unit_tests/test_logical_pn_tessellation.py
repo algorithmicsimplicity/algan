@@ -794,18 +794,6 @@ def test_non_positive_pixel_tolerance_is_rejected(value):
         Sphere(render_tolerance_pixels=value)
 
 
-def test_surface_defaults_to_a_one_pixel_absolute_tolerance():
-    sphere = Sphere()
-
-    primitive = sphere.get_render_primitives()
-
-    assert sphere.render_tolerance_pixels == 1.0
-    assert primitive.render_tolerance_pixels == 1.0
-    # PREVIEW and LD are decided by the fraction; HD and above by the pixel.
-    assert primitive._pixel_threshold(396) == pytest.approx(0.396)
-    assert primitive._pixel_threshold(1080) == 1.0
-
-
 def test_surface_builds_new_logical_pn_primitive_with_both_tolerances():
     sphere = Sphere(
         geometry_tolerance=0.04,

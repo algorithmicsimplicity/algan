@@ -262,8 +262,31 @@ transfer path as its neighbours.
 
 `gl_main` + `gl_pyr` is ~53 bytes per pixel of **one frame** — 22 MB at PREVIEW,
 111 MB at HD. Both come from `ManualMemory`, so `rendering/memory_model.py`
-measures them like everything else and the batch size adapts on its own; there
-is nothing to annotate. They are allocated only when the mode is active.
+measures them like everything else and the batch size adapts on its own. They
+are allocated only when the mode is active.
+
+Two things the *tile* sizer has to be told, which the batch model does not
+cover — both were missing when this shipped, and both are why
+`materials_and_lighting` and `solids_and_camera` failed with `OutOfRenderMemory`
+at PREVIEW on a 600 MB arena:
+
+* **Allocate the two frame buffers BEFORE `_auto_primary_per_tile` runs**, the
+  way the classic route allocates `aa_accum` first. `WAVEFRONT_TILE_SAFETY` is
+  1.0, so the tiler hands the tile *every* free arena byte; anything taken
+  afterwards is taken out of the tile's own state. 16 MB at PREVIEW is nothing
+  against the arena and everything against what is left of it by a batch's last
+  chunk.
+* **Charge the widened `pix_accum`.** `_WAVEFRONT_BYTES_PER_PRIMARY` is the
+  measured 28 bytes of the plain `(primaries, 7)` row; this route allocates
+  `(2 * primaries, 13)`, so the tile needs the extra 76 bytes per primary passed
+  as `extra_bytes_per_primary` or it is fitted to a row it does not take.
+
+Getting either wrong is not a graceful degradation. The tile overruns on its
+first attempt and the halving retry cannot recover: a splitting batch holds the
+continuation pool — the dominant allocation — fixed across retries, so only
+`pix_accum` shrinks and the loop rides down to the one-covered-pixel diagnostic.
+The retry now halves the pool alongside the primaries so a miss costs tiles
+rather than the render, but that is a backstop, not the budget.
 
 ## 5. Deliberate limitations
 

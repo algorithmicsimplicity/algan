@@ -2,7 +2,9 @@ import torch
 
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing import tracer
+from algan.rendering.raytracing.glossy_prefilter_taichi import GL_ROW_WIDTH
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
+    ALLOC_WIDTH,
     SCA_WIDTH_NESTED,
     SCA_WIDTH_PLAIN,
 )
@@ -132,3 +134,71 @@ def test_state_charge_follows_sca_width_argument_not_nested_ior_setting(monkeypa
         got = tracer._wavefront_state_coefficients(SCA_WIDTH_NESTED)
         # A nested-width tile is charged exactly its five extra f32 columns.
         assert got["pool"] == plain_pool + nested_extra
+
+
+def test_glossy_tile_charge_covers_its_widened_pix_accum(monkeypatch):
+    """A split-sum glossy tile is charged the ``pix_accum`` it really allocates.
+
+    The measured per-primary coefficient describes the plain route's single
+    7-column row. The glossy route accumulates the reflection into a second row
+    and widens both, so it allocates ``2 * GL_ROW_WIDTH`` columns per primary
+    instead -- and ``WAVEFRONT_TILE_SAFETY`` is 1.0, so a tile sized against the
+    plain charge spends every free arena byte and then asks for nearly four
+    times the ``pix_accum`` it budgeted. That overruns on the first attempt, and
+    halving the primaries barely helps: a splitting batch keeps the pool (the
+    dominant allocation) fixed across retries, so the tile rides all the way
+    down to the one-covered-pixel diagnostic. This pins the charge the sparse
+    resolve applies against the rows it goes on to allocate.
+    """
+    split_k = 4
+    wanted = 7
+    coefficients = tracer._wavefront_state_coefficients()
+    glossy_extra = (2 * GL_ROW_WIDTH - 7) * torch.float32.itemsize
+    per_primary = tracer._wavefront_state_bytes_per_primary(
+        split_k, extra_bytes_per_primary=glossy_extra
+    )
+    # The extra IS the widened rows: what is charged must be what is allocated.
+    assert (
+        per_primary
+        == split_k * coefficients["pool"] + 2 * GL_ROW_WIDTH * torch.float32.itemsize
+    )
+    # ... and it must actually reach the tiler, i.e. cost the tile primaries.
+    plain_per_primary = tracer._wavefront_state_bytes_per_primary(split_k)
+    assert per_primary > plain_per_primary
+
+    # The tile's non-per-primary words: rs_alloc, rs_vis, the compactor's
+    # counter, and the two (1, 1) stubs _alloc_wavefront_state keeps so the
+    # state tuple stays ABI-compatible. The resolve charges only rs_alloc and
+    # lets the floor division's remainder absorb the rest; size the arena for
+    # all of them so this test measures the per-primary term alone.
+    tile_fixed = ALLOC_WIDTH * torch.int32.itemsize + 4 * torch.int32.itemsize
+    # Start the tile after one uint8 byte, so ManualMemory must spend three
+    # bytes aligning the first f32 state tensor.
+    total = 1 + 3 + tile_fixed + wanted * per_primary
+    memory = ManualMemory(0, device="cpu", num_bytes=total)
+    memory.get_tensor((1,), torch.uint8)
+
+    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_AUTO", True)
+    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_SAFETY", 1.0)
+    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MIN", 1 << 18)
+    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MAX", 1 << 25)
+
+    got = tracer._auto_primary_per_tile(
+        memory,
+        split_k,
+        static_primary=100,
+        extra_bytes_per_primary=glossy_extra,
+        fixed_bytes=tile_fixed,
+    )
+    assert got == wanted
+
+    # The sparse resolve's own allocation order, with the glossy pix_accum.
+    pool = got * split_k
+    tracer._alloc_wavefront_state(memory, pool, SCA_WIDTH_PLAIN, global_hits=False)
+    memory.get_tensor((pool,), torch.int32)  # rs_pix
+    memory.get_tensor((got * 2, GL_ROW_WIDTH), torch.float32)  # pix_accum
+    memory.get_tensor((ALLOC_WIDTH,), torch.int32)  # rs_alloc
+    memory.get_tensor((1,), torch.int32)  # rs_vis
+    tracer._ArenaRayCompactor(memory, pool)
+    # The tile is maximal: everything fit, and one more primary would not have.
+    assert 0 <= memory.get_num_bytes_remaining() < per_primary

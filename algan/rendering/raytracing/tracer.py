@@ -2753,20 +2753,6 @@ def raytrace_render_wavefront(
                 return
 
             num_covered_total = int(coverage["num_covered"])
-            sparse_primary = _auto_primary_per_tile(
-                memory,
-                pool_ratio,
-                primary_per_tile,
-                fixed_bytes=ALLOC_WIDTH * torch.int32.itemsize,
-                # The width this route's own _alloc_wavefront_state uses below.
-                state_sca_width=state_sca_width,
-            )
-            primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
-            shared_pool_capacity = _shared_pool_slots(
-                primary_capacity, sparse_primary, pool_ratio, analytic_raster
-            )
-            learned_primary_cap = primary_capacity
-            covered_start = 0
 
             # SPLIT-SUM GLOSSY (DESIGN_glossy_prefilter.md). Two buffers per
             # FRAME -- never per batch, which is many frames and would make
@@ -2776,6 +2762,18 @@ def raytrace_render_wavefront(
             # frame at a time and flushed at the boundary. Both come from the
             # arena, so the runtime memory model measures them like everything
             # else and the batch size adapts on its own.
+            #
+            # ALLOCATED BEFORE THE TILE IS SIZED, exactly as the classic route
+            # allocates ``aa_accum`` first: ``_auto_primary_per_tile`` spends
+            # every free arena byte (WAVEFRONT_TILE_SAFETY is 1.0), so a buffer
+            # taken AFTER it is taken out of the tile's own state. At PREVIEW
+            # these are only 16 MB, but the tile is sized against a nearly
+            # exhausted arena by the last chunk of a batch, and 16 MB there is
+            # the whole margin -- solids_and_camera and materials_and_lighting
+            # both failed to fit their first attempt and then rode the halving
+            # retry down to one covered pixel, which cannot help: a splitting
+            # batch holds the pool fixed across retries, so nothing but
+            # ``pix_accum`` shrinks.
             gl_active = int(rt_settings.glossy_reflection_mode()) == 3
             gl_main = gl_pyr = gl_levels = None
             gl_sigma_max = 0.0
@@ -2799,6 +2797,33 @@ def raytrace_render_wavefront(
                 )
                 _gloss_clear(gl_main, gl_pyr)
             gl_frame = 0
+
+            # One 7-column accumulator row per primary on the plain route; the
+            # glossy route adds a second row for the reflection alone and
+            # widens both (DESIGN_glossy_prefilter.md). The tile is CHARGED and
+            # the buffer ALLOCATED from these same two numbers, so the sizing
+            # cannot be fitted to a narrower row than the tile goes on to take
+            # -- the measured per-primary coefficient describes the plain row,
+            # and a tile that spends every free byte on it has nothing left for
+            # the wide one.
+            pix_accum_rows, pix_accum_cols = (2, GL_ROW_WIDTH) if gl_active else (1, 7)
+            sparse_primary = _auto_primary_per_tile(
+                memory,
+                pool_ratio,
+                primary_per_tile,
+                extra_bytes_per_primary=(
+                    (pix_accum_rows * pix_accum_cols - 7) * torch.float32.itemsize
+                ),
+                fixed_bytes=ALLOC_WIDTH * torch.int32.itemsize,
+                # The width this route's own _alloc_wavefront_state uses below.
+                state_sca_width=state_sca_width,
+            )
+            primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
+            shared_pool_capacity = _shared_pool_slots(
+                primary_capacity, sparse_primary, pool_ratio, analytic_raster
+            )
+            learned_primary_cap = primary_capacity
+            covered_start = 0
 
             while covered_start < num_covered_total:
                 remaining = num_covered_total - covered_start
@@ -2836,9 +2861,7 @@ def raytrace_render_wavefront(
                             # involved are at 72 parameters against Taichi's
                             # 64 runtime ones. See DESIGN_glossy_prefilter.md.
                             pix_accum = memory.get_tensor(
-                                (attempt_primary * 2, GL_ROW_WIDTH)
-                                if gl_active
-                                else (attempt_primary, 7),
+                                (attempt_primary * pix_accum_rows, pix_accum_cols),
                                 f32,
                             )
                             rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
@@ -2922,6 +2945,25 @@ def raytrace_render_wavefront(
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
+                        # A splitting batch holds the pool fixed across the
+                        # OVERFLOW retry on purpose (the shrunken tile inherits
+                        # the spare slots), but the pool is also the tile's
+                        # dominant allocation -- so halving only the primaries
+                        # after a MEMORY failure re-attempts a state block of
+                        # very nearly the same size, fails identically, and
+                        # rides all the way down to the one-pixel diagnostic
+                        # without ever having freed anything. Halve the pool
+                        # with it, keeping the primaries' own slots (the shared
+                        # allocator starts at ``attempt_primary``); an
+                        # under-sized pool overflows, and the overflow retry
+                        # above is exact and terminating.
+                        if pool_ratio > 1:
+                            shared_pool_capacity = max(
+                                next_primary, shared_pool_capacity // 2
+                            )
+                            pool = shared_pool_capacity
+                        else:
+                            pool = attempt_primary
                         continue
 
                     # The resolve's own overflow, checked before the bounce

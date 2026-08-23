@@ -1551,46 +1551,7 @@ ANALYTIC_AA_SECONDARY_MIN_ENERGY = env_float(
     "ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", 0.12
 )
 
-# Roughness-driven GLOSSY REFLECTION for the deterministic tracer: a rough
-# reflector's continuation rays spread over a GGX lobe instead of all taking the
-# one mirror direction, so a reflected image blurs as roughness rises. Without
-# it a MeshStandardMaterial(roughness=0.18) shows a razor-thin reflection
-# beside a broad direct highlight -- the same material described two ways.
-#
-# The lobe is sampled by the continuations the fragment ALREADY spawns
-# (ANALYTIC_AA_SECONDARY_SAMPLES): the taps that vary in sub-pixel position now
-# vary in lobe direction too, so this costs no extra rays and no extra pool
-# slots. It therefore only reaches a fragment that takes the secondary-sampling
-# branch; a fragment with one tap stays specular-perfect (blurring needs more
-# than one sample -- a single deterministic tap is not a blur, it is a mirror
-# pointing the wrong way).
-#
-# Deterministic by construction: the taps are a stratified GGX radial CDF plus a
-# golden-angle azimuth, indexed by tap number, with an optional per-pixel
-# Bayer rotation. No ti.random anywhere, so the same frame renders byte-identical
-# every time and an animation cannot hiss. Roughness below
-# ``_GLOSSY_MIN_ROUGHNESS`` (raster_taichi) takes the untouched mirror path, so
-# a true mirror is byte-identical to the pre-glossy build.
-#
-# DEFAULT OFF, and off is not "roughness is ignored": with the lobe off a
-# reflection carries only the share of itself a single ray can stand for
-# (``wavefront_kernels_taichi._mirror_share``), which is what keeps a rough
-# metal from drawing a sharp mirror image. On is the opt-in that spends rays
-# to blur the reflection for real.
-#
-# It is off because four taps cannot integrate a wide lobe. The two ways to
-# spend them both cost something visible, measured on a rough metal wall
-# reflecting a small bright source: the Bayer rotation below resolves a glossy
-# transition into K+1 levels, i.e. an ordered dither that CRAWLS as geometry
-# moves under a screen-fixed pattern (the reason this shipped disabled, in a
-# way that also disabled roughness entirely -- see DESIGN_analytic_aa.md ss20),
-# and without it the same four taps land as four discrete ghost copies of the
-# reflected image. ANALYTIC_AA_SECONDARY_SAMPLES = 8 halves the dither and
-# doubles the ghosts; neither makes it clean. Turn this on for a still, or for
-# a scene whose reflected content is low-contrast enough not to dither.
-#
-# See DESIGN_analytic_aa.md ss20.
-GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", False)
+GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", True)
 
 # Rotate each pixel's lobe fan by a 4x4 Bayer index (interleaved sampling), so
 # four taps read as a smear rather than four ghost copies of the reflected
