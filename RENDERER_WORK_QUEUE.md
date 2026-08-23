@@ -803,11 +803,6 @@ Recorded so they are not rediscovered from scratch. None is started.
   several continuations sums them in nondeterministic order. If §J's re-run
   shows a floor, P7's shape is recorded (count-pass template + host int-scan +
   exact-slot emit).
-* **`DESIGN_sheet_resolve.md` §4.6 — K and overflow.** Never built, and now
-  moot: the compaction is a host CSR with no per-pixel sheet cap, so there is no
-  K to overflow. The real ceiling is `MAX_SURFACES_PER_RAY`, which is item 1's
-  business. **Amend §4.6 to say so** rather than leaving a design describing a
-  structure the code does not have.
 * **`DESIGN_mesh_identity_open.md` §L — coincident duplicates.** Unbuilt, and
   the symptom has never been demonstrated. Its own instruction stands: render
   two coincident quads of the same mesh and of different meshes and measure the
@@ -816,12 +811,6 @@ Recorded so they are not rediscovered from scratch. None is started.
   Deliberately deferred: the BVH build is ~1% of a shadowed five-solid render
   and no workload in the repo has thousands of repeated meshes. Revisit only
   when one does.
-* **`DESIGN_analytic_aa.md` §20 / `GLOSSY_REFLECTION`.** Off by default because
-  four taps cannot integrate a wide lobe — with the screen-space rotation on it
-  dithers and crawls, with it off it ghosts. Neither `ANALYTIC_AA_SECONDARY = 8`
-  nor turning the rotation off fixes it. A real fix needs more taps than the
-  coverage budget can pay for, which makes it a path-tracer feature; record it
-  as such rather than as a tuning problem.
 
 * **One `set_material` anywhere in a Scene silences every other mob's
   `color=`.** Found 2026-08-23 while attributing the axis-triad specks, not

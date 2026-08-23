@@ -4,15 +4,12 @@ Combining Animations
 
 So far every animation has taken exactly one second and happened strictly after
 the one before it. Real videos need more control than that: things happening at the
-same time, overlapping, at different speeds, with different easing.
+same time, at different speeds, with different easing.
 
 Algan handles all of this with :class:`.AnimationContext` s: ``with`` blocks that
-change *when* the animations inside them happen and *how long* they take. You
-never write a ``play`` call or pass a duration to an individual animation; you
-put the animations in the right block.
+change *when* the animations inside them happen and *how long* they take.
 
-The Four Contexts
-=================
+Here's a basic example, playing two animations at the same time:
 
 .. algan:: ControllingSync
 
@@ -26,7 +23,12 @@ The Four Contexts
     Scene.save_video()
 
 Everything inside a :class:`.Sync` block
-plays *simultaneously*, so the square above slides and turns at once. The four basic contexts are:
+plays *simultaneously*, so the square above slides and turns at once.
+
+The Four Contexts
+=================
+
+The four basic contexts are:
 
 .. list-table::
    :header-rows: 1
@@ -49,30 +51,28 @@ plays *simultaneously*, so the square above slides and turns at once. The four b
 
     from algan import *
 
-    mob1 = Square().spawn()
-    mob2 = Circle().spawn()
+    with Off():
+        square = Square().spawn()
+        circle = Circle().spawn()
+        square.move(LEFT)
+        circle.move(RIGHT)
 
     with Sync():
-        mob1.rotate(360, OUT)
-        mob2.move(RIGHT)
+        square.rotate(360, OUT)
+        circle.move(RIGHT)
 
     with Seq():
-        mob1.move(RIGHT)
-        mob2.move(UP)
+        square.move(RIGHT*2)
+        circle.move(UP)
 
     with Lag(0.5):
-        mob1.move_to(ORIGIN)
-        mob2.move_to(ORIGIN)
-
-    with Off():
-        mob1.move(LEFT)
-        mob2.move(RIGHT)
+        square.move_to(ORIGIN)
+        circle.move_to(ORIGIN)
 
     Scene.save_video()
 
-:class:`.Off` is how you do setup. Positioning, spawning and configuring things
-inside ``with Off():`` costs no timeline, so your video starts where you want it
-to:
+:class:`.Off` is useful for doing scene setup, use it to put
+everything in position for where it should first appear.
 
 .. important::
 
@@ -82,17 +82,6 @@ to:
 .. note::
 
     Sync is equivalent to Lag(0) and Seq is equivalent to Lag(1).
-
-.. code-block:: python
-
-    with Off():
-        # Build and place the whole scene instantly.
-        Scene.clear_light_sources()
-        DirectionalLight(location=UP * 8, target=ORIGIN).spawn()
-        diagram.scale(0.8).move_to_edge(LEFT).spawn()
-
-    # Now the video begins.
-    diagram.rotate(360, UP)
 
 Timing
 ======
@@ -123,14 +112,6 @@ Two arguments control how long a context takes:
 
 The first block squeezes four moves into one second total; the second gives each
 of its two animations five seconds. If you set both, ``run_time`` overrides ``run_time_unit``.
-
-To leave a deliberate pause, use :meth:`~.Animatable.wait`:
-
-.. code-block:: python
-
-    mob.wait(2)        # two seconds of this mob doing nothing
-    Scene.wait(2)      # exactly equivalent to mob.wait(2)
-
 
 Nesting Contexts
 ================
@@ -223,8 +204,6 @@ differently. The ones you will reach for most:
      - Fast start, long settle. Good for things arriving on screen.
    * - ``rate_funcs.ease_in_expo`` / ``rate_funcs.ease_out_expo``
      - Sharp acceleration / deceleration.
-   * - ``rate_funcs.delay_fade``, ``rate_funcs.pulse_fade``
-     - Shaped fades, used by Algan's own spawn animations.
 
 A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
 ``[0, 1]``, so you can write your own:
@@ -247,41 +226,3 @@ with the parent context's easing rather than replacing it.
     you want a long orbit to run at constant speed, put ``rate_func`` on the
     context that owns the orbit, not on an enclosing one that also holds other
     animations.
-
-Timing recipes
-==============
-
-.. list-table::
-   :header-rows: 1
-   :widths: 42 58
-
-   * - You want
-     - Write
-   * - Two things at once
-     - ``with Sync(): ...``
-   * - A block to last exactly 3 seconds
-     - ``with Seq(run_time=3): ...``
-   * - Each step to last 3 seconds
-     - ``with Seq(run_time_unit=3): ...``
-   * - A staggered ripple across a list
-     - ``with Lag(0.2): for m in mobs: ...``
-   * - Instant, untimed setup
-     - ``with Off(): ...``
-   * - Constant speed, no easing
-     - ``with Seq(rate_func=rate_funcs.identity): ...``
-   * - Every step stretched to the longest one
-     - ``with Sync(same_run_time=True): ...``
-   * - A pause
-     - ``Scene.wait(2)``
-
-Where to next
--------------
-
-* :doc:`built_in_animations` -- ready-made animations to put inside these
-  contexts.
-* :doc:`updaters` -- animations that run indefinitely rather than for a fixed
-  time.
-* :doc:`../advanced_user_tutorials/animating_out_of_order` -- writing animations
-  to arbitrary points on the timeline.
-* :doc:`../advanced_user_tutorials/audio_and_speech` -- contexts whose duration
-  comes from a sound file or a line of narration.

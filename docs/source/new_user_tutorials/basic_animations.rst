@@ -3,10 +3,9 @@ Basic Animations
 ================
 
 In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob` s
-(objects that
-appear on screen) and then changing them. By default, changes
-you make to a mob are animated over a one second sequence. More complex
-animations will be covered in the later :doc:`combining_animations` tutorial.
+and then changing them. By default, changes
+you make to a mob are animated over a one second period. More complex
+animation behaviour will be covered in the later :doc:`combining_animations` tutorial.
 
 Changing Animatable Attributes
 ------------------------------
@@ -33,14 +32,13 @@ Every :class:`~algan.animatable_base.mob.Mob` has these animatable attributes:
      - The Mob's main colour.
    * - :ref:`glow <reference-mob-glow>`
      - float
-     - How much light the Mob bleeds into surrounding pixels. ``0`` is off.
+     - How strongly the mob glows. ``0`` is off.
    * - :ref:`opacity <reference-mob-opacity>`
      - float
-     - ``1`` is solid, ``0`` is invisible.
+     - How see-through the mob is. ``1`` is opaque, ``0`` is invisible.
 
 These attributes are special: **assigning to one performs a 1-second animation**
-that interpolates from the old value to the new value. Nothing else in your script
-has to change.
+that interpolates from the old value to the new value.
 
 .. algan:: BasicChangingAttributes
 
@@ -81,16 +79,14 @@ into the colour you assign:
 
     circle.color = BLUE.set_opacity(0.5)   # ... or together, in one animation
 
-A colour with a non-zero glow component emits light into nearby pixels (see
-:doc:`../advanced_user_tutorials/backgrounds_and_post_processing`). Algan ships
-the full Manim colour palette -- ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
+Algan ships the full Manim colour palette -- ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
 on, plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
 Mob Methods
 -----------
 
 :class:`~algan.animatable_base.mob.Mob` s also have a bunch of common operations built in to them as methods.
-Most of the time, these are what you will reach for.
+Most of the time, these are what you will use.
 
 .. algan:: BasicMobMethods
 
@@ -120,7 +116,7 @@ The methods used above:
   to become, and is never itself drawn on screen. Without that flag Algan registers it as a
   Mob you meant to show, and warns that you never spawned it.
 
-Two more you will use constantly:
+Two more useful ones:
 
 * :meth:`~algan.animatable_base.mob.Mob.scale` grows or shrinks the Mob: ``mob.scale(2)`` doubles its size.
 * :meth:`~algan.animatable_base.animatable.Animatable.wait` holds the Mob still: ``mob.wait(2)`` leaves two
@@ -129,78 +125,3 @@ Two more you will use constantly:
 :doc:`positioning_and_layout` covers the placement and sizing methods in full,
 and the :class:`~algan.animatable_base.mob.Mob` reference lists every method.
 
-Spawning and despawning
------------------------
-
-A Mob does not appear, and cannot be animated, until it is *spawned*:
-
-.. code-block:: python
-
-    square = Square()        # created, but not on screen
-    square.spawn()           # fades in over 1 second, now animatable
-
-    square.despawn()         # fades out and stops being animatable
-
-:meth:`~algan.animatable_base.animatable.Animatable.spawn` returns the Mob, so it chains:
-``square = Square().spawn()``. Everything before ``spawn()`` happens instantly
-and is not animated, which makes it the right place to do setup:
-
-.. code-block:: python
-
-    # Position and size it first, then bring it on screen.
-    square = Square(color=BLUE).scale(0.5).move(LEFT * 3).spawn()
-
-.. _animated-functions:
-
-Animated Functions
-------------------
-
-Attribute changes and Mob methods cover most common use cases.
-If you need an animation which can't be created by them,
-then you can make your own animations using the
-:func:`~.animated_function` decorator.
-
-.. algan:: BasicAnimatedFunction
-
-    from algan import *
-    import numpy as np
-
-    # A function mapping a scalar parameter t to a point in space.
-    def path_func(t):
-        return UP * np.sin(t) + RIGHT * (t - PI)
-
-    # An animated_function that moves our mob along that path.
-    @animated_function(animated_args={'t': 0})
-    def move_along_path(mob, t):
-        mob.location = path_func(t)
-
-    square = Square().spawn()
-    square.location = path_func(0)   # Jump to the starting point.
-    move_along_path(square, 2 * PI)
-
-    Scene.save_video()
-
-``animated_args`` maps each animated parameter to its value at the *start* of the
-animation. Algan then interpolates from there to whatever you called the function
-with, evaluating the body at every frame. Above, ``t`` starts at ``0`` and the
-call passes ``2 * PI``, so the animation sweeps ``t`` from ``0`` to ``2 * PI``
-over one second.
-
-.. important::
-
-    An :func:`~.animated_function` must take a :class:`~algan.animatable_base.mob.Mob` as its first
-    argument, and every name listed in ``animated_args`` must be a float.
-
-.. note::
-
-    Inside an :func:`~.animated_function`, attribute assignment is *not*
-    separately animated; the function body describes a single frame, and the
-    decorator does the animating.
-
-Where to next
--------------
-
-* :doc:`mob_gallery` -- what Mobs are available.
-* :doc:`positioning_and_layout` -- putting Mobs exactly where you want them.
-* :doc:`combining_animations` -- controlling *when* animations happen and how
-  long they take.

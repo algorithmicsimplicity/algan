@@ -1,6 +1,6 @@
-==========================
+=====================
 Child Mobs and Groups
-==========================
+=====================
 
 Complex objects are built by combining simple ones. Algan gives you two ways to
 do that, and they are the same mechanism underneath:

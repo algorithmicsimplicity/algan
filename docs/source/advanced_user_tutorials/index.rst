@@ -18,9 +18,12 @@ narration, and control over how Algan renders.
    backgrounds_and_post_processing
    transparent_backgrounds
    audio_and_speech
+   custom_animations
    animating_out_of_order
    multi_scene_projects
    performance_and_quality
    renderer_limitations
    settings
+   saving_videos_and_images
+   the_render_daemon
    extending_algan
