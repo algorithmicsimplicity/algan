@@ -205,7 +205,28 @@ becoming a solid tears into visibly separated strips mid-flight, because the PN
 triangles are paired independently. That one *is* in `become`'s docstring; its
 severity is not.
 
-### 10. Reported by Ox, not independently reproduced here
+### 10. `Arrow3D` is the same aggregate defect and is not fixed
+
+`Arrow3D.get_render_primitives` builds the shaft, the tip and their end discs
+itself -- its own comment says none of them is a Scene actor and it is the only
+thing that asks them to build. So it is an aggregator exactly as `Polyhedron`
+is, and `become` publishes its parts separately. Both directions are wrong on
+`HEAD` and still wrong here, identically: `Sphere -> Arrow3D` misses by peak 35
+over 237 pixels, and `Arrow3D -> Sphere` **raises**
+(`RuntimeError: The expanded size of the tensor (1) must match the existing
+size (0)`). Verified pre-existing by running both against `e46264d` in a
+separate worktree. The point-cloud family (`PMobject`, `DotCloud`) aggregates
+the same way.
+
+Declaring `draws_descendants` on them is *not* the fix, and was tried and
+reverted: their `_morph_family` is `None`, so `_collect_morph_primitives` still
+decomposes them into their `Cylinder`/`Cone`/`Dot3D` parts while registration
+would withhold exactly those parts. The two halves have to move together, which
+means giving these aggregates a morph family so they can convert as one unit --
+a feature rather than a fix. `Polyhedron` is the one aggregate where the halves
+already agree, because its family is `"mesh"`.
+
+### 11. Reported by Ox, not independently reproduced here
 
 * **#2** the same-kind endpoint keeps the source's `color_texture` when the two
   sides' texel counts differ (the attribute name encodes `W*H`).
@@ -319,5 +340,13 @@ Two smaller notes from the same probe:
   answers `get_render_primitives` dropped the tip off `Line->Arrow` (peak 255
   over 282 pixels), because a `BezierCircuitCubic` answers it and yet does not
   draw its children. That is what `draws_descendants` exists to distinguish.
+* A second review pass by the same agent (`OX_BECOME_FIX_REVIEW.md`, run
+  against the fix diff) found two more things worth acting on, both now fixed:
+  the empty-tiling catch matched only one of the two torch messages an empty
+  tiling can raise (`cat` on one path, `stack` on the other), and an aggregator
+  was speaking for a child a *user* had attached to it, so that child was
+  withheld from the Scene and vanished from the morph. `Mob.owned_subtrees`
+  narrows the claim to what the aggregator built for itself, and
+  `test_a_polyhedron_speaks_only_for_the_geometry_it_built` guards it.
 * CPU only. No CUDA machine was available, so nothing here speaks for the CUDA
   baselines.

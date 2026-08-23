@@ -1589,6 +1589,15 @@ class Polyhedron(Mob):
     #: beads a spawned one does not have, and drew each of its faces twice.
     draws_descendants = True
 
+    def owned_subtrees(self):
+        """The faces this Polyhedron draws and the graph it declines to draw.
+
+        Both are its own construction and neither is a Mob in its own right.
+        Anything else below it is a user's, and stays a Scene actor -- speaking
+        for a user's child too would make their geometry vanish from a morph.
+        """
+        return [self.faces, self.graph]
+
     def _face_primitive_mobs(self):
         return [
             descendant

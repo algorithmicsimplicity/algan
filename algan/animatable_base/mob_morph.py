@@ -302,6 +302,10 @@ class MobMorphMixin:
         them dropped the tip off an ``Arrow`` grown as a placeholder inside a
         ``Line``.
 
+        An aggregator speaks only for the subtrees it built for itself, which
+        ``owned_subtrees`` names: a child a user hangs on a Polyhedron is not
+        one of them, and withholding it made the user's geometry disappear.
+
         The walk seeds from what ``mob`` is already attached to rather than from
         scratch, because ``_expand_n_children`` makes a placeholder a child
         before registering it, and the aggregator that will draw it is an
@@ -309,29 +313,48 @@ class MobMorphMixin:
         """
         actors = self.scene.actors
 
-        def under_an_aggregator(node, seen=None):
+        def owned_by(node):
+            """Ids of the subtrees ``node`` speaks for, or None for all of them."""
+            if not getattr(node, "draws_descendants", False):
+                return None
+            owned = node.owned_subtrees()
+            if not owned:
+                return "all"
+            ids = set()
+            for root in owned:
+                ids.update(id(mob) for mob in root.get_descendants())
+            return ids
+
+        def spoken_for(node, owner_ids):
+            return owner_ids == "all" or (
+                owner_ids is not None and id(node) in owner_ids
+            )
+
+        def seed(node, seen=None):
             seen = set() if seen is None else seen
             for parent in getattr(node, "parents", ()):
                 if id(parent) in seen:
                     continue
                 seen.add(id(parent))
-                if getattr(parent, "draws_descendants", False):
-                    return True
-                if under_an_aggregator(parent, seen):
-                    return True
-            return False
+                owner_ids = owned_by(parent)
+                if spoken_for(node, owner_ids):
+                    return owner_ids
+                inherited = seed(parent, seen)
+                if inherited is not None:
+                    return inherited
+            return None
 
-        def visit(node, drawn_by_ancestor):
+        def visit(node, owner_ids):
             draws_itself = hasattr(node, "get_render_primitives")
-            if not (drawn_by_ancestor and draws_itself) and not _identity_contains(
-                actors, node
-            ):
+            if not (
+                draws_itself and spoken_for(node, owner_ids)
+            ) and not _identity_contains(actors, node):
                 self.scene.add_actor(node)
-            aggregates = drawn_by_ancestor or getattr(node, "draws_descendants", False)
+            child_owner = owner_ids if owner_ids is not None else owned_by(node)
             for child in getattr(node, "children", ()):
-                visit(child, aggregates)
+                visit(child, child_owner)
 
-        visit(mob, under_an_aggregator(mob))
+        visit(mob, seed(mob))
         return mob
 
     def _expand_n_list(self, lst, n: int, counterparts=None) -> list:

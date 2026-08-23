@@ -104,6 +104,41 @@ def test_morphing_into_a_polyhedron_does_not_publish_its_vertex_dots(scene):
     assert not [actor for actor in scene.actors if isinstance(actor, Dot3D)]
 
 
+def test_a_polyhedron_speaks_only_for_the_geometry_it_built(scene):
+    """An aggregator's claim covers its own construction, not a user's child.
+
+    ``Polyhedron`` draws its faces and owns a vertex-and-edge graph it never
+    draws, so neither may be published separately. A Mob a *user* hangs on the
+    Polyhedron is neither: the Polyhedron will not draw it, so withholding it
+    from the Scene makes it disappear from the morph result even though
+    spawning the same hierarchy directly shows it.
+    """
+    with Off():
+        cube = Cube(side_length=1.0)
+        extra = Sphere(radius=0.25).move(UP * 1.2)
+        cube.add_children(extra)
+        cube.spawn()
+    spawned = {id(actor) for actor in _rendering_actors(scene) if actor.is_spawned()}
+    assert id(extra) in spawned, "the fixture no longer registers the user's child"
+
+    with Scene() as fresh:
+        with Off():
+            source = Sphere(radius=0.8).spawn()
+            target = Cube(side_length=1.0)
+            target.add_children(Sphere(radius=0.25).move(UP * 1.2))
+        with Sync(run_time=1.0):
+            result = source.become(target)
+        drawn = [
+            type(actor).__name__
+            for actor in _rendering_actors(fresh)
+            if actor.is_spawned() and not actor.is_despawned()
+        ]
+        assert result is not None
+        assert "Sphere" in drawn, (
+            f"the user's child was withheld from the Scene; drawn: {drawn}"
+        )
+
+
 def test_a_morphed_polyhedron_draws_each_face_once(scene):
     """The faces must not be published alongside the Polyhedron that draws them.
 

@@ -166,6 +166,18 @@ class Mob(
     #: vertex-and-edge graph).
     draws_descendants = False
 
+    def owned_subtrees(self) -> list:
+        """The child subtrees this Mob built for itself, when it aggregates.
+
+        Only consulted when :attr:`draws_descendants` is set, and it narrows
+        that claim: a Polyhedron speaks for the faces it draws and the
+        vertex-and-edge graph it deliberately does not, but not for a child a
+        user hung on it afterwards. Without the distinction, a morph into a
+        Polyhedron carrying user geometry withheld that geometry from the Scene
+        and it vanished. Returning an empty list means "everything below me".
+        """
+        return []
+
     #: Whether this Mob's triangles form a CLOSED shell -- every camera ray
     #: that enters the geometry crosses a second time on its way out. ``False``
     #: (the default) leaves ``opacity`` compositing once per crossing, which is

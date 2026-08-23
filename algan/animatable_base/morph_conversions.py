@@ -23,6 +23,16 @@ class MorphConversionError(RuntimeError):
     """A registered family could not be converted to the PN morph medium."""
 
 
+#: What torch says when the bezier tiler hands it an empty tiling. Two spellings
+#: because the tiler reaches torch through ``cat`` on one path and ``stack`` on
+#: the other, depending on where it runs out of tiles; matching only the first
+#: left the second re-raising the crash this fallback exists to prevent.
+_EMPTY_TILING_MESSAGES = (
+    "non-empty list of Tensors",
+    "non-empty TensorList",
+)
+
+
 @dataclass(frozen=True)
 class MorphConversion:
     to_pn_soup: Callable
@@ -325,8 +335,11 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
             # circuit's opacity a few lines below in any case -- so stand one
             # degenerate triangle at the path's centroid, which contributes the
             # rows the morph interpolates and no visible area. Matched on the
-            # message so an unrelated RuntimeError still reaches the caller.
-            if "non-empty list of Tensors" not in str(exc):
+            # message so an unrelated RuntimeError still reaches the caller --
+            # and on BOTH messages an empty tiling can produce, since the tiler
+            # reaches torch through `cat` on one path and `stack` on the other
+            # depending on where it runs out of tiles.
+            if not any(marker in str(exc) for marker in _EMPTY_TILING_MESSAGES):
                 raise
             local_2d = projected.reshape(-1, 2).mean(0).expand(1, 3, 2)
         else:

@@ -106,6 +106,10 @@ BUILDERS = {
         Line(LEFT, RIGHT), Line(UP, UP * -1)
     ),
     "CrossedLinesGroup": lambda: Group(Line(LEFT, RIGHT), Line(UP, UP * -1)),
+    "Arrow3D": lambda: __import__("algan").Arrow3D(),
+    "DotCloud": lambda: __import__("algan").DotCloud(
+        points=torch.tensor([[-0.6, 0.0, 0.0], [0.0, 0.5, 0.0], [0.6, -0.3, 0.0]])
+    ),
     "Cross": lambda: __import__("algan").Cross(),
     "VGroupTwoSquares": lambda: __import__("algan").VGroup(
         Square(color=BLUE).move(LEFT), Square(color=BLUE).move(RIGHT)
