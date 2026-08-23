@@ -168,11 +168,40 @@ def _interior(opaque, background_byte):
     return cv2.erode(mask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
 
 
+def _ink_ratio(opaque, faded, background_byte):
+    """Total ink at this alpha as a fraction of the opaque frame's total ink.
+
+    Ink is ``sum |rendered - backdrop|`` in linear light over the WHOLE window,
+    silhouette included. The interior deviation above deliberately erodes the
+    antialiased rim, so nothing else here would notice a fix that got the
+    interior right by under-covering the edge -- which is the failure mode the
+    one-mesh ceiling's ``max(front, back)`` shape exists to avoid (a plain
+    suppression flipped a rod's signed coverage error negative and notched
+    1676 of 3508 interior pixels; see ``ANALYTIC_AA_ONE_MESH``). For a correct
+    alpha composite this ratio is the authored alpha, edge and all.
+
+    The absolute value is load-bearing, not tidiness. Signed, a shape that is
+    brighter than the backdrop in one channel and darker in another cancels
+    against itself, and over a light backdrop the ratio's denominator collapses
+    -- it read 0.579 for a flat ``Circle`` at alpha 0.55, and -0.199 for a
+    sphere. Per channel ``rendered - backdrop`` is exactly ``a * (opaque -
+    backdrop)``, so taking the magnitude first keeps the ratio linear in alpha
+    while removing the cancellation. The ``circle`` arm is what caught this:
+    when the control fails, the metric is wrong.
+    """
+    bg = _srgb_to_linear(float(background_byte))
+    ink_opaque = np.abs(_srgb_to_linear(opaque) - bg).sum()
+    if abs(ink_opaque) < 1e-9:
+        return float("nan")
+    return float(np.abs(_srgb_to_linear(faded) - bg).sum() / ink_opaque)
+
+
 def _score(opaque, faded, background_byte, alpha):
-    """``(dev_mean, dev_max, eff_alpha, n_pixels)`` for one arm at one alpha."""
+    """``(dev_mean, dev_max, eff_alpha, ink_ratio, n_pixels)`` for one arm."""
     mask = _interior(opaque, background_byte)
+    ink = _ink_ratio(opaque, faded, background_byte)
     if not mask.any():
-        return float("nan"), float("nan"), float("nan"), 0
+        return float("nan"), float("nan"), float("nan"), ink, 0
     bg = _srgb_to_linear(float(background_byte))
     ideal = _linear_to_srgb(alpha * _srgb_to_linear(opaque) + (1.0 - alpha) * bg)
     dev = np.abs(faded - ideal)[mask]
@@ -181,7 +210,7 @@ def _score(opaque, faded, background_byte, alpha):
     # backdrop for the division to be conditioned.
     usable = mask[..., None] & (np.abs(span) > 0.02)
     eff = ((_srgb_to_linear(faded) - bg) / np.where(usable, span, 1.0))[usable]
-    return dev.mean(), dev.max(), eff.mean(), int(mask.sum())
+    return dev.mean(), dev.max(), eff.mean(), ink, int(mask.sum())
 
 
 def main() -> int:
@@ -221,7 +250,7 @@ def main() -> int:
     failures = []
     print(
         f"{'arm':18s} {'backdrop':9s} {'alpha':>6s} {'dev mean':>9s} "
-        f"{'dev max':>8s} {'eff alpha':>10s} {'px':>6s}"
+        f"{'dev max':>8s} {'eff alpha':>10s} {'ink':>7s} {'px':>6s}"
     )
     for arm in _ARMS:
         ambient = arm != "sphere_noambient"
@@ -230,16 +259,18 @@ def main() -> int:
             opaque = frames[(bg_name, ambient, 1.0)][window(key_arm)]
             for alpha in ALPHAS[1:]:
                 faded = frames[(bg_name, ambient, alpha)][window(key_arm)]
-                dev_mean, dev_max, eff, n = _score(opaque, faded, bg_byte, alpha)
+                dev_mean, dev_max, eff, ink, n = _score(opaque, faded, bg_byte, alpha)
                 flag = ""
                 if not np.isnan(dev_mean) and (
-                    dev_mean > TOLERANCE or abs(eff - alpha) > ALPHA_TOLERANCE
+                    dev_mean > TOLERANCE
+                    or abs(eff - alpha) > ALPHA_TOLERANCE
+                    or abs(ink - alpha) > ALPHA_TOLERANCE
                 ):
                     flag = "  <-- off"
-                    failures.append((arm, bg_name, alpha, dev_mean, eff))
+                    failures.append((arm, bg_name, alpha, dev_mean, eff, ink))
                 print(
                     f"{arm:18s} {bg_name:9s} {alpha:6.2f} {dev_mean:9.2f} "
-                    f"{dev_max:8.2f} {eff:10.3f} {n:6d}{flag}"
+                    f"{dev_max:8.2f} {eff:10.3f} {ink:7.3f} {n:6d}{flag}"
                 )
 
     print()
