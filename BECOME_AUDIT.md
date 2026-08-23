@@ -127,226 +127,206 @@ empty Groups gave it nothing to record. The roots still have attributes of their
 own, so that case now records a root-attribute morph -- which is both the right
 thing to animate and what makes it occupy its `run_time`.
 
+## Fixed in the second pass
+
+### 5. `become(ImageMob)` and `strategy="dissolve"` crashed on several types
+
+**16 of 841 matrix pairs**, all through one line -- `_fit_bbox`'s
+`mob.scale(scale)` with a non-uniform 3-vector. The bug was in `Mob.scale`, not
+in `become`: `Star().scale(torch.tensor([1.5, 0.8, 1.0]))` raised on its own.
+Manim-compat Mobs passed the factor into the vendored Manim mobject unconverted,
+so NumPy deferred to the tensor and the points came back torch; packed Mobs met
+a per-member pivot basis against per-point child rows. Both fixed. Deliberately
+**not** through `to_manim`: that converter mirrors z, and a per-axis multiplier
+is not a coordinate.
+
+Fixing it exposed a second, latent bug underneath in the dissolve path itself:
+`replacement.set(opacity=torch.zeros_like(replacement.opacity))` recurses, so on
+a packed Mob a tensor shaped like the root's opacity met a descendant of a
+different width. Every dissolve into a `Text` or `Tex` raised. A scalar
+broadcasts instead.
+
+### 6. `Arrow3D` and the point-cloud family are one morph unit now
+
+Both build their whole subtree in `get_render_primitives` and none of the parts
+is a Scene actor -- the same thing `Polyhedron` says with `draws_descendants` --
+but they had no `_morph_family`, so `become` decomposed them into parts it then
+had to publish separately. `Sphere -> Arrow3D` missed by 35 channel values over
+237 pixels; `Arrow3D -> Sphere` raised. Both are byte-identical to the target
+now. A new `"aggregate"` adapter converts each part and concatenates, which is
+what makes the two halves agree: without a family, pairing decomposed them while
+registration withheld the parts, and declaring `draws_descendants` alone made it
+worse rather than better.
+
+### 7. Morphing into a coarser Surface ends on that surface
+
+Reconciliation moves both sides to the finer grid, so the coarser one was
+interpolated up -- and interpolating a coarse grid does not reproduce the
+surface those samples came from. A 6x6 plane becoming a 4x9 wave ended on a
+bilinear resampling of four columns: **0.0258 mean deviation** from the analytic
+wave, 0.108 at worst. `Surface._change_resolution` already re-evaluates the
+parametric function on a new grid, which is what reconciliation should have been
+doing: **0.00064 mean**, a 40x improvement. Packed surfaces keep the
+interpolating path.
+
+The endpoint is now sampled at the reconciled resolution -- 6x9 where the target
+is 4x9 -- so it renders at a finer tessellation of the same surface and is not
+pixel-identical to the target rendered alone. That is a sampling difference, not
+a shape one, which is why the guard measures deviation from the surface's own
+function rather than distance to the target's sample points: a nearest-point
+comparison reports half a grid cell for a perfectly correct morph.
+
+### 8. A morph into a stroke-only shape cross-fades
+
+`_bezier_to_pn_soup` zeroes an unfilled circuit's opacity because there is no
+interior to convert, so a cross-family morph into an `Arrow`, `Line`, `Axes` or
+unfilled `Square` had nothing to show: the solid faded to nothing, roughly a
+third of the frames were empty, and the outline appeared at the end. Such a pair
+now cross-fades. `strategy="morph"` still forces the geometric route for a
+caller who wants it.
+
+### 9. Cross-family solids no longer tear
+
+The two soups were paired triangle by triangle in build order, so a Cylinder
+becoming a Sphere split into visibly separated strips while independent
+triangles crossed to unrelated counterparts. `reorder_batch_to_minimize_movement`
+already existed but only ran under `minimize_movement`; it now runs by default
+under a cap, because it is a Hungarian solve over an N x N matrix. Measured on
+this CPU: **0.07s at 1024 triangles, 0.66s at 2048, 0.97s at 2500, 2.2s at 3200,
+3.3s at 4096**. The cap is 2500 -- a morph still pays about a second, and it
+covers every solid measured (Sphere 462, Torus 1716, a Square's triangulation
+2178) while leaving out text-sized soups (`Text("hello")` is 4379) where the
+solve runs away. Over the cap it logs at `PERF` rather than degrading silently.
+
+### 10. A Surface takes the target's colour texture
+
+A texture is stored under an attribute name encoding its own `W * H`, so two
+surfaces with differently-sized textures share no attribute for the same-kind
+morph's `animatable_attrs` intersection to copy: a 4x4 red texture becoming an
+8x4 blue one ended red. Assigned through the property rather than the generic
+`_MORPH_ADOPTED_ATTRS` list, because the getter hands back the stored
+`[1, 1, W*H*5]` row and the setter wants the `[W, H, 5]` image.
+
+Also: `_expand_n_tensor` loses a `counterparts` argument it accepted and ignored
+-- deliberately, per its own docstring, but both call sites passed one so it read
+as an oversight rather than a decision.
+
 ## Found, not fixed
 
-### 5. `become(ImageMob)` and `strategy="dissolve"` crash on several types
+### 11. The frame at exactly the PN swap instant shows the soup
 
-**16 of 841 matrix pairs.** Every one funnels through one line --
-`_fit_bbox`'s `mob.scale(scale)`, where `scale` is a non-uniform 3-vector -- and
-the failure is in `Mob.scale`, not in `become`:
+On the cross-family route the soup despawns and the replacement spawns at the
+same timestamp. Sampled at that instant, the frame differs from the target by up
+to **30 channel values over 132 pixels** -- and is byte-identical a frame later.
+Every PN morph into a `Sphere` shows it (`Square`, `Cylinder`, `Cube` sources).
+It is the soup's tessellation against the real surface's, at a moment when the
+soup has already interpolated to the target's geometry, so it is a sub-frame
+seam rather than a wrong endpoint. Left alone: moving the swap risks the double
+draw that `test_pn_swap_uses_half_open_lifespans_with_no_gap_or_double_draw`
+exists to prevent, for something a viewer sees for at most one frame.
 
-| Type | Failure | Reproduces outside `become`? |
-| --- | --- | --- |
-| `Star`, `MathTex`, `Axes` (Manim-compat) | `TypeError: expected np.ndarray (got Tensor)` | **Yes** -- `Star().scale(torch.tensor([1.5, 0.8, 1.0]))` fails on its own; a uniform float works |
-| a packed circuit (a `Text`'s inner `BezierCircuitCubic`) | basis rows (5) vs point rows (371) | Yes, calling `scale` on the packed circuit directly |
-| `Arrow`, `DoubleArrow` | Manim's `get_last_handle` indexes `points[-2]` on a length-1 array | Only via `_fit_bbox` |
+### 12. `_expand_n_batch`'s two `parent_batch_sizes` branches
 
-Left alone deliberately: the fix belongs in `Mob.scale`'s handling of non-uniform
-scale on packed and Manim-compat Mobs, and getting that wrong would break far
-more than `become`.
+Reported by Ox (#5): the `objects_per_parent == 1` fast path and the `bincount`
+path build lists of different lengths for the same input. Looked for an input
+that produces a wrong result and **could not construct one**: across
+`Text("ab") -> Text("hello")` and its reverse, every component keeps
+`sum(parent_batch_sizes) == location.shape[-2]`, every character view indexes,
+and each length matches its Mob's real member structure -- one entry per glyph on
+the per-glyph Mobs, one on the circuit. Changing it without a failing case would
+be a guess.
 
-### 6. A Manim-compat container as a morph target does not land on the target
+### 13. Reported by Ox, resolved or not reproduced
 
-`Sphere().become(VGroup(Square(), Square()))` misses by peak 255 over **7.21% of
-the frame**; `Sphere().become(Cross())` by 252 over 0.41%. The native-Algan
-equivalent, `Sphere().become(Group(Line(...), Line(...)))`, is **byte-identical**,
-as is `Sphere().become(Square(filled=False))`. So this is the `manim_compat`
-wrapper as a target, not the geometry and not the PN route -- and it is the same
-subsystem as finding 5. Pre-existing; the `Cross` case only became reachable
-because finding 1 was fixed.
+* **#2** `color_texture` not adopted -- confirmed and fixed, finding 10 above.
+* **#7** `_expand_n_tensor`'s dead `counterparts` argument -- removed, above.
+* **#5** the `parent_batch_sizes` branches -- finding 12 above.
+* **#4** `z_index` not adopted -- **did not reproduce**.
+  `Square(z_index=2).become(Circle(z_index=5))` ends with the target's `z_index`
+  without help, so it was deliberately left out of `_MORPH_ADOPTED_ATTRS`:
+  assigning it there would bypass the setter that propagates it to the
+  sub-hierarchy.
 
-### 7. Morphing into a coarser Surface ends on an interpolation of it
+## The assignment: what changed, and why
 
-`_reconcile_grid_pair` resamples both sides to the per-axis maximum grid, so a
-target coarser along an axis is resampled *upward* -- and `F.interpolate` over a
-coarse grid does not reproduce the surface those samples came from. A 6x6 plane
-becoming a 4x9 wave ends **0.161 away** on a surface one unit across: 178 channel
-values over 0.70% of an LD frame. Guarded as a strict `xfail` with the mechanism
-and the intended fix (re-evaluate `Surface._func` on the finer grid rather than
-interpolating its samples, which has to go through the base-grid cache because
-the grid holds transformed coordinates).
-
-### 8. One frame at the PN phase boundary shows the soup, not the target
-
-On the cross-family route the triangle soup despawns and the target replacement
-spawns at the same instant. At exactly that instant the soup has interpolated to
-the target's geometry but is still diced as a soup rather than as the real
-surface, so the frame differs from the target by up to **30 channel values over
-132 pixels** -- and is byte-identical 0.05s later. Every PN morph into a `Sphere`
-shows it (`Square -> Sphere`, `Cylinder -> Sphere`, `Cube -> Sphere`), and a
-1-second morph at 30fps lands a frame exactly there. Pre-existing and small; the
-fix would be to spawn the replacement a hair before the soup despawns rather than
-at the same timestamp, which risks the double-draw
-`test_pn_swap_uses_half_open_lifespans_with_no_gap_or_double_draw` guards.
-
-### 9. A morph into a stroke-only shape goes blank in the middle
-
-This is the worst-looking thing in the audit, and no assertion anywhere covers
-it, because every check looks at the endpoints. Film-strip
-`Cylinder -> Sphere -> Arrow` (`benchmarks/_become_chain_filmstrip.py`) and the
-second morph is **empty for roughly a third of its duration**: the sphere fades
-away, several frames show nothing at all, and the arrow pops in near the end.
-
-`_bezier_to_pn_soup` zeroes an unfilled circuit's opacity, correctly -- there is
-no fill to convert, and the stroke is not in the soup. But that makes the whole
-target soup transparent, so the cross-family route tweens the *source's* opacity
-down to zero and the morph has nothing to show until the real target spawns.
-Every morph into a `Line`, `Arrow`, `Axes`, unfilled `Square` or any other
-stroke-only shape does this, and so does the reverse.
-
-Two ways out, neither a small patch: convert the stroke to a ribbon of triangles
-so it is genuinely in the soup, or -- much cheaper -- give the target soup the
-circuit's own opacity rather than zero, so the morph travels through a filled
-silhouette of the target and the border phase then opens it out into an outline.
-The second is a choreography change and wants a decision rather than a guess.
-
-The same strip shows the documented seam caveat in its first row: a solid
-becoming a solid tears into visibly separated strips mid-flight, because the PN
-triangles are paired independently. That one *is* in `become`'s docstring; its
-severity is not.
-
-### 10. `Arrow3D` is the same aggregate defect and is not fixed
-
-`Arrow3D.get_render_primitives` builds the shaft, the tip and their end discs
-itself -- its own comment says none of them is a Scene actor and it is the only
-thing that asks them to build. So it is an aggregator exactly as `Polyhedron`
-is, and `become` publishes its parts separately. Both directions are wrong on
-`HEAD` and still wrong here, identically: `Sphere -> Arrow3D` misses by peak 35
-over 237 pixels, and `Arrow3D -> Sphere` **raises**
-(`RuntimeError: The expanded size of the tensor (1) must match the existing
-size (0)`). Verified pre-existing by running both against `e46264d` in a
-separate worktree. The point-cloud family (`PMobject`, `DotCloud`) aggregates
-the same way.
-
-Declaring `draws_descendants` on them is *not* the fix, and was tried and
-reverted: their `_morph_family` is `None`, so `_collect_morph_primitives` still
-decomposes them into their `Cylinder`/`Cone`/`Dot3D` parts while registration
-would withhold exactly those parts. The two halves have to move together, which
-means giving these aggregates a morph family so they can convert as one unit --
-a feature rather than a fix. `Polyhedron` is the one aggregate where the halves
-already agree, because its family is `"mesh"`.
-
-### 11. Reported by Ox, not independently reproduced here
-
-* **#2** the same-kind endpoint keeps the source's `color_texture` when the two
-  sides' texel counts differ (the attribute name encodes `W*H`).
-* **#5** `_expand_n_batch`'s `objects_per_parent == 1` fast path and its
-  `bincount` path build structurally different `parent_batch_sizes`.
-* **#7** `_expand_n_tensor` accepts a `counterparts` argument and never reads it,
-  though both call sites pass one. Confirmed by reading; harmless today, but the
-  docstring of `_expand_n_list` describes counterpart-aware behaviour that this
-  sibling does not have.
-* **#4** `z_index` not adopted -- **did not reproduce**. `Square(z_index=2).become(Circle(z_index=5))`
-  ends with the target's `z_index` without any help, so it was deliberately left
-  out of `_MORPH_ADOPTED_ATTRS`: assigning it there would bypass the setter that
-  propagates it to the sub-hierarchy.
-
-## The assignment: is there a better way?
-
-Yes, and the evidence is one picture.
-
-`_primitive_pair_cost` builds `compatibility * 1e6 + secondary`, where by default
+`_primitive_pair_cost` builds `compatibility * 1e6 + secondary`, where the
+default `secondary` used to be
 
 ```python
-secondary = abs(source_position - target_position) + min(distance, 1e3) * 1e-6
+abs(source_position - target_position) + min(distance, 1e3) * 1e-6
 ```
 
 The order term spans `[0, 1]`. The distance term is capped at `1e-3`. **So the
-default pairs by traversal order and the geometry only breaks exact ties** --
-which is what the comment says it intends ("Distance only breaks otherwise equal
-assignments without overriding that order"), but the consequence is stronger than
+default paired by traversal order and the geometry only broke exact ties** --
+which is what the comment said it intended, but the consequence is stronger than
 it sounds. A Group's child order is very often unrelated to its layout: built by
 a loop, by `add()`, from a dict.
 
 `benchmarks/_become_pairing_aesthetics.py`'s `scrambled_children` is that case
 reduced to nothing else: four identical squares in the same four positions in
 both hierarchies, differing *only* in the order the Group lists them. Nothing
-needs to move. Under the default, all four converge on the centre of the screen
-and pile up on top of each other at the halfway frame before flying back out.
-Under `minimize_movement=True` they stand perfectly still.
+needs to move. Under the old rule all four converged on the centre of the screen
+and piled up at the halfway frame before flying back out.
 
-What I would change, and what I measured:
+The three things that can distinguish a pairing are now each normalized to
+`[0, 1]` and weighted to sum to 1:
 
-1. **Make the two terms commensurable.** Normalize the distance by the span of
-   the primitive centres so it also lands in `[0, 1]`, then blend, instead of
-   adding a term that cannot exceed `1e-3`. A weighting of roughly
-   `0.35 * order_gap + 0.5 * position_gap` reproduces the still result on
-   `scrambled_children` and leaves `bar_reorder` and `size_swap` looking
-   identical to today. Order stays the default semantics; it stops being the
-   *only* semantics.
-2. **Put size in the cost at all.** It is in neither mode. Two same-type
-   candidates at the same distance are equally good matches whether one is the
-   source's size and the other ten times it. A saturating log-ratio term is the
-   cheap version.
+| term | weight | what it measures |
+| --- | --- | --- |
+| order | 0.35 | the gap between the two normalized traversal positions |
+| position | 0.50 | centre-to-centre distance over the spread of the parts being paired |
+| size | 0.15 | log ratio of extents, saturating at one decade |
 
-Point 2 is a taste call rather than a defect -- `size_swap` shows a big circle
-and a small one exchanging places, and all three rules cross-fade them in place
-rather than sliding them past each other. Both readings are defensible (Manim's
-`Transform` does the former, `TransformMatchingShapes` the latter), so it wants a
-decision, not a patch.
+Order still leads, because it is what makes `Text("abc") -> Text("abd")` pair a
+with a. Position is close behind and is measured against the **spread of the
+parts being paired**, not the frame, so a diagram ten units across and a glyph a
+tenth of one get the same range of position costs and the same balance. Size was
+in neither mode before; it is the nudge that keeps a big part big.
 
-**I did not change the default.** Any change to the pairing moves rendered
-output, and `tests/full_renders/complex_hierarchy_become` is precisely the scene
-that would move -- which needs both baseline sets regenerated, and the CUDA set
-needs a CUDA machine. The harness and the numbers are here so the call can be
-made with the filmstrips in view.
+`minimize_movement=True` is untouched: a caller who asks for the least motion
+still gets pure proximity.
 
-Two smaller notes from the same probe:
+Measured effects: `scrambled_children` now stands perfectly still, matching what
+`minimize_movement=True` always did, and `bar_reorder`, `size_swap` and
+`cluster_regroup` are visually unchanged. `_become_pairing_aesthetics.py` keeps
+the old rule available as its `order` row, so the two can still be put side by
+side.
 
-* `minimize_movement` is all-or-nothing: either order decides or distance does,
-  never a blend. The blend above subsumes both.
-* The compatibility rank dominates by `1e6`, so a same-type pair is always
-  preferred over a nearer different-type one -- `Square@left + Circle@right`
-  becoming `Circle@left + Square@right` sends both across the screen rather than
-  changing shape in place. That is defensible (it preserves identity) and both
-  band scales are safe against the secondary terms, per Ox #9. Noted, not
-  changed.
+The cost's subtree walks are also memoized per assignment rather than recomputed
+per matrix cell -- the previous code walked both subtrees for every cell of an
+`S x T` matrix, with a `.cpu()` sync each (Ox audit #8), and adding a size term
+would have doubled that.
+
+**This moves rendered output for any hierarchy morph, and no baseline was
+regenerated** -- that was the instruction. `tests/full_renders`'
+`complex_hierarchy_become` is the scene that moves; its CPU and CUDA baselines
+both need regenerating, and the CUDA set needs a CUDA machine.
+
+One thing deliberately left alone: the compatibility rank dominates by `1e6`, so
+a same-type pair is always preferred over a nearer different-type one --
+`Square@left + Circle@right` becoming `Circle@left + Square@right` sends both
+across the screen rather than changing shape in place. That preserves identity,
+which is defensible, and both band scales are safe against the secondary terms
+(Ox #9).
 
 ## Verification
 
-* `pytest -q tests/unit_tests tests/fast` -- **1834 passed, 93 skipped, 1 xfailed,
-  1 failed**. The failure is `tests/fast`'s pixel-compared render, and it is
-  **pre-existing**: checking `HEAD` (`e46264d`) out into a separate worktree and
-  running the same suite there gives the identical failure, *"fast.mp4 differs
-  from its baseline by up to 5 channel values (worst at frame 27)"*, against a
-  tolerance of 2. It also cannot be caused by anything here --
-  `tests/fast/scene.py` never calls `become`, and every function this branch
-  touches is reachable only from `become`. Re-running with the Manim Tex cache
-  warm gives the same 5, so it is not the cold-cache effect `CLAUDE.md`
-  describes either; it is the CPU baseline being stale on this machine.
-* `tests/unit_tests/test_morph_become.py` -- 26 passed, unchanged by any fix.
-* `tests/unit_tests/test_morph_become_audit.py` -- 9 passed, 1 xfail. Every one
-  reproduced its defect before the corresponding fix; the two endpoint-property
-  tests were re-checked by blanking `_MORPH_ADOPTED_ATTRS` and confirming they
-  fail.
-* `benchmarks/_become_endstate_check.py` -- of the 26 default pairs, 18 landed
-  byte-identically on the target before the fixes and **23** after. All three
-  that still differ (`Square->Sphere`, `Cylinder->Sphere`, `Cube->Sphere`) are
-  finding 8's one-frame phase-boundary artifact and are byte-identical 0.05s
-  later. Findings 6 and 7 are outside this pair list and were measured
-  separately (`Sphere:VGroupTwoSquares` at 7.21%, `SurfacePlane:SurfaceWaveCoarse`
-  at 0.70%).
-* Five pairs went from differing to byte-identical: `Square->SquareUnfilled` and
-  its reverse, `Square->Star`, `Sphere->Cube`, `Cube->Tetrahedron`,
-  `Polyhedron->Cube`.
-* One pair moved that was previously matching, and it is worth stating rather
-  than burying: **`Cube->Sphere`** now shows finding 8's phase-boundary frame
-  (30 channel values over 132 pixels, byte-identical 0.05s later) because a Cube
-  is now one morph unit and the pair takes the cross-family route instead of
-  pairing twelve faces against one Sphere. It is the same one-frame artifact
-  `Square->Sphere` and `Cylinder->Sphere` already had.
-* An earlier iteration of the fix *did* cause a real regression, caught by this
-  harness and not by any test: withholding registration under any Mob that
-  answers `get_render_primitives` dropped the tip off `Line->Arrow` (peak 255
-  over 282 pixels), because a `BezierCircuitCubic` answers it and yet does not
-  draw its children. That is what `draws_descendants` exists to distinguish.
-* A second review pass by the same agent (`OX_BECOME_FIX_REVIEW.md`, run
-  against the fix diff) found two more things worth acting on, both now fixed:
-  the empty-tiling catch matched only one of the two torch messages an empty
-  tiling can raise (`cat` on one path, `stack` on the other), and an aggregator
-  was speaking for a child a *user* had attached to it, so that child was
-  withheld from the Scene and vanished from the morph. `Mob.owned_subtrees`
-  narrows the claim to what the aggregator built for itself, and
-  `test_a_polyhedron_speaks_only_for_the_geometry_it_built` guards it.
+* `pytest -q tests/unit_tests tests/fast` -- **1841 passed, 93 skipped, 1
+  failed**. The failure is `tests/fast`'s pixel-compared render and is
+  **pre-existing and unchanged**: checking `HEAD` (`e46264d`) out into a separate
+  worktree gives the identical failure, *"up to 5 channel values, worst at frame
+  27"*, against a tolerance of 2; the number is still exactly 5 after every
+  change here, including one to `Mob.scale`, which is used everywhere.
+* `tests/unit_tests/test_morph_become.py` + `test_morph_become_audit.py` -- **42
+  passed**, no xfails. Every audit test reproduced its defect before the
+  corresponding fix.
+* `benchmarks/_become_stress2.py --mode matrix` -- **841 pairs**: 838 ok, 1
+  problem and 2 errors before this pass, all three now clean. (The two errors
+  were `Image -> Text` and `Image -> Tex`, the latent recursive-set bug that the
+  `Mob.scale` fix uncovered; the problem was the harness measuring a surface
+  against the target's sample points.)
+* `benchmarks/_become_endstate_check.py` -- **23 of 26** default pairs
+  byte-identical to the target, up from 18. The three that differ are finding
+  11's swap-instant frame and are byte-identical one frame later.
 * CPU only. No CUDA machine was available, so nothing here speaks for the CUDA
   baselines.

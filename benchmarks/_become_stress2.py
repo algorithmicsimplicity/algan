@@ -336,11 +336,22 @@ def run_case(
                 scale = float(
                     (reference.amax(0) - reference.amin(0)).abs().max().clamp_min(0.5)
                 )
+                # DELIBERATELY COARSE. A nearest-point comparison cannot tell a
+                # correct surface sampled differently from a slightly wrong one:
+                # a morph ending exactly on the target but sampled 6x9 where the
+                # target is 4x9 reports about half a grid cell in the sparse
+                # direction, and nothing about the point sets says which it is.
+                # So this is a smoke test for "the morph landed somewhere near
+                # the right place"; the precise standard lives in
+                # _become_endstate_check.py, which compares pixels, and in the
+                # unit test that measures a surface against its own analytic
+                # function rather than against the target's samples.
+                tolerance = 0.2 * scale
                 error = _chamfer(end_points, reference)
-                if error > 0.12 * scale:
+                if error > tolerance:
                     result["problems"].append(
                         f"end point cloud is {error:.3f} from the target "
-                        f"(scale {scale:.2f})"
+                        f"(scale {scale:.2f}, tolerance {tolerance:.3f})"
                     )
 
             # (b) Nothing may be non-finite at any sampled time.

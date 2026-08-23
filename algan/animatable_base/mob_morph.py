@@ -1077,7 +1077,14 @@ class MobMorphMixin:
         )
         if not piecewise:
             self._fit_bbox(replacement, source)
-            replacement.set(opacity=torch.zeros_like(replacement.opacity))
+            # A SCALAR, NOT ``zeros_like(root.opacity)``. This ``set`` recurses,
+            # and on a packed Mob the root carries one opacity row per member
+            # while its descendants carry one per point -- so a tensor shaped
+            # like the root's meets a descendant of a different width and the
+            # subtraction that records the change raises. Every dissolve into a
+            # Text or a Tex hit it. A scalar broadcasts to whatever each
+            # descendant's rows are.
+            replacement.set(opacity=0.0)
             return False
 
         for index, part in enumerate(replacement_parts):
@@ -1085,7 +1092,7 @@ class MobMorphMixin:
                 (index * len(source_parts)) // len(replacement_parts)
             ]
             self._fit_bbox(part, source_part)
-            part.set(opacity=torch.zeros_like(part.opacity))
+            part.set(opacity=0.0)
         replacement.set_non_recursive(opacity=torch.zeros_like(replacement.opacity))
         return True
 
@@ -1098,11 +1105,11 @@ class MobMorphMixin:
                     (index * len(target_parts)) // len(source_parts)
                 ]
                 self._fit_bbox(part, target_part)
-                part.set(opacity=torch.zeros_like(part.opacity))
+                part.set(opacity=0.0)
             source.set_non_recursive(opacity=torch.zeros_like(source.opacity))
         else:
             self._fit_bbox(source, target)
-            source.set(opacity=torch.zeros_like(source.opacity))
+            source.set(opacity=0.0)
 
     def _record_dissolve(
         self,
