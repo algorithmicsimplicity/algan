@@ -4,14 +4,23 @@ The documentation carries two kinds of Python block and only one of them was
 ever executed by anything:
 
 * ``.. algan::`` blocks are rendered during a full documentation build, so a
-  broken one fails that build -- but the build renders every example, takes
-  minutes, and does not run in CI;
+  broken one fails that build -- but that build renders every example and takes
+  minutes, and the docs job in CI runs the structural build instead, which parses
+  each directive without executing its body;
 * ``.. code-block:: python`` blocks are syntax-highlighted and nothing more.
 
 Most of the documentation's code is the second kind, and most of it is a
 *fragment* -- three lines using an undefined ``mob`` -- which can never become a
 runnable scene without inventing scaffolding around it. So this module checks
-what each block can actually support, in three tiers:
+what each block can actually support, in four tiers:
+
+``test_algan_directive_is_well_formed``
+    Structural, every ``.. algan::`` block on both surfaces -- documentation
+    pages *and* docstrings in ``algan/`` -- no execution. Checks what the
+    directive itself requires of a block before it runs: a name argument, a body
+    that star-imports algan, one video out. The docs job in CI builds with
+    ``-t skip-manim``, so it never executes a body but does parse every
+    directive; this tier is the cheap stand-in for both halves.
 
 ``test_doc_example_uses_public_api``
     Static, every block, no execution. Resolves the names and attribute chains a
@@ -55,6 +64,7 @@ import ast
 import builtins
 import os
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -62,7 +72,9 @@ import pytest
 import algan
 from algan.scene_manager import SceneManager
 
-DOCS_SOURCE = Path(__file__).resolve().parents[2] / "docs" / "source"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCS_SOURCE = REPO_ROOT / "docs" / "source"
+PACKAGE_ROOT = REPO_ROOT / "algan"
 
 # Written as an reStructuredText comment on the line(s) immediately above a
 # block, so it never reaches the rendered page:
@@ -116,17 +128,27 @@ class DocExample:
     """One Python block lifted out of a documentation page."""
 
     def __init__(
-        self, path: Path, line: int, code: str, directive: str, opted_out: bool = False
+        self,
+        path: Path,
+        line: int,
+        code: str,
+        directive: str,
+        opted_out: bool = False,
+        name: str = "",
     ):
         self.path = path
         self.line = line
         self.code = code
         self.directive = directive
         self.opted_out = opted_out
+        self.name = name
 
     @property
     def id(self) -> str:
-        return f"{self.path.relative_to(DOCS_SOURCE).as_posix()}:{self.line}"
+        # Blocks come from documentation pages and from docstrings in the
+        # package, so anchor the path at whichever root contains it.
+        root = DOCS_SOURCE if DOCS_SOURCE in self.path.parents else REPO_ROOT
+        return f"{self.path.relative_to(root).as_posix()}:{self.line}"
 
     @property
     def skipped_by_marker(self) -> bool:
@@ -148,16 +170,22 @@ class DocExample:
 
 
 def _iter_blocks(path: Path):
-    """Yield ``(line, code, directive, opted_out)`` per Python block in a page."""
+    """Yield ``(line, code, directive, opted_out, name)`` per Python block."""
     lines = path.read_text(encoding="utf-8").splitlines()
     i, n = 0, len(lines)
     while i < n:
-        match = re.match(r"^(\s*)\.\.\s+(algan|code-block::\s*python)\b.*$", lines[i])
+        match = re.match(
+            r"^(\s*)\.\.\s+(algan|code-block::\s*python)\b(.*)$",
+            lines[i],
+        )
         if not match:
             i += 1
             continue
         indent = len(match.group(1))
         directive = "algan" if match.group(2) == "algan" else "code-block"
+        # The argument of `.. algan:: Name` -- empty when the author left it off,
+        # which is exactly what `AlganDirective.required_arguments` rejects.
+        name = match.group(3).lstrip(":").strip()
         body: list[str] = []
         base: int | None = None
         start = i + 1
@@ -186,7 +214,7 @@ def _iter_blocks(path: Path):
         if code:
             preceding = lines[max(0, i - _MARKER_LOOKBACK) : i]
             opted_out = any(SKIP_MARKER in line for line in preceding)
-            yield start, code, directive, opted_out
+            yield start, code, directive, opted_out, name
         i = j
 
 
@@ -195,13 +223,39 @@ def _collect_examples() -> list[DocExample]:
     for page in sorted(DOCS_SOURCE.rglob("*.rst")):
         if "_templates" in page.parts:
             continue
-        for line, code, directive, opted_out in _iter_blocks(page):
-            examples.append(DocExample(page, line, code, directive, opted_out))
+        for line, code, directive, opted_out, name in _iter_blocks(page):
+            examples.append(DocExample(page, line, code, directive, opted_out, name))
+    return examples
+
+
+def _collect_docstring_directives() -> list[DocExample]:
+    """Every ``.. algan::`` block written inside the package's own docstrings.
+
+    Scanned as text rather than through ``ast``: several classes get their
+    documentation from a module-level string assigned to ``__doc__`` later
+    (``manim_compat``'s ``MathTex`` and ``Title``), which no docstring walk sees.
+    """
+    examples = []
+    for module in sorted(PACKAGE_ROOT.rglob("*.py")):
+        if "external_libraries" in module.parts:
+            continue
+        if ".. algan::" not in module.read_text(encoding="utf-8"):
+            continue
+        for line, code, directive, opted_out, name in _iter_blocks(module):
+            if directive != "algan":
+                continue
+            examples.append(DocExample(module, line, code, directive, opted_out, name))
     return examples
 
 
 EXAMPLES = _collect_examples()
 COMPLETE = [e for e in EXAMPLES if e.is_complete_script and not e.skipped_by_marker]
+
+# Rendered examples live on both surfaces -- documentation pages and docstrings
+# on the API they document -- and the directive treats them identically.
+ALGAN_DIRECTIVES = [
+    e for e in EXAMPLES if e.directive == "algan"
+] + _collect_docstring_directives()
 
 
 def _ids(examples):
@@ -216,6 +270,62 @@ def test_documentation_has_examples_to_check():
     """
     assert len(EXAMPLES) > 100, f"only extracted {len(EXAMPLES)} doc examples"
     assert len(COMPLETE) > 20, f"only {len(COMPLETE)} complete doc scripts"
+    assert len(ALGAN_DIRECTIVES) > 100, (
+        f"only extracted {len(ALGAN_DIRECTIVES)} algan directives"
+    )
+    assert any(e.path.suffix == ".py" for e in ALGAN_DIRECTIVES), (
+        "no docstring examples extracted -- the package scan found nothing"
+    )
+
+
+# --------------------------------------------------------------------------
+# tier 0 -- what the documentation build itself requires
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("example", ALGAN_DIRECTIVES, ids=_ids(ALGAN_DIRECTIVES))
+def test_algan_directive_is_well_formed(example: DocExample):
+    """Every ``.. algan::`` block is one the documentation build can render.
+
+    The build is the only thing that executes these, it takes minutes because it
+    renders each one, and CI runs it *without* rendering (``-t skip-manim -W``).
+    So the structural half of a broken directive fails the docs job while the
+    body's half only shows up in a full local build. Both are cheap to check
+    here, and the alternative -- noticing on master -- has happened: a nameless
+    ``.. algan::`` in ``Scene.use_manim_defaults`` red-flagged every docs run
+    from the commit that added it.
+
+    The three rules are the directive's own (``required_arguments = 1``, and a
+    body executed in a namespace holding nothing but ``__name__``) plus
+    ``_find_video``'s, which needs exactly one video to embed.
+    """
+    assert example.name, (
+        f"{example.id}: `.. algan::` needs a name argument -- the directive "
+        f"takes one and Sphinx errors out without it. Follow the "
+        f"Example{{N}}{{Owner}} convention in DOCSTRINGS.md."
+    )
+    assert re.search(r"^\s*from algan import \*", example.code, re.M), (
+        f"{example.id} ({example.name}): the body runs in an empty namespace, "
+        f"so it must start with `from algan import *`."
+    )
+    saves = len(re.findall(r"\.save_(?:video|frame)\s*\(", example.code))
+    assert saves == 1, (
+        f"{example.id} ({example.name}): calls save_video/save_frame {saves} "
+        f"times; the directive embeds exactly one video and errors otherwise."
+    )
+
+
+def test_algan_directive_names_are_unique():
+    """Names identify an example's output file, so they have to be unique.
+
+    A reused one does not collide -- the directive disambiguates by appending
+    how many times it has seen the name -- but which of the two gets ``-1`` then
+    depends on the order Sphinx happens to read the pages in, so the asset a
+    page embeds is not stable across builds.
+    """
+    counts = Counter(e.name for e in ALGAN_DIRECTIVES if e.name)
+    duplicates = {name: count for name, count in counts.items() if count > 1}
+    assert not duplicates, f"reused example names: {duplicates}"
 
 
 # --------------------------------------------------------------------------

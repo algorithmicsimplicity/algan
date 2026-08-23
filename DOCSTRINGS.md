@@ -359,6 +359,10 @@ See Also
   - options are available when useful: `:quality:` (`low`/`medium`/`high`/`fourk`),
     `:save_last_frame:` for a still, `:save_as_gif:`, `:hide_source:`, `:no_autoplay:`.
     Prefer `:save_last_frame:` for anything static — every rendered example costs docs-build time.
+  - those first three rules are enforced by `test_algan_directive_is_well_formed`, over the
+    docstrings *and* the pages. Omitting the name is what CI catches: the docs job builds with
+    `-W`, and a nameless directive is a Sphinx error rather than a rendering one, so it fails
+    the run without anything having to render.
 - Use a plain ```` .. code-block:: python ```` for non-visual API (settings, `save_video` paths,
   return-value handling), as `Scene.save_video` does.
 - Examples must be *runnable as written* and show the parameter being documented. Prefer three short

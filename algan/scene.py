@@ -376,8 +376,9 @@ class Scene(RenderLoopMixin):
 
         Examples
         --------
-        .. algan::
+        .. algan:: Example1SceneUseManimDefaults
 
+            from algan import *
             import manim
 
             Scene.use_manim_defaults()
