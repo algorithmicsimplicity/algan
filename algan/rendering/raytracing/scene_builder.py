@@ -1384,6 +1384,16 @@ def _merge_scene(primitives):
             .to(torch.int32)
             .contiguous()
         )
+        # Per-triangle closed-shell declaration, folded with its transmission
+        # exemption at pack time (primitives._pack_projected_flat_geometry):
+        # 1.0 where the surface may be coverage-ceilinged as a closed shell.
+        # Read only by the sheet compaction, and only under
+        # ``SOLID_SHELL_ALPHA`` -- the field is built unconditionally because it
+        # is one [T?, N] tensor against a whole batch, but consumed strictly
+        # behind the toggle so disabling it changes nothing downstream.
+        scene["tri_closed"] = _cat_collections(
+            _geom("_rt_tri_closed"), 1, "triangle merge"
+        ).contiguous()
         scene["tri_pos"] = _cat_collections(_tri_parts, 1, "triangle merge")
         scene["tri_norm"] = _cat_collections(_geom("_rt_tri_norm"), 1, "triangle merge")
         scene["tri_mat_id"] = _cat_collections(

@@ -134,6 +134,17 @@ def orient_faces_outward(vertex_coords, faces_list):
     return oriented
 
 
+def _sweep_is_full(range_, span):
+    """True if a parametric ``(start, end)`` sweep covers ``span`` radians.
+
+    What a revolved solid's closed-shell declaration hangs on: a partial sweep
+    cuts the shell open (the docstrings of ``Sphere``/``Cylinder``/``Torus``
+    all promise an open surface for a partial range), and the cut edges are not
+    capped, so the inside shows through. Tolerance absorbs float sweep values.
+    """
+    return abs(float(range_[1]) - float(range_[0]) - span) < 1e-6
+
+
 def _surface_resolution_kwargs(resolution, kwargs):
     """Translate Manim's surface resolution/style names to Algan's Surface."""
     if resolution is not None:
@@ -361,6 +372,12 @@ class Sphere(Surface):
         # Surface owns u_range/v_range: assigning them before this call would be
         # overwritten by Surface.__init__'s own (0, 1) defaults.
         super().__init__(*args, u_range=u_range, v_range=v_range, **kwargs)
+        # A full pole-to-pole sweep tiles the shell exactly once per crossing;
+        # a partial range cuts it open (see the Notes above), and an open
+        # surface must not claim the closed-solid opacity behaviour.
+        self.closed_shell = _sweep_is_full(u_range, 2 * PI) and _sweep_is_full(
+            v_range, PI
+        )
 
     def coord_function(self, coords_2d):
         # Keep the original Algan sampling orientation.  Although a sphere is
@@ -519,6 +536,14 @@ class Cone(Surface):
         self.base_circle.mesh_key = self.mesh_key
         with Off(animation_manager=self.animation_manager):
             self.base_circle.move_to(-direction_t * height * 0.5)
+        # Capped AND swept the whole way round is what closes the shell: the
+        # disc seals the base, but a partial sweep still leaves the wedge's cut
+        # faces open (the disc itself is whole either way -- see
+        # ``_cap_ring_offsets``). Both the side and its cap must carry the
+        # declaration: they share one surface id (``mesh_key``), and the
+        # renderer reads it per triangle.
+        self.closed_shell = bool(show_base) and _sweep_is_full(v_range, 2 * PI)
+        self.base_circle.closed_shell = self.closed_shell
         if show_base:
             self.add_children(self.base_circle)
         self.start_point = -direction_t * height * 0.5
@@ -739,6 +764,13 @@ class Cylinder(Surface):
         self.top_cap = _CapDisc(direction=direction, **caps)
         self.bottom_cap.mesh_key = self.mesh_key
         self.top_cap.mesh_key = self.mesh_key
+        # Both ends sealed AND swept the whole way round closes the shell; a
+        # half-pipe with whole discs is still open along its cut. The tube and
+        # its caps share one surface id (``mesh_key``), so all three carry the
+        # declaration -- the renderer reads it per triangle.
+        self.closed_shell = _sweep_is_full(self.v_range, 2 * PI)
+        self.bottom_cap.closed_shell = self.closed_shell
+        self.top_cap.closed_shell = self.closed_shell
         self.base_bottom = self.bottom_cap
         self.base_top = self.top_cap
         self.add_children(self.bottom_cap, self.top_cap)
@@ -1291,6 +1323,11 @@ class Torus(Surface):
                 resolution = (resolution, resolution)
             kwargs.setdefault("grid_width", int(resolution[0]))
             kwargs.setdefault("grid_height", int(resolution[1]))
+        # Both sweeps whole closes the tube into a ring; a partial one cuts it
+        # open along the cut (a half-ring shows its inside through the slice).
+        self.closed_shell = _sweep_is_full(u_range, 2 * torch.pi) and _sweep_is_full(
+            v_range, 2 * torch.pi
+        )
         super().__init__(
             coord_function=self.coord_function,
             u_range=u_range,
@@ -1515,10 +1552,16 @@ class Polyhedron(Mob):
         # The faces are triangle mobs, which are two-sided sheets on their own;
         # what makes them the SKIN of a solid is this polyhedron, so it is this
         # polyhedron that declares it -- and only when the winding pass above
-        # established which way out is.
+        # established which way out is. The same proof says whether the faces
+        # CLOSE: ``orient_faces_outward`` returns unchanged exactly for
+        # geometry where "outward" has no answer (an open mesh, a T-junction, a
+        # Moebius-like shell), and those must keep compositing per crossing --
+        # their far side is genuinely visible through the opening.
         self.two_sided = not self._faces_are_outward
+        self.closed_shell = self._faces_are_outward
         for mob in self._face_primitive_mobs():
             mob.two_sided = self.two_sided
+            mob.closed_shell = self.closed_shell
 
         vertex_type = self.graph_config.get("vertex_type", Dot3D)
         vertex_config = dict(self.graph_config.get("vertex_config", {}))

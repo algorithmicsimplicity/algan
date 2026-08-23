@@ -297,6 +297,42 @@ def _mesh_ids_from_collection(members, counts):
     return torch.cat(blocks).contiguous(), next_id
 
 
+def closed_shell_ceiling_flag(closed_shell, transmission):
+    """Fold a closed-shell declaration with its transmission exemption.
+
+    Returns a per-triangle float32 tensor: 1.0 where the surface's coverage may
+    be ceilinged as a closed shell (``SOLID_SHELL_ALPHA``), 0.0 anywhere the
+    declaration is absent or the material transmits. Transmission exempts
+    because refraction visits both shells as physical transport -- capping the
+    second crossing would eat the refracted path -- and is taken amax over
+    corners and frames, so a material that transmits at ANY authored moment
+    stays exempt everywhere (conservative: it errs toward today's behaviour,
+    never toward a wrongly-capped shell).
+
+    ``closed_shell`` / ``transmission`` are the packed per-corner values,
+    ``[T?, N, 3, 1]``-shaped or ``None`` (undeclared / non-PBR material).
+    """
+    if closed_shell is None:
+        return None
+    closed_v = closed_shell.float()
+    if closed_v.dim() >= 4:  # [T?, N, 3, 1] -> per-triangle corner 0
+        closed_v = closed_v[:, :, 0, :]
+    closed_any = closed_v.reshape(closed_v.shape[0], -1).amax(0) > 0.5
+    if transmission is None:
+        transmits = torch.zeros_like(closed_any)
+    else:
+        trans_v = transmission.float()
+        if trans_v.dim() >= 4:
+            trans_v = trans_v[..., 0, :]
+        transmits = trans_v.reshape(trans_v.shape[0], -1).amax(0) > 1e-6
+    return (
+        (closed_any & ~transmits)
+        .to(torch.float32)
+        .reshape(1, -1)
+        .to(closed_shell.device)
+    )
+
+
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
@@ -332,12 +368,21 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # tuple for the machinery around it -- the per-member gather below, whose
     # default fill of 0.0 is exactly "two-sided, as before", and the logical-PN
     # dice, which has to carry it to every diced triangle.
+    #
+    # ``closed_shell`` rides beside it for the same reasons: the MOB declares
+    # it (:meth:`declare_closed_shell`), members that say nothing are open
+    # (the 0.0 fill), and the dice carries it to every diced triangle. Unlike
+    # ``one_sided`` it is consumed on the HOST -- the sheet compaction's
+    # closed-shell coverage ceiling reads it out of the merged scene as
+    # ``tri_closed``, folded there with the transmission exemption (a closed
+    # shell that transmits refracts through both shells and must keep them).
     _surface_params = (
         "reflectivity",
         "roughness",
         "refractive_index",
         "transmission",
         "one_sided",
+        "closed_shell",
     )
 
     def __init__(
@@ -461,6 +506,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # construction (``declare_one_sided``) -- the same point at which
             # it declares ``mesh_key``.
             self.declare_one_sided(False)
+            self.declare_closed_shell(False)
 
     def declare_one_sided(self, one_sided=True):
         """Declare whether this primitive's hits are shaded from one side only.
@@ -476,6 +522,27 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """
         self.one_sided = torch.full_like(
             self.colors[:1, ..., :1], 1.0 if one_sided else 0.0
+        )
+        return self
+
+    def declare_closed_shell(self, closed=True):
+        """Declare whether this primitive's triangles are a closed shell.
+
+        Called by the mob that built the primitive, beside
+        :meth:`declare_one_sided`: ``closed`` says the triangles tile a shell
+        that encloses its interior -- every camera ray that enters crosses a
+        second time on its way out -- so ``Mob.opacity`` can mean what it says
+        (one attenuation of what is behind) instead of compositing once per
+        crossing (:attr:`~algan.animatable_base.mob.Mob.closed_shell`).
+
+        The declaration is consumed host-side by the sheet compaction's
+        coverage ceiling; it never reaches a kernel. A surface whose material
+        transmits is folded back to open at pack time (``_rt_tri_closed``):
+        refraction visits both shells as physical transport, and the ceiling
+        would eat the second one.
+        """
+        self.closed_shell = torch.full_like(
+            self.colors[:1, ..., :1], 1.0 if closed else 0.0
         )
         return self
 
@@ -882,6 +949,18 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_tri_extra = self._pack_surface_extra("triangle surface params")
         self._rt_tri_colors = self.colors.float().contiguous()
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
+        # The closed-shell declaration folded with its one exemption, as one
+        # per-triangle flag the merge carries and the sheet compaction reads
+        # (``tri_closed``); see ``closed_shell_ceiling_flag`` for the folding.
+        self._rt_tri_closed = closed_shell_ceiling_flag(
+            getattr(self, "closed_shell", None),
+            getattr(self, "transmission", None),
+        )
+        if self._rt_tri_closed is None:
+            self._rt_tri_closed = torch.zeros(
+                (1, corners.shape[1]), dtype=torch.float32, device=corners.device
+            )
+        self._rt_tri_closed = self._rt_tri_closed.contiguous()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
         # Per-triangle SOURCE-SURFACE id, [1, N] (or [T, N] for diced logical

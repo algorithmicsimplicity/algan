@@ -154,6 +154,32 @@ class Mob(
     #: Mob is spawned, since the render primitive reads it once.
     two_sided = True
 
+    #: Whether this Mob's triangles form a CLOSED shell -- every camera ray
+    #: that enters the geometry crosses a second time on its way out. ``False``
+    #: (the default) leaves ``opacity`` compositing once per crossing, which is
+    #: right for anything open or unprovable: a 2-D shape, an uncapped
+    #: :class:`~algan.mobs.shapes_3d.Cone`, a partial sphere, user polyhedron
+    #: geometry whose closedness cannot be proven.
+    #:
+    #: On a closed shell, one attenuation of what is behind it IS the documented
+    #: meaning of ``Mob.opacity`` -- rendering at opacity ``a`` must give
+    #: ``a * (the Mob rendered opaque) + (1 - a) * backdrop`` -- so the
+    #: renderer caps the shell's total coverage per pixel instead of letting
+    #: both shells composite (the far sheet would otherwise deliver the extra
+    #: ``a * (1 - a)`` of coverage painted with the interior's own shading).
+    #: The built-in solids declare it; see
+    #: ``tests/unit_tests/test_closed_shell_declaration.py`` for the proof that
+    #: each declaration matches the geometry. Like ``two_sided``, set it before
+    #: the Mob is spawned: the render primitive reads it once.
+    #:
+    #: Known limit: the rule reaches PRIMARY visibility only. A REFLECTION of a
+    #: half-transparent solid -- its image in a mirror -- still composites both
+    #: shells and so reads more opaque than the authored value, because the
+    #: bounce loop that shades reflections carries no surface identity. The same
+    #: is true of any render at ``samples_per_pixel > 1``, which routes to the
+    #: Monte Carlo tracer instead.
+    closed_shell = False
+
     #: Opaque hashable identifying the SURFACE this Mob's geometry belongs to,
     #: stamped onto the primitives it builds. Parts of one solid that carry the
     #: same key -- a ``Cylinder``'s tube and its two end discs -- merge into a

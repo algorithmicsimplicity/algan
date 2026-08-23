@@ -545,8 +545,11 @@ class TriangleVertices(Mob):
         primitive.mesh_key = ("trimob", self.id)
         # A bare triangle mob has no outside (a Polyhedron's faces do -- it
         # sets ``two_sided`` False on them, and this is what carries that to
-        # the renderer).
+        # the renderer) and no closed shell for the same reason: a face of a
+        # solid is skin, and it is the solid that declares the shell closed
+        # (``Mob.closed_shell``) when its geometry proves one.
         primitive.declare_one_sided(not self.two_sided)
+        primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
         return primitive
 
 
