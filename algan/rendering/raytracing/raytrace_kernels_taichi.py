@@ -1873,12 +1873,19 @@ def pbr_neutral_tonemap(color: ti.math.vec3) -> ti.math.vec3:
     if peak >= startCompression:
         d = 1.0 - startCompression
         newPeak = 1.0 - d * d / (peak + d - startCompression)
-        color_offset *= newPeak / peak
-        
+        # Scale at the read rather than in place. `color_offset *= newPeak / peak`
+        # here is dropped outright when Taichi compiles this func with
+        # advanced_optimization on -- the mixes below then read the unscaled
+        # value and an authored white tonemaps to 244 instead of 222. Algan runs
+        # with that pass off so released renders never saw it, but ALGAN_ADV_OPT=1
+        # and any bare `ti.init` do turn it on. Bit-identical to the in-place
+        # form under Algan's own config, measured over 250k random colours.
+        scale = newPeak / peak
+
         g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0)
-        out[0] = ti.math.mix(color_offset[0], newPeak, g)
-        out[1] = ti.math.mix(color_offset[1], newPeak, g)
-        out[2] = ti.math.mix(color_offset[2], newPeak, g)
+        out[0] = ti.math.mix(color_offset[0] * scale, newPeak, g)
+        out[1] = ti.math.mix(color_offset[1] * scale, newPeak, g)
+        out[2] = ti.math.mix(color_offset[2] * scale, newPeak, g)
 
     return ti.math.clamp(out, 0.0, 1.0)
 

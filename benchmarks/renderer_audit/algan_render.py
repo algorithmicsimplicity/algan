@@ -187,8 +187,11 @@ def render(
     SETTINGS.raytracing.set(shadows=shadows, tonemapping=tonemap)
     if bounces is not None:
         SETTINGS.raytracing.set(max_bounces=bounces)
-    if glossy:
-        SETTINGS.raytracing.set(glossy_reflection=True)
+    # Stated either way rather than left to the default. This only ever turned
+    # the route *on*, which was fine while it defaulted off and silently wrong
+    # once it did not: every "glossy off" arm rendered glossy and reported
+    # ``"glossy_reflection": false`` beside the frame it had just produced.
+    SETTINGS.raytracing.set(glossy_reflection=glossy)
 
     Scene.set_background_color(_color(r.get("background"), (0.0, 0.0, 0.0)))
 

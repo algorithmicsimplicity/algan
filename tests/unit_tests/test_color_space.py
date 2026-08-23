@@ -149,8 +149,19 @@ def test_taichi_twins_agree_with_torch():
         linear_to_srgb_f,
         srgb_to_linear_f,
     )
+    from algan.rendering.taichi_runtime import init_taichi
 
-    ti.init(arch=ti.cpu)
+    # Algan's own init, never a bare ``ti.init``. ``ti.init`` is process-global
+    # and takes the *defaults* for every kwarg it is not given, so a bare call
+    # here silently re-configured Taichi for every test that ran afterwards in
+    # the same process -- and one of those defaults, ``advanced_optimization``
+    # (Algan runs with it off), miscompiles ``pbr_neutral_tonemap``: it drops
+    # the peak rescale, which turned an authored white from 222 into 244 and
+    # failed three tonemapping guards in CI while every one of them passed
+    # when run on its own. This call is idempotent -- Taichi is already up by
+    # the time the kernel module above is imported -- so it neither reinitializes
+    # nor discards the kernels compiled so far.
+    init_taichi()
 
     probe = np.array(PROBE, dtype=np.float32)
     decoded = np.zeros_like(probe)

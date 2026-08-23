@@ -884,11 +884,27 @@ def _patch_boundary_points(primitive, source_corners, source_normals, patch, edg
 
 
 @pytest.mark.parametrize(
-    "build",
-    [lambda: Cylinder(radius=0.5, height=2.0), Sphere],
+    ("build", "snap_is_exercised"),
+    [
+        # A cylinder cannot show the snap doing work, and that is a property of
+        # the shape rather than of this camera. Its interior seams come in two
+        # kinds: the diagonal inside one quad, where both triangles carry the
+        # same subdivision level except when they straddle a threshold, and the
+        # axis-aligned edge between two quads, which is the ``across`` edge on
+        # both sides and diced 0 because a cylinder is straight along its axis.
+        # The levels that do vary -- around the circumference -- are never what
+        # either side emits along a shared edge. It reported one uneven seam
+        # until the default tolerances were halved, from a single quad whose two
+        # triangles happened to straddle a level threshold; that was a
+        # coincidence, not coverage. The cylinder is here for watertightness.
+        (lambda: Cylinder(radius=0.5, height=2.0), False),
+        (Sphere, True),
+    ],
     ids=["cylinder", "sphere"],
 )
-def test_a_whole_diced_mesh_stays_watertight_across_every_seam(build):
+def test_a_whole_diced_mesh_stays_watertight_across_every_seam(
+    build, snap_is_exercised
+):
     """Every edge two patches share is the same polyline seen from both sides.
 
     The per-dimension dice hands neighbouring patches genuinely different
@@ -945,8 +961,11 @@ def test_a_whole_diced_mesh_stays_watertight_across_every_seam(build):
         uneven += emitted_level(patch_a, edge_a) != emitted_level(patch_b, edge_b)
     assert cracks == 0
     # Keep the check honest: a mesh whose neighbours all happened to agree
-    # would pass this without exercising the snap at all.
-    assert uneven > 0
+    # would pass the seam walk above without exercising the snap at all. Which
+    # meshes can show that is stated per-parameter rather than assumed, so a
+    # mesh that stops exercising it is a change to this list and not a silent
+    # weakening of the test.
+    assert (uneven > 0) == snap_is_exercised, uneven
 
 
 def test_a_developable_surface_dices_along_its_curved_direction_only():
