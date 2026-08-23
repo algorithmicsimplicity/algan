@@ -824,20 +824,59 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         return mat_id.contiguous(), mat.contiguous()
 
     def _pack_surface_extra(self, error_context):
-        """Per-primitive surface params [Te, N, 12]: the interleaved per-corner
+        """Per-primitive surface params [Te, N, 15]: the interleaved per-corner
         (reflectivity, roughness) pairs in columns 0-5 (consumed by
         ``_triangle_extra`` in every kernel), followed by the per-corner
         refractive index in columns 6-8 (unsigned magnitude, 0 = non-PBR; read
         by the wavefront's ``_corner_ior``), followed by the per-corner
         transmission in columns 9-11 (0 = opaque to light passing through; read
-        by ``_corner_transmission``).
+        by ``_corner_transmission``), followed by the per-PRIMITIVE Beer-Lambert
+        absorption coefficient in columns 12-14 (``_EXTRA_SIGMA``; read by the
+        shadow march over a solid's interior chord).
+
+        Sigma is per-primitive rather than per-corner -- one primitive is one
+        material, so there is nothing to interpolate across the face -- and it
+        does NOT ride ``_surface_params``: that tuple feeds the collection
+        gather and the logical-PN dice, both of which slice values to one
+        scalar channel per corner, which would truncate an RGB coefficient to
+        its red channel. It travels as the ``attenuation_sigma`` shader
+        parameter instead (computed by
+        ``materials._attenuation_sigma``, packed into ``shader_param_values``
+        exactly like ``metalness`` and ``ior``), which the collection merge and
+        the PN dice both already carry through untouched.
         """
-        (reflectivity_e, roughness_e, ior_e, transmission_e), _ = _unify_time(
+        names = list(getattr(self, "shader_param_names", None) or [])
+        values = list(getattr(self, "shader_param_values", None) or [])
+        if "attenuation_sigma" in names:
+            sigma_raw = values[names.index("attenuation_sigma")]
+        else:
+            sigma_raw = None
+        if sigma_raw is not None:
+            sigma_e = sigma_raw.float()
+        else:
+            # No attenuation parameter on this material (every non-PBR and
+            # legacy shader): zero is no absorption. Shaped like the other
+            # per-corner params so the time unification below sees a
+            # compatible tensor.
+            sigma_e = torch.zeros_like(self.reflectivity.float()).expand(
+                *self.reflectivity.shape[:-1], 3
+            )
+        (
+            (
+                reflectivity_e,
+                roughness_e,
+                ior_e,
+                transmission_e,
+                sigma_e,
+            ),
+            _,
+        ) = _unify_time(
             [
                 self.reflectivity.float(),
                 self.roughness.float(),
                 self.refractive_index.float(),
                 self.transmission.float(),
+                sigma_e,
             ],
             error_context,
         )
@@ -845,7 +884,14 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         refl_rough = torch.cat((reflectivity_e, roughness_e), -1).reshape(n_t, n_p, 6)
         ior = ior_e.reshape(n_t, n_p, 3)
         transmission = transmission_e.reshape(n_t, n_p, 3)
-        return torch.cat((refl_rough, ior, transmission), -1).contiguous()
+        # Collapse the per-corner fan of the RGB coefficient to one triple per
+        # primitive. The parameter arrives shaped like every other surface
+        # param -- [T, N, 3 corners, 3 channels] -- and a material is uniform
+        # across a face, so every corner carries the same value and taking
+        # corner 0 is lossless. The reshape names the corner axis explicitly
+        # rather than assuming its position.
+        sigma = sigma_e.reshape(sigma_e.shape[0], sigma_e.shape[1], -1, 3)[:, :, 0, :]
+        return torch.cat((refl_rough, ior, transmission, sigma), -1).contiguous()
 
     def _pack_frame_visibility(self, lo, hi, colors, error_context):
         """Per-frame bounds; frames where a primitive is fully transparent

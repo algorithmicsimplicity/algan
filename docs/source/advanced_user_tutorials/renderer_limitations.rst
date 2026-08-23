@@ -411,9 +411,22 @@ nested transmissive media. And ``thickness`` is stored for API parity and unused
 — three.js's rasterizer needs it because it has no ray to measure, and Algan
 does not.
 
-Shadows are not tinted by what they pass through: a shadow ray carries one
-scalar per light, so the shadow under green glass gets *brighter* (see
-``transmission`` above) but stays grey where a path tracer's turns green.
+Shadow rays carry colour through the same medium. A shadow ray holds an RGB
+payload rather than one scalar per light, so a transmissive surface tints the
+light it passes by its albedo -- the same treatment the refracted ray gets --
+and a transmissive *solid* also absorbs over the chord the ray spends inside
+it, from the same ``attenuation_color`` / ``attenuation_distance`` the view ray
+uses above: a bigger piece of coloured glass casts a deeper shadow, not just a
+coloured one. Circuits are flat zero-thickness panes with no interior, so they
+tint but never absorb.
+
+Two limits stand. There is still no refraction: the shadow ray travels
+straight through the glass, so there is no caustic core, and the umbra comes
+out uniformly tinted where a path tracer concentrates light into a bright
+centre. And the entry/exit pairing behind the chord is exact for a single
+convex solid and approximate where solids nest or overlap. Both behaviours are
+compiled in behind ``ALGAN_RGB_SHADOW_TINT`` (default on); set it to ``0``
+before ``import algan`` to restore achromatic shadows.
 
 
 Texture maps
@@ -524,9 +537,11 @@ Limits and approximations
   ``SETTINGS.raytracing.experimental.set(shadow_terminator=False)`` if you need
   to compare against the old behaviour.
 * **No refractive shadow transport.** Light is not bent as it passes through
-  glass, so there are no caustics and a glass object's shadow is simply its
-  silhouette attenuated by its opacity. Caustics need
-  ``samples_per_pixel > 1``, which gives up most of this page's features.
+  glass, so there are no caustics: a glass object's shadow keeps its sharp
+  silhouette, and everything its interior does to the light crossing it --
+  opacity, albedo tint, absorption over the chord -- happens along a straight
+  line. Caustics need ``samples_per_pixel > 1``, which gives up most of this
+  page's features.
 
 
 Reflection, refraction and transmission
@@ -599,10 +614,11 @@ Refraction
   difference.
 * **A Bezier circuit transmits as a thin pane**: light passes through tinted,
   but is not bent. Only triangle geometry refracts.
-* **No absorption over distance, no dispersion.** Transmitted light is tinted by
-  the surface colour at each interface, not attenuated by the path length
-  through the medium, and every wavelength takes the same index of refraction --
-  so no coloured fringing at a prism.
+* **No dispersion.** Every wavelength takes the same index of refraction, so no
+  coloured fringing at a prism. Absorption over distance *is* modelled:
+  transmitted light is attenuated along its actual path through the medium by
+  the material's ``attenuation_color`` / ``attenuation_distance`` described
+  above, and the shadow ray applies the same coefficient over its own chord.
 * Refraction needs both ``transmission > 0`` and ``ior > 1``. In practice that
   means a :class:`~.MeshPhysicalMaterial`, a :class:`~.Surface` with a
   ``refractive_index_texture``, or an imported model whose material carries

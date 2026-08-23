@@ -68,6 +68,8 @@ from algan.rendering.raytracing.shading_taichi import (
     _orient_hit_normals,
     _reflect_frame,
     _shadow_terminator_delta,
+    _vis_max_component,
+    light_vis_index,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
@@ -2306,7 +2308,15 @@ def wavefront_shadow(
                                                 # No source identity on this
                                                 # path (see wavefront_traverse).
                                                 -1, -1, 0.0, 0.0, tri_pos, 0)
-                                            if occ > 0.5:
+                                            if _vis_max_component(occ) > 0.5:
+                                                # Binary by necessity: the
+                                                # bit pack cannot carry colour
+                                                # (this mode is documented as
+                                                # never enabled above, and is
+                                                # now also colour-blind -- the
+                                                # max-component reduction is
+                                                # what a bit test means for an
+                                                # RGB payload).
                                                 bits |= (
                                                     1 << (q
                                                           * _DEFERRED_SHADOW_LIGHTS
@@ -2612,22 +2622,31 @@ def wavefront_shade(
                     # shadows. The light loop is a *runtime* loop (not
                     # ti.static-unrolled) so the heavy ``_shadow_occluded`` ->
                     # ``_nearest_surface`` -> PN solver call graph is inlined
-                    # once, not once per light.
-                    vis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
+                    # once, not once per light. The payload is RGB,
+                    # channel-major per light (see shading_taichi.
+                    # light_vis_index): with the tint gate off every channel
+                    # holds the same scalar the old payload did.
+                    vis = ti.Vector([1.0]
+                                    * (3 * MAX_SHADOW_LIGHTS))
                     if ti.static((shadows != 0) and (deferred_shadows != 0)):
                         # Legacy deferred shadows: read the per-(hit, light)
                         # binary occlusion bits precomputed by
                         # ``wavefront_shadow`` for this hit's K-buffer slot
                         # (``sel``). This mode is currently never enabled and
                         # must use floats before it can support the active
-                        # opacity-weighted shadow contract.
+                        # opacity-weighted shadow contract -- and its bits
+                        # cannot carry colour, so it is now also colour-blind:
+                        # a blocked light sets all three channels to 0, an
+                        # unblocked one keeps them at 1.
                         sbits = rs_vis[i]
                         for li in range(num_lights):
                             if li < _DEFERRED_SHADOW_LIGHTS:
                                 if ((sbits
                                      >> (sel * _DEFERRED_SHADOW_LIGHTS + li))
                                         & 1) != 0:
-                                    vis[li] = 0.0
+                                    vis[light_vis_index(li, 0)] = 0.0
+                                    vis[light_vis_index(li, 1)] = 0.0
+                                    vis[light_vis_index(li, 2)] = 0.0
                     if ti.static((shadows != 0) and (deferred_shadows == 0)):
                         # Shadow visibility is skipped exactly where it cannot
                         # reach the output: an UNLIT hit never consumes ``vis``
@@ -2767,7 +2786,7 @@ def wavefront_shade(
                                                     0.0, 1.0, 0.0)
                                             b1 = wi.cross(aref).normalized()
                                             b2 = wi.cross(b1)
-                                        occ_sum = 0.0
+                                        occ_sum = ti.math.vec3(0.0)
                                         n_valid = 0.0
                                         for s in range(ns):
                                             wis = wi
@@ -2840,7 +2859,17 @@ def wavefront_shade(
                                                     # wavefront_traverse).
                                                     -1, -1, 0.0, 0.0, tri_pos, 0)
                                         if n_valid > 0.0:
-                                            vis[li] = 1.0 - occ_sum / n_valid
+                                            # The soft-shadow fan still
+                                            # averages over the SCALAR sample
+                                            # count; only the occlusion sum is
+                                            # per-channel.
+                                            base = light_vis_index(li, 0)
+                                            vis[base] = 1.0 - occ_sum[0] \
+                                                / n_valid
+                                            vis[base + 1] = 1.0 - occ_sum[1] \
+                                                / n_valid
+                                            vis[base + 2] = 1.0 - occ_sum[2] \
+                                                / n_valid
                     if htype == 1:
                         # Light with the *normal-mapped* shading normal (equals
                         # the interpolated vertex normal when the triangle has

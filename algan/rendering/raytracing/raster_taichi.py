@@ -2859,7 +2859,7 @@ def raster_shadow_trace(
             # fan's all-lit default multiplies zero either way (see
             # _light_zero_radiance).
             fan_geom = 1
-        visibility = 1.0
+        visibility = ti.math.vec3(1.0)
         lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
                           light_pos[tl, li, 2])
         ltype = 0
@@ -2910,7 +2910,7 @@ def raster_shadow_trace(
                 # its fan over them.
                 ns = ti.max(ns, 4)
 
-            occ_sum = 0.0
+            occ_sum = ti.math.vec3(0.0)
             n_valid = 0.0
             for s in range(ns):
                 wis = wi
@@ -2976,7 +2976,12 @@ def raster_shadow_trace(
                         src_sid, src_prim, eps_self, eps_near,
                         tri_obj, shadow_identity)
             if n_valid > 0.0:
-                visibility = 1.0 - occ_sum / n_valid
-        shadow_vis[e, li] = visibility
+                # Per-channel visibility; the soft-shadow fan still averages
+                # over the SCALAR sample count.
+                visibility = ti.math.vec3(1.0) - occ_sum / n_valid
+        # RGB payload: one (event, light) cell carries a triple, channel-last
+        # (see raster_pipeline's allocation).
+        for c in ti.static(range(3)):
+            shadow_vis[e, li, c] = visibility[c]
 
 

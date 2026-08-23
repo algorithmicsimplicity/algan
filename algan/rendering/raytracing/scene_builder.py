@@ -16,6 +16,7 @@ from algan.rendering.raytracing.primitives import (
     RayTracedTrianglePrimitive,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _EXTRA_W,
     _M_REFLECTIVITY,
     _M_TRANSMISSION,
     _M_WIDTH,
@@ -534,7 +535,7 @@ def _split_promotable(p, _append_texture, device, scene):
     ``tri_colors``/``tri_extra`` row.
     """
     colors = p._rt_tri_colors  # [Tc, N, 3, 5]
-    extra = p._rt_tri_extra  # [Te, N, 15]
+    extra = p._rt_tri_extra  # [Te, N, _EXTRA_W] (see _pack_surface_extra)
     N = colors.shape[1]
     all_idx = torch.arange(N, device=device)
     if N == 0:
@@ -543,8 +544,9 @@ def _split_promotable(p, _append_texture, device, scene):
     # Per-triangle promotable: the three corners share one colour (all channels,
     # all frames) and one material (reflectivity 0/2/4, roughness 1/3/5, index of
     # refraction 6/7/8), and the triangle is non-glowing (glow magnitude cols
-    # 9-11 zero; a nonzero default glow_radius in 12-14 is irrelevant once glow
-    # is 0). Only such a triangle is fully described by a single 1x1 texel.
+    # 9-11 -- which hold per-corner transmission since the transmission work;
+    # the name survives from when those columns were glow). Only such a triangle
+    # is fully described by a single 1x1 texel.
     color_eq = (colors == colors[:, :, :1, :]).all(-1).all(-1).all(0)  # [N]
     e = extra
     mat_eq = (
@@ -1096,7 +1098,7 @@ def _build_textured_scene(scene, num_frames, device):
     """
     T = num_frames
     tc = _expand_frames(scene["tri_colors"].to(device), T)  # [T,N,3,5]
-    te = _expand_frames(scene["tri_extra"].to(device), T)  # [T,N,15]
+    te = _expand_frames(scene["tri_extra"].to(device), T)  # [T,N,_EXTRA_W]
     tm = _expand_frames(scene["tri_mat"].to(device), T)[..., :MAT_W]  # [T,N,MAT_W]
     tmi = _expand_frames(scene["tri_mat_id"].to(device), T)  # [T,N]
     N = tc.shape[1]
@@ -1465,7 +1467,11 @@ def _merge_scene(primitives):
             scene["tri_extra"] = _cat_collections(vextra, 1, "triangle merge")
         else:  # every triangle promoted -> minimal placeholder rows
             scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
-            scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
+            # Width must agree with the real packing (_EXTRA_W): these rows
+            # are write-only filler, but a kernel variant compiled against
+            # one width and a merge that produces another is how silent
+            # drift starts.
+            scene["tri_extra"] = torch.zeros((1, 1, _EXTRA_W), device=device)
 
         # Any promoted group synthesises material maps. Promotion only runs
         # for deterministic fragment-shading renders (see
@@ -1556,7 +1562,7 @@ def _merge_scene(primitives):
     else:
         scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)
-        scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
+        scene["tri_extra"] = torch.zeros((1, 1, _EXTRA_W), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
         scene["tri_tex_meta"] = torch.full(
