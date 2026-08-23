@@ -158,9 +158,12 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
     ``lp - spos`` and its norm, bitwise the stage's ``d``), so "exactly zero"
     here is exactly zero there and the fragment's shadow fan cannot influence
     any stage whose vis-multiplied terms all carry ``lc`` as a factor
-    (lambert/phong/standard/physical). NOT valid for ``_stage_default``:
-    its base-colour fade accumulates a vis-weighted ``w`` even at
-    ``lc == 0`` -- callers gate on the hit's pipeline id. Underflowed (but
+    (lambert/phong/standard/physical). Callers still gate ``_stage_default``
+    out on the hit's pipeline id, which is now **conservative rather than
+    load-bearing**: its base-colour fade used to accumulate a vis-weighted
+    ``w`` even at ``lc == 0``, and no longer does (the fade share carries
+    ``lc``), so admitting it here would be correct -- and would spare those
+    fans -- but it has not been measured and is left alone. Underflowed (but
     not bitwise-zero) multipliers are treated as live: that only traces a
     fan whose result multiplies zero, never the reverse.
     """
@@ -2670,9 +2673,10 @@ def wavefront_shade(
                                     fan_exact = 0
                                     # Geometric zero-radiance culling is only
                                     # valid for stages whose vis terms all
-                                    # carry lc (see _light_zero_radiance);
-                                    # the default stage's base fade is not
-                                    # one of them.
+                                    # carry lc (see _light_zero_radiance).
+                                    # The default stage now qualifies too;
+                                    # excluding it is conservative, not
+                                    # required. See the raster_taichi twin.
                                     if pid_s != _MID_DEFAULT:
                                         fan_geom = 1
                         if do_fan == 1:

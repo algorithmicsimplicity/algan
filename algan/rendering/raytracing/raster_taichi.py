@@ -2857,8 +2857,10 @@ def raster_shadow_trace(
         if pid_e < _USER_PIPELINE_BASE:
             fan_exact = 0
             # Geometric zero-radiance culling is only valid for stages whose
-            # vis terms all carry lc (see _light_zero_radiance); the default
-            # stage's base fade is not one of them.
+            # vis terms all carry lc (see _light_zero_radiance). The default
+            # stage now qualifies -- its base fade carries lc since the fade
+            # became radiance-weighted -- so excluding it here is conservative
+            # rather than required; unmeasured, so left as it was.
             if pid_e != _MID_DEFAULT:
                 fan_geom = 1
         visibility = ti.math.vec3(1.0)

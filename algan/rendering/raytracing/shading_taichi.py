@@ -206,7 +206,9 @@ def light_vis_index(li, c):
 # occupancy on the shadow kernels). Each area-light emitter sample counts as
 # one slot; samples past the cap light without shadowing, so an under-capped
 # area light just gets a shallower umbra, never a wrong one (the default
-# shader's base fade-out is power-fraction weighted -- see _stage_default). A
+# shader's base fade-out is radiance-weighted, so the K samples' shares sum to
+# one whole light's worth however many of them there are -- see
+# _stage_default). A
 # truly unbounded (runtime) count would need the per-fragment visibilities in
 # a global scratch buffer instead of a stack vector.
 MAX_SHADOW_LIGHTS = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
@@ -643,10 +645,13 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
     applied), the specular gate (0 for the direction-less ambient-like types)
     and the light's *power fraction* (packed column 15): the share of a whole
     light this row represents -- ``1/K`` for one of an area light's K emitter
-    samples, 1 for every stand-alone light. Physical stages ignore it (their
-    per-sample radiance already carries the 1/K); the legacy lerp-based default
-    stage weights its blend total by it so an area light lerps like *one*
-    light of its full colour rather than K dim ones.
+    samples, 1 for every stand-alone light. **No stage reads it any more.** It
+    existed for the legacy lerp-based default stage, whose base fade counted
+    light rows geometrically and so had to be told that K samples are one
+    light; that fade is radiance-weighted now and the per-sample ``1/K`` is
+    already in ``lc``, which says the same thing without being told. The
+    column stays packed -- it is part of the documented row layout, and a
+    stage that counts rows rather than radiance would need it again.
 
     Compact rows (``light_col`` width 3, the legacy packing used whenever the
     scene has only plain point lights) take the original point-light path with
@@ -795,18 +800,50 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                    num_lights, shadows: ti.template(), vis):
     """default_shader: diffuse lerp of the colour toward each light colour.
 
-    Additive over lights: gather every light's lerp weight, then blend once.
-    For a single light this equals the legacy per-light lerp
-    (``out*(1-w) + lc*w``); for many lights it stays stable (an area light's
-    sample fan, or a key/fill/rim rig) instead of the old sequential lerp
-    driving the colour toward the last light's.
+    Composed over lights, not summed. Each light claims a share of what is
+    *left* of the albedo and the shares compose the way the legacy per-light
+    lerps did -- ``keep *= 1 - share`` -- so N ordinary lights leave
+    ``keep >= (1 - max share) ** N``, a number that shrinks but does not
+    vanish. For a single light this equals the legacy lerp
+    (``out*(1-w) + lc*w``) exactly; for many it stays a bounded blend (an
+    area light's sample fan, or a key/fill/rim rig) instead of driving the
+    colour toward the last light's, which is what the old sequential lerp did.
+    One light can still take the whole albedo, but only by delivering more
+    than twice unit radiance straight at the surface -- a blowout the legacy
+    lerp produced too, through ``acc`` clipping rather than through the fade.
+
+    **Summing the shares instead is what silenced ``color=``.** The total was
+    clamped at 1, and at 1 the albedo term was multiplied by zero: the mob
+    rendered as pure light colour, whatever the author had asked for. Two
+    lights reach that on their own -- an ambient-like row (ambient /
+    hemisphere / environment SH) shades along the surface normal, so ``n . l``
+    is 1 and its share is the maximum 0.5, and two head-on direct lights do
+    the same. It read as "one ``set_material`` silenced everyone else's
+    colour" because a mob that *has* a material shades through one of the
+    stages below, all of which multiply the albedo rather than displacing it.
+
+    A share is weighted by the light's own radiance, as the illumination
+    budget ``wsum`` already was in every other stage, and for the reason
+    ``_energy_scale`` gives: counting geometry alone charges a rig for how
+    many lights it has rather than how much light they emit. Without it a
+    0.3-intensity hemisphere fill displaced exactly as much albedo as a white
+    key light -- intensity did not enter the fade at all. It also settles two
+    things that used to need their own machinery: a light row's *power
+    fraction* (an area light's K emitter samples each carry 1/K of the
+    radiance, so their shares already sum to one whole light's worth, and
+    ``frac`` is no longer read here), and a fragment outside a spot cone or
+    past a range fade (whose evaluated radiance is zero, so it now fades
+    nothing -- it used to darken the albedo while contributing no colour).
     """
     flat = params[f % params.shape[0], prim, off + 10]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
     out = in_rgb
     acc = ti.math.vec3(0.0, 0.0, 0.0)
+    # ``keep``: the albedo's surviving share, as a product over lights.
+    # ``wsum``: the same shares summed, which is both the illumination budget
+    # and the normaliser that turns ``acc`` into an average light colour.
+    keep = 1.0
     wsum = 0.0
-    esum = 0.0
     tl0 = f % light_col.shape[0]
     for li in range(num_lights):
         # A zero-colour light row is a light outside its lifespan (or
@@ -830,37 +867,33 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
             if (lt0 == _LT_HEMISPHERE) or (lt0 == _LT_ENV_SH):
                 row_live = 1
         if row_live == 1:
-            ld, lc, _spec_w, frac = _light_eval(light_pos, light_col, f, li,
-                                                pos, n)
+            ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                                 pos, n)
             v = _light_vis(shadows, vis, li)
             d = ti.max(ld.dot(n), 0.0)
             w = d * d * d * d * d * 0.5 * v
             acc += lc * w
-            # The energy budget stays scalar: it normalises a total
-            # illumination weight, which has no per-channel meaning. Reducing
-            # the RGB weight to its max component reproduces the old scalar
-            # sum bit for bit whenever the visibility channels are equal (see
-            # _vis_max_component).
-            esum += _vis_max_component(w) \
+            # The share stays scalar: it is a total illumination weight, which
+            # has no per-channel meaning. Reducing the RGB visibility to its
+            # max component reproduces the old scalar sum bit for bit whenever
+            # the visibility channels are equal (see _vis_max_component).
+            share = _vis_max_component(w) \
                 * ti.max(lc[0], ti.max(lc[1], lc[2]))
-            # The base fade-out counts each row by its *power fraction* (1/K
-            # for an area light's K emitter samples, 1 otherwise), so one area
-            # light displaces at most as much base colour as one point light
-            # would -- while ``acc`` (whose per-sample radiance already
-            # carries the 1/K) sums back to the full light colour. Without
-            # this, a fully-occluded umbra under a many-sample area light
-            # would revert toward the raw albedo (which can be *brighter*
-            # than the dimly-lit surroundings, a "bright shadow"), because
-            # the K dim samples each faded the base as a whole light while
-            # only delivering 1/K of the colour.
-            wsum += _vis_max_component(w) * frac
-    # The base fade was already bounded by ``min(wsum, 1)``; ``acc`` was not,
-    # so past a total weight of 1 the two stopped being a blend and the sum ran
-    # away with the extra lights. Scaling ``acc`` by the same budget makes the
-    # pair a genuine convex combination of the albedo and the light colours.
-    # ``max(wsum, 1)`` is exactly 1 for a single light (whose weight peaks at
-    # 0.5), so the default rig is bit-identical.
-    out = out * (1.0 - ti.min(wsum, 1.0)) + acc * _energy_scale(esum)
+            wsum += share
+            keep *= 1.0 - ti.min(share, 1.0)
+    # ``acc`` is the shares' colour sum; dividing it by their total turns it
+    # into the average light colour, and the pair is then a genuine convex
+    # combination of that and the albedo -- at any light count, and without
+    # leaning on ``_energy_scale``, which is exactly 1.0 under the default
+    # linear working space and so could never have bounded the sum there. For
+    # one light of unit radiance ``fade == wsum == w``, the division cancels
+    # and this is the legacy lerp bit for bit; Algan's own default rig is one
+    # white point light, so an unlit-by-the-author scene does not move.
+    fade = 1.0 - keep
+    scale = 0.0
+    if wsum > 0.0:
+        scale = fade / wsum
+    out = out * keep + acc * scale
     return ti.math.vec4(out[0], out[1], out[2], in_glow)
 
 

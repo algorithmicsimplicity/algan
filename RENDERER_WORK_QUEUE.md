@@ -823,33 +823,41 @@ Recorded so they are not rediscovered from scratch. None is started.
   coverage budget can pay for, which makes it a path-tracer feature; record it
   as such rather than as a tuning problem.
 
-* **One `set_material` anywhere in a Scene silences every other mob's
-  `color=`.** Found 2026-08-23 while attributing the axis-triad specks, not
-  yet diagnosed — recorded here so the next person starts from the repro
-  rather than from the symptom. A mob built with `color=` and no material
-  renders it correctly *until* some other mob in the same Scene carries an
-  explicit material; then it renders default white instead. It is scene-wide,
-  not per merge block: a `Cube` carrying the material does it to a `Line3D`
-  just as an `Arrow3D` does.
+* **~~One `set_material` anywhere in a Scene silences every other mob's
+  `color=`.~~ Fixed 2026-08-23 — and the title was wrong.** `set_material`
+  never had anything to do with it, and the repro this entry used to carry
+  does not reproduce: a `Cube` with a `MeshBasicMaterial` beside a
+  `Line3D(color=MAGENTA)` renders the line magenta, measured. **The trigger is
+  the lighting rig, and the site is `_stage_default`** in
+  `algan/rendering/raytracing/shading_taichi.py` — the fragment stage every
+  mob that was never given a material falls to.
 
-  ```python
-  from algan import *
-  Scene.set_background_color(DARKER_GRAY)
-  with Off():
-      AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)
-      # Comment this ONE line out and the line below renders magenta.
-      Cube(side_length=1.0).set_material(MeshBasicMaterial(color=RED)).spawn()
-      Line3D(start=LEFT * 2, end=RIGHT * 2, thickness=0.2,
-             color=MAGENTA).spawn()
-  Scene.save_frame("material_color_bleed")
-  ```
+  It summed a per-light fade weight and clamped the total at 1, and at 1 the
+  albedo term is multiplied by zero, so the fragment renders as pure light
+  colour. Two lights reach that alone: an ambient-like row (ambient /
+  hemisphere / environment SH) shades along the surface normal, so `n · l` is
+  exactly 1 and its share is the maximum 0.5 **whatever its intensity** — the
+  fade weight was geometric only, carrying no radiance factor at all, while
+  the illumination budget beside it had been radiance-weighted in `1a4c9d2`
+  for precisely the reason that geometric counting is wrong. Two head-on
+  direct lights do it too. It reads as a material problem because a mob that
+  *has* a material shades through one of the other stages, every one of which
+  multiplies the albedo rather than displacing it.
 
-  `Mob.color` still reads back MAGENTA throughout, so the loss is in what the
-  merge or the shade path packs, not in the timeline. It is live in
-  `tests/full_renders/scenes/solids_and_camera.py` today: the triad's
-  `Line3D(..., color=GRAY_A)` and `Dot3D(..., color=WHITE)` are both inert
-  because the three `Arrow3D`s beside them carry materials, so the line
-  renders white rather than `#DDDDDD`. Fixing it will move that baseline.
+  The stage now composes the shares (`keep *= 1 - share`) instead of summing
+  them — a product that approaches zero and never reaches it, which is what
+  the legacy per-light lerps did — and weights each share by the light's own
+  radiance. Algan's default rig is one white point light, so a scene that adds
+  no lights of its own is byte-identical (verified). Every test scene adds
+  lights, so all seven pixel baselines moved. `tests/unit_tests/
+  test_default_shader_albedo.py` is the guard. Two follow-ups left open: the
+  torch twin `default_shader` (`shaders/pbr_shaders.py`) still lerps
+  sequentially with the geometric-only weight, which is only reachable under
+  `samples_per_pixel > 1` or `set_fragment_shading(False)`; and the shadow-fan
+  culling sites that exclude `_MID_DEFAULT` because its fade used to
+  accumulate at zero radiance (`wavefront_kernels_taichi.py:161`,
+  `raster_taichi.py:2859`) are now merely conservative rather than
+  load-bearing. `OX_DEFAULT_STAGE_AUDIT.md` is the call-site inventory.
 
 * **`DESIGN_sheet_resolve.md` §6.1.1 — interpenetration is not antialiased.**
   Added 2026-08-23. Two opaque surfaces crossing inside one pixel both claim

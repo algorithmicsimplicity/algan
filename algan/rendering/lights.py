@@ -173,9 +173,12 @@ class Light(Mob):
         )
         aux[..., 0] = self.light_type
         # Power fraction: the share of a whole light each packed row carries
-        # (1/K for one of an area light's K emitter samples). Consumed by the
-        # legacy lerp-based default shader so a many-sample light displaces at
-        # most one whole light's worth of base colour.
+        # (1/K for one of an area light's K emitter samples). No shading stage
+        # reads it now -- it told the default shader's base fade that K samples
+        # are one light, which the fade works out for itself since it became
+        # radiance-weighted (see shading_taichi._light_eval). Still packed: it
+        # is part of the row layout, and it is the only place the split is
+        # recorded.
         aux[..., 12] = 1.0 / self.num_samples()
         return aux
 
