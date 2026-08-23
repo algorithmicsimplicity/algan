@@ -39,7 +39,8 @@ Worth saying first, because most of `become` is sound:
   `GroupRagged -> GroupMixed -> GroupWide -> GroupEmpty -> GroupRagged`, ...)
   each end on their target at every step.
 * **Most endpoints are byte-identical to the target.** Of 26 rendered pairs, 18
-  matched exactly before any fix and 24 after.
+  matched exactly before any fix and 23 after -- and the three that still differ
+  are all the same one-frame artifact (finding 8), byte-identical 0.05s later.
 * Ox proved three things I had flagged as suspects and could not settle by
   inspection: `align_part_lists` **cannot** drop a short-side part (brute-forced
   over every `m <= n < 64`); the `results_by_target[target_index]` lookup in
@@ -271,8 +272,12 @@ Two smaller notes from the same probe:
   tests were re-checked by blanking `_MORPH_ADOPTED_ATTRS` and confirming they
   fail.
 * `benchmarks/_become_endstate_check.py` -- of the 26 default pairs, 18 landed
-  byte-identically on the target before the fixes and 24 after. The two that
-  still differ are findings 6 and 7.
+  byte-identically on the target before the fixes and **23** after. All three
+  that still differ (`Square->Sphere`, `Cylinder->Sphere`, `Cube->Sphere`) are
+  finding 8's one-frame phase-boundary artifact and are byte-identical 0.05s
+  later. Findings 6 and 7 are outside this pair list and were measured
+  separately (`Sphere:VGroupTwoSquares` at 7.21%, `SurfacePlane:SurfaceWaveCoarse`
+  at 0.70%).
 * Five pairs went from differing to byte-identical: `Square->SquareUnfilled` and
   its reverse, `Square->Star`, `Sphere->Cube`, `Cube->Tetrahedron`,
   `Polyhedron->Cube`.
