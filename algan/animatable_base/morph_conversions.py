@@ -303,20 +303,36 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
 
         extent = (projected.amax((-3, -2)) - projected.amin((-3, -2))).clamp_min(1e-4)
         tile_size = float(extent.max() / sqrt(triangle_budget / 2))
-        triangulated = TriangulatedBezierCircuit(
-            params,
-            invert=False,
-            border_width=0,
-            tile_size=max(tile_size, 1e-4),
-            hash_keys=params,
-            use_cache=True,
-            reverse_points=False,
-            scene=circuit.scene,
-            add_to_scene=False,
-        )
-        triangle_root = triangulated.tiles.children[0]
-        local = triangle_root.corners.location[0].reshape(-1, 3, 3)
-        local_2d = local[..., :2]
+        try:
+            triangulated = TriangulatedBezierCircuit(
+                params,
+                invert=False,
+                border_width=0,
+                tile_size=max(tile_size, 1e-4),
+                hash_keys=params,
+                use_cache=True,
+                reverse_points=False,
+                scene=circuit.scene,
+                add_to_scene=False,
+            )
+        except RuntimeError as exc:
+            # A PATH THAT ENCLOSES NOTHING IS AN EMPTY FILL, NOT A FAILURE.
+            # Two crossed lines, a Cross, a DashedLine, an Axes, the rule of a
+            # MathTex: the tiler emits no tiles and its packing step cannot
+            # concatenate an empty list, so the whole conversion used to raise
+            # and `Axes().become(Sphere())` was simply unavailable. What such a
+            # circuit draws is its stroke, and the soup zeroes an unfilled
+            # circuit's opacity a few lines below in any case -- so stand one
+            # degenerate triangle at the path's centroid, which contributes the
+            # rows the morph interpolates and no visible area. Matched on the
+            # message so an unrelated RuntimeError still reaches the caller.
+            if "non-empty list of Tensors" not in str(exc):
+                raise
+            local_2d = projected.reshape(-1, 2).mean(0).expand(1, 3, 2)
+        else:
+            triangle_root = triangulated.tiles.children[0]
+            local = triangle_root.corners.location[0].reshape(-1, 3, 3)
+            local_2d = local[..., :2]
         world = (
             location + local_2d[..., 0:1] * e0 * scale + local_2d[..., 1:2] * e1 * scale
         ).reshape(1, -1, 3)

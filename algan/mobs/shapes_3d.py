@@ -1579,6 +1579,16 @@ class Polyhedron(Mob):
         )
         self.add_children(self.faces, self.graph)
 
+    #: ``get_render_primitives`` below hands the renderer every face under one
+    #: ``mesh_key``, and nothing else -- so the faces are this Mob's internals
+    #: rather than Mobs of their own, and the vertex ``Dot3D``s and edge Mobs
+    #: under ``self.graph`` (kept for Manim parity, where ``graph_config``
+    #: styles them) are geometry it owns but never puts on screen. Both facts
+    #: matter to :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`:
+    #: without this flag a morphed Polyhedron grew a wireframe and eight vertex
+    #: beads a spawned one does not have, and drew each of its faces twice.
+    draws_descendants = True
+
     def _face_primitive_mobs(self):
         return [
             descendant

@@ -264,6 +264,7 @@ class TriangleMesh(Mob):
         return self._rebatch_structural_attrs(permutation, child=child)
 
     def _adopt_structural_attrs(self, target):
+        super()._adopt_structural_attrs(target)
         self.corner_index = target.corner_index.clone()
         self.corner_normals = (
             None if target.corner_normals is None else target.corner_normals.clone()

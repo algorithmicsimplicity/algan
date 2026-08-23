@@ -69,15 +69,24 @@ class MobMorphMixin:
         """Return renderable morph units, treating structural Mobs as transparent.
 
         A renderer primitive owns its geometry (including structural components
-        such as a Surface's grid), so traversal stops there. Aggregate wrappers
-        such as Polyhedron advertise a conversion family but are not themselves
-        primitives; descend through them to pair their triangle and Dot3D leaves.
-        Plain Mobs and Groups likewise do not consume a pairing slot.
+        such as a Surface's grid), so traversal stops there. So does an
+        aggregate that draws its own descendants (``draws_descendants``, in
+        practice Polyhedron): its faces are internals rather than Mobs to pair,
+        and the vertex-and-edge graph beside them is geometry it never draws at
+        all. Plain Mobs and Groups do not consume a pairing slot.
         """
         primitives = []
 
         def visit(mob):
-            if mob._morph_family is not None and mob.is_primitive:
+            # A Mob that draws its descendants is one unit however many children
+            # it keeps: a Polyhedron's twelve faces arrive under a single
+            # ``mesh_key`` and are its internals, not twelve Mobs to pair.
+            # Pairing them separately published each face to the Scene as well,
+            # so the Polyhedron and the face both drew it -- and did the same
+            # for the vertex-and-edge graph the Polyhedron never draws at all.
+            if mob._morph_family is not None and (
+                mob.is_primitive or mob.draws_descendants
+            ):
                 primitives.append(mob)
                 return
             before = len(primitives)
@@ -278,10 +287,51 @@ class MobMorphMixin:
         return self
 
     def _register_hierarchy_for_render(self, mob):
+        """Publish ``mob`` to the Scene without publishing what an ancestor draws.
+
+        Under a Mob that draws its descendants (``draws_descendants``, in
+        practice ``Polyhedron``), a descendant published in its own right is
+        drawn a second time, and one the aggregator deliberately omits -- the
+        vertex-and-edge graph -- is drawn for the first time. That is what gave
+        a morphed Polyhedron a wireframe and eight vertex beads and a doubled
+        rim along every silhouette edge.
+
+        The condition is ``draws_descendants`` and not merely "has
+        ``get_render_primitives``": a ``BezierCircuitCubic`` has one and draws
+        only its own rows, so its children must still be published. Withholding
+        them dropped the tip off an ``Arrow`` grown as a placeholder inside a
+        ``Line``.
+
+        The walk seeds from what ``mob`` is already attached to rather than from
+        scratch, because ``_expand_n_children`` makes a placeholder a child
+        before registering it, and the aggregator that will draw it is an
+        ancestor rather than anything inside the walk.
+        """
         actors = self.scene.actors
-        for descendant in mob.get_descendants():
-            if not _identity_contains(actors, descendant):
-                self.scene.add_actor(descendant)
+
+        def under_an_aggregator(node, seen=None):
+            seen = set() if seen is None else seen
+            for parent in getattr(node, "parents", ()):
+                if id(parent) in seen:
+                    continue
+                seen.add(id(parent))
+                if getattr(parent, "draws_descendants", False):
+                    return True
+                if under_an_aggregator(parent, seen):
+                    return True
+            return False
+
+        def visit(node, drawn_by_ancestor):
+            draws_itself = hasattr(node, "get_render_primitives")
+            if not (drawn_by_ancestor and draws_itself) and not _identity_contains(
+                actors, node
+            ):
+                self.scene.add_actor(node)
+            aggregates = drawn_by_ancestor or getattr(node, "draws_descendants", False)
+            for child in getattr(node, "children", ()):
+                visit(child, aggregates)
+
+        visit(mob, under_an_aggregator(mob))
         return mob
 
     def _expand_n_list(self, lst, n: int, counterparts=None) -> list:
@@ -1062,6 +1112,28 @@ class MobMorphMixin:
         """Morph renderer-facing units independently, then install target nesting."""
         source_primitives = self._collect_morph_primitives(source)
         target_primitives = self._collect_morph_primitives(target)
+        if (
+            not source_primitives
+            and not target_primitives
+            and source.morph_kind == target.morph_kind
+        ):
+            # Neither side draws anything -- two empty Groups, say. There is no
+            # pair to record, and a context whose block records no event never
+            # advances its cursor, so this morph alone used to take zero time
+            # and pull everything after it in a Seq a second early. The roots
+            # still have attributes of their own (location, opacity, colour):
+            # morphing those is both the right thing to animate and what makes
+            # the morph occupy its run_time like every other route. Guarded on
+            # the kinds matching because ``_record_same_kind_morph`` is only
+            # defined for a matching pair; anything else falls through to the
+            # ordinary path, which is what it did before.
+            return self._record_same_kind_morph(
+                source,
+                target,
+                minimize_movement=minimize_movement,
+                strategy=strategy,
+                replacement_allowed=True,
+            )
         pairs, unmatched_sources, unmatched_targets = self._pair_primitive_indices(
             source_primitives, target_primitives, minimize_movement
         )

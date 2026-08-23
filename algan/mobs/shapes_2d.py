@@ -488,6 +488,7 @@ class TriangleVertices(Mob):
         return self._rebatch_structural_attrs(permutation, child=child)
 
     def _adopt_structural_attrs(self, target):
+        super()._adopt_structural_attrs(target)
         self.normals = None if target.normals is None else target.normals.clone()
         return self
 

@@ -154,6 +154,18 @@ class Mob(
     #: Mob is spawned, since the render primitive reads it once.
     two_sided = True
 
+    #: Whether ``get_render_primitives`` returns geometry belonging to this
+    #: Mob's DESCENDANTS as well as its own. Almost nothing does: a
+    #: ``BezierCircuitCubic`` or a ``Surface`` draws its own rows and leaves its
+    #: children to draw themselves. ``Polyhedron`` is the exception -- it
+    #: gathers every face under one ``mesh_key`` -- and the difference decides
+    #: two things for :meth:`~.Mob.become`: whether the Mob is one morph unit or
+    #: several, and whether a descendant may be published to the Scene in its
+    #: own right (doing so under an aggregator draws it twice, and draws
+    #: geometry the aggregator deliberately omits, such as a Polyhedron's
+    #: vertex-and-edge graph).
+    draws_descendants = False
+
     #: Whether this Mob's triangles form a CLOSED shell -- every camera ray
     #: that enters the geometry crosses a second time on its way out. ``False``
     #: (the default) leaves ``opacity`` compositing once per crossing, which is
@@ -284,8 +296,25 @@ class Mob(
         """Reorder plain geometry metadata with an object-batch permutation."""
         return self
 
+    #: Plain (non-animatable) attributes a morph endpoint must take from its
+    #: target. Each one changes what the renderer draws and none of them lives
+    #: on the timeline, so the same-kind path -- which copies the intersection
+    #: of the two Mobs' ``animatable_attrs`` -- carried none of them: a morph
+    #: ended with the target's geometry wearing the source's shading and
+    #: sidedness. Subclasses extend the tuple rather than overriding the method.
+    _MORPH_ADOPTED_ATTRS = ("shader", "two_sided", "closed_shell")
+
     def _adopt_structural_attrs(self, target):
-        """Take target-side plain geometry metadata at a morph endpoint."""
+        """Take target-side plain geometry metadata at a morph endpoint.
+
+        Assigned through the normal setter, which is how construction sets each
+        of these: bypassing it with ``object.__setattr__`` would shadow rather
+        than set anything that turns out to be a property, and the morph would
+        pass an attribute check while rendering unchanged.
+        """
+        for attr in self._MORPH_ADOPTED_ATTRS:
+            if hasattr(target, attr):
+                setattr(self, attr, getattr(target, attr))
         return self
 
     def _init_default_attr(self, attr, value):
