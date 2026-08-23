@@ -171,11 +171,20 @@ def test_the_blocks_default_is_the_historical_behaviour():
     The padding rule here has outgrown "one_sided is the LAST slot": slots may
     be appended after it, each safe for exactly one reason -- its own 0.0 also
     means the behaviour that existed before (slots 27..29 attenuation_sigma:
-    0.0 is no absorption, what every material did before they existed).
+    0.0 is no absorption, what every material did before they existed), or
+    nothing outside the pipeline id that owns it can reach it (slots 30..32,
+    toon's num_bands and depth's near/far, whose non-zero defaults only ever
+    land in a built-in block).
     """
+    from algan.rendering.raytracing.shading_taichi import (
+        _MAT_ATTENUATION_SIGMA,
+    )
+
     assert len(_MAT_DEFAULTS) == MAT_W
     assert _MAT_DEFAULTS[_MAT_ONE_SIDED] == 0.0
-    assert all(v == 0.0 for v in _MAT_DEFAULTS[_MAT_ONE_SIDED:])
+    assert all(
+        v == 0.0 for v in _MAT_DEFAULTS[_MAT_ONE_SIDED : _MAT_ATTENUATION_SIGMA + 3]
+    )
 
 
 def test_moving_a_solid_keeps_its_declaration():

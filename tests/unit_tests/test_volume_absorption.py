@@ -140,7 +140,9 @@ def test_the_packed_block_carries_sigma_in_its_slots():
     """
     start, width = _MAT_SLOTS["attenuation_sigma"]
     assert (start, width) == (27, 3)
-    assert start + width == MAT_W
+    # Slots 30..32 (toon's num_bands, depth's near/far) were appended after
+    # sigma, so it no longer ends the block -- but nothing may precede it.
+    assert start + width < MAT_W
 
     with Scene(), Off():
         glass = Octahedron(edge_length=0.8)

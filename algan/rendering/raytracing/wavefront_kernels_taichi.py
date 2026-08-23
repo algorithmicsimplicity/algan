@@ -158,11 +158,12 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
     ``lp - spos`` and its norm, bitwise the stage's ``d``), so "exactly zero"
     here is exactly zero there and the fragment's shadow fan cannot influence
     any stage whose vis-multiplied terms all carry ``lc`` as a factor
-    (lambert/phong/standard/physical). NOT valid for ``_stage_default``:
-    its base-colour fade accumulates a vis-weighted ``w`` even at
-    ``lc == 0`` -- callers gate on the hit's pipeline id. Underflowed (but
-    not bitwise-zero) multipliers are treated as live: that only traces a
-    fan whose result multiplies zero, never the reverse.
+    (lambert/phong/toon/standard/physical; normal/matcap/depth consume no
+    lights at all, so the cull cannot touch their output either). NOT valid
+    for ``_stage_default``: its base-colour fade accumulates a vis-weighted
+    ``w`` even at ``lc == 0`` -- callers gate on the hit's pipeline id.
+    Underflowed (but not bitwise-zero) multipliers are treated as live: that
+    only traces a fan whose result multiplies zero, never the reverse.
     """
     zero = 0
     if light_col.shape[2] > 3:
@@ -2408,7 +2409,11 @@ def wavefront_shade(
         rs_int: ti.types.ndarray(),
         hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
-        rs_alloc: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
+        rs_alloc: ti.types.ndarray(), rs_vis: ti.types.ndarray(),
+        # Per-frame camera world position, handed on to the material stages
+        # (``cam_pos``): depth-style shading measures from the CAMERA, and a
+        # bounced ray's own origin is not it.
+        cam_origin: ti.types.ndarray()):
     """Drain the compact event batch front-to-back.
 
     Alpha-composite each surface with per-geometry-type shading and mirror
@@ -2901,7 +2906,8 @@ def wavefront_shade(
                                                ro + t_hit * rd, tri_pos, sn,
                                                tri_mat_id, tri_mat,
                                                light_pos, light_col, num_lights,
-                                               color, shadows, vis)
+                                               color, shadows, vis,
+                                               cam_origin)
 
                 if ti.static(len(frag_scatters) == 0):
                     # Built-in continuation.  The packed surface channels carry

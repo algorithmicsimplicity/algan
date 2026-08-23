@@ -338,7 +338,9 @@ the frame is rendered.
      - Consequences
    * - No material set (Algan's default), :class:`~.MeshLambertMaterial`,
        :class:`~.MeshPhongMaterial`, :class:`~.MeshStandardMaterial`,
-       :class:`~.MeshPhysicalMaterial`
+       :class:`~.MeshPhysicalMaterial`, :class:`~.MeshToonMaterial`,
+       :class:`~.MeshNormalMaterial`, :class:`~.MeshMatcapMaterial`,
+       :class:`~.MeshDepthMaterial`
      - Per fragment
      - Full behaviour: every light type, shadows, environment lighting, normal
        maps, material-property maps.
@@ -349,34 +351,39 @@ the frame is rendered.
    * - :class:`~.MeshBasicMaterial` / :class:`~.UnlitMaterial`
      - Unlit by design
      - Passes its colour through. Not a limitation — it is the point.
-   * - :class:`~.MeshToonMaterial`, :class:`~.MeshNormalMaterial`,
-       :class:`~.MeshMatcapMaterial`, :class:`~.MeshDepthMaterial`
+   * - A custom **per-vertex** shader from
+       :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`
+       (a plain function, not a
+       :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`)
      - **Per vertex only**
      - See below.
 
-The four per-vertex materials are the sharp edge here. Because their shading is
-baked at the mesh's vertices before rendering:
+Custom per-vertex shading is the sharp edge here. Because such a shader runs at
+the mesh's vertices before rendering:
 
-* They are lit **only by** :class:`~.PointLight`. Directional, ambient,
-  hemisphere, spot and rect-area lights are skipped entirely, as is an
-  environment map's diffuse contribution.
-* They **never receive shadows**, whatever ``shadows`` is set to.
-* Their shading resolution is the mesh's resolution. On a coarse mesh a toon
-  band or a matcap gradient is visibly faceted, and raising
-  ``grid_width``/``grid_height`` is the only remedy.
-* :class:`~.MeshMatcapMaterial` never samples a matcap image; it uses a
-  view-facing approximation tinted by the base colour.
-  :class:`~.MeshToonMaterial` never samples a gradient map; its band count comes
-  from the Algan-specific ``bands`` argument.
+* It sees **only** :class:`~.PointLight`. Directional, ambient, hemisphere,
+  spot and rect-area lights are skipped entirely, as is an environment map's
+  diffuse contribution.
+* It **never receives shadows**, whatever ``shadows`` is set to.
+* Its shading resolution is the mesh's resolution: lighting is interpolated
+  between corners instead of evaluated per fragment.
 
-None of that is silent. Combining one of the four with a lighting rig that asks
-for more than the bake delivers -- any light beyond a plain :class:`~.PointLight`,
-``shadows=True``, or an environment map -- emits a warning naming the material
-and what is being dropped. It fires where
+None of that is silent. Combining a vertex-baked shader with a lighting rig that
+asks for more than the bake delivers -- any light beyond a plain
+:class:`~.PointLight`, ``shadows=True``, or an environment map -- emits a warning
+naming what is being dropped. It fires where
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader` or
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material` is
 called, against the lights that exist by then, and again once per render over
 the whole scene, which is what catches the usual authoring order of choosing the
-material before spawning the lights.
+shader before spawning the lights.
+
+Two of the built-in materials keep their own documented approximations even
+though they now shade per fragment:
+:class:`~.MeshMatcapMaterial` never samples a matcap image; it uses a
+view-facing approximation tinted by the base colour.
+:class:`~.MeshToonMaterial` never samples a gradient map; its band count comes
+from the Algan-specific ``bands`` argument.
 
 Three.js material properties that are accepted and ignored
 -----------------------------------------------------------

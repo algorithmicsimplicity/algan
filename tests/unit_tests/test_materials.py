@@ -439,7 +439,34 @@ def test_texture_and_unsupported_warnings():
 
 # ---------------------------------------------------------------------------
 # Warnings for lighting a vertex bake cannot answer
+#
+# Every BUILT-IN material shades in-kernel now, so the only thing still baked
+# into vertex colours is a CUSTOM per-vertex shader -- ``set_shader`` with a
+# plain function, or a Material whose ``shader`` is one. These tests prove both
+# halves of that: the four former bake-only materials warn no longer, and a
+# custom per-vertex shader still does.
 # ---------------------------------------------------------------------------
+
+
+def _custom_vertex_shader(
+    memory,
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    camera_location,
+    light_origin,
+    light_color,
+    light_intensity,
+    ambient_light_intensity,
+):
+    """A plain per-vertex shader: no in-kernel port, so it is baked."""
+    return albedo_color
+
+
+class _CustomVertexMaterial(Material):
+    """A material whose shading can only be baked into vertex colours."""
+
+    shader = staticmethod(_custom_vertex_shader)
 
 
 def _caught(fn):
@@ -450,17 +477,41 @@ def _caught(fn):
     return " ".join(str(w.message) for w in rec)
 
 
+def test_formerly_baked_materials_now_light_like_every_core_material():
+    from algan import SETTINGS, AmbientLight, DirectionalLight, Scene, Sphere
+
+    with Scene():
+        DirectionalLight(color=WHITE).spawn(animate=False)
+        AmbientLight(color=WHITE, intensity=0.3).spawn(animate=False)
+        SETTINGS.raytracing.set(shadows=True)
+        try:
+            # Toon/normal/matcap/depth used to be vertex-baked, which cost them
+            # every light beyond a plain PointLight and every shadow; each had
+            # a matching warning here. They have in-kernel stages now.
+            for cls in (
+                MeshToonMaterial,
+                MeshNormalMaterial,
+                MeshMatcapMaterial,
+                MeshDepthMaterial,
+            ):
+                text = _caught(lambda cls=cls: Sphere().set_material(cls()))
+                assert text == "", (cls.__name__, text)
+        finally:
+            SETTINGS.raytracing.set(shadows=False)
+    print("ok: toon/normal/matcap/depth see extended lights and shadows")
+
+
 def test_set_material_warns_when_extended_lights_are_already_spawned():
     from algan import AmbientLight, DirectionalLight, Scene, Sphere
 
     with Scene():
         DirectionalLight(color=WHITE).spawn(animate=False)
         AmbientLight(color=WHITE, intensity=0.3).spawn(animate=False)
-        text = _caught(lambda: Sphere().set_material(MeshToonMaterial()))
-    assert "MeshToonMaterial" in text
+        text = _caught(lambda: Sphere().set_material(_CustomVertexMaterial()))
+    assert "_CustomVertexMaterial" in text
     assert "DirectionalLight" in text
     assert "AmbientLight" in text
-    print("ok: a vertex-baked material warns about the extended lights it drops")
+    print("ok: a vertex-baked custom shader warns about the lights it drops")
 
 
 def test_set_material_warns_when_shadows_are_on():
@@ -469,21 +520,21 @@ def test_set_material_warns_when_shadows_are_on():
     with Scene():
         SETTINGS.raytracing.set(shadows=True)
         try:
-            text = _caught(lambda: Sphere().set_material(MeshMatcapMaterial()))
+            text = _caught(lambda: Sphere().set_material(_CustomVertexMaterial()))
         finally:
             SETTINGS.raytracing.set(shadows=False)
-    assert "MeshMatcapMaterial" in text
+    assert "_CustomVertexMaterial" in text
     assert "shadow" in text
-    print("ok: a vertex-baked material warns that it receives no shadows")
+    print("ok: a vertex-baked custom shader warns that it receives no shadows")
 
 
 def test_set_material_stays_quiet_for_the_default_rig_and_core_materials():
     from algan import DirectionalLight, Scene, Sphere
 
     with Scene():
-        # A vertex-baked material under the default rig (one plain PointLight,
-        # shadows off) loses nothing, so it must not warn.
-        assert _caught(lambda: Sphere().set_material(MeshToonMaterial())) == ""
+        # A vertex-baked custom shader under the default rig (one plain
+        # PointLight, shadows off) loses nothing, so it must not warn.
+        assert _caught(lambda: Sphere().set_material(_CustomVertexMaterial())) == ""
         DirectionalLight(color=WHITE).spawn(animate=False)
         # Core materials and the deliberately unlit one shade in-kernel.
         assert _caught(lambda: Sphere().set_material(MeshStandardMaterial())) == ""
@@ -496,11 +547,11 @@ def test_render_rechecks_materials_against_lights_spawned_afterwards():
     from algan import DirectionalLight, Scene, Sphere
 
     with Scene() as scene:
-        # The authoring order set_material cannot see: material first, rig
+        # The authoring order set_material cannot see: shader first, rig
         # after. The render's own pass is what catches it.
-        baked = Sphere().set_material(MeshDepthMaterial()).spawn(animate=False)
+        baked = Sphere().set_material(_CustomVertexMaterial()).spawn(animate=False)
         Sphere().set_material(MeshStandardMaterial()).spawn(animate=False)
-        Sphere().set_material(MeshNormalMaterial())  # never spawned
+        unspawned = Sphere().set_material(_CustomVertexMaterial())  # never spawned
         assert _caught(scene._warn_vertex_baked_lighting) == ""
 
         DirectionalLight(color=WHITE).spawn(animate=False)
@@ -511,9 +562,10 @@ def test_render_rechecks_materials_against_lights_spawned_afterwards():
     # end of the message names the core materials, so the count and the
     # parenthesised list are what carry this.)
     assert "1 spawned Mob(s)" in text
-    assert "(MeshDepthMaterial)" in text
-    assert baked.shader is ms.depth_shader
-    print("ok: the render re-checks vertex-baked materials against the live rig")
+    assert "(_CustomVertexMaterial)" in text
+    assert baked.shader is _custom_vertex_shader
+    assert unspawned.shader is _custom_vertex_shader
+    print("ok: the render re-checks vertex-baked shaders against the live rig")
 
 
 # ---------------------------------------------------------------------------

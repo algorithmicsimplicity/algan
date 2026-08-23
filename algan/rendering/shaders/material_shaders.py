@@ -308,10 +308,16 @@ def phong_shader(
     flat_shading: float = 0.0,
     env_map_intensity: float = 1.0,
 ):
-    """MeshPhongMaterial: Blinn-Phong diffuse + specular highlight + emissive."""
+    """MeshPhongMaterial: Blinn-Phong diffuse + specular highlight + emissive.
+
+    Twin of ``shading_taichi._stage_phong``; read its docstring for why the
+    specular lobe carries three.js's ``0.25 * (shininess * 0.5 + 1)``
+    normalization and its Fresnel term but not its ``1/pi`` (the diffuse lobe
+    drops the same factor, so the ratio between them is three.js's exactly).
+    """
     rgb, glow = _split_albedo(albedo_color)
     n = _shading_normal(vertex_location, vertex_normal, flat_shading)
-    (_l, _v, _h, n_dot_l, _nv, n_dot_h, _vh) = _light_geometry(
+    (_l, _v, _h, n_dot_l, _nv, n_dot_h, v_dot_h) = _light_geometry(
         vertex_location, n, camera_location, light_origin
     )
     radiance = light_color[..., :3] * light_intensity
@@ -319,9 +325,21 @@ def phong_shader(
     kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
     ambient = rgb * kA
     diffuse = rgb * radiance * n_dot_l
-    # Blinn-Phong specular: (N.H)^shininess, gated by N.L so back faces stay dark.
-    spec_term = n_dot_h.clamp_min(1e-4) ** shininess.clamp_min(1e-3)
-    specular_out = specular * radiance * spec_term * (n_dot_l > 0)
+    # Blinn-Phong specular: F_Schlick(specular, 1, V.H) * 0.25 * D, with
+    # D = (shininess * 0.5 + 1) * (N.H)^shininess, scaled by N.L -- which
+    # also keeps back faces dark without a separate gate.
+    s = (
+        shininess.clamp_min(1e-3)
+        if torch.is_tensor(shininess)
+        else max(shininess, 1e-3)
+    )
+    d_blinn = (s * 0.5 + 1.0) * n_dot_h.clamp_min(1e-4) ** s
+    # ``specular`` reaches the live path as a tensor (Material.get_shader_param_values
+    # runs it through _to_rgb); the signature default is a plain tuple, and
+    # ``1 - tuple`` is not a thing, so normalise before the Fresnel.
+    spec_rgb = specular if torch.is_tensor(specular) else torch.tensor(specular)
+    f_spec = spec_rgb + (1.0 - spec_rgb) * (1.0 - v_dot_h).clamp(0.0, 1.0) ** 5
+    specular_out = f_spec * radiance * (0.25 * d_blinn * n_dot_l)
     out = (ambient + diffuse + specular_out) * _energy_scale(
         n_dot_l * radiance.amax(-1, keepdim=True) + kA
     ) + emissive * emissive_intensity

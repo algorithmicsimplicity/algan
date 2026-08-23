@@ -332,6 +332,7 @@ def _stage_cosine_color(
     num_lights,
     shadows: ti.template(),
     vis,
+    cam_pos,
 ):
     """Modulate the albedo by an RGB-phase-shifted cosine of world x (rainbow
     banding). Params: ``frequency`` (slot 0), ``phase`` (slot 1).
