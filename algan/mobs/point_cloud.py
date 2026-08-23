@@ -78,6 +78,16 @@ def _gradient(colors, length: int) -> torch.Tensor:
 class PMobject(Group):
     """Point-array Mobject rendered as a batched set of tiny spheres."""
 
+    #: ``get_render_primitives`` below builds every point's sphere itself and
+    #: none of them is a Scene actor, so the cloud is one unit to ``become``
+    #: too: converted through the "aggregate" adapter and with its spheres kept
+    #: out of the actor list rather than published and drawn a second time.
+    _morph_family = "aggregate"
+    draws_descendants = True
+
+    def morph_soup_parts(self):
+        return self._primitive_children()
+
     def __init__(
         self,
         stroke_width: int = 4,

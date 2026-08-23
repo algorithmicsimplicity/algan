@@ -741,6 +741,20 @@ class BezierCircuitCubic(Mob):
     def get_animatable_attrs(self):
         return {"border_width"}.union(super().get_animatable_attrs())
 
+    #: ``filled`` and ``empty`` decide whether the circuit is a disc or a ring.
+    #: ``get_render_primitives`` reads both live and neither is animatable, so a
+    #: filled Square becoming an unfilled one used to stay solid -- a full-range
+    #: difference over 3.6% of the frame. The colours that go with the fill
+    #: arrive separately: ``texture_points`` and ``border_texture_points`` are
+    #: components, and the morph recurses into them. ``z_index`` is deliberately
+    #: absent -- it already reaches the endpoint on its own, and assigning it
+    #: here would bypass the setter that propagates it to the sub-hierarchy.
+    _MORPH_ADOPTED_ATTRS = (
+        *Mob._MORPH_ADOPTED_ATTRS,
+        "filled",
+        "empty",
+    )
+
     @property
     def border_color(self):
         """Per-vertex colors sampled across the circuit's border texture grid."""
