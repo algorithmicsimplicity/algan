@@ -301,10 +301,11 @@ has to sit in the *middle* of a pipeline rather than at the start:
 =====================  ========================================================
 Stage                  Lighting model
 =====================  ========================================================
-``STAGE_MANIM``        Manim's default 3-D lighting -- an achromatic
-                       ``n . to_light ** 3`` offset per light, nothing else.
-                       Resolved from ``manim_shader``; installed as the
-                       default 3-D shading by
+``STAGE_MANIM``        Manim's default 3-D lighting -- per light, a
+                       ``0.5 * (n . to_light) ** 3`` offset, halved when the
+                       surface faces away from the light and scaled by the
+                       light's colour. Resolved from ``manim_shader``;
+                       installed as the default 3-D shading by
                        :meth:`~algan.scene.Scene.use_manim_defaults`.
 ``STAGE_UNLIT``        No lighting: the fragment keeps its own colour. Resolved
                        from ``null_shader`` and ``basic_material_shader``, and
