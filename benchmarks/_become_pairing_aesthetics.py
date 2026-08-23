@@ -6,10 +6,12 @@ outside, so this renders the same morph under each available rule and lays the
 frames out as a filmstrip: one row per rule, one column per sampled time.
 
 Rules:
-  order      -- the shipped default (minimize_movement=False)
-  distance   -- the shipped opt-in  (minimize_movement=True)
-  blend      -- a proposal: order, position and size, all normalized and
-                weighted, instead of order with a 1e-6 tiebreak
+  blend      -- the shipped default: order, position and size, all normalized
+                and weighted (the `_PAIR_*_WEIGHT` constants on MobMorphMixin)
+  distance   -- the shipped opt-in, `minimize_movement=True`: pure proximity
+  order      -- what the default USED to be, restored by monkeypatch: the order
+                gap plus a distance capped at 1e-3, so geometry could only
+                break exact ties. Kept as the A/B the change was made against.
 
 Usage:  <venv-python> benchmarks/_become_pairing_aesthetics.py [--scene NAME]
 """
@@ -20,7 +22,6 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from algan import (
     BLUE,
@@ -48,20 +49,20 @@ OUT = Path("/tmp/pairing_aesthetics")
 
 
 # --------------------------------------------------------------------------
-# The proposed cost
+# The rule the default replaced, for A/B
 # --------------------------------------------------------------------------
 
 
-def _extent(mob):
-    size = mob.get_axis_aligned_size()
-    return size.reshape(-1, size.shape[-1]).mean(0).detach().float().cpu()
+def install_legacy_order_cost():
+    """Restore the pre-change rule: order, with distance as a 1e-6 tiebreak.
 
-
-def install_blend_cost(order_weight=0.35, position_weight=0.5, size_weight=0.15):
-    """Replace `_primitive_pair_cost` with a normalized weighted blend."""
+    This is what shipped before the assignment was rebalanced, kept so the two
+    can be put side by side. Its distance term is capped at 1e-3 against an
+    order gap spanning [0, 1], which is why it could only break exact ties.
+    """
     original = MobMorphMixin._primitive_pair_cost
 
-    def blend_cost(
+    def legacy_cost(
         self,
         source,
         target,
@@ -71,52 +72,28 @@ def install_blend_cost(order_weight=0.35, position_weight=0.5, size_weight=0.15)
         source_count,
         target_count,
         minimize_movement,
+        scene_span=None,
     ):
         compatibility = self._primitive_compatibility_rank(source, target)
-        source_center = self._morph_center(source)
-        target_center = self._morph_center(target)
-        distance = float((source_center - target_center).norm())
-
-        scale = getattr(self, "_blend_scene_scale", None)
-        if not scale:
-            scale = 1.0
-        source_position = source_index / max(source_count - 1, 1)
-        target_position = target_index / max(target_count - 1, 1)
-        order_gap = abs(source_position - target_position)
-        position_gap = min(distance / scale, 1.0)
-
-        source_extent = _extent(source).norm().clamp_min(1e-4)
-        target_extent = _extent(target).norm().clamp_min(1e-4)
-        ratio = float(torch.log(target_extent / source_extent).abs())
-        size_gap = min(ratio / 2.30258509, 1.0)  # one decade saturates
-
-        secondary = (
-            order_weight * order_gap
-            + position_weight * position_gap
-            + size_weight * size_gap
+        distance = float(
+            (self._morph_center(source) - self._morph_center(target)).norm()
         )
+        if minimize_movement:
+            secondary = distance
+        else:
+            source_position = source_index / max(source_count - 1, 1)
+            target_position = target_index / max(target_count - 1, 1)
+            secondary = (
+                abs(source_position - target_position) + min(distance, 1e3) * 1e-6
+            )
         return compatibility * 1e6 + secondary
 
-    MobMorphMixin._primitive_pair_cost = blend_cost
+    MobMorphMixin._primitive_pair_cost = legacy_cost
     return original
 
 
-def install_scene_scale_hook():
-    """Give the blend cost a scene scale to normalize distances against."""
-    original = MobMorphMixin._pair_primitive_indices
-
-    def patched(self, sources, targets, minimize_movement):
-        points = []
-        for mob in list(sources) + list(targets):
-            points.append(MobMorphMixin._morph_center(mob))
-        if points:
-            stacked = torch.stack(points)
-            span = float((stacked.amax(0) - stacked.amin(0)).norm())
-            self._blend_scene_scale = max(span, 1e-3)
-        return original(self, sources, targets, minimize_movement)
-
-    MobMorphMixin._pair_primitive_indices = patched
-    return original
+def restore_cost(original):
+    MobMorphMixin._primitive_pair_cost = original
 
 
 # --------------------------------------------------------------------------
@@ -234,7 +211,7 @@ SCENES = {
     "shape_row": shape_row,
 }
 
-RULES = ["order", "distance", "blend"]
+RULES = ["blend", "distance", "order"]
 SAMPLES = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
@@ -275,10 +252,12 @@ def main():
     for name in names:
         rows = []
         for rule in rules:
-            if rule == "blend":
-                install_scene_scale_hook()
-                install_blend_cost()
-            paths = render_strip(name, rule, f"{name}_{rule}")
+            original = install_legacy_order_cost() if rule == "order" else None
+            try:
+                paths = render_strip(name, rule, f"{name}_{rule}")
+            finally:
+                if original is not None:
+                    restore_cost(original)
             images = [cv2.imread(str(path), cv2.IMREAD_UNCHANGED) for path in paths]
             images = [
                 image[..., :3] if image.shape[2] == 4 else image for image in images

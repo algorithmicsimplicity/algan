@@ -47,6 +47,13 @@ def _patched(self, sources, targets, minimize_movement):
     pairs, unmatched_sources, unmatched_targets = _ORIGINAL(
         self, sources, targets, minimize_movement
     )
+    # Pass the same span `_pair_primitive_indices` used, or the printed cost is
+    # the un-normalized one and does not explain the assignment it sits beside.
+    scene_span = (
+        None
+        if minimize_movement
+        else MobMorphMixin._pairing_scene_span(sources, targets)
+    )
     costs = torch.empty((len(sources), len(targets)), dtype=torch.float64)
     for i, source in enumerate(sources):
         for j, target in enumerate(targets):
@@ -58,6 +65,7 @@ def _patched(self, sources, targets, minimize_movement):
                 source_count=len(sources),
                 target_count=len(targets),
                 minimize_movement=minimize_movement,
+                scene_span=scene_span,
             )
     _LOG.append(
         {

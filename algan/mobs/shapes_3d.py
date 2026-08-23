@@ -1040,6 +1040,19 @@ class Arrow3D(Mob):
         self.length = length
         self.add_children(self.tail, self.head, self.start_point, self.end_point)
 
+    #: The arrow hands the renderer the shaft, the tip and their end discs
+    #: itself -- as ``get_render_primitives`` below says, none of them is a
+    #: Scene actor and it is the only thing that asks them to build. So it is
+    #: one unit to ``become`` as well: one morph unit, converted through the
+    #: "aggregate" adapter, with its parts kept out of the actor list. Without
+    #: the family it had no converter at all and ``Arrow3D().become(Sphere())``
+    #: raised; without ``draws_descendants`` its parts were published twice.
+    _morph_family = "aggregate"
+    draws_descendants = True
+
+    def morph_soup_parts(self):
+        return self._renderable_descendants()
+
     def _renderable_descendants(self):
         """This arrow's geometry, each part immediately followed by its own caps.
 

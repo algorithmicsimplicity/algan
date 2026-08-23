@@ -19,6 +19,7 @@ from algan import (
     LEFT,
     RIGHT,
     UP,
+    Arrow3D,
     Cross,
     Cube,
     Dot3D,
@@ -280,24 +281,23 @@ def _wave(grid_width, grid_height):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known, unfixed. _reconcile_grid_pair resamples both sides to the "
-        "per-axis maximum grid, so a target that is coarser along an axis is "
-        "resampled UPWARD -- and F.interpolate over a coarse grid does not "
-        "reproduce the surface those samples came from. The morph therefore "
-        "ends on an interpolated near-miss of the target: 0.161 on a surface "
-        "one unit across, 178 channel values over 0.70% of an LD frame. The "
-        "fix is to re-evaluate the surface's own function on the finer grid "
-        "instead of interpolating its samples -- Surface keeps it as `_func` "
-        "and exposes `_current_surface_function()` -- but the grid holds "
-        "transformed coordinates, so doing that correctly means going through "
-        "the base-grid cache rather than calling the function directly."
-    ),
-)
 def test_morphing_into_a_coarser_surface_lands_on_that_surface(scene):
-    """Grid reconciliation resamples both sides to the per-axis maximum."""
+    """The morph must end on the target SURFACE, not on a resampling of it.
+
+    Grid reconciliation moves both sides to the finer grid per axis, so a
+    target coarser along an axis is resampled upward -- and interpolating a
+    coarse grid does not reproduce the surface those samples came from. The
+    morph used to end on a bilinear re-sampling of four columns of a wave
+    rather than on the wave: 0.0258 mean deviation from the analytic surface,
+    0.108 at worst. Re-evaluating the Surface's own parametric function on the
+    reconciled grid ends on the wave itself.
+
+    Measured against the analytic surface rather than the target's sample
+    POINTS on purpose. The result is sampled at 6x9 where the target is 4x9, so
+    the two point sets do not coincide however right the shape is -- a nearest-
+    point comparison would report half a grid cell and call a correct morph
+    wrong. What has to be true is that every point lies on the surface.
+    """
     with Off():
         source = Surface(
             lambda u, v: torch.stack((u - 0.5, v - 0.5, torch.zeros_like(u)), -1),
@@ -305,14 +305,209 @@ def test_morphing_into_a_coarser_surface_lands_on_that_surface(scene):
             grid_height=6,
         ).spawn()
         target = _wave(4, 9)
-    reference = _static_points(target)
 
     with Sync(run_time=1.0):
         source.become(target)
     end = float(scene.animation_manager.context.timespan.current_time)
     scene.timeline_manager.set_state_to_times(torch.tensor([end]))
     points = _visible_points(scene)
-    error = _chamfer(points, reference)
     scene.timeline_manager.clear_buffers()
 
-    assert error < 0.02, f"the morph ended {error:.4f} away from the target surface"
+    inside = (points[:, 0].abs() <= 0.5001) & (points[:, 1].abs() <= 0.5001)
+    surface_points = points[inside]
+    assert surface_points.shape[0] >= 40, "too few points to say anything"
+    u = surface_points[:, 0] + 0.5
+    v = surface_points[:, 1] + 0.5
+    expected_z = 0.25 * torch.sin(6 * u) * torch.cos(6 * v)
+    deviation = (surface_points[:, 2] - expected_z).abs()
+    assert float(deviation.mean()) < 0.005, (
+        f"the morph ended {float(deviation.mean()):.4f} off the target surface "
+        f"on average (worst {float(deviation.max()):.4f})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The assignment: geometry decides, not just the order children were listed in
+# ---------------------------------------------------------------------------
+
+
+def _part_centers(mob, index):
+    centers = []
+    for node in [mob, *mob.get_descendants()]:
+        location = getattr(node, "location", None)
+        if location is None or location.shape[0] <= index or not location.numel():
+            continue
+        if not hasattr(node, "get_render_primitives"):
+            continue
+        rows = location[index].reshape(-1, 3)
+        centers.append((rows.amin(0) + rows.amax(0)) / 2)
+    return centers
+
+
+def test_parts_that_need_not_move_do_not_travel(scene):
+    """Four squares in the same four places, listed in a different order.
+
+    Nothing has to move. The old cost added a distance capped at 1e-3 to an
+    order gap spanning [0, 1], so traversal order decided the assignment
+    outright: all four converged on the centre of the screen, overlapped, and
+    flew back out. The rebalanced cost normalizes the two against each other,
+    and geometry wins where it is this lopsided.
+    """
+    places = [LEFT * 2 + UP, RIGHT * 2 + UP, RIGHT * 2 - UP, LEFT * 2 - UP]
+
+    def build(order):
+        return Group(*[Square(side_length=0.7).move(places[i]) for i in order])
+
+    with Off():
+        source = build([0, 1, 2, 3]).spawn()
+        target = build([2, 0, 3, 1])
+    start = float(scene.animation_manager.context.timespan.current_time)
+    with Sync(run_time=1.0):
+        morphed = source.become(target)
+    end = float(scene.animation_manager.context.timespan.current_time)
+
+    times = [start, (start + end) / 2, end]
+    scene.timeline_manager.set_state_to_times(torch.tensor(times))
+    start_centers = _part_centers(morphed, 0)
+    middle_centers = _part_centers(morphed, 1)
+    scene.timeline_manager.clear_buffers()
+
+    assert len(start_centers) == len(middle_centers) == 4
+    travelled = max(
+        float((a - b).norm()) for a, b in zip(start_centers, middle_centers)
+    )
+    assert travelled < 0.25, (
+        f"a square moved {travelled:.2f} units mid-morph when the two "
+        f"hierarchies differ only in the order their children are listed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A morph has to show something the whole way through
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "build_target",
+    [
+        pytest.param(
+            lambda: Square(side_length=1.6, filled=False, border_width=0.06),
+            id="unfilled_square",
+        ),
+        pytest.param(
+            lambda: Group(Line(LEFT, RIGHT), Line(UP, -UP)), id="crossed_lines"
+        ),
+    ],
+)
+def test_a_morph_into_a_stroke_only_shape_is_never_blank(scene, build_target):
+    """The PN medium carries fills, and a stroke-only circuit has none.
+
+    ``_bezier_to_pn_soup`` zeroes an unfilled circuit's opacity, correctly --
+    there is no interior to convert. But that makes the whole target soup
+    transparent, so a geometric morph had nothing to show: the solid faded to
+    nothing, roughly a third of the frames were empty, and the outline appeared
+    at the end. Such a pair cross-fades instead.
+    """
+    with Off():
+        source = Sphere(radius=0.8).spawn()
+        target = build_target()
+    start = float(scene.animation_manager.context.timespan.current_time)
+    with Sync(run_time=1.0):
+        source.become(target)
+    end = float(scene.animation_manager.context.timespan.current_time)
+
+    times = [start + (end - start) * f for f in (0.2, 0.4, 0.5, 0.6, 0.8)]
+    scene.timeline_manager.set_state_to_times(torch.tensor(times))
+    counts = [
+        0
+        if _visible_points(scene, index) is None
+        else _visible_points(scene, index).shape[0]
+        for index in range(len(times))
+    ]
+    scene.timeline_manager.clear_buffers()
+
+    assert all(count > 0 for count in counts), (
+        f"the morph showed nothing at some point in its middle: {counts}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# An aggregate morphs and draws as one thing
+# ---------------------------------------------------------------------------
+
+
+def test_an_arrow3d_can_morph_in_both_directions(scene):
+    """``Arrow3D`` draws its shaft, tip and end discs itself.
+
+    It had no ``_morph_family``, so ``become`` decomposed it into those parts
+    and then had to publish them separately: ``Sphere -> Arrow3D`` ended with
+    the parts drawn twice, and ``Arrow3D -> Sphere`` raised outright. It is now
+    one morph unit converted through the "aggregate" adapter.
+    """
+    with Off():
+        source = Arrow3D().spawn()
+        target = Sphere(radius=0.6).move(RIGHT * 1.5)
+    with Sync(run_time=1.0):
+        result = source.become(target)
+    assert result is not None
+
+    with Scene() as fresh:
+        with Off():
+            reference = Arrow3D().spawn()
+        expected = len([a for a in _rendering_actors(fresh) if a.is_spawned()])
+        assert reference is not None
+    with Scene() as other:
+        with Off():
+            sphere = Sphere(radius=0.6).spawn()
+            arrow = Arrow3D()
+        with Sync(run_time=1.0):
+            sphere.become(arrow)
+        live = [
+            a
+            for a in _rendering_actors(other)
+            if a.is_spawned() and not a.is_despawned()
+        ]
+        assert len(live) == expected, (
+            f"a morphed Arrow3D publishes {len(live)} renderable actors where a "
+            f"spawned one publishes {expected}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# A surface's image is part of what it looks like
+# ---------------------------------------------------------------------------
+
+
+def test_become_takes_the_targets_colour_texture(scene):
+    """A texture is stored under a name encoding its own ``W * H``.
+
+    Two surfaces with differently-sized textures therefore share no attribute
+    for the same-kind morph's ``animatable_attrs`` intersection to copy, and
+    the result kept the source's picture: a 4x4 red texture becoming an 8x4
+    blue one ended red.
+    """
+
+    def textured(texture_width, texture_height, tint):
+        surface = Surface(
+            lambda u, v: torch.stack((u - 0.5, v - 0.5, torch.zeros_like(u)), -1),
+            grid_width=6,
+            grid_height=6,
+        )
+        texture = torch.zeros(texture_width, texture_height, 5)
+        texture[..., :3] = torch.tensor(tint, dtype=texture.dtype)
+        texture[..., 3] = 1.0
+        surface.color_texture = texture
+        return surface
+
+    with Off():
+        source = textured(4, 4, (1.0, 0.0, 0.0)).spawn()
+        target = textured(8, 4, (0.0, 0.0, 1.0))
+    wanted = target.color_texture
+    with Sync(run_time=1.0):
+        result = source.become(target)
+    got = result.color_texture
+
+    assert got is not None
+    assert wanted is not None
+    assert tuple(got.shape) == tuple(wanted.shape)
+    assert torch.allclose(got[..., :3], wanted[..., :3], atol=1e-3)

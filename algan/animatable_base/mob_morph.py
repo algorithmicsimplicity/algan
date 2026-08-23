@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -9,6 +10,7 @@ import torch
 from algan.animation_timeline.animation_contexts import NoExtra, Off, Seq, Sync
 from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants import rate_funcs
+from algan.logging.logger import PERF, get_logger
 from algan.utils.tensor_utils import cast_to_tensor, mid_point, squish, unsquish
 
 if TYPE_CHECKING:
@@ -125,6 +127,34 @@ class MobMorphMixin:
             return 2
         return 3
 
+    @staticmethod
+    def _morph_extent(mob):
+        size = mob.get_axis_aligned_size()
+        return float(size.reshape(-1, size.shape[-1]).mean(0).norm())
+
+    #: How the default assignment weighs the three things that can distinguish
+    #: one candidate pairing from another. They sum to 1 and each term is
+    #: normalized to ``[0, 1]``, which is the whole point: the previous rule
+    #: added a distance capped at ``1e-3`` to an order gap spanning ``[0, 1]``,
+    #: so the geometry could only break exact ties and the assignment was
+    #: traversal order and nothing else. Order still leads, because it is what
+    #: makes ``Text("abc") -> Text("abd")`` pair a with a; position is close
+    #: behind, because a Group's child order is often unrelated to its layout;
+    #: size is a lighter nudge toward keeping a big part big.
+    _PAIR_ORDER_WEIGHT = 0.35
+    _PAIR_POSITION_WEIGHT = 0.5
+    _PAIR_SIZE_WEIGHT = 0.15
+
+    #: A size ratio of one decade saturates the size term. Beyond that the two
+    #: parts are simply incomparable and a bigger number should not keep buying
+    #: influence over position.
+    _PAIR_SIZE_DECADE = 2.302585092994046  # log(10)
+
+    #: Largest PN soup, in triangles, that a cross-family morph will pair by
+    #: proximity before falling back to build order. See ``_record_pn_morph``
+    #: for the timings this was chosen from.
+    _REORDER_TRIANGLE_CAP = 2500
+
     def _primitive_pair_cost(
         self,
         source,
@@ -135,27 +165,73 @@ class MobMorphMixin:
         source_count,
         target_count,
         minimize_movement,
+        scene_span=None,
+        geometry=None,
     ):
+        # ``geometry`` memoizes each Mob's centre and extent by identity.
+        # Without it every cell of an S x T cost matrix walks both subtrees --
+        # twice over, since the size term needs the extent as well -- so a
+        # hierarchy of a few dozen parts pays thousands of subtree walks and a
+        # ``.cpu()`` sync each. The caller fills it once per assignment.
+        source_center, source_extent = self._pair_geometry(source, geometry)
+        target_center, target_extent = self._pair_geometry(target, geometry)
         compatibility = self._primitive_compatibility_rank(source, target)
-        distance = float(
-            (self._morph_center(source) - self._morph_center(target)).norm()
-        )
+        distance = float((source_center - target_center).norm())
         if minimize_movement:
+            # The explicit opt-in stays what it was: pure proximity, so a caller
+            # who asks for the least motion gets exactly that.
             secondary = distance
         else:
             source_position = source_index / max(source_count - 1, 1)
             target_position = target_index / max(target_count - 1, 1)
-            # Traversal order is the default semantic ordering. Distance only
-            # breaks otherwise equal assignments without overriding that order.
+            order_gap = abs(source_position - target_position)
+            position_gap = min(distance / (scene_span or 1.0), 1.0)
+            size_gap = min(
+                abs(math.log(max(target_extent, 1e-4) / max(source_extent, 1e-4)))
+                / self._PAIR_SIZE_DECADE,
+                1.0,
+            )
             secondary = (
-                abs(source_position - target_position) + min(distance, 1e3) * 1e-6
+                self._PAIR_ORDER_WEIGHT * order_gap
+                + self._PAIR_POSITION_WEIGHT * position_gap
+                + self._PAIR_SIZE_WEIGHT * size_gap
             )
         return compatibility * 1e6 + secondary
+
+    @classmethod
+    def _pair_geometry(cls, mob, cache=None):
+        """``(centre, extent)`` for one Mob, memoized by identity when asked."""
+        if cache is not None and id(mob) in cache:
+            return cache[id(mob)]
+        value = (cls._morph_center(mob), cls._morph_extent(mob))
+        if cache is not None:
+            cache[id(mob)] = value
+        return value
+
+    @classmethod
+    def _pairing_scene_span(cls, sources, targets):
+        """Distance the position term is measured against.
+
+        The spread of the parts being paired, not the frame: what "far" means
+        in a morph is relative to the thing morphing, so a diagram spanning ten
+        units and a glyph spanning one tenth get the same range of position
+        costs and the same balance against order and size.
+        """
+        centers = [cls._morph_center(mob) for mob in [*sources, *targets]]
+        if not centers:
+            return 1.0
+
+        stacked = torch.stack(centers)
+        return max(float((stacked.amax(0) - stacked.amin(0)).norm()), 1e-3)
 
     def _pair_primitive_indices(self, sources, targets, minimize_movement):
         if not sources or not targets:
             return [], list(range(len(sources))), list(range(len(targets)))
 
+        geometry = {}
+        scene_span = (
+            None if minimize_movement else self._pairing_scene_span(sources, targets)
+        )
         costs = torch.empty((len(sources), len(targets)), dtype=torch.float64)
         for source_index, source in enumerate(sources):
             for target_index, target in enumerate(targets):
@@ -167,6 +243,8 @@ class MobMorphMixin:
                     source_count=len(sources),
                     target_count=len(targets),
                     minimize_movement=minimize_movement,
+                    scene_span=scene_span,
+                    geometry=geometry,
                 )
         source_indices, target_indices = linear_sum_assignment(costs.numpy())
         pairs = sorted(
@@ -208,6 +286,33 @@ class MobMorphMixin:
                     best_distance = distance
                     best_point = points[point_index].detach().clone()
         return fallback if best_point is None else best_point
+
+    @staticmethod
+    def _is_stroke_only(mob):
+        """A circuit that draws a stroke and no fill.
+
+        Its PN conversion is honest and empty: ``_bezier_to_pn_soup`` converts
+        the *interior*, and an unfilled circuit has none, so the soup it
+        produces is fully transparent.
+        """
+        if mob._morph_family != "bezier":
+            return False
+        return not getattr(mob, "filled", True) or bool(getattr(mob, "empty", False))
+
+    @classmethod
+    def _pair_wants_crossfade(cls, source, target):
+        """Whether a cross-family pair should dissolve rather than travel.
+
+        The PN medium carries fills. When either end is a stroke-only circuit --
+        an ``Arrow``, a ``Line``, an ``Axes``, an unfilled ``Square`` -- its
+        side of the soup is transparent, so a geometric morph has nothing to
+        show: the solid fades to nothing, several frames are blank, and the
+        outline pops in at the end. A cross-fade is what the pair actually
+        looks like, so route it there instead of travelling through an empty
+        medium. Only for ``strategy="auto"``: a caller who explicitly asks for
+        ``"morph"`` has asked for the geometric route and gets it.
+        """
+        return cls._is_stroke_only(source) or cls._is_stroke_only(target)
 
     @staticmethod
     def _pair_supports_geometric_morph(source, target):
@@ -445,9 +550,7 @@ class MobMorphMixin:
         bump_hierarchy_version()
         return self
 
-    def _expand_n_tensor(
-        self, value: torch.Tensor, n: int, counterparts=None
-    ) -> torch.Tensor:
+    def _expand_n_tensor(self, value: torch.Tensor, n: int) -> torch.Tensor:
         """Pad a path's segment tensor with contour-continuous degenerates.
 
         Repeated slots sit immediately after the source segment selected by the
@@ -455,6 +558,11 @@ class MobMorphMixin:
         this preserves the source contour until the new target segment grows.
         Choosing an unrelated globally-nearest point can make the interpolated
         contour jump across itself even though each individual pairing is short.
+
+        Deliberately blind to the counterpart it is padding towards, unlike its
+        sibling ``_expand_n_list`` -- that is what the paragraph above is about.
+        It used to *accept* a ``counterparts`` argument and ignore it, which
+        read as an oversight rather than a decision; both call sites passed one.
         """
         if n <= 0:
             return value
@@ -611,6 +719,23 @@ class MobMorphMixin:
         old_width, old_height = surface.grid_width, surface.grid_height
         if (old_width, old_height) == (width, height):
             return surface
+
+        # RESAMPLE THE SURFACE, NOT ITS SAMPLES, WHENEVER IT CAN SAY WHAT IT IS.
+        # Reconciliation moves both sides to the finer grid, so whichever side
+        # was coarser gets INTERPOLATED UP -- and interpolating a coarse grid
+        # does not reproduce the surface those samples came from. A 6x6 plane
+        # becoming a 4x9 wave used to end 0.161 away from the wave on a surface
+        # one unit across, because the wave it ended on was a bilinear
+        # re-sampling of four columns rather than the wave itself. A Surface
+        # knows its own parametric function, and `_change_resolution` evaluates
+        # it on the new grid (interpolating only the per-vertex attributes,
+        # which is the honest thing to do with colours). Packed surfaces keep
+        # the interpolating path: `_change_resolution` describes one grid, not a
+        # block of them.
+        if surface.grid.parent_batch_sizes is None:
+            surface._change_resolution(int(width), int(height))
+            return surface
+
         old_count = old_width * old_height
         new_count = width * height
         parent_sizes = surface.grid.parent_batch_sizes
@@ -722,13 +847,9 @@ class MobMorphMixin:
             for my_path, their_path in zip(my_paths, their_paths):
                 difference = their_path.shape[-3] - my_path.shape[-3]
                 if difference > 0:
-                    my_path = mine._expand_n_tensor(
-                        my_path, difference, counterparts=their_path
-                    )
+                    my_path = mine._expand_n_tensor(my_path, difference)
                 elif difference < 0:
-                    their_path = theirs._expand_n_tensor(
-                        their_path, -difference, counterparts=my_path
-                    )
+                    their_path = theirs._expand_n_tensor(their_path, -difference)
                 aligned_mine.append(my_path)
                 aligned_theirs.append(their_path)
             my_batch = torch.cat(aligned_mine, dim=-3)
@@ -1056,8 +1177,32 @@ class MobMorphMixin:
             source_soup._expand_n_batch(difference)
         elif difference < 0:
             target_soup._expand_n_batch(-difference)
-        if minimize_movement:
+
+        # The soups are paired triangle by triangle, and by default that pairing
+        # was the order they happened to be built in -- so a solid morphing into
+        # a solid tore into visibly separated strips while independent triangles
+        # crossed each other on their way to unrelated counterparts. Pairing
+        # each with its nearest counterpart keeps the surface together.
+        #
+        # It is a Hungarian solve over an N x N distance matrix, so it is capped
+        # rather than unconditional. Measured on this CPU: 0.07s at 1024
+        # triangles, 0.66s at 2048, 0.97s at 2500, 2.2s at 3200, 3.3s at 4096 --
+        # a 2x in size costs 5-6x in time. The cap sits where a morph still pays
+        # about a second, and covers every solid measured (Sphere 462, Torus
+        # 1716, a Square's triangulation 2178) while leaving out text-sized
+        # soups (Text("hello") is 4379) where the solve runs away.
+        triangles = source_soup.location.shape[-2] // 3
+        if minimize_movement or triangles <= self._REORDER_TRIANGLE_CAP:
             target_soup.reorder_batch_to_minimize_movement(source_soup)
+        else:
+            get_logger().log(
+                PERF,
+                "become: %d triangles is over the %d cap for proximity pairing; "
+                "the morph may show seams. Pass minimize_movement=True to pair "
+                "anyway.",
+                triangles,
+                self._REORDER_TRIANGLE_CAP,
+            )
 
         replacement = target.clone(add_to_scene=False, spawn=False)
         target_border = None
@@ -1249,12 +1394,21 @@ class MobMorphMixin:
             cleanup_results = []
             with Sync(animation_manager=am):
                 for pair_source, pair_target, target_index in pair_specs:
-                    pair_strategy = (
-                        "dissolve"
-                        if "image"
-                        in {pair_source._morph_family, pair_target._morph_family}
-                        else "morph"
-                    )
+                    # "morph" here is this route forcing the geometric path on
+                    # its own pairs, not the caller asking for it -- so a pair
+                    # the caller left on "auto" still gets the cross-fade when
+                    # one end is a stroke-only circuit whose PN soup is empty.
+                    if "image" in {
+                        pair_source._morph_family,
+                        pair_target._morph_family,
+                    } or (
+                        strategy == "auto"
+                        and pair_source.morph_kind != pair_target.morph_kind
+                        and self._pair_wants_crossfade(pair_source, pair_target)
+                    ):
+                        pair_strategy = "dissolve"
+                    else:
+                        pair_strategy = "morph"
                     result = self._dispatch_become(
                         pair_source,
                         pair_target,
@@ -1335,6 +1489,17 @@ class MobMorphMixin:
             and source._morph_family == "grid"
             and type(source) is not type(target)
         )
+        if (
+            strategy == "auto"
+            and (not same_kind or requires_grid_conversion)
+            and self._pair_wants_crossfade(source, target)
+        ):
+            return self._record_dissolve(
+                source,
+                target,
+                minimize_movement=minimize_movement,
+                replacement_allowed=replacement_allowed,
+            )
         if same_kind and not requires_grid_conversion:
             return self._record_same_kind_morph(
                 source,

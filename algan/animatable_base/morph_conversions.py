@@ -400,6 +400,50 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
     )
 
 
+def _aggregate_to_pn_soup(mob, *, add_to_scene=False):
+    """Convert a Mob that draws its own descendants by converting each of them.
+
+    An ``Arrow3D`` is a Cylinder, a Cone and their end discs; a point cloud is
+    one packed batch of spheres. Both hand the renderer that whole subtree
+    themselves and none of the parts is a Scene actor, which is what
+    ``draws_descendants`` says -- so the thing to convert is the union, exactly
+    as the thing to *draw* is the union. Without this they had no family at all,
+    and ``become`` decomposed them into parts it then had to publish separately;
+    ``Arrow3D().become(Sphere())`` raised outright.
+    """
+    parts = mob.morph_soup_parts()
+    soups = [convert_to_pn_soup(part, add_to_scene=False) for part in parts]
+    soups = [soup for soup in soups if soup.location.shape[-2]]
+    if not soups:
+        raise MorphConversionError(f"{type(mob).__name__} draws no geometry to convert")
+    if len(soups) == 1:
+        return soups[0]
+
+    def joined(name):
+        return torch.cat([getattr(soup, name) for soup in soups], dim=-2)
+
+    first = soups[0]
+    shared = set(first.get_shader_params())
+    for soup in soups[1:]:
+        shared &= set(soup.get_shader_params())
+    return PNMesh(
+        joined("location"),
+        joined("normals"),
+        color=joined("color").as_subclass(Color),
+        opacity=joined("opacity"),
+        glow=joined("glow"),
+        shader=first.shader,
+        shader_params={
+            name: torch.cat([soup.get_shader_params()[name] for soup in soups], dim=-2)
+            for name in shared
+        },
+        render_tolerance=min(soup.render_tolerance for soup in soups),
+        render_tolerance_pixels=min(soup.render_tolerance_pixels for soup in soups),
+        scene=mob.scene,
+        add_to_scene=add_to_scene,
+    )
+
+
 def _pn_soup_identity(mob, *, add_to_scene=False):
     return PNMesh(
         mob.location.clone(),
@@ -433,3 +477,4 @@ register_morph_conversion(
     post_animate=_border_to_target,
 )
 register_morph_conversion("pn_soup", to_pn_soup=_pn_soup_identity)
+register_morph_conversion("aggregate", to_pn_soup=_aggregate_to_pn_soup)
