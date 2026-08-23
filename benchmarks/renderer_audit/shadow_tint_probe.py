@@ -130,9 +130,7 @@ def _predict(material, radius):
     base = np.array(
         [float(c) for c in material.get("color", [1.0, 1.0, 1.0])], dtype=np.float64
     )
-    base_lin = np.where(
-        base <= 0.04045, base / 12.92, ((base + 0.055) / 1.055) ** 2.4
-    )
+    base_lin = np.where(base <= 0.04045, base / 12.92, ((base + 0.055) / 1.055) ** 2.4)
     transmission = float(material.get("transmission", 0.0))
     metalness = float(material.get("metalness", 0.0))
     ior = abs(float(material.get("ior", 1.0)))
@@ -208,14 +206,11 @@ def main(argv=None):
                     "shadow_linear": [round(float(c), 4) for c in mean],
                     "transmittance": [round(float(c), 4) for c in ratio],
                     "predicted": [
-                        round(float(c), 4)
-                        for c in _predict(s["material"], s["radius"])
+                        round(float(c), 4) for c in _predict(s["material"], s["radius"])
                     ],
                     # How far the shadow is from grey: 1.0 is perfectly
                     # neutral, and the whole content of §4.10.
-                    "green_over_red": round(
-                        float(ratio[1] / max(ratio[0], 1e-9)), 3
-                    ),
+                    "green_over_red": round(float(ratio[1] / max(ratio[0], 1e-9)), 3),
                 }
             )
 

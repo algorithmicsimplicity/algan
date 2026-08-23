@@ -160,17 +160,17 @@ deterministic renderer evaluates in-kernel at every ray hit. It is on by default
 (``SETTINGS.raytracing.experimental.fragment_shading``), and
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader` forces it on for any scene the Mob appears in.
 
-Four materials have no in-kernel implementation at all and are therefore always
-baked into vertex colours before the frame renders:
-:class:`~algan.rendering.shaders.materials.MeshToonMaterial`,
-:class:`~algan.rendering.shaders.materials.MeshNormalMaterial`,
-:class:`~algan.rendering.shaders.materials.MeshMatcapMaterial` and
-:class:`~algan.rendering.shaders.materials.MeshDepthMaterial`. That bake sees
-only a plain :class:`~.PointLight` and never receives a shadow, so applying one
-in a scene that also has a directional, ambient, hemisphere, spot or rect-area
-light, an environment map, or ``shadows=True``, warns and names what is being
-dropped -- at the ``set_material`` call, and again once per render for the
-lights spawned after it. See :doc:`renderer_limitations`.
+Every built-in material class shades per fragment in the render kernel, so all
+of them respond to the full lighting rig -- every light type, shadows and an
+environment map's diffuse contribution. Only a **custom per-vertex shader**
+(:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader` with
+a plain function rather than a fragment stage) is still baked into vertex
+colours before the frame renders. That bake sees only a plain
+:class:`~.PointLight` and never receives a shadow, so using one in a scene that
+also has a directional, ambient, hemisphere, spot or rect-area light, an
+environment map, or ``shadows=True``, warns and names what is being dropped --
+at the ``set_shader`` / ``set_material`` call, and again once per render for
+the lights spawned after it. See :doc:`renderer_limitations`.
 
 For full physically-based light transport -- true global illumination rather than
 direct lighting plus deterministic bounces -- switch to the Monte Carlo path tracer

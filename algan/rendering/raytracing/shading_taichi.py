@@ -13,17 +13,18 @@ coarse meshes shade smoothly.
 Shading is expressed as **stages** with a single uniform ``@ti.func`` contract
 (see ``_stage_phong`` etc.). A per-primitive **pipeline** is an ordered list of
 stages run left-to-right, each receiving the previous stage's output colour --
-so a user recolour stage can feed a built-in lighting stage. The built-in *core
-lit* materials are the first stages: Manim's default 3-D lighting
-(:func:`~algan.rendering.shaders.material_shaders.manim_shader`),
-``MeshBasicMaterial`` (unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``,
-``MeshStandardMaterial``
-and ``MeshPhysicalMaterial``.
+so a user recolour stage can feed a built-in lighting stage. The built-in
+materials are the first stages: Manim's default 3-D lighting
+(:func:`~algan.rendering.shaders.material_shaders.manim_shader`),, ``MeshBasicMaterial``
+(unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``,
+``MeshPhysicalMaterial``, and the four that used to be vertex-baked only --
+``MeshToonMaterial``, ``MeshNormalMaterial``, ``MeshMatcapMaterial`` and
+``MeshDepthMaterial``.
 Custom user stages (also ``@ti.func``) are composed into per-pipeline funcs by
 :func:`make_pipeline_func` and injected into the shade kernel as a flat
 ``ti.template()`` tuple (see ``taichi-func-injection``).
 
-Per-primitive **pipeline id** (``pid_arr``); ids 0-5 are the built-in
+Per-primitive **pipeline id** (``pid_arr``); ids 0-9 are the built-in
 single-stage pipelines, ids >= ``_USER_PIPELINE_BASE`` index the injected user
 pipeline tuple::
 
@@ -31,6 +32,8 @@ pipeline tuple::
                             3  phong  (Blinn-Phong diffuse + specular)
     1  basic / unlit / passthrough     4  standard (Cook-Torrance GGX PBR)
     2  lambert (diffuse)   5  physical (standard + clearcoat / sheen / ior)
+    6  toon (banded cel diffuse)      8  matcap (view-facing approximation)
+    7  normal (world-space n*0.5+0.5) 9  depth (linear camera-distance ramp)
 
 Built-in material parameter block ``params[.., off:off+MAT_W]`` (per primitive),
 canonical slot layout (``off`` is the stage's base offset, 0 for a built-in
@@ -46,6 +49,8 @@ single-stage pipeline)::
     27..29 attenuation_sigma (Beer-Lambert absorption coefficient over the
     segment a ray spends inside a transmissive solid; applied by the wavefront
     bounce loop, not by the shading stages)
+    30 num_bands (toon band count)     31 near   32 far (depth ramp endpoints;
+    both matching MeshDepthMaterial's defaults)
 
 Every slot above carries a 0.0 default that means "the behaviour that existed
 before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
@@ -64,10 +69,11 @@ from algan.environment import env_int
 from algan.rendering.raytracing.color_space_taichi import (
     linear_to_srgb_v3,
     srgb_to_linear_v3,
+    srgb_to_linear_f,
 )
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 30
+MAT_W = 33
 
 # Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
 # so a back-facing hit is shaded with its own normal instead of the viewer's
@@ -78,15 +84,30 @@ MAT_W = 30
 # fragment pipeline's block is a different layout entirely and is zero-padded
 # to this width when the two share a scene, so a zero read from the padding
 # has to be the pre-existing behaviour of whatever reads that slot. That rule,
-# not slot position, is what makes appending slots after this one safe -- new
-# entries must carry a 0.0 that means "as before" (slots 27..29 do: 0.0 is no
-# volumetric absorption, which is what every material did before they existed).
+# not slot position, is what makes appending slots after this one safe -- a new
+# entry is safe when its 0.0 means "as before" for whatever reads it (slots
+# 27..29: 0.0 is no volumetric absorption, what every material did before they
+# existed) or when nothing outside its own pipeline id can reach it (slots
+# 30..32 below, whose non-zero defaults only ever land in a built-in block).
 _MAT_ONE_SIDED = 26
 
 # Slots 27..29 of that block: the Beer-Lambert absorption coefficient of the
 # medium a transmissive solid encloses, per channel. Read by the wavefront
 # bounce loop over the segment a ray spends inside, never by a shading stage.
 _MAT_ATTENUATION_SIGMA = 27
+
+# Slot 30: MeshToonMaterial's band count (``bands``). Unlike 27..29 this slot's
+# DEFAULT is not zero -- it is 3.0, the shader signature's own default -- but
+# the padding rule above still holds for it, because the only reader
+# (_stage_toon) runs only under the toon pipeline id, and every built-in
+# pipeline packs the full defaults row. A narrower custom-pipeline block's
+# zero padding in this slot is never read by anything.
+_MAT_NUM_BANDS = 30
+
+# Slots 31..32: MeshDepthMaterial's linear ramp endpoints (``near``, ``far``).
+# Same argument as _MAT_NUM_BANDS: read only by _stage_depth under its own id.
+_MAT_NEAR = 31
+_MAT_FAR = 32
 
 # Built-in single-stage pipeline ids.
 _MID_MANIM = 0
@@ -95,10 +116,14 @@ _MID_LAMBERT = 2
 _MID_PHONG = 3
 _MID_STANDARD = 4
 _MID_PHYSICAL = 5
+_MID_TOON = 6
+_MID_NORMAL = 7
+_MID_MATCAP = 8
+_MID_DEPTH = 9
 
 # Pipeline ids at or above this index address the injected user pipeline tuple
 # (``frag_pipelines``): user pipeline k has id ``_USER_PIPELINE_BASE + k``.
-_USER_PIPELINE_BASE = 6
+_USER_PIPELINE_BASE = 10
 
 # Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
 AMBIENT_STRENGTH = 0.1
@@ -141,6 +166,33 @@ def _linear_color_space():
     from algan.rendering.raytracing import settings as rt_settings
 
     return bool(rt_settings.LINEAR_COLOR_SPACE)
+
+
+@ti.func
+def _as_written_bytes(v):
+    """Pre-compensate a value that is DATA rather than colour, so it survives
+    the output transfer function unchanged.
+
+    ``MeshNormalMaterial`` and ``MeshDepthMaterial`` do not produce radiance:
+    they produce a packed normal and a depth ramp, meant to be read back as
+    numbers. Under the linear working space every shaded value is encoded with
+    the sRGB OETF at the byte write, which would bend them -- an authored 0.255
+    lands on byte 139 instead of 65. three.js is explicit about this: its
+    ``meshbasic`` fragment shader includes ``<colorspace_fragment>`` and its
+    ``meshnormal`` and ``depth`` shaders deliberately do not.
+
+    Algan has no per-material opt-out at the byte write, so the exact
+    equivalent is to decode here and let the encode undo it:
+    ``linear_to_srgb(srgb_to_linear(x)) == x``. Off under the display-referred
+    pipeline (``ALGAN_LINEAR_COLOR=0``), where nothing encodes at write-out and
+    the value already passes through untouched.
+    """
+    out = v
+    if ti.static(_linear_color_space()):
+        out = ti.math.vec3(
+            srgb_to_linear_f(v[0]), srgb_to_linear_f(v[1]), srgb_to_linear_f(v[2])
+        )
+    return out
 
 
 @ti.func
@@ -778,20 +830,22 @@ def _vis_max_component(v):
 # and return the new RGB + glow as a ``vec4``. ``in_rgb`` is the running colour
 # (the previous stage's output, or the interpolated raw albedo for the first
 # stage); ``in_glow`` is the passthrough 4th channel; ``view_dir`` is the unit
-# direction from the surface back toward the viewer. ``params`` is the
-# per-primitive parameter ndarray and ``off`` this stage's base slot offset.
-# When ``shadows`` is enabled, ``vis`` carries one RGB visibility triple per
-# light (see ``_light_vis``);
-# only the direct diffuse/specular response is gated by it (ambient/emissive
-# stay lit). Stages loop the lights internally, exactly as the single-light
-# vertex path overwrites the colour per light.
+# direction from the surface back toward the viewer; ``cam_pos`` is the
+# CAMERA's world position for the frame (not the current ray's origin -- a
+# mirror bounce shades with its own origin in ``pos``, but depth-style
+# materials still measure from the camera). ``params`` is the per-primitive
+# parameter ndarray and ``off`` this stage's base slot offset. When ``shadows``
+# is enabled, ``vis`` carries one RGB visibility triple per light (see
+# ``_light_vis``); only the direct diffuse/specular response is gated by it
+# (ambient/emissive stay lit). Stages loop the lights internally, exactly as
+# the single-light vertex path overwrites the colour per light.
 # ---------------------------------------------------------------------------
 
 @ti.func
 def _stage_unlit(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                  params: ti.template(), f, prim, off,
                  light_pos: ti.template(), light_col: ti.template(),
-                 num_lights, shadows: ti.template(), vis):
+                 num_lights, shadows: ti.template(), vis, cam_pos):
     """MeshBasicMaterial / passthrough: returns the colour unchanged."""
     return ti.math.vec4(in_rgb[0], in_rgb[1], in_rgb[2], in_glow)
 
@@ -800,7 +854,7 @@ def _stage_unlit(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                  params: ti.template(), f, prim, off,
                  light_pos: ti.template(), light_col: ti.template(),
-                 num_lights, shadows: ti.template(), vis):
+                 num_lights, shadows: ti.template(), vis, cam_pos):
     """manim_shader: Manim's default 3-D lighting, ported in-kernel.
 
     Each light adds an offset of ``0.5 * (n . to_light) ** 3`` -- halved when
@@ -849,7 +903,7 @@ def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                    params: ti.template(), f, prim, off,
                    light_pos: ti.template(), light_col: ti.template(),
-                   num_lights, shadows: ti.template(), vis):
+                   num_lights, shadows: ti.template(), vis, cam_pos):
     """MeshLambertMaterial: Lambertian (diffuse-only) lighting plus emissive."""
     tm = f % params.shape[0]
     emissive = ti.math.vec3(params[tm, prim, off + 0], params[tm, prim, off + 1],
@@ -884,8 +938,30 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                  params: ti.template(), f, prim, off,
                  light_pos: ti.template(), light_col: ti.template(),
-                 num_lights, shadows: ti.template(), vis):
-    """MeshPhongMaterial: Blinn-Phong diffuse + specular highlight + emissive."""
+                 num_lights, shadows: ti.template(), vis, cam_pos):
+    """MeshPhongMaterial: Blinn-Phong diffuse + specular highlight + emissive.
+
+    The specular lobe is three.js's ``BRDF_BlinnPhong`` term for term:
+    ``F_Schlick(specular, 1, v.h) * G_BlinnPhong_Implicit * D_BlinnPhong``,
+    with ``G = 0.25`` and ``D = (shininess * 0.5 + 1) * (n.h)^shininess``,
+    scaled by ``n.l``.
+
+    **The one deliberate departure is the ``1/pi``**, and it is the same
+    departure the diffuse term makes. three.js writes
+    ``D = RECIPROCAL_PI * (s*0.5 + 1) * pow(n.h, s)`` and pairs it with
+    ``BRDF_Lambert = albedo / pi``; Algan's light unit is pi times three.js's
+    (an ``intensity=1`` light means "a white surface facing it comes out
+    white"), so BOTH lobes drop the ``1/pi`` and the *ratio* between them --
+    which is what the highlight's appearance actually is -- matches three.js
+    exactly. Dropping it from one lobe only would be the bug.
+
+    Before this, the lobe was a bare ``(n.h)^shininess`` with ``n.l`` as a
+    boolean gate: no normalization, so a highlight was
+    ``0.25 * (shininess * 0.5 + 1)`` times too weak relative to its own
+    diffuse -- 4x at the default shininess 30, 10.25x at 80 -- and sharpening
+    a lobe did not brighten it, where three.js's normalized ``D`` concentrates
+    the same energy as it narrows.
+    """
     tm = f % params.shape[0]
     emissive = ti.math.vec3(params[tm, prim, off + 0], params[tm, prim, off + 1],
                             params[tm, prim, off + 2])
@@ -908,10 +984,17 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         half = (ld + view_dir).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)
         n_dot_h = ti.max(n.dot(half), 0.0)
-        spec_term = ti.pow(ti.max(n_dot_h, 1e-4), ti.max(shininess, 1e-3))
-        gate = spec_w if n_dot_l > 0.0 else 0.0
+        v_dot_h = ti.max(view_dir.dot(half), 0.0)
+        s = ti.max(shininess, 1e-3)
+        # D_BlinnPhong without three's 1/pi (see the docstring), G = 0.25.
+        d_blinn = (s * 0.5 + 1.0) * ti.pow(ti.max(n_dot_h, 1e-4), s)
+        # F_Schlick(specular, 1.0, v.h): the specular COLOUR enters through
+        # the Fresnel term, which is why it is not multiplied in separately.
+        one = ti.math.vec3(1.0, 1.0, 1.0)
+        fspec = specular + (one - specular) * ti.pow(
+            ti.max(1.0 - v_dot_h, 0.0), 5.0)
         refl += (in_rgb * lc * n_dot_l
-                 + specular * lc * spec_term * gate) * v
+                 + fspec * lc * (0.25 * d_blinn * n_dot_l * spec_w)) * v
         # Scalar energy budget, reduced as in _stage_default (see
         # _vis_max_component).
         wsum += n_dot_l * _vis_max_component(v) \
@@ -924,7 +1007,7 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                     params: ti.template(), f, prim, off,
                     light_pos: ti.template(), light_col: ti.template(),
-                    num_lights, shadows: ti.template(), vis):
+                    num_lights, shadows: ti.template(), vis, cam_pos):
     """MeshStandardMaterial: metalness/roughness Cook-Torrance GGX PBR + emissive."""
     tm = f % params.shape[0]
     emissive = ti.math.vec3(params[tm, prim, off + 0], params[tm, prim, off + 1],
@@ -971,7 +1054,7 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                     params: ti.template(), f, prim, off,
                     light_pos: ti.template(), light_col: ti.template(),
-                    num_lights, shadows: ti.template(), vis):
+                    num_lights, shadows: ti.template(), vis, cam_pos):
     """MeshPhysicalMaterial: MeshStandard plus ior-driven specular, a clearcoat
     GGX lobe, a sheen rim and (crude) transmission -- the in-kernel port of
     ``material_shaders.physical_shader`` (same terms; ``iridescence`` is
@@ -1074,6 +1157,126 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
+@ti.func
+def _stage_toon(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
+                params: ti.template(), f, prim, off,
+                light_pos: ti.template(), light_col: ti.template(),
+                num_lights, shadows: ti.template(), vis, cam_pos):
+    """MeshToonMaterial: diffuse quantized into flat bands (cel shading).
+
+    The in-kernel port of ``material_shaders.toon_shader``, term for term:
+    ``stepped = ceil(clamp(n.l, 0, 1) * bands) / bands`` scales each light's
+    diffuse, ambient and emissive stay unbanded, and the whole reflection runs
+    through ``_energy_scale`` exactly as the PyTorch shader's per-light weight
+    does (the fragment path accumulates the budget over lights first, which is
+    what makes several lights ADD here where the vertex bake kept only the
+    last one). The Three.js ``gradientMap`` is approximated by an even
+    ``num_bands``-step ramp; band-edge placement is Algan's own convention.
+    """
+    tm = f % params.shape[0]
+    emissive = ti.math.vec3(params[tm, prim, off + 0], params[tm, prim, off + 1],
+                            params[tm, prim, off + 2])
+    emissive_intensity = params[tm, prim, off + 3]
+    flat = params[tm, prim, off + 10]
+    env = params[tm, prim, off + 11]
+    bands = ti.max(params[tm, prim, off + _MAT_NUM_BANDS], 1.0)
+    n = _prep_normal(n_interp, face_n, flat, view_dir)
+    # Additive over lights on a fixed albedo (see _stage_lambert): ambient +
+    # emissive once, then each light's banded diffuse. For a single light this
+    # equals the PyTorch shader's arithmetic exactly.
+    amb = ti.static(_ambient_strength())
+    refl = in_rgb * (amb * env)
+    wsum = amb * env
+    for li in range(num_lights):
+        ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                             pos, n)
+        v = _light_vis(shadows, vis, li)
+        n_dot_l = ti.max(n.dot(ld), 0.0)
+        stepped = ti.ceil(n_dot_l * bands) / bands
+        refl += in_rgb * lc * (stepped * v)
+        # Scalar energy budget, reduced as in _stage_default (see
+        # _vis_max_component); ``stepped`` replaces lambert's raw ``n_dot_l``
+        # as this shader's per-light irradiance weight.
+        wsum += stepped * _vis_max_component(v) \
+            * ti.max(lc[0], ti.max(lc[1], lc[2]))
+    acc = refl * _energy_scale(wsum) + emissive * emissive_intensity
+    return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
+
+
+@ti.func
+def _stage_normal(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
+                  params: ti.template(), f, prim, off,
+                  light_pos: ti.template(), light_col: ti.template(),
+                  num_lights, shadows: ti.template(), vis, cam_pos):
+    """MeshNormalMaterial: RGB encodes the WORLD-space surface normal
+    (``n * 0.5 + 0.5``), no lights.
+
+    Term for term with ``material_shaders.normal_shader`` -- including its
+    documented divergence from three.js, which packs VIEW-space normals. Only
+    the camera position (not its orientation) reaches a stage, so world space
+    it stays; do not "fix" that here.
+
+    A packed normal is data, not radiance, so it goes out through
+    ``_as_written_bytes`` and reaches the frame buffer as the number this
+    computes rather than as its sRGB encoding.
+    """
+    flat = params[f % params.shape[0], prim, off + 10]
+    n = _prep_normal(n_interp, face_n, flat, view_dir)
+    out = _as_written_bytes(n * 0.5 + 0.5)
+    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+
+
+@ti.func
+def _stage_matcap(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
+                  params: ti.template(), f, prim, off,
+                  light_pos: ti.template(), light_col: ti.template(),
+                  num_lights, shadows: ti.template(), vis, cam_pos):
+    """MeshMatcapMaterial: the no-image approximation -- a view-facing diffuse
+    term plus an additive rim highlight tinting the base colour, no lights.
+
+    The in-kernel port of ``material_shaders.matcap_shader``:
+    ``rgb * (0.3 + 0.7 * n.v) + clamp(1 - n.v, 0, 1)^3 * 0.4``. The matcap
+    IMAGE is not sampled (no UV pipeline); three.js's own multiplicative ramp
+    is a different function by design and deliberately not imitated.
+    """
+    flat = params[f % params.shape[0], prim, off + 10]
+    n = _prep_normal(n_interp, face_n, flat, view_dir)
+    n_dot_v = ti.max(n.dot(view_dir), 0.0)
+    rim = ti.math.clamp(1.0 - n_dot_v, 0.0, 1.0)
+    rim = rim * rim * rim
+    out = in_rgb * (0.3 + 0.7 * n_dot_v) + rim * 0.4
+    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+
+
+@ti.func
+def _stage_depth(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
+                 params: ti.template(), f, prim, off,
+                 light_pos: ti.template(), light_col: ti.template(),
+                 num_lights, shadows: ti.template(), vis, cam_pos):
+    """MeshDepthMaterial: grayscale by camera distance, near=bright, far=dark.
+
+    The in-kernel port of ``material_shaders.depth_shader``:
+    ``1 - clamp((||pos - cam|| - near) / (far - near), 0, 1)`` replicated to
+    RGB. This is why stages take ``cam_pos``: ``view_dir`` is a unit vector,
+    so the distance cannot be recovered from it, and ``pos`` is the current
+    ray's hit -- for a mirror bounce that is not a camera ray, but the ramp
+    still measures from the CAMERA. Approximates three.js's hyperbolic NDC
+    depth packing with a linear Euclidean ramp (documented convention).
+
+    Like the normal material, a depth ramp is data rather than radiance, so it
+    goes out through ``_as_written_bytes``: the byte the frame buffer holds is
+    the ramp value, not its sRGB encoding.
+    """
+    near = params[f % params.shape[0], prim, off + _MAT_NEAR]
+    far = params[f % params.shape[0], prim, off + _MAT_FAR]
+    distance = (pos - cam_pos).norm()
+    span = ti.max(far - near, 1e-6)
+    normalized = ti.math.clamp((distance - near) / span, 0.0, 1.0)
+    value = 1.0 - normalized
+    out = _as_written_bytes(ti.math.vec3(value, value, value))
+    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+
+
 def make_pipeline_func(stages, offsets):
     """Compose an ordered list of stage ``@ti.func``s into a single ``@ti.func``.
 
@@ -1090,7 +1293,7 @@ def make_pipeline_func(stages, offsets):
     def pipeline_fn(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                     params: ti.template(), f, prim,
                     light_pos: ti.template(), light_col: ti.template(),
-                    num_lights, shadows: ti.template(), vis):
+                    num_lights, shadows: ti.template(), vis, cam_pos):
         out = in_rgb
         g = in_glow
         for si in ti.static(range(len(stages))):
@@ -1098,7 +1301,7 @@ def make_pipeline_func(stages, offsets):
             off = ti.static(offsets[si])
             r = stage(pos, view_dir, n_interp, face_n, out, g,
                       params, f, prim, off,
-                      light_pos, light_col, num_lights, shadows, vis)
+                      light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         return ti.math.vec4(out[0], out[1], out[2], g)
@@ -1114,7 +1317,7 @@ def make_pipeline_func(stages, offsets):
 # which launches one small shade kernel per material bucket with that
 # material's *pipeline func* injected as a ``ti.template()`` -- so the runtime
 # pid switch of ``_run_frag_pipeline`` disappears and a warp never mixes
-# materials. The six built-in single-stage materials are wrapped into composed
+# materials. The ten built-in single-stage materials are wrapped into composed
 # pipeline funcs (lazily, cached) so built-in and user pipelines share one
 # injection contract.
 #
@@ -1166,7 +1369,9 @@ def make_pipeline_func(stages, offsets):
 # ---------------------------------------------------------------------------
 
 _BUILTIN_STAGE_FNS = (_stage_manim, _stage_unlit, _stage_lambert,
-                      _stage_phong, _stage_standard, _stage_physical)
+                      _stage_phong, _stage_standard, _stage_physical,
+                      _stage_toon, _stage_normal, _stage_matcap,
+                      _stage_depth)
 _BUILTIN_PIPELINE_FNS = {}
 
 # "Every pipeline id may be present" -- the ungated kernel. All bits of the
@@ -1213,10 +1418,11 @@ def solo_pid(pids_present, frag_pipelines):
 
 def builtin_pipeline_fn(pid):
     """Composed single-stage pipeline func for built-in material id ``pid``
-    (0 manim, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical), for
-    injection into a per-material shade kernel of the legacy sorted path
-    (unsupported). Lazily created and cached so every render reuses the same
-    func objects (stable Taichi template instantiations).
+    (0 manim, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical,
+    6 toon, 7 normal, 8 matcap, 9 depth), for injection into a per-material
+    shade kernel of the legacy sorted path (unsupported). Lazily created and
+    cached so every render reuses the same func objects (stable Taichi
+    template instantiations).
     """
     pid = int(pid)
     if pid not in _BUILTIN_PIPELINE_FNS:
@@ -1230,10 +1436,11 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                        prim, f, pos, view_dir, n_interp, face_n, albedo, glow,
                        light_pos: ti.template(), light_col: ti.template(),
                        num_lights, pid_arr: ti.template(),
-                       params: ti.template(), shadows: ti.template(), vis):
+                       params: ti.template(), shadows: ti.template(), vis,
+                       cam_pos):
     """Evaluate a surface hit's per-primitive shading pipeline.
 
-    ``pid_arr[f, prim]`` selects the pipeline: ids 0-5 are the built-in
+    ``pid_arr[f, prim]`` selects the pipeline: ids 0-9 are the built-in
     single-stage materials (dispatched directly, without the composed-func
     indirection); ids >= ``_USER_PIPELINE_BASE``
     index the injected ``frag_pipelines`` tuple. ``albedo`` is the interpolated
@@ -1281,14 +1488,14 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
             stage = ti.static(_BUILTIN_STAGE_FNS[solo])
             r = stage(pos, view_dir, shade_n, face_n, out, g,
                       params, f, prim, 0,
-                      light_pos, light_col, num_lights, shadows, vis)
+                      light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         else:
             fn = ti.static(frag_pipelines[solo - _USER_PIPELINE_BASE])
             r = fn(pos, view_dir, shade_n, face_n, out, g,
                    params, f, prim,
-                   light_pos, light_col, num_lights, shadows, vis)
+                   light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
     elif ti.static(pids_present == ALL_PIDS):
@@ -1306,31 +1513,55 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
         if pid == _MID_MANIM:
             r = _stage_manim(pos, view_dir, shade_n, face_n, out, g,
                              params, f, prim, 0,
-                             light_pos, light_col, num_lights, shadows, vis)
+                             light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_LAMBERT:
             r = _stage_lambert(pos, view_dir, shade_n, face_n, out, g,
                                params, f, prim, 0,
-                               light_pos, light_col, num_lights, shadows, vis)
+                               light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_PHONG:
             r = _stage_phong(pos, view_dir, shade_n, face_n, out, g,
                              params, f, prim, 0,
-                             light_pos, light_col, num_lights, shadows, vis)
+                             light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_STANDARD:
             r = _stage_standard(pos, view_dir, shade_n, face_n, out, g,
                                 params, f, prim, 0,
-                                light_pos, light_col, num_lights, shadows, vis)
+                                light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_PHYSICAL:
             r = _stage_physical(pos, view_dir, shade_n, face_n, out, g,
                                 params, f, prim, 0,
-                                light_pos, light_col, num_lights, shadows, vis)
+                                light_pos, light_col, num_lights, shadows, vis, cam_pos)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_TOON:
+            r = _stage_toon(pos, view_dir, shade_n, face_n, out, g,
+                            params, f, prim, 0,
+                            light_pos, light_col, num_lights, shadows, vis, cam_pos)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_NORMAL:
+            r = _stage_normal(pos, view_dir, shade_n, face_n, out, g,
+                              params, f, prim, 0,
+                              light_pos, light_col, num_lights, shadows, vis, cam_pos)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_MATCAP:
+            r = _stage_matcap(pos, view_dir, shade_n, face_n, out, g,
+                              params, f, prim, 0,
+                              light_pos, light_col, num_lights, shadows, vis, cam_pos)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_DEPTH:
+            r = _stage_depth(pos, view_dir, shade_n, face_n, out, g,
+                             params, f, prim, 0,
+                             light_pos, light_col, num_lights, shadows, vis, cam_pos)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_UNLIT:
@@ -1346,7 +1577,8 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                         fn = ti.static(frag_pipelines[pi])
                         r = fn(pos, view_dir, shade_n, face_n, out, g,
                                params, f, prim,
-                               light_pos, light_col, num_lights, shadows, vis)
+                               light_pos, light_col, num_lights, shadows, vis,
+                               cam_pos)
                         out = ti.math.vec3(r[0], r[1], r[2])
                         g = r[3]
     else:
@@ -1365,7 +1597,8 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                 if pid == mid:
                     r = stage(pos, view_dir, shade_n, face_n, out, g,
                               params, f, prim, 0,
-                              light_pos, light_col, num_lights, shadows, vis)
+                              light_pos, light_col, num_lights, shadows, vis,
+                              cam_pos)
                     out = ti.math.vec3(r[0], r[1], r[2])
                     g = r[3]
         for pi in ti.static(range(len(frag_pipelines))):
@@ -1375,7 +1608,8 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                 if pid == _USER_PIPELINE_BASE + pi:
                     r = fn(pos, view_dir, shade_n, face_n, out, g,
                            params, f, prim,
-                           light_pos, light_col, num_lights, shadows, vis)
+                           light_pos, light_col, num_lights, shadows, vis,
+                           cam_pos)
                     out = ti.math.vec3(r[0], r[1], r[2])
                     g = r[3]
     # Bound the shaded colour to the display range. Lights accumulate here

@@ -431,7 +431,7 @@ def sheet_resolve_shade(
                                            light_pos, light_col,
                                            num_lights, color,
                                            ti.static(1 if mode == 2 else 0),
-                                           lvis)
+                                           lvis, cam_origin)
                 ior, T = _tri_ior_transmission_g(
                     0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)

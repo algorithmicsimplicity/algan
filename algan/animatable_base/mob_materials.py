@@ -213,15 +213,14 @@ class MobMaterialsMixin:
         refraction. This mirrors the Three.js material workflow; there are no
         separate mob-level reflectivity, roughness, or refractive-index setters.
 
-        Four materials --
-        :class:`~algan.rendering.shaders.materials.MeshToonMaterial`,
-        :class:`~algan.rendering.shaders.materials.MeshNormalMaterial`,
-        :class:`~algan.rendering.shaders.materials.MeshMatcapMaterial` and
-        :class:`~algan.rendering.shaders.materials.MeshDepthMaterial` -- are
-        shaded before the frame is rendered rather than in the render kernel, so
-        they are lit only by a plain :class:`~.PointLight` and never receive
-        shadows. Applying one under a lighting rig that asks for more than that
-        warns, rather than quietly dropping the difference.
+        Every built-in material class shades per fragment in the render kernel,
+        so it sees every light type, receives shadows, and its look no longer
+        depends on the mesh's tessellation. Only a *custom* per-vertex shader
+        (``set_shader`` with a plain function) is baked into vertex colours
+        before the frame renders -- lit only by a plain :class:`~.PointLight`
+        and never receiving shadows. Applying one under a lighting rig that
+        asks for more than that warns, rather than quietly dropping the
+        difference.
 
         Animation
         ---------

@@ -59,25 +59,64 @@ def _build_material(mat):
     """Translate a spec material into the Algan material class it names."""
     from algan import (
         MeshBasicMaterial,
+        MeshDepthMaterial,
+        MeshLambertMaterial,
+        MeshMatcapMaterial,
+        MeshNormalMaterial,
+        MeshPhongMaterial,
         MeshPhysicalMaterial,
         MeshStandardMaterial,
+        MeshToonMaterial,
     )
 
     kind = mat.get("type", "physical")
     color = _color(mat.get("color"), (1.0, 1.0, 1.0))
+    opacity = mat.get("opacity", 1.0)
+
+    # basic / normal / matcap / depth take no lighting fields (SPEC.md).
+    # normal and depth also discard the base colour on both engines (Algan's
+    # classes set applies_color = False), so it is not even passed.
     if kind == "basic":
-        return MeshBasicMaterial(color=color, opacity=mat.get("opacity", 1.0))
+        return MeshBasicMaterial(color=color, opacity=opacity)
+    if kind == "normal":
+        return MeshNormalMaterial(opacity=opacity)
+    if kind == "matcap":
+        return MeshMatcapMaterial(color=color, opacity=opacity)
+    if kind == "depth":
+        # Algan's MeshDepthMaterial takes near/far; three.js's does not -- the
+        # two engines define this material differently (see SPEC.md), so this
+        # panel is informational rather than a parity test.
+        return MeshDepthMaterial(
+            near=float(mat.get("near", 0.1)),
+            far=float(mat.get("far", 100.0)),
+            opacity=opacity,
+        )
 
     common = dict(
         color=color,
-        roughness=mat.get("roughness", 1.0),
-        metalness=mat.get("metalness", 0.0),
         emissive=_color(mat.get("emissive"), (0.0, 0.0, 0.0)),
         emissive_intensity=mat.get("emissive_intensity", 1.0),
-        opacity=mat.get("opacity", 1.0),
+        opacity=opacity,
+    )
+    if kind == "lambert":
+        return MeshLambertMaterial(**common)
+    if kind == "phong":
+        return MeshPhongMaterial(
+            specular=_color(mat.get("specular"), (0.067, 0.067, 0.067)),
+            shininess=float(mat.get("shininess", 30)),
+            **common,
+        )
+    if kind == "toon":
+        return MeshToonMaterial(bands=float(mat.get("bands", 3)), **common)
+    # 0.85, not Algan's own class default of 1.0: SPEC.md fixes the spec-level
+    # defaults and three_render.mjs already applied 0.85, so the two back ends
+    # were silently rendering different materials for any object that left
+    # roughness out.
+    pbr = dict(
+        roughness=mat.get("roughness", 0.85), metalness=mat.get("metalness", 0.0)
     )
     if kind == "standard":
-        return MeshStandardMaterial(**common)
+        return MeshStandardMaterial(**pbr, **common)
     return MeshPhysicalMaterial(
         ior=mat.get("ior", 1.5),
         transmission=mat.get("transmission", 0.0),
@@ -97,12 +136,14 @@ def _build_material(mat):
             else math.inf
         ),
         attenuation_color=_color(mat.get("attenuation_color"), (1.0, 1.0, 1.0)),
+        **pbr,
         **common,
     )
 
 
 def _build_object(obj):
     from algan import Prism, Sphere
+    from algan.constants.color import WHITE
     from algan.constants.spatial import UP
 
     geom = obj["geometry"]
@@ -114,7 +155,15 @@ def _build_object(obj):
     else:
         raise ValueError(f"unsupported geometry type {kind!r}")
 
-    mob.set_material(_build_material(obj.get("material", {})))
+    material = _build_material(obj.get("material", {}))
+    if not material.applies_color:
+        # normal / depth discard their material colour on BOTH engines, so the
+        # spec's colour is ignored either way -- but left alone the mob keeps
+        # its OWN colour, and a bare Surface defaults to GREEN, which would
+        # tint the vertex bake. White is what the ported full-render scene
+        # does (Sphere(color=WHITE).set_material(MeshNormalMaterial())).
+        mob.color = WHITE
+    mob.set_material(material)
     # Negated with Z (see _vec): conjugating a Y-rotation by the Z flip turns it
     # into a rotation by the opposite angle.
     rot = -float(obj.get("rotation_y", 0.0))
@@ -125,7 +174,14 @@ def _build_object(obj):
 
 
 def _build_light(light):
-    from algan import AmbientLight, DirectionalLight, PointLight
+    from algan import (
+        AmbientLight,
+        DirectionalLight,
+        HemisphereLight,
+        PointLight,
+        RectAreaLight,
+        SpotLight,
+    )
     from algan.constants.spatial import ORIGIN
 
     kind = light["type"]
@@ -134,13 +190,26 @@ def _build_light(light):
     if kind == "ambient":
         return AmbientLight(color=color, intensity=intensity)
     if kind == "directional":
-        # The spec's `direction` points from the light toward the scene, so the
-        # light sits at -direction (Three.js's DirectionalLight.position, with
-        # the same target).
-        d = _vec(light["direction"])
-        d = d / d.norm()
+        # Two spellings, exactly one of them required (SPEC.md): the spec's
+        # `direction` points from the light toward the scene, so the light sits
+        # at -direction (Three.js's DirectionalLight.position, with the same
+        # target); `position` + `target` name both ends directly.
+        if ("direction" in light) == ("position" in light):
+            raise ValueError(
+                "directional light takes exactly one form: 'direction', or "
+                "'position' + 'target'"
+            )
+        if "direction" in light:
+            d = _vec(light["direction"])
+            d = d / d.norm()
+            return DirectionalLight(
+                location=-d * 50.0, target=ORIGIN, color=color, intensity=intensity
+            )
         return DirectionalLight(
-            location=-d * 50.0, target=ORIGIN, color=color, intensity=intensity
+            location=_vec(light["position"]),
+            target=_vec(light.get("target", (0, 0, 0))),
+            color=color,
+            intensity=intensity,
         )
     if kind == "point":
         return PointLight(
@@ -149,6 +218,39 @@ def _build_light(light):
             intensity=intensity,
             decay=float(light.get("decay", 0.0)),
             distance=float(light.get("distance", 0.0)),
+        )
+    # Every position and target below goes through _vec: they are points in the
+    # spec frame (+Z toward the viewer) and Algan negates Z.
+    if kind == "spot":
+        return SpotLight(
+            location=_vec(light["position"]),
+            target=_vec(light["target"]),
+            color=color,
+            intensity=intensity,
+            angle=float(light["angle"]),
+            penumbra=float(light.get("penumbra", 0.0)),
+            decay=float(light.get("decay", 0.0)),
+            distance=float(light.get("distance", 0.0)),
+        )
+    if kind == "rect_area":
+        extra = {"samples": int(light["samples"])} if "samples" in light else {}
+        return RectAreaLight(
+            location=_vec(light["position"]),
+            target=_vec(light["target"]),
+            color=color,
+            intensity=intensity,
+            width=float(light["width"]),
+            height=float(light["height"]),
+            **extra,
+        )
+    if kind == "hemisphere":
+        # No position to flip: a hemisphere light is defined by its sky/ground
+        # colours about `up`, which stays (0, 1, 0) -- Y is up in both frames;
+        # only Z flips.
+        return HemisphereLight(
+            color=color,
+            ground_color=_color(light.get("ground_color"), (0.0, 0.0, 0.0)),
+            intensity=intensity,
         )
     raise ValueError(f"unsupported light type {kind!r}")
 

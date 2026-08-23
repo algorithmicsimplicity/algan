@@ -24,20 +24,19 @@ a material you can animate e.g. ``mob.roughness = 0.1`` or ``mob.emissive_intens
 
 Limitations
 -----------
-Algan shades per vertex and has no UV / image-sampling pipeline, so every
-texture / image-based property (``map``, ``normalMap``, ``roughnessMap``,
-``envMap``, ``matcap``, ``gradientMap``, ...) is accepted for API parity but not
-sampled; a one-time warning is emitted when such a slot is set. ``wireframe``,
-``vertexColors`` and non-default ``side`` are likewise unsupported. The matcap,
-normal and depth materials use documented approximations (see
-:mod:`algan.rendering.shaders.material_shaders`).
-
-:class:`MeshToonMaterial`, :class:`MeshNormalMaterial`,
-:class:`MeshMatcapMaterial` and :class:`MeshDepthMaterial` are the four whose
-shading has no in-kernel port: they are baked into vertex colours, which is what
-costs them every light beyond a plain :class:`~.PointLight`, all shadows, and an
-environment map's diffuse contribution. Combining one with a lighting rig that
-asks for any of those warns, both where the material is set and once per render.
+Algan shades per vertex when no in-kernel port exists and has no UV /
+image-sampling pipeline, so every texture / image-based property (``map``,
+``normalMap``, ``roughnessMap``, ``envMap``, ``matcap``, ``gradientMap``, ...)
+is accepted for API parity but not sampled; a one-time warning is emitted when
+such a slot is set. ``wireframe``, ``vertexColors`` and non-default ``side``
+are likewise unsupported. The matcap, normal and depth materials use documented
+approximations (see :mod:`algan.rendering.shaders.material_shaders`). Every
+built-in material class shades per fragment in the render kernel; only a
+*custom* per-vertex shader (``set_shader`` with a plain function) is baked into
+vertex colours, which is what costs it every light beyond a plain
+:class:`~.PointLight`, all shadows, and an environment map's diffuse
+contribution. Combining one with a lighting rig that asks for any of those
+warns, both where the shader is set and once per render.
 """
 
 from __future__ import annotations
@@ -113,9 +112,9 @@ _TEXTURE_SLOTS = frozenset(
 
 # -- lighting a vertex bake cannot answer -----------------------------------
 # A material is shaded in the render kernel only when its shader has an
-# in-kernel port (raytracing.settings._core_shader_ids). Everything else --
-# MeshToonMaterial, MeshNormalMaterial, MeshMatcapMaterial, MeshDepthMaterial
-# and any custom per-vertex shader -- is baked into vertex colours before the
+# in-kernel port (raytracing.settings._core_shader_ids), which every built-in
+# material class has. Everything else -- a custom per-vertex shader handed to
+# ``set_shader`` as a plain function -- is baked into vertex colours before the
 # frame renders, and that bake sees only plain point lights
 # (RayTracedTrianglePrimitive._shade_vertex_colors skips every light carrying
 # ``_render_aux``). The same shaders pack the unlit in-kernel material id,
@@ -123,13 +122,18 @@ _TEXTURE_SLOTS = frozenset(
 # no shadows either. Neither is recoverable at render time, so the honest
 # thing is to say so at the point the combination is authored.
 #
+# (MeshToonMaterial, MeshNormalMaterial, MeshMatcapMaterial and
+# MeshDepthMaterial used to be in this bake-only group; they have in-kernel
+# stages now and light like every other core material.)
+#
 # Deliberately a warning rather than raytracing.settings.report_unsupported_features:
-# that policy defaults to raising, and these materials are shipped, documented
-# and render perfectly well -- what they drop is part of the lighting rig, not
-# the render.
+# that policy defaults to raising, and custom per-vertex shaders are shipped,
+# documented and render perfectly well -- what they drop is part of the
+# lighting rig, not the render.
 _PER_FRAGMENT_ADVICE = (
-    "Shade per fragment instead -- with MeshLambertMaterial, MeshPhongMaterial, "
-    "MeshStandardMaterial or MeshPhysicalMaterial, or with set_fragment_shader()."
+    "Shade per fragment instead -- with any of the Three.js-style material "
+    "classes (MeshLambertMaterial, MeshPhongMaterial, MeshStandardMaterial, "
+    "MeshPhysicalMaterial, ...), or with set_fragment_shader()."
 )
 
 
@@ -162,8 +166,9 @@ def _lighting_beyond_vertex_bake(lights=(), *, shadows=None, environment_map=Non
     if shadows is None:
         shadows = rt_settings.SHADOWS
 
-    # Phrased so each entry reads correctly after both "MeshToonMaterial:
-    # shading is baked ..., so" and "N Mob(s) ... bake into vertex colours, so".
+    # Phrased so each entry reads correctly after both "a custom per-vertex
+    # shader's shading is baked ..., so" and
+    # "N Mob(s) ... bake into vertex colours, so".
     features = []
     extended = sorted({type(_).__name__ for _ in lights if light_is_extended(_)})
     if extended:

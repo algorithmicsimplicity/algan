@@ -39,6 +39,14 @@
 //     1/max(pow(d,decay),0.01), windowed by pow2(saturate(1-pow4(d/distance))) when
 //     distance>0 — so decay=0 & distance=0 is literally attenuation 1 everywhere.
 //     DirectionalLight irradiance = color*intensity*dotNL (no PI factor either).
+//   * SpotLight: spec `angle` is a half-angle in DEGREES, three wants radians;
+//     spec `decay`/`distance` default to 0 (no falloff), overriding three's own
+//     constructor defaults (angle pi/3, decay 2). castShadow = true.
+//   * RectAreaLight: positioned and lookAt(target); three renders it BLACK
+//     until RectAreaLightUniformsLib.init() runs once before the first render
+//     (imported via the page's import map below). It cannot cast shadows here.
+//   * HemisphereLight: HemisphereLight(skyColor, groundColor, intensity); no
+//     shadows either side.
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -48,7 +56,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const FALLBACK_NODE_MODULES =
-  '/tmp/claude-0/-home-user-algan/bef18805-2bd9-5edb-b997-0497104809e3/scratchpad/three/node_modules';
+  '/tmp/claude-0/-home-user-algan/51960e50-b094-5117-954b-e7b85c715502/scratchpad/three/node_modules';
 
 function parseArgs(argv) {
   const args = { mode: 'both', samples: 64 };
@@ -154,6 +162,11 @@ function pageHtml(port) {
 <script type="module">
 import * as THREE from 'three';
 import { WebGLPathTracer } from 'three-gpu-pathtracer';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+
+// A RectAreaLight renders BLACK until the LTC lookup tables are built; this
+// must run once before the first render (see SPEC.md, "rect_area").
+RectAreaLightUniformsLib.init();
 
 const col = (c) => new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace);
 
@@ -165,18 +178,66 @@ function buildMaterial(m) {
     sheen_color: [0, 0, 0], emissive: [0, 0, 0], emissive_intensity: 1.0,
     specular_intensity: 1.0, specular_color: [1, 1, 1], opacity: 1.0,
     attenuation_color: [1, 1, 1], attenuation_distance: 0,
+    // phong / toon / depth fields (SPEC.md). phong's specular default is
+    // three's own 0x111111; depth's near/far exist only on the Algan side --
+    // three derives depth from the camera and takes no such fields.
+    specular: [0.067, 0.067, 0.067], shininess: 30, bands: 3, near: 0.1, far: 100,
   };
   const p = { ...d, ...(m || {}) };
   let mat;
   if (p.type === 'physical') mat = new THREE.MeshPhysicalMaterial();
   else if (p.type === 'basic') mat = new THREE.MeshBasicMaterial();
+  else if (p.type === 'lambert') mat = new THREE.MeshLambertMaterial();
+  else if (p.type === 'phong') mat = new THREE.MeshPhongMaterial();
+  else if (p.type === 'toon') mat = new THREE.MeshToonMaterial();
+  else if (p.type === 'normal') mat = new THREE.MeshNormalMaterial();
+  else if (p.type === 'matcap') mat = new THREE.MeshMatcapMaterial();
+  else if (p.type === 'depth') mat = new THREE.MeshDepthMaterial();
   else mat = new THREE.MeshStandardMaterial();
-  mat.color.copy(col(p.color));
-  if (p.type !== 'basic') {
-    mat.roughness = p.roughness;
-    mat.metalness = p.metalness;
+  // normal/depth discard the base colour in-shader on BOTH engines, so it is
+  // not set here either.
+  if (p.type !== 'normal' && p.type !== 'depth') {
+    mat.color.copy(col(p.color));
+  }
+  const hasEmissive =
+    p.type === 'lambert' || p.type === 'phong' || p.type === 'toon' ||
+    p.type === 'standard' || p.type === 'physical';
+  if (hasEmissive) {
     mat.emissive.copy(col(p.emissive));
     mat.emissiveIntensity = p.emissive_intensity;
+  }
+  if (p.type === 'standard' || p.type === 'physical') {
+    mat.roughness = p.roughness;
+    mat.metalness = p.metalness;
+  }
+  if (p.type === 'phong') {
+    mat.specular.copy(col(p.specular));
+    mat.shininess = p.shininess;
+  }
+  if (p.type === 'toon' && m && m.bands !== undefined) {
+    // SPEC.md: the documented three.js way to get N toon bands is a
+    // gradientMap -- a DataTexture of N texels ramping 0..1 with NearestFilter
+    // on both min and mag, so the ramp quantises into N steps. Algan instead
+    // quantises dotNL directly (its 'bands' argument); without 'bands' three
+    // keeps its own default toon (a 2-step smoothstep at 0.7).
+    const n = Math.max(1, Math.round(p.bands));
+    const data = new Uint8Array(n);
+    for (let i = 0; i < n; i++) data[i] = Math.round((i / Math.max(n - 1, 1)) * 255);
+    const gradientMap = new THREE.DataTexture(data, n, 1, THREE.RedFormat);
+    gradientMap.minFilter = THREE.NearestFilter;
+    gradientMap.magFilter = THREE.NearestFilter;
+    gradientMap.needsUpdate = true;
+    mat.gradientMap = gradientMap;
+  }
+  // depth: deliberately nothing beyond construction -- three.js's
+  // MeshDepthMaterial takes no near/far (it uses the camera's near/far and
+  // writes non-linear gl_FragCoord.z). SPEC.md records this panel as
+  // informational rather than a parity test; we do not hack a custom shader
+  // to force agreement.
+  if (p.type === 'matcap') {
+    // No matcap texture is sampled on either engine (SPEC.md): with none
+    // assigned, three's shader substitutes its built-in default
+    // vec4(vec3(mix(0.2, 0.8, uv.y)), 1.0) and multiplies the base colour in.
   }
   if (p.type === 'physical') {
     mat.ior = p.ior;
@@ -207,9 +268,20 @@ function buildScene(spec) {
   scene.background = col(spec.render.background);
   for (const l of spec.lights || []) {
     if (l.type === 'directional') {
+      // Exactly one form required (SPEC.md): 'direction' (pointing from the
+      // light toward the scene; position becomes -direction*50) or
+      // 'position' + 'target'.
+      if ((l.direction !== undefined) === (l.position !== undefined)) {
+        throw new Error("directional light takes exactly one form: 'direction', or 'position' + 'target'");
+      }
       const dl = new THREE.DirectionalLight(col(l.color), l.intensity);
-      dl.position.set(-l.direction[0], -l.direction[1], -l.direction[2]).multiplyScalar(50);
-      dl.target.position.set(0, 0, 0);
+      if (l.direction !== undefined) {
+        dl.position.set(-l.direction[0], -l.direction[1], -l.direction[2]).multiplyScalar(50);
+        dl.target.position.set(0, 0, 0);
+      } else {
+        dl.position.set(l.position[0], l.position[1], l.position[2]);
+        dl.target.position.set(l.target[0], l.target[1], l.target[2]);
+      }
       dl.castShadow = true;
       dl.shadow.mapSize.set(2048, 2048);
       dl.shadow.camera.left = -30; dl.shadow.camera.right = 30;
@@ -224,6 +296,34 @@ function buildScene(spec) {
       pl.shadow.mapSize.set(1024, 1024);
       pl.shadow.camera.near = 0.5; pl.shadow.camera.far = 200;
       scene.add(pl);
+    } else if (l.type === 'spot') {
+      // Spec 'angle' is a half-angle in DEGREES (three wants radians); spec
+      // decay/distance default to 0 -- passed explicitly because three's own
+      // constructor defaults are angle pi/3 and decay 2.
+      const sl = new THREE.SpotLight(
+        col(l.color), l.intensity,
+        l.distance ?? 0,
+        THREE.MathUtils.degToRad(l.angle ?? 30),
+        l.penumbra ?? 0,
+        l.decay ?? 0,
+      );
+      sl.position.set(l.position[0], l.position[1], l.position[2]);
+      sl.target.position.set(l.target[0], l.target[1], l.target[2]);
+      sl.castShadow = true;
+      sl.shadow.mapSize.set(1024, 1024);
+      sl.shadow.camera.near = 0.5; sl.shadow.camera.far = 200;
+      scene.add(sl); scene.add(sl.target);
+    } else if (l.type === 'rect_area') {
+      // RectAreaLightUniformsLib.init() ran once at page load; without it this
+      // light renders black. It cannot cast shadows in three (SPEC.md).
+      const rl = new THREE.RectAreaLight(col(l.color), l.intensity, l.width, l.height);
+      rl.position.set(l.position[0], l.position[1], l.position[2]);
+      scene.add(rl);
+      rl.lookAt(new THREE.Vector3(l.target[0], l.target[1], l.target[2]));
+    } else if (l.type === 'hemisphere') {
+      // No shadow support on either engine (SPEC.md).
+      const hl = new THREE.HemisphereLight(col(l.color), col(l.ground_color), l.intensity);
+      scene.add(hl);
     } else if (l.type === 'ambient') {
       scene.add(new THREE.AmbientLight(col(l.color), l.intensity));
     } else {

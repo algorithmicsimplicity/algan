@@ -2684,6 +2684,7 @@ def raytrace_render_wavefront(
                     pix_accum,
                     rs_alloc,
                     rs_vis,
+                    cam_origin,
                 )
             active = compactor.select(
                 rs_int,
@@ -3257,6 +3258,7 @@ def raytrace_render_wavefront(
                     pix_accum,
                     rs_alloc,
                     rs_vis,
+                    cam_origin,
                 )
             active = compactor.select(
                 rs_int,

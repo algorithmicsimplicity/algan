@@ -1690,7 +1690,8 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
                    tri_pos: ti.template(), shade_normal,
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
-                   num_lights, albedo, shadows: ti.template(), vis):
+                   num_lights, albedo, shadows: ti.template(), vis,
+                   cam_origin: ti.template()):
     """Per-fragment material shading of a confirmed flat-triangle hit: feeds the
     caller-supplied shading normal ``shade_normal``, the geometric face normal,
     the hit position and the per-primitive parameter block into
@@ -1701,7 +1702,10 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
     shading. ``albedo`` is the interpolated (raw) base RGB + glow;
     ``tri_mat_id``/``tri_mat`` carry the per-primitive pipeline id and parameter
     block; returns the shaded RGB + glow. ``vis`` holds the caller's per-light
-    shadow visibilities (used iff ``shadows``).
+    shadow visibilities (used iff ``shadows``). ``cam_origin`` is the batch's
+    per-frame camera-position table, read at the hit's frame and handed on as
+    the stages' ``cam_pos`` (depth-style materials measure from the CAMERA,
+    which no ray argument names once the ray has bounced).
 
     ``pos`` is the WORLD HIT POSITION, passed in rather than rebuilt here as
     ``ro + t_hit * rd``: under analytic coverage a partially covering raster
@@ -1723,11 +1727,12 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
                       tri_pos[tp, prim, 8])
     face_n = (v1 - v0).cross(v2 - v0)
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
+    cam_pos = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
     return _run_frag_pipeline(frag_pipelines, pids_present,
                               prim, f, pos, -rd, shade_normal,
                               face_n, rgb,
                               albedo[3], light_pos, light_col, num_lights,
-                              tri_mat_id, tri_mat, shadows, vis)
+                              tri_mat_id, tri_mat, shadows, vis, cam_pos)
 
 
 @ti.func

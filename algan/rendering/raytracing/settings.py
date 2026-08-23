@@ -2319,9 +2319,11 @@ def set_fragment_shading(enabled):
     When enabled, triangle/PN hits whose material is one of the core lit
     shaders (the legacy diffuse default, ``MeshBasicMaterial``,
     ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``,
-    ``MeshPhysicalMaterial``) are shaded per fragment in-kernel from the raw
-    albedo, a per-primitive material block and the scene's point lights --
-    crisper specular highlights and smooth shading on coarse meshes. Other
+    ``MeshPhysicalMaterial``, ``MeshToonMaterial``, ``MeshNormalMaterial``,
+    ``MeshMatcapMaterial`` and ``MeshDepthMaterial``) are shaded per fragment
+    in-kernel from the raw albedo, a per-primitive material block and the
+    scene's lights -- crisper specular highlights and smooth shading on coarse
+    meshes. Other
     materials keep vertex shading.
     Only the deterministic renderer (``set_samples_per_pixel(1)``, non-physical)
     is affected. Set before rendering.
@@ -2536,16 +2538,21 @@ def _get_tonemap_t_val():
 
 
 # --- Core lit material registry (shader function -> in-kernel material id) ----
-# Ids must match shading_taichi: 0 manim (Manim's default 3-D lighting), 1
-# basic/unlit/passthrough, 2 lambert, 3 phong, 4 standard, 5 physical.
+# Ids must match shading_taichi: 0 manim (Manim's default 3-D lighting), 1 basic/unlit/passthrough,
+# 2 lambert, 3 phong, 4 standard, 5 physical, 6 toon, 7 normal, 8 matcap,
+# 9 depth.
 def _build_core_shader_ids():
     from algan.rendering.shaders.material_shaders import (
         basic_material_shader,
+        depth_shader,
         lambert_shader,
+        matcap_shader,
+        normal_shader,
         manim_shader,
         phong_shader,
         physical_shader,
         standard_shader,
+        toon_shader,
     )
     from algan.rendering.shaders.pbr_shaders import null_shader
 
@@ -2557,11 +2564,15 @@ def _build_core_shader_ids():
         phong_shader: 3,
         standard_shader: 4,
         physical_shader: 5,
+        toon_shader: 6,
+        normal_shader: 7,
+        matcap_shader: 8,
+        depth_shader: 9,
     }
 
 
 _CORE_SHADER_IDS = None
-# Per-material parameter defaults (canonical 30-slot block; see shading_taichi).
+# Per-material parameter defaults (canonical 33-slot block; see shading_taichi).
 # Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
 # physical_shader signature (ior 1.5, specular_intensity 1, specular_color
 # white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
@@ -2601,6 +2612,13 @@ _MAT_DEFAULTS = [
     0.0,
     0.0,
     0.0,
+    # 30..32 the toon / depth materials' own fields, defaults matching their
+    # shader signatures (MeshToonMaterial.bands 3, MeshDepthMaterial
+    # near 0.1 / far 100). Read only under those materials' pipeline ids, so
+    # the non-zero defaults never reach another stage's block.
+    3.0,
+    0.1,
+    100.0,
 ]
 # Material-property name -> (start slot, width) in the canonical block.
 # ``one_sided`` (slot 26) is deliberately absent: it is declared by the mob's
@@ -2625,6 +2643,9 @@ _MAT_SLOTS = {
     "transmission": (24, 1),
     "iridescence": (25, 1),
     "attenuation_sigma": (27, 3),
+    "num_bands": (30, 1),
+    "near": (31, 1),
+    "far": (32, 1),
 }
 
 
