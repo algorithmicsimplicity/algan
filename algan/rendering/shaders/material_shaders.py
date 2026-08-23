@@ -1,12 +1,12 @@
 """Lighting-model shader functions backing the Three.js-style material system.
 
 Each function follows the shader calling convention used throughout Algan (see
-:func:`algan.rendering.shaders.pbr_shaders.default_shader`): the first nine
-parameters are fixed (``memory``, ``vertex_location``, ``vertex_normal``,
-``albedo_color``, ``camera_location``, ``light_origin``, ``light_color``,
-``light_intensity``, ``ambient_light_intensity``) and any further parameters are
-the material's animatable properties. The renderer registers those extra
-parameters as animatable attributes on the mob (see
+:data:`SHADER_FIXED_PARAM_COUNT` below): the first nine parameters are fixed
+(``memory``, ``vertex_location``, ``vertex_normal``, ``albedo_color``,
+``camera_location``, ``light_origin``, ``light_color``, ``light_intensity``,
+``ambient_light_intensity``) and any further parameters are the material's
+animatable properties. The renderer registers those extra parameters as
+animatable attributes on the mob (see
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`).
 
 Channel layout
@@ -32,7 +32,19 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan.utils.color_space import linear_to_srgb, srgb_to_linear
 from algan.utils.tensor_utils import dot_product
+
+#: Number of fixed leading parameters in the shader calling convention: the
+#: ``memory, vertex_location, vertex_normal, albedo_color, camera_location,
+#: light_origin, light_color, light_intensity, ambient_light_intensity``
+#: prefix every lighting-model shader declares before its own material
+#: parameters. This constant is the convention's reference -- the length
+#: ``set_shader`` slices a shader's extra parameters from and the length the
+#: renderer treats as shader-independent -- so it is pinned to a real
+#: signature by tests/unit_tests/test_materials.py, which asserts it equals
+#: ``len(inspect.signature(basic_material_shader).parameters)``.
+SHADER_FIXED_PARAM_COUNT = 9
 
 # Base ambient coefficient. The renderer always passes ``ambient_light_intensity``
 # as 1, so we scale it down here to avoid washing surfaces out to white and to
@@ -288,6 +300,86 @@ def lambert_shader(
     out = (ambient + diffuse) * _energy_scale(
         n_dot_l * radiance.amax(-1, keepdim=True) + kA
     ) + emissive * emissive_intensity
+    return _recombine(out, glow)
+
+
+def manim_shader(
+    memory,
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    camera_location,
+    light_origin,
+    light_color,
+    light_intensity: float,
+    ambient_light_intensity: float,
+    flat_shading: float = 0.0,
+):
+    """Shade a surface with Manim's default 3-D lighting model.
+
+    Implements Manim's ``get_shaded_rgb``: each light contributes an offset of
+    ``0.5 * (n . to_light) ** 3`` -- halved when the surface faces away from
+    the light, so back-facing surfaces darken at half the rate front-facing
+    ones brighten. There is no ambient term, no specular lobe and no distance
+    falloff; ``ambient_light_intensity`` is accepted for signature parity but
+    unused, because Manim's model has none.
+
+    Under Manim's own rig -- the single white ``PointLight`` of intensity 1
+    that :meth:`~.Scene.use_manim_defaults` installs, with decay 0 and
+    distance 0 -- the light-colour factor below is exactly ``(1, 1, 1)`` and
+    the offset reproduces Manim's scalar one exactly. Multiplying by
+    ``light_color * light_intensity`` is a strict generalisation to coloured
+    and multi-light rigs, which Manim does not have; the per-light offsets
+    simply sum.
+
+    Manim adds its offset to display-referred sRGB values. Under the default
+    linear working space this shader therefore encodes the base colour to
+    sRGB, adds the offsets there, clamps the sum to ``[0, 1]`` and decodes
+    back to linear light; under the display-referred setting it adds and
+    clamps directly. Exact Manim fidelity further assumes exposure 1 and
+    tonemapping off -- which is what :meth:`~.Scene.use_manim_defaults` sets;
+    any other exposure or tonemap curve maps the result as Manim never would.
+
+    Parameters
+    ----------
+    memory
+        Scratch-tensor provider supplied by the renderer. Unused here.
+    vertex_location
+        Location of the vertex to shade, shape ``(*, 3)``; the renderer's
+        triangle path passes ``(*, 3, 3)`` corners.
+    vertex_normal
+        Surface normal at the vertex; need not be normalized. Shape ``(*, 3)``.
+    albedo_color
+        Base colour with its trailing glow channel, shape ``(*, 4)``, which is
+        also the shape of the return value.
+    camera_location
+        Camera position, shape ``(*, 3)``. Accepted for signature parity;
+        Manim's model is view-independent, so this shader ignores it.
+    light_origin
+        Position of the light source, shape ``(*, 3)``.
+    light_color
+        Colour of the light with its trailing opacity channel, shape
+        ``(*, 4)``; only its RGB is used.
+    light_intensity
+        Multiplier on the light's contribution. Defaults to whatever the
+        renderer passes (1 for Algan's stock rig).
+    ambient_light_intensity
+        Accepted for signature parity; unused, since the model has no ambient
+        term.
+    flat_shading
+        Blend of the interpolated normal toward the flat per-face normal,
+        from 0 (smooth, the default) to 1 (flat).
+    """
+    rgb, glow = _split_albedo(albedo_color)
+    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
+    to_sun = _normalize(light_origin - vertex_location)
+    w = 0.5 * dot_product(n, to_sun) ** 3
+    w = torch.where(w < 0.0, 0.5 * w, w)
+    offset = w * light_color[..., :3] * light_intensity
+    if _linear_color_space():
+        out = srgb_to_linear(linear_to_srgb(rgb) + offset).clamp(0.0, 1.0)
+    else:
+        out = (rgb + offset).clamp(0.0, 1.0)
     return _recombine(out, glow)
 
 

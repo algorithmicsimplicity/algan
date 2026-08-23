@@ -22,14 +22,14 @@ from algan.manim_defaults import (
 def scene():
     """A fresh Scene, with the process-global style settings restored after."""
     style = SETTINGS.style
-    saved_style = (style.default_shader, style.background_color.clone())
+    saved_style = (style.default_material, style.background_color.clone())
     saved_tonemapping = SETTINGS.raytracing.tonemapping
     created = Scene()
     try:
         yield created
     finally:
         SETTINGS.style.set(
-            default_shader=saved_style[0], background_color=saved_style[1]
+            default_material=saved_style[0], background_color=saved_style[1]
         )
         SETTINGS.raytracing.set(tonemapping=saved_tonemapping)
 
@@ -96,11 +96,16 @@ def test_use_manim_defaults_turns_off_tonemapping(scene):
     assert SETTINGS.raytracing.tonemapping is False
 
 
-def test_use_manim_defaults_makes_shading_flat(scene):
-    from algan.rendering.shaders.material_shaders import basic_material_shader
+def test_use_manim_defaults_installs_the_manim_material(scene):
+    from algan.rendering.shaders.material_shaders import manim_shader
+    from algan.rendering.shaders.materials import ManimMaterial
 
     scene.use_manim_defaults()
-    assert SETTINGS.style.default_shader is basic_material_shader
+    # The default material is Manim's 3-D shading, not merely an unlit
+    # passthrough: Manim shades 3-D geometry via get_shaded_rgb, and this is
+    # what makes a material-less imported 3-D mob do the same.
+    assert isinstance(SETTINGS.style.default_material, ManimMaterial)
+    assert SETTINGS.style.default_material.shader is manim_shader
 
 
 def test_use_manim_defaults_sets_the_coordinate_convention(scene):

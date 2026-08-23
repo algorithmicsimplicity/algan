@@ -345,9 +345,12 @@ class Scene(RenderLoopMixin):
             Whether to move the camera to Manim's viewpoint and set its field of
             view. Defaults to ``True``.
         shading
-            Whether to reproduce Manim's colour pipeline: its single light in its
-            own position, unlit flat colour as the default shading -- which is
-            what Manim's renderer actually does to a vector Mobject -- and no
+            Whether to reproduce Manim's colour pipeline: its single light in
+            its own position, ``ManimMaterial`` as the default material for
+            3-D Mobs with none of their own -- reproducing the shading Manim's
+            ``get_shaded_rgb`` applies to 3-D geometry, where flat vector
+            Mobjects get none (and Algan's 2-D content is drawn unlit by
+            construction, so it never consults the setting) -- and no
             tonemapping, so a flat fill comes out byte-identical to Manim's.
             Defaults to ``True``.
         background

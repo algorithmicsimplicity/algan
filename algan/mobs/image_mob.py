@@ -5,7 +5,9 @@ a quad carrying the image as a texture map, sampled per fragment by the renderer
 so it stays sharp independently of the mesh's resolution.
 
 It is a :class:`~algan.mobs.surfaces.surface.Surface`, so it moves, rotates and
-lights like any other 3-D Mob, and can be deformed.
+deforms like any other 3-D Mob -- but it is deliberately unlit: a picture shows
+its own colours rather than a lighting gradient, whatever the Scene's lights are
+doing.
 
 Paths resolve against the working directory and then against the directory
 holding the main script, so an image sitting beside your ``.py`` file loads
@@ -22,6 +24,7 @@ import torch.types
 import algan.utils.file_utils as file_utils
 from algan.constants.color import Color
 from algan.mobs.surfaces.surface import Surface
+from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.utils.lazy_import import LazyModule, isinstance_if_loaded
 
 # Deferred: an ImageMob is usually built from a file path / array; only the
@@ -36,6 +39,9 @@ class ImageMob(Surface):
     """A flat 2-D rectangular
     :class:`~algan.mobs.surfaces.surface.Surface` with color set according
     to a given image (or image file path).
+
+    The picture is shown unlit -- its own colours, unaffected by the Scene's
+    lights.
 
     Parameters
     ----------
@@ -88,6 +94,12 @@ class ImageMob(Surface):
         )
         if not textured:
             self.grid._setattr_without_record("color", surface_colors.flatten(-3, -2))
+        # A picture plane is unlit: null_shader returns the albedo unchanged,
+        # so the image shows its own colours instead of a lighting gradient.
+        # Called after super().__init__ so it reaches the grid that actually
+        # renders (set_shader walks the descendants), and before spawn, as
+        # set_shader requires.
+        self.set_shader(null_shader)
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
             self.move_to(submob.get_center())

@@ -178,9 +178,15 @@ fields are the ones you set once at the top of a script:
     Whether a render fades everything out at the end. Defaults to ``False``.
     ``save_video(animate_fade_out=...)`` overrides it per render.
 
-``default_shader``
-    Vertex shader applied to Mobs that do not set their own. Defaults to
-    ``None`` (Algan's built-in shading) -- see :doc:`shaders_and_materials`.
+``default_material``
+    The material a 3-D Mob is shaded with when it sets none of its own.
+    Defaults to :class:`~algan.rendering.shaders.materials.DiffuseMaterial`
+    (Lambert diffuse), installed when Algan is imported;
+    :meth:`~algan.scene.Scene.use_manim_defaults` replaces it with
+    ``ManimMaterial``, so imported 3-D geometry shades the way Manim shades
+    it. Must be a ``Material`` instance -- a value without a ``.shader``
+    attribute is rejected -- and flat 2-D content never consults it. See
+    :doc:`shaders_and_materials`.
 
 ``shape_style_profile``
     Whose per-shape styling defaults the built-in shapes adopt: ``"algan"``
