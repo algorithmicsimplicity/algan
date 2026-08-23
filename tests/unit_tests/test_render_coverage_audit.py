@@ -72,6 +72,11 @@ EXEMPT = {
     "DiffuseMaterial": "legacy material API, unit-tested",
     "SpecularMaterial": "legacy material API, unit-tested",
     "UnlitMaterial": "legacy material API, unit-tested",
+    # Reached through Scene.use_manim_defaults(), which repoints the default
+    # material rather than asking scenes to author it; the full-render scenes
+    # all pin explicit materials. Pinned by
+    # tests/unit_tests/test_manim_shader.py.
+    "ManimMaterial": "installed by use_manim_defaults, unit-tested",
 }
 
 

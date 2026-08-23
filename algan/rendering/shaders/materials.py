@@ -61,6 +61,7 @@ __all__ = [
     "AdvancedPBRMaterial",
     "MeshBasicMaterial",
     "MeshLambertMaterial",
+    "ManimMaterial",
     "MeshPhongMaterial",
     "MeshStandardMaterial",
     "MeshPhysicalMaterial",
@@ -363,6 +364,31 @@ class DiffuseMaterial(Material):
 
 
 MeshLambertMaterial = DiffuseMaterial
+
+
+class ManimMaterial(Material):
+    """Manim's default 3-D shading: per light, an achromatic
+    ``0.5 * (n . to_light) ** 3`` offset (halved when back-facing) added to
+    the base colour -- no ambient, no specular, no falloff.
+
+    Reproduces Manim's ``get_shaded_rgb`` exactly under the rig
+    :meth:`~.Scene.use_manim_defaults` installs (one white intensity-1 point
+    light); see :func:`~.material_shaders.manim_shader` for the precise
+    conditions. It has no properties of its own beyond the shared
+    :class:`Material` ones, but
+    :meth:`~.Material.get_shader_param_values` still carries
+    ``flat_shading``: the packed material block is written name by name, so
+    an empty dict would leave that slot at its default and
+    ``ManimMaterial(flat_shading=True)`` would silently do nothing.
+
+    :meth:`~.Scene.use_manim_defaults` will install this material as the
+    default for 3-D Mobs alongside the rig it sets up.
+    """
+
+    shader = staticmethod(ms.manim_shader)
+
+    def get_shader_param_values(self):
+        return {"flat_shading": self._flat()}
 
 
 class SpecularMaterial(Material):

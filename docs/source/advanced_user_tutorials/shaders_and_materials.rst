@@ -282,8 +282,9 @@ has to sit in the *middle* of a pipeline rather than at the start:
 =====================  ========================================================
 Stage                  Lighting model
 =====================  ========================================================
-``STAGE_DEFAULT``      Algan's built-in shading -- what a Mob uses when you set
-                       no material. Resolved from ``default_shader``.
+``STAGE_MANIM``        Manim's default 3-D lighting -- an achromatic
+                       ``n . to_light ** 3`` offset per light, nothing else.
+                       Resolved from ``manim_shader``.
 ``STAGE_UNLIT``        No lighting: the fragment keeps its own colour. Resolved
                        from ``null_shader`` and ``basic_material_shader``, and
                        what :class:`~.MeshBasicMaterial` maps to.

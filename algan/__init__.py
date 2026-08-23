@@ -136,6 +136,7 @@ from algan.rendering.shaders.material_shaders import (
     basic_material_shader,
     depth_shader,
     lambert_shader,
+    manim_shader,
     matcap_shader,
     normal_shader,
     phong_shader,
@@ -172,8 +173,8 @@ from algan.rendering.raytracing.shading_taichi import (
 from algan.rendering.raytracing.tracer import RenderPlan, render_batch_raytraced
 from algan.rendering.raytracing.truncation import TruncationCounts
 from algan.rendering.shaders.fragment_shaders import (
-    STAGE_DEFAULT,
     STAGE_LAMBERT,
+    STAGE_MANIM,
     STAGE_PHONG,
     STAGE_PHYSICAL,
     STAGE_STANDARD,

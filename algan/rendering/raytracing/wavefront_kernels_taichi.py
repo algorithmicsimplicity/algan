@@ -63,7 +63,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
-    _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -155,12 +154,12 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
     on the same inputs (``to_light``/``ldist`` are the fan site's
     ``lp - spos`` and its norm, bitwise the stage's ``d``), so "exactly zero"
     here is exactly zero there and the fragment's shadow fan cannot influence
-    any stage whose vis-multiplied terms all carry ``lc`` as a factor
-    (lambert/phong/standard/physical). NOT valid for ``_stage_default``:
-    its base-colour fade accumulates a vis-weighted ``w`` even at
-    ``lc == 0`` -- callers gate on the hit's pipeline id. Underflowed (but
-    not bitwise-zero) multipliers are treated as live: that only traces a
-    fan whose result multiplies zero, never the reverse.
+    any built-in lit stage (lambert/phong/standard/physical/manim): every
+    one of their vis-multiplied terms carries the evaluated light colour
+    ``lc`` as a factor, so a fan skipped for geometrically-zero radiance
+    leaves an all-lit ``vis`` that multiplies zero either way. Underflowed
+    (but not bitwise-zero) multipliers are treated as live: that only traces
+    a fan whose result multiplies zero, never the reverse.
     """
     zero = 0
     if light_col.shape[2] > 3:
@@ -2635,9 +2634,8 @@ def wavefront_shade(
                         # (passthrough shading; scatters take no ``vis``), and
                         # in every built-in stage a zero-colour light row (not
                         # yet spawned, or despawned) contributes nothing
-                        # whatever its visibility -- the lit stages' terms all
-                        # carry the light colour as a factor, and the default
-                        # stage skips zero-colour rows outright. Only user
+                        # whatever its visibility -- every lit stage's terms
+                        # carry the light colour as a factor. Only user
                         # pipelines, which may read ``vis`` arbitrarily, keep
                         # the exact fan for every light.
                         do_fan = 0
@@ -2649,13 +2647,13 @@ def wavefront_shade(
                                 do_fan = 1
                                 if pid_s < _USER_PIPELINE_BASE:
                                     fan_exact = 0
-                                    # Geometric zero-radiance culling is only
-                                    # valid for stages whose vis terms all
-                                    # carry lc (see _light_zero_radiance);
-                                    # the default stage's base fade is not
-                                    # one of them.
-                                    if pid_s != _MID_DEFAULT:
-                                        fan_geom = 1
+                                    # Geometric zero-radiance culling is
+                                    # valid for EVERY built-in stage: each
+                                    # one's vis-multiplied terms carry lc,
+                                    # so a culled fan's all-lit default
+                                    # multiplies zero either way (see
+                                    # _light_zero_radiance).
+                                    fan_geom = 1
                         if do_fan == 1:
                             # Smooth shading normal and the *geometric* face
                             # normal of the hit facet/patch.

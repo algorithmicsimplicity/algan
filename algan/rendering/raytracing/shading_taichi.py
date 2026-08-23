@@ -14,9 +14,10 @@ Shading is expressed as **stages** with a single uniform ``@ti.func`` contract
 (see ``_stage_phong`` etc.). A per-primitive **pipeline** is an ordered list of
 stages run left-to-right, each receiving the previous stage's output colour --
 so a user recolour stage can feed a built-in lighting stage. The built-in *core
-lit* materials are the first stages: the legacy diffuse
-:func:`~algan.rendering.shaders.pbr_shaders.default_shader`, ``MeshBasicMaterial``
-(unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``
+lit* materials are the first stages: Manim's default 3-D lighting
+(:func:`~algan.rendering.shaders.material_shaders.manim_shader`),
+``MeshBasicMaterial`` (unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``,
+``MeshStandardMaterial``
 and ``MeshPhysicalMaterial``.
 Custom user stages (also ``@ti.func``) are composed into per-pipeline funcs by
 :func:`make_pipeline_func` and injected into the shade kernel as a flat
@@ -26,7 +27,8 @@ Per-primitive **pipeline id** (``pid_arr``); ids 0-5 are the built-in
 single-stage pipelines, ids >= ``_USER_PIPELINE_BASE`` index the injected user
 pipeline tuple::
 
-    0  default diffuse      3  phong  (Blinn-Phong diffuse + specular)
+    0  manim (Manim's default 3-D lighting)
+                            3  phong  (Blinn-Phong diffuse + specular)
     1  basic / unlit / passthrough     4  standard (Cook-Torrance GGX PBR)
     2  lambert (diffuse)   5  physical (standard + clearcoat / sheen / ior)
 
@@ -59,6 +61,10 @@ light), which is identical to a single light -- the common case.
 import taichi as ti
 
 from algan.environment import env_int
+from algan.rendering.raytracing.color_space_taichi import (
+    linear_to_srgb_v3,
+    srgb_to_linear_v3,
+)
 
 # Width of the built-in per-primitive material parameter block (see slot map).
 MAT_W = 30
@@ -83,7 +89,7 @@ _MAT_ONE_SIDED = 26
 _MAT_ATTENUATION_SIGMA = 27
 
 # Built-in single-stage pipeline ids.
-_MID_DEFAULT = 0
+_MID_MANIM = 0
 _MID_UNLIT = 1
 _MID_LAMBERT = 2
 _MID_PHONG = 3
@@ -185,8 +191,9 @@ def _energy_scale(weight):
 # for denser area-light penumbras or larger rigs (more registers, lower
 # occupancy on the shadow kernels). Each area-light emitter sample counts as
 # one slot; samples past the cap light without shadowing, so an under-capped
-# area light just gets a shallower umbra, never a wrong one (the default
-# shader's base fade-out is power-fraction weighted -- see _stage_default). A
+# area light just gets a shallower umbra, never a wrong one (every built-in
+# stage treats a past-the-cap light as fully lit, exactly as it treats an
+# unshadowed one). A
 # truly unbounded (runtime) count would need the per-fragment visibilities in
 # a global scratch buffer instead of a stack vector.
 MAX_SHADOW_LIGHTS = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
@@ -623,10 +630,11 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
     applied), the specular gate (0 for the direction-less ambient-like types)
     and the light's *power fraction* (packed column 15): the share of a whole
     light this row represents -- ``1/K`` for one of an area light's K emitter
-    samples, 1 for every stand-alone light. Physical stages ignore it (their
-    per-sample radiance already carries the 1/K); the legacy lerp-based default
-    stage weights its blend total by it so an area light lerps like *one*
-    light of its full colour rather than K dim ones.
+    samples, 1 for every stand-alone light. Every built-in stage ignores it:
+    their per-sample radiance already carries the 1/K, so summing K samples
+    reconstructs one whole light without any further weighting. The value is
+    returned for user-written stages that want to count rows as fractions of
+    a light.
 
     Compact rows (``light_col`` width 3, the legacy packing used whenever the
     scene has only plain point lights) take the original point-light path with
@@ -748,73 +756,52 @@ def _stage_unlit(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 
 
 @ti.func
-def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
-                   params: ti.template(), f, prim, off,
-                   light_pos: ti.template(), light_col: ti.template(),
-                   num_lights, shadows: ti.template(), vis):
-    """default_shader: diffuse lerp of the colour toward each light colour.
+def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
+                 params: ti.template(), f, prim, off,
+                 light_pos: ti.template(), light_col: ti.template(),
+                 num_lights, shadows: ti.template(), vis):
+    """manim_shader: Manim's default 3-D lighting, ported in-kernel.
 
-    Additive over lights: gather every light's lerp weight, then blend once.
-    For a single light this equals the legacy per-light lerp
-    (``out*(1-w) + lc*w``); for many lights it stays stable (an area light's
-    sample fan, or a key/fill/rim rig) instead of the old sequential lerp
-    driving the colour toward the last light's.
+    Each light adds an offset of ``0.5 * (n . to_light) ** 3`` -- halved when
+    negative -- scaled by the light's evaluated colour and gated by its
+    shadow visibility. No ambient, no emissive, no falloff of its own:
+    Manim's model has none. Under the single white intensity-1 point light
+    that ``use_manim_defaults`` installs (decay 0 / distance 0), the colour
+    factor is exactly ``(1, 1, 1)`` and this reproduces Manim's scalar
+    ``get_shaded_rgb`` offset exactly; see
+    :func:`~algan.rendering.shaders.material_shaders.manim_shader`.
+
+    Every vis-weighted term carries the evaluated light colour ``lc`` as a
+    factor, so a zero-colour row (a light outside its lifespan) contributes
+    nothing with no row-liveness gate, and skipping a shadow fan whose
+    radiance is geometrically zero cannot change this stage's output.
+
+    Manim shades in display-referred sRGB. Under the linear working space the
+    running colour is encoded before the offsets are added and decoded after
+    (clamped to [0, 1] in between), under a compile-time gate exactly the way
+    ``_energy_scale`` gates its budget -- which means A/B-ing the two arms
+    needs one process per arm (CLAUDE.md on ``ti.static``).
     """
-    flat = params[f % params.shape[0], prim, off + 10]
+    tm = f % params.shape[0]
+    flat = params[tm, prim, off + 10]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
-    out = in_rgb
-    acc = ti.math.vec3(0.0, 0.0, 0.0)
-    wsum = 0.0
-    esum = 0.0
-    tl0 = f % light_col.shape[0]
+    base = in_rgb
+    if ti.static(bool(_linear_color_space())):
+        base = linear_to_srgb_v3(in_rgb)
     for li in range(num_lights):
-        # A zero-colour light row is a light outside its lifespan (or
-        # genuinely black) and must not fade the base colour: it either was
-        # filtered out of the batch's light list entirely, or belongs to a
-        # batch straddling its spawn -- and the output must not depend on
-        # which of those happened. Gated on the RAW row colour (not the
-        # evaluated ``lc``) so live-light modifiers (spot cones, decay)
-        # keep their existing fade behaviour. Hemisphere / environment-SH
-        # rows radiate from their aux columns even with zero RGB (a black-sky
-        # hemisphere still has a ground colour), so they are always kept --
-        # their out-of-lifespan rows are inert anyway (the aux radiance
-        # columns scale with opacity at materialization).
-        row_live = 0
-        if ((light_col[tl0, li, 0] != 0.0)
-                or (light_col[tl0, li, 1] != 0.0)
-                or (light_col[tl0, li, 2] != 0.0)):
-            row_live = 1
-        elif light_col.shape[2] > 3:
-            lt0 = ti.cast(light_col[tl0, li, 3] + 0.5, ti.i32)
-            if (lt0 == _LT_HEMISPHERE) or (lt0 == _LT_ENV_SH):
-                row_live = 1
-        if row_live == 1:
-            ld, lc, _spec_w, frac = _light_eval(light_pos, light_col, f, li,
-                                                pos, n)
-            v = _light_vis(shadows, vis, li)
-            d = ti.max(ld.dot(n), 0.0)
-            w = d * d * d * d * d * 0.5 * v
-            acc += lc * w
-            esum += w * ti.max(lc[0], ti.max(lc[1], lc[2]))
-            # The base fade-out counts each row by its *power fraction* (1/K
-            # for an area light's K emitter samples, 1 otherwise), so one area
-            # light displaces at most as much base colour as one point light
-            # would -- while ``acc`` (whose per-sample radiance already
-            # carries the 1/K) sums back to the full light colour. Without
-            # this, a fully-occluded umbra under a many-sample area light
-            # would revert toward the raw albedo (which can be *brighter*
-            # than the dimly-lit surroundings, a "bright shadow"), because
-            # the K dim samples each faded the base as a whole light while
-            # only delivering 1/K of the colour.
-            wsum += w * frac
-    # The base fade was already bounded by ``min(wsum, 1)``; ``acc`` was not,
-    # so past a total weight of 1 the two stopped being a blend and the sum ran
-    # away with the extra lights. Scaling ``acc`` by the same budget makes the
-    # pair a genuine convex combination of the albedo and the light colours.
-    # ``max(wsum, 1)`` is exactly 1 for a single light (whose weight peaks at
-    # 0.5), so the default rig is bit-identical.
-    out = out * (1.0 - ti.min(wsum, 1.0)) + acc * _energy_scale(esum)
-    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+        ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                             pos, n)
+        v = _light_vis(shadows, vis, li)
+        d = ld.dot(n)
+        w = 0.5 * d * d * d
+        if w < 0.0:
+            w *= 0.5
+        base += lc * (w * v)
+    base = ti.min(ti.max(base, ti.math.vec3(0.0, 0.0, 0.0)),
+                  ti.math.vec3(1.0, 1.0, 1.0))
+    if ti.static(bool(_linear_color_space())):
+        base = srgb_to_linear_v3(base)
+    return ti.math.vec4(base[0], base[1], base[2], in_glow)
 
 
 @ti.func
@@ -1125,7 +1112,7 @@ def make_pipeline_func(stages, offsets):
 # ``scatter=`` argument to override how rays bounce.
 # ---------------------------------------------------------------------------
 
-_BUILTIN_STAGE_FNS = (_stage_default, _stage_unlit, _stage_lambert,
+_BUILTIN_STAGE_FNS = (_stage_manim, _stage_unlit, _stage_lambert,
                       _stage_phong, _stage_standard, _stage_physical)
 _BUILTIN_PIPELINE_FNS = {}
 
@@ -1173,7 +1160,7 @@ def solo_pid(pids_present, frag_pipelines):
 
 def builtin_pipeline_fn(pid):
     """Composed single-stage pipeline func for built-in material id ``pid``
-    (0 default, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical), for
+    (0 manim, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical), for
     injection into a per-material shade kernel of the legacy sorted path
     (unsupported). Lazily created and cached so every render reuses the same
     func objects (stable Taichi template instantiations).
@@ -1263,10 +1250,10 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                                             params, f, prim)
         else:
             shade_n = _two_sided_normal(n_interp, face_n, 0.0, view_dir)
-        if pid == _MID_DEFAULT:
-            r = _stage_default(pos, view_dir, shade_n, face_n, out, g,
-                               params, f, prim, 0,
-                               light_pos, light_col, num_lights, shadows, vis)
+        if pid == _MID_MANIM:
+            r = _stage_manim(pos, view_dir, shade_n, face_n, out, g,
+                             params, f, prim, 0,
+                             light_pos, light_col, num_lights, shadows, vis)
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_LAMBERT:

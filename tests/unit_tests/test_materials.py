@@ -30,6 +30,7 @@ from algan.constants.material_presets import (
 from algan.rendering.shaders import material_shaders as ms
 from algan.rendering.shaders.materials import (
     FrontSide,
+    ManimMaterial,
     Material,
     MeshBasicMaterial,
     MeshDepthMaterial,
@@ -49,6 +50,7 @@ _NUM_BASE_PARAMS = len(inspect.signature(ms.basic_material_shader).parameters)  
 ALL_MATERIALS = [
     MeshBasicMaterial,
     MeshLambertMaterial,
+    ManimMaterial,
     MeshPhongMaterial,
     MeshStandardMaterial,
     MeshPhysicalMaterial,

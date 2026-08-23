@@ -62,7 +62,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _tri_hit,
 )
 from algan.rendering.raytracing.shading_taichi import (
-    _MID_DEFAULT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
 )
@@ -2834,11 +2833,10 @@ def raster_shadow_trace(
         # The event's material pipeline id (packed above the 4-bit sub-pixel
         # position mask at build time). In every built-in stage a zero-colour
         # light row (not yet spawned, or despawned) contributes nothing
-        # whatever its visibility -- the lit stages' terms all carry the light
-        # colour as a factor, and the default stage skips zero-colour rows
-        # outright -- so such rows keep their all-lit default without tracing.
-        # Only user pipelines, which may read visibility arbitrarily, keep the
-        # exact fan for every light.
+        # whatever its visibility -- every lit stage's terms carry the light
+        # colour as a factor -- so such rows keep their all-lit default
+        # without tracing. Only user pipelines, which may read visibility
+        # arbitrarily, keep the exact fan for every light.
         pid_e = event_msk[e] >> 8
         src_sid = -1
         src_prim = -1
@@ -2856,11 +2854,11 @@ def raster_shadow_trace(
         fan_geom = 0
         if pid_e < _USER_PIPELINE_BASE:
             fan_exact = 0
-            # Geometric zero-radiance culling is only valid for stages whose
-            # vis terms all carry lc (see _light_zero_radiance); the default
-            # stage's base fade is not one of them.
-            if pid_e != _MID_DEFAULT:
-                fan_geom = 1
+            # Geometric zero-radiance culling is valid for EVERY built-in
+            # stage: each one's vis-multiplied terms carry lc, so a culled
+            # fan's all-lit default multiplies zero either way (see
+            # _light_zero_radiance).
+            fan_geom = 1
         visibility = 1.0
         lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
                           light_pos[tl, li, 2])
