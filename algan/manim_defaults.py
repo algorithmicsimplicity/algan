@@ -175,7 +175,7 @@ def apply_manim_defaults(
 ):
     """Point ``scene`` at Manim's defaults. See :meth:`~algan.scene.Scene.use_manim_defaults`."""
     from algan.rendering.lights import PointLight
-    from algan.rendering.shaders.material_shaders import basic_material_shader
+    from algan.rendering.shaders.materials import ManimMaterial
     from algan.settings.video_settings import VideoSettings
 
     if coordinates:
@@ -209,11 +209,18 @@ def apply_manim_defaults(
             location=from_manim_coordinates(MANIM_LIGHT_SOURCE).view(1, 1, 3),
             color=WHITE,
         ).spawn(animate=False)
-        # Manim's renderer draws a VMobject as flat colour -- it applies no
-        # lighting at all -- so an unlit default is what actually reproduces it.
-        # The light above still shades any Mob given an explicitly lit material,
-        # and it shades it from where Manim's own light sits.
-        SETTINGS.style.set(default_shader=basic_material_shader)
+        # What the default material reaches, engine by engine. Manim applies
+        # no lighting at all to a flat 2-D VMobject -- Cairo fills it in its
+        # own colour -- and Algan's 2-D content never consults this setting
+        # (circuits and images are drawn unlit by construction), so flat
+        # 2-D matches on both sides without it. The setting's audience is
+        # 3-D geometry, which is Manim's ``ThreeDVMobject`` territory: there
+        # Manim DOES shade, per light via ``get_shaded_rgb``, and that is
+        # exactly what ManimMaterial reproduces -- so an imported 3-D mob with
+        # no material of its own shades the way Manim would have shaded it.
+        # The light above is what it responds to, placed where Manim's own
+        # light sits; a Mob given an explicitly lit material keeps it.
+        SETTINGS.style.set(default_material=ManimMaterial())
         # Manim writes its colours straight out. Algan does too now -- this is
         # its own default since 2026-08-22 -- so this is belt-and-braces against
         # a Scene that turned tonemapping on. With the curve on, every fill

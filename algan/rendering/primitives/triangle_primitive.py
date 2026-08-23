@@ -32,6 +32,14 @@ from algan.utils.tensor_utils import (
 
 
 class TrianglePrimitive(RenderPrimitive):
+    #: Parameter values of ``SETTINGS.style.default_material``, carried by a
+    #: primitive built through the no-material fallback so the process-wide
+    #: default material's look reaches the packed material block and the
+    #: vertex bake, not just its shader. Empty when the mob set its own
+    #: material or shader (its own values are already registered) -- every
+    #: consumer treats an empty mapping as an exact no-op.
+    default_material_params: dict = {}
+
     def __init__(
         self,
         corners=None,
@@ -74,6 +82,12 @@ class TrianglePrimitive(RenderPrimitive):
 
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
+            # The seed rides along: members grouped under one identifier all
+            # went through the same fallback (see get_batch_identifier), so
+            # the first member's mapping is every member's.
+            self.default_material_params = dict(
+                getattr(triangle_collection[0], "default_material_params", {})
+            )
             # Names of the positional shader_param_values, in the same order
             # (kept so the ray tracer can map them to its material slots).
             self.shader_param_names = getattr(
@@ -185,8 +199,27 @@ class TrianglePrimitive(RenderPrimitive):
         )
 
         if shader is None:
-            shader = SETTINGS.style.default_shader
+            # A mob that set no material of its own renders as the process
+            # default material (SETTINGS.style.default_material, installed at
+            # import as a DiffuseMaterial). Its parameters ride along so an
+            # explicitly configured default -- e.g.
+            # MeshStandardMaterial(roughness=0.3) -- is honoured rather than
+            # silently rendering at the packed block's built-in defaults; see
+            # _pack_material and _ordered_shader_param_values.
+            default_material = SETTINGS.style.default_material
+            if default_material is not None:
+                shader = default_material.shader
+                self.default_material_params = dict(
+                    default_material.get_shader_param_values()
+                )
         self.shader = shader
 
     def get_batch_identifier(self):
-        return f"{self.__class__}_{id(self.shader)}"
+        # The trailing flag separates a mob that authored its own shader
+        # parameter values from one shaded through the default-material seed
+        # (empty ``shader_param_names``). Both can carry the same shader
+        # function now that the fallback resolves to DiffuseMaterial's, but
+        # their parameter rows have different widths, and the collection
+        # merge transposes members column-wise -- mixing them would silently
+        # truncate the authored rows to the bare mob's zero.
+        return f"{self.__class__}_{id(self.shader)}_{bool(getattr(self, 'shader_param_names', None))}"

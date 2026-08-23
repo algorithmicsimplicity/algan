@@ -27,6 +27,20 @@ A material bundles a lighting model with its parameter values, so
 ``MeshStandardMaterial(metalness=1.0, roughness=0.2)`` gives you polished metal
 without your having to know which shader that is.
 
+What an unconfigured Mob gets
+-----------------------------
+
+A 3-D Mob that sets no material of its own is not unshaded: it renders as
+:class:`~algan.rendering.shaders.materials.DiffuseMaterial`, Algan's default
+material (Lambert diffuse plus emissive). That material is installed at import
+as ``SETTINGS.style.default_material``, and
+``SETTINGS.style.set(default_material=MeshStandardMaterial(roughness=0.3))``
+replaces it scene-wide -- its parameter values then apply to every
+material-less Mob, exactly as if each had been given the material explicitly.
+Flat 2-D content (shapes, text, images) is drawn unlit and never consults the
+setting; see :meth:`~algan.scene.Scene.use_manim_defaults` for the
+Manim-compatible variant.
+
 .. algan:: MaterialsSetMaterial
 
     from algan import *
@@ -198,19 +212,23 @@ Vertex Shaders
 A shader is just a function, and
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader` installs one.
 Algan ships
-:func:`~algan.rendering.shaders.pbr_shaders.default_shader` (a simplified diffuse
-model with no material properties, which is what an unconfigured Mob uses) and
 :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader`,
-which adds ``smoothness`` and ``metallicness``.
+which adds ``smoothness`` and ``metallicness`` to the lighting model. (What an
+unconfigured 3-D Mob gets is decided by materials, not here: it renders as
+:class:`~algan.rendering.shaders.materials.DiffuseMaterial`, Algan's default
+material -- see `What an unconfigured Mob gets`_.)
 
-The interesting part is how parameters are handled. ``set_shader`` inspects the
-function's signature, sees which parameters come *after* the ones
-:func:`~algan.rendering.shaders.pbr_shaders.default_shader` declares, and registers those as animatable attributes on
+Every shader follows one calling convention, whose reference is the named
+constant ``SHADER_FIXED_PARAM_COUNT`` in
+``algan/rendering/shaders/material_shaders.py``: a signature opens with nine
+fixed parameters, and any parameters after those are the material's animatable
+properties. ``set_shader`` inspects the function's signature, sees which
+parameters come *after* the fixed nine, and registers those as animatable
+attributes on
 the Mob. So installing :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` gives you ``mob.smoothness`` and
 ``mob.metallicness`` to animate, without either being a predeclared Mob attribute.
 
-To write your own, match :func:`~algan.rendering.shaders.pbr_shaders.default_shader`'s signature and append your own
-parameters:
+To write your own, declare the fixed parameters and append your own:
 
 .. code-block:: python
 
@@ -224,8 +242,9 @@ parameters:
     mob.set_shader(my_shader)   # before spawning
     mob.banding = 8.0           # now animatable
 
-Every parameter of :func:`~algan.rendering.shaders.pbr_shaders.default_shader` must be declared even if you ignore it.
-Read the source of :func:`~algan.rendering.shaders.pbr_shaders.default_shader` and
+Every fixed parameter must be declared even if you ignore it.
+Read the source of ``basic_material_shader`` (in
+``algan/rendering/shaders/material_shaders.py``) and
 :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` for
 working implementations.
 
@@ -282,8 +301,12 @@ has to sit in the *middle* of a pipeline rather than at the start:
 =====================  ========================================================
 Stage                  Lighting model
 =====================  ========================================================
-``STAGE_DEFAULT``      Algan's built-in shading -- what a Mob uses when you set
-                       no material. Resolved from ``default_shader``.
+``STAGE_MANIM``        Manim's default 3-D lighting -- per light, a
+                       ``0.5 * (n . to_light) ** 3`` offset, halved when the
+                       surface faces away from the light and scaled by the
+                       light's colour. Resolved from ``manim_shader``;
+                       installed as the default 3-D shading by
+                       :meth:`~algan.scene.Scene.use_manim_defaults`.
 ``STAGE_UNLIT``        No lighting: the fragment keeps its own colour. Resolved
                        from ``null_shader`` and ``basic_material_shader``, and
                        what :class:`~.MeshBasicMaterial` maps to.

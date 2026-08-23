@@ -27,8 +27,8 @@ import taichi as ti
 
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
-    _stage_default,
     _stage_lambert,
+    _stage_manim,
     _stage_phong,
     _stage_physical,
     _stage_standard,
@@ -94,10 +94,10 @@ _PHYSICAL_MAT_SPECS = _BUILTIN_MAT_SPECS + [
     ("iridescence", 1, 0.0),
 ]
 
-# Built-in material stages (12-slot canonical params; physical 26). ``default``
+# Built-in material stages (12-slot canonical params; physical 26). ``manim``
 # and ``unlit`` ignore most slots but share the layout so offsets stay uniform
 # in a pipeline.
-STAGE_DEFAULT = FragmentStage(_stage_default, _BUILTIN_MAT_SPECS)
+STAGE_MANIM = FragmentStage(_stage_manim, _BUILTIN_MAT_SPECS)
 STAGE_UNLIT = FragmentStage(_stage_unlit, _BUILTIN_MAT_SPECS)
 STAGE_LAMBERT = FragmentStage(_stage_lambert, _BUILTIN_MAT_SPECS)
 STAGE_PHONG = FragmentStage(_stage_phong, _BUILTIN_MAT_SPECS)
@@ -112,14 +112,15 @@ def _builtin_shader_to_stage():
     from algan.rendering.shaders.material_shaders import (
         basic_material_shader,
         lambert_shader,
+        manim_shader,
         phong_shader,
         physical_shader,
         standard_shader,
     )
-    from algan.rendering.shaders.pbr_shaders import default_shader, null_shader
+    from algan.rendering.shaders.pbr_shaders import null_shader
 
     return {
-        default_shader: STAGE_DEFAULT,
+        manim_shader: STAGE_MANIM,
         null_shader: STAGE_UNLIT,
         basic_material_shader: STAGE_UNLIT,
         lambert_shader: STAGE_LAMBERT,

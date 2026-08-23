@@ -3,7 +3,11 @@
 Most 2-D shapes are rendered as bezier circuits, evaluated analytically. A
 :class:`TriangulatedBezierCircuit` is the alternative: the outline is triangulated
 into a real mesh, which is what a shape needs when its interior has to carry
-per-fragment shading, a texture, or 3-D lighting.
+per-fragment shading or a texture.
+
+Its fills are unlit by default -- they are circuits that happen to be
+triangulated, not 3-D surfaces -- matching every other circuit's flat look;
+``set_material`` / ``set_shader`` can light them explicitly.
 
 The module implements the tiling and triangulation -- polygon triangulation,
 region tiling, and curve subdivision fine enough that the mesh boundary follows
@@ -31,6 +35,7 @@ from algan.geometry.geometry import (
     get_roots_of_quadratic,
 )
 from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.settings import SETTINGS
 from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
@@ -666,12 +671,15 @@ def tile_region2(
     corners, colors, transparencies = [get_inds(_) for _ in [grid, color, mask]]
     pp = squish(edge_polygons.unsqueeze(2).expand(-1, -1, 2, -1, -1), 0, 2)
     pp = torch.cat((torch.zeros_like(pp[..., :1]), pp.flip(-1)), -1)
+    # Same rule as TriangulatedBezierCircuit: a triangulated circuit fill is
+    # unlit. (This helper currently has no callers; kept consistent so a
+    # revival cannot reintroduce lit circuit fills.)
     return TriangleTriangulated(
         corners,
         color=colors,
         transparency=torch.zeros_like(1 - transparencies),
         perimeter_poins=pp,
-    )
+    ).set_shader(null_shader)
 
 
 def cubic_bezier_eval(p, t):
@@ -1037,6 +1045,15 @@ class TriangulatedBezierCircuit(Mob):
                     )
         self.tiles.add_children(triangles)
         self.add_children(self.tiles)
+        # These triangles are bezier-circuit fills that happen to be
+        # triangulated (glyph fills, plots.Arrow, function-plot curves), and
+        # their untriangulated twins are drawn unlit -- circuits stay unlit.
+        # null_shader returns the albedo unchanged, giving exactly that, and
+        # suppresses the no-material fallback that would otherwise light them
+        # as 3-D geometry. Called after the children exist so set_shader's
+        # descendant walk reaches the triangle mob that actually renders, and
+        # before spawn, as set_shader requires.
+        self.set_shader(null_shader)
         # if create and not self.animation_manager.context.delay_creation:
         #    self.spawn(animate_creation)
         self.parents = []

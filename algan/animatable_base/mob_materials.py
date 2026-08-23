@@ -11,7 +11,7 @@ import inspect
 import warnings
 from typing import TYPE_CHECKING
 
-from algan.rendering.shaders.pbr_shaders import default_shader
+from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
 from algan.utils.tensor_utils import cast_to_tensor
 
 if TYPE_CHECKING:
@@ -93,9 +93,7 @@ class MobMaterialsMixin:
             return self
 
         shader_params = inspect.signature(shader).parameters
-        num_shader_independent_params = len(
-            inspect.signature(default_shader).parameters.keys()
-        )
+        num_shader_independent_params = SHADER_FIXED_PARAM_COUNT
         shader_specific_param_names = list(shader_params.keys())[
             num_shader_independent_params:
         ]
