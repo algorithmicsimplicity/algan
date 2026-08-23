@@ -166,3 +166,10 @@ third_party/*
 
 # Session scratch (briefs for subagents, interim measurements)
 /scratch_*
+
+# The renderer audit's Three.js back end (benchmarks/renderer_audit/three_render.mjs)
+# needs three + three-gpu-pathtracer + playwright installed beside it; the
+# script's header says how. Reference renders are regenerated, not committed.
+benchmarks/renderer_audit/node_modules/
+benchmarks/renderer_audit/package.json
+benchmarks/renderer_audit/package-lock.json
