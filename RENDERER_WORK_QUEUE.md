@@ -845,14 +845,26 @@ Recorded so they are not rediscovered from scratch. None is started.
   multiplies the albedo rather than displacing it.
 
   The stage now composes the shares (`keep *= 1 - share`) instead of summing
-  them — a product that approaches zero and never reaches it, which is what
-  the legacy per-light lerps did — and weights each share by the light's own
-  radiance. Algan's default rig is one white point light, so a scene that adds
-  no lights of its own is byte-identical (verified). Every test scene adds
-  lights, so all seven pixel baselines moved. `tests/unit_tests/
-  test_default_shader_albedo.py` is the guard. Two follow-ups left open: the
-  torch twin `default_shader` (`shaders/pbr_shaders.py`) still lerps
-  sequentially with the geometric-only weight, which is only reachable under
+  them — a product that shrinks but does not vanish, which is what the legacy
+  per-light lerps did — and weights each share by the light's own radiance.
+  Algan's default rig is one white point light, so a scene that adds no
+  lights of its own is byte-identical (verified by md5). Four of the seven
+  pixel suites move, measured HEAD against the change on a CPU-only machine:
+  `text_and_media` 27, `complex_hierarchy_become` 34, `shapes_and_timeline`
+  37, `solids_and_camera` 118 channel values; `tests/fast`,
+  `manim_compat_and_plots` and `materials_and_lighting` are byte-identical.
+  **No baseline was regenerated**, because both suites are already red on
+  that machine at HEAD without the change: `tests/fast` by 5 channel values
+  on one pixel (which this change does not touch), and the full-render CPU
+  set by 231 at identical worst frames — its background is 24 where the
+  renderer and the fresher CUDA set both produce 34, and at HEAD this
+  machine agrees with the CUDA set to a mean of 0.02–0.11. The CPU set has
+  drifted from changes predating this one; both device sets want a
+  deliberate pass from someone who can run both.
+  `tests/unit_tests/test_default_shader_albedo.py` is the guard. Two
+  follow-ups left open: the torch twin `default_shader`
+  (`shaders/pbr_shaders.py`) still lerps sequentially with the geometric-only
+  weight, which is only reachable under
   `samples_per_pixel > 1` or `set_fragment_shading(False)`; and the shadow-fan
   culling sites that exclude `_MID_DEFAULT` because its fade used to
   accumulate at zero radiance (`wavefront_kernels_taichi.py:161`,
