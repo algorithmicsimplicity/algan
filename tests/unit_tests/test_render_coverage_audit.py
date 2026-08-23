@@ -69,7 +69,10 @@ EXEMPT = {
     # by tests/unit_tests/test_materials.py.
     "PBRMaterial": "legacy material API, unit-tested",
     "AdvancedPBRMaterial": "legacy material API, unit-tested",
-    "DiffuseMaterial": "legacy material API, unit-tested",
+    # Algan's default: installed at import as SETTINGS.style.default_material,
+    # so every 3-D Mob with no material of its own renders through it. Pinned
+    # by tests/unit_tests/test_default_material.py.
+    "DiffuseMaterial": "the default 3-D material, installed at import; unit-tested",
     "SpecularMaterial": "legacy material API, unit-tested",
     "UnlitMaterial": "legacy material API, unit-tested",
     # Reached through Scene.use_manim_defaults(), which repoints the default

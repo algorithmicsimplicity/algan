@@ -46,6 +46,7 @@ from algan.rendering.raytracing.settings import (
 from algan.rendering.raytracing.shading_taichi import _MAT_ONE_SIDED, MAT_W
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _unify_time
+from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
 from algan.settings import SETTINGS
 from algan.utils.memory_utils import empty_cache
 from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
@@ -622,19 +623,25 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         shader's own signature order.
 
         Rebuild the argument list from the shader's signature so custom shaders
-        remain robust to missing optional parameters.
+        remain robust to missing optional parameters. A parameter the mob does
+        not carry itself falls back to
+        ``SETTINGS.style.default_material``'s value for it (this primitive was
+        built by the no-material fallback, so its mob has nothing registered),
+        and only then to the shader signature's default.
         """
         import inspect
 
-        from algan.rendering.shaders.pbr_shaders import default_shader
-
         sig = inspect.signature(self.shader).parameters
-        num_fixed = len(inspect.signature(default_shader).parameters)
+        num_fixed = SHADER_FIXED_PARAM_COUNT
         extra_names = list(sig.keys())[num_fixed:]
 
         names = list(getattr(self, "shader_param_names", None) or [])
         values = list(getattr(self, "shader_param_values", None) or [])
         by_name = dict(zip(names, values))
+        if not by_name:
+            # Exact no-op when the fallback did not run (empty class-level
+            # mapping): nothing is added and signature defaults apply as before.
+            by_name.update(self.default_material_params)
 
         args = []
         for name in extra_names:
@@ -726,6 +733,22 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         mat_id = torch.full(
             (1, N), _shader_material_id(shader), dtype=torch.int32, device=device
         )
+        # Later writes win. The block is sized from the primitive's own
+        # per-frame parameter rows only, then filled in three passes:
+        # SETTINGS.style.default_material's constant values first (a
+        # no-material fallback primitive; they broadcast over every row and
+        # contribute nothing to Tm), then the primitive's own registered
+        # parameters overwriting them by name -- an explicit per-mob value
+        # always beats the process-wide default.
+        seeds = []
+        if _shader_is_core(shader):
+            # A configured default material such as
+            # ``SETTINGS.style.set(default_material=MeshStandardMaterial(
+            # roughness=0.3))`` must reach the packed block, not silently
+            # render at ``_MAT_DEFAULTS``.
+            for name, value in self.default_material_params.items():
+                if name in _MAT_SLOTS:
+                    seeds.append((name, torch.as_tensor(value, dtype=torch.float32)))
         pairs = []
         if _shader_is_core(shader):
             # The material's shader params, addressed by their real names.
@@ -748,6 +771,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             .expand(Tm, N, MAT_W)
             .contiguous()
         )
+        for name, v in seeds:
+            start, width = _MAT_SLOTS[name]
+            # A constant seed broadcasts over every time row and triangle.
+            if v.numel() != width:
+                v = v.reshape(-1).expand(width)
+            mat[:, :, start : start + width] = v.to(device)
         for name, v in pairs:
             start, width = (_MAT_ONE_SIDED, 1) if name is None else _MAT_SLOTS[name]
             if v.shape[-1] != width:  # broadcast a scalar into a vector slot

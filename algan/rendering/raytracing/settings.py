@@ -2505,8 +2505,7 @@ def _get_tonemap_t_val():
 
 
 # --- Core lit material registry (shader function -> in-kernel material id) ----
-# Ids must match shading_taichi: 0 manim (Manim's default 3-D lighting; also
-# mapped from pbr_shaders.default_shader until that is deleted), 1
+# Ids must match shading_taichi: 0 manim (Manim's default 3-D lighting), 1
 # basic/unlit/passthrough, 2 lambert, 3 phong, 4 standard, 5 physical.
 def _build_core_shader_ids():
     from algan.rendering.shaders.material_shaders import (
@@ -2517,11 +2516,10 @@ def _build_core_shader_ids():
         physical_shader,
         standard_shader,
     )
-    from algan.rendering.shaders.pbr_shaders import default_shader, null_shader
+    from algan.rendering.shaders.pbr_shaders import null_shader
 
     return {
         manim_shader: 0,
-        default_shader: 0,
         null_shader: 1,
         basic_material_shader: 1,
         lambert_shader: 2,

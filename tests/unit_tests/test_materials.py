@@ -47,6 +47,19 @@ from algan.rendering.shaders.materials import (
 
 _NUM_BASE_PARAMS = len(inspect.signature(ms.basic_material_shader).parameters)  # 9
 
+
+def test_fixed_param_count_constant_matches_the_signature():
+    """SHADER_FIXED_PARAM_COUNT is the convention's reference length.
+
+    ``set_shader`` slices a shader's own parameters off after it and the
+    renderer treats that many leading parameters as shader-independent, so a
+    constant that drifted from a real signature would silently re-slice every
+    custom shader's extras. Pinning it to ``basic_material_shader``'s actual
+    signature keeps the convention honest.
+    """
+    assert _NUM_BASE_PARAMS == ms.SHADER_FIXED_PARAM_COUNT
+    print("ok: SHADER_FIXED_PARAM_COUNT matches basic_material_shader's signature")
+
 ALL_MATERIALS = [
     MeshBasicMaterial,
     MeshLambertMaterial,
@@ -527,8 +540,8 @@ def test_legacy_pbr_shader_still_works():
     from algan.rendering.shaders.pbr_shaders import basic_pbr_shader, null_shader
 
     vloc, vnrm, alb, cam, light, lcol = _toy_geometry()
-    # basic_pbr_shader and null_shader don't use the memory arg (default_shader
-    # does, so it's exercised by the render pipeline rather than this unit test).
+    # basic_pbr_shader and null_shader don't use the memory arg, so None is a
+    # fine stand-in for it here.
     out = basic_pbr_shader(
         None, vloc, vnrm, alb[..., :4], cam, light, lcol, 1, 1, 0.5, 0.5
     )

@@ -147,11 +147,10 @@ from algan.rendering.shaders.material_shaders import (
 from algan.rendering.shaders.materials import *
 from algan.rendering.shaders.pbr_shaders import (
     basic_pbr_shader,
-    default_shader,
     null_shader,
 )
 
-SETTINGS.style.set(default_shader=default_shader)
+SETTINGS.style.set(default_material=DiffuseMaterial())
 from algan.rendering.raytracing.shading_taichi import (
     _ggx_distribution as ggx_distribution,
 )

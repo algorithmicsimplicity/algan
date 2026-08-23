@@ -381,7 +381,7 @@ class ManimMaterial(Material):
     an empty dict would leave that slot at its default and
     ``ManimMaterial(flat_shading=True)`` would silently do nothing.
 
-    :meth:`~.Scene.use_manim_defaults` will install this material as the
+    :meth:`~.Scene.use_manim_defaults` installs this material as the
     default for 3-D Mobs alongside the rig it sets up.
     """
 

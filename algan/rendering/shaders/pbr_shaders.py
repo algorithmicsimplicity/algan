@@ -6,7 +6,10 @@ colour. It runs before upload, once per vertex, which is cheap -- the trade-off
 is that highlights are interpolated across a triangle rather than evaluated at
 each pixel.
 
-:func:`default_shader` is what a Mob uses when no material is set.
+A Mob that sets no material of its own does not come here: it is shaded by
+:class:`~algan.rendering.shaders.materials.DiffuseMaterial`, Algan's default
+material, whose lighting shaders live in
+:mod:`algan.rendering.shaders.material_shaders`.
 :func:`null_shader` skips lighting entirely, leaving a Mob its own flat colour.
 :func:`basic_pbr_shader` is the metallic/roughness model the
 :class:`~algan.rendering.shaders.materials.MeshStandardMaterial` family builds on.
@@ -24,7 +27,6 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from algan.geometry.geometry import normalize
 from algan.utils.tensor_utils import dot_product
 
 
@@ -155,61 +157,6 @@ def basic_pbr_shader(
     # We clip the final color to prevent negative values, although PBR should not produce them.
     final_color = ambient + diffuse + specular
     return final_color.clamp_(min=0, max=1)
-
-
-def default_shader(
-    memory,
-    vertex_location,
-    vertex_normal,
-    albedo_color,
-    camera_location,
-    light_origin,
-    light_color,
-    light_intensity: float,
-    ambient_light_intensity: float,
-):
-    """Implements just diffuse lighting.
-
-    Parameters
-    ----------
-    vertex_location : (np.ndarray)
-        The 3D location of the vertex to be shaded.
-    vertex_normal : (np.ndarray)
-        The surface normal vector at the vertex point (need not be normalized).
-    albedo_color : (np.ndarray)
-        The albedo/base RGBG color of the material.
-    camera_location : (np.ndarray)
-        The 3D location of the camera/viewer.
-    light_origin : (np.ndarray)
-        The 3D location of the point light source.
-    light_color : (np.ndarray)
-        The RGB color of the light.
-    light_intensity : float
-        The intensity/brightness of the light source.
-    ambient_light_intensity : float
-        The intensity of ambient scene lighting, ranges from 0 (no light) to 1.
-
-    Returns
-    -------
-    np.ndarray
-        The final computed RGB color for the vertex.
-
-    """
-    incidences = torch.subtract(
-        vertex_location, light_origin, out=memory.get_tensor(vertex_location.shape)
-    )
-    incidences = normalize(incidences, dim=-1, p=2, memory=memory)
-    vertex_normal = normalize(vertex_normal, p=2, dim=-1, memory=memory)
-    dot = dot_product(incidences, vertex_normal, out=memory)
-    dot *= -1
-    diffuse_factor = (dot).relu_().pow_(5)
-    diffuse_factor *= 0.5
-    return torch.lerp(
-        albedo_color,
-        light_color,
-        diffuse_factor,
-        out=memory.get_tensor(albedo_color.shape),
-    )
 
 
 def null_shader(

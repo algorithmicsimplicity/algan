@@ -117,13 +117,10 @@ def _builtin_shader_to_stage():
         physical_shader,
         standard_shader,
     )
-    from algan.rendering.shaders.pbr_shaders import default_shader, null_shader
+    from algan.rendering.shaders.pbr_shaders import null_shader
 
     return {
         manim_shader: STAGE_MANIM,
-        # Kept alive until pbr_shaders.default_shader is deleted; both share
-        # material id 0, and the manim stage is what id 0 runs.
-        default_shader: STAGE_MANIM,
         null_shader: STAGE_UNLIT,
         basic_material_shader: STAGE_UNLIT,
         lambert_shader: STAGE_LAMBERT,

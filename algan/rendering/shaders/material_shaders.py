@@ -1,12 +1,12 @@
 """Lighting-model shader functions backing the Three.js-style material system.
 
 Each function follows the shader calling convention used throughout Algan (see
-:func:`algan.rendering.shaders.pbr_shaders.default_shader`): the first nine
-parameters are fixed (``memory``, ``vertex_location``, ``vertex_normal``,
-``albedo_color``, ``camera_location``, ``light_origin``, ``light_color``,
-``light_intensity``, ``ambient_light_intensity``) and any further parameters are
-the material's animatable properties. The renderer registers those extra
-parameters as animatable attributes on the mob (see
+:data:`SHADER_FIXED_PARAM_COUNT` below): the first nine parameters are fixed
+(``memory``, ``vertex_location``, ``vertex_normal``, ``albedo_color``,
+``camera_location``, ``light_origin``, ``light_color``, ``light_intensity``,
+``ambient_light_intensity``) and any further parameters are the material's
+animatable properties. The renderer registers those extra parameters as
+animatable attributes on the mob (see
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`).
 
 Channel layout
@@ -34,6 +34,17 @@ import torch.nn.functional as F
 
 from algan.utils.color_space import linear_to_srgb, srgb_to_linear
 from algan.utils.tensor_utils import dot_product
+
+#: Number of fixed leading parameters in the shader calling convention: the
+#: ``memory, vertex_location, vertex_normal, albedo_color, camera_location,
+#: light_origin, light_color, light_intensity, ambient_light_intensity``
+#: prefix every lighting-model shader declares before its own material
+#: parameters. This constant is the convention's reference -- the length
+#: ``set_shader`` slices a shader's extra parameters from and the length the
+#: renderer treats as shader-independent -- so it is pinned to a real
+#: signature by tests/unit_tests/test_materials.py, which asserts it equals
+#: ``len(inspect.signature(basic_material_shader).parameters)``.
+SHADER_FIXED_PARAM_COUNT = 9
 
 # Base ambient coefficient. The renderer always passes ``ambient_light_intensity``
 # as 1, so we scale it down here to avoid washing surfaces out to white and to
