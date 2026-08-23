@@ -808,9 +808,10 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     (``out*(1-w) + lc*w``) exactly; for many it stays a bounded blend (an
     area light's sample fan, or a key/fill/rim rig) instead of driving the
     colour toward the last light's, which is what the old sequential lerp did.
-    One light can still take the whole albedo, but only by delivering more
-    than twice unit radiance straight at the surface -- a blowout the legacy
-    lerp produced too, through ``acc`` clipping rather than through the fade.
+    One light can still take the whole albedo, but only at a share of 1 or
+    more, which needs peak radiance of 2 with the light straight on -- a
+    blowout the legacy lerp produced too, through ``acc`` clipping rather
+    than through the fade.
 
     **Summing the shares instead is what silenced ``color=``.** The total was
     clamped at 1, and at 1 the albedo term was multiplied by zero: the mob
@@ -822,10 +823,11 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     colour" because a mob that *has* a material shades through one of the
     stages below, all of which multiply the albedo rather than displacing it.
 
-    A share is weighted by the light's own radiance, as the illumination
-    budget ``wsum`` already was in every other stage, and for the reason
-    ``_energy_scale`` gives: counting geometry alone charges a rig for how
-    many lights it has rather than how much light they emit. Without it a
+    A share is weighted by the light's own radiance. Every other stage's
+    illumination budget already was -- so was this stage's, which sat one
+    line above the fade and counted the same rows differently -- and for the
+    reason ``_energy_scale`` gives: counting geometry alone charges a rig for
+    how many lights it has rather than how much light they emit. Without it a
     0.3-intensity hemisphere fill displaced exactly as much albedo as a white
     key light -- intensity did not enter the fade at all. It also settles two
     things that used to need their own machinery: a light row's *power
