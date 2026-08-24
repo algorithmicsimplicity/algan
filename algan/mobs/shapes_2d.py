@@ -551,6 +551,7 @@ class TriangleVertices(Mob):
         # (``Mob.closed_shell``) when its geometry proves one.
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
+        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
         return primitive
 
 

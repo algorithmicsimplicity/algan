@@ -43,7 +43,11 @@ from algan.rendering.raytracing.settings import (
     _shader_is_core,
     _shader_material_id,
 )
-from algan.rendering.raytracing.shading_taichi import _MAT_ONE_SIDED, MAT_W
+from algan.rendering.raytracing.shading_taichi import (
+    _MAT_NO_SHADOW_RECEIVE,
+    _MAT_ONE_SIDED,
+    MAT_W,
+)
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _unify_time
 from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
@@ -298,6 +302,33 @@ def _mesh_ids_from_collection(members, counts):
     return torch.cat(blocks).contiguous(), next_id
 
 
+def shadow_cast_flag(no_shadow_cast, num_prims, device):
+    """Per-primitive "this geometry blocks light" flag, ``[1, N]`` bool.
+
+    Reduces the packed per-corner ``no_shadow_cast`` declaration
+    (:meth:`RayTracedTrianglePrimitive.declare_shadow_flags`) to one bool per
+    primitive, which is the granularity the BVH leaf word carries: a leaf holds
+    a whole primitive, so a flag that varied across a triangle's corners could
+    not be represented there. Taken amax over corners and frames, so a
+    primitive that declines to cast at ANY authored moment declines everywhere
+    -- the flag is documented as fixed for the render, and reducing this way
+    makes that true of the packed value rather than merely asserted of the API.
+
+    ``None`` (nothing declared -- a primitive built before the flags, or one
+    whose collection merge filled the column with the 0.0 default) is every
+    primitive casting, which is what they all did before, and so is the whole
+    feature switched off (``PER_MOB_SHADOW_FLAGS``): with nothing to stamp, the
+    leaf words are what they were before the flags existed.
+    """
+    if no_shadow_cast is None or not rt_settings.PER_MOB_SHADOW_FLAGS:
+        return torch.ones((1, num_prims), dtype=torch.bool, device=device)
+    v = no_shadow_cast.float()
+    if v.dim() >= 4:  # [T?, N, 3, 1] -> per-primitive
+        v = v[:, :, 0, :]
+    blocked = v.reshape(v.shape[0], v.shape[1], -1).amax(-1).amax(0) > 0.5
+    return (~blocked).reshape(1, -1).contiguous()
+
+
 def closed_shell_ceiling_flag(closed_shell, transmission):
     """Fold a closed-shell declaration with its transmission exemption.
 
@@ -377,6 +408,15 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # closed-shell coverage ceiling reads it out of the merged scene as
     # ``tri_closed``, folded there with the transmission exemption (a closed
     # shell that transmits refracts through both shells and must keep them).
+    # ``no_shadow_cast`` / ``no_shadow_receive`` ride here for the same reasons
+    # again: the MOB declares them (:meth:`declare_shadow_flags`), a member that
+    # says nothing takes the 0.0 fill, and the dice carries them to every diced
+    # triangle. Both are spelled NEGATIVELY -- 0.0 is "casts" and "receives",
+    # what every mob did before the flags existed -- because that 0.0 fill and
+    # the material block's padding rule both require a zero to mean the old
+    # behaviour. ``no_shadow_receive`` is packed into the material block beside
+    # ``one_sided``; ``no_shadow_cast`` is consumed on the HOST, where it
+    # becomes the BVH leaf word's caster bit (``_rt_frame_casts``).
     _surface_params = (
         "reflectivity",
         "roughness",
@@ -384,6 +424,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "transmission",
         "one_sided",
         "closed_shell",
+        "no_shadow_cast",
+        "no_shadow_receive",
     )
 
     def __init__(
@@ -508,6 +550,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # it declares ``mesh_key``.
             self.declare_one_sided(False)
             self.declare_closed_shell(False)
+            self.declare_shadow_flags(True, True)
 
     def declare_one_sided(self, one_sided=True):
         """Declare whether this primitive's hits are shaded from one side only.
@@ -544,6 +587,31 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """
         self.closed_shell = torch.full_like(
             self.colors[:1, ..., :1], 1.0 if closed else 0.0
+        )
+        return self
+
+    def declare_shadow_flags(self, casts=True, receives=True):
+        """Declare whether this primitive casts and receives shadows.
+
+        Called by the mob that built the primitive, beside
+        :meth:`declare_one_sided`, from
+        :attr:`~algan.animatable_base.mob.Mob.casts_shadows` and
+        :attr:`~algan.animatable_base.mob.Mob.receives_shadows`.
+
+        Stored NEGATED and per corner, matching the other ``_surface_params``:
+        the collection merge and the logical-PN dice fill an absent member with
+        0.0, and 0.0 has to mean "casts" / "receives", the behaviour that
+        existed before the flags. The two land in different places downstream --
+        ``no_shadow_receive`` in the material block that ``_run_frag_pipeline``
+        already holds at the hit, ``no_shadow_cast`` in the BVH leaf word the
+        shadow traversal already loads -- but both are declared here, once,
+        because a mob declares them together.
+        """
+        self.no_shadow_cast = torch.full_like(
+            self.colors[:1, ..., :1], 0.0 if casts else 1.0
+        )
+        self.no_shadow_receive = torch.full_like(
+            self.colors[:1, ..., :1], 0.0 if receives else 1.0
         )
         return self
 
@@ -763,7 +831,14 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # ``_run_frag_pipeline`` already has in hand at the hit.
         one_sided = getattr(self, "one_sided", None)
         if one_sided is not None:
-            pairs.append((None, per_triangle(one_sided)))
+            pairs.append((_MAT_ONE_SIDED, per_triangle(one_sided)))
+        # Beside it, and for the same reason: whether shadows cast onto this
+        # geometry darken it (``declare_shadow_flags``). The CASTING half of
+        # that declaration is not here -- it never reaches a shading stage, only
+        # the BVH leaf word (``_rt_frame_casts``).
+        no_shadow_receive = getattr(self, "no_shadow_receive", None)
+        if no_shadow_receive is not None and rt_settings.PER_MOB_SHADOW_FLAGS:
+            pairs.append((_MAT_NO_SHADOW_RECEIVE, per_triangle(no_shadow_receive)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
         mat = (
             torch.tensor(_MAT_DEFAULTS, device=device)
@@ -778,7 +853,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 v = v.reshape(-1).expand(width)
             mat[:, :, start : start + width] = v.to(device)
         for name, v in pairs:
-            start, width = (_MAT_ONE_SIDED, 1) if name is None else _MAT_SLOTS[name]
+            # A geometry-declared entry addresses its slot by index (it has no
+            # material-property name to look up); a material's addresses it by
+            # name. Both are single-slot or vector writes into the same block.
+            start, width = (name, 1) if isinstance(name, int) else _MAT_SLOTS[name]
             if v.shape[-1] != width:  # broadcast a scalar into a vector slot
                 v = v.expand(*v.shape[:-1], width)
             mat[:, :, start : start + width] = v
@@ -952,6 +1030,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         )
         visible = visible.squeeze(-1)
         self._rt_frame_opaque = opaque.squeeze(-1).contiguous()
+        # Rides beside the opacity flag because it has the same destination:
+        # the BVH leaf word, where a bit the shadow traversal already loads
+        # says whether this primitive may block a shadow ray.
+        self._rt_frame_casts = shadow_cast_flag(
+            getattr(self, "no_shadow_cast", None), lo.shape[1], lo.device
+        )
         self._rt_frame_lo = torch.where(
             visible.unsqueeze(-1), lo, torch.tensor(EMPTY_LO, device=lo.device)
         ).contiguous()
@@ -2577,10 +2661,37 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     # non-PBR), ``refractive_index`` is an unsigned magnitude feeding dielectric
     # F0, and ``transmission`` says how much light passes through. A circuit
     # transmits as a thin pane rather than refracting (see ``circuit_scatter``).
-    _surface_params = ("reflectivity", "roughness", "refractive_index", "transmission")
+    # ``no_shadow_cast`` rides here so the collection merge carries it: a
+    # circuit is never a shadow RECEIVER (the renderer draws 2-D geometry
+    # unlit, and an unlit hit builds no shadow event), but it is very much a
+    # shadow CASTER -- the bezier tree is walked by every shadow ray -- so only
+    # the casting half of the declaration is meaningful here. A member that
+    # says nothing takes the 0.0 fill below, which is "casts", as before.
+    _surface_params = (
+        "reflectivity",
+        "roughness",
+        "refractive_index",
+        "transmission",
+        "no_shadow_cast",
+    )
 
     # Non-PBR sentinel for metalness; the other channels are inert at 0.
     _surface_param_fill = {"reflectivity": -1.0}
+
+    def declare_shadow_flags(self, casts=True, receives=True):
+        """Declare whether this circuit casts a shadow.
+
+        The circuit counterpart of
+        :meth:`RayTracedTrianglePrimitive.declare_shadow_flags`, stored the same
+        way (negated, so the merge's 0.0 fill means "casts"). ``receives`` is
+        accepted so a mob can declare both without knowing which primitive kind
+        it built, and deliberately ignored: 2-D geometry is drawn unlit and
+        builds no shadow event, so there is no shadow for it to decline.
+        """
+        self.no_shadow_cast = torch.full_like(
+            self.mob_center[..., :1], 0.0 if casts else 1.0
+        )
+        return self
 
     def __init__(
         self,
@@ -3194,6 +3305,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         if not self.filled:
             opaque = torch.zeros_like(opaque)
         self._rt_frame_opaque = opaque.contiguous()
+        # See the triangle primitive's assignment: same flag, same destination.
+        self._rt_frame_casts = shadow_cast_flag(
+            getattr(self, "no_shadow_cast", None), lo.shape[1], device
+        )
         lo = torch.where(
             visible.unsqueeze(-1), lo, torch.tensor(EMPTY_LO, device=device)
         )

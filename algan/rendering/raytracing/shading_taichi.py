@@ -51,6 +51,8 @@ single-stage pipeline)::
     bounce loop, not by the shading stages)
     30 num_bands (toon band count)     31 near   32 far (depth ramp endpoints;
     both matching MeshDepthMaterial's defaults)
+    33 no_shadow_receive (declared by the GEOMETRY like slot 26 -- see
+    ``_MAT_NO_SHADOW_RECEIVE``)
 
 Every slot above carries a 0.0 default that means "the behaviour that existed
 before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
@@ -73,7 +75,7 @@ from algan.rendering.raytracing.color_space_taichi import (
 )
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 33
+MAT_W = 34
 
 # Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
 # so a back-facing hit is shaded with its own normal instead of the viewer's
@@ -108,6 +110,17 @@ _MAT_NUM_BANDS = 30
 # Same argument as _MAT_NUM_BANDS: read only by _stage_depth under its own id.
 _MAT_NEAR = 31
 _MAT_FAR = 32
+
+# Slot 33: 1.0 when the primitive's mob declared that it is not darkened by
+# shadows cast onto it (``Mob.receives_shadows`` False). Declared by the MOB,
+# like slot 26, so it is not in ``_MAT_SLOTS`` either. Spelled negatively for
+# the padding rule above: 0.0 has to mean "receives shadows", which is what
+# every primitive did before the flag, and is what a custom fragment pipeline's
+# zero-padded block must therefore read as. Consumed where a shadow ray would
+# otherwise be SPAWNED -- the sheet route's mode-1 event build and the classic
+# wavefront's inline shadow block -- rather than at shading time, so opting out
+# costs no shadow ray at all instead of tracing one and discarding it.
+_MAT_NO_SHADOW_RECEIVE = 33
 
 # Built-in single-stage pipeline ids.
 _MID_MANIM = 0

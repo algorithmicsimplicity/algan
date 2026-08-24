@@ -82,6 +82,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shade_tri_hit,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_NO_SHADOW_RECEIVE,
     _MID_UNLIT,
     _reflect_frame,
     _shadow_terminator_delta,
@@ -444,7 +445,24 @@ def sheet_resolve_shade(
                     # with the material pipeline id above it, and the pixel
                     # footprint for soft sub-pixel sampling.
                     pid_e = tri_mat_id[f % tri_mat_id.shape[0], prim]
-                    if pid_e != _MID_UNLIT:
+                    # A mob that declared receives_shadows False is shaded as
+                    # though every light reached it, so it builds no event and
+                    # traces no shadow ray -- opting out is cheaper than the
+                    # default rather than a query whose answer is discarded.
+                    # The width test is not paranoia: a scene whose every
+                    # primitive carries a CUSTOM fragment pipeline packs a
+                    # block of that pipeline's own width, which can be narrower
+                    # than the built-in layout (see utils._cat_mat_blocks, and
+                    # the same reasoning that keeps _run_frag_pipeline's
+                    # one_sided read on the built-in branch). Such a scene
+                    # cannot opt out, and reads nothing out of bounds to find
+                    # that out.
+                    recv = 1
+                    if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
+                        if tri_mat[f % tri_mat.shape[0], prim,
+                                   _MAT_NO_SHADOW_RECEIVE] > 0.5:
+                            recv = 0
+                    if (pid_e != _MID_UNLIT) and (recv == 1):
                         snrm, fnrm = _tri_shadow_normals(
                             f, prim, a, b, surf_rd, tri_pos, tri_norm,
                             tri_uvs, tri_tex_meta, textures,

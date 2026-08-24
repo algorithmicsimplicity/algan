@@ -97,7 +97,16 @@ MAX_DEPTH = 16
 LINK_INVALID = -1
 LINK_LEAF_BIT = -2147483648  # 1 << 31 as int32
 LINK_OPAQUE_BIT = 1 << 30
-LINK_PRIM_MASK = (1 << 30) - 1
+# Bit 29: set when the leaf's primitive declared that it casts no shadow
+# (``Mob.casts_shadows`` False). The link word is what the traversal already
+# loads to find the leaf's primitive, so a non-caster is rejected here for no
+# additional memory traffic -- the same argument as ``stbvh.LEAF_NOCAST_BIT``,
+# which is that tree kind's spelling of this flag. Unlike the STBVH's word this
+# one had no spare bit, so the primitive index gives one up: 2^29 primitives is
+# far beyond any batch the rest of the renderer can hold, and the builder's
+# existing range guard below now enforces the narrower bound.
+LINK_NOCAST_BIT = 1 << 29
+LINK_PRIM_MASK = (1 << 29) - 1
 
 
 class RefitBVH(STBVH):
@@ -260,7 +269,13 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
 
 
 def build_refit_bvh(
-    frame_lo, frame_hi, num_frames=None, opaque=None, tightness=None, builder=None
+    frame_lo,
+    frame_hi,
+    num_frames=None,
+    opaque=None,
+    tightness=None,
+    builder=None,
+    casts=None,
 ):
     """Build a shared-topology binned-SAH refit BVH from per-frame bounds.
 
@@ -288,7 +303,7 @@ def build_refit_bvh(
     M = int(pids.shape[0])
     if M >= LINK_PRIM_MASK:
         raise ValueError(
-            f"refit BVH link words carry 30-bit primitive indices; got {M}"
+            f"refit BVH link words carry 29-bit primitive indices; got {M}"
         )
 
     # Batch-union boxes + centroids of the ever-visible primitives (the SAH
@@ -411,6 +426,15 @@ def build_refit_bvh(
         opq = torch.zeros((1, N), dtype=torch.bool, device=device)
     else:
         opq = opaque
+    # True where the primitive casts no shadow, [N]. Reduced with ``all`` over
+    # frames like the STBVH's stamp: the flag is fixed for the render, so this
+    # is exact. All-casting (the common case) leaves ``leaf_w`` bit-for-bit what
+    # it was before the flag existed, because the OR term is then a constant 0.
+    if casts is None:
+        nocast = torch.zeros((N,), dtype=torch.int32, device=device)
+    else:
+        c = casts.all(0) if casts.dim() == 2 else casts
+        nocast = (~c).to(torch.int32).to(device)
     nb_lo = torch.empty((Tb, B, 3), device=device)
     nb_hi = torch.empty((Tb, B, 3), device=device)
     ch_lo = torch.empty((Tb, B, a, 3), device=device)
@@ -448,7 +472,13 @@ def build_refit_bvh(
         leaf_opq = opq[:, safe_prim].view(opq.shape[0], -1, a).to(torch.int32)
         if leaf_opq.shape[0] != Tb:
             leaf_opq = leaf_opq.expand(Tb, -1, -1)
-        leaf_w = ref.to(torch.int32) | LINK_LEAF_BIT | (leaf_opq * LINK_OPAQUE_BIT)
+        leaf_nocast = nocast[safe_prim].view(1, -1, a)
+        leaf_w = (
+            ref.to(torch.int32)
+            | LINK_LEAF_BIT
+            | (leaf_opq * LINK_OPAQUE_BIT)
+            | (leaf_nocast * LINK_NOCAST_BIT)
+        )
         w = torch.where(
             kind.view(1, -1, a) == 1,
             leaf_w,

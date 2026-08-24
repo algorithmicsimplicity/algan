@@ -63,6 +63,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
+    _MAT_NO_SHADOW_RECEIVE,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -1915,7 +1916,10 @@ def wavefront_traverse(
                 # Camera rays carry no source identity: (-1, _, 0) compiles
                 # the identity-aware acceptance floor out entirely. The
                 # forwarded tri_pos is never read.
-                -1, -1, 0.0, 0.0, tri_pos, 0)
+                -1, -1, 0.0, 0.0, tri_pos, 0,
+                # Not a shadow ray, so a non-casting primitive stays
+                # visible to it and the leaf test compiles out.
+                0)
             num_hits = found
             if found != 0:
                 kb_t[0] = t_hit
@@ -1939,7 +1943,10 @@ def wavefront_traverse(
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
                         edges_2d, edge_accel,
-                        -1, -1, 0.0, 0.0, tri_pos, 0)
+                        -1, -1, 0.0, 0.0, tri_pos, 0,
+                        # Not a shadow ray, so a non-casting primitive stays
+                        # visible to it and the leaf test compiles out.
+                        0)
                 if opq_found == 0:
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
@@ -1952,7 +1959,10 @@ def wavefront_traverse(
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                 circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
                 initial_opq_t, initial_opq_layer,
-                -1, -1, 0.0, 0.0, tri_pos, 0)
+                -1, -1, 0.0, 0.0, tri_pos, 0,
+                # Not a shadow ray, so a non-casting primitive stays
+                # visible to it and the leaf test compiles out.
+                0)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
         # commits its accumulated colour + leftover (background) throughput to
@@ -2094,7 +2104,10 @@ def wavefront_traverse_events(
                 # No source identity on camera rays: (-1, _, 0) compiles the
                 # identity-aware acceptance floor out entirely; the forwarded
                 # tri_pos is never read.
-                -1, -1, 0.0, 0.0, tri_pos, 0)
+                -1, -1, 0.0, 0.0, tri_pos, 0,
+                # Not a shadow ray, so a non-casting primitive stays
+                # visible to it and the leaf test compiles out.
+                0)
             num_hits = found
             if found != 0:
                 kb_t[0] = t_hit
@@ -2118,7 +2131,10 @@ def wavefront_traverse_events(
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
                         edges_2d, edge_accel,
-                        -1, -1, 0.0, 0.0, tri_pos, 0)
+                        -1, -1, 0.0, 0.0, tri_pos, 0,
+                        # Not a shadow ray, so a non-casting primitive stays
+                        # visible to it and the leaf test compiles out.
+                        0)
                 if opq_found == 0:
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
@@ -2131,7 +2147,10 @@ def wavefront_traverse_events(
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
                 circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
                 initial_opq_t, initial_opq_layer,
-                -1, -1, 0.0, 0.0, tri_pos, 0)
+                -1, -1, 0.0, 0.0, tri_pos, 0,
+                # Not a shadow ray, so a non-casting primitive stays
+                # visible to it and the leaf test compiles out.
+                0)
         rs_int[r, 3] = num_hits
         if num_hits > 0:
             # Surface events are indexed by compacted active-queue ordinal,
@@ -2665,7 +2684,21 @@ def wavefront_shade(
                         fan_geom = 0
                         if htype == 1:
                             pid_s = tri_mat_id[f % tri_mat_id.shape[0], prim]
-                            if pid_s != _MID_UNLIT:
+                            # ...and a hit whose mob declared
+                            # receives_shadows False never consumes ``vis``
+                            # either: it is shaded as though every light
+                            # reached it, so the fan is skipped for the same
+                            # reason an unlit hit skips it. The width test
+                            # mirrors the sheet route's (see
+                            # sheet_resolve_taichi): a scene of nothing but
+                            # custom fragment pipelines packs a block that may
+                            # be narrower than the built-in layout.
+                            recv_s = 1
+                            if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
+                                if tri_mat[f % tri_mat.shape[0], prim,
+                                           _MAT_NO_SHADOW_RECEIVE] > 0.5:
+                                    recv_s = 0
+                            if (pid_s != _MID_UNLIT) and (recv_s == 1):
                                 do_fan = 1
                                 if pid_s < _USER_PIPELINE_BASE:
                                     fan_exact = 0

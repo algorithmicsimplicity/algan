@@ -1208,6 +1208,11 @@ class BezierCircuitCubic(Mob):
             ),
         )
         prim.num_texture_points = self.num_texture_points
+        # A circuit casts a shadow like anything else, so it honours
+        # Mob.casts_shadows; receives_shadows is accepted and inert here
+        # (2-D geometry renders unlit and receives no shadow to begin
+        # with) -- see the primitive's declare_shadow_flags.
+        prim.declare_shadow_flags(*self.resolved_shadow_flags())
         return prim
 
     @animated_function(animated_args={"t": 0.0})

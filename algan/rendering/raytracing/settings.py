@@ -1560,6 +1560,27 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 SOLID_SHELL_ALPHA = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 
 
+# Per-mob shadow flags (``Mob.casts_shadows`` / ``Mob.receives_shadows``).
+#
+# OFF restores the pre-flag renderer exactly, and does it entirely on the HOST:
+# the caster bit is simply not stamped into the BVH leaf words, and the material
+# block's ``no_shadow_receive`` slot is left at its 0.0 default. Both kernel
+# tests then read a bit that is never set and a slot that is always zero, which
+# is bit-for-bit what they did before the flags existed -- so no kernel variant
+# changes and there is no ti.static gate to go stale mid-process (CLAUDE.md's
+# hazard). The flags stay settable on a Mob with this off; they just do nothing,
+# which is the same thing ``SETTINGS.raytracing.shadows = False`` does to them.
+PER_MOB_SHADOW_FLAGS = env_flag("ALGAN_PER_MOB_SHADOW_FLAGS", True)
+
+
+def set_per_mob_shadow_flags(enabled):
+    """Toggle the per-mob shadow flags (see ``PER_MOB_SHADOW_FLAGS``).
+    Takes effect at the next batch's scene merge.
+    """
+    global PER_MOB_SHADOW_FLAGS
+    PER_MOB_SHADOW_FLAGS = bool(enabled)
+
+
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
 # triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
 # A space-filling curve is cheap but packs spatially distant instances into the
@@ -2619,10 +2640,15 @@ _MAT_DEFAULTS = [
     3.0,
     0.1,
     100.0,
+    # 33 no_shadow_receive: 0.0 is "this surface is darkened by shadows cast
+    # onto it", what every mob did before Mob.receives_shadows existed
+    # (shading_taichi._MAT_NO_SHADOW_RECEIVE).
+    0.0,
 ]
 # Material-property name -> (start slot, width) in the canonical block.
-# ``one_sided`` (slot 26) is deliberately absent: it is declared by the mob's
-# geometry, not by its material, and ``_pack_material`` writes it directly.
+# ``one_sided`` (slot 26) and ``no_shadow_receive`` (slot 33) are deliberately
+# absent: both are declared by the mob's geometry, not by its material, and
+# ``_pack_material`` writes them directly.
 _MAT_SLOTS = {
     "emissive": (0, 3),
     "emissive_intensity": (3, 1),
