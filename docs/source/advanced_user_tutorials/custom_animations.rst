@@ -95,25 +95,6 @@ value:
 
     Scene.save_video()
 
-Batching with ``unique_args``
------------------------------
-
-Algan batches recorded function applications so that many Mobs running the same
-animated function are evaluated together. ``unique_args`` names the arguments
-that must *not* be batched across: two calls with different values for a unique
-argument are treated as two entirely separate functions. Arguments named in
-``unique_args`` must take string values only.
-
-.. code-block:: python
-
-    @animated_function(animated_args={'t': 0}, unique_args=('mode',))
-    def wobble(mob, t, mode='sine'):
-        ...
-
-You need this only when the function's *shape* changes with an argument rather
-than its numbers -- a branch on a mode string, say. Ordinary numeric arguments
-batch fine.
-
 See Also
 ========
 

@@ -44,7 +44,7 @@ Let's break down how this works:
 * :meth:`~algan.animatable_base.animatable.Animatable.add_updater` attaches a function to the Mob and runs it on every frame.
 * The updater function takes two parameters: the **Mob** itself and the **elapsed time** ``t`` in seconds since the updater was added.
 * :meth:`~algan.animatable_base.animatable.Animatable.add_updater` returns an integer ID,
-  which you pass to :meth:`~algan.animatable_base.animatable.Animatable.remove_updater` to stop the updater later.
+  which you can pass to :meth:`~algan.animatable_base.animatable.Animatable.remove_updater` to stop the updater later.
 
 Two important things to notice here:
 
@@ -115,12 +115,3 @@ and the updater is applied on top of that result.
       a point on the timeline you choose yourself.
     * :doc:`../advanced_user_tutorials/custom_animations` -- when what you want
       *is* a fixed-duration animation, but not one the built-ins provide.
-
-Where To Next
-=============
-
-* :doc:`three_d_basics` -- the last of the new-user tutorials: lights, cameras
-  and 3-D shapes.
-* :doc:`../galleries/built_in_animations` -- ready-made animations, including
-  :class:`~algan.animations.changing.AnimatedBoundary`, which is an
-  indefinitely-repeating effect like an updater.

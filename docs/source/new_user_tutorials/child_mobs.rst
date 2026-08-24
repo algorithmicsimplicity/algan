@@ -174,13 +174,3 @@ keeping a separate list:
     group.arrange_in_grid()
 
     Scene.save_video()
-
-Where To Next
-=============
-
-* :doc:`updaters` -- relations between mobs that hold continuously, rather than
-  for a fixed duration.
-* :doc:`../advanced_user_tutorials/positioning_and_layout` -- every placement,
-  sizing and arrangement method.
-* :doc:`../advanced_user_tutorials/extending_algan` -- packing many objects into
-  a single Mob, when a Group of thousands becomes too slow.

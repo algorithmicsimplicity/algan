@@ -2,11 +2,10 @@
 Importing From Manim
 ====================
 
-Algan ships a good collection of Mobs, but nowhere near as extensive a one as
-`Manim's <https://docs.manim.community/en/stable/>`_. So Algan lets you import
-Manim Mobjects directly and animate them as Algan Mobs, which gives you Manim's
-whole geometry library -- axes, plots, number planes, braces, tables, graphs,
-matrices, code blocks -- for free.
+Algan supports all of the same Mobjects that Manim does
+`Manim's <https://docs.manim.community/en/stable/>`_, implemented as native Algan mobs.
+If you prefer, you can also create Mobjects using Manim
+and then import them to Algan using :class:`~.ManimMob`.
 
 Manim is a dependency of Algan, so ``import manim`` works out of the box; there
 is nothing extra to install.

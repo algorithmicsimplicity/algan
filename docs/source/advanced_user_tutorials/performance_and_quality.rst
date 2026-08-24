@@ -20,33 +20,6 @@ Passing a preset to :meth:`~algan.scene.Scene.save_video` applies it to that ren
 restores the Scene's own settings afterwards, so you never have to remember to put
 it back.
 
-The Fast Feedback Loop
-======================
-
-Before tuning any renderer setting, get rid of the fixed costs. A fresh
-``python scene.py`` pays several seconds of library import plus Taichi kernel
-preparation before the first pixel appears -- roughly twenty seconds in total.
-The :doc:`render daemon <the_render_daemon>` pays that once and then re-runs your
-script on demand, so a re-render costs only the render itself: around a second
-for a simple scene.
-
-You get this without doing anything -- the first ``python scene.py`` starts a
-daemon in the background and every later run finds it. Launch one by hand when
-you want a terminal you can watch and an Enter-to-re-render loop:
-
-.. code-block:: bash
-
-    python -m algan.daemon
-
-.. important::
-
-    Never edit Algan's own ``*_taichi.py`` kernel sources while a render *is
-    running* -- the JIT reads them at first launch and can compile half-edited
-    code. Between runs you are covered: the daemon fingerprints every Algan
-    source file and shuts itself down once any of them changes, so the next run
-    executes in a fresh process. You still pay the cold start, and a kernel edit
-    still pays a full recompile.
-
 Video Settings
 ==============
 

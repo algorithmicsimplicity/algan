@@ -78,10 +78,9 @@ into the color you assign:
     circle = Circle().spawn()
 
     circle.color = BLUE                     # leaves glow and opacity alone
-    circle.glow = 0.5                       # ... or set them separately
-    circle.opacity = 0.5
+    circle.opacity = 0.5                    # ... or set them separately
 
-    circle.color = GREEN.set_opacity(1.0)   # ... or together, in one animation
+    circle.color = GREEN.set_glow(0.5)   # ... or together, in one animation
 
     Scene.save_video()
 
@@ -110,7 +109,9 @@ Most of the time, these are what you will use.
     pentagon.rotate(360, OUT)
     pentagon.rotate(360, UP)
     pentagon.rotate(360, OUT, about_point=ORIGIN)
+    pentagon.scale(2)
     pentagon = pentagon.become(Circle(add_to_scene=False))
+    pentagon.wait(2)
 
     Scene.save_video()
 
@@ -128,9 +129,6 @@ The methods used above:
   Build the target with ``add_to_scene=False``: it is only there to say what shape
   to become, and is never itself drawn on screen. Without that flag Algan registers it as a
   Mob you meant to show, and warns that you never spawned it.
-
-Two more useful ones:
-
 * :meth:`~algan.animatable_base.mob.Mob.scale` grows or shrinks the Mob: ``pentagon.scale(2)`` doubles its size.
 * :meth:`~algan.animatable_base.animatable.Animatable.wait` holds the Mob still: ``pentagon.wait(2)`` leaves two
   seconds of nothing happening. ``Scene.wait(2)`` also does the same thing.
@@ -147,12 +145,3 @@ The :class:`~algan.animatable_base.mob.Mob` reference lists every method.
       animation of your own with
       :func:`~algan.animatable_base.animatable.animated_function`,
       for anything the built-ins do not cover.
-
-Where To Next
-=============
-
-* :doc:`combining_animations` -- playing animations at the same time, at
-  different speeds, with different easing.
-* :doc:`../galleries/mob_gallery` -- every Mob these methods apply to.
-* :doc:`../advanced_user_tutorials/positioning_and_layout` -- the full placement
-  and sizing catalogue.

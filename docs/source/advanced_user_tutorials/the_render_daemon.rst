@@ -13,7 +13,7 @@ its kernels already compiled. When you import Algan in a script, the client half
 of the daemon looks for one that is already running and, if it finds one, hands
 the script over to it. If none is found, Algan launches one in the background.
 Either way, the start-up cost is paid once and every later run begins rendering
-almost immediately -- about a second for a simple scene.
+almost immediately.
 
 Nothing is required of you to get this. A plain ``python scene.py`` uses it.
 

@@ -174,9 +174,9 @@ You can pass a different one to any context:
 
     from algan import *
 
-    squares = [Square(color=c).scale(0.4) for c in (BLUE, GREEN, YELLOW)]
-    group = Group(squares)
-    group.arrange_in_line(DOWN, buffer=0.8).move(LEFT * 3).spawn()
+    with Off():
+        squares = [Square(color=c).scale(0.4).move((i-1)*DOWN*1.5 + LEFT*3).spawn()
+                        for i, c in enumerate((BLUE, GREEN, YELLOW))]
 
     funcs = (rate_funcs.identity, rate_funcs.smooth, rate_funcs.ease_out_quintic)
     with Sync(run_time=2):
@@ -247,12 +247,3 @@ with the parent context's easing rather than replacing it.
     * :doc:`../advanced_user_tutorials/animating_out_of_order` -- writing
       animations to a point on the timeline of your own choosing, for when each
       Mob's start time is a function of something about that Mob.
-
-Where To Next
-=============
-
-* :doc:`child_mobs` -- animating a whole collection of mobs as one.
-* :doc:`../galleries/built_in_animations` -- ready-made animations that compose
-  with every context on this page.
-* :doc:`../advanced_user_tutorials/custom_animations` -- writing an animation of
-  your own when no combination of the built-ins does the job.

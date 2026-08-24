@@ -200,8 +200,8 @@ that material's properties become animatable attributes of the mob, so
     * :doc:`../advanced_user_tutorials/reflections_and_glass` -- what
       ``metalness``, ``roughness`` and ``transmission`` do to rays.
 
-Where To Next
-=============
+More 3-D
+========
 
 3-D rendering is too broad a topic to cover in one tutorial, so if you want to
 learn more, these advanced tutorials pick up where this one stops:
@@ -219,4 +219,3 @@ learn more, these advanced tutorials pick up where this one stops:
 * :doc:`../advanced_user_tutorials/renderer_limitations` -- what the renderer
   does not do, and where its approximations show.
 
-Or carry on to :doc:`where_to` for the rest of what Algan can do.

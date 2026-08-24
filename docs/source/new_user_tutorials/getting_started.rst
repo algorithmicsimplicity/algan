@@ -100,25 +100,6 @@ in your script and render them into a video file with the given name.
     :class:`~algan.mobs.text.Tex`, per-glyph animation, the hand-writing effect
     and animated numbers.
 
-Naming your mobs
-================
-
-Every example in this documentation names a mob after *what it is* --
-``text``, ``square``, ``circle``, ``camera``. That is worth copying. A scene
-script is mostly a sequence of calls on names you chose, so ``circle.move(UP)``
-reads as what it does where ``mob1.move(UP)`` does not, and when a scene grows
-to a dozen objects the names are the only thing keeping it readable.
-
-Making it faster
-================
-
-The first run of an Algan script pays about twenty seconds of start-up: importing
-Torch and Taichi, and preparing the render kernels. You do not pay it twice.
-Algan keeps a warm background process around and re-runs your script on it, so
-every later run starts rendering almost immediately. Nothing is required of you
--- it happens on the first run -- but :doc:`../advanced_user_tutorials/the_render_daemon`
-explains what it is doing and how to control it.
-
 Where To Next
 =============
 
@@ -127,5 +108,3 @@ Where To Next
 * :doc:`../galleries/mob_gallery` -- see all of Algan's available mobs.
 * :doc:`../advanced_user_tutorials/saving_videos_and_images` -- customize the
   output file and the video quality.
-* :doc:`../manim_migration_guide` -- if you already know Manim, this maps what
-  you know onto Algan.
