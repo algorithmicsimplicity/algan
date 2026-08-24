@@ -8,11 +8,17 @@ The two overlap in one place and are otherwise complementary: the empirical pass
 found the crashes and the wrong pictures, the source pass found the endpoint
 properties that silently do not travel.
 
-The standard used throughout is **the target**. A morph that finishes has to
-leave the Scene holding what spawning the target alone would have held: the same
-geometry, the same fill and shading, and no Mob the target would not have
-registered. That is measurable in pixels, and where a claim below has a number
-attached, it was measured that way rather than reasoned about.
+A **third pass** was added later and works to a different standard: it renders
+one whole scene and reads it frame by frame, because the first two passes both
+compared endpoints and three defects lived entirely between them. Its findings
+are 14-18, and it ran its own parallel Ox audit (`OX_FILL_MORPH_AUDIT.md`) on
+the hardest of them.
+
+The standard used through findings 1-13 is **the target**. A morph that finishes
+has to leave the Scene holding what spawning the target alone would have held:
+the same geometry, the same fill and shading, and no Mob the target would not
+have registered. That is measurable in pixels, and where a claim below has a
+number attached, it was measured that way rather than reasoned about.
 
 ## How it was measured
 
@@ -290,6 +296,31 @@ with that property -- `filled` and `empty` -- and the fix is two rules over it:
   `detach_history=True`, exactly as the existing stroke-only cross-fade rule
   (finding 8) is.
 
+Ox audited the same question in parallel and read-only
+(`OX_FILL_MORPH_AUDIT.md`); it settled the two design questions this pass could
+not settle by inspection, and it corrected one premise of the brief it was
+given (there is no `set_fill_colors`; the dual-grid colour write is
+`_apply_texture_grid_colors`). What it measured:
+
+* **Holding `filled=True` and fading the fill's alpha to zero is not the same
+  picture as `filled=False`** -- because the flag moves the stroke, not just the
+  interior. Ox: max 253 over 1408 pixels at a 2 px stroke. Re-measured here
+  independently on a `Circle`: **max 117 over 500 pixels**, a one-pixel annulus
+  where the ring relocated. That is what rules out both the "never adopt the
+  flag" option and any end-of-morph swap: the swap would be a visible pop
+  outward rather than the invisible handover a zero fill alpha suggests.
+* **`empty` is the same mechanism with a bigger hammer** -- `get_render_primitives`
+  returns `None` outright, so the whole mob including its stroke vanishes from the
+  morph's first frame (measured: 4624 shape pixels before, 0 after). Nothing in
+  the package constructs `empty=True` except `ManimMob` for a point-less Manim
+  mobject, so the hazard was latent rather than live. Both flags are declared
+  untravellable together.
+* **Any endpoint swap has to be gated on `replacement_allowed`**, which this fix
+  is: Ox grepped the callers that need `_record_same_kind_morph` to return
+  `mine` itself, and they are all `detach_history=False` holders --
+  `Line.put_start_and_end_on`, `Paragraph.set_alignment`, and two Manim-compat
+  paths that rewrite `self.children` after the call.
+
 ## Found, not fixed
 
 ### 11. The frame at exactly the PN swap instant shows the soup
@@ -325,6 +356,38 @@ be a guess.
   without help, so it was deliberately left out of `_MORPH_ADOPTED_ATTRS`:
   assigning it there would bypass the setter that propagates it to the
   sub-hierarchy.
+
+### 17. A circuit cannot morph across its planarity plan
+
+The reverse of finding 16, and found by Ox looking for it: `_nonplanar_plan` is
+decided at construction (`classify_circuit`, `bezier_circuit.py:435`), read
+every batch, and **not** in `_MORPH_ADOPTED_ATTRS` -- so a planar source morphed
+onto non-planar geometry keeps rendering under the source's flattening decision
+for the rest of its life. It is not the same defect as 16 (nothing pops; the
+endpoint is simply built the wrong way), and adopting the plan is not enough on
+its own, because the plan indexes geometry the source does not have. Left for
+someone who can measure a case that reaches it.
+
+### 18. `shader`, `two_sided` and `closed_shell` have finding 16's character
+
+They are adopted plain attributes read per batch, so adoption flips them for the
+adopting mob's whole life exactly as `filled` did. They are **deliberately not**
+declared untravellable: none of them decides whether a region is drawn, so what
+a crossing costs is a shading difference during the morph rather than a shape
+disappearing, and routing such a pair to a cross-fade would trade a geometric
+morph for a worse picture. The reachable case is a full `Sphere` morphing into a
+partial-sweep one, which crosses both. Nobody has put a number on it.
+
+### 19. `_fit_bbox` stretches a degenerate texture frame with the geometry
+
+`_record_dissolve` fits each end to the other's axis-aligned box, and
+`Mob.scale` carries the whole subtree -- including `texture_points`, whose rows
+are the frame a circuit is coloured over rather than anything drawn. Fitting a
+`MathTex` glyph to an `Axes` line is a 40x stretch along one axis, which throws
+that one-texel frame 25.8 units out while the drawn glyph stays inside 6. It is
+invisible at one texel (a flat colour has nowhere to sample from), and it was
+reachable before this pass through any dissolve; finding 16 just routes more
+pairs through it. What it would cost at a real texture grid is unmeasured.
 
 ## The assignment: what changed, and why
 
@@ -409,3 +472,45 @@ which is defensible, and both band scales are safe against the secondary terms
   11's swap-instant frame and are byte-identical one frame later.
 * CPU only. No CUDA machine was available, so nothing here speaks for the CUDA
   baselines.
+
+### Third pass
+
+* `pytest -q tests/unit_tests tests/fast` -- **1970 passed, 132 skipped, 2
+  failed**, and both failures are **pre-existing**, established by running the
+  same command on the base commit in a separate worktree (**5 failed** there:
+  the same two, plus the three new guards below reproducing their defects).
+  * `tests/fast`'s pixel render, *"up to 5 channel values, worst at frame 27"*
+    -- byte-for-byte the same message on base.
+  * `test_fragment_shaders.py::test_a_batch_injects_only_the_pipelines_it_uses`,
+    which asserts that two freshly built pipelines land in **adjacent** registry
+    slots and so depends on which earlier test in the process registered one.
+    Running `test_render_coverage_audit.py` and `test_ux_regressions.py` ahead
+    of it reproduces the failure in 25 seconds, on base, with none of this pass
+    loaded. Not a flake -- there is no random ordering here -- a latent
+    order dependence that the tests added since the second pass now trip.
+* `test_morph_become.py` + `test_morph_become_audit.py` -- **48 passed**. The
+  five new guards -- six cases, one is parametrized -- were each run against the
+  base commit first and **all six fail there**: two for finding 14 (a cloned
+  Polyhedron's beads, and the pre-morph clone's), one for 15, two for 16.
+* `benchmarks/_become_endstate_check.py` -- **23 of 26**, unchanged from the
+  second pass, so the routing and pairing changes cost no endpoint.
+* `benchmarks/_become_stress2.py --mode matrix` -- **839 ok, 2 problems, 0
+  errors** of 841, down from 841 ok. Both problems are `MathTex` <-> `Axes`,
+  which finding 16 newly routes to a cross-fade because a glyph is filled and a
+  `Line` is not, and both are the harness's bound check reading a Mob that
+  draws nothing: `_fit_bbox` scales the whole subtree, and a glyph's degenerate
+  one-texel *texture frame* is what leaves the union bounds (25.8 units on a
+  12.1 span), not any geometry. Measured over the same window, the widest
+  **drawn** extent goes 0.22 -> 0.46 -> 3.11 -> 5.76 -> 6.00, monotone and
+  inside the bounds. Rendered side by side against base, the new frames are
+  the better ones -- base's first frame already shows the glyphs stripped to
+  outlines, which is finding 16 -- and the mid-flight stretch is the ordinary
+  look of this engine's dissolve. See finding 19.
+* Rendered output moves for `tests/full_renders`' `complex_hierarchy_become`,
+  which is the point. Its resolved target tree is unchanged apart from
+  antialiased edges where the coplanar draw-order bias shifted with the actor
+  registration order: **26 channel values over 86 pixels** at the first
+  post-morph frame. Baselines were already stale before this pass and are still
+  not regenerated.
+* CPU only, again. Ox's measurements were taken on the same container, so they
+  do not speak for CUDA either.
