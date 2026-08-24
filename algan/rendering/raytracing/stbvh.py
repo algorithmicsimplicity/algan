@@ -628,8 +628,62 @@ def _compute_miss_links(num_leaves, device):
     return miss
 
 
+# Bit 15 of a leaf's packed frame interval: set when the instance's primitive
+# declared that it casts no shadow (``Mob.casts_shadows`` False). The interval
+# halves are clipped to 15 bits each (t0 in bits 0-14, t1 in bits 16-30) and the
+# sign bit carries interval-opacity, so this is the one bit of the word that was
+# never written -- which is why the flag lives here rather than in an array of
+# its own: the shadow traversal already loads this word to test the leaf's frame
+# interval, so rejecting a non-caster costs it no additional memory traffic.
+# Readers must therefore mask t0 with 0x7FFF rather than 0xFFFF.
+LEAF_NOCAST_BIT = 1 << 15
+
+
+def _stamp_noncaster_bit(bvh, casts):
+    """Set :data:`LEAF_NOCAST_BIT` on every leaf whose primitive does not cast.
+
+    Applied to the finished tree rather than inside each builder: the leaf word
+    is derived from ``leaf_prim``, which every builder has produced by the time
+    it returns, so one implementation covers the morton, split and (retired) sah
+    orderings identically. ``STBVH.blocks`` is built from the node rows, not from
+    ``leaf_tspan``, so stamping after construction cannot leave the two
+    disagreeing.
+
+    ``casts`` is ``[To, N]`` (or ``[N]``) bool, True where the primitive casts.
+    It is reduced with ``all`` over frames: the flag is fixed for the render by
+    design, so this is exact, and a primitive that declines to cast on any frame
+    declines on all of them. When every primitive casts -- the overwhelmingly
+    common case -- the tree is returned untouched and the word is bit-for-bit
+    what it was before the flag existed.
+    """
+    if casts is None:
+        return bvh
+    # Not named ``blocks``: that is the tree's kernel-facing child-block array.
+    per_prim = casts.all(0) if casts.dim() == 2 else casts
+    if bool(per_prim.all()):
+        return bvh
+    lp = bvh.leaf_prim.long()
+    valid = lp >= 0
+    nocast = ~per_prim.to(bvh.leaf_tspan.device)[lp.clamp_min(0)]
+    bvh.leaf_tspan = torch.where(
+        valid & nocast,
+        bvh.leaf_tspan
+        | torch.tensor(
+            LEAF_NOCAST_BIT, dtype=bvh.leaf_tspan.dtype, device=bvh.leaf_tspan.device
+        ),
+        bvh.leaf_tspan,
+    ).contiguous()
+    return bvh
+
+
 def build_stbvh(
-    frame_lo, frame_hi, num_frames=None, tightness=2.0, opaque=None, builder="morton"
+    frame_lo,
+    frame_hi,
+    num_frames=None,
+    tightness=2.0,
+    opaque=None,
+    builder="morton",
+    casts=None,
 ):
     """Build a spatio-temporal BVH from per-frame primitive bounds.
 
@@ -648,6 +702,11 @@ def build_stbvh(
         marked opaque (``leaf_tspan`` bit 31) when the primitive is opaque on
         *every* frame of the instance's interval, allowing the renderer to
         prune hits behind it during gathering.
+    casts : Tensor[To, N] (bool), optional
+        Per-primitive shadow-casting flags, True where the primitive may block a
+        shadow ray. A False entry sets :data:`LEAF_NOCAST_BIT` on that
+        primitive's leaves; ``None`` (or an all-True mask) leaves every leaf word
+        exactly as it was before the flag existed.
     builder : str
         Instance-ordering strategy: "morton", "split" or "sah" (see the
         ``_BVH_BUILD`` comment above for the trade-offs and per-geometry-type
@@ -830,9 +889,12 @@ def build_stbvh(
 
     miss = _compute_miss_links(P, device)
 
-    return STBVH(
-        nodes.contiguous(),
-        miss.to(torch.int32).contiguous(),
-        leaf_prim.to(torch.int32).contiguous(),
-        leaf_tspan.contiguous(),
+    return _stamp_noncaster_bit(
+        STBVH(
+            nodes.contiguous(),
+            miss.to(torch.int32).contiguous(),
+            leaf_prim.to(torch.int32).contiguous(),
+            leaf_tspan.contiguous(),
+        ),
+        casts,
     )

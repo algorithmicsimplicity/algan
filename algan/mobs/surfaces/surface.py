@@ -3141,6 +3141,7 @@ class Surface(Mob):
         # as does any partial sweep that cuts the shell.
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
+        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
         return primitive
 
     def coord_function(self, uv: torch.Tensor):

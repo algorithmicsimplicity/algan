@@ -218,6 +218,50 @@ class Mob(
     #: Monte Carlo tracer instead.
     closed_shell = False
 
+    #: Whether this Mob's geometry blocks light on its way from a light source
+    #: to another surface -- whether it casts a shadow. ``True`` (the default)
+    #: is what every Mob did before the flag existed. ``False`` makes the
+    #: geometry invisible to shadow rays ONLY: it still renders to the camera,
+    #: to reflections and to refraction exactly as it would have, and it still
+    #: RECEIVES shadows unless :attr:`receives_shadows` says otherwise.
+    #:
+    #: This is the per-Mob half of ``SETTINGS.raytracing.shadows``, which
+    #: remains the switch for the feature as a whole -- with shadows off
+    #: globally, neither flag does anything. Use it where a shadow is
+    #: physically implied but pedagogically in the way: a label plate lying on
+    #: the scene's floor, a wireframe cage around the object being explained, an
+    #: annotation arrow whose shadow reads as a second arrow.
+    #:
+    #: Like ``two_sided``, set it before the Mob is spawned -- the render
+    #: primitive reads it once -- and note that it is a plain attribute, not an
+    #: animatable one: it cannot change over the course of a render.
+    casts_shadows = True
+
+    #: Whether this Mob's surfaces are darkened by shadows cast onto them.
+    #: ``True`` (the default) is what every Mob did before the flag existed.
+    #: ``False`` shades the Mob as though every light reached it unobstructed,
+    #: which is strictly cheaper than the default: no shadow ray is traced for
+    #: its fragments at all.
+    #:
+    #: It does not change what the Mob does to OTHER surfaces -- a Mob that
+    #: receives no shadow still casts one unless :attr:`casts_shadows` says
+    #: otherwise. Use it to keep a surface legible where a correct shadow would
+    #: not be: a caption laid on a shadowed floor, a colour key or legend that
+    #: has to stay readable wherever it is placed.
+    #:
+    #: Set it before the Mob is spawned, and like ``casts_shadows`` it is a
+    #: plain attribute rather than an animatable one.
+    #:
+    #: Two kinds of Mob ignore it, both because they were never shadowed to
+    #: begin with: 2-D geometry (a shape, ``Text``) renders unlit, and so does
+    #: anything with :meth:`~.Mob.set_shader` ``None``. A Mob carrying a custom
+    #: fragment pipeline (:meth:`~.Mob.set_fragment_shader`) also ignores it,
+    #: because the slot this rides in the material block belongs to that
+    #: pipeline's own parameters -- the same reason a custom pipeline is never
+    #: asked about ``two_sided``. ``casts_shadows`` has none of these
+    #: exceptions: all three still cast.
+    receives_shadows = True
+
     #: Opaque hashable identifying the SURFACE this Mob's geometry belongs to,
     #: stamped onto the primitives it builds. Parts of one solid that carry the
     #: same key -- a ``Cylinder``'s tube and its two end discs -- merge into a
@@ -328,7 +372,13 @@ class Mob(
     #: of the two Mobs' ``animatable_attrs`` -- carried none of them: a morph
     #: ended with the target's geometry wearing the source's shading and
     #: sidedness. Subclasses extend the tuple rather than overriding the method.
-    _MORPH_ADOPTED_ATTRS = ("shader", "two_sided", "closed_shell")
+    _MORPH_ADOPTED_ATTRS = (
+        "shader",
+        "two_sided",
+        "closed_shell",
+        "casts_shadows",
+        "receives_shadows",
+    )
 
     def _adopt_structural_attrs(self, target):
         """Take target-side plain geometry metadata at a morph endpoint.
@@ -342,6 +392,42 @@ class Mob(
             if hasattr(target, attr):
                 setattr(self, attr, getattr(target, attr))
         return self
+
+    def resolved_shadow_flags(self):
+        """``(casts_shadows, receives_shadows)`` for this Mob, resolved against
+        its ancestors: an opt-out anywhere above it applies to it.
+
+        The Mob a user sets the flag on is very often not the Mob that builds
+        the geometry. A :class:`~algan.mobs.shapes_3d.Cube` is a
+        :class:`~algan.mobs.shapes_3d.Polyhedron` whose FACES carry the
+        triangles, a ``Group`` holds whatever was put in it, and a ``Text``
+        holds its glyphs -- so reading ``self.casts_shadows`` at the point the
+        primitive is built would silently ignore ``cube.casts_shadows = False``,
+        which is the obvious thing for a user to write. (It did: the flag
+        reached the primitive as its default and the render was unchanged.)
+        Walking up instead makes ``group.casts_shadows = False`` mean what it
+        looks like, for a whole subtree, and lets a Mob that aggregates say it
+        once rather than each aggregate propagating by hand the way
+        ``two_sided`` does.
+
+        The hierarchy is a DAG (``parents`` is a list), so this walks every
+        ancestor and stops as soon as both flags are already False. Read at
+        primitive-build time, which is why the flags must be set before the Mob
+        is spawned.
+        """
+        casts = bool(getattr(self, "casts_shadows", True))
+        receives = bool(getattr(self, "receives_shadows", True))
+        seen = {id(self)}
+        stack = list(getattr(self, "parents", None) or ())
+        while stack and (casts or receives):
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            casts = casts and bool(getattr(node, "casts_shadows", True))
+            receives = receives and bool(getattr(node, "receives_shadows", True))
+            stack.extend(getattr(node, "parents", None) or ())
+        return casts, receives
 
     def _init_default_attr(self, attr, value):
         """Allocate ``attr``'s attribute-timeline buffer directly to ``value``

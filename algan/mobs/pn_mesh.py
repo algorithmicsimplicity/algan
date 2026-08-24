@@ -82,7 +82,7 @@ class PNMesh(Mob):
         colors[..., -1:] *= self.opacity
         colors[..., -2:-1] += self.glow
         normals = F.normalize(self.normals, p=2, dim=-1)
-        return LogicalPNTrianglePrimitive(
+        primitive = LogicalPNTrianglePrimitive(
             corners=self.location,
             colors=colors,
             normals=normals,
@@ -93,6 +93,13 @@ class PNMesh(Mob):
             geometry_slack_ratio=self.geometry_slack_ratio,
             **self.get_shader_params(),
         )
+        # A PN soup is what a CROSS-FAMILY ``become`` renders during the morph
+        # window, so without this a non-casting mob would start casting for the
+        # duration of its own morph and stop again at the far end -- both
+        # endpoints honour the flag (``_MORPH_ADOPTED_ATTRS``), and the seam was
+        # strictly interior to the transition.
+        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        return primitive
 
     def _get_memory_used_per_timestep(self):
         # Timeline state (position, normal, colour, opacity/glow and material)

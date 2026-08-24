@@ -621,7 +621,14 @@ def _split_promotable(p, _append_texture, device, scene):
 
 
 def _build_accel(
-    lo, hi, num_frames, tightness, opaque=None, builder="morton", refit=None
+    lo,
+    hi,
+    num_frames,
+    tightness,
+    opaque=None,
+    builder="morton",
+    refit=None,
+    casts=None,
 ):
     """Build one geometry type's acceleration structure: the classic
     spatio-temporal instance tree, or -- under ``settings.BVH_REFIT`` -- the
@@ -635,7 +642,9 @@ def _build_accel(
     """
     _rts = SETTINGS.raytracing
     if _rts.refit_bvh_active() if refit is None else refit:
-        return build_refit_bvh(lo, hi, num_frames=num_frames, opaque=opaque)
+        return build_refit_bvh(
+            lo, hi, num_frames=num_frames, opaque=opaque, casts=casts
+        )
     return build_stbvh(
         lo,
         hi,
@@ -643,6 +652,7 @@ def _build_accel(
         tightness=tightness,
         opaque=opaque,
         builder=builder,
+        casts=casts,
     )
 
 
@@ -656,7 +666,7 @@ def _empty_scene_part(device, refit=None):
 
 
 def _build_opaque_bvh(
-    lo, hi, opaque, num_frames, tightness, builder="morton", refit=None
+    lo, hi, opaque, num_frames, tightness, builder="morton", refit=None, casts=None
 ):
     """Build a BVH containing only primitives proven opaque when visible.
 
@@ -680,6 +690,7 @@ def _build_opaque_bvh(
         opaque=visible_opaque.contiguous(),
         builder=builder,
         refit=refit,
+        casts=casts,
     )
 
 
@@ -743,7 +754,10 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
         _rts = SETTINGS.raytracing
         placeholder = _empty_scene_part(device)
         if tri_inputs is not None:
-            lo, hi, opaque = tri_inputs
+            lo, hi, opaque, casts = tri_inputs
+            # The caster mask is retained beside the bounds: the on-demand
+            # build needs it to stamp the leaf words (``build_deferred_bvhs``).
+            scene["tri_frame_casts"] = casts.contiguous()
             # Retained for the on-demand build (bez lo/hi are already stored
             # for the raster frontend; tri pair generation uses tri_screen).
             scene["tri_frame_lo"] = lo.contiguous()
@@ -759,7 +773,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
 
     scene["bvh_deferred"] = False
     if tri_inputs is not None:
-        lo, hi, opaque = tri_inputs
+        lo, hi, opaque, casts = tri_inputs
         # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
         # extra build per batch; byte-identical for triangles (the depth-peel
         # is arrangement-invariant). PN/bezier BVHs stay Morton -- their
@@ -770,6 +784,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
             num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
             opaque=opaque,
+            casts=casts,
             builder="split",
         )
         if not scene["tri_has_opaque"]:
@@ -784,9 +799,10 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
                 num_frames,
                 RayTracedTrianglePrimitive.stbvh_tightness,
                 builder="split",
+                casts=casts,
             )
     if bez_inputs is not None:
-        lo, hi, opaque = bez_inputs
+        lo, hi, opaque, casts = bez_inputs
         # ss3.4: bezier was the last type still pinned to Morton (PN, the other,
         # was deleted). Split ordering is a pure reorder, but a circuit's seam
         # de-dup is discovery-order sensitive, so it moves output at the epsilon
@@ -798,6 +814,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
             num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
             opaque=opaque,
+            casts=casts,
             builder=bez_builder,
         )
         if not scene["bez_has_opaque"]:
@@ -812,6 +829,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
                 num_frames,
                 RayTracedBezierCircuitPrimitive.stbvh_tightness,
                 builder=bez_builder,
+                casts=casts,
             )
 
 
@@ -839,6 +857,7 @@ def build_deferred_bvhs(merged):
         lo = merged["tri_frame_lo"]
         hi = merged["tri_frame_hi"]
         opaque = merged["tri_frame_opaque"]
+        casts = merged.get("tri_frame_casts")
         merged["tri_bvh"] = _build_accel(
             lo,
             hi,
@@ -847,6 +866,7 @@ def build_deferred_bvhs(merged):
             opaque=opaque,
             builder="split",
             refit=refit,
+            casts=casts,
         )
         if not merged["tri_has_opaque"]:
             merged["tri_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)
@@ -861,6 +881,7 @@ def build_deferred_bvhs(merged):
                 RayTracedTrianglePrimitive.stbvh_tightness,
                 builder="split",
                 refit=refit,
+                casts=casts,
             )
         merged["tri_frame_lo"] = None
         merged["tri_frame_hi"] = None
@@ -868,6 +889,7 @@ def build_deferred_bvhs(merged):
         lo = merged["bez_frame_lo"]
         hi = merged["bez_frame_hi"]
         opaque = merged["bez_frame_opaque"]
+        casts = merged.get("bez_frame_casts")
         merged["bez_bvh"] = _build_accel(
             lo,
             hi,
@@ -875,6 +897,7 @@ def build_deferred_bvhs(merged):
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
             opaque=opaque,
             refit=refit,
+            casts=casts,
         )
         if not merged["bez_has_opaque"]:
             merged["bez_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)
@@ -888,6 +911,7 @@ def build_deferred_bvhs(merged):
                 num_frames,
                 RayTracedBezierCircuitPrimitive.stbvh_tightness,
                 refit=refit,
+                casts=casts,
             )
     merged["bvh_deferred"] = False
 
@@ -1457,6 +1481,7 @@ def _merge_scene(primitives):
         lo = _cat_collections(_geom("_rt_frame_lo"), 1, "triangle merge")
         hi = _cat_collections(_geom("_rt_frame_hi"), 1, "triangle merge")
         opaque = _cat_collections(_geom("_rt_frame_opaque"), 1, "triangle merge")
+        casts = _cat_collections(_geom("_rt_frame_casts"), 1, "triangle merge")
         # Per-primitive color-texture alpha certainty for the hybrid raster
         # frontend.  The old global ``has_uncertain_texture_alpha`` flag forced
         # every triangle through the transparent path when a single cutout
@@ -1606,9 +1631,10 @@ def _merge_scene(primitives):
         # Derived from the same bounds/opacity arrays the STBVH build uses.
         scene["tri_frame_valid"] = (hi >= lo).all(-1).contiguous()
         scene["tri_frame_opaque"] = opaque.contiguous()
+        scene["tri_frame_casts"] = casts.contiguous()
         # Triangle STBVHs are built (or deferred) in _finalize_bvhs once every
         # routing flag this batch needs is known.
-        tri_bvh_inputs = (lo, hi, opaque)
+        tri_bvh_inputs = (lo, hi, opaque, casts)
         if _rts.WF_MEM_TRIM:
             _build_mem_trim(scene, lo, hi, opaque, num_frames, device)
     else:
@@ -1629,6 +1655,7 @@ def _merge_scene(primitives):
         scene["tri_opaque_bvh"] = scene["tri_bvh"]
         scene["tri_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
         scene["tri_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
+        scene["tri_frame_casts"] = torch.ones((1, 1), dtype=torch.bool, device=device)
         scene["tri_alpha_uncertain"] = torch.zeros(
             (1, 1), dtype=torch.bool, device=device
         )
@@ -1805,6 +1832,9 @@ def _merge_scene(primitives):
         opaque = _cat_collections(
             [p._rt_frame_opaque for p in beziers], 1, "bezier merge"
         )
+        casts = _cat_collections(
+            [p._rt_frame_casts for p in beziers], 1, "bezier merge"
+        )
         _record_visibility("bez", lo, hi, opaque)
         # Per-(frame, circuit) visibility, opacity, and AABBs for the hybrid
         # raster frontend.  Proven-opaque circuits now participate in the typed
@@ -1812,10 +1842,11 @@ def _merge_scene(primitives):
         # translucent / reflective panes remain in the ordered fragment stream.
         scene["bez_frame_valid"] = (hi >= lo).all(-1).contiguous()
         scene["bez_frame_opaque"] = opaque.contiguous()
+        scene["bez_frame_casts"] = casts.contiguous()
         scene["bez_frame_lo"] = lo.contiguous()
         scene["bez_frame_hi"] = hi.contiguous()
         # Bezier STBVHs are built (or deferred) in _finalize_bvhs.
-        bez_bvh_inputs = (lo, hi, opaque)
+        bez_bvh_inputs = (lo, hi, opaque, casts)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
         # Any PBR circuit, not just a metallic one: metalness >= 0 is the whole
         # test, because a dielectric (metalness 0) still reflects its Fresnel
@@ -1839,6 +1870,7 @@ def _merge_scene(primitives):
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
         scene["bez_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
         scene["bez_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
+        scene["bez_frame_casts"] = torch.ones((1, 1), dtype=torch.bool, device=device)
         scene["bez_frame_lo"] = torch.full((1, 1, 3), EMPTY_LO, device=device)
         scene["bez_frame_hi"] = torch.full((1, 1, 3), EMPTY_HI, device=device)
         scene["num_circuits"] = 0

@@ -809,7 +809,20 @@ def _refit_link(row, c, blocks: ti.template()):
 
 
 # Refit link-word decode masks (must match refit_bvh.LINK_*).
-_REFIT_PRIM_MASK = (1 << 30) - 1
+_REFIT_PRIM_MASK = (1 << 29) - 1
+
+# "This primitive casts no shadow" (Mob.casts_shadows False), in the two leaf
+# words the traversal already loads: bit 29 of a refit link word
+# (refit_bvh.LINK_NOCAST_BIT) and bit 15 of an STBVH leaf's packed frame
+# interval (stbvh.LEAF_NOCAST_BIT). Tested only where a SHADOW ray accepts a
+# leaf, so the same geometry stays visible to camera, reflection and refraction
+# rays; the two spellings exist because the two tree kinds pack their leaves
+# differently, not because they mean different things. Setting bit 15 is why
+# every leaf-interval read below masks t0 with 0x7FFF rather than 0xFFFF -- the
+# halves were always clipped to 15 bits, so that narrowing changes nothing for
+# a tree with no non-casters in it.
+_REFIT_NOCAST_BIT = 1 << 29
+_LEAF_NOCAST_BIT = 1 << 15
 
 
 @ti.func
@@ -992,7 +1005,11 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                           first_leaf, tri_pos: ti.template(),
                           src_sid, src_prim, eps_self, eps_near,
                           tri_obj: ti.template(),
-                          ident: ti.template()):
+                          ident: ti.template(),
+                          # 1 rejects a leaf whose primitive declared
+                          # Mob.casts_shadows False; 0 (every non-shadow ray)
+                          # compiles the test out.
+                          nocast: ti.template()):
     """Nearest triangle intersection strictly after (t_prev, layer_prev).
 
     ``refit != 0`` walks a refit tree instead (see refit_bvh.py): ``nodes``
@@ -1044,6 +1061,9 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                     child_blk = w
                 else:
                     l_prim = w & _REFIT_PRIM_MASK
+                    if ti.static(nocast != 0):
+                        if (w & _REFIT_NOCAST_BIT) != 0:
+                            l_prim = -1
             else:
                 g_child = BVH_ARITY * g_cur + 1 + g_c
                 if g_child >= first_leaf:
@@ -1058,9 +1078,12 @@ def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
                         prim = -1
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
-                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                        if ((p0 >= 0) and ((tspan & 0x7FFF) <= f)
                                 and (f <= ((tspan >> 16) & 0x7FFF))):
                             prim = p0
+                            if ti.static(nocast != 0):
+                                if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                    prim = -1
                     if prim >= 0:
                         v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                           tri_pos[tp, prim, 1],
@@ -1105,7 +1128,8 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                         nodes: ti.template(), node_miss: ti.template(),
                         leaf_prim: ti.template(), leaf_tspan: ti.template(),
                         first_leaf, circuit_meta: ti.template(),
-                        edges_2d: ti.template(), edge_accel: ti.template()):
+                        edges_2d: ti.template(), edge_accel: ti.template(),
+                        nocast: ti.template()):
     """Nearest bezier-circuit intersection strictly after (t_prev, layer_prev).
 
     A circuit hit is the ray/plane intersection classified against the
@@ -1159,6 +1183,9 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                     child_blk = w
                 else:
                     l_prim = w & _REFIT_PRIM_MASK
+                    if ti.static(nocast != 0):
+                        if (w & _REFIT_NOCAST_BIT) != 0:
+                            l_prim = -1
             else:
                 g_child = BVH_ARITY * g_cur + 1 + g_c
                 if g_child >= first_leaf:
@@ -1173,9 +1200,12 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                         circuit = -1
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
-                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                        if ((p0 >= 0) and ((tspan & 0x7FFF) <= f)
                                 and (f <= ((tspan >> 16) & 0x7FFF))):
                             circuit = p0
+                            if ti.static(nocast != 0):
+                                if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                    circuit = -1
                     if circuit >= 0:
                         tm = f % num_meta_frames
                         n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
@@ -1750,7 +1780,8 @@ def _nearest_surface_g(refit: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
                      edges_2d: ti.template(), edge_accel: ti.template(),
                      src_sid, src_prim, eps_self, eps_near,
-                     tri_obj: ti.template(), ident: ti.template()):
+                     tri_obj: ti.template(), ident: ti.template(),
+                     nocast: ti.template()):
     """Nearest surface of any geometry type strictly after
     (t_prev, layer_prev) along the ray. Geometry only -- shading data is
     fetched by the caller for the hits it actually uses.
@@ -1786,7 +1817,8 @@ def _nearest_surface_g(refit: ti.template(),
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
             layer_offset_triangles,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-            tri_pos, src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+            tri_pos, src_sid, src_prim, eps_self, eps_near, tri_obj, ident,
+            nocast)
     bt = 1e30
     b_circ = -1
     b_border = 0
@@ -1800,7 +1832,8 @@ def _nearest_surface_g(refit: ti.template(),
         bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
             refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, bez_cap,
             pixel_size_per_t, base_dist, b_nodes, b_node_miss, b_leaf_prim,
-            b_leaf_tspan, b_first_leaf, circuit_meta, edges_2d, edge_accel)
+            b_leaf_tspan, b_first_leaf, circuit_meta, edges_2d, edge_accel,
+            nocast)
 
     if t_prim >= 0:
         found = 1
@@ -2021,7 +2054,7 @@ def _nearest_surface(refit: ti.template(),
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
         circuit_meta, edges_2d, edge_accel,
-        -1, -1, 0.0, 0.0, tri_pos, 0)
+        -1, -1, 0.0, 0.0, tri_pos, 0, 0)
 
 
 @ti.func
@@ -2042,7 +2075,8 @@ def _collect_hits(refit: ti.template(),
                    has_bez: ti.template(), initial_opq_t: ti.f32,
                    initial_opq_layer: ti.f32,
                    src_sid, src_prim, eps_self, eps_near,
-                   tri_obj: ti.template(), ident: ti.template()) -> ti.i32:
+                   tri_obj: ti.template(), ident: ti.template(),
+                   nocast: ti.template()) -> ti.i32:
     """Gather the up-to-``KBUF`` nearest hits strictly after
     (t_prev, layer_prev) into the caller's buffers, in one traversal of each
     BVH. Triangles are traversed first; the bezier traversal then prunes
@@ -2119,6 +2153,9 @@ def _collect_hits(refit: ti.template(),
                         child_blk = w
                     else:
                         l_prim = w & _REFIT_PRIM_MASK
+                        if ti.static(nocast != 0):
+                            if (w & _REFIT_NOCAST_BIT) != 0:
+                                l_prim = -1
                         l_opq = (w >> 30) & 1
                 else:
                     g_child = BVH_ARITY * g_cur + 1 + g_c
@@ -2136,9 +2173,12 @@ def _collect_hits(refit: ti.template(),
                             prim = -1
                             p0 = t_leaf_prim[l_base + j]
                             tspan = t_leaf_tspan[l_base + j]
-                            if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                            if ((p0 >= 0) and ((tspan & 0x7FFF) <= f)
                                     and (f <= ((tspan >> 16) & 0x7FFF))):
                                 prim = p0
+                                if ti.static(nocast != 0):
+                                    if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                        prim = -1
                                 opq = 1 if tspan < 0 else 0
                         if prim >= 0:
                             v0 = ti.math.vec3(tri_pos[tp, prim, 0],
@@ -2257,6 +2297,9 @@ def _collect_hits(refit: ti.template(),
                         child_blk = w
                     else:
                         l_prim = w & _REFIT_PRIM_MASK
+                        if ti.static(nocast != 0):
+                            if (w & _REFIT_NOCAST_BIT) != 0:
+                                l_prim = -1
                         l_opq = (w >> 30) & 1
                 else:
                     g_child = BVH_ARITY * g_cur + 1 + g_c
@@ -2274,9 +2317,12 @@ def _collect_hits(refit: ti.template(),
                             circuit = -1
                             p0 = b_leaf_prim[l_base + j]
                             tspan = b_leaf_tspan[l_base + j]
-                            if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                            if ((p0 >= 0) and ((tspan & 0x7FFF) <= f)
                                     and (f <= ((tspan >> 16) & 0x7FFF))):
                                 circuit = p0
+                                if ti.static(nocast != 0):
+                                    if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                        circuit = -1
                                 opq = 1 if tspan < 0 else 0
                         if circuit >= 0:
                             tm = f % num_meta_frames
@@ -2430,6 +2476,8 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                     child_blk = w
                 elif ((w >> 30) & 1) != 0:
                     l_prim = w & _REFIT_PRIM_MASK
+                    if (w & _REFIT_NOCAST_BIT) != 0:
+                        l_prim = -1
             else:
                 g_child = BVH_ARITY * g_cur + 1 + g_c
                 if g_child >= first_leaf:
@@ -2446,9 +2494,11 @@ def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                         tspan = leaf_tspan[l_base + j]
                         # Bit 31 (sign) flags interval-opaque instances.
                         if ((p0 >= 0) and (tspan < 0)
-                                and ((tspan & 0xFFFF) <= f)
+                                and ((tspan & 0x7FFF) <= f)
                                 and (f <= ((tspan >> 16) & 0x7FFF))):
                             prim = p0
+                            if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                prim = -1
                     if (hit == 0) and (prim >= 0):
                         v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                           tri_pos[tp, prim, 1],
@@ -2527,6 +2577,8 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                     child_blk = w
                 elif ((w >> 30) & 1) != 0:
                     l_prim = w & _REFIT_PRIM_MASK
+                    if (w & _REFIT_NOCAST_BIT) != 0:
+                        l_prim = -1
             else:
                 g_child = BVH_ARITY * g_cur + 1 + g_c
                 if g_child >= first_leaf:
@@ -2542,9 +2594,11 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
                         if ((p0 >= 0) and (tspan < 0)
-                                and ((tspan & 0xFFFF) <= f)
+                                and ((tspan & 0x7FFF) <= f)
                                 and (f <= ((tspan >> 16) & 0x7FFF))):
                             circuit = p0
+                            if (tspan & _LEAF_NOCAST_BIT) != 0:
+                                circuit = -1
                     if (hit == 0) and (circuit >= 0):
                         tm = f % num_meta_frames
                         n = ti.math.vec3(
@@ -2837,7 +2891,9 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             tri_pos,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel,
-            src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+            src_sid, src_prim, eps_self, eps_near, tri_obj, ident,
+            # A shadow ray: reject leaves whose primitive casts no shadow.
+            1)
         if (found == 0) or (t_hit >= max_t):
             break
         seam_eps = DEPTH_TIE_EPSILON
@@ -3021,7 +3077,9 @@ def _shadow_gather_occluded(refit: ti.template(),
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
             max_t, -1e30,
-            src_sid, src_prim, eps_self, eps_near, tri_obj, ident)
+            src_sid, src_prim, eps_self, eps_near, tri_obj, ident,
+            # A shadow ray: reject leaves whose primitive casts no shadow.
+            1)
         if num_hits == 0:
             alive = 0
         drained = 0

@@ -83,7 +83,9 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shade_tri_hit,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_NO_SHADOW_RECEIVE,
     _MID_UNLIT,
+    _USER_PIPELINE_BASE,
     _reflect_frame,
     _shadow_terminator_delta,
     light_vis_index,
@@ -464,7 +466,29 @@ def sheet_resolve_shade(
                     # with the material pipeline id above it, and the pixel
                     # footprint for soft sub-pixel sampling.
                     pid_e = tri_mat_id[f % tri_mat_id.shape[0], prim]
-                    if pid_e != _MID_UNLIT:
+                    # A mob that declared receives_shadows False is shaded as
+                    # though every light reached it, so it builds no event and
+                    # traces no shadow ray -- opting out is cheaper than the
+                    # default rather than a query whose answer is discarded.
+                    #
+                    # Asked of BUILT-IN pipelines only, which is the same rule
+                    # that keeps _run_frag_pipeline's one_sided read on the
+                    # built-in branch, and it is a semantic guard rather than a
+                    # bounds one: a custom fragment pipeline numbers its own
+                    # slots from 0, so slot 33 of a block >= 34 wide is that
+                    # pipeline's REAL parameter, and reading it here would let a
+                    # user's unrelated value above 0.5 silently stop the mob
+                    # receiving shadows. The width test then covers the narrow
+                    # blocks, where the slot does not exist at all. So
+                    # receives_shadows is inert for a custom-pipeline mob, the
+                    # same way it is inert for 2-D geometry.
+                    recv = 1
+                    if pid_e < _USER_PIPELINE_BASE:
+                        if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
+                            if tri_mat[f % tri_mat.shape[0], prim,
+                                       _MAT_NO_SHADOW_RECEIVE] > 0.5:
+                                recv = 0
+                    if (pid_e != _MID_UNLIT) and (recv == 1):
                         snrm, fnrm = _tri_shadow_normals(
                             f, prim, a, b, surf_rd, tri_pos, tri_norm,
                             tri_uvs, tri_tex_meta, textures,

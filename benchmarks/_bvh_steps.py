@@ -181,7 +181,7 @@ def _steps_tri(
                         tspan = leaf_tspan[l_base + j]
                         if (
                             (p0 >= 0)
-                            and ((tspan & 0xFFFF) <= f)
+                            and ((tspan & 0x7FFF) <= f)
                             and (f <= ((tspan >> 16) & 0x7FFF))
                         ):
                             prim = p0
@@ -325,7 +325,7 @@ def _steps_bez(
                         tspan = leaf_tspan[l_base + j]
                         if (
                             (p0 >= 0)
-                            and ((tspan & 0xFFFF) <= f)
+                            and ((tspan & 0x7FFF) <= f)
                             and (f <= ((tspan >> 16) & 0x7FFF))
                         ):
                             circuit = p0
