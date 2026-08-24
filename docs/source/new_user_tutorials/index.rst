@@ -15,11 +15,7 @@ If you have not installed Algan yet, start with :doc:`../installation`.
    getting_started
    basic_animations
    combining_animations
-   updaters
    child_mobs
-   mob_gallery
-   positioning_and_layout
-   text_and_math
-   built_in_animations
+   updaters
    three_d_basics
-   importing_from_manim
+   where_to

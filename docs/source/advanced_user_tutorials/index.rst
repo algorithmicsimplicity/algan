@@ -1,14 +1,19 @@
 Advanced User Tutorials
 =======================
 
-Techniques you will not need for most scenes, but which unlock the renderer's
-full capabilities: lighting rigs, materials, reflections, imported assets,
-narration, and control over how Algan renders.
+These tutorials cover all of Algan's full functionality, in detail. These are unstructured
+and may be followed in any order. It is recommended to use them like a reference: look
+up the tutorial for the thing you need to use, when you need to use it.
 
 .. toctree::
    :caption: Table of Contents
    :maxdepth: 2
 
+   mob_gallery
+   positioning_and_layout
+   text_and_math
+   built_in_animations
+   importing_from_manim
    cameras
    lighting_and_shadows
    shaders_and_materials

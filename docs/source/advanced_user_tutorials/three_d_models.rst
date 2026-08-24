@@ -1,6 +1,6 @@
-======================
+====================
 Importing 3-D Models
-======================
+====================
 
 :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` loads a 3-D model file -- geometry, UVs, textures, PBR
 materials, node hierarchy and rigid animation -- and gives you an ordinary Algan
