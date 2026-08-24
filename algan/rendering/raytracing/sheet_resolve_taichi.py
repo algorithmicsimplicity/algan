@@ -42,6 +42,7 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_FULL_DUST,
+    _AA_LOSE_SHIFT,
     _AA_MASK_ALL,
     _AA_NUM_SAMPLES,
     _AA_ONE_MESH_BIT,
@@ -308,6 +309,17 @@ def sheet_resolve_shade(
             dens = 1.0
             nsm = _AA_NUM_SAMPLES
             slots = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
+            # SHEET_SAMPLE_DEPTH: the host ceded these samples to a strictly
+            # nearer other-surface sheet (sheets.compact_sheets), so claiming
+            # them here painted an interpenetrating surface whole-pixel wrong.
+            # Zeroing slots drops both the claim and this sheet's share of the
+            # occlusion write at them -- the winner claims that ink, whose own
+            # svis the gated loser no longer dims. cfac stays normalized to
+            # the ORIGINAL mask popcount; off, the host sets no bits and this
+            # reads zero, which is bit-identical arithmetic.
+            lose = 0
+            if not areal:
+                lose = (msk >> _AA_LOSE_SHIFT) & _AA_MASK_ALL
             if areal:
                 dens = area
             else:
@@ -316,10 +328,18 @@ def sheet_resolve_shade(
                 if msk_low == _AA_MASK_ALL:
                     if ti.abs(1.0 - cov) > _AA_FULL_DUST:
                         cfac = area
+                    if lose != 0:
+                        for s in ti.static(range(_AA_NUM_SAMPLES)):
+                            if ((lose >> s) & 1) != 0:
+                                slots[s] = 0.0
                 else:
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
                         if ((msk_low >> s) & 1) == 0:
                             slots[s] = 0.0
+                    if lose != 0:
+                        for s in ti.static(range(_AA_NUM_SAMPLES)):
+                            if ((lose >> s) & 1) != 0:
+                                slots[s] = 0.0
                     cfac = area * ti.static(float(_AA_NUM_SAMPLES)) \
                         / ti.cast(pop, ti.f32)
             vis = 0.0

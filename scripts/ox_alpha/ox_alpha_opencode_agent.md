@@ -484,3 +484,54 @@ each stage carries; the diagnosis came from instrumenting one pixel
 (`benchmarks/_triad_sheet_probe.py`, which dumps a pixel's fragments and
 sheets) and reading the eight per-sample depths off the dump. Ask it for the
 map; measure the territory yourself.
+
+**UPDATE: REVIEW FROM A SEVENTH TASK (per-sample depth ceding, 2026-08-24)**
+
+The sequel to the sixth task: I briefed it to BUILD the per-sample depth gate
+the sixth task's audit had scoped. One run at `--variant max` from a file,
+~125 steps, no continuation needed, and it produced a complete, working,
+tested implementation across six production files plus 210 lines of unit
+tests. Everything it claimed re-ran exactly as written.
+
+**It is very good at the mechanical middle of a job and honest about its
+edges.** The per-lane `amin` reduction, the mask-bit packing (with an
+unprompted note that a future 16-sample pattern would collide with the field
+it chose), the settings/env registration, the resolve-kernel read placed in
+the one block where `slots` is still live, and a parallel implementation in
+the Python oracle so the parity harness stays true — all correct. It caught
+that the brief's stated reflectivity source was wrong and read what the
+kernel actually reads instead. And its own "what I did NOT verify" section
+led with the thing that mattered: *"No renders were run... I make no claim
+about actual pixels."*
+
+**And that is exactly where it stopped, one step short of the finding.** The
+feature it shipped moved **zero pixels**. Its own reflective-pixel veto — a
+guard it invented, correctly, against a real hazard — vetoed 29,487 of the
+frame's 41,834 sheets and disabled the feature outright, because it flagged
+"reflective" on `reflectivity > 0` while the kernel breaks the walk on
+`alpha * R > MIN_ALPHA` with `R` damped by roughness. Every dielectric has a
+nonzero Fresnel base, so the predicate was true for literally every sheet in
+the scene, arrows and all. This is the §4 pattern again in its sharpest form
+yet: **it will build a guard against a hazard it has correctly identified and
+never ask how much that guard costs.** One render would have shown it.
+
+Two lessons worth carrying, beyond "run the render yourself":
+
+* **Ask for the guard's cost, not just its correctness.** The brief should
+  say: "state what fraction of a real frame's sheets your guard excludes, and
+  measure it." A conservative guard and a disabled feature are the same
+  artifact from the inside; only a measurement separates them.
+* **The fix came from deleting its code, not adding to it.** Once measured,
+  the veto turned out to be unnecessary as well as fatal — ceding without any
+  reflectivity guard regressed nothing across a 234-frame scene. What the
+  hazard actually needed was a rule about *how much* a sheet cedes (a
+  majority or nothing), which no amount of source reading would have
+  suggested, because it comes from the fragment-centroid depth being an
+  unreliable estimator at fine margins — a fact about accuracy, not about
+  control flow. Ox reads control flow superbly and has no instinct for which
+  numbers are trustworthy.
+
+Mechanics: `opencode --version` was 1.18.21, already installed from the
+previous session's container image. Its 125 steps ran ~40 minutes with the
+step counter climbing steadily, matching the fifth task's "budget for an
+hour" rather than §4.1's hang signature.

@@ -20,7 +20,13 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as BACKFACE,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_LOSE_SHIFT as LOSE_SHIFT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MAT_OPAQUE_BIT as MAT_OPAQUE,
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as SLIVER,
@@ -87,8 +93,12 @@ def _compact(
     shade_split=False,
     tri_norm=None,
     positioned_depth=True,
+    sample_depth=False,
+    tri_extra=None,
 ):
     coverage, merged, cam, pws = _coverage(frags, tri_norm=tri_norm)
+    if tri_extra is not None:
+        merged["tri_extra"] = tri_extra
     return compact_sheets(
         coverage,
         merged,
@@ -101,6 +111,7 @@ def _compact(
         band_c=band_c,
         shade_split=shade_split,
         positioned_depth=positioned_depth,
+        sample_depth=sample_depth,
     )
 
 
@@ -761,3 +772,226 @@ def test_sheet_positioned_depth_setting_reaches_the_live_module():
         assert rt.SHEET_POSITIONED_DEPTH is True
     finally:
         rt.SHEET_POSITIONED_DEPTH = old
+
+
+# ---------------------------------------------------------------------------
+# Per-sample depth gating (rt_settings.SHEET_SAMPLE_DEPTH)
+# ---------------------------------------------------------------------------
+#
+# Two surfaces crossing inside one pixel, both claiming the whole sample
+# union at full exact coverage (the DESIGN_sheet_resolve.md ss6.1.1 case the
+# walk order cannot resolve: one scalar depth per sheet decides the pixel).
+# Per-sample nearest-owner depths interleave: surface 1 is strictly nearer at
+# samples {0,1,2}, surface 0 at {3..7}. The MAT_OPAQUE bit is what the
+# emission pipeline folds into fragment masks for material-opaque triangles.
+_CROSSING_FULL = [
+    # surface 0 (refs 0-3), nearest fragment leads the stream
+    (0, 1.0000, 0, 0.375, 0b11100000),
+    # surface 1 (refs 4-7)
+    (0, 1.0010, 4, 0.375, 0b00000111),
+    (0, 1.0020, 1, 0.625, 0b00011111),
+    (0, 1.0030, 5, 0.625, 0b11111000),
+]
+
+
+def _opaque(frags):
+    return [(p, t, r, c, m | MAT_OPAQUE) for p, t, r, c, m in frags]
+
+
+def _lose(msk_word):
+    """A mask word's per-sample lose bits."""
+    return (int(msk_word) >> LOSE_SHIFT) & MASK_ALL
+
+
+def test_interpenetrating_full_union_sheets_cede_strictly_nearer_samples():
+    out = _compact(_opaque(_CROSSING_FULL), band_rule="facing", sample_depth=True)
+    assert out["num_sheets"] == 2
+    # The walk order itself is untouched: surface 0's nearest fragment still
+    # leads, so sheet 0 is surface 0 and sheet 1 is surface 1.
+    assert _t(out, 0) == pytest.approx(1.000)
+    assert _t(out, 1) == pytest.approx(1.001)
+    # Each sheet carries the exact per-sample cession mask: surface 0 loses
+    # exactly {0,1,2} where surface 1 is strictly nearer; surface 1 loses
+    # exactly {3..7}.
+    assert _lose(out["sheet_msk"][0]) == 0b00000111
+    assert _lose(out["sheet_msk"][1]) == 0b11111000
+    # The weights the kernel consumes carry the same bits.
+    assert _lose(out["sheet_wmsk"][0]) == 0b00000111
+    assert _lose(out["sheet_wmsk"][1]) == 0b11111000
+    # Resolved through the oracle, the claims become winner-per-sample:
+    # 5/8 + 3/8 instead of one surface taking all eight samples.
+    total, claims = _resolve_band(out)
+    assert total == pytest.approx(1.0)
+    assert claims[0] == pytest.approx(0.625)
+    assert claims[1] == pytest.approx(0.375)
+
+
+def test_a_translucent_sheet_sets_no_floor():
+    # Without the MAT_OPAQUE bit surface 0 is no enforcer, so surface 1 finds
+    # nothing to cede {3..7} to -- while surface 0 is still gated by surface
+    # 1's own full-union opaque sheet.
+    frags = [
+        (0, 1.0000, 0, 0.375, 0b11100000),
+        (0, 1.0010, 4, 0.375, 0b00000111 | MAT_OPAQUE),
+        (0, 1.0020, 1, 0.625, 0b00011111),
+        (0, 1.0030, 5, 0.625, 0b11111000 | MAT_OPAQUE),
+    ]
+    out = _compact(frags, band_rule="facing", sample_depth=True)
+    assert _lose(out["sheet_msk"][0]) == 0b00000111
+    assert _lose(out["sheet_msk"][1]) == 0
+
+
+def test_a_partial_coverage_sheet_is_no_enforcer():
+    # Surface 0 covers only 0.95 of the pixel: outside the full-coverage dust
+    # band it must set no floor for surface 1, whatever its sample union says.
+    frags = [
+        (0, 1.0000, 0, 0.35, 0b11100000),
+        (0, 1.0010, 4, 0.375, 0b00000111),
+        (0, 1.0020, 1, 0.60, 0b00011111),
+        (0, 1.0030, 5, 0.625, 0b11111000),
+    ]
+    out = _compact(_opaque(frags), band_rule="facing", sample_depth=True)
+    assert _t(out, 0) == pytest.approx(1.000)
+    # Sheet 0 is surface 0 (its nearest fragment leads). Had its 0.95 area
+    # made it an enforcer, surface 1 would have lost {3..7} to it; being
+    # merely a subject it still cedes its own {0,1,2} to surface 1.
+    assert _lose(out["sheet_msk"][0]) == 0b00000111
+    assert _lose(out["sheet_msk"][1]) == 0
+
+
+def test_same_surface_sheets_never_gate_each_other():
+    # Front and back shells of ONE solid: both would be enforcers and both
+    # subjects, but a floor only binds across DIFFERENT surfaces.
+    out = _compact(
+        _opaque(
+            [
+                (0, 1.0, 0, 1.0, MASK_ALL),
+                (0, 2.0, 1, 1.0, BACKFACE | MASK_ALL),
+            ]
+        ),
+        band_rule="facing",
+        sample_depth=True,
+    )
+    assert out["num_sheets"] == 2
+    assert _lose(out["sheet_msk"][0]) == 0
+    assert _lose(out["sheet_msk"][1]) == 0
+
+
+def test_an_areal_sheet_gets_no_lose_bits():
+    # A donor-only sheet is position-less; the gate never applies to it even
+    # though the other surface is strictly nearer at every sample.
+    out = _compact(
+        _opaque(
+            [
+                (0, 1.0, 4, 1.0, MASK_ALL),
+                (0, 2.0, 0, 0.30, 0),
+                (0, 2.0002, 1, 0.10, 0),
+            ]
+        ),
+        band_rule="facing",
+        sample_depth=True,
+    )
+    assert out["num_sheets"] == 2
+    assert int(out["sheet_msk"][1]) & SLIVER != 0
+    assert _lose(out["sheet_msk"][1]) == 0
+
+
+def test_ties_within_the_epsilon_set_no_bits():
+    # Strictly-nearer with margin: a 5e-5 depth gap keeps today's walk order
+    # on BOTH sheets.
+    out = _compact(
+        _opaque(
+            [
+                (0, 1.0000, 4, 1.0, MASK_ALL),
+                (0, 1.00005, 0, 1.0, MASK_ALL),
+            ]
+        ),
+        band_rule="facing",
+        sample_depth=True,
+    )
+    assert out["num_sheets"] == 2
+    assert _lose(out["sheet_msk"][0]) == 0
+    assert _lose(out["sheet_msk"][1]) == 0
+
+
+def test_setting_off_leaves_every_output_at_today_s_semantics():
+    on = _compact(_opaque(_CROSSING_FULL), band_rule="facing", sample_depth=True)
+    off = _compact(_opaque(_CROSSING_FULL), band_rule="facing", sample_depth=False)
+    for field in (
+        "sheet_key",
+        "sheet_ref",
+        "sheet_cov",
+        "sheet_wgt",
+        "sheet_nfrag",
+        "sheet_fused",
+    ):
+        assert torch.equal(on[field], off[field]), field
+    for i in range(int(on["num_sheets"])):
+        assert _lose(off["sheet_msk"][i]) == 0
+        # The ONLY difference in either mask word is its lose bits.
+        assert int(off["sheet_msk"][i]) == int(on["sheet_msk"][i]) ^ (
+            _lose(on["sheet_msk"][i]) << LOSE_SHIFT
+        )
+
+
+def test_multi_sheet_bands_neither_cede_nor_floor():
+    # The deferral exemption: a band split into shade-class siblings claims
+    # against band-pooled arithmetic whose single occlusion write ignores
+    # slots, so its sheets are exempt on BOTH sides -- they neither receive
+    # lose bits from the nearer other-surface enforcer nor act as one for it.
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x), 4: (z, z, z)})
+    frags = [
+        # surface 1: near full-union opaque enforcer, strictly nearer than
+        # every sample the crease siblings own
+        (0, 0.5, 4, 1.0, MASK_ALL),
+        # surface 0 crease pair: one band, TWO sibling sheets
+        (0, 1.001, 0, 0.5, 0b00001111),
+        (0, 1.002, 1, 0.5, 0b11110000),
+    ]
+    split = _compact(
+        _opaque(frags),
+        band_rule="facing",
+        shade_split=True,
+        tri_norm=tn,
+        sample_depth=True,
+    )
+    assert split["num_sheets"] == 3
+    for i in range(3):
+        assert _lose(split["sheet_msk"][i]) == 0, i
+
+
+def test_a_sheet_cedes_everything_it_loses_or_nothing():
+    # A lane's depth is its FRAGMENT's centroid depth, not the lane's own, so a
+    # sheet losing only a thin share is reading the margin least entitled to
+    # decide -- and ceding there measurably regressed pixels the sheet already
+    # won. Surface 0 spans the pixel in two fragments (lanes 0-5 near, lanes
+    # 6-7 far) and surface 1 sits between them at every lane, so each is an
+    # enforcer for the other and the two cede in opposite proportions: surface
+    # 0 loses 2 of 8, exactly the 0.25 floor and so NOT more than it, and cedes
+    # nothing; surface 1 loses 6 of 8 and cedes all six.
+    frags = [
+        (0, 1.000, 0, 0.75, 0b00111111),
+        (0, 1.005, 4, 1.00, 0b11111111),
+        (0, 1.010, 1, 0.25, 0b11000000),
+    ]
+    out = _compact(_opaque(frags), band_rule="facing", sample_depth=True)
+    assert out["num_sheets"] == 2
+    assert _t(out, 0) == pytest.approx(1.000)
+    assert _lose(out["sheet_msk"][0]) == 0
+    assert _lose(out["sheet_msk"][1]) == 0b00111111
+
+
+def test_sheet_sample_depth_setting_reaches_the_live_module():
+    from algan import SETTINGS
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.SHEET_SAMPLE_DEPTH
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_sample_depth=False)
+        assert rt.SHEET_SAMPLE_DEPTH is False
+        SETTINGS.raytracing.experimental.set(sheet_sample_depth=True)
+        assert rt.SHEET_SAMPLE_DEPTH is True
+    finally:
+        rt.SHEET_SAMPLE_DEPTH = old

@@ -844,14 +844,28 @@ Recorded so they are not rediscovered from scratch. None is started.
   Added 2026-08-23. Two opaque surfaces crossing inside one pixel both claim
   exact area 1 and the full sample union, and a sheet carries one scalar
   depth, so the whole pixel goes to whichever sheet sorts first. Which one
-  that is has been repaired (`SHEET_POSITIONED_DEPTH`: an area donor, which
-  owns no sample, no longer sets a sheet's depth), so the pixel now lands on
-  the surface that is nearer at the samples — but the seam is still a hard
-  z-buffer edge where a supersampled reference blends. Blending it needs a
-  depth plane per sheet and a per-sample tie-break in the resolve;
-  `OX_SHEET_INTERPENETRATION_AUDIT.md` §6 scopes the seven call sites and
-  says plainly which datum does not exist yet (no sheet field describes a
-  depth *extent*). Unowned.
+  that is has been repaired twice. `SHEET_POSITIONED_DEPTH` (2026-08-23)
+  stopped an area donor — which owns no sample — from setting a sheet's
+  depth. `SHEET_SAMPLE_DEPTH` (2026-08-24, default on) makes the decision
+  PER SAMPLE rather than per pixel: the compaction reduces each sheet's
+  nearest fragment *owning each sample lane*, an opaque full-coverage sheet
+  publishes that as a per-(pixel, sample) floor, and another surface's sheet
+  cedes the samples where the floor is strictly nearer. This is what the
+  audit said did not exist — and it did not need a new datum, only a reduction
+  the fragments already supported. Measured against a route-off supersampled
+  reference on `solids_and_camera`: t=14.3 nine pixels move and all nine land
+  closer (169 -> 2, 152 -> 0; summed error 834 -> 61), t=19.1 nine better and
+  two worse; 150 pixels move over the 234-frame scene and none lands on the
+  background. `benchmarks/_sample_depth_check.py` is the acceptance run.
+
+  **Still open, and now the whole of what is left here:** the seam is a
+  per-sample z-buffer, not an antialiased crossing. A ceded sample goes wholly
+  to the winner, and because a lane's depth is its fragment's CENTROID depth
+  the margin is untrustworthy when it is fine — hence the all-or-nothing rule
+  above a `_SAMPLE_DEPTH_CEDE_FRACTION` floor, and hence the residual
+  over-correction on pixels a reference blends. A true blend needs a depth plane per sheet and a
+  per-sample tie-break in the resolve; `OX_SHEET_INTERPENETRATION_AUDIT.md`
+  §6 scopes those call sites. Unowned.
 
 
 ## 20. The shadow terminator on diced surfaces
