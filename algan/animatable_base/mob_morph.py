@@ -1373,6 +1373,16 @@ class MobMorphMixin:
                         source.get_center(),
                     )
                     self._collapse_hierarchy_at(surrogate, anchor)
+                    # A COLLAPSED SEED IS A POINT, AND A POINT AT FULL OPACITY
+                    # IS A BRIGHT SPECK THAT CAME FROM NOWHERE. The seed carries
+                    # the target's colour and material, so at zero size it
+                    # rendered as a hard dot sitting at an unrelated source
+                    # vertex for a third of the morph before inflating into a
+                    # solid. Growth still says where the new geometry comes
+                    # from; the fade is what makes it arrive rather than pop.
+                    # Its counterpart is the sink below, which fades as it
+                    # shrinks for the same reason.
+                    self._zero_hierarchy_opacity(surrogate)
                     self._register_hierarchy_for_render(surrogate)
                     surrogate.spawn(animate=False)
                     pair_specs.append((surrogate, target_primitive, target_index))
@@ -1393,8 +1403,12 @@ class MobMorphMixin:
                     else:
                         anchor = target.get_center()
                     self._collapse_hierarchy_at(sink, anchor)
-                    if source_primitive._morph_family == "image":
-                        self._zero_hierarchy_opacity(sink)
+                    # Symmetric with the surrogate above: a surplus source that
+                    # only shrinks ends as a full-brightness speck and then is
+                    # despawned, so the last thing the viewer sees of it is a
+                    # dot blinking out. Fading it as it shrinks is the same
+                    # treatment images already got here.
+                    self._zero_hierarchy_opacity(sink)
                     pair_specs.append((source_primitive, sink, None))
 
             results_by_target = {}
