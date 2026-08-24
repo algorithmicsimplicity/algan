@@ -302,6 +302,18 @@ def _mesh_ids_from_collection(members, counts):
     return torch.cat(blocks).contiguous(), next_id
 
 
+def _declares_no_shadow_cast(primitive):
+    """Whether this primitive declined to cast, as one bool for the whole mob.
+
+    Only for keying a merge group (``get_batch_identifier``), never for what the
+    renderer reads -- that is per primitive and goes through
+    :func:`shadow_cast_flag`. A primitive's declaration is one constant, so
+    reducing it to a bool here loses nothing.
+    """
+    value = getattr(primitive, "no_shadow_cast", None)
+    return bool(value is not None and bool((value > 0.5).any()))
+
+
 def shadow_cast_flag(no_shadow_cast, num_prims, device):
     """Per-primitive "this geometry blocks light" flag, ``[1, N]`` bool.
 
@@ -309,10 +321,22 @@ def shadow_cast_flag(no_shadow_cast, num_prims, device):
     (:meth:`RayTracedTrianglePrimitive.declare_shadow_flags`) to one bool per
     primitive, which is the granularity the BVH leaf word carries: a leaf holds
     a whole primitive, so a flag that varied across a triangle's corners could
-    not be represented there. Taken amax over corners and frames, so a
-    primitive that declines to cast at ANY authored moment declines everywhere
-    -- the flag is documented as fixed for the render, and reducing this way
-    makes that true of the packed value rather than merely asserted of the API.
+    not be represented there. Reads CORNER 0 and reduces amax over what is left
+    and over frames, so a primitive that declines to cast at ANY authored moment
+    declines everywhere -- the flag is documented as fixed for the render, and
+    reducing this way makes that true of the packed value rather than merely
+    asserted of the API. Corner 0 stands for the whole triangle because every
+    producer writes a corner-uniform constant (``declare_shadow_flags`` fills
+    with ``full_like``, and the PN dice interpolates a constant to itself); a
+    producer that ever wrote a per-corner value would want this to reduce over
+    corners too, which it does not do today.
+
+    Reducing over FRAMES is exact only because a merged primitive column means
+    one mob for the whole batch. That is an enforced invariant rather than an
+    accident: a diced collection would otherwise let a column change hands
+    between frames, which is why
+    ``LogicalPNTrianglePrimitive.get_batch_identifier`` splits merge groups by
+    this flag.
 
     ``None`` (nothing declared -- a primitive built before the flags, or one
     whose collection merge filled the column with the 0.0 default) is every
@@ -1366,10 +1390,27 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             raise ValueError("render_tolerance must be greater than zero")
 
     def get_batch_identifier(self):
+        # The shadow-casting declaration joins the key, and ONLY here: the BVH
+        # leaf word carries one bit per merged primitive column for the whole
+        # batch, which assumes a column means one mob's flag on every frame. A
+        # diced collection breaks that assumption and nothing else does -- each
+        # frame dices adaptively, so a column hosting a patch of mob A in one
+        # frame can host a patch of mob B in the next, and the reduction that
+        # turns the per-corner declaration into that one bit
+        # (``shadow_cast_flag``) has to be conservative over frames. Merging a
+        # non-caster with a caster therefore ate part of the CASTER's shadow:
+        # measured as a bite out of a sphere's shadow ellipse on every frame of
+        # ``benchmarks/_shadow_flags_mixed_dice_check.py``, which is the guard.
+        # Splitting the merge group restores the assumption instead of weakening
+        # the bit. Flat triangles and circuits need no such split -- neither is
+        # diced, so their column-to-primitive mapping is fixed for the batch --
+        # and ``receives_shadows`` needs none either, since the material block it
+        # rides is itself per frame.
         return (
             f"{super().get_batch_identifier()}"
             f"_logical_pn_render_tolerance={self.render_tolerance}"
             f"_logical_pn_render_tolerance_pixels={self.render_tolerance_pixels}"
+            f"_casts_shadows={_declares_no_shadow_cast(self)}"
         )
 
     def _pixel_threshold(self, screen_height):

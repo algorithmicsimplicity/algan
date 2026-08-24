@@ -251,6 +251,15 @@ class Mob(
     #:
     #: Set it before the Mob is spawned, and like ``casts_shadows`` it is a
     #: plain attribute rather than an animatable one.
+    #:
+    #: Two kinds of Mob ignore it, both because they were never shadowed to
+    #: begin with: 2-D geometry (a shape, ``Text``) renders unlit, and so does
+    #: anything with :meth:`~.Mob.set_shader` ``None``. A Mob carrying a custom
+    #: fragment pipeline (:meth:`~.Mob.set_fragment_shader`) also ignores it,
+    #: because the slot this rides in the material block belongs to that
+    #: pipeline's own parameters -- the same reason a custom pipeline is never
+    #: asked about ``two_sided``. ``casts_shadows`` has none of these
+    #: exceptions: all three still cast.
     receives_shadows = True
 
     #: Opaque hashable identifying the SURFACE this Mob's geometry belongs to,

@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan import Cube, Group, Prism, Square, Text
+from algan import Cube, Group, Prism, Sphere, Square, Text
 from algan.rendering.raytracing.primitives import shadow_cast_flag
 from algan.rendering.raytracing.refit_bvh import (
     LINK_INVALID,
@@ -131,6 +131,42 @@ def test_text_glyphs_inherit_from_the_text_mob(fresh_scene):
     prims = _primitives(text)
     assert prims
     assert all(float(p.no_shadow_cast.min()) == 1.0 for p in prims)
+
+
+def test_diced_surfaces_with_different_flags_do_not_merge(fresh_scene):
+    """The invariant the leaf word depends on: one merged column, one mob's flag.
+
+    A logical-PN collection dices adaptively per frame, so a column can host a
+    patch of one mob in one frame and another mob's in the next. The leaf word
+    carries ONE bit per column for the whole batch, so merging a non-caster with
+    a caster made the caster's shadow partly disappear -- measured as a bite out
+    of a sphere's shadow ellipse on every frame
+    (``benchmarks/_shadow_flags_mixed_dice_check.py``). Keeping them in separate
+    merge groups is what restores the assumption.
+    """
+    quiet = Sphere(radius=1.0)
+    quiet.casts_shadows = False
+    loud = Sphere(radius=1.0)
+    quiet.spawn(animate=False)
+    loud.spawn(animate=False)
+    quiet_ids = {p.get_batch_identifier() for p in _primitives(quiet)}
+    loud_ids = {p.get_batch_identifier() for p in _primitives(loud)}
+    assert quiet_ids
+    assert loud_ids
+    assert not (quiet_ids & loud_ids), (
+        "a non-casting surface shares a merge group with a casting one"
+    )
+
+
+def test_same_flag_surfaces_still_merge(fresh_scene):
+    """...and the split costs nothing when the flags agree, which is the norm."""
+    a = Sphere(radius=1.0)
+    b = Sphere(radius=1.0)
+    a.spawn(animate=False)
+    b.spawn(animate=False)
+    assert {p.get_batch_identifier() for p in _primitives(a)} == {
+        p.get_batch_identifier() for p in _primitives(b)
+    }
 
 
 def test_a_morph_endpoint_adopts_the_flags(fresh_scene):

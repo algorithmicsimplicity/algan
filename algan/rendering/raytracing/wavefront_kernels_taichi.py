@@ -2688,16 +2688,17 @@ def wavefront_shade(
                             # receives_shadows False never consumes ``vis``
                             # either: it is shaded as though every light
                             # reached it, so the fan is skipped for the same
-                            # reason an unlit hit skips it. The width test
-                            # mirrors the sheet route's (see
-                            # sheet_resolve_taichi): a scene of nothing but
-                            # custom fragment pipelines packs a block that may
-                            # be narrower than the built-in layout.
+                            # reason an unlit hit skips it. Asked of BUILT-IN
+                            # pipelines only, and behind a width test -- see
+                            # sheet_resolve_taichi for why slot 33 belongs to a
+                            # custom pipeline whenever its block is wide enough
+                            # to have one.
                             recv_s = 1
-                            if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
-                                if tri_mat[f % tri_mat.shape[0], prim,
-                                           _MAT_NO_SHADOW_RECEIVE] > 0.5:
-                                    recv_s = 0
+                            if pid_s < _USER_PIPELINE_BASE:
+                                if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
+                                    if tri_mat[f % tri_mat.shape[0], prim,
+                                               _MAT_NO_SHADOW_RECEIVE] > 0.5:
+                                        recv_s = 0
                             if (pid_s != _MID_UNLIT) and (recv_s == 1):
                                 do_fan = 1
                                 if pid_s < _USER_PIPELINE_BASE:

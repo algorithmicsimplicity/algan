@@ -376,6 +376,10 @@ class TriangleMesh(Mob):
         shells = self.triangle_shell_ids()
         if shells is not None:
             primitive.mesh_ids = shells
+        # An imported model honours the shadow flags like anything else. The
+        # declaration is resolved through the hierarchy, so setting it on the
+        # ThreeDModelMob covers the TriangleMesh children it holds.
+        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
         return primitive
 
     def triangle_shell_ids(self):
