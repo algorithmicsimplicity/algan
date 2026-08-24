@@ -133,6 +133,47 @@ def test_text_glyphs_inherit_from_the_text_mob(fresh_scene):
     assert all(float(p.no_shadow_cast.min()) == 1.0 for p in prims)
 
 
+def test_a_morph_endpoint_adopts_the_flags(fresh_scene):
+    """``become()`` takes plain geometry metadata from its target.
+
+    Neither flag lives on the timeline, so the same-kind morph path -- which
+    copies the intersection of the two Mobs' animatable attrs -- would carry
+    neither, and a morph would end with the target's geometry wearing the
+    source's shadow behaviour. ``_MORPH_ADOPTED_ATTRS`` is what stops that,
+    beside ``two_sided`` and ``closed_shell``.
+    """
+    source = Cube(side_length=1.0, fill_opacity=1).spawn(animate=False)
+    target = Cube(side_length=1.5, fill_opacity=1)
+    target.casts_shadows = False
+    target.receives_shadows = False
+    assert (source.casts_shadows, source.receives_shadows) == (True, True)
+    source._adopt_structural_attrs(target)
+    assert (source.casts_shadows, source.receives_shadows) == (False, False)
+
+
+def test_the_kill_switch_stops_the_flag_reaching_the_primitive(
+    fresh_scene, monkeypatch
+):
+    """``ALGAN_PER_MOB_SHADOW_FLAGS=0`` leaves the packed value at its default.
+
+    The switch is host-side by design -- nothing is stamped into the leaf word
+    and the material slot keeps its 0.0 -- so no kernel variant changes and
+    there is no ti.static gate to go stale mid-process. Rendered proof that the
+    frame is then byte-identical lives in the acceptance harness; this pins the
+    mechanism.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    monkeypatch.setattr(rt_settings, "PER_MOB_SHADOW_FLAGS", False)
+    cube = Cube(side_length=1.0, fill_opacity=1)
+    cube.casts_shadows = False
+    cube.spawn(animate=False)
+    for p in _primitives(cube):
+        # The declaration is still made -- the switch acts where it is CONSUMED.
+        assert float(p.no_shadow_cast.min()) == 1.0
+        assert bool(shadow_cast_flag(p.no_shadow_cast, 1, torch.device("cpu")).all())
+
+
 # --------------------------------------------------------------------------
 # The declaration reaches the two words the traversal already loads.
 # --------------------------------------------------------------------------
