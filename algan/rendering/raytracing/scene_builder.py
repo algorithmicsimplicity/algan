@@ -1154,6 +1154,54 @@ def _build_textured_scene(scene, num_frames, device):
     )
 
 
+def _densify_frag_pipeline_ids(scene):
+    """Renumber this batch's user fragment-pipeline ids into a dense range.
+
+    A pipeline's id is its position in a process-global, append-only registry
+    (``fragment_shaders.register_pipeline``), and the shade kernel's injected
+    ``frag_pipelines`` tuple is indexed by that id. Taichi specialises on the
+    tuple, so with global ids the SAME custom shader compiles a different
+    kernel depending on how many other pipelines the process registered before
+    it: in one process a lone pipeline is ``(fn,)``, in the next it is
+    ``(None, None, fn)``. Nothing reuses a variant across those, in the
+    process or in the offline cache, and a test suite pays a cold compile per
+    custom-shader render.
+
+    So the batch renumbers: the user ids it actually carries, in ascending
+    global order, become ``_USER_PIPELINE_BASE + 0, +1, ...``. The injected
+    tuple's shape is then a function of the batch's own content -- one
+    pipeline is always ``(fn,)`` -- while ``scene["frag_pipeline_ids"]`` keeps
+    the global ids, in slot order, so the tracer can still find the funcs.
+
+    Built-in ids (below ``_USER_PIPELINE_BASE``) and the negative sentinels
+    are left exactly as they are; only user pipelines move. Sets
+    ``scene["tri_material_ids"]`` as a side effect, since it has the unique
+    ids in hand and the merge would otherwise recompute them.
+    """
+    mat_id = scene["tri_mat_id"]
+    present = tuple(int(v) for v in torch.unique(mat_id.detach().cpu()).tolist())
+    user = tuple(v for v in present if v >= _USER_PIPELINE_BASE)
+    scene["frag_pipeline_ids"] = user
+    dense = tuple(range(_USER_PIPELINE_BASE, _USER_PIPELINE_BASE + len(user)))
+    if user and user != dense:
+        # One gather over a [0, max] lookup table; the ``>=`` guard keeps
+        # built-ins and sentinels off it rather than relying on the table's
+        # identity prefix, so a negative id can never index it.
+        table = torch.arange(user[-1] + 1, dtype=mat_id.dtype, device=mat_id.device)
+        for old, new in zip(user, dense):
+            table[old] = new
+        scene["tri_mat_id"] = torch.where(
+            mat_id >= _USER_PIPELINE_BASE,
+            table.index_select(0, mat_id.clamp_min(0).reshape(-1).long()).view_as(
+                mat_id
+            ),
+            mat_id,
+        ).contiguous()
+        renumbered = dict(zip(user, dense))
+        present = tuple(sorted(renumbered.get(v, v) for v in present))
+    scene["tri_material_ids"] = present
+
+
 def _merge_scene(primitives):
     """Merge the batch's collections into one set per geometry type --
     triangles and bezier circuits, each with a single STBVH
@@ -1401,6 +1449,10 @@ def _merge_scene(primitives):
         scene["tri_mat_id"] = _cat_collections(
             _geom("_rt_tri_mat_id"), 1, "triangle merge"
         )
+        # Before anything reads the ids: the memory trim below compacts this
+        # very table, and the host-side classification at the end of the merge
+        # reuses the unique ids this leaves behind.
+        _densify_frag_pipeline_ids(scene)
         scene["tri_mat"] = _cat_mat_blocks(_geom("_rt_tri_mat"), "triangle merge")
         lo = _cat_collections(_geom("_rt_frame_lo"), 1, "triangle merge")
         hi = _cat_collections(_geom("_rt_frame_hi"), 1, "triangle merge")
@@ -1803,10 +1855,14 @@ def _merge_scene(primitives):
     # Host-side render classification.  The uploaded material-id tensors are
     # kernel data; renderer dispatch/bucketing must not run CUDA reductions or
     # uniqueness passes after the arena has consumed the device allowance.
-    ids = scene["tri_mat_id"].detach().cpu()
-    scene["tri_material_ids"] = tuple(
-        int(value) for value in torch.unique(ids).tolist()
-    )
+    if "tri_material_ids" not in scene:
+        # The triangle branch's ``_densify_frag_pipeline_ids`` already took
+        # this unique; only a batch with no triangles at all reaches here.
+        ids = scene["tri_mat_id"].detach().cpu()
+        scene["tri_material_ids"] = tuple(
+            int(value) for value in torch.unique(ids).tolist()
+        )
+        scene["frag_pipeline_ids"] = ()
     scene["has_user_pipeline"] = any(
         material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )

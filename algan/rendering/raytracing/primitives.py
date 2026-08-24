@@ -430,7 +430,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # a batch. For a flat collection these are triangle counts; for a
             # logical-PN collection, PATCH counts (the dice maps them to
             # per-frame triangle ids).
-            self._rt_obj_counts = [
+            #
+            # These three attributes carry NO ``_rt_`` prefix, and that is
+            # load-bearing rather than cosmetic: the prefix marks packed state
+            # that a projection rebuilds, and ``RenderPrimitive.slice_time_window``
+            # deletes every ``_rt_*`` attribute of the shallow copy it hands
+            # the arena preflight. Nothing rebuilds surface identity -- it is
+            # resolved here, once, from members the copy no longer holds -- so
+            # a prefixed name is silently dropped for every render that slices
+            # a frame window (which is every video render, and no
+            # ``save_frame``), collapsing the whole collection to one id.
+            self._obj_counts = [
                 int(t.corners.shape[1]) // 3 for t in triangle_collection
             ]
             # A member's count is the right surface granularity only when one
@@ -443,8 +453,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # into per-triangle shells -- which ``_mesh_ids_from_collection``
             # resolves into explicit per-triangle ids. ``None`` keeps the
             # per-member counts, so a mob that declares nothing is unchanged.
-            self._rt_obj_ids, self._rt_obj_ids_n = _mesh_ids_from_collection(
-                triangle_collection, self._rt_obj_counts
+            self._obj_ids, self._obj_ids_n = _mesh_ids_from_collection(
+                triangle_collection, self._obj_counts
             )
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
@@ -496,12 +506,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 normal_texture_map=normal_texture_map,
                 **shader_kwargs,
             )
-            self._rt_obj_counts = None
+            self._obj_counts = None
             # A lone primitive is one surface unless it declares its own shells
             # (a packed-grid Surface, a multi-part glTF mesh).
-            self._rt_obj_ids, self._rt_obj_ids_n = _mesh_ids_from_collection(
-                [self], None
-            )
+            self._obj_ids, self._obj_ids_n = _mesh_ids_from_collection([self], None)
             self._derive_material_surface_params()
             # Two-sided until the mob says otherwise, which it does after
             # construction (``declare_one_sided``) -- the same point at which
@@ -1049,8 +1057,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # ``mesh_ids`` declarations (``_mesh_ids_from_collection``); then the
         # per-member counts, which are what a collection declaring nothing gets.
         pn_obj = getattr(self, "_logical_pn_tri_obj", None)
-        obj_ids = getattr(self, "_rt_obj_ids", None)
-        counts = getattr(self, "_rt_obj_counts", None)
+        obj_ids = getattr(self, "_obj_ids", None)
+        counts = getattr(self, "_obj_counts", None)
         if not rt_settings.MESH_ID:
             obj_ids = None
         if pn_obj is not None:
@@ -1063,7 +1071,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             )
         elif obj_ids is not None:
             self._rt_tri_obj = obj_ids.view(1, -1).to(corners.device).contiguous()
-            self._rt_tri_obj_n = int(self._rt_obj_ids_n)
+            self._rt_tri_obj_n = int(self._obj_ids_n)
         elif counts:
             self._rt_tri_obj = (
                 torch.repeat_interleave(
@@ -2083,23 +2091,23 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # tail rows (c >= the frame's total) clamp to the last patch; they are
         # alpha-zero and never emit a fragment.
         num_patches = counts.shape[1] if counts.ndim > 1 else 0
-        counts_src = getattr(self, "_rt_obj_counts", None)
+        counts_src = getattr(self, "_obj_counts", None)
         # Same three sources in the same order as the flat path in
         # ``_pack_projected_flat_geometry``, most specific first: the members'
         # own ``mesh_key``/``mesh_ids`` declaration, then the per-member counts.
         # Consulting the declaration here is what makes it reach a DICED
         # surface at all -- ``_pack_projected_flat_geometry`` gives ``pn_obj``
-        # priority over ``_rt_obj_ids``, so whatever this builds is final. A
+        # priority over ``_obj_ids``, so whatever this builds is final. A
         # packed-grid ``Surface`` is one member covering every packed sphere, so
         # without it the whole pack dices to a single surface id and the
         # per-grid ``mesh_ids`` that ``Surface.get_render_primitives`` stamps
         # are read by nothing. A logical-PN member's ``mesh_ids`` are per PATCH
         # (its ``corners`` are patch corners), which is the granularity wanted
         # here; the searchsorted below carries them to the diced rows.
-        obj_ids = getattr(self, "_rt_obj_ids", None) if rt_settings.MESH_ID else None
+        obj_ids = getattr(self, "_obj_ids", None) if rt_settings.MESH_ID else None
         if obj_ids is not None:
             patch_source = obj_ids.reshape(-1).to(device=device, dtype=torch.int32)
-            self._logical_pn_tri_obj_n = int(self._rt_obj_ids_n)
+            self._logical_pn_tri_obj_n = int(self._obj_ids_n)
         elif counts_src:
             patch_source = torch.repeat_interleave(
                 torch.arange(len(counts_src), dtype=torch.int32, device=device),

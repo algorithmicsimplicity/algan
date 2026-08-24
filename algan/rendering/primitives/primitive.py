@@ -63,6 +63,16 @@ class RenderPrimitive:
         Topology, shader objects, texture metadata and scene/memory handles are
         shared.  Packed ``_rt_*`` state is deliberately cleared: each candidate
         is projected and merged independently during arena preflight.
+
+        The ``_rt_`` prefix is therefore a CONTRACT, not a spelling: an
+        attribute wearing it must be one a projection rebuilds from what the
+        copy still holds.  Anything a primitive resolves once at construction
+        from its collection members -- the members are not copied, so nothing
+        can rebuild it -- has to be named without the prefix or it is dropped
+        here, silently and only on the renders that slice a window.  Surface
+        identity (``_obj_counts`` / ``_obj_ids`` / ``_obj_ids_n``, which decide
+        how many mobs a merged collection's ``tri_obj`` can tell apart) is the
+        case that established the rule.
         """
         start = int(start)
         end = int(end)

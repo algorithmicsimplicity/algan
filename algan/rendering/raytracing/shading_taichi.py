@@ -1448,9 +1448,14 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
     RGB + glow as a ``vec4``.
 
     ``frag_pipelines`` carries only the pipelines *this batch* uses (see
-    ``fragment_shaders.build_frag_pipelines``); an unused slot is ``None`` and
-    compiles out, so the registry's other pipelines cost this kernel nothing
-    and, more to the point, do not change its Taichi specialization.
+    ``fragment_shaders.build_frag_pipelines``), packed densely: the merge
+    renumbers the batch's ids so slot ``i`` is the pipeline packed as
+    ``_USER_PIPELINE_BASE + i``. The registry's other pipelines therefore cost
+    this kernel nothing and -- the point of the renumbering -- do not change
+    its Taichi specialization, so one custom shader compiles the same variant
+    whatever else the process registered around it. (A ``None`` slot can still
+    reach the parallel scatter tuple, where it means "no custom scatter", and
+    compiles out under ``ti.static(bool(fn))``.)
 
     ``pids_present`` (compile-time) is the host's bitmask of the ids this
     batch's primitives actually carry, and selects one of three dispatches:

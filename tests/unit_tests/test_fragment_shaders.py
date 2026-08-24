@@ -92,17 +92,39 @@ def test_a_batch_injects_only_the_pipelines_it_uses():
     first, _ = build_fragment_pipeline(cosine_color)
     second, _ = build_fragment_pipeline([cosine_color, phong_shader])
 
-    only_second = build_frag_pipelines(frozenset({second._frag_pipeline_id}))
-    # Slot position IS the pipeline id, so an unused slot is None rather than
-    # closed up; the tuple is trimmed after the last one used.
-    assert len(only_second) == second._frag_pipeline_id - _USER_PIPELINE_BASE + 1
-    assert only_second[first._frag_pipeline_id - _USER_PIPELINE_BASE] is None
-    assert only_second[second._frag_pipeline_id - _USER_PIPELINE_BASE] is not None
+    only_second = build_frag_pipelines((second._frag_pipeline_id,))
+    assert len(only_second) == 1
+    assert only_second[0] is not None
 
-    both = build_frag_pipelines(
-        frozenset({first._frag_pipeline_id, second._frag_pipeline_id})
-    )
+    both = build_frag_pipelines((first._frag_pipeline_id, second._frag_pipeline_id))
+    assert len(both) == 2
     assert None not in both
+    assert both[0] is not both[1]
+
+
+def test_the_injected_tuple_does_not_depend_on_the_registrys_history():
+    """REGRESSION, and the reason the ids are renumbered per batch.
+
+    A pipeline's id is its position in a process-global append-only registry,
+    and the injected tuple used to be indexed by that id -- padded with
+    ``None`` up to it. So one pipeline was ``(fn,)`` if it registered first and
+    ``(None, None, fn)`` if two others beat it to the registry, Taichi
+    specialised the shade kernel on the difference, and the same custom shader
+    compiled a fresh uncached variant per process. The merge now renumbers a
+    batch's ids into a dense range, so the shape depends on the batch alone.
+
+    (This is also what made the old assertion order-dependent: run after
+    another module had registered the same two pipelines in the other order,
+    it indexed past the end of its own narrowed tuple.)
+    """
+    early, _ = build_fragment_pipeline(cosine_color)
+    for _ in range(3):  # push the registry along
+        build_fragment_pipeline([cosine_color, phong_shader, cosine_color])
+    late, _ = build_fragment_pipeline([phong_shader, cosine_color])
+
+    assert late._frag_pipeline_id > early._frag_pipeline_id
+    assert len(build_frag_pipelines((early._frag_pipeline_id,))) == 1
+    assert len(build_frag_pipelines((late._frag_pipeline_id,))) == 1
 
 
 def test_solo_dispatch_never_calls_an_uninjected_pipeline():
@@ -132,15 +154,13 @@ def test_unenumerable_ids_fall_back_to_the_whole_registry():
     assert _batch_user_pipeline_ids({"tri_mat_id": ids}) is None
     assert build_frag_pipelines(None) != ()
 
-    # Enumerable: built-in ids are not pipelines, and PN patches contribute
-    # alongside triangles.
-    merged = {
-        "tri_material_ids": (0, 3, _USER_PIPELINE_BASE),
-        "pn_material_ids": (_USER_PIPELINE_BASE + 1,),
-    }
-    assert _batch_user_pipeline_ids(merged) == frozenset(
-        {_USER_PIPELINE_BASE, _USER_PIPELINE_BASE + 1}
-    )
+    # Enumerable: the merge publishes the batch's GLOBAL ids in the slot order
+    # it renumbered them into, and that list is what the narrowing reads.
+    merged = {"frag_pipeline_ids": (_USER_PIPELINE_BASE + 1,)}
+    assert _batch_user_pipeline_ids(merged) == (_USER_PIPELINE_BASE + 1,)
+    # A batch with no user pipeline at all is enumerable and empty -- NOT the
+    # unenumerable fallback, which would compile the whole registry in.
+    assert _batch_user_pipeline_ids({"frag_pipeline_ids": ()}) == ()
 
 
 def test_a_render_after_registering_a_pipeline_injects_nothing(tmp_path, monkeypatch):

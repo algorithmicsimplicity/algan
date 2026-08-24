@@ -209,24 +209,26 @@ def register_pipeline(stages):
 
 def _select_by_pid(entries, pids):
     """``entries`` (a registry list indexed by ``pid - _USER_PIPELINE_BASE``)
-    narrowed to the pipeline ids in ``pids``, or the whole list when ``pids``
-    is None.
+    gathered into the slot order ``pids`` asks for, or the whole list when
+    ``pids`` is None.
 
-    Slots outside ``pids`` become ``None`` -- the position of a pipeline IS its
-    id, so the slots cannot be closed up without renumbering every packed
-    per-primitive material id -- and the tuple is then trimmed after its last
-    live entry. Both kernel-side dispatches already compile a ``None`` slot out
-    (``ti.static(bool(fn))``), so a narrowed tuple costs the kernel nothing it
-    would not have paid anyway.
+    ``pids`` is the batch's GLOBAL pipeline ids **in the order the batch packs
+    them**, so slot ``i`` of the result is the pipeline the batch packed as
+    ``_USER_PIPELINE_BASE + i``. The scene merge renumbers a batch's ids to
+    exactly that dense range (``scene_builder._densify_frag_pipeline_ids``),
+    which is what makes the result's shape a function of the batch alone
+    rather than of how many pipelines the process happened to register first
+    -- and Taichi specialises the shade kernels on this tuple, so that
+    difference is the difference between reusing a compiled kernel and
+    compiling a new one.
+
+    ``None`` means "the whole registry, indexed by global id": the fallback
+    for a merged scene that carries no dense id list, whose packed ids are
+    therefore still global.
     """
     if pids is None:
-        selected = list(entries)
-    else:
-        keep = {int(pid) - _USER_PIPELINE_BASE for pid in pids}
-        selected = [entry if i in keep else None for i, entry in enumerate(entries)]
-    while selected and selected[-1] is None:
-        selected.pop()
-    return tuple(selected)
+        return tuple(entries)
+    return tuple(entries[int(pid) - _USER_PIPELINE_BASE] for pid in pids)
 
 
 def build_frag_pipelines(pids=None):
@@ -234,16 +236,16 @@ def build_frag_pipelines(pids=None):
     ``frag_pipelines`` template argument, indexed by ``pid -
     _USER_PIPELINE_BASE`` and ordered by id.
 
-    ``pids`` is the set of material pipeline ids the batch being rendered
-    actually carries; everything else is dropped (see :func:`_select_by_pid`).
-    Pass it. **The registry is process-global and append-only, and Taichi
-    specialises the shade kernels on this tuple**, so handing over the whole
-    registry puts every render in a process that ever registered a pipeline
-    onto its own uncached kernel variant -- including renders with no custom
-    shader at all, which is both the pathology this argument exists to close
-    and the reason a batch-narrowed tuple is what the tracer passes. ``None``
-    (the whole registry) is the conservative fallback for a batch whose merged
-    scene cannot enumerate its ids.
+    ``pids`` is the batch's own pipeline ids in packing order; everything else
+    is dropped (see :func:`_select_by_pid`). Pass it. **The registry is
+    process-global and append-only, and Taichi specialises the shade kernels
+    on this tuple**, so handing over the whole registry puts every render in a
+    process that ever registered a pipeline onto its own uncached kernel
+    variant -- including renders with no custom shader at all, which is both
+    the pathology this argument exists to close and the reason a batch-narrowed
+    tuple is what the tracer passes. ``None`` (the whole registry) is the
+    conservative fallback for a batch whose merged scene cannot enumerate its
+    ids.
     """
     return _select_by_pid(_PIPELINE_LIST, pids)
 

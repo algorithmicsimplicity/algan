@@ -577,7 +577,12 @@ class RenderLoopMixin:
         return primitives, _slice_render_state(render_state, 0, duration, total_frames)
 
     def _release_preflight_candidate(self, primitive_batch):
-        """Drop projected/merged state belonging to a rejected arena probe."""
+        """Drop projected/merged state belonging to a rejected arena probe.
+
+        Keyed off the ``_rt_`` prefix, which is the same contract
+        :meth:`~algan.rendering.primitives.primitive.RenderPrimitive.slice_time_window`
+        reads it as: a prefixed attribute is one a projection rebuilds.
+        """
         for primitive in primitive_batch:
             for name in tuple(vars(primitive)):
                 if name.startswith("_rt_"):

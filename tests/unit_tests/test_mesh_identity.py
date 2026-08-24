@@ -42,25 +42,33 @@ from algan import (
 from algan.rendering.raytracing.primitives import _mesh_ids_from_collection
 
 
-def _tri_obj(primitives):
-    """The per-triangle surface ids a collection of primitives resolves to.
+def _ids_of(collection):
+    """The per-triangle surface ids one built collection resolves to.
 
     Mirrors what ``_pack_projected_flat_geometry`` does without needing a
-    camera: the collection path resolves ``_rt_obj_ids`` at construction.
+    camera: the collection path resolves ``_obj_ids`` at construction.
     """
-    from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
-
-    collection = RayTracedTrianglePrimitive(triangle_collection=list(primitives))
-    ids, n = collection._rt_obj_ids, collection._rt_obj_ids_n
+    ids, n = collection._obj_ids, collection._obj_ids_n
     if ids is None:
         # No member declared identity: the per-member counts are the ids.
-        counts = collection._rt_obj_counts
+        counts = collection._obj_counts
         ids = torch.repeat_interleave(
             torch.arange(len(counts), dtype=torch.int32),
             torch.tensor(counts, dtype=torch.int64),
         )
         n = len(counts)
     return ids, n
+
+
+def _collection(primitives):
+    from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
+
+    return RayTracedTrianglePrimitive(triangle_collection=list(primitives))
+
+
+def _tri_obj(primitives):
+    """The per-triangle surface ids a collection of primitives resolves to."""
+    return _ids_of(_collection(primitives))
 
 
 def _primitives(mob):
@@ -188,7 +196,7 @@ def test_a_surface_is_one_surface():
 
 @pytest.mark.fast
 def test_two_spheres_in_one_collection_stay_two_surfaces():
-    """The case ``_rt_obj_counts`` was introduced for: the batcher merges every
+    """The case ``_obj_counts`` was introduced for: the batcher merges every
     same-identifier mob into one collection, so one member is not one surface.
     """
     with Scene():
@@ -198,6 +206,37 @@ def test_two_spheres_in_one_collection_stay_two_surfaces():
         ids, n = _tri_obj(_primitives(a) + _primitives(b))
         assert n == 2
         assert ids[0].item() != ids[-1].item()
+
+
+@pytest.mark.fast
+def test_surface_identity_survives_a_sliced_frame_window():
+    """REGRESSION. ``RenderPrimitive.slice_time_window`` deletes every ``_rt_*``
+    attribute of the shallow copy it hands the arena preflight, because a
+    prefixed attribute is one a projection rebuilds. Surface identity is not:
+    it is resolved once at construction from members the copy does not carry.
+
+    While it wore the prefix, every render that sliced a frame window lost it
+    -- which is every ``save_video`` (the preflight picks the batch's frame
+    prefix from views of one fetch) and no ``save_frame``, so a single frame
+    of a scene rendered correctly and the same frame of its video did not. A
+    whole merged collection collapsed to one ``tri_obj`` id, and the sheet
+    compaction, which keys a sheet on ``(pixel, mesh id, facing, band)``, then
+    fused unrelated mobs crossing one pixel into a single sheet shaded from
+    whichever fragment was largest: in ``solids_and_camera`` the red arrow's
+    shaft painted a pixel of the white Dot3D that the green arrow covered.
+    """
+    with Scene():
+        with Off():
+            a = Sphere(radius=1.0).spawn()
+            b = Sphere(radius=1.0).move(RIGHT * 3).spawn()
+        collection = _collection(_primitives(a) + _primitives(b))
+        ids, n = _ids_of(collection)
+        assert n == 2
+
+        sliced = collection.slice_time_window(0, 1, 1)
+        sliced_ids, sliced_n = _ids_of(sliced)
+        assert sliced_n == n
+        assert torch.equal(sliced_ids, ids)
 
 
 _CAPPED_SOLIDS = {
@@ -437,7 +476,7 @@ def test_a_packed_grid_declares_one_shell_per_sphere():
 def test_declared_shells_survive_the_logical_pn_dice(tmp_path):
     """REGRESSION. A packed grid is diced logical PN, and
     ``_pack_projected_flat_geometry`` gives the dice's ``_logical_pn_tri_obj``
-    priority over ``_rt_obj_ids``. The dice built its patch->surface map from
+    priority over ``_obj_ids``. The dice built its patch->surface map from
     the per-member COUNTS alone, so a lone packed primitive -- one member
     covering every sphere -- collapsed to a single id and the ``mesh_ids``
     resolved above were read by nothing, with MESH_ID on or off.

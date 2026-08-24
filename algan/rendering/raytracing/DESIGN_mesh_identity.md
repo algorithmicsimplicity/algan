@@ -1740,8 +1740,8 @@ its result. `1035 passed, 89 skipped` on `pytest -q tests/unit_tests`.
     and the reason was not that identity does not matter — it was that
     **`Surface`'s declared `mesh_ids` were never read by anything.** A packed
     grid is diced logical PN, `_pack_projected_flat_geometry` gives the dice's
-    `_logical_pn_tri_obj` priority over `_rt_obj_ids`, and `_dice_logical_pn`
-    built its patch→surface map from the per-member `_rt_obj_counts` alone. For a
+    `_logical_pn_tri_obj` priority over `_obj_ids`, and `_dice_logical_pn`
+    built its patch→surface map from the per-member `_obj_counts` alone. For a
     lone packed primitive — one member covering every sphere — that is a single
     id, so the whole pack diced to one surface and the `mesh_ids`
     `Surface.get_render_primitives` stamps (`surface.py:2618`, added by §2.2)

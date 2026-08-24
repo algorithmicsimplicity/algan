@@ -171,7 +171,7 @@ mean |d| 0.024.
 Getting there needed a DEFECT fixed. Both packed cases were byte-identical
 across MESH_ID at first, because a packed grid is diced logical PN and
 ``_dice_logical_pn`` built its patch->surface map from the per-member
-``_rt_obj_counts`` alone. A lone packed primitive is ONE member covering every
+``_obj_counts`` alone. A lone packed primitive is ONE member covering every
 sphere, so the pack diced to a single id and the ``mesh_ids``
 ``Surface.get_render_primitives`` stamps were resolved at construction and then
 thrown away. The dice now consults the declaration first, like the flat path.

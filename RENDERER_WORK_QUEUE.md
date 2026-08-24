@@ -867,6 +867,28 @@ Recorded so they are not rediscovered from scratch. None is started.
   per-sample tie-break in the resolve; `OX_SHEET_INTERPENETRATION_AUDIT.md`
   §6 scopes those call sites. Unowned.
 
+  **What was NOT this, and what it cost to find out** (2026-08-24). Five
+  arrow-coloured specks survived `SHEET_SAMPLE_DEPTH` in the triad's Act 3
+  (video frames 141–143, 154, 165) and read as more of the same residual. They
+  were a different defect entirely: `slice_time_window` deletes every `_rt_*`
+  attribute of the shallow copy the arena preflight renders, surface identity
+  wore that prefix, and nothing rebuilds it — so a merged collection collapsed
+  to ONE `tri_obj` id and the compaction fused the red arrow, the green arrow
+  and the Dot3D into a single sheet. Fixed by renaming the three attributes out
+  of the prefix (see `RenderPrimitive.slice_time_window`); 65 of 234 frames and
+  2687 pixels moved, and both remaining fused-sheet families in this scene (the
+  triad, and the saddle leaking through the torus at t≈19.1) went with it.
+
+  **The measurement trap it exposes, which applies to every item here:** the
+  preflight only slices a window when there is more than one frame, so a
+  `save_frame` of time *t* and the video's own frame at *t* were rendering
+  DIFFERENT scenes — same fragments, different sheets. Every harness in
+  `benchmarks/` that renders the triad (`_triad_artifact_frame.py`,
+  `_sample_depth_check.py`, `_triad_sheet_probe.py`) uses `save_frame` and was
+  therefore structurally blind to it. Reproduce a video artifact with a video
+  render (`_triad_video_probe.py`), and note that ffmpeg's 1-based frame files
+  are one ahead of the `--at` grid: `f0165.png` is `t = 16.4`.
+
 
 ## 20. The shadow terminator on diced surfaces
 

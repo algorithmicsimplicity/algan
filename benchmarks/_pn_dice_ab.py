@@ -152,11 +152,11 @@ def reference_dice(self, camera):
     max_triangles = int(counts.sum(1).amax().item()) if counts.numel() else 0
 
     num_patches = counts.shape[1] if counts.ndim > 1 else 0
-    counts_src = getattr(self, "_rt_obj_counts", None)
-    obj_ids = getattr(self, "_rt_obj_ids", None) if MESH_ID else None
+    counts_src = getattr(self, "_obj_counts", None)
+    obj_ids = getattr(self, "_obj_ids", None) if MESH_ID else None
     if obj_ids is not None:
         patch_source = obj_ids.reshape(-1).to(device=device, dtype=torch.int32)
-        self._logical_pn_tri_obj_n = int(self._rt_obj_ids_n)
+        self._logical_pn_tri_obj_n = int(self._obj_ids_n)
     elif counts_src:
         patch_source = torch.repeat_interleave(
             torch.arange(len(counts_src), dtype=torch.int32, device=device),

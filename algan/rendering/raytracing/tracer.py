@@ -3546,51 +3546,47 @@ def _scene_has_custom_scatter(merged):
         return False
     from algan.rendering.shaders.fragment_shaders import build_frag_scatters
 
+    # The whole registry, indexed by GLOBAL id -- so this must be asked with
+    # global ids, not with the dense ones the merge packs
+    # (``_batch_user_pipeline_ids`` returns exactly those globals).
     scatters = build_frag_scatters()
-    for prefix in ("tri", "pn"):
-        material_ids = merged.get(f"{prefix}_material_ids")
-        if material_ids is None:
+    ids = _batch_user_pipeline_ids(merged)
+    if ids is None:
+        ids = []
+        for prefix in ("tri", "pn"):
             arr = merged.get(f"{prefix}_mat_id")
-            material_ids = (
-                ()
-                if arr is None or not arr.numel()
-                else torch.unique(arr.detach().cpu()).tolist()
-            )
-        for pid in material_ids:
-            i = int(pid) - _USER_PIPELINE_BASE
-            if 0 <= i < len(scatters) and scatters[i] is not None:
-                merged["has_custom_scatter"] = True
-                return True
+            if arr is not None and arr.numel():
+                ids.extend(torch.unique(arr.detach().cpu()).tolist())
+    for pid in ids:
+        i = int(pid) - _USER_PIPELINE_BASE
+        if 0 <= i < len(scatters) and scatters[i] is not None:
+            merged["has_custom_scatter"] = True
+            return True
     merged["has_custom_scatter"] = False
     return False
 
 
 def _batch_user_pipeline_ids(merged):
-    """The user fragment-pipeline ids this batch's primitives carry, for
-    narrowing the injected pipeline / scatter tuples to what the batch can
-    reach (``fragment_shaders.build_frag_pipelines``).
+    """The user fragment-pipeline ids this batch's primitives carry, in the
+    slot order the batch packs them, for narrowing the injected pipeline /
+    scatter tuples to what the batch can reach
+    (``fragment_shaders.build_frag_pipelines``).
 
-    Returns ``None`` -- "the whole registry", the safe answer -- when a
-    geometry type is present but the merged scene cannot enumerate its
-    material ids, for the same reason ``_frag_pid_mask`` returns ``ALL_PIDS``
-    there: dropping a pipeline the kernel can still dispatch to would shade
-    that surface with no material at all. Reads only the merge-time host-side
-    id lists, so it costs no device reduction.
+    These are GLOBAL registry ids; the merge has renumbered the packed table
+    so that slot ``i`` is global id ``result[i]``
+    (``scene_builder._densify_frag_pipeline_ids``), which is what keeps the
+    injected tuple's shape a function of the batch rather than of the
+    process's registration history.
+
+    Returns ``None`` -- "the whole registry, indexed by global id", the safe
+    answer -- for a merged scene that carries no such list, whose packed ids
+    are therefore still global. That is the same reason ``_frag_pid_mask``
+    returns ``ALL_PIDS`` there: dropping a pipeline the kernel can still
+    dispatch to would shade that surface with no material at all. Reads only
+    the merge-time host-side list, so it costs no device reduction.
     """
-    ids = set()
-    for prefix in ("tri", "pn"):
-        material_ids = merged.get(f"{prefix}_material_ids")
-        if material_ids:
-            ids.update(
-                pid
-                for pid in (int(value) for value in material_ids)
-                if pid >= _USER_PIPELINE_BASE
-            )
-            continue
-        arr = merged.get(f"{prefix}_mat_id")
-        if arr is not None and arr.numel():
-            return None
-    return frozenset(ids)
+    ids = merged.get("frag_pipeline_ids")
+    return None if ids is None else tuple(ids)
 
 
 def _frag_pid_mask(merged, prefix, active, _record=True):
@@ -3693,15 +3689,18 @@ def _raytrace_render_wavefront_sorted(
     # Material bucket table: one entry per (geometry type, pipeline id) pair
     # present in the merged scene. Each bucket carries the composed pipeline
     # func + scatter func to inject and the geometry type's parameter block.
-    scatters = build_frag_scatters()
+    # Narrowed by the SAME ids the caller narrowed ``frag_pipelines`` with, so
+    # the two tuples share one indexing -- the merge renumbers a batch's
+    # pipeline ids, so a scatter list built from the whole registry would be
+    # indexed by global ids while the pipelines beside it are dense.
+    scatters = build_frag_scatters(_batch_user_pipeline_ids(merged))
 
     def _resolve(pid):
         if pid < _USER_PIPELINE_BASE:
             return builtin_pipeline_fn(pid), default_scatter
         i = pid - _USER_PIPELINE_BASE
         fn = frag_pipelines[i]
-        # Both tuples are trimmed after their last live entry, so a pipeline
-        # past the end of the scatter list is simply scatterless.
+        # A pipeline past the end of the scatter list is simply scatterless.
         sc = scatters[i] if i < len(scatters) else None
         return fn, (sc if sc is not None else default_scatter)
 
