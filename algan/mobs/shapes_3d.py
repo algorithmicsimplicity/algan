@@ -21,6 +21,7 @@ Unlike 2-D shapes, these respond to light. See
 
 from __future__ import annotations
 
+import inspect
 import math
 
 import torch
@@ -194,6 +195,18 @@ def _radial_and_axial_coordinates(points, center, axis):
     return radial, axial
 
 
+#: ``_CapDisc`` sizes its rim from ``geometry_tolerance`` and
+#: ``max_grid_resolution`` *before* it can call ``Surface.__init__``, so when a
+#: caller does not pass them it needs the same fallbacks that call is about to
+#: apply. Lifted here from the signature itself rather than restated, so the
+#: two cannot drift apart.
+_SURFACE_INIT_DEFAULTS = {
+    name: parameter.default
+    for name, parameter in inspect.signature(Surface.__init__).parameters.items()
+    if parameter.default is not inspect.Parameter.empty
+}
+
+
 class _CapDisc(Surface):
     """The flat disc that closes a ``Cylinder``'s end or a ``Cone``'s base.
 
@@ -212,10 +225,20 @@ class _CapDisc(Surface):
     rim and two along the radius, the inner row collapsing to the centre
     (welded like a sphere's pole). The rim comes from ``rim_function``, which
     the body supplies from the same expression its own ring is sampled at, so
-    the two land on each other vertex for vertex and the joint is watertight.
-    That is also why the resolution is passed in rather than searched from
-    ``geometry_tolerance``: a disc's flat interior is exact at any resolution,
-    so the search would answer "two" and leave a triangle.
+    every one of the body's ring vertices is a rim vertex.
+
+    The rim count starts at ``segments`` -- the body's own ring count -- and is
+    then grown in whole multiples of it until the chord polygon tracks the true
+    rim curve within ``geometry_tolerance``, capped at ``max_grid_resolution``
+    like any surface's search. The disc's flat *interior* is exact at any
+    resolution, which is why it is not handed to the resolution search; its
+    *rim* is not exact, and nothing downstream can fix it: PN cannot curve a
+    flat patch's boundary, so the rim stays straight chords at every dice level
+    however finely the renderer would cut. It is therefore sized here, at
+    construction, against the same tolerance the rest of the surface honours.
+    Whole multiples of the body's count keep the watertight joint -- every one
+    of the body's ring vertices remains exactly a rim vertex, and only
+    vertices strictly between them are added.
 
     Parameters
     ----------
@@ -228,7 +251,14 @@ class _CapDisc(Surface):
         The way the disc faces -- the outward normal of the solid it closes,
         shape ``(*, 3)``; it need not be normalized. Defaults to ``OUT``.
     segments
-        Samples around the rim. Defaults to ``25``.
+        The body's ring count: the starting sample count around the rim, so
+        every one of the body's ring vertices is a rim vertex from the outset.
+        The rim is refined upward from here in whole multiples of it until it
+        meets ``geometry_tolerance``. Defaults to ``25``.
+    geometry_tolerance, max_grid_resolution
+        Passed through to :class:`~algan.mobs.surfaces.surface.Surface`, and
+        also what the rim refinement above is measured against. Bodies pass
+        their own through; left unset they fall back to ``Surface``'s defaults.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
     """
@@ -253,9 +283,69 @@ class _CapDisc(Surface):
         # the solid, so the direction is measured against the outward normal
         # here rather than assumed, once, from the rim function itself.
         self._reverse = not self._sweep_faces(direction)
-        kwargs.setdefault("grid_width", max(3, int(segments)))
+        if "grid_width" not in kwargs:
+            # The bodies pass their tolerances in on the same kwargs, and the
+            # rim is sized against exactly those; left unset they fall back to
+            # the same ``Surface`` defaults the call below would apply. They
+            # stay in ``kwargs`` so the disc carries them like any surface.
+            kwargs["grid_width"] = self._rimmed_grid_width(
+                int(segments),
+                float(
+                    kwargs.get(
+                        "geometry_tolerance",
+                        _SURFACE_INIT_DEFAULTS["geometry_tolerance"],
+                    )
+                ),
+                int(
+                    kwargs.get(
+                        "max_grid_resolution",
+                        _SURFACE_INIT_DEFAULTS["max_grid_resolution"],
+                    )
+                ),
+            )
         kwargs.setdefault("grid_height", 2)
         super().__init__(*args, **kwargs)
+
+    def _rimmed_grid_width(self, segments, geometry_tolerance, max_grid_resolution):
+        """The smallest whole multiple of ``segments`` whose chord polygon hugs
+        the rim within ``geometry_tolerance``.
+
+        Whole multiples because the body-to-cap joint has no welding mechanism
+        beyond coincident samples (see ``Cylinder.add_bases``): refining by any
+        other step would drop body ring vertices off the rim. The search walks
+        upward over multipliers and takes the first count that meets the
+        tolerance, or the last one ``max_grid_resolution`` affords -- a rim
+        that cannot meet tolerance inside the cap is the degraded-but-
+        rendering situation every surface search tolerates, not an error.
+        """
+        chords = max(int(segments) - 1, 1)
+        width = max(3, int(segments))
+        for multiplier in range(1, int(max_grid_resolution)):
+            candidate = chords * multiplier + 1
+            if candidate > int(max_grid_resolution):
+                break
+            width = candidate
+            if self._rim_chord_deviation(chords * multiplier) <= float(
+                geometry_tolerance
+            ):
+                break
+        return max(3, width)
+
+    def _rim_chord_deviation(self, chord_count):
+        """The worst distance from a rim chord's midpoint to the true rim curve.
+
+        Sampled generically off ``rim_function`` -- the exact sagitta for a
+        circular rim, and the right generalisation for whatever else a body
+        hands this disc. This is the only measurement the rim's accuracy gets:
+        the render-time criteria compare a flat patch against its own straight
+        boundary (see ``_pn_geometry_deviation``), so nothing downstream can
+        refine a rim sized too coarsely here.
+        """
+        steps = torch.arange(chord_count + 1, dtype=torch.float32).reshape(-1, 1)
+        corners = self._rim_function(steps / chord_count).reshape(-1, 3)
+        midpoints = (corners[:-1] + corners[1:]) * 0.5
+        arcs = self._rim_function((steps[:-1] + 0.5) / chord_count).reshape(-1, 3)
+        return float((midpoints - arcs).norm(dim=-1).amax())
 
     def _sweep_faces(self, direction):
         """True if the rim, swept forwards, winds a fan facing ``direction``."""
@@ -277,7 +367,14 @@ class _CapDisc(Surface):
         return outward.expand(*uv.shape[:-1], 3)
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
-        """Zero: the disc is planar, so its PN patches lie on it exactly."""
+        """Zero: the disc's planar interior is exact at any resolution.
+
+        True of the interior only. PN cannot curve a flat patch's *boundary* --
+        the rim stays straight chords however finely it is diced -- so the rim
+        is sized against ``geometry_tolerance`` at construction instead
+        (``_rimmed_grid_width``); there is nothing for a render-time search to
+        measure or refine here.
+        """
         return torch.zeros_like(pn_points[..., 0])
 
 
@@ -440,7 +537,11 @@ class Cone(Surface):
         Defaults to ``OUT`` (out of the screen, towards the viewer).
     show_base
         Whether to cap the base with a filled circle. Defaults to ``False``: the
-        cone is open, so the camera can see inside it.
+        cone is open, so the camera can see inside it. The disc samples its rim
+        more finely than the cone samples its rings -- it has to, since a flat
+        disc's boundary cannot be refined at render time the way the curved
+        side's is -- so a capped cone carries more triangles than the side
+        alone suggests.
     v_range
         Angular sweep around the axis, in radians -- a Manim-parity domain, which
         is why it contradicts Algan's usual degrees. ``(0, pi)`` gives a half
@@ -523,7 +624,10 @@ class Cone(Surface):
         # and when the cone itself is detached, so a morph target stays one.
         # The cone's own azimuth runs on the SECOND uv component (see
         # coord_function), so ``grid_height`` is its count around the axis and
-        # is what puts the base's rim vertices on the cone's own.
+        # is what puts the base's rim vertices on the cone's own. The cone's
+        # tolerances go with it: the disc grows that count in whole multiples
+        # of it as its rim needs, measured against the accuracy the cone
+        # itself was built to.
         self.mesh_key = ("solid", self.id)
         self.base_circle = _CapDisc(
             rim_function=self._cap_ring_offsets,
@@ -531,6 +635,8 @@ class Cone(Surface):
             direction=-direction_t,
             segments=self.grid_height,
             color=self.color,
+            geometry_tolerance=self._geometry_tolerance,
+            max_grid_resolution=self._max_grid_resolution,
             add_to_scene=bool(show_base) and self._added_to_scene,
         )
         self.base_circle.mesh_key = self.mesh_key
@@ -655,7 +761,10 @@ class Cylinder(Surface):
         carrying the tube's own mesh identity, so each rim is an interior edge
         of one surface. Defaults to ``False``: the tube is open at both ends.
         The discs are whole circles even when ``v_range`` is partial, matching
-        Manim.
+        Manim. Each disc samples its rim more finely than the tube samples its
+        rings -- it has to, since a flat disc's boundary cannot be refined at
+        render time the way the curved tube's is -- so a capped cylinder
+        carries more triangles than the tube alone suggests.
     resolution
         Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
         both; each value becomes ``grid_width``/``grid_height`` plus one, since
@@ -751,7 +860,10 @@ class Cylinder(Surface):
         registered = self._added_to_scene
         # ``grid_width`` is the tube's own count around the axis (its azimuth
         # runs on the FIRST uv component, see coord_function), so giving the
-        # discs the same puts their rim vertices on the tube's.
+        # discs the same puts their rim vertices on the tube's. The tube's
+        # tolerances go with it: the discs grow that count in whole multiples
+        # of it as their rims need, measured against the accuracy the tube
+        # itself was built to.
         self.mesh_key = ("solid", self.id)
         caps = {
             "rim_function": self._cap_ring_offsets,
@@ -759,6 +871,8 @@ class Cylinder(Surface):
             "segments": self.grid_width,
             "color": self.color,
             "add_to_scene": registered,
+            "geometry_tolerance": self._geometry_tolerance,
+            "max_grid_resolution": self._max_grid_resolution,
         }
         self.bottom_cap = _CapDisc(direction=-direction, **caps)
         self.top_cap = _CapDisc(direction=direction, **caps)

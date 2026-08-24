@@ -30,6 +30,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+# Same helpers test_cap_disc_rim uses to read a surface's built grid and a
+# cap's built rim -- one way of selecting that geometry across both files,
+# so the two cannot drift apart.
+from test_cap_disc_rim import _built_grid, _rim_points
+
 from algan import (
     IN,
     LEFT,
@@ -295,60 +300,79 @@ def test_polyhedron_winds_outward(name):
         _closed_mesh_is_outward(mob, name)
 
 
+# The capped joints, with the ring each disc actually closes, selected off
+# the built grid by the same row indexing test_cap_disc_rim uses (a body's
+# whole grid is only "the ring" for a two-row cylinder; a Cone's base is its
+# u=0 row and every other row is something else).
 _RIMS = {
     "cylinder": (
         lambda: Cylinder(radius=0.45, height=1.0, show_ends=True),
-        lambda m: (m.bottom_cap, m.top_cap),
+        lambda m, g: ((m.bottom_cap, g[:, 0]), (m.top_cap, g[:, -1])),
     ),
     "cylinder-tilted": (
         lambda: Cylinder(
             radius=0.3, height=1.2, direction=(1.0, 0.4, -0.7), show_ends=True
         ),
-        lambda m: (m.bottom_cap, m.top_cap),
+        lambda m, g: ((m.bottom_cap, g[:, 0]), (m.top_cap, g[:, -1])),
     ),
     "cone": (
         lambda: Cone(base_radius=0.55, height=1.1, show_base=True),
-        lambda m: (m.base_circle,),
+        lambda m, g: ((m.base_circle, g[0]),),
     ),
     "cone-tilted": (
         lambda: Cone(
             base_radius=0.4, height=0.9, direction=(0.2, -1.0, 0.5), show_base=True
         ),
-        lambda m: (m.base_circle,),
+        lambda m, g: ((m.base_circle, g[0]),),
     ),
     "line3d-rebased": (
         lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.2).move_between_points(
             LEFT * 0.7 + IN * 0.5, RIGHT * 1.2 + UP * 0.8
         ),
-        lambda m: (m.bottom_cap, m.top_cap),
+        lambda m, g: ((m.bottom_cap, g[:, 0]), (m.top_cap, g[:, -1])),
     ),
 }
 
 
 @pytest.mark.parametrize("name", sorted(_RIMS))
 def test_an_end_discs_rim_sits_on_the_bodys_own_ring(name):
-    """A cap is a fan over the body's ring, not an independently sampled circle.
+    """A cap closes the BODY'S OWN ring: ring ⊆ rim, in whole multiples.
 
-    Two circles of the same radius sampled from different parameterizations are
-    polygons rotated against each other: the cone's base used to miss its own
-    ring by half a segment, which scallops the rim. Sampling the body's own
-    expression is what makes the joint watertight -- and it has to survive
-    re-basing, which rebuilds both.
+    The direction matters now that rims refine themselves: a cap grows its
+    rim in whole multiples of the body's ring count until the chord polygon
+    meets ``geometry_tolerance``, so the rim carries MORE vertices than the
+    ring -- refinement adds rim vertices strictly BETWEEN the body's
+    samples, up to half a ring chord from the nearest one. Holding every RIM
+    vertex against the ring (the old direction) would fail on that
+    legitimate refinement. What the original fault requires is the converse:
+    the cone's base once missed its own ring by half a segment because it
+    was sampled independently, which scalloped the rim -- so now every ring
+    vertex must sit on the rim (within the joint's 1e-3 construction
+    tolerance), and the counts must stand in whole multiple, which is what
+    shows the sampling was derived from the ring rather than coinciding with
+    it. An independently sampled circle of even the exact radius passes
+    neither way: its vertices interleave the ring's instead of containing
+    them, and any count relation would be an accident.
     """
-    build, discs_of = _RIMS[name]
+    build, rings_of = _RIMS[name]
     with Scene(), Off():
         body = build()
         body.spawn(animate=False)
-        ring = body.grid.location.reshape(-1, 3)
-        for disc in discs_of(body):
-            points = disc.grid.location.reshape(-1, 3)
-            radius = (points - disc.location.reshape(-1)).norm(dim=-1)
-            rim = points[radius > radius.max() - 1e-4]
+        grid = _built_grid(body)
+        for disc, ring in rings_of(body, grid):
+            rim = _rim_points(disc)
             assert len(rim) > 2, f"{name}: no rim found on the disc"
-            gap = torch.cdist(rim, ring).min(dim=-1).values.max()
+            chords = ring.shape[0] - 1  # closed ring: last sample repeats the first
+            assert rim.shape[0] % chords == 0, (
+                f"{name}: the cap's {rim.shape[0]}-vertex rim is not a whole "
+                f"multiple of the body's {chords}-chord ring, so it was not "
+                "sampled off the body's own ring"
+            )
+            gap = torch.cdist(ring, rim).min(dim=-1).values.max()
             assert float(gap) < 1e-3, (
-                f"{name}: a rim vertex sits {float(gap):.2e} from the nearest "
-                "vertex of the body's ring, so the joint is not watertight"
+                f"{name}: a ring vertex sits {float(gap):.2e} from the "
+                "nearest rim vertex, so the cap is not a fan over the "
+                "body's own ring"
             )
 
 

@@ -484,3 +484,72 @@ each stage carries; the diagnosis came from instrumenting one pixel
 (`benchmarks/_triad_sheet_probe.py`, which dumps a pixel's fragments and
 sheets) and reading the eight per-sample depths off the dump. Ask it for the
 map; measure the territory yourself.
+
+**UPDATE: REVIEW FROM A SEVENTH TASK (cylinder cap-rim jaggies, 2026-08-24)**
+
+Four sequential runs, all `--variant max`, all driven from a file: one
+read-only audit, one implementation, then two rounds fixing defects in its own
+test work. **No continuation was needed on any of them** — 10 to 30 steps each,
+17 to 40 minutes. The pattern that produced that: one narrow objective per
+invocation, the verification commands written out, and the previous round's
+report named as context. The four-rounds-of-one shape beat what one big brief
+would have done, because each round's finding changed what the next should ask.
+
+**It corrects the premises you hand it, and that is still the thing to hire it
+for.** Two this session, both load-bearing. My audit brief asked it to compare
+the rim error against `SETTINGS.raytracing.render_tolerance_pixels`; it opened
+with "false premise first: there is no such setting" and gave the real ones
+(per-`Surface` constructor kwargs). Later I specified a fix grouping chain
+edges by render primitive; it went to check how mobs emit primitives before
+implementing, found `Polyhedron` emits **one primitive per face triangle**, and
+reported that the grouping I had specified could not do the job I wanted. That
+is the fourth-task lesson holding: it fires on the claims you put in front of
+it. So put your claims in front of it explicitly.
+
+**The sharp lesson is narrower than "review its diff", and worth stating
+exactly.** Its self-review is genuinely good on code it wrote — the fifth
+task's `NameError` it caught itself, and this session it caught none of its own
+syntax or wiring faults because there were none. What it gets wrong is
+**bounding an exposure it discovered itself.** It disclosed the chain rule's
+hole honestly and unprompted, then judged it "adversarial-mesh-only" and
+"nothing in the geometry pipeline emits such edges". A tetrahedron missing a
+face — the most ordinary open shell there is — was being called closed, through
+the public API, in the same session. When it says "this gap is unreachable in
+practice", spend five minutes trying to reach it. Both times I did, I got there
+on the first try. It is honest about the existence of its gaps and
+over-optimistic about their reach.
+
+Handing a defect back works, and this is the recipe that worked three times:
+name the counterexample with its verdicts, state the **invariant** that
+separates the good case from the bad one (not the code change), require a
+permanent regression test for it, and add "then go hunt the next one of this
+kind yourself". The hunts were productive every time — it found two hole
+families a metric bound could never catch and proved the metric was exhausted
+rather than mis-tuned, which is what redirected the fix to a topological rule.
+It also found a latent pre-existing defect while in there (a test helper
+collected an aggregate mob's handover *and* its subtree, so every `Arrow3D`
+triangle twice) and fixed it against the engine's actual publication contract
+(`draws_descendants`) rather than papering over it.
+
+The sixth task's suggested brief question — *is the datum already there being
+read by something that has no right to it?* — went straight to the answer when
+asked directly. It is worth keeping in the template verbatim. Here the answer
+was that a flat disc's zero PN deviation is true of the interior and says
+nothing about the boundary, and that the closure guard was reading a
+construction grid the renderer discards.
+
+Mechanics:
+
+- **A run can die before its first step with `Error: Provider finish_reason:
+  network_error`**, having written nothing and logged no `loop` line. It looks
+  exactly like §4.1's hang for the first minute. Check the tail of the run's
+  own log for that string before waiting; relaunching the identical command
+  worked immediately.
+- **The warm algan daemon served one of its probes a stale module** — it had
+  imported the test module before new cases were added, so a verdict table
+  printed 9 rows as 7. Ox diagnosed this itself and re-took every number with
+  `ALGAN_USE_DAEMON=0`. Put that in any brief whose probes import repo code
+  that the same run is editing.
+- Renders and its test runs coexisted fine on the 4-vCPU container, but do not
+  swap a source file out from under it: it runs the full unit suite as
+  verification and will report failures caused by your swap as its own.
