@@ -2415,11 +2415,12 @@ class RenderLoopMixin:
             light_objects.append(light)
             loc = light.location
             # The one ingest point for light colour, and the decode has to
-            # happen here rather than at the pack: alpha, opacity and intensity
-            # below are all linear scalars, and srgb_to_linear(c * k) is not
-            # srgb_to_linear(c) * k. Channel 3 is glow, not colour, so only
-            # 0:3 is decoded. This is what three.js does too -- its Color is
-            # already linear by the time WebGLLights multiplies in intensity.
+            # happen here rather than at the pack: alpha and opacity below are
+            # linear scalars and intensity below is a linear per-frame row, so
+            # srgb_to_linear(c * k) is not srgb_to_linear(c) * k. Channel 3 is
+            # glow, not colour, so only 0:3 is decoded. This is what three.js
+            # does too -- its Color is already linear by the time WebGLLights
+            # multiplies in intensity.
             light_rgba = light.color
             if rt_settings_module.LINEAR_COLOR_SPACE:
                 light_rgba = torch.cat(
@@ -2430,8 +2431,13 @@ class RenderLoopMixin:
                     -1,
                 )
             col = light_rgba[..., :-1] * light_rgba[..., -1:] * light.opacity
-            intensity = float(getattr(light, "intensity", 1.0))
-            if intensity != 1.0:
+            # Per-frame intensity row ([T, 1, 1] once materialized, so it
+            # broadcasts directly). Kept LAST -- after alpha and opacity -- so
+            # a constant intensity still computes ((rgb * glow) * opacity) * k
+            # exactly as before. Lights without an intensity attribute (the
+            # stub lights some render-loop tests drive this mixin with) skip it.
+            intensity = getattr(light, "intensity", None)
+            if intensity is not None:
                 col = col * intensity
             is_ext = getattr(light, "is_extended", None)
             if is_ext is not None and is_ext():
@@ -2450,12 +2456,20 @@ class RenderLoopMixin:
                 radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
                 if radiance_cols is not None:
                     # Radiance-bearing aux columns (a hemisphere's ground
-                    # colour) scale with the light's per-frame opacity, like
-                    # the RGB columns above -- so frames outside the light's
-                    # lifespan pack a genuinely all-zero (inert) row rather
-                    # than a row that keeps emitting from its aux columns.
+                    # colour) scale with the light's per-frame opacity and
+                    # intensity, like the RGB columns above -- so frames
+                    # outside the light's lifespan pack a genuinely all-zero
+                    # (inert) row rather than a row that keeps emitting from
+                    # its aux columns. Two SEPARATE multiplies, intensity then
+                    # opacity, because that is the order build_aux used to bake
+                    # in ((ground * intensity) * opacity); float multiplication
+                    # is not associative, so folding the two scalars first
+                    # could differ in the last bit and move a
+                    # constant-intensity render.
                     a, b = radiance_cols
                     opacity = light.opacity
+                    if intensity is not None:
+                        aux[..., a:b] = aux[..., a:b] * intensity
                     aux[..., a:b] = aux[..., a:b] * opacity.reshape(
                         opacity.shape[0], 1, 1
                     )

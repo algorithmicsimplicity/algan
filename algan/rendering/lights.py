@@ -5,9 +5,10 @@ Mirrors the Three.js light catalogue: :class:`PointLight`,
 :class:`SpotLight` and :class:`RectAreaLight`, each with an ``intensity``
 multiplier and (where physical) ``decay``/``distance`` falloff parameters.
 
-Lights are renderable Mobs: their ``location``, ``color`` and
-``opacity`` are animatable like any other mob. The extra parameters
-(``intensity``, ``decay``, cone angles, ...) are plain per-light constants.
+Lights are renderable Mobs: their ``location``, ``color``, ``opacity``
+and ``intensity`` are animatable like any other mob attribute. The remaining
+parameters (``decay``, ``distance``, cone angles, emitter sizes) are plain
+per-light constants.
 
 Soft (penumbra) shadows: point / spot lights take a ``shadow_radius`` (the
 world-space radius of the emitting disk) and directional lights a
@@ -36,6 +37,7 @@ from algan.constants.spatial import ORIGIN, UP
 from algan.errors import AlganConfigurationError
 from algan.rendering.raytracing import settings as rt_settings
 from algan.utils.color_space import srgb_to_linear
+from algan.utils.tensor_utils import cast_to_tensor
 
 __all__ = [
     "Light",
@@ -90,6 +92,29 @@ def _finite_number(
     return result
 
 
+def _validated_intensity(value):
+    """Validate an ``intensity`` write, tolerating both scalars and tensors.
+
+    Tensors are expected, not a defensive nicety: after any state
+    materialization the attribute holds a ``[T, 1, 1]`` row, and
+    ``Animatable.__deepcopy__`` copies every animatable attribute through its
+    setter -- so ``light.clone()`` feeds exactly such a tensor through here.
+    """
+    # The finite/non-negative check is load-bearing, not cosmetic: a light
+    # outside its lifespan is made inert by its OPACITY row being zeroed, and
+    # intensity only ever reaches the render multiplied by that opacity. A NaN
+    # or inf intensity turns 0 * inf into NaN and resurrects emission on frames
+    # where the light does not exist. (The intensity timeline itself is not
+    # endpoint-masked -- record_end_points is set only for opacity.)
+    if torch.is_tensor(value):
+        if not bool(torch.isfinite(value).all()):
+            raise AlganConfigurationError("intensity must be a finite number")
+        if bool((value < 0).any()):
+            raise AlganConfigurationError("intensity must be at least 0.0")
+        return value
+    return _finite_number("intensity", value, minimum=0.0)
+
+
 def _positive_sample_count(value):
     if isinstance(value, bool):
         raise AlganConfigurationError("samples must be a positive integer")
@@ -119,27 +144,82 @@ class Light(Mob):
     Parameters
     ----------
     intensity
-        Scalar multiplier applied to the light's color.
+        Dimensionless multiplier applied to the light's color: at ``2`` the
+        light contributes exactly twice the radiance it does at ``1``. Pixel
+        values do not double with it, because exposure and the sRGB transfer
+        function sit between radiance and the byte written to the frame. Must
+        be a finite number of at least ``0.0``. Defaults to ``1.0``. The
+        constructor argument is the light's initial value and is not animated;
+        animate with assignment after spawn -- see `Animation` below.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``intensity`` is not a finite number of at least ``0.0``, on
+        construction or on any later write.
+
+    Attributes
+    ----------
+    intensity
+        The light's brightness multiplier: a dimensionless finite number of at
+        least ``0.0``, applied to the light's color every frame. Defaults to
+        ``1.0``.
+
+    Animation
+    ---------
+    Writing ``light.intensity = 3`` after spawn is *recorded*: the value
+    interpolates from its current value to the target over the current
+    context's duration (1 second by default), exactly like writing ``color``
+    -- wrap it in ``with Off():`` to apply instantly instead. Writes made
+    before spawn are instant setup, as with ``location``. Like any Mob
+    attribute write the change propagates to descendants (lights normally
+    have none).
     """
 
     light_type = LIGHT_POINT
 
     #: Aux-column range ``(start, stop)`` carrying RADIANCE (not geometry):
-    #: those columns must scale with the light's per-frame opacity at
-    #: materialization, so a light outside its lifespan is a genuinely inert
-    #: all-zero row (its RGB columns already scale with opacity). ``None``
-    #: when every emitted quantity lives in the RGB columns.
+    #: those columns must scale with the light's per-frame opacity *and*
+    #: intensity at materialization, so a light outside its lifespan is a
+    #: genuinely inert all-zero row (its RGB columns already scale with
+    #: opacity and intensity). ``None`` when every emitted quantity lives in
+    #: the RGB columns.
     _AUX_RADIANCE_COLS = None
 
     def __init__(self, *args, intensity=1.0, **kwargs):
-        self.intensity = _finite_number("intensity", intensity, minimum=0.0)
+        # Registered before super().__init__() so Animatable's accessor generation
+        # sees it and installs set_intensity / get_intensity like every other
+        # animatable attribute.
+        self.register_attrs_as_animatable(["intensity"], Light)
+        # Into a local, not self.intensity: once the property is attached this
+        # assignment would route into set_animated_attribute, which reads
+        # state Animatable.__init__ has not built yet.
+        intensity = _finite_number("intensity", intensity, minimum=0.0)
         kwargs["add_to_scene"] = False
         super().__init__(*args, **kwargs)
+        # _init_default_attr writes the timeline row directly, bypassing the property
+        # setter (which cannot run before Animatable.__init__ has built its state), so
+        # the constructor validates the value itself, above.
+        self._init_default_attr("intensity", cast_to_tensor(intensity))
 
-    def set_intensity(self, intensity):
-        """Set the non-negative light intensity and return this light."""
-        self.intensity = _finite_number("intensity", intensity, minimum=0.0)
-        return self
+    def set_animated_attribute(self, attr, value, recursive=True):
+        """Animate one animatable attribute to a new value, by name.
+
+        As :meth:`~.Mob.set_animated_attribute`, and additionally the one place
+        an ``intensity`` write is checked. Every route to that attribute --
+        assignment, ``set_intensity``, :meth:`~.Mob.set` and
+        :meth:`~.Mob.set_non_recursive` -- passes through here, so a light
+        cannot reach the renderer with a negative or non-finite brightness.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``attr`` is ``"intensity"`` and ``value`` is not a finite number
+            (or tensor of numbers) of at least ``0.0``.
+        """
+        if attr == "intensity":
+            value = _validated_intensity(value)
+        return super().set_animated_attribute(attr, value, recursive=recursive)
 
     def spawn(self, animate: bool = True):
         """Spawn this light and register it with its owning scene exactly once."""
@@ -196,7 +276,9 @@ class Light(Mob):
         6     cos(outer cone angle) (spot)
         7     cos(inner cone angle) (spot)
         8     shadow softness (world radius; directional: tan(angle))
-        9-11  ground color RGB (hemisphere) / SH linear coeffs (env)
+        9-11  ground color RGB (hemisphere) / SH linear coeffs (env); the
+              ground row is decoded to linear light here, then scaled by
+              per-frame opacity x intensity downstream at materialization
         12    power fraction of this row (1/K for area samples, else 1)
         ====  ==========================================================
 
@@ -219,7 +301,8 @@ class PointLight(Light):
     Parameters
     ----------
     intensity
-        Color multiplier.
+        As on :class:`~.Light`: a dimensionless multiplier on the light's
+        color, animatable like any Mob attribute. Defaults to ``1.0``.
     decay
         Distance falloff exponent (0 = none -- the legacy Algan default;
         2 = physically correct inverse-square).
@@ -414,15 +497,17 @@ class HemisphereLight(Light):
             gc = torch.zeros(3)
         if not torch.is_tensor(gc):
             gc = torch.tensor(gc, dtype=torch.float32)
-        # Decoded before the intensity multiply, not after: intensity is a
-        # linear scalar, and srgb_to_linear(c * i) is not srgb_to_linear(c) * i.
-        # This is the hemisphere's ground colour -- an authored colour like any
-        # other, and the one radiance-bearing aux column, so it has to make the
-        # same trip into linear light the RGB columns do.
+        # Decoded to linear light here, and left at that: cols 9:12 carry the
+        # decoded ground colour -- an authored colour like any other, and the
+        # one radiance-bearing aux column, so it has to make the same trip
+        # into linear light the RGB columns do (srgb_to_linear(c * i) is not
+        # srgb_to_linear(c) * i). The per-frame opacity and intensity scaling
+        # happens downstream at materialization
+        # (RenderLoopMixin._materialize_render_state), never here.
         ground = gc.float().reshape(-1)[:3]
         if rt_settings.LINEAR_COLOR_SPACE:
             ground = srgb_to_linear(ground)
-        aux[..., 9:12] = ground * self.intensity
+        aux[..., 9:12] = ground
         return aux
 
 

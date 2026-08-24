@@ -21,3 +21,17 @@ Rendering
    ~rendering.primitives.bezier_circuit_primitive
    ~rendering.post_processing
    ~rendering.memory_model
+
+Runtime light attributes
+------------------------
+
+These attributes are registered dynamically by
+:class:`~algan.rendering.lights.Light` during construction, so they do not
+appear as ordinary class properties in ``autoclass``. They are still part of
+the public Light API.
+
+.. py:attribute:: algan.rendering.lights.Light.intensity
+
+   The light's brightness: a dimensionless multiplier applied to the light's
+   ``color`` every frame. Must be a finite number of at least ``0.0``;
+   defaults to ``1.0``. Animatable like any Mob attribute.
