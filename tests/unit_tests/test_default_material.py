@@ -98,10 +98,20 @@ def test_a_triangulated_circuit_fill_is_unlit():
     # One closed square outline as four cubic segments.
     square = torch.tensor(
         [
-            [[-0.5, -0.5, 0.0], [-0.17, -0.5, 0.0], [0.17, -0.5, 0.0], [0.5, -0.5, 0.0]],
+            [
+                [-0.5, -0.5, 0.0],
+                [-0.17, -0.5, 0.0],
+                [0.17, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+            ],
             [[0.5, -0.5, 0.0], [0.5, -0.17, 0.0], [0.5, 0.17, 0.0], [0.5, 0.5, 0.0]],
             [[0.5, 0.5, 0.0], [0.17, 0.5, 0.0], [-0.17, 0.5, 0.0], [-0.5, 0.5, 0.0]],
-            [[-0.5, 0.5, 0.0], [-0.5, 0.17, 0.0], [-0.5, -0.17, 0.0], [-0.5, -0.5, 0.0]],
+            [
+                [-0.5, 0.5, 0.0],
+                [-0.5, 0.17, 0.0],
+                [-0.5, -0.17, 0.0],
+                [-0.5, -0.5, 0.0],
+            ],
         ]
     )
     with Scene(), Off():
@@ -149,9 +159,7 @@ def test_the_default_materials_parameters_reach_the_packed_block(style):
         )
 
         # An explicit per-mob value still beats the seed.
-        explicit = Sphere(radius=0.5).set_material(
-            MeshStandardMaterial(roughness=1.0)
-        )
+        explicit = Sphere(radius=0.5).set_material(MeshStandardMaterial(roughness=1.0))
         explicit.spawn(animate=False)
         _mat_id, mat = _primitives(explicit)[0]._pack_material()
         assert bool(torch.all(mat[:, :, start] == 1.0))

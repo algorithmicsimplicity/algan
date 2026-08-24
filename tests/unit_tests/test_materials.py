@@ -60,6 +60,7 @@ def test_fixed_param_count_constant_matches_the_signature():
     assert _NUM_BASE_PARAMS == ms.SHADER_FIXED_PARAM_COUNT
     print("ok: SHADER_FIXED_PARAM_COUNT matches basic_material_shader's signature")
 
+
 ALL_MATERIALS = [
     MeshBasicMaterial,
     MeshLambertMaterial,

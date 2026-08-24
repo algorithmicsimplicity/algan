@@ -69,9 +69,7 @@ def _run_shader(light_color):
     alb = torch.cat([rgb, torch.zeros(n, 1)], dim=-1).view(n, 1, 4)
     cam = torch.zeros(1, 1, 3)
     light = torch.tensor(_LIGHT_SOURCE, dtype=torch.float32).view(1, 1, 3)
-    return ms.manim_shader(
-        None, vloc, vnrm, alb, cam, light, light_color, 1.0, 1.0
-    )
+    return ms.manim_shader(None, vloc, vnrm, alb, cam, light, light_color, 1.0, 1.0)
 
 
 def test_matches_vendored_get_shaded_rgb_in_display_terms():
@@ -119,5 +117,5 @@ def test_manim_material_contract():
     fixed = list(inspect.signature(ms.basic_material_shader).parameters)
     # The canonical nine, in order, then exactly the material's own params.
     assert params[: len(fixed)] == fixed
-    assert list(m.get_shader_param_values().keys()) == params[len(fixed):]
+    assert list(m.get_shader_param_values().keys()) == params[len(fixed) :]
     assert {"manim_shader", "STAGE_MANIM", "ManimMaterial"} <= set(algan.__all__)
