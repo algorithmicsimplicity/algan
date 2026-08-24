@@ -1768,6 +1768,10 @@ lobe's exact directional albedo, and for the fast scene's
 `share + R = 1` holds in that arm too. What blocks the extension is not the
 arithmetic but the baselines: it moves `tests/fast` and every full-render
 scene, and the CUDA set cannot be regenerated on a CPU-only machine.
+`OX_DIRECT_SPECULAR_REVIEW.md` closes the arithmetic independently, by
+dumping the merged batch to confirm every argument the add-back and the
+shading stage share carries the same value at the same hit, and predicting
++27 bytes against the +25 measured.
 
 ### 9.4 A mirror renders the background, and so disappears into it
 
