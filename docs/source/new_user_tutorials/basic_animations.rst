@@ -2,7 +2,7 @@
 Basic Animations
 ================
 
-In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob` s
+In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob`s
 and then changing them. By default, changes
 you make to a mob are animated over a one second period. More complex
 animation behaviour will be covered in the later :doc:`combining_animations` tutorial.
@@ -58,18 +58,18 @@ that interpolates from the old value to the new value.
 
     **Reading an animatable attribute gives you a copy.** ``circle.location``
     hands back a copy of the value on the timeline, so editing that copy in place
-    -- ``circle.location[0] = 1`` -- changes nothing and records nothing. The
+    (e.g. ``circle.location[0] = 1`` ) changes nothing and records nothing. The
     write goes into the copy and is thrown away silently.
 
     Assignment is what Algan records, so both ``circle.location = circle.location
     + UP`` and ``circle.location += UP`` work.
 
-A note on colours
+A note on colors
 =================
 
 An Algan :class:`~algan.constants.color.Color` carries five components: red, green, blue, glow and
 opacity, in that order. So glow and opacity can be set either on the Mob or baked
-into the colour you assign:
+into the color you assign:
 
 .. code-block:: python
 
@@ -79,7 +79,7 @@ into the colour you assign:
 
     circle.color = BLUE.set_opacity(0.5)   # ... or together, in one animation
 
-Algan ships the full Manim colour palette -- ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
+Algan ships the full Manim colour palette: ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
 on, plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
 Mob Methods

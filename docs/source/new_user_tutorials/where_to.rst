@@ -18,4 +18,4 @@ In particular, check out the following useful tutorials:
   * :doc:`audio_and_speech` -- adding sound to your videos
 
 If you need help with Algan, or just want to chat with the developers and fellow Algan
-users, then join the discord server: <discord_server>
+users, then join the discord server: <algan_discord>

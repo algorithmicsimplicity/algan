@@ -167,8 +167,8 @@ A ``rate_func`` maps progress through an animation (``0`` to ``1``) to how far
 along the change should be at that moment. It is what makes motion feel like it
 accelerates and settles rather than snapping between states.
 
-Algan's default is ``rate_funcs.smooth``: a gentle ease in and out. Pass a
-different one to any context:
+Algan's default is ``rate_funcs.smooth``: a gentle ease in and out.
+You can pass a different one to any context:
 
 .. algan:: ControllingRateFuncs
 
@@ -187,7 +187,7 @@ different one to any context:
     Scene.save_video()
 
 The three squares cover the same distance in the same time but arrive
-differently. The ones you will reach for most:
+differently. Here are some useful rate functions:
 
 .. list-table::
    :header-rows: 1
