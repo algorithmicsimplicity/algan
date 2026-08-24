@@ -20,6 +20,7 @@ from algan import (
     RIGHT,
     UP,
     Arrow3D,
+    Circle,
     Cross,
     Cube,
     Dot3D,
@@ -35,6 +36,7 @@ from algan import (
     TriangleVertices,
     VGroup,
 )
+from algan.animatable_base.mob_morph import MobMorphMixin
 
 
 @pytest.fixture
@@ -613,3 +615,57 @@ def test_a_surplus_target_fades_in_as_it_grows(scene):
 
     assert first <= 1e-3, f"the surplus target started visible (alpha {first:.3f})"
     assert last >= 0.99, f"the surplus target never became solid (alpha {last:.3f})"
+
+
+# ---------------------------------------------------------------------------
+# A flag the renderer reads once cannot be animated, so it is not travelled
+# ---------------------------------------------------------------------------
+
+
+def test_a_fill_crossing_pair_is_ranked_below_a_like_filled_one(scene):
+    """Crossing ``filled`` costs half a compatibility band, not a whole one.
+
+    Type identity still leads -- a filled Square would rather become an
+    unfilled Square than a filled Circle, which is the same rule that sends
+    ``Square@left + Circle@right -> Circle@left + Square@right`` across the
+    screen instead of changing shape in place.  But among counterparts of equal
+    type and family, one that does not force the crossing wins.
+    """
+    rank = MobMorphMixin._primitive_compatibility_rank
+    with Off():
+        filled = Square(side_length=0.6, filled=True)
+        also_filled = Square(side_length=0.6, filled=True)
+        unfilled = Square(side_length=0.6, filled=False)
+        filled_circle = Circle(radius=0.3, filled=True)
+
+    assert rank(filled, also_filled) < rank(filled, unfilled)
+    assert rank(filled, unfilled) < rank(filled, filled_circle)
+
+
+@pytest.mark.parametrize("source_filled", [True, False])
+def test_a_fill_crossing_morph_does_not_play_in_the_endpoints_fill(
+    scene, source_filled
+):
+    """``filled`` is read once per render, so adopting it is not an ending.
+
+    ``_adopt_structural_attrs`` runs after the recorded morph, but the timeline
+    is fully recorded before anything renders -- so the renderer reads the
+    adopted value on *every* frame of that mob's life, and a filled Circle
+    became an outline on the morph's first frame and stayed one.  The flag also
+    decides where the stroke goes, not merely whether the interior shows, so
+    nothing animatable interpolates between the two: such a pair cross-fades,
+    which leaves the source holding its own fill for as long as it is visible.
+    """
+    with Off():
+        source = Square(color=BLUE, filled=source_filled, border_width=0.05).spawn()
+        target = Square(color=BLUE, filled=not source_filled, border_width=0.05)
+
+    with Sync(run_time=1.0):
+        result = source.become(target)
+
+    assert result.filled is (not source_filled)
+    assert result is not source
+    assert source.filled is source_filled, (
+        "the source was made to render in the endpoint's fill for the whole "
+        "morph rather than fading out in its own"
+    )

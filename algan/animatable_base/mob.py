@@ -343,6 +343,34 @@ class Mob(
                 setattr(self, attr, getattr(target, attr))
         return self
 
+    #: The adopted attributes a morph cannot *travel* through, as opposed to
+    #: merely land on. Adopting one at the end of a recorded morph is not a
+    #: change at the end of the morph: the whole timeline is recorded before
+    #: anything renders, so the renderer reads the final value on every frame
+    #: of the mob's life. Where that flips a region of the shape on or off,
+    #: the morph's first frame shows the endpoint's version of it -- which is
+    #: how a filled Circle became an outline the instant its morph began. A
+    #: pair that crosses one of these cross-fades instead (see
+    #: ``MobMorphMixin._dispatch_become``), and the assignment prefers not to
+    #: make such a pair in the first place
+    #: (``MobMorphMixin._primitive_compatibility_rank``). Subclasses extend the
+    #: tuple; every entry must also be in ``_MORPH_ADOPTED_ATTRS``.
+    _MORPH_UNTRAVELLABLE_ATTRS = ()
+
+    def _morph_structural_break(self, target) -> bool:
+        """Whether morphing into ``target`` crosses an untravellable attribute.
+
+        Compared only where both sides have the attribute, so a cross-family
+        pair -- which converts through the PN medium and never reads these --
+        answers False.
+        """
+        for attr in self._MORPH_UNTRAVELLABLE_ATTRS:
+            if not hasattr(target, attr) or not hasattr(self, attr):
+                continue
+            if bool(getattr(self, attr)) != bool(getattr(target, attr)):
+                return True
+        return False
+
     def _init_default_attr(self, attr, value):
         """Allocate ``attr``'s attribute-timeline buffer directly to ``value``
         during construction, bypassing the get/change/apply machinery of the

@@ -110,7 +110,22 @@ class MobMorphMixin:
 
     @staticmethod
     def _primitive_compatibility_rank(source, target):
-        """Lexicographic pairing preference before position/order costs."""
+        """Lexicographic pairing preference before position/order costs.
+
+        Each band is doubled to leave room for a **structural penalty**: a pair
+        that crosses an untravellable attribute (``filled``, in practice)
+        cannot show the crossing happening, so it is worth one whole band of
+        compatibility to avoid making that pair at all. Three unfilled frames
+        becoming three of five unfilled frames is what this buys -- the
+        assignment used to hand one of them to a filled Circle purely on
+        position, and the Circle then lost its fill on the morph's first frame.
+        """
+        rank = MobMorphMixin._primitive_family_rank(source, target)
+        return rank * 2 + int(source._morph_structural_break(target))
+
+    @staticmethod
+    def _primitive_family_rank(source, target):
+        """How compatible two primitives are by type and family alone."""
         if type(source) is type(target):
             return 0
         if source._morph_family == target._morph_family:
@@ -1419,13 +1434,25 @@ class MobMorphMixin:
                     # its own pairs, not the caller asking for it -- so a pair
                     # the caller left on "auto" still gets the cross-fade when
                     # one end is a stroke-only circuit whose PN soup is empty.
-                    if "image" in {
-                        pair_source._morph_family,
-                        pair_target._morph_family,
-                    } or (
-                        strategy == "auto"
-                        and pair_source.morph_kind != pair_target.morph_kind
-                        and self._pair_wants_crossfade(pair_source, pair_target)
+                    if (
+                        "image"
+                        in {
+                            pair_source._morph_family,
+                            pair_target._morph_family,
+                        }
+                        or (
+                            strategy == "auto"
+                            and pair_source.morph_kind != pair_target.morph_kind
+                            and self._pair_wants_crossfade(pair_source, pair_target)
+                        )
+                        # A same-kind pair that crosses an untravellable
+                        # attribute is the other case this route must not force
+                        # onto the geometric path: forcing it plays the whole
+                        # morph in the endpoint's version of the shape.
+                        or (
+                            strategy == "auto"
+                            and pair_source._morph_structural_break(pair_target)
+                        )
                     ):
                         pair_strategy = "dissolve"
                     else:
@@ -1512,6 +1539,25 @@ class MobMorphMixin:
         )
         if (
             strategy == "auto"
+            and replacement_allowed
+            and source._morph_structural_break(target)
+        ):
+            # An untravellable attribute cannot be shown changing (see
+            # ``Mob._MORPH_UNTRAVELLABLE_ATTRS``), so a geometric morph across
+            # one plays entirely in the endpoint's version of the shape. The
+            # cross-fade is what the pair actually looks like: the source keeps
+            # its fill while it fades, and the target arrives with its own.
+            # Gated on ``replacement_allowed`` because the endpoint has to be a
+            # target-class Mob; ``detach_history=False`` keeps identity and
+            # therefore keeps the old behaviour.
+            return self._record_dissolve(
+                source,
+                target,
+                minimize_movement=minimize_movement,
+                replacement_allowed=replacement_allowed,
+            )
+        if (
+            strategy == "auto"
             and (not same_kind or requires_grid_conversion)
             and self._pair_wants_crossfade(source, target)
         ):
@@ -1581,13 +1627,17 @@ class MobMorphMixin:
         traversal order or spatial proximity. Same-kind pairs use structural point
         alignment and different primitive families convert through a cubic-PN
         triangle soup. ImageMob pairs cross-dissolve because image textures have no
-        geometric adapter. ``strategy`` may be ``"auto"``, ``"morph"`` (reject
+        geometric adapter, and so does a pair that changes whether a circuit is
+        filled: that flag is read once per render rather than per frame, so no
+        morph can show it changing. The pairing prefers a counterpart that does
+        not force the change. ``strategy`` may be ``"auto"``, ``"morph"`` (reject
         every non-geometric pair), or ``"dissolve"`` (dissolve the whole root).
 
         With the default ``detach_history=True``, the returned Mob has the target's
         hierarchy and is spliced into this Mob's parent slot; use it for later
-        animation. Surplus target primitives grow from collapsed, target-shaped
-        geometry at nearby source points, while surplus sources shrink to points.
+        animation. Surplus target primitives fade in as they grow from collapsed,
+        target-shaped geometry at nearby source points, while surplus sources fade
+        out as they shrink to points.
         ``detach_history=False`` keeps identity for compatibility and therefore
         uses a dissolve where a target-class replacement would be required.
         Updaters remain attached to replaced sources rather than being migrated

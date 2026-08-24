@@ -24,6 +24,7 @@ attached, it was measured that way rather than reasoned about.
 | `benchmarks/_become_pairing_probe.py` | intercepts the assignment and prints which source paired with which target, and why |
 | `benchmarks/_become_pairing_aesthetics.py` | renders morph filmstrips under each pairing rule so they can be judged by eye |
 | `benchmarks/_become_chain_filmstrip.py` | film-strips `Cylinder -> Sphere -> Arrow`, because nothing else looks at the middle of a morph |
+| `benchmarks/_hierarchy_become_probe.py` | renders the full-render hierarchy scene and dumps every frame as a PNG, which is how the third pass below was read |
 | `tests/unit_tests/test_morph_become_audit.py` | each defect below as a regression test |
 
 Everything ran on CPU in a cloud session. There is no CUDA here, so no claim
@@ -210,6 +211,84 @@ morph's `animatable_attrs` intersection to copy: a 4x4 red texture becoming an
 Also: `_expand_n_tensor` loses a `counterparts` argument it accepted and ignored
 -- deliberately, per its own docstring, but both call sites passed one so it read
 as an oversight rather than a decision.
+
+## Fixed in the third pass: what the rendered scene showed
+
+The first two passes measured endpoints -- the last frame of a morph against
+the target rendered alone. Three defects sat entirely in the frames *between*
+the endpoints, or before the morph began, so nothing that compares endpoints
+could see them. They were found by rendering
+`tests/full_renders/scenes/complex_hierarchy_become.py` and reading it frame by
+frame (`benchmarks/_hierarchy_become_probe.py` dumps every frame as a PNG),
+which is the standard this pass adds: **the frames in between have to be right
+too, and the way to know is to look at them.**
+
+### 14. A clone registered geometry its source deliberately withholds
+
+The Tetrahedron wore four green vertex beads for every frame before the morph
+and lost them on the morph's first frame -- peak **221 channel values over 464
+pixels**, 0.17% of the frame, all inside the solid's bounding box.
+
+Those frames are not the Tetrahedron's. `become` calls `detach_history`, which
+clones the source so the clone can carry the recorded animation while the
+original starts fresh, so everything up to the morph is the clone's rendering.
+`Animatable.__deepcopy__` put the caller's `add_to_scene` policy in the deepcopy
+memo and every descendant read it from there -- but a composite builds parts it
+never intends the Scene to see and marks them by construction with
+`add_to_scene=False`. A `Polyhedron` builds both kinds: the vertex-and-edge
+graph it never draws (finding 3's beads, arriving by a different route) and each
+face's `TriangleVertices`, which it hands the renderer itself. The clone
+published all of them, so it grew beads *and* drew every face twice.
+
+A descendant now keeps its own registration flag and only the clone root takes
+the caller's policy. This is not a `become` defect at heart: plain
+`Tetrahedron().clone()` grew four beads beside an original that has none.
+
+### 15. A collapsed seed at full opacity is a speck that came from nowhere
+
+A target primitive with no source is grown from a clone of itself collapsed onto
+the nearest existing source point (finding 3's rule, which is right: it must not
+duplicate an already-visible source). At zero size that clone still carried the
+target's colour and material, so what the viewer saw was a hard bright dot
+sitting at an unrelated vertex for a third of the morph before inflating into a
+solid -- five of them in this scene.
+
+The seed now starts at zero opacity and fades up as it grows, and its
+counterpart -- the sink a surplus *source* shrinks into -- fades out as it
+shrinks rather than blinking out as a full-brightness dot. Images already got
+that treatment; nothing else did.
+
+### 16. `filled` is read once per render, so adopting it is not an ending
+
+Finding 2 fixed a morph that ended wearing the source's fill by adopting
+`filled` from the target. `_adopt_structural_attrs` runs after the recorded
+morph -- but the whole timeline is recorded before anything renders, so the
+renderer reads the adopted value on **every** frame of that mob's life. The
+filled `Circle` in the middle of the scene therefore lost its fill on the morph's
+first frame and played the remaining 2.6 s as an outline: peak **221 channel
+values over 692 pixels** in that panel.
+
+There is no value of anything animatable that interpolates between the two
+states, and not merely because the interior is hidden: `filled` decides *where
+the stroke goes*. A filled circuit lays its border inward from the outline and an
+unfilled one centres it on the path (`_circuit_point_region` in
+`raytrace_kernels_taichi.py`), so the two are different shapes, not one shape at
+two opacities. `Mob._MORPH_UNTRAVELLABLE_ATTRS` names the adopted attributes
+with that property -- `filled` and `empty` -- and the fix is two rules over it:
+
+* **The assignment prefers not to make such a pair.** A structural break costs
+  half a compatibility band (`rank * 2 + break`), so type identity still leads --
+  a filled Square would still rather become an unfilled Square than a filled
+  Circle -- but among counterparts of equal type and family, one that does not
+  force the crossing wins. In this scene that is the whole fix: the three
+  unfilled frames take three of the five unfilled target frames, the filled
+  Circle takes the filled `RegularPolygon` it was previously passed over for,
+  and **no bezier pair crosses the flag at all**.
+* **When a crossing is unavoidable, the pair cross-fades.** The source keeps its
+  own fill for as long as it is visible and the target arrives with its own,
+  which is what the pair actually looks like. Gated on `strategy="auto"` and on
+  `detach_history=True`, exactly as the existing stroke-only cross-fade rule
+  (finding 8) is.
 
 ## Found, not fixed
 
