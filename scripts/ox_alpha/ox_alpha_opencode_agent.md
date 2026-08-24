@@ -553,3 +553,54 @@ Mechanics:
 - Renders and its test runs coexisted fine on the 4-vCPU container, but do not
   swap a source file out from under it: it runs the full unit suite as
   verification and will report failures caused by your swap as its own.
+
+**UPDATE: REVIEW FROM AN EIGHTH TASK (mirror/transmitted-lobe fix, 2026-08-24)**
+
+Two runs landed, both `--variant max`, both from a file: a read-only audit of
+the defect and a read-only close on one arithmetic question left over from the
+fix. Reports are `OX_MIRROR_TRANSMITTED_LOBE_AUDIT.md` and
+`OX_DIRECT_SPECULAR_REVIEW.md`.
+
+**A brief can fail repeatedly with `network_error` while the model is fine —
+shorten it, do not just relaunch.** The seventh task's note says a relaunch
+works; here it did not. One 5.2 KB brief died with
+`Error: Provider finish_reason: network_error` before its first step **three
+times in a row**, while a one-word ping at the same model and variant answered
+immediately in between. Rewriting the same request as a 2.4 KB brief with one
+question instead of six ran first time, 60+ steps, no continuation. So the
+size threshold that §4.1 documents as a *hang* at ~9 KB also has a lower,
+noisier band that presents as an immediate error. Two failures on one brief is
+the signal to cut it down, not to retry a third time.
+
+**One question per invocation beat six, and not only for reliability.** The
+six-question review brief was asking it to check scope leaks, hoisted
+variables, entitlement, an energy invariant *and* find an unexplained factor of
+ten. The single-question version — just the factor of ten — got a better answer
+than the combined brief would have had room for: it wrote a host-side script
+that builds the real batch through `_merge_scene` and dumps the packed material
+rows, to prove that every argument the two code paths share carries the same
+value. I would not have thought to ask for that, and it is stronger evidence
+than reading the packing code.
+
+**It refutes the premise in the brief's own framing, again.** The brief said
+"something the scatter site passes differs — find it". It opened with the
+refutation: nothing differs, the excess is in the weight, because the default
+split-sum arm replaces `R` with `_material_env_brdf`'s directional albedo
+before the site reads it. Then it closed the loop numerically — predicting +27
+byte values against the +25 measured. Same instinct as §4's, still the thing to
+hire it for, and still fires only on the claim you actually put in front of it.
+
+**It tracks a concurrent session's tree honestly.** Both runs shared the
+checkout with this session. Each reported the uncommitted state it saw, and the
+second one noticed and named the exact nine-minute window in which this session
+had `git stash`ed `algan/` to run a control suite, then re-checked every
+citation against the restored tree. Neither touched a tracked file. The
+fifth task's "two sessions can share one tree if they stay in disjoint files"
+extends to this: it will also tell you when your own tree moved under it.
+
+**Where the split still lands.** It answered the question; the measurements
+that decided the fix — rendering the mirror sphere alone to discover that 82%
+of the reference's mirror-disc energy was the mirror's own highlight, and
+integrating the GGX lobe to show the reference's apparent 7x was a clipping
+artifact — came from running experiments it was not asked to run. Ask it for
+the map. Measure the territory yourself.
