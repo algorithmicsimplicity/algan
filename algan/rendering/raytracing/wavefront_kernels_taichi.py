@@ -199,6 +199,17 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
 # Golden-angle increment of the deterministic soft-shadow sample fan.
 _GOLDEN_ANGLE = 2.3999632297286533
 
+# R2 low-discrepancy increments for a RECT area light's shadow fan: sample s
+# of a cell lands at fractional position (frac(0.5 + a1*s), frac(0.5 +
+# a2*s)) scaled to [-1, 1]^2 across it, where a1 = 1/phi2 and a2 = 1/phi2^2
+# for the plastic number phi2 = 1.324717957244746 -- the 2-D analogue of the
+# golden-angle spiral the disk branch uses. R2 rather than a jittered grid:
+# deterministic (no per-cell state to carry or seed), and uniform over any
+# sample count S; s = 0 is exactly the cell centre, so a one-sample fan
+# degenerates to today's centre ray.
+_R2_SEQUENCE_A1 = 0.7548776662466927
+_R2_SEQUENCE_A2 = 0.5698402909980532
+
 _PI = 3.141592653589793
 
 # Deferred shadows (the ``deferred_shadows`` compile-time template of the
@@ -2736,10 +2747,23 @@ def wavefront_shade(
                                     # original single-ray path bit-for-bit.
                                     ltype = 0
                                     radius = 0.0
+                                    hu = 0.0
+                                    hv = 0.0
                                     if light_col.shape[2] > 3:
                                         ltype = ti.cast(
                                             light_col[tl, li, 3] + 0.5, ti.i32)
                                         radius = light_col[tl, li, 11]
+                                        # A rect-area row carries its CELL's
+                                        # half-extents along the emitter
+                                        # plane's own axes. The ltype guard is
+                                        # load-bearing, not defensive:
+                                        # columns 9/10 are a spot light's cone
+                                        # cosines there, and reading them
+                                        # unguarded would turn every spot
+                                        # light into a rect emitter.
+                                        if ltype == _LT_AREA_SAMPLE:
+                                            hu = light_col[tl, li, 9]
+                                            hv = light_col[tl, li, 10]
                                     to_light = lp - spos
                                     ldist = to_light.norm()
                                     wi = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2783,25 +2807,76 @@ def wavefront_shade(
                                         b2 = ti.math.vec3(0.0, 0.0, 0.0)
                                         if radius > 0.0:
                                             ns = SOFT_SHADOW_SAMPLES
-                                            aref = ti.math.vec3(1.0, 0.0, 0.0)
-                                            if ti.abs(wi[0]) > 0.9:
+                                            if (hu > 0.0) or (hv > 0.0):
+                                                # Rect emitter: the fan samples
+                                                # INSIDE this row's own cell, in
+                                                # the light's own plane -- b1 is
+                                                # the packed right axis and b2
+                                                # the up axis recovered exactly
+                                                # as _rect_axes builds it. The
+                                                # offsets do not depend on wi,
+                                                # so a moving sub-pixel origin
+                                                # needs no basis rebuild.
+                                                b1 = ti.math.vec3(
+                                                    light_col[tl, li, 12],
+                                                    light_col[tl, li, 13],
+                                                    light_col[tl, li, 14])
+                                                b2 = ti.math.vec3(
+                                                    light_col[tl, li, 6],
+                                                    light_col[tl, li, 7],
+                                                    light_col[tl, li, 8]) \
+                                                    .cross(b1)
+                                            else:
                                                 aref = ti.math.vec3(
-                                                    0.0, 1.0, 0.0)
-                                            b1 = wi.cross(aref).normalized()
-                                            b2 = wi.cross(b1)
+                                                    1.0, 0.0, 0.0)
+                                                if ti.abs(wi[0]) > 0.9:
+                                                    aref = ti.math.vec3(
+                                                        0.0, 1.0, 0.0)
+                                                b1 = wi.cross(aref).normalized()
+                                                b2 = wi.cross(b1)
                                         occ_sum = ti.math.vec3(0.0)
                                         n_valid = 0.0
                                         for s in range(ns):
                                             wis = wi
                                             ldn = ldist
                                             ok = 1
+                                            # Declared here, not in the arms
+                                            # below: a Taichi local is scoped
+                                            # to the block it is FIRST
+                                            # assigned in, so assigning it in
+                                            # every arm of an if/else does not
+                                            # make it readable after the
+                                            # if/else (TaichiNameError at
+                                            # compile time). raster_shadow_trace
+                                            # carries the same initialiser for
+                                            # the same reason.
+                                            off = ti.math.vec3(0.0, 0.0, 0.0)
                                             if radius > 0.0:
-                                                ang = _GOLDEN_ANGLE * s
-                                                rr = radius * ti.sqrt(
-                                                    (ti.cast(s, ti.f32) + 0.5)
-                                                    / ti.cast(ns, ti.f32))
-                                                off = (ti.cos(ang) * b1
-                                                       + ti.sin(ang) * b2) * rr
+                                                if (hu > 0.0) or (hv > 0.0):
+                                                    # R2 sequence across the
+                                                    # cell: s = 0 is exactly
+                                                    # the cell centre, so a
+                                                    # one-sample fan degenerates
+                                                    # to today's ray.
+                                                    u = 0.5 + _R2_SEQUENCE_A1 \
+                                                        * s
+                                                    v = 0.5 + _R2_SEQUENCE_A2 \
+                                                        * s
+                                                    ru = 2.0 * (u - ti.floor(u)) \
+                                                        - 1.0
+                                                    rv = 2.0 * (v - ti.floor(v)) \
+                                                        - 1.0
+                                                    off = b1 * (hu * ru) \
+                                                        + b2 * (hv * rv)
+                                                else:
+                                                    ang = _GOLDEN_ANGLE * s
+                                                    rr = radius * ti.sqrt(
+                                                        (ti.cast(s, ti.f32)
+                                                         + 0.5)
+                                                        / ti.cast(ns, ti.f32))
+                                                    off = (ti.cos(ang) * b1
+                                                           + ti.sin(ang) * b2) \
+                                                        * rr
                                                 if ltype == _LT_DIRECTIONAL:
                                                     wis = (wi + off) \
                                                         .normalized()

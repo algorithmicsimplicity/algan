@@ -1987,6 +1987,11 @@ def _pack_lights(light_sources, num_frames, device):
         5    range (0 = infinite)                     12:15 ground RGB / SH
         6:9  direction                                15 power fraction (1/K)
 
+    For ``ltype == 5`` (an area-sample row) columns 9/10 instead carry the
+    emitter cell's half-extents, column 11 the cell's equal-area radius, and
+    columns 12:14 the rectangle's right axis; each of those readers is
+    type-guarded.
+
     Area lights arrive pre-expanded into K emitter sample rows (see
     ``Scene._materialize_render_state``), each occupying its own light slot.
     """

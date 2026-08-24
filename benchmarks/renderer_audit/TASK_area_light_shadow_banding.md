@@ -1,5 +1,39 @@
 # Task: an area light casts K hard shadows instead of one penumbra
 
+**Status: DONE.** Each emitter row now integrates visibility over its own cell
+of the rectangle, in the light's own plane, instead of testing the cell's centre
+point. `shadow_band_probe.py` finds no `k/K` grid at any emitter count, flatness
+falls 0.87 → 0.73 at the shipped `samples = 4` and → 0.54 at 16 against the path
+tracer's 0.49, and the profile is monotone into the umbra and back out.
+`benchmarks/_area_light_shadow_check.py` is the acceptance harness;
+`ALGAN_AREA_LIGHT_SOFT_SHADOWS=0` restores the old behaviour.
+
+Three things this brief got wrong, or could not have known, recorded because the
+next reader will hit them:
+
+* **§6's "the umbra stays dark" is the wrong acceptance test**, and a fix that
+  passes it is wrong. The umbra *should* lift, 0.009 → 0.039, because a `k × k`
+  grid of point emitters spans only `(1 - 1/k)` of the rectangle: at
+  `samples = 4` the old renderer shadowed from an emitter **half** the authored
+  width and height, and a too-small emitter casts a too-large, too-dark umbra.
+  The honest test is that the umbra **converges** (0.039 → 0.035 → 0.032 as
+  `samples` rises) rather than keeps climbing, and that an unshadowed render is
+  byte-identical between the arms so nothing reached the radiance term.
+* **§5(a)'s "raise the sample count" was never a route.** `MAX_SHADOW_LIGHTS` is
+  16 and each emitter sample spends one slot, so at `samples = 64` the surplus
+  rows are lit but cast no shadow and the shadow washes out entirely (scanline
+  minimum 0.73). Raising `samples` only shrinks the steps until the cap erases
+  the shadow.
+* **§5's "leaves the light half-corrected"** stands, and deliberately so: this
+  is the visibility half only. The falloff (`REPORT.md` §6.7) is untouched
+  because fixing it redefines `intensity` for every existing `RectAreaLight`.
+  The two are mechanically independent — visibility lives in the two shadow
+  fans, radiance in `_light_eval` — so neither needs redoing for the other.
+
+What follows is the original brief, unedited.
+
+---
+
 **Status:** open, diagnosed, not fixed.
 
 `REPORT.md` §6.7 is the same mechanism seen in the light's *falloff*, and it

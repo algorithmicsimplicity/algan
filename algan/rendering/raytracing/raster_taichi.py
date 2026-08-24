@@ -69,9 +69,12 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _GOLDEN_ANGLE,
     _LT_AMBIENT,
+    _LT_AREA_SAMPLE,
     _LT_DIRECTIONAL,
     _LT_ENV_SH,
     _LT_HEMISPHERE,
+    _R2_SEQUENCE_A1,
+    _R2_SEQUENCE_A2,
     _light_zero_radiance,
     _reserve_continuation_slot,
     _tri_color_g,
@@ -2758,9 +2761,13 @@ def raster_shadow_trace(
 
     A zero-radius point/spot/directional light emits one hard-shadow ray.
     Non-zero emitter radii use the same fixed golden-angle fan as the classic
-    wavefront shader; area lights are already expanded into packed sample rows
-    and therefore naturally obtain soft visibility by averaging those rows in
-    the material shader.
+    wavefront shader. An area light's packed rows carry their emitter CELL's
+    half-extents and the rectangle's right axis, and each row's fan places
+    its samples inside that cell, in the light's own plane: the per-row
+    visibility integrates the cell instead of testing its centre point, so
+    summing the rows gives a continuous penumbra rather than a stack of hard
+    ones (gated host-side by AREA_LIGHT_SOFT_SHADOWS -- with it off these
+    rows pack zeros and take today's single hard ray).
 
     ``shadow_identity`` (``SHADOW_IDENTITY_REJECT``, DESIGN_mesh_identity_open.md
     ssI) engages identity-aware rejection. ``event_src_prim`` carries each
@@ -2864,10 +2871,20 @@ def raster_shadow_trace(
                           light_pos[tl, li, 2])
         ltype = 0
         radius = 0.0
+        hu = 0.0
+        hv = 0.0
         if light_col.shape[2] > 3:
             ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
             if light_col.shape[2] > 11:
                 radius = light_col[tl, li, 11]
+                # A rect-area row carries its CELL's half-extents along the
+                # emitter plane's own axes. The ltype guard is load-bearing,
+                # not defensive: columns 9/10 are a spot light's cone cosines
+                # there, and reading them unguarded would turn every spot
+                # light into a rect emitter.
+                if ltype == _LT_AREA_SAMPLE:
+                    hu = light_col[tl, li, 9]
+                    hv = light_col[tl, li, 10]
         to_light = lp - spos
         ldist = to_light.norm()
         wi = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2899,11 +2916,24 @@ def raster_shadow_trace(
             b2 = ti.math.vec3(0.0, 0.0, 0.0)
             if radius > 0.0:
                 ns = SOFT_SHADOW_SAMPLES
-                aref = ti.math.vec3(1.0, 0.0, 0.0)
-                if ti.abs(wi[0]) > 0.9:
-                    aref = ti.math.vec3(0.0, 1.0, 0.0)
-                b1 = wi.cross(aref).normalized()
-                b2 = wi.cross(b1)
+                if (hu > 0.0) or (hv > 0.0):
+                    # Rect emitter: the fan samples INSIDE this row's own
+                    # cell, in the light's own plane -- b1 is the packed right
+                    # axis and b2 the up axis recovered exactly as _rect_axes
+                    # builds it. The offsets do not depend on wi, so a moving
+                    # sub-pixel origin needs no basis rebuild.
+                    b1 = ti.math.vec3(light_col[tl, li, 12],
+                                      light_col[tl, li, 13],
+                                      light_col[tl, li, 14])
+                    b2 = ti.math.vec3(light_col[tl, li, 6],
+                                      light_col[tl, li, 7],
+                                      light_col[tl, li, 8]).cross(b1)
+                else:
+                    aref = ti.math.vec3(1.0, 0.0, 0.0)
+                    if ti.abs(wi[0]) > 0.9:
+                        aref = ti.math.vec3(0.0, 1.0, 0.0)
+                    b1 = wi.cross(aref).normalized()
+                    b2 = wi.cross(b1)
             if ti.static(sec_aa > 1):
                 # A hard light needs the sub-pixel positions to be separate
                 # rays; a soft one already has enough rays and just spreads
@@ -2923,11 +2953,21 @@ def raster_shadow_trace(
                         ok = 0
                 off = ti.math.vec3(0.0, 0.0, 0.0)
                 if radius > 0.0:
-                    ang = _GOLDEN_ANGLE * s
-                    rr = radius * ti.sqrt(
-                        (ti.cast(s, ti.f32) + 0.5)
-                        / ti.cast(ns, ti.f32))
-                    off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
+                    if (hu > 0.0) or (hv > 0.0):
+                        # R2 sequence across the cell: s = 0 is exactly the
+                        # cell centre, so a one-sample fan degenerates to
+                        # today's ray.
+                        u = 0.5 + _R2_SEQUENCE_A1 * s
+                        v = 0.5 + _R2_SEQUENCE_A2 * s
+                        ru = 2.0 * (u - ti.floor(u)) - 1.0
+                        rv = 2.0 * (v - ti.floor(v)) - 1.0
+                        off = b1 * (hu * ru) + b2 * (hv * rv)
+                    else:
+                        ang = _GOLDEN_ANGLE * s
+                        rr = radius * ti.sqrt(
+                            (ti.cast(s, ti.f32) + 0.5)
+                            / ti.cast(ns, ti.f32))
+                        off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
                     if ltype == _LT_DIRECTIONAL:
                         wis = (wi + off).normalized()
                 if ltype != _LT_DIRECTIONAL:

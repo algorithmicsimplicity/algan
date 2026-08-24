@@ -553,3 +553,58 @@ Mechanics:
 - Renders and its test runs coexisted fine on the 4-vCPU container, but do not
   swap a source file out from under it: it runs the full unit suite as
   verification and will report failures caused by your swap as its own.
+
+**UPDATE: REVIEW FROM AN EIGHTH TASK (area-light shadow banding, 2026-08-24)**
+
+Three runs, all `--variant max`, all driven from a file: a read-only audit, the
+implementation, then one round handing back a defect. **No continuation on any
+of them.** The four-rounds-of-one shape from the seventh task held; so did the
+verification split — it wrote the code, I designed and ran every experiment, and
+the experiments are what decided the design question the brief could not.
+
+**The premise-checking is now reliable enough to plan around.** My audit brief
+listed four numbered claims and asked for CONFIRMED/REFUTED with line numbers.
+It confirmed three and refuted the fourth precisely: I had called packed light
+column 11 "free for area rows", and it showed the column is read
+*unconditionally* by both shadow fans — which did not break the design (that
+read is the gate I wanted) but did mean my count of free columns was wrong by
+one. Asking for verdicts on enumerated claims gets a better result than asking
+it to "audit" something, because a verdict is refusable and a summary is not.
+
+**The sharp lesson is a new one: its self-review cannot see what its tools
+cannot see.** It shipped a `wavefront_shade` fan that would not compile —
+`off` assigned in both arms of a new if/else and read after it, which is a
+`TaichiNameError` because **Taichi scopes a local to the block it is first
+assigned in, not to the function.** Its adversarial re-read explicitly
+considered that hunk and cleared it ("preserving the original single-assignment
+semantics, Taichi SSA phi"). Nothing in its verification could have caught it:
+`ruff` does not know Taichi scoping, `import algan` compiles no kernels, and its
+own tests were host-side. **The failure was not carelessness, it was a
+verification gap** — so the useful move is not "review harder", it is to notice
+which classes of defect the agent's own commands are blind to and require a test
+that closes that class. Here that was "make a test that actually compiles the
+kernel".
+
+Handing it back with the seventh task's recipe worked again, and the
+counterexample-first shape matters: I led with a five-line standalone Taichi
+repro of the scoping rule rather than with the line number. It re-ran that repro
+itself before touching anything, then wrote the parametrized compile test,
+**confirmed the test failed on the broken code first**, fixed the defect, and
+swept the whole diff for siblings as a per-variable table (declaration site,
+conditional reassignment, read site, verdict) — which surfaced that `b1`/`b2`
+survive only because pre-existing code happened to declare them
+unconditionally. It also caught its own test bug mid-round (the first draft
+forgot to apply its parametrized settings) and reported it unprompted.
+
+Two smaller things:
+
+- **It flags the specialisations its own test does not compile.** Its report
+  named `sec_aa > 1` as an uncompiled variant of both fans. That is exactly the
+  fifth-task pattern of honest gap-disclosure, and it was right to flag it —
+  my acceptance harness renders at `anti_alias_level 3` and covers it, but
+  nothing in its own work did.
+- **A prompt that says "do not run renders or suites, I will" is respected
+  literally**, and is the right instruction when you need the machine. It ran
+  only the two commands the brief named. Budget your own render time around
+  that rather than hoping it will measure things for you — it will not, and per
+  §4 it is weak at designing the experiment anyway.

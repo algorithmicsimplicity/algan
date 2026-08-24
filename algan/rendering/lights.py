@@ -15,8 +15,11 @@ world-space radius of the emitting disk) and directional lights a
 are enabled (:func:`~algan.rendering.raytracing.settings.set_ray_traced_shadows`)
 the deterministic tracer fires a fixed fan of shadow rays across the emitter
 instead of a single ray, producing smooth penumbras. :class:`RectAreaLight` is
-sampled at a fixed grid of emitter points (``samples``), so both its lighting
-and its shadows are naturally soft.
+sampled at a fixed grid of emitter points (``samples``), and each row's fan
+integrates visibility over its own cell of the rectangle rather than testing
+only the cell's centre, so its penumbra is continuous rather than a stack of
+hard shadows -- gated by ``AREA_LIGHT_SOFT_SHADOWS``, at the ray cost noted on
+:class:`RectAreaLight`.
 
 Only the default plain :class:`PointLight` is supported by every render path;
 the extended light types are rendered by the deterministic (single-sample)
@@ -192,8 +195,10 @@ class Light(Mob):
               hemisphere, surface normal for area samples)
         6     cos(outer cone angle) (spot)
         7     cos(inner cone angle) (spot)
-        8     shadow softness (world radius; directional: tan(angle))
-        9-11  ground color RGB (hemisphere) / SH linear coeffs (env)
+        8     shadow softness (world radius; directional: tan(angle); area:
+              equal-area radius of one emitter cell, see RectAreaLight)
+        9-11  ground color RGB (hemisphere) / SH linear coeffs (env) / right
+              axis of the emitter rectangle (area)
         12    power fraction of this row (1/K for area samples, else 1)
         ====  ==========================================================
 
@@ -500,21 +505,34 @@ class RectAreaLight(_TargetedLight):
     The rectangle is centered on the light's location, faces
     ``normalize(target - location)``, and is expanded at render time into a
     fixed grid of ``samples`` point emitters (each carrying ``1/samples`` of
-    the power, with one-sided cosine emission). Both the lighting and -- with
-    ray-traced shadows enabled -- the penumbras are therefore smooth, with a
-    smoothness set by ``samples``.
+    the power, with one-sided cosine emission).
+
+    With ray-traced shadows enabled, each emitter row stands for one cell of
+    the grid and its shadow fan integrates visibility over that whole cell --
+    placing its samples inside the cell, in the light's own plane -- instead
+    of testing only the cell's centre point. The penumbra is therefore
+    continuous rather than a stack of hard shadows. This costs
+    ``SOFT_SHADOW_SAMPLES`` shadow rays per row instead of one, i.e.
+    :meth:`num_samples` ``* SOFT_SHADOW_SAMPLES`` (default 8) per shaded
+    fragment while an area light is in the scene; ``samples`` stays the dial
+    for both quality and cost. The integration can be turned off, restoring
+    one hard ray per row, with
+    ``SETTINGS.raytracing.experimental.area_light_soft_shadows``.
 
     Parameters
     ----------
     width / height
-        Size of the rectangle in world units.
+        Size of the rectangle in world units. Defaults to 2 for each.
     target
-        World point the rectangle faces.
+        World point the rectangle faces. Defaults to the origin.
     samples
-        Number of emitter samples (rounded up to a k x k grid). More samples
-        = smoother penumbras, linearly more shadow-ray cost.
+        Number of emitter samples, rounded up to a square k x k grid: a k x k
+        grid of at least this many cells is laid out over the rectangle.
+        Defaults to 4. More samples = finer cells and smoother lighting and
+        shadows, linearly more shadow-ray cost.
     decay / distance
         As on :class:`PointLight` (set ``decay=2`` for physical falloff).
+        Defaults to no falloff and unlimited range.
     """
 
     light_type = LIGHT_AREA_SAMPLE
@@ -541,6 +559,10 @@ class RectAreaLight(_TargetedLight):
         self.distance = _finite_number("distance", distance, minimum=0.0)
         super().__init__(*args, target=target, **kwargs)
 
+    def _grid_side(self):
+        """Internal: side ``k`` of the square emitter grid."""
+        return int(math.ceil(math.sqrt(self.samples)))
+
     def num_samples(self):
         """Number of emitter samples this area light packs to.
 
@@ -550,7 +572,7 @@ class RectAreaLight(_TargetedLight):
             ``samples`` rounded up to the next square number, since the emitters are
             laid out on a square grid.
         """
-        k = int(math.ceil(math.sqrt(self.samples)))
+        k = self._grid_side()
         return k * k
 
     def _rect_axes(self, location):
@@ -583,7 +605,7 @@ class RectAreaLight(_TargetedLight):
             Sample positions, shape ``[T, K, 3]`` where ``K`` is
             :meth:`~.RectAreaLight.num_samples`.
         """
-        k = int(math.ceil(math.sqrt(self.samples)))
+        k = self._grid_side()
         right, up = self._rect_axes(location)
         # Cell-centered k x k grid over the rectangle.
         u = (torch.arange(k, dtype=torch.float32) + 0.5) / k - 0.5
@@ -597,7 +619,13 @@ class RectAreaLight(_TargetedLight):
         )
 
     def build_aux(self, location):
-        """Internal: pack this light's falloff, range and surface normal.
+        """Internal: pack this light's falloff, range and surface normal, and
+        -- when ``AREA_LIGHT_SOFT_SHADOWS`` is on -- each emitter row's cell
+        geometry for the soft-shadow fans: aux 6/7 the cell's half-extents
+        along the rectangle's ``right``/``up``, aux 8 the cell's equal-area
+        radius (the fans' gate and their isotropic fallback), aux 9-11 the
+        rectangle's ``right`` unit axis (``up`` is recovered in-kernel as
+        ``cross(normal, right)``).
 
         Parameters
         ----------
@@ -613,6 +641,21 @@ class RectAreaLight(_TargetedLight):
         aux[..., 1] = self.decay
         aux[..., 2] = self.distance
         aux[..., 3:6] = self._directions(location).unsqueeze(-2)
+        if rt_settings.AREA_LIGHT_SOFT_SHADOWS:
+            k = self._grid_side()
+            right, _ = self._rect_axes(location)
+            hu = self.width / (2.0 * k)
+            hv = self.height / (2.0 * k)
+            aux[..., 6] = hu
+            aux[..., 7] = hv
+            # Column 8 is the shadow-radius column every extended row carries;
+            # for an area row it holds the EQUAL-AREA disk radius of the cell,
+            # sqrt(4*hu*hv/pi). It serves twice: it is the fans' ``radius > 0``
+            # gate that turns the multi-sample fan on, and the isotropic
+            # fallback for any reader that knows a shadow radius but not the
+            # rectangle. Equal-area is the honest scalar stand-in for the cell.
+            aux[..., 8] = math.sqrt(4.0 * hu * hv / math.pi)
+            aux[..., 9:12] = right.unsqueeze(-2)
         return aux
 
 
