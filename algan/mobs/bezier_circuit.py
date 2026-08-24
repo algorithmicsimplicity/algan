@@ -755,6 +755,18 @@ class BezierCircuitCubic(Mob):
         "empty",
     )
 
+    #: Both of them are also untravellable, and ``filled`` is the sharpest case
+    #: of it in the package: the flag does not merely hide the interior, it
+    #: decides where the stroke goes (a filled circuit lays its border INWARD
+    #: from the outline, an unfilled one centres it on the path -- see
+    #: ``_circuit_point_region``), so no value of anything animatable
+    #: interpolates between the two. A pair that crosses it cross-fades.
+    _MORPH_UNTRAVELLABLE_ATTRS = (
+        *Mob._MORPH_UNTRAVELLABLE_ATTRS,
+        "filled",
+        "empty",
+    )
+
     @property
     def border_color(self):
         """Per-vertex colors sampled across the circuit's border texture grid."""

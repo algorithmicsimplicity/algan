@@ -20,6 +20,7 @@ from algan import (
     RIGHT,
     UP,
     Arrow3D,
+    Circle,
     Cross,
     Cube,
     Dot3D,
@@ -31,8 +32,11 @@ from algan import (
     Square,
     Surface,
     Sync,
+    Tetrahedron,
+    TriangleVertices,
     VGroup,
 )
+from algan.animatable_base.mob_morph import MobMorphMixin
 
 
 @pytest.fixture
@@ -64,6 +68,17 @@ def _visible_points(scene, index=0):
         if bool(keep.any()):
             points.append(rows[keep])
     return torch.cat(points, 0) if points else None
+
+
+def _max_alpha(mob, index):
+    """The brightest opacity anywhere in ``mob``'s subtree at one time index."""
+    alphas = []
+    for node in [mob, *mob.get_descendants()]:
+        opacity = getattr(node, "opacity", None)
+        if opacity is None or opacity.shape[0] <= index or opacity.numel() == 0:
+            continue
+        alphas.append(float(opacity[index].reshape(-1).max()))
+    return max(alphas) if alphas else 0.0
 
 
 def _chamfer(a, b):
@@ -511,3 +526,146 @@ def test_become_takes_the_targets_colour_texture(scene):
     assert wanted is not None
     assert tuple(got.shape) == tuple(wanted.shape)
     assert torch.allclose(got[..., :3], wanted[..., :3], atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# A clone registers what its source registered, not everything it can reach
+# ---------------------------------------------------------------------------
+
+
+def test_cloning_a_polyhedron_publishes_no_vertex_beads(scene):
+    """A clone is registered by the caller's policy; its parts are not.
+
+    ``clone(add_to_scene=True)`` put the root's policy in the deepcopy memo and
+    every descendant read it from there, so the copy registered geometry the
+    original deliberately does not: a ``Polyhedron`` builds its faces and its
+    vertex-and-edge graph with ``add_to_scene=False`` because it hands the
+    faces to the renderer itself and never draws the graph at all.  A cloned
+    Tetrahedron therefore grew four vertex beads and drew each of its four
+    faces twice, beside an original that did neither.
+    """
+    with Off():
+        original = Tetrahedron(edge_length=1.0).spawn()
+    per_solid = len(_rendering_actors(scene))
+    assert per_solid == 1, "the fixture no longer registers one actor per solid"
+
+    with Off():
+        original.clone()
+
+    assert len(_rendering_actors(scene)) == 2 * per_solid
+    assert not [actor for actor in scene.actors if isinstance(actor, Dot3D)]
+
+
+def test_a_morphed_polyhedrons_history_publishes_no_vertex_beads(scene):
+    """The frames *before* a morph belong to a clone, and it must look the same.
+
+    ``become`` calls ``detach_history``, which clones the source so the clone
+    can carry the recorded animation while the original starts fresh -- so
+    everything the viewer sees up to the morph is the clone's rendering.  With
+    the clone registering parts the original withholds, a Tetrahedron wore four
+    vertex beads for its whole pre-morph life and lost them on the first frame
+    of the morph, when the picture was handed back to the original.
+    """
+    with Off():
+        source = Tetrahedron(edge_length=1.0).spawn()
+        target = Sphere(radius=0.5)
+
+    with Sync(run_time=1.0):
+        source.become(target)
+
+    beads = [actor for actor in scene.actors if isinstance(actor, Dot3D)]
+    assert not beads, f"the historical clone published {len(beads)} vertex beads"
+    doubled = [actor for actor in scene.actors if isinstance(actor, TriangleVertices)]
+    assert not doubled, (
+        f"the historical clone published {len(doubled)} face triangles the "
+        "Tetrahedron draws itself, so every face was drawn twice"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Geometry with no counterpart arrives rather than popping
+# ---------------------------------------------------------------------------
+
+
+def test_a_surplus_target_fades_in_as_it_grows(scene):
+    """A collapsed seed at full opacity is a bright speck that came from nowhere.
+
+    A target primitive with no source is grown from a clone of itself collapsed
+    onto the nearest existing source point.  At zero size that clone still
+    carried the target's colour and material, so it rendered as a hard dot
+    sitting at an unrelated vertex for a third of the morph before inflating
+    into a solid.  It has to arrive, not appear.
+    """
+    with Off():
+        source = Sphere(radius=0.4).move(LEFT).spawn()
+        target = Group(
+            Sphere(radius=0.4).move(LEFT),
+            Sphere(radius=0.4).move(RIGHT),
+        )
+    start = float(scene.animation_manager.context.timespan.current_time)
+    with Sync(run_time=1.0):
+        result = source.become(target)
+    end = float(scene.animation_manager.context.timespan.current_time)
+
+    scene.timeline_manager.set_state_to_times(torch.tensor([start, end]))
+    grown = result[1]
+    first = _max_alpha(grown, 0)
+    last = _max_alpha(grown, 1)
+    scene.timeline_manager.clear_buffers()
+
+    assert first <= 1e-3, f"the surplus target started visible (alpha {first:.3f})"
+    assert last >= 0.99, f"the surplus target never became solid (alpha {last:.3f})"
+
+
+# ---------------------------------------------------------------------------
+# A flag the renderer reads once cannot be animated, so it is not travelled
+# ---------------------------------------------------------------------------
+
+
+def test_a_fill_crossing_pair_is_ranked_below_a_like_filled_one(scene):
+    """Crossing ``filled`` costs half a compatibility band, not a whole one.
+
+    Type identity still leads -- a filled Square would rather become an
+    unfilled Square than a filled Circle, which is the same rule that sends
+    ``Square@left + Circle@right -> Circle@left + Square@right`` across the
+    screen instead of changing shape in place.  But among counterparts of equal
+    type and family, one that does not force the crossing wins.
+    """
+    rank = MobMorphMixin._primitive_compatibility_rank
+    with Off():
+        filled = Square(side_length=0.6, filled=True)
+        also_filled = Square(side_length=0.6, filled=True)
+        unfilled = Square(side_length=0.6, filled=False)
+        filled_circle = Circle(radius=0.3, filled=True)
+
+    assert rank(filled, also_filled) < rank(filled, unfilled)
+    assert rank(filled, unfilled) < rank(filled, filled_circle)
+
+
+@pytest.mark.parametrize("source_filled", [True, False])
+def test_a_fill_crossing_morph_does_not_play_in_the_endpoints_fill(
+    scene, source_filled
+):
+    """``filled`` is read once per render, so adopting it is not an ending.
+
+    ``_adopt_structural_attrs`` runs after the recorded morph, but the timeline
+    is fully recorded before anything renders -- so the renderer reads the
+    adopted value on *every* frame of that mob's life, and a filled Circle
+    became an outline on the morph's first frame and stayed one.  The flag also
+    decides where the stroke goes, not merely whether the interior shows, so
+    nothing animatable interpolates between the two: such a pair cross-fades,
+    which leaves the source holding its own fill for as long as it is visible.
+    """
+    with Off():
+        source = Square(color=BLUE, filled=source_filled, border_width=0.05).spawn()
+        target = Square(color=BLUE, filled=not source_filled, border_width=0.05)
+
+    with Sync(run_time=1.0):
+        result = source.become(target)
+
+    assert result.filled is (not source_filled)
+    assert result is not source
+    assert source.filled is source_filled, (
+        "the source was made to render in the endpoint's fill for the whole "
+        "morph rather than fading out in its own"
+    )

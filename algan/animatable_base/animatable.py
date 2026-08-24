@@ -1204,7 +1204,23 @@ class Animatable:
         memo.setdefault("___copy_animate_creation___", False)
         memo.setdefault("___copy_recursive___", True)
         memo.setdefault("___clone_data___", True)
+        # THE POLICY IS THE ROOT'S; A DESCENDANT STILL SPEAKS FOR ITSELF. A
+        # composite builds parts it never intends the Scene to see -- a
+        # Polyhedron's vertex-and-edge graph, which it deliberately does not
+        # draw, and each face's TriangleVertices, which it draws itself -- and
+        # marks them by construction with ``add_to_scene=False``. Handing the
+        # root's policy to the whole subtree registered them all, so a cloned
+        # Polyhedron grew eight vertex beads and drew every face twice, while
+        # the original beside it did neither. ``detach_history`` is what made
+        # that visible in a morph: it clones to carry the recorded history, so
+        # the pre-morph frames were the clone's and grew beads that vanished
+        # the moment the morph handed the picture back to the original.
+        is_clone_root = "___copy_root_id___" not in memo
+        if is_clone_root:
+            memo["___copy_root_id___"] = id(self)
         add_to_scene = memo["___copy_add_to_scene___"]
+        if not is_clone_root:
+            add_to_scene = add_to_scene and bool(getattr(self, "_added_to_scene", True))
         spawn = memo["___copy_spawn___"]
         animate_creation = memo["___copy_animate_creation___"]
         copy_recursive = memo["___copy_recursive___"]

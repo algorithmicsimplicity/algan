@@ -133,8 +133,9 @@ with Off():
     target_center = framed(target_center_content, buffer=0.22)
 
     # The right side changes from one direct mesh into a nested Group plus an
-    # extra root leaf. Surplus targets start as their own collapsed geometry and
-    # grow outward without fading or duplicating an already-visible source.
+    # extra root leaf. Surplus targets start as their own collapsed geometry at
+    # the nearest existing source point and fade up as they grow outward, rather
+    # than duplicating an already-visible source.
     target_right_content = Group(
         Sphere(radius=0.42, color=TEAL_A).move(RIGHT * 3.0 + UP * 0.42),
         Square(side_length=0.72, color=BLUE_A).move(RIGHT * 3.72 + DOWN * 0.38),
