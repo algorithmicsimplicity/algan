@@ -1,11 +1,84 @@
 # Task: a mirror's image of glass is the transmitted lobe, not the reflected one
 
-**Status:** open, diagnosed, not fixed. Found by the renderer audit's fourth run
-(`REPORT.md` §9.3).
+**Status: FIXED 2026-08-24 for the transmissive case — but read §0 first, because
+two of the numbers this brief asks you to move turned out to be measuring
+something else.** The cause, the fix and the corrected measurements are in
+`REPORT.md` §9.3.1; the rest of this file is preserved as written, so §0 is
+where it is contradicted.
 
 **You do not need to read `REPORT.md` to work on this.** Everything needed is
 here; `REPORT.md` §9.3 is the same finding written for a reader of the whole
 audit, and §4.2 is the earlier Fresnel fix this one sits next to.
+
+---
+
+## 0. What was actually wrong, and what this brief got wrong
+
+**The cause.** The reflected share `R` a hit splits off is traced as a
+continuation **ray**, and a ray can only find light that has geometry to hit. A
+directional or point light is a delta: no continuation will ever land on one. So
+the reflected lobe's response to the direct lights exists only as the analytic
+GGX term the material stages evaluate — and that term rides inside the shaded
+colour, which the scatter sites weight by `1 - R - trans_share`, the share that
+is explicitly *not* reflected. For clear glass `trans_share = 1 - R` exactly, so
+the weight collapses to `R * (1 - _mirror_share(roughness))`: **1.2% at
+roughness 0.05.** The ball's own reflection is annihilated, and all a mirror can
+then show of it is what lies *behind* it, tinted once entering and once leaving.
+That albedo² is what §2's table measures.
+
+`_material_reflectance` was innocent, as §4 suspected it might be. The defect is
+in how its output is spent, exactly as §4 warned.
+
+**Correction 1 — §2's reference column is mostly the MIRROR's own highlight.**
+Render the `mirror` sphere alone on a black background, with nothing in the
+scene for it to reflect, and three-gpu-pathtracer still returns
+**(4.66, 4.66, 4.66)** over its disc at 99.8% concentration — the directional
+light's specular reflection off the mirror itself, which three renders because
+it clamps roughness and Algan does not (Algan's GGX `alpha` floor at roughness 0
+is 1e-4, a lobe far too narrow to find). That is 82% of the 5.67 the reference
+returns with the glass present. **The "small untinted specular highlight" §1
+attributes to the glass ball is mostly not the glass ball.** Always render the
+mirror-only control before trusting a mirror-disc number.
+
+**Correction 2 — §6's headline target is unreachable and was the wrong metric.**
+The mirror-disc `g/r` sits at 1.77 before the fix and 1.77 after, for two
+measured reasons: the confound above, and the fact that the ball's image in a
+convex mirror is ~4% of its own screen area, so its restored highlight lands in
+a handful of pixels. Integrating the GGX lobe over the sphere analytically, the
+ball's highlight toward the mirror is **0.77x** its highlight toward the camera;
+Algan now measures 1.1x where it measured ~0, while the reference's apparent 7x
+is a clipping artifact (its 15 added pixels saturate at 255).
+
+**Measure the transmissive surface's own disc instead.** It is what the defect
+is about, and it is not diluted:
+
+| | total (linear R, G, B) | g/r | top-2% |
+| --- | --- | --- | --- |
+| algan, before | (0.034, 0.063, 0.013) | **1.87** | 94.5% |
+| algan, after | (1.129, 1.159, 1.108) | **1.03** | 98.9% |
+| three path tracer | (2.815, 3.008, 2.656) | 1.07 | 99.2% |
+
+```bash
+<venv-python> benchmarks/renderer_audit/mirror_tint_probe.py <scene> \
+    --images <images> --labels <labels> --mirror glass --source glass
+```
+
+(`--mirror` names the disc to measure, so pointing it at the glass ball works.)
+
+§6's other four requirements all hold: `calib_mirror` 0.9004 and `calib_glass`
+0.9134 are unchanged to four decimals, the opaque control does not move, and
+total energy does not collapse.
+
+**Still open: the opaque half.** The same defect throttles an opaque rough
+metal's direct-light highlight the same way. Extending the fix there moves
+`tests/fast` by 25 channel values, which is the CORRECT restoration and not a
+surprise: the weight in the default split-sum arm is `_material_env_brdf`, the
+lobe's exact directional albedo, and for the fast scene's
+`MeshStandardMaterial(roughness=0.35, metalness=0.4)` that is **25x**
+`R * _mirror_share(0.35)` (0.344 against 0.0138 in red). The identity
+`share + R = 1` holds in that arm too. What blocks the extension is not the
+arithmetic but the baselines: it moves `tests/fast` and every full-render
+scene, and the CUDA set cannot be regenerated on a CPU-only machine.
 
 ---
 

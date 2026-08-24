@@ -823,6 +823,98 @@ def _vis_max_component(v):
     return ti.max(v[0], ti.max(v[1], v[2]))
 
 
+@ti.func
+def direct_specular_lobe(f, prim, pos, view_dir, n_interp, face_n,
+                         metalness, roughness, ior, albedo,
+                         params: ti.template(),
+                         light_pos: ti.template(), light_col: ti.template(),
+                         num_lights, shadows: ti.template(), vis):
+    """The delta lights' Cook-Torrance specular reflection off this hit.
+
+    **Why this exists separately from the material stages, which already
+    compute the very same lobe.** A hit's outgoing energy is split by the
+    scatter sites into a reflected share ``R`` traced as a continuation ray, a
+    transmitted share, and a remainder that weights the locally shaded colour
+    (see ``_scatter_impl``). That partition is a statement about *reflectance*,
+    and it is sound -- but the continuation carrying ``R`` is a ray, and a ray
+    can only find light that has geometry to hit. A directional or point light
+    is a delta: no continuation will ever land on it, however many bounces it
+    is given. So the reflected lobe's response to the direct lights exists
+    ONLY as the analytic GGX term the stages evaluate -- and that term rides
+    inside the shaded colour, which is weighted by the share that is
+    explicitly *not* reflected.
+
+    The result is that exactly the materials whose reflected lobe dominates
+    lose their highlight. A perfect mirror (``R = 1``) shades at weight
+    ``1 - R = 0``: its own specular reflection of every light in the scene is
+    multiplied by zero, and the ray that took its place returns the
+    background. Clear glass is the same defect wearing the transmitted share
+    instead: ``trans_share = 1 - R`` eats the remainder, leaving the highlight
+    ``R * (1 - _mirror_share(roughness))``, about 1.2% of it at roughness
+    0.05. Measured against three-gpu-pathtracer on a mirror sphere alone
+    against a black background -- a scene with nothing whatever to reflect --
+    the reference returns 4.66 units of untinted highlight over the mirror's
+    disc and Algan returned 0.046.
+
+    So the scatter sites add this back at the weight the traced ray took
+    (``R * _mirror_share``), which restores the lobe to unit weight overall:
+    the shaded colour's share plus the traced share is 1. It is not double
+    counting -- the two carry disjoint sources, the ray the environment and
+    this the delta lights.
+
+    The normal is prepared HERE, from the raw interpolated one, by the same
+    two steps :func:`_run_frag_pipeline` applies before it calls a stage:
+    :func:`_sided_shading_normal` then the flat blend. Handing this the raw
+    normal instead is not a small error -- on a back-facing hit ``n . v`` falls
+    to the ``1e-4`` clamp and the lobe divides by it, so the term explodes
+    rather than vanishing. Measured on ``tests/fast``: the raw normal moved the
+    scene by 25 channel values where the prepared one moves it by 3.
+
+    ``params``/``prim``/``f`` are the per-primitive material block, read only
+    for the one-sided declaration (slot 26) and the flat-shading blend
+    (slot 10) -- both canonical slots every built-in stage writes.
+
+    F0 comes from the transport ``ior``, which is the fixed 1.5 for a
+    MeshStandardMaterial and so reproduces that stage's hard-coded 0.04
+    exactly, and is the authored value for a MeshPhysicalMaterial. It does NOT
+    read the KHR specular-workflow slots (13, 14..16): those are written by the
+    physical stage alone and are zero under a standard material, so reading
+    them would zero the dielectric F0 of every MeshStandardMaterial in the
+    scene. The cost is that a MeshPhysicalMaterial which moves
+    ``specular_intensity``/``specular_color`` off their defaults gets its
+    add-back at the default F0. Scope, likewise: the base GGX lobe only. A
+    physical material's clearcoat and sheen are additional lobes that stay
+    where they are, on the stage's own share -- a mirror has neither, and a
+    coat bright enough to matter is not a coat.
+    """
+    out = ti.math.vec3(0.0, 0.0, 0.0)
+    if metalness >= 0.0:
+        tm = f % params.shape[0]
+        n = _sided_shading_normal(n_interp, face_n, view_dir, params, f, prim)
+        n = _prep_normal(n, face_n, params[tm, prim, 10], view_dir)
+        m = ti.math.clamp(metalness, 0.0, 1.0)
+        one = ti.math.vec3(1.0, 1.0, 1.0)
+        rgb = ti.math.clamp(albedo, 0.0, 1.0)
+        ratio = (ior - 1.0) / ti.max(ior + 1.0, 1e-4)
+        f0 = one * (ratio * ratio) * (1.0 - m) + rgb * m
+        for li in range(num_lights):
+            ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                                pos, n)
+            v = _light_vis(shadows, vis, li)
+            half = (ld + view_dir).normalized()
+            n_dot_l = ti.max(n.dot(ld), 0.0)
+            n_dot_v = ti.max(n.dot(view_dir), 1e-4)
+            n_dot_h = ti.max(n.dot(half), 0.0)
+            v_dot_h = ti.max(view_dir.dot(half), 0.0)
+            fresnel = f0 + (one - f0) * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
+            ndf = _ggx_distribution(n_dot_h, roughness)
+            geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
+            spec = (ndf * geom) * fresnel \
+                / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
+            out += spec * lc * (n_dot_l * spec_w) * v
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Built-in core lit material stages.
 #

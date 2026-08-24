@@ -2660,6 +2660,7 @@ def raytrace_render_wavefront(
                     # read live per batch like the other shadow toggles.
                     int(rt_settings.shadow_terminator_mode()),
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                    int(rt_settings.DIRECT_SPECULAR_LOBE),
                     int(mem_trim),
                     opaque_closest,
                     0,
@@ -3234,6 +3235,7 @@ def raytrace_render_wavefront(
                     # read live per batch like the other shadow toggles.
                     int(rt_settings.shadow_terminator_mode()),
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                    int(rt_settings.DIRECT_SPECULAR_LOBE),
                     int(mem_trim),
                     opaque_closest,
                     first,

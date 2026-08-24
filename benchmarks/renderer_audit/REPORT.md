@@ -71,7 +71,7 @@ were not being shaded at all under this scene's lighting rig.
 | §6.3 | **[3]** A packed normal and a depth ramp went out through the sRGB OETF, which three.js pointedly does not do to either | yes | **fixed** — red and green now match three.js to the byte; only the world-vs-view-space channel is left |
 | §6.4 | **[3]** Phong's specular lobe has no `(shininess·0.5+1)·0.25` normalization, no multiplicative `n·l` and no Fresnel — the one lit material whose ratio to three.js is not a uniform π | yes | **fixed** — three.js's `BRDF_BlinnPhong` term for term, pinned by a unit test against the analytic formula |
 | §6.7 | **[3]** `RectAreaLight` is a mean of point samples, not a solid-angle integral: with the default `decay = 0` it has no distance falloff at all, so it floods a wall where the reference pools under the rectangle (32× under the light, 145× at the wall's edge) | yes — not a unit convention, a falloff shape | not fixed — the correction is specified in §6.7 and needs its own baselines |
-| §9.3 | **[4]** A mirror's image of a transmissive solid is dominated by twice-tinted *transmitted* light where the reference shows an untinted specular highlight — tint ratio g/r **1.77** against three's **0.95**, where the glass albedo is 1.30 and albedo² is 1.69 | probably — Fresnel favours the reference at the grazing angles a mirror sees a limb through | not fixed — §9.3 measures it and rules out three other causes |
+| §9.3 | **[4]** A transmissive solid returns none of its own reflected lobe: the direct lights' specular highlight is weighted by the share that is explicitly *not* reflected, which clear glass's transmitted share reduces to 1.2%. All a mirror can then show of it is what lies behind it, tinted once each way — g/r **1.87** on the ball's own disc against three's 1.07 | yes — a ray cannot find a delta light, so the traced reflected share can never deliver one | **fixed** (§9.3.1) — g/r 1.87 → **1.03**, 33x brighter; §9.3's mirror-disc metric is confounded and does not move |
 | §9.2 | **[4]** An escaped *secondary* ray returns the background colour, so a perfect mirror renders the backdrop exactly — 0.016 linear, the background's own value — and disappears into it. Three.js gives an escaped ray zero radiance unless `scene.environment` is set | neither — a convention, but one that decides whether a mirror is visible at all | documented, not changed |
 | §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention, now measurable as exactly π (§6.6 measures it as 3.15 at every pixel of a hemisphere-lit wall) | left alone, on purpose |
 | §4.8 | **[2]** A flat ambient on every lit surface, 0.01 in linear light | yes, but an artistic default | left alone |
@@ -1432,17 +1432,19 @@ what the second run learned:
    fallback needs only the camera *up* vector, since its basis is built from
    the view direction. Both are documented approximations rather than
    accidents, which is why they are a follow-up and not a defect.
-6. **Check the Fresnel weight the bounce loop gives a transmissive dielectric at
-   a wide angle of incidence** (§9.3) — **[4]**, and the only new finding about
-   Algan since the third run. A mirror's image of the glass sphere is dominated
-   by twice-tinted *transmitted* light where the reference shows an untinted
-   specular highlight; the tint ratio measures 1.77 against the albedo's 1.30 and
-   albedo squared's 1.69, and against three's 0.95. Total reflected energy is
-   comparable, so this is a split between two lobes rather than a gain: at
-   grazing incidence reflection should dominate and does not. §9.3 rules out the
-   background, the sheet-versus-wavefront route difference and the closed-shell
-   ceiling, so what is left is the weight itself, against the equations §4.2 was
-   pinned to.
+6. ~~**Check the Fresnel weight the bounce loop gives a transmissive dielectric
+   at a wide angle of incidence** (§9.3)~~ — **done, §9.3.1.** The Fresnel weight
+   was never wrong. What was wrong is where the direct lights' half of the
+   reflected lobe lives: inside the shaded colour, which the scatter sites
+   weight by the share that is explicitly *not* reflected. A ray cannot find a
+   delta light, so the traced share can never deliver one, and clear glass's
+   transmitted share leaves the analytic term 1.2% of its due weight. Fixed by
+   adding it back at the complement of that share.
+
+   What remains of this item is its **opaque** half: a rough metal's
+   direct-light highlight is weighted the same way. The fix is scoped to
+   transmissive materials only because extending it moves `tests/fast` and
+   every full-render baseline, and the CUDA set needs a CUDA machine.
 7. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
    conformance rather than Three.js parity is the goal.
 8. **Consider decoding the legacy textured-wavefront colour banks**
@@ -1695,9 +1697,77 @@ fixed) and not §4.5 (a rough *metal*'s reflection). It is the
 reflected/transmitted **split** on a secondary ray, and nothing in the audit
 covered it before. **`TASK_mirror_transmitted_lobe.md` is the self-contained
 brief for fixing it** — the measurement, the three ruled-out causes with the
-commands that ruled them out, the code, and what "fixed" has to measure. A follow-up should check the Fresnel weight the bounce loop
-applies when a continuation ray strikes a transmissive dielectric at a wide angle
-of incidence, against the same equations §4.2 was pinned to.
+commands that ruled them out, the code, and what "fixed" has to measure.
+
+#### 9.3.1 The cause, and two corrections to the numbers above
+
+Found and fixed 2026-08-24 (`shading_taichi.direct_specular_lobe`,
+`SETTINGS.raytracing.experimental.direct_specular_lobe`).
+
+**The mechanism.** The reflected share `R` a hit splits off is traced as a
+continuation **ray** — and a ray can only find light that has geometry to hit.
+A directional or point light is a delta: no continuation will ever land on one,
+however many bounces it is given. So the reflected lobe's response to the
+direct lights exists *only* as the analytic GGX term the material stages
+evaluate, and that term rides inside the shaded colour, which the scatter sites
+weight by `1 - R - trans_share` — the share that is explicitly **not**
+reflected. For clear glass `trans_share = 1 - R` exactly, so the weight
+collapses to `R * (1 - _mirror_share(roughness))`: **1.2% at roughness 0.05.**
+The ball's own Fresnel reflection is annihilated, and the only thing a mirror
+can then see of it is what lies *behind* it — tinted once entering and once
+leaving, which is the albedo² this section measured.
+
+The fix adds that lobe back at the exact complement of the share the shaded
+colour already carries, so the reflected lobe reaches unit weight. It is not
+double counting: the traced ray carries the environment, the analytic term
+carries the delta lights, and the two sources are disjoint.
+
+Measured on the black-background scene, the transmissive sphere's **own** disc:
+
+| | total (linear R, G, B) | g/r | top-2% |
+| --- | --- | --- | --- |
+| algan, before | (0.034, 0.063, 0.013) | **1.87** | 94.5% |
+| algan, after | (1.129, 1.159, 1.108) | **1.03** | 98.9% |
+| three path tracer | (2.815, 3.008, 2.656) | 1.07 | 99.2% |
+
+33x brighter and the tint is gone, matching the reference's ratio to 0.04.
+`calib_mirror` (0.9004) and `calib_glass` (0.9134) are unchanged to four
+decimals, and every non-transmissive material renders byte-identically.
+
+**Correction 1 — most of the reference's mirror-disc energy is the mirror's
+own highlight, not the glass.** Rendering the `mirror` sphere **alone** on a
+black background, with nothing whatever in the scene for it to reflect, the
+path tracer still returns (4.66, 4.66, 4.66) over its disc at 99.8%
+concentration. That is 82% of the 5.67 it returns with the glass ball present,
+and a comparable share of the (7.64, 7.27, 5.49) tabulated above. It is the
+directional light's specular reflection off the mirror itself, which three
+renders because it clamps roughness and Algan does not: at roughness 0 Algan's
+GGX `alpha` floor is 1e-4, a lobe far too narrow to find. **The "small untinted
+specular highlight" this section attributes to the glass ball is mostly the
+mirror's own.** Subtracting it, the glass contributes 1.007 to the reference's
+disc and 0.000 to Algan's before the fix.
+
+**Correction 2 — the mirror-disc `g/r` is not a good acceptance metric, and it
+has not moved.** It sits at 1.77 before the fix and 1.77 after. Two reasons,
+both established by measurement: the confound above, and the fact that the
+ball's image in a convex mirror is ~4% of its own screen area, so its restored
+highlight lands in a handful of pixels. Integrating the GGX lobe over the
+sphere analytically, the highlight toward the mirror is **0.77x** the highlight
+toward the camera — Algan now measures 1.1x where it measured ~0 before, while
+the reference's apparent 7x is a clipping artifact (its 15 added pixels are
+saturated at 255). Measure the transmissive surface's **own** disc instead; it
+is what the defect is about and it is not diluted.
+
+**Still open: the opaque half.** The same defect throttles an opaque rough
+metal's direct-light highlight the same way. Extending the fix there moves
+`tests/fast` by 25 channel values, which is the CORRECT restoration and not a
+surprise: the weight in the default split-sum arm is `_material_env_brdf`, the
+lobe's exact directional albedo, and for the fast scene's
+`MeshStandardMaterial(roughness=0.35, metalness=0.4)` that is **25x**
+`R * _mirror_share(0.35)` (0.344 against 0.0138 in red). The identity
+`share + R = 1` holds in that arm too. What blocks the extension is not the
+arithmetic but the baselines: it moves `tests/fast` and every full-render
+scene, and the CUDA set cannot be regenerated on a CPU-only machine.
 
 ### 9.4 A mirror renders the background, and so disappears into it
 

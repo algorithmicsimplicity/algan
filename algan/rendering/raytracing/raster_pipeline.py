@@ -2013,6 +2013,7 @@ def shade_sparse_raster_coverage(
         float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
         int(rt_settings.glossy_reflection_mode()),
         1 if coverage.get("env_in_composite") else 0,
+        int(rt_settings.DIRECT_SPECULAR_LOBE),
     )
     post_args = (
         covered_idx,

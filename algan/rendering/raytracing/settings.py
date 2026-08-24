@@ -1560,6 +1560,41 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 SOLID_SHELL_ALPHA = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 
 
+# Deliver the DIRECT LIGHTS' share of the reflected specular lobe, which the
+# traced continuation cannot: a ray only finds light that has geometry, and a
+# directional or point light is a delta.
+#
+# A hit's energy is partitioned into a reflected share ``R`` (traced), a
+# transmitted share, and a remainder that weights the locally shaded colour.
+# That partition is sound as reflectance, but the shaded colour is where the
+# analytic GGX highlight lives -- so the lights' own specular reflection is
+# weighted by the share that is explicitly NOT reflected, and the materials
+# whose reflected or transmitted lobe dominates lose their highlight outright.
+# Clear glass is the case that surfaced it: ``trans_share = 1 - R`` eats the
+# remainder, leaving the highlight ``R * (1 - _mirror_share(roughness))`` --
+# 1.2% of it at roughness 0.05. A perfect mirror is the same defect wearing
+# ``R = 1`` instead, shading at weight zero.
+#
+# The scatter sites therefore add the lobe back at exactly the complement of
+# the share the shaded colour already carries (``R * _mirror_share +
+# trans_share``), which puts the reflected lobe at unit weight overall and
+# leaves the diffuse/ambient partition untouched. Not double counting: the
+# traced ray carries the environment, this carries the delta lights, and the
+# two sources are disjoint.
+#
+# Measured on ``scenes/matlight_pbr_subset.json`` against three-gpu-pathtracer,
+# black background, the transmissive sphere's own disc: (0.034, 0.063, 0.013)
+# linear at g/r 1.87 -- doubly tinted, no highlight -- becomes (1.129, 1.159,
+# 1.108) at g/r 1.03, against the reference's g/r 1.07. The opaque control and
+# the transmission-0.5 sphere move by 0.06% and 0.2%.
+#
+# Scope: the built-in material arm of both primary routes (the sheet resolve
+# and the classic wavefront bounce loop). A custom fragment scatter owns its
+# own transport and a bezier circuit is never material-shaded, so neither has
+# a GGX highlight to restore. OFF restores the previous weighting exactly.
+DIRECT_SPECULAR_LOBE = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
+
+
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
 # triangle tree already uses, instead of Morton (DESIGN_mesh_identity.md ss3.4).
 # A space-filling curve is cheap but packs spatially distant instances into the

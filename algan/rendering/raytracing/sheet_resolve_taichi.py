@@ -85,6 +85,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _reflect_frame,
     _shadow_terminator_delta,
+    direct_specular_lobe,
     light_vis_index,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -136,6 +137,10 @@ def sheet_resolve_shade(
         sec_aa: ti.template(), sec_min_energy: ti.f32,
         glossy: ti.template(),
         env_in_composite: ti.template(),
+        # Deliver the direct lights' share of the reflected specular lobe,
+        # which the continuation this hit spawns cannot (rt_settings.
+        # DIRECT_SPECULAR_LOBE). 0 restores the previous weighting exactly.
+        direct_spec: ti.template(),
         # Shadow support (DESIGN_sheet_resolve.md §4.9). ``mode`` 0 is the
         # shadow-free resolve; 1 walks the IDENTICAL transport and writes one
         # candidate shadow event per accepted lit triangle sheet (no shading,
@@ -366,6 +371,12 @@ def sheet_resolve_shade(
             ior = 0.0
             T = 0.0
             albedo3 = ti.math.vec3(0.0, 0.0, 0.0)
+            # Per-light shadow visibility, RGB and channel-major (see
+            # shading_taichi.light_vis_index). Declared at the sheet's own
+            # scope rather than inside the shading branch that fills it,
+            # because the reflected lobe's direct-light add-back reads it
+            # again further down, once the surface normal is known.
+            lvis = ti.Vector([1.0] * (3 * MAX_SHADOW_LIGHTS))
             prim = 0
             circuit = 0
             fetched_bez = False
@@ -399,9 +410,6 @@ def sheet_resolve_shade(
                     tri_tex_meta, textures, num_colored_triangles)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
                 if ti.static(frag_shading != 0 and mode != 1):
-                    # RGB payload, channel-major per light (see
-                    # shading_taichi.light_vis_index).
-                    lvis = ti.Vector([1.0] * (3 * MAX_SHADOW_LIGHTS))
                     if ti.static(mode == 2):
                         event_id = sheet_event_id[idx]
                         if event_id >= 0:
@@ -575,6 +583,29 @@ def sheet_resolve_shade(
             acc += ti.math.vec4(
                 share[0], share[1], share[2],
                 w_glow * alpha * (1.0 - r_glow - trans_share)) * color
+            # The direct lights' share of the REFLECTED lobe. The continuation
+            # spawned below carries ``R`` of that lobe, but it is a ray and a
+            # delta light has nothing for a ray to hit, so it can only return
+            # the environment. Added here at exactly the weight the ray took,
+            # which puts the lobe's total weight at 1 alongside ``share``.
+            # See ``shading_taichi.direct_specular_lobe``. The 4th (glow)
+            # lane takes nothing: glow is the authored bloom channel and a
+            # Fresnel highlight is not authored emission, so every existing
+            # bloom pass reads exactly what it read before.
+            if ti.static(frag_shading != 0 and mode != 1 and direct_spec != 0):
+                # Triangles/PN only. A bezier circuit is never material-
+                # shaded -- its colour is sampled, not lit, so it carries no
+                # GGX term to restore -- and its ``prim`` indexes
+                # ``circuit_meta``, not ``tri_mat``, so reading a material
+                # block with it would silently pick another primitive's.
+                if (not fetched_bez) and (reflectivity >= 0.0) and (T > 1e-4):
+                    sa = (weight * alpha) * (R + trans_share) \
+                        * direct_specular_lobe(
+                            f, prim, surf_pos, -surf_rd, normal, geo_normal,
+                            reflectivity, rough, ior, albedo3, tri_mat,
+                            light_pos, light_col, num_lights,
+                            ti.static(1 if mode == 2 else 0), lvis)
+                    acc += ti.math.vec4(sa[0], sa[1], sa[2], 0.0)
             refl_energy = alpha * R
             refl_max = ti.max(refl_energy[0],
                               ti.max(refl_energy[1], refl_energy[2]))
