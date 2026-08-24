@@ -69,8 +69,9 @@ Because they are Mobs, lights animate:
 Light Types
 ===========
 
-Every light takes an ``intensity`` multiplier, and every light's ``location`` and
-``color`` are animatable. All of them are importable from ``algan`` directly.
+Every light takes an ``intensity`` multiplier, and every light's ``location``,
+``color`` and ``intensity`` are animatable. All of them are importable from
+``algan`` directly.
 
 Point Light
 -----------
@@ -149,14 +150,36 @@ Almost every rig wants a little of it.
 The ambient term is what keeps the side of the sphere facing away from the key
 light off pure black.
 
+Animating Intensity
+-------------------
+
+A light's ``intensity`` is an animatable attribute like its ``color``: writing
+it after spawn records the change on the timeline, so a light can brighten or
+dim over a shot.
+
+.. algan:: LightingAnimatedIntensity
+
+    from algan import *
+
+    with Off():
+        Scene.clear_light_sources()
+        PointLight(location=UP * 4 + OUT * 2, color=WHITE).spawn()
+
+        Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
+               for x in (-1.8, 0, 1.8)]).spawn()
+
+    light = Scene.get_light_sources()[0]
+    with Seq(run_time=3):
+        light.intensity = 5
+
+    Scene.save_video()
+
 .. note::
 
-    A light's ``intensity`` and its shape parameters (``decay``, ``distance``,
-    cone angles, emitter sizes) are plain per-light constants, not animatable
+    A light's *shape* parameters -- ``decay``, ``distance``, cone angles and
+    emitter sizes -- are still plain per-light constants rather than animatable
     attributes: they are read when a frame batch is prepared rather than
-    recorded on the timeline. A light's ``location`` and ``color`` *are*
-    animatable, which is what the example above animates. To show two intensity
-    settings, render two videos.
+    recorded on the timeline. To show two of those settings, render two videos.
 
 Hemisphere Light
 ----------------
