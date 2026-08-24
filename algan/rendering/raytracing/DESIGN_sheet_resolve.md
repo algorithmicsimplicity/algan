@@ -414,10 +414,40 @@ not empty-pixel optimizations.
     sheet carries one scalar depth and the walk order is fixed on the host,
     so the whole pixel goes to whichever sheet sorts first. There is no
     per-sample depth anywhere downstream of emission — not even per fragment,
-    whose one depth is evaluated at the centroid of the samples it owns — so
-    nothing can blend the crossing. Blending it needs a depth plane per sheet
-    (a min/max or a gradient) and a per-sample tie-break in the resolve;
-    `OX_SHEET_INTERPENETRATION_AUDIT.md` scopes that, and it is NOT built.
+    whose one depth is evaluated at the centroid of the samples it owns.
+
+    That last clause is what changed on 2026-08-24 (`SHEET_SAMPLE_DEPTH`,
+    default on). The audit asked where a NEW datum would have to go; the
+    cheaper question was what the existing ones already say, and between them
+    the fragments do carry a per-sample reading: a fragment's mask names the
+    samples it owns and its scalar names where they are. So the compaction now
+    reduces, per sheet and per sample lane, the depth of the nearest fragment
+    of that sheet OWNING that lane — one masked `amin` scatter per lane over
+    the same sorted stream the band reduction already walks. A sheet that is
+    opaque, full-union, full-coverage and its band's only sheet publishes that
+    reading as a per-(pixel, sample) floor; any other surface's sheet cedes the
+    samples where the floor is strictly nearer, and the resolve zeroes those
+    samples' claim and occlusion slots. The walk ORDER is untouched — only what
+    a sheet may claim — so the deferral machinery, the sibling bands and the
+    shadow-event pass see the arithmetic they already saw.
+
+    Two limits are inherent and deliberate. The lane depth is the owning
+    FRAGMENT's centroid depth, not the lane's own, so a fine margin is the
+    least trustworthy reading there is: a sheet therefore cedes everything it
+    loses or nothing at all, and only once it is losing more than
+    `_SAMPLE_DEPTH_CEDE_FRACTION` (0.25) of what it owns. And the
+    result is still a per-sample z-buffer rather than an antialiased crossing —
+    a ceded sample goes wholly to the winner, so a pixel the reference blends
+    can over-correct. Measured on `solids_and_camera` against a route-off
+    supersampled reference: at t=14.3 nine pixels move, ALL nine better and
+    none worse (worst speck 169 -> 2, and 152 -> 0; summed error over the moved
+    pixels 834 -> 61), and at t=19.1 twelve move, nine better and two worse
+    (156 -> 1). `benchmarks/_sample_depth_check.py` is that run. Over the whole 234-frame scene 150 pixels
+    move and NONE lands on the background — the hole a cede could in principle
+    leave, if the surface meant to claim it were never walked, does not occur.
+    A true blend still needs a depth plane per sheet and a per-sample tie-break
+    in the resolve; `OX_SHEET_INTERPENETRATION_AUDIT.md` scopes that and it is
+    still NOT built.
 
     What IS repaired (2026-08-23, `SHEET_POSITIONED_DEPTH`, default on) is
     which surface the whole-pixel decision picks. The depth was the nearest

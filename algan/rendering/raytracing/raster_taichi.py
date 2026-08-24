@@ -140,6 +140,25 @@ _AA_SLIVER_BIT = 2 << _AA_FLAG_SHIFT
 # per-pixel ceiling clamp reads it via the sheet records).
 _AA_ONE_MESH_BIT = 4 << _AA_FLAG_SHIFT
 
+# Marks a fragment of a MATERIAL-opaque triangle (the one-mesh rule's sense of
+# opaque, before the coverage adjustment narrows it) -- set per fragment by
+# prepare_sparse_raster_coverage under SHEET_SAMPLE_DEPTH. The sheet compaction
+# folds it into a band's mask word so the per-sample depth gate can tell an
+# enforcer sheet (may floor a strictly farther interpenetrating surface) from a
+# translucent one. Every reader either masks with _AA_MASK_ALL or tests named
+# flag bits, so the bit is inert where it is not read.
+_AA_MAT_OPAQUE_BIT = 8 << _AA_FLAG_SHIFT  # bit 19, set per fragment
+
+# SHEET_SAMPLE_DEPTH: the per-sheet "this sample was ceded to a strictly nearer
+# other-surface enforcer" bits, computed on the host at compaction
+# (sheets.compact_sheets) and applied to ``slots`` in the resolve's pre-eff
+# block. Bits 20..27 of the mask word, one per sub-pixel sample; frag_msk /
+# sheet_msk are int32, so bit 31 stays clear. NOTE: a future 16-sample pattern
+# (_AA_PATTERN_16 above) needs sample bits 0..15 plus these flags and would
+# collide with both this field and _AA_MAT_OPAQUE_BIT -- move them (and every
+# reader of them) before widening the pattern.
+_AA_LOSE_SHIFT = 20  # bits 20..27, per sheet
+
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the
 # geometry kernels are launched with ``1 + mode``) so that each policy gets its

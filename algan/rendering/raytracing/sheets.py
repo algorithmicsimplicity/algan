@@ -67,7 +67,13 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_LOSE_SHIFT as AA_LOSE_SHIFT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MAT_OPAQUE_BIT as AA_MAT_OPAQUE_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_NUM_SAMPLES as AA_NUM_SAMPLES,
@@ -77,6 +83,9 @@ from algan.rendering.raytracing.raster_taichi import (
 )
 from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
+)
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    DEPTH_TIE_EPSILON,
 )
 from algan.rendering.raytracing.truncation import record_truncation
 
@@ -105,6 +114,17 @@ _SHADE_CLASS_BASE = 1 << 25
 #: exact area is within this of 1 composites at exactly 1, so a genuine tiling
 #: stays bit-clean.
 FULL_DUST = 1e-3
+
+#: ``SHEET_SAMPLE_DEPTH``: the share of its own samples a sheet must be losing
+#: before it cedes any of them. A fragment's depth is evaluated at the centroid
+#: of the samples it owns, so a per-lane depth is that centroid's rather than
+#: the lane's; the finer the margin the less it is entitled to decide. Ceding a
+#: small minority spends that weakest reading on a pixel the sheet already
+#: wins, which measured WORSE (two pixels of the reference frame regressed by
+#: 110 and 55 channel values). At 0.25 the reference frame's eight artifact
+#: pixels all improve and none regresses; 0.5 keeps three of the eight and
+#: 0.0 (cede whatever is lost) reinstates both regressions.
+_SAMPLE_DEPTH_CEDE_FRACTION = 0.25
 
 
 def resolve_pixel_reference(
@@ -192,6 +212,17 @@ def resolve_pixel_reference(
         else:
             p_i = area / (bin(msk_low).count("1") / N)
         own = [1.0 if (areal or (msk_low >> s) & 1) else 0.0 for s in range(N)]
+        # SHEET_SAMPLE_DEPTH: samples the host ceded to a strictly nearer
+        # other-surface sheet claim nothing here -- same placement as the
+        # resolve kernel's pre-``eff`` block, non-areal sheets only. The
+        # coverage factor ``p_i`` stays normalized to the ORIGINAL mask
+        # popcount: ceded ink is claimed by the winner.
+        if not areal:
+            lose = (msks[i] >> AA_LOSE_SHIFT) & AA_MASK_ALL
+            if lose:
+                for s in range(N):
+                    if (lose >> s) & 1:
+                        own[s] = 0.0
         c = [p_i * own[s] for s in range(N)]
         eff = sum(T[s] * c[s] for s in range(N)) / N
         if (
@@ -709,6 +740,7 @@ def compact_sheets(
     tri_screen=None,
     shade_split=False,
     positioned_depth=True,
+    sample_depth=False,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -754,6 +786,28 @@ def compact_sheets(
     in the emission stream, so only interleaved (interpenetrating) sheets can
     move.
 
+    ``sample_depth`` (``SHEET_SAMPLE_DEPTH``) computes the one per-sample datum
+    the sheet record otherwise lacks (DESIGN_sheet_resolve.md §6.1.1): for each
+    sub-pixel sample a sheet owns, the exact depth of its nearest fragment
+    owning THAT sample. From it, a triangle sheet that is positioned,
+    material-opaque (the ``_AA_MAT_OPAQUE_BIT`` the emission pipeline folds
+    into the masks), of full sample union at full exact coverage, its band's
+    only sheet and of non-negative weight is an ENFORCER: per pixel and
+    sample it publishes that minimum depth as a floor. A SUBJECT — triangle,
+    positioned, not areal, its band's only sheet, non-negative weight — then
+    cedes (loses) every owned sample where the best OTHER-surface enforcer is
+    strictly nearer beyond ``DEPTH_TIE_EPSILON``, and the resolve zeroes those
+    samples' claim/occlusion slots. Ties and near-ties keep today's walk order;
+    the walk order itself never changes, only what a sheet may claim. Sheets of
+    multi-sheet bands — shading-class siblings, conflict-rank splits — are
+    exempt on both sides: their band's pooled arithmetic writes occlusion once,
+    ignoring slots. And a sheet cedes everything it loses or nothing at all,
+    and only once it is losing more than ``_SAMPLE_DEPTH_CEDE_FRACTION`` of
+    what it owns: a lane's depth is its fragment's CENTROID depth rather than
+    the lane's own, so a thin margin is the reading least entitled to decide. The lose bits ride bits 20..27 of BOTH
+    mask words (record and weights). Off, no bit is set anywhere and the output
+    is byte-identical to before.
+
     Returns a dict of per-sheet arrays, ordered by ``(pixel, classic order of
     the sheet's nearest fragment)`` so a walk over them front-to-back matches
     the emission's own (depth-bin, descending-layer) relation:
@@ -773,7 +827,8 @@ def compact_sheets(
         Union of the sample masks, with the flag bits: facing from the band
         key, the one-mesh/sliver flags from the dominant fragment, and the
         sliver bit forced on when the union is empty (an areal, positionless
-        sheet — the donors-only case).
+        sheet — the donors-only case). Under ``sample_depth``, bits 20..27
+        additionally carry the per-sample ceded (lose) mask.
     ``sheet_wgt`` / ``sheet_wmsk``
         What the RESOLVE consumes in place of ``sheet_cov`` / ``sheet_msk``:
         equal to them for a sheet that is its band's only one, and §4.4's
@@ -928,7 +983,10 @@ def compact_sheets(
             )
             shell_back = ((frag_msk & AA_BACKFACE_BIT) != 0).index_select(0, order)
         del closed_flag
-    del frame_rel, safe_ref, t, t_o
+    # ``t_o`` (the sorted exact depths) stays live past this point: the
+    # SHEET_SAMPLE_DEPTH block below reads it to find each sheet's nearest
+    # owner per sample. It is one [n] f32 array, freed at that block.
+    del frame_rel, safe_ref, t
 
     band_id = torch.cumsum(band_start.to(torch.int64), 0) - 1
 
@@ -970,6 +1028,11 @@ def compact_sheets(
     uniq_cid, band_id = torch.unique(cid, sorted=True, return_inverse=True)
     del cid
     nb = int(uniq_cid.numel())
+    # Band identity for SHEET_SAMPLE_DEPTH's multi-sheet-band exemption: a
+    # conflict-rank split makes several sheets of ONE band, and ``cid``'s low
+    # four bits are the rank. Under ``shade_split`` the same rule is recovered
+    # from the class key further down.
+    cid_band = uniq_cid // 16
     del uniq_cid
     if nb == 0:
         return None
@@ -1143,6 +1206,38 @@ def compact_sheets(
         del masked
         min_pos = torch.where(has_pos, min_pos_p, min_pos)
         del min_pos_p, has_pos
+
+    # ---- SHEET_SAMPLE_DEPTH: per-sample nearest-owner depths ---------------
+    # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
+    # owning sample bit s (OX_SHEET_INTERPENETRATION_AUDIT.md ss6 -- the datum
+    # the sheet record otherwise lacks). The stream is depth-ascending within
+    # a group, so the FIRST owner of a lane in sorted order is the minimum --
+    # one masked amin-scatter over sorted positions per lane, in the style of
+    # the positioned_depth block above, each lane's temporaries freed before
+    # the next. A sheet that does not own a lane keeps infinity there; the
+    # classification below never compares an unowned lane.
+    sample_depths = None
+    if sample_depth:
+        big = torch.full((), n, dtype=torch.int64, device=device)
+        inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
+        sample_depths = torch.full(
+            (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+        )
+        for lane in range(AA_NUM_SAMPLES):
+            owns = ((msk_o >> lane) & 1) != 0
+            masked = torch.where(owns, positions, big)
+            del owns
+            first_lane = torch.full((nb,), n, dtype=torch.int64, device=device)
+            first_lane.scatter_reduce_(
+                0, band_id, masked, reduce="amin", include_self=True
+            )
+            del masked
+            has = first_lane < n
+            d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
+            sample_depths[:, lane] = torch.where(has, d_lane, inf)
+            del first_lane, has, d_lane
+        del big, inf
+    del t_o
     del positions, msk_o
 
     # Dominant fragment: largest exact area, earliest original position on
@@ -1225,6 +1320,157 @@ def compact_sheets(
     sheet_key = frag_key.index_select(0, nearest_orig).index_select(0, final)
     sheet_pix = sheet_pix.index_select(0, final)
     rep_final = rep_orig.index_select(0, final)
+
+    # ---- SHEET_SAMPLE_DEPTH: classify, floor, cede --------------------------
+    # Everything here works on the FINAL-ordered per-sheet arrays; the lose
+    # words land in both mask outputs so the resolve (which consumes the
+    # weights) and every record reader see the same thing. Off, none of this
+    # runs and the outputs above are exactly what they were.
+    if sample_depth:
+        ppf = int(width) * int(height)
+        rep_ref = frag_ref.index_select(0, rep_final)
+        is_tri_sheet = rep_ref >= 0
+        low = sheet_msk_final & AA_MASK_ALL
+        positioned_s = low != 0
+        full_s = low == AA_MASK_ALL
+        mat_opaque_s = (sheet_msk_final & AA_MAT_OPAQUE_BIT) != 0
+        nonareal_s = positioned_s & ((sheet_msk_final & AA_SLIVER_BIT) == 0)
+        # The depth table was built in sheet order; everything below works in
+        # the final (walk) order.
+        sample_depths = sample_depths.index_select(0, final)
+        # Band identity and the multi-sheet-band exemption: a band split into
+        # siblings (shade-class split, conflict-rank split) claims against
+        # band-pooled arithmetic whose single occlusion write ignores slots,
+        # so gating a sibling would over-occlude. Its sheets are neither
+        # subjects nor enforcers.
+        if sheet_band is not None:
+            band_of_sheet = sheet_band.index_select(0, final)
+        else:
+            band_of_sheet = cid_band.index_select(0, final)
+        n_bands = int(band_of_sheet.max().item()) + 1
+        members = torch.zeros(n_bands, dtype=torch.int64, device=device)
+        members.scatter_add_(
+            0, band_of_sheet, torch.ones(nb, dtype=torch.int64, device=device)
+        )
+        only_band = members.index_select(0, band_of_sheet) == 1
+        del members
+        positive_wgt = sheet_wgt >= 0.0
+        # The surface id: one band never spans two meshes, so the dominant
+        # fragment's mesh is every member's. Circuits have no sid and are
+        # excluded by ``is_tri_sheet`` on both sides.
+        f_rel_s = sheet_pix // ppf
+        safe_rep = rep_ref.clamp_min(0).to(torch.int64)
+        row_to = (f_rel_s + int(time_start)) % merged["tri_obj"].shape[0]
+        sheet_sid = merged["tri_obj"][row_to, safe_rep].to(torch.int64)
+        del f_rel_s, safe_rep, rep_ref, row_to
+
+        enforcer = (
+            is_tri_sheet
+            & mat_opaque_s
+            & full_s
+            & ((sheet_cov_final - 1.0).abs() <= FULL_DUST)
+            & only_band
+            & positive_wgt
+        )
+        subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
+
+        # Per-(pixel, sample) floor over the enforcers: the minimum depth AND
+        # the second minimum over DIFFERENT-surface entries, so each subject
+        # compares against the best OTHER-sid enforcer at that sample.
+        other_d = torch.full(
+            (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+        )
+        enf = enforcer.nonzero(as_tuple=True)[0]
+        if int(enf.numel()) > 0:
+            lanes = torch.arange(AA_NUM_SAMPLES, device=device)
+            epk = (
+                sheet_pix.index_select(0, enf).unsqueeze(1) * AA_NUM_SAMPLES
+                + lanes.view(1, -1)
+            ).reshape(-1)
+            edepth = sample_depths.index_select(0, enf).reshape(-1)
+            esid = (
+                sheet_sid.index_select(0, enf)
+                .unsqueeze(1)
+                .expand(-1, AA_NUM_SAMPLES)
+                .reshape(-1)
+            )
+            ord_e = _lexsort(epk, edepth)
+            epk = epk.index_select(0, ord_e)
+            edepth = edepth.index_select(0, ord_e)
+            esid = esid.index_select(0, ord_e)
+            del ord_e
+            new_group_e = torch.ones_like(epk, dtype=torch.bool)
+            if epk.numel() > 1:
+                new_group_e[1:] = epk[1:] != epk[:-1]
+            grp = torch.cumsum(new_group_e.to(torch.int64), 0) - 1
+            uniq_pk = epk[new_group_e]
+            best_d = edepth[new_group_e]
+            best_sid = esid[new_group_e]
+            diff_sid = esid != best_sid.index_select(0, grp)
+            sec_d = torch.full(
+                (int(uniq_pk.numel()),),
+                float("inf"),
+                dtype=torch.float32,
+                device=device,
+            )
+            if bool(diff_sid.any()):
+                sec_d.scatter_reduce_(
+                    0,
+                    grp[diff_sid],
+                    edepth[diff_sid],
+                    reduce="amin",
+                    include_self=True,
+                )
+            del diff_sid
+            del new_group_e, epk, edepth, esid
+            qpk = (sheet_pix.unsqueeze(1) * AA_NUM_SAMPLES + lanes.view(1, -1)).reshape(
+                -1
+            )
+            loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
+            found = uniq_pk.index_select(0, loc) == qpk
+            bd = best_d.index_select(0, loc)
+            bsid = best_sid.index_select(0, loc)
+            sd = sec_d.index_select(0, loc)
+            own_here = (
+                bsid == sheet_sid.unsqueeze(1).expand(-1, AA_NUM_SAMPLES).reshape(-1)
+            ).reshape(-1)
+            other_d = torch.where(found & own_here, sd, bd)
+            other_d = torch.where(found, other_d, other_d.new_full((), float("inf")))
+            other_d = other_d.view(nb, AA_NUM_SAMPLES)
+            del found, bd, bsid, sd, loc, qpk, grp, uniq_pk, best_d, best_sid
+            del sec_d, lanes
+
+        # Lose: the subject owns s AND the best other-surface enforcer there
+        # is strictly nearer beyond DEPTH_TIE_EPSILON -- exact ties and
+        # near-ties keep today's walk order.
+        lane_bits = torch.arange(AA_NUM_SAMPLES, device=device)
+        owns = ((low.unsqueeze(1) >> lane_bits.view(1, -1)) & 1) == 1
+        gate = owns & (other_d < sample_depths - DEPTH_TIE_EPSILON)
+        gate &= subject.unsqueeze(1)
+        # ALL OR NOTHING, above a floor. A fragment's depth is evaluated at
+        # the centroid of the samples it OWNS (raster_taichi.py:1308-1330), so
+        # a lane's depth is that centroid's rather than the lane's: the finer
+        # the margin, the less the comparison is entitled to decide anything.
+        # A sheet losing only a thin share of its samples is reading exactly
+        # that weakest margin, on a pixel it otherwise wins -- measured, ceding
+        # there regressed two pixels by 110 and 55 channel values while fixing
+        # nothing, because the surface behind does not always claim what was
+        # ceded. So a sheet cedes everything it loses or nothing at all, and
+        # only once it is losing more than _SAMPLE_DEPTH_CEDE_FRACTION of what
+        # it owns.
+        n_lose = gate.sum(dim=1)
+        n_own = owns.sum(dim=1)
+        gate &= (
+            n_lose.to(torch.float32)
+            > _SAMPLE_DEPTH_CEDE_FRACTION * n_own.to(torch.float32)
+        ).unsqueeze(1)
+        del n_lose, n_own
+        lose_word = (
+            (gate.to(torch.int64) << lane_bits.view(1, -1)).sum(dim=1).to(torch.int32)
+        ) << AA_LOSE_SHIFT
+        sheet_msk_final = sheet_msk_final | lose_word
+        sheet_wmsk = sheet_wmsk | lose_word
+
     out = {
         "sheet_key": sheet_key,
         "sheet_pix": sheet_pix,

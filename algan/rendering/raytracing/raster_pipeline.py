@@ -38,6 +38,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_MAT_OPAQUE_BIT as AA_MAT_OPAQUE_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -1726,6 +1729,20 @@ def prepare_sparse_raster_coverage(
             )
             one_mesh_cap = (one_mesh, seg, cap_pix)
 
+        # SHEET_SAMPLE_DEPTH: mark MATERIAL-opaque triangles so the compaction
+        # can tell a depth-gate enforcer sheet (material-opaque, full sample
+        # union, full exact coverage) from a translucent one. Classification is
+        # uniform within a surface -- the bit comes from the material, and one
+        # band never spans two meshes -- so per-fragment is per-band. Rides the
+        # mask word as data; every reader masks with AA_MASK_ALL or tests named
+        # flag bits, so it is inert where unread.
+        if rt_settings.SHEET_SAMPLE_DEPTH and num_frags:
+            msk_s = msk_s | torch.where(
+                mat_opaque_s & (ref_s >= 0),
+                torch.full_like(msk_s, AA_MAT_OPAQUE_BIT),
+                torch.zeros_like(msk_s),
+            )
+
         num_covered = int(covered.numel())
         # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
         # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
@@ -1793,6 +1810,7 @@ def prepare_sparse_raster_coverage(
             tri_screen=tri_screen,
             shade_split=bool(rt_settings.SHEET_SHADE_SPLIT),
             positioned_depth=bool(rt_settings.SHEET_POSITIONED_DEPTH),
+            sample_depth=bool(rt_settings.SHEET_SAMPLE_DEPTH),
         )
         ns = int(stream["num_sheets"])
         sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)

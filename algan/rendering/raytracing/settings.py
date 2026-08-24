@@ -1207,6 +1207,30 @@ def set_sheet_positioned_depth(enabled):
     SHEET_POSITIONED_DEPTH = bool(enabled)
 
 
+# Per-sample depth gate for interpenetrating sheets (DESIGN_sheet_resolve.md
+# ss6.1.1, OX_SHEET_INTERPENETRATION_AUDIT.md ss6). At compaction the host
+# computes, per sub-pixel sample, each material-opaque full-coverage triangle
+# sheet's exact nearest depth at that sample, and a sheet cedes a sample when
+# another SURFACE's enforcer is strictly nearer there beyond DEPTH_TIE_EPSILON;
+# the resolve zeroes those samples' claim/occlusion slots, so two surfaces
+# crossing inside one pixel paint winner-per-sample instead of whole-pixel to
+# whichever sheet sorted first. Ties and near-ties keep today's walk order.
+# Reflective materials veto the pixel: a reflective sheet can break the walk
+# before the winner claims, which would turn a mis-gated pixel into an unlit
+# one. Multi-sheet bands -- shade-class siblings and conflict-rank splits --
+# are exempt on BOTH sides: their band-pooled arithmetic writes occlusion once
+# and ignores slots, so gating a sibling would over-occlude.
+SHEET_SAMPLE_DEPTH = env_flag("ALGAN_SHEET_SAMPLE_DEPTH", True)
+
+
+def set_sheet_sample_depth(enabled):
+    """Toggle per-sample depth gating of interpenetrating sheets (see
+    ``SHEET_SAMPLE_DEPTH``). Takes effect at the next batch's compaction.
+    """
+    global SHEET_SAMPLE_DEPTH
+    SHEET_SAMPLE_DEPTH = bool(enabled)
+
+
 # Kernel conflict-rank scan in the compaction
 # (sheet_compact_taichi.sheet_conflict_rank). A fragment's conflict rank --
 # the largest, over the sample lanes it claims, of how many EARLIER fragments
