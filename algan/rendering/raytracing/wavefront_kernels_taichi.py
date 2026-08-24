@@ -70,6 +70,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _reflect_frame,
     _shadow_terminator_delta,
     _vis_max_component,
+    direct_specular_lobe,
     light_vis_index,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
@@ -2413,6 +2414,13 @@ def wavefront_shade(
         # today's origin and guard exactly (see raster_shadow_trace).
         shadow_term: ti.template(),
         skip_unlit_normal: ti.template(),
+        # Deliver the direct lights' share of the reflected specular lobe,
+        # which the continuation this hit spawns cannot: a ray only finds
+        # light that has geometry, and a delta light has none
+        # (rt_settings.DIRECT_SPECULAR_LOBE). A ti.template(), not a runtime
+        # arg, so it costs this kernel nothing against the CUDA argument
+        # ceiling noted below. 0 restores the previous weighting exactly.
+        direct_spec: ti.template(),
         mem_trim: ti.template(),
         opaque_closest: ti.template(),
         # Fused generation's first host iteration (see wavefront_traverse's
@@ -2648,24 +2656,29 @@ def wavefront_shade(
                 # so whenever the tint matters this is the true albedo.)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
 
+                # Per-light shadow visibility for this hit (all-lit unless
+                # shadow rays accumulate blocker opacity). Compiled out
+                # when shadows are off; only triangle/PN hits cast/receive
+                # shadows. The light loop below is a *runtime* loop (not
+                # ti.static-unrolled) so the heavy ``_shadow_occluded`` ->
+                # ``_nearest_surface`` -> PN solver call graph is inlined
+                # once, not once per light. The payload is RGB,
+                # channel-major per light (see shading_taichi.
+                # light_vis_index): with the tint gate off every channel
+                # holds the same scalar the old payload did.
+                #
+                # Declared at the hit's own scope rather than inside the
+                # shading branch that fills it: the reflected lobe's
+                # direct-light add-back further down is a sibling ti.static
+                # block, and Taichi scopes a name to the block it is bound in.
+                vis = ti.Vector([1.0]
+                                * (3 * MAX_SHADOW_LIGHTS))
                 # Fragment shading: ``color`` arrived as the interpolated raw
                 # albedo for triangle/PN hits; evaluate the lighting model per
                 # fragment. Bezier circuits (htype 0) keep their sampled colour.
                 # Compiled out entirely on the default (vertex-shaded) path via
                 # ti.static.
                 if ti.static(frag_shading != 0):
-                    # Per-light shadow visibility for this hit (all-lit unless
-                    # shadow rays accumulate blocker opacity). Compiled out
-                    # when shadows are off; only triangle/PN hits cast/receive
-                    # shadows. The light loop is a *runtime* loop (not
-                    # ti.static-unrolled) so the heavy ``_shadow_occluded`` ->
-                    # ``_nearest_surface`` -> PN solver call graph is inlined
-                    # once, not once per light. The payload is RGB,
-                    # channel-major per light (see shading_taichi.
-                    # light_vis_index): with the tint gate off every channel
-                    # holds the same scalar the old payload did.
-                    vis = ti.Vector([1.0]
-                                    * (3 * MAX_SHADOW_LIGHTS))
                     if ti.static((shadows != 0) and (deferred_shadows != 0)):
                         # Legacy deferred shadows: read the per-(hit, light)
                         # binary occlusion bits precomputed by
@@ -3165,6 +3178,36 @@ def wavefront_shade(
                         share[0], share[1], share[2],
                         w_glow * alpha
                         * (1.0 - r_glow - trans_share)) * color
+                    # The direct lights' share of the REFLECTED lobe, which
+                    # the continuation spawned below cannot deliver: it is a
+                    # ray, and a delta light has no geometry for a ray to
+                    # find. Added at exactly the weight that ray took, which
+                    # puts the lobe at unit weight alongside ``share``. See
+                    # ``shading_taichi.direct_specular_lobe``.
+                    # ``htype == 1`` (triangles/PN) only, for the reason
+                    # given at the matching site in ``sheet_resolve_taichi``:
+                    # a circuit is never material-shaded and its ``prim``
+                    # indexes ``circuit_meta`` rather than ``tri_mat``.
+                    # Gated on ``frag_shading`` as well, matching the sheet
+                    # route: without it there is no per-fragment lighting on
+                    # this hit at all, ``vis`` is never filled, and a
+                    # vertex-shaded surface would gain an unshadowed highlight
+                    # its own shading path never computed.
+                    #
+                    # The 4th (glow) lane takes nothing. Glow is the authored
+                    # bloom channel, and a Fresnel highlight is not authored
+                    # emission -- leaving it at zero keeps every existing
+                    # bloom pass reading exactly what it read before.
+                    if ti.static(direct_spec != 0 and frag_shading != 0) \
+                            and (htype == 1) and (reflectivity >= 0.0) \
+                            and (T > 1e-4):
+                        sa = (weight * alpha) * (R + trans_share) \
+                            * direct_specular_lobe(
+                                f, prim, ro + t_hit * rd, -rd, normal,
+                                geo_normal, reflectivity, rough, ior, albedo3,
+                                tri_mat, light_pos, light_col, num_lights,
+                                shadows, vis)
+                        acc += ti.math.vec4(sa[0], sa[1], sa[2], 0.0)
                     refl_energy = alpha * R
                     refl_max = ti.max(refl_energy[0],
                                       ti.max(refl_energy[1], refl_energy[2]))

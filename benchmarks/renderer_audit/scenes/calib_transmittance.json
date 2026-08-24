@@ -1,0 +1,85 @@
+{
+ "name": "calib_transmittance",
+ "_why": "Absolute transmittance of a solid glass ball, with no reference renderer and no lighting model in the way. The backdrop is UNLIT, so its radiance IS its colour; the ball is index 1.5 and WHITE, so a ray through the ball's centre crosses two interfaces at normal incidence and bends at neither. The answer is therefore forced: (1 - F)^2 with F = ((1-n)/(1+n))^2 = 0.04, i.e. 0.9216, and nothing about the scene can move it. No lights, so the only thing being measured is transport. See transmittance_probe.py.",
+ "render": {
+  "width": 480,
+  "height": 360,
+  "background": [
+   0,
+   0,
+   0
+  ]
+ },
+ "camera": {
+  "position": [
+   0,
+   0,
+   7
+  ],
+  "target": [
+   0,
+   0,
+   0
+  ],
+  "up": [
+   0,
+   1,
+   0
+  ],
+  "fov": 53.13010235415598,
+  "near": 0.1,
+  "far": 200
+ },
+ "lights": [],
+ "objects": [
+  {
+   "name": "backdrop",
+   "geometry": {
+    "type": "box",
+    "size": [
+     30,
+     30,
+     0.1
+    ]
+   },
+   "position": [
+    0,
+    0,
+    -5
+   ],
+   "material": {
+    "type": "basic",
+    "color": [
+     1,
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "name": "ball",
+   "geometry": {
+    "type": "sphere",
+    "radius": 0.5,
+    "segments": 128
+   },
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "material": {
+    "type": "physical",
+    "color": [
+     1,
+     1,
+     1
+    ],
+    "roughness": 0.0,
+    "metalness": 0.0,
+    "transmission": 1.0,
+    "ior": 1.5
+   }
+  }
+ ]
+}

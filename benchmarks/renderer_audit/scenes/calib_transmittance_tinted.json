@@ -1,0 +1,85 @@
+{
+ "name": "calib_transmittance_tinted",
+ "_why": "As calib_transmittance, but with the pale-green albedo of matlight_pbr_subset's glass sphere, so the prediction becomes (1 - F)^2 * albedo^2 -- the ORDER of the tint, not just its magnitude. glTF's transmission BTDF multiplies by the base colour once per interface crossed, so a solid must square it; a renderer that tints once, or three times, fails here and nowhere else in this suite. See REPORT.md section 9.3.1.",
+ "render": {
+  "width": 480,
+  "height": 360,
+  "background": [
+   0,
+   0,
+   0
+  ]
+ },
+ "camera": {
+  "position": [
+   0,
+   0,
+   7
+  ],
+  "target": [
+   0,
+   0,
+   0
+  ],
+  "up": [
+   0,
+   1,
+   0
+  ],
+  "fov": 53.13010235415598,
+  "near": 0.1,
+  "far": 200
+ },
+ "lights": [],
+ "objects": [
+  {
+   "name": "backdrop",
+   "geometry": {
+    "type": "box",
+    "size": [
+     30,
+     30,
+     0.1
+    ]
+   },
+   "position": [
+    0,
+    0,
+    -5
+   ],
+   "material": {
+    "type": "basic",
+    "color": [
+     1,
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "name": "ball",
+   "geometry": {
+    "type": "sphere",
+    "radius": 0.5,
+    "segments": 128
+   },
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "material": {
+    "type": "physical",
+    "color": [
+     0.788235,
+     0.886275,
+     0.682353
+    ],
+    "roughness": 0.0,
+    "metalness": 0.0,
+    "transmission": 1.0,
+    "ior": 1.5
+   }
+  }
+ ]
+}
