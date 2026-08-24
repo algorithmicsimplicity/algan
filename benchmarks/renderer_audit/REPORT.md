@@ -1773,6 +1773,69 @@ dumping the merged batch to confirm every argument the add-back and the
 shading stage share carries the same value at the same hit, and predicting
 +27 bytes against the +25 measured.
 
+#### 9.3.2 The transmitted lobe itself is correct — measured against theory
+
+The obvious next question, once §9.3.1 restores the reflected lobe and the
+mirror disc *still* reads g/r 1.77: is the transmitted lobe carrying too much
+energy? §9.3's own numbers invite it, and a first pass at answering it by
+subtracting the reference's mirror-disc total from Algan's said yes, by 2.6x in
+green. **That answer was wrong, twice over, and both mistakes are worth
+recording because they are easy to repeat.**
+
+**Ask theory, not the other renderer.** `calib_transmittance` /
+`calib_transmittance_tinted` + `transmittance_probe.py` put a glass ball on the
+optical axis in front of an **unlit** backdrop with **no lights in the scene**.
+The backdrop's radiance is its own colour; a ray through the ball's centre
+meets both interfaces at normal incidence and bends at neither. So the answer
+is forced: `(1 - F)^2` with `F = ((1-n)/(1+n))^2 = 0.04`, times the base colour
+once per crossing. Algan measures:
+
+| | measured | forced by theory | error |
+| --- | --- | --- | --- |
+| white ball | (0.9216, 0.9216, 0.9216) | (0.9216, 0.9216, 0.9216) | **0.00%** |
+| the pale-green ball | (0.3140, 0.5333, 0.1651) | (0.3144, 0.5331, 0.1649) | **0.13%** |
+
+Exact, and the tinted row pins the *order* as well as the magnitude: a
+renderer that applied the albedo once, or three times, could not land there.
+Independently, reading the tint straight off the mirror's blob in the real
+scene — normalising it by its own source — gives Algan a filter of g/r 1.729,
+g/b 3.21 against albedo²'s 1.698, 3.24.
+
+**Mistake 1: differencing whole discs of a noisy path trace.** The feature in
+question is about 15 pixels inside a 4100-pixel disc. Extracting it by
+subtracting two path-traced renders means differencing two large noisy numbers.
+At 32 samples the reference's blob measured (0.434, 0.956, 0.163); at 256
+samples the same measurement gives **(1.186, 2.332, 1.238)** — nearly 3x in
+red and 8x in blue. The 32-sample figure was noise, and every conclusion drawn
+from it was noise.
+
+**Mistake 2: comparing absolute energy across engines whose lighting differs.**
+`three_render.mjs` reports `pathtrace_dropped_light_types: ["ambient"]` — the
+path tracer ignores `AmbientLight` outright, and this scene has one at
+intensity 0.35. Its source spheres are therefore several times dimmer than
+Algan's, so any absolute ratio taken against them reads as a transport error
+that is not there. Normalising each engine's blob by **its own** source, at 256
+samples:
+
+| | blob / its own source (R, G, B) |
+| --- | --- |
+| algan | (0.00487, 0.00841, 0.00262) |
+| three | (0.00852, 0.01007, 0.00474) |
+| algan / three | **(0.57, 0.84, 0.55)** |
+
+Algan is if anything *below* the reference, not 2.6x above it. What remains is
+inside what this comparison can resolve at all: the normalisation assumes the
+lens image samples the source uniformly, and it does not — a ball of ior 1.5 is
+a strong converging lens showing a demagnified, inverted image of one part of
+the sphere behind it.
+
+**So §9.3's mechanism stands and its verdict on the transmitted lobe is
+"correct".** A mirror really is showing light that crossed the glass twice and
+took its tint twice; that is what glTF's transmission BTDF specifies and what
+Algan does, to 0.13%. What §9.3 got wrong was attributing the *dominance* of
+that lobe to it carrying too much energy. It dominated because the reflected
+lobe carried almost none — the defect §9.3.1 fixes.
+
 ### 9.4 A mirror renders the background, and so disappears into it
 
 Not a defect, but it decides whether a mirror is visible at all, and §6.5 left it

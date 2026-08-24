@@ -84,6 +84,23 @@ dumping the merged batch to confirm every argument the add-back and the
 shading stage share carries the same value at the same hit, and predicting
 +27 bytes against the +25 measured.
 
+**And the transmitted lobe is NOT carrying too much energy — checked against
+theory, not against the reference.** `calib_transmittance` /
+`calib_transmittance_tinted` + `transmittance_probe.py` force the answer with
+an unlit backdrop, no lights and normal incidence: the centre must transmit
+`(1-F)^2` times the base colour once per crossing. Algan measures 0.9216
+against 0.9216 white (0.00% error) and (0.3140, 0.5333, 0.1651) against
+(0.3144, 0.5331, 0.1649) tinted (0.13%). Exact, and the tinted row pins the
+tint's *order* too.
+
+Do not try to establish this by differencing the reference's mirror disc. Two
+traps, both hit on the way here: the feature is ~15 px in a 4100 px disc, so at
+32 samples the reference's blob is pure noise (it triples in red and octuples
+in blue at 256 samples); and the path tracer drops `AmbientLight` entirely, so
+its sources are several times dimmer and any absolute cross-engine ratio is
+meaningless. Normalised by each engine's own source at 256 samples, Algan's
+blob is (0.57, 0.84, 0.55) of the reference's — below it, not above.
+
 ---
 
 ## 1. The defect in one paragraph
