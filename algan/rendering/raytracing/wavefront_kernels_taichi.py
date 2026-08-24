@@ -158,7 +158,12 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
     here is exactly zero there and the fragment's shadow fan cannot influence
     any stage whose vis-multiplied terms all carry ``lc`` as a factor
     (lambert/phong/toon/standard/physical; normal/matcap/depth consume no
-    lights at all, so the cull cannot touch their output either).
+    lights at all, so the cull cannot touch their output either). Callers still gate ``_stage_default``
+    out on the hit's pipeline id, which is now **conservative rather than
+    load-bearing**: its base-colour fade used to accumulate a vis-weighted
+    ``w`` even at ``lc == 0``, and no longer does (the fade share carries
+    ``lc``), so admitting it here would be correct -- and would spare those
+    fans -- but it has not been measured and is left alone.
     Underflowed (but not bitwise-zero) multipliers are treated as live: that
     only traces a fan whose result multiplies zero, never the reverse.
     """
