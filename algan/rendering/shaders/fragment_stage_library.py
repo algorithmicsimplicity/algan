@@ -56,6 +56,7 @@ def _stage_fresnel_rim(
     num_lights,
     shadows: ti.template(),
     vis,
+    cam_pos,
 ):
     """Add ``rim_color * rim_gain * (1 - |N.V|) ** rim_power``."""
     tm = f % params.shape[0]
@@ -103,6 +104,7 @@ def _stage_glass_ball(
     num_lights,
     shadows: ti.template(),
     vis,
+    cam_pos,
 ):
     """Studio glass-ball edge: two Fresnel lobes, a silhouette ring and two
     screen-space specular blobs, all added to the incoming colour.

@@ -1,6 +1,6 @@
-========================
+====================
 Multi-Scene Projects
-========================
+====================
 
 A single ``.py`` file with one ``Scene.save_video()`` at the end is the right shape
 for one shot. A finished video is usually a dozen of them, and once you are there you
@@ -116,5 +116,8 @@ See Also
 * :class:`~algan.project.Project` -- the full API.
 * :func:`~algan.project.scene_function` -- marks a zero-argument function as a scene
   entry point for ``render_all_funcs``.
+* :doc:`saving_videos_and_images` -- the single-Scene form these calls wrap.
 * :doc:`settings` -- how ``video_settings`` and the output paths resolve.
 * :doc:`audio_and_speech` -- the speech generators a project can install.
+* :doc:`performance_and_quality` -- why you draft at ``PREVIEW`` and render the
+  final pass once.

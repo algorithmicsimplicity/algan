@@ -70,10 +70,10 @@ row links to the section that explains it.
      - Yes (8-ray fan)
      - **No**
      - `Shadows`_
-   * - Colour / material / normal maps
+   * - Color / material / normal maps
      - Triangles only
      - Triangles only
-     - Colour only
+     - Color only
      - `Texture maps`_
    * - Mip-mapped texture minification
      - **No**
@@ -202,7 +202,7 @@ silently dropping it. See :ref:`renderer-capabilities` for the full table.
 
 Two further consequences of the split, not covered there:
 
-* The Monte Carlo renderer shades from **baked per-vertex colour**, so
+* The Monte Carlo renderer shades from **baked per-vertex color**, so
   per-fragment material response, normal maps, material-property maps and
   ray-traced shadows are all absent from it as well. Its lighting comes from the
   integrator.
@@ -250,7 +250,7 @@ you are on it:
   the way primary visibility and coverage are resolved changes.
 
 The two paths do **not** produce identical images
---------------------------------------------------
+-------------------------------------------------
 
 This is deliberate, and the differences are small but enumerable:
 
@@ -307,9 +307,9 @@ Only triangle geometry is lit
      - **No**
      - Yes
      - Yes
-     - Colour grid only
+     - Color grid only
 
-A Bezier circuit is drawn with the colour it was authored with. No light source
+A Bezier circuit is drawn with the color it was authored with. No light source
 touches it, no shadow falls on it, and a normal map or material-property map has
 nothing to perturb. It *is* a full participant in ray transport in the other
 direction: it occludes shadow rays according to its own opacity, and it can be
@@ -323,10 +323,10 @@ per-fragment shading, a texture and 3-D lighting -- at the cost of the analytic
 outline the circuit path gives you for free.
 
 Materials: which are shaded per fragment
------------------------------------------
+----------------------------------------
 
 A material is shaded **per fragment**, in the render kernel, only if it has an
-in-kernel implementation. Everything else is baked into vertex colours before
+in-kernel implementation. Everything else is baked into vertex colors before
 the frame is rendered.
 
 .. list-table::
@@ -350,7 +350,7 @@ the frame is rendered.
      - Same, and it can read shadow visibility itself.
    * - :class:`~.MeshBasicMaterial` / :class:`~.UnlitMaterial`
      - Unlit by design
-     - Passes its colour through. Not a limitation — it is the point.
+     - Passes its color through. Not a limitation — it is the point.
    * - A custom **per-vertex** shader from
        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`
        (a plain function, not a
@@ -381,12 +381,12 @@ shader before spawning the lights.
 Two of the built-in materials keep their own documented approximations even
 though they now shade per fragment:
 :class:`~.MeshMatcapMaterial` never samples a matcap image; it uses a
-view-facing approximation tinted by the base colour.
+view-facing approximation tinted by the base color.
 :class:`~.MeshToonMaterial` never samples a gradient map; its band count comes
 from the Algan-specific ``bands`` argument.
 
 Three.js material properties that are accepted and ignored
------------------------------------------------------------
+----------------------------------------------------------
 
 The material classes mirror Three.js's API, and some of that API has no
 implementation behind it. Setting one of these emits a warning and has no
@@ -411,20 +411,20 @@ Textures do work — through a different door. See the next section.
 ``attenuation_distance`` *are* honoured: light crossing a transmissive solid is
 absorbed along the path it actually travels, following
 ``KHR_materials_volume``'s ``attenuation_color ** (d / attenuation_distance)``,
-so a thick piece of coloured glass comes out deeper than a thin one. Two limits
+so a thick piece of colored glass comes out deeper than a thin one. Two limits
 are worth knowing. The path length is measured from the surface the ray last
 crossed, which is exact for a single convex solid and an approximation for
 nested transmissive media. And ``thickness`` is stored for API parity and unused
 — three.js's rasterizer needs it because it has no ray to measure, and Algan
 does not.
 
-Shadow rays carry colour through the same medium. A shadow ray holds an RGB
+Shadow rays carry color through the same medium. A shadow ray holds an RGB
 payload rather than one scalar per light, so a transmissive surface tints the
 light it passes by its albedo -- the same treatment the refracted ray gets --
 and a transmissive *solid* also absorbs over the chord the ray spends inside
 it, from the same ``attenuation_color`` / ``attenuation_distance`` the view ray
-uses above: a bigger piece of coloured glass casts a deeper shadow, not just a
-coloured one. Circuits are flat zero-thickness panes with no interior, so they
+uses above: a bigger piece of colored glass casts a deeper shadow, not just a
+colored one. Circuits are flat zero-thickness panes with no interior, so they
 tint but never absorb.
 
 Two limits stand. There is still no refraction: the shadow ray travels
@@ -449,9 +449,9 @@ They are set on the geometry, not on the material.
    * - Map
      - How to set it
      - Notes
-   * - Colour (RGB + glow + alpha)
+   * - Color (RGB + glow + alpha)
      - :class:`~.Surface`'s ``color_texture``; :class:`~.ImageMob`; a glTF/FBX
-       base-colour texture
+       base-color texture
      - Drives albedo and the glow lane. Alpha is honoured, including by shadow
        rays.
    * - Material properties
@@ -471,12 +471,12 @@ Everything else about texturing:
   the camera moves. Bilinear magnification is fine; minification is not
   filtered at all. Pre-downsample the image to roughly the size it will occupy
   on screen if this bites.
-* **Bezier circuits carry a colour grid, not a UV-mapped image.** A 2-D shape's
-  ``texture_grid_width`` x ``texture_grid_height`` grid of colour samples is
+* **Bezier circuits carry a color grid, not a UV-mapped image.** A 2-D shape's
+  ``texture_grid_width`` x ``texture_grid_height`` grid of color samples is
   laid over the shape's own frame. It is not an image sampler and it takes no
   normal or material map. :class:`~.ImageMob` is a :class:`~.Surface`, so it is
   the way to put a real image on screen.
-* **Imported models collapse two maps to a constant.** glTF base-colour and
+* **Imported models collapse two maps to a constant.** glTF base-color and
   normal maps are sampled per fragment; a packed **metallic-roughness** map and
   an **emissive** map are reduced to their *mean* and applied as per-primitive
   constants. Occlusion maps are ignored.
@@ -622,7 +622,7 @@ Refraction
 * **A Bezier circuit transmits as a thin pane**: light passes through tinted,
   but is not bent. Only triangle geometry refracts.
 * **No dispersion.** Every wavelength takes the same index of refraction, so no
-  coloured fringing at a prism. Absorption over distance *is* modelled:
+  colored fringing at a prism. Absorption over distance *is* modelled:
   transmitted light is attenuated along its actual path through the medium by
   the material's ``attenuation_color`` / ``attenuation_distance`` described
   above, and the shadow ray applies the same coefficient over its own chord.
@@ -633,7 +633,7 @@ Refraction
   expensive configuration Algan has.
 
 The depth budget, and what happens at the end of it
-----------------------------------------------------
+---------------------------------------------------
 
 A primary ray composites **at most 256 surfaces**. Beyond that the ray stops and
 the background shows through the remainder of the stack. This is a real ceiling
@@ -654,7 +654,7 @@ Anti-aliasing
 .. _limits-shading-rate:
 
 Shading is evaluated once per surface region per pixel
--------------------------------------------------------
+------------------------------------------------------
 
 The analytic path groups a pixel's fragments into **maximal same-surface
 regions** and evaluates the material once per region, at the region's largest
@@ -671,7 +671,7 @@ wherever shading varies smoothly across the region. Where it does not:
   above, seen from the shading side.
 
 What analytic coverage does and does not resolve
--------------------------------------------------
+------------------------------------------------
 
 * **Exact:** a primitive's own outline, and the way several fragments of one
   surface tile a pixel between them.
@@ -752,8 +752,8 @@ exactly what the camera sees. What to know:
   carves a counter out of a glyph has no equivalent once each sub-path is its
   own patch group. Manim's 3-D tiles have no holes, so this is only reachable by
   hand-building one.
-* A non-planar circuit's texture grid collapses to one colour per shape, so
-  :meth:`~.BezierCircuitCubic.set_color_by_function` and colour waves across it
+* A non-planar circuit's texture grid collapses to one color per shape, so
+  :meth:`~.BezierCircuitCubic.set_color_by_function` and color waves across it
   come out flat. The grid is laid out across a circuit's plane frame, which
   these no longer have.
 * Neighbouring patches share corner *positions* exactly, so the surface is
@@ -787,7 +787,7 @@ Ordering, coplanar geometry and z-fighting
 .. _limits-scale:
 
 The renderer assumes a roughly unit-scale scene
-------------------------------------------------
+-----------------------------------------------
 
 Several of the renderer's tolerances are **absolute world-space constants**, not
 fractions of the scene's own size:
@@ -928,7 +928,7 @@ Not implemented at all
 
 Neither renderer does any of these, at any setting:
 
-* **Global illumination** on the deterministic path. Colour bleeding and indirect
+* **Global illumination** on the deterministic path. Color bleeding and indirect
   light need ``samples_per_pixel > 1``.
 * **Caustics.**
 * **Ambient occlusion**, in any form -- no SSAO pass, no AO map.
@@ -981,4 +981,10 @@ See Also
 - :doc:`reflections_and_glass` -- setting up mirrors, metals and glass.
 - :doc:`shaders_and_materials` -- the material classes in full.
 - :doc:`images_and_textures` -- how to get a texture onto a mob.
+- :doc:`cameras` -- the projection model, and the near-orthographic
+  approximation named above.
+- :doc:`backgrounds_and_post_processing` -- the anti-aliasing settings this page
+  bounds.
+- :doc:`settings` -- where the settings named on this page live, and what
+  ``experimental`` means.
 - :doc:`performance_and_quality` -- what each of these features costs.

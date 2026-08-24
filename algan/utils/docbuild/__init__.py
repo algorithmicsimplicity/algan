@@ -4,7 +4,7 @@ For more information about the Manim documentation building, see:
 
 -   :doc:`/contributing/development`, specifically the ``Documentation``
     bullet point under :ref:`polishing-changes-and-submitting-a-pull-request`
--   :doc:`/contributing/docs`
+-   :doc:`/contributing`
 
 .. autosummary::
    :toctree: ../reference

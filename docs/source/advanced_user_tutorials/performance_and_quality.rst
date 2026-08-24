@@ -25,20 +25,27 @@ The Fast Feedback Loop
 
 Before tuning any renderer setting, get rid of the fixed costs. A fresh
 ``python scene.py`` pays several seconds of library import plus Taichi kernel
-preparation before the first pixel appears. The render daemon pays that once and
-then re-runs your script on demand:
+preparation before the first pixel appears -- roughly twenty seconds in total.
+The :doc:`render daemon <the_render_daemon>` pays that once and then re-runs your
+script on demand, so a re-render costs only the render itself: around a second
+for a simple scene.
+
+You get this without doing anything -- the first ``python scene.py`` starts a
+daemon in the background and every later run finds it. Launch one by hand when
+you want a terminal you can watch and an Enter-to-re-render loop:
 
 .. code-block:: bash
 
     python -m algan.daemon
 
-A re-render then costs only the render itself -- around a second for a simple scene, against roughly twenty
-
 .. important::
 
-    Never edit Algan's own ``*_taichi.py`` kernel sources while a render process or
-    daemon is running -- the JIT reads them at first launch and can compile
-    half-edited code. Restart the daemon after changing any Algan source.
+    Never edit Algan's own ``*_taichi.py`` kernel sources while a render *is
+    running* -- the JIT reads them at first launch and can compile half-edited
+    code. Between runs you are covered: the daemon fingerprints every Algan
+    source file and shuts itself down once any of them changes, so the next run
+    executes in a fresh process. You still pay the cold start, and a kernel edit
+    still pays a full recompile.
 
 Video Settings
 ==============
@@ -153,7 +160,7 @@ before it allocates anything and refuses rather than silently dropping them.
      - Yes
 
 "Extended lights" means any light carrying parameters beyond a position and a
-colour -- a cone angle, a ground colour, an emitter radius, a distance falloff.
+color -- a cone angle, a ground color, an emitter radius, a distance falloff.
 :class:`~.PointLight` is the only one that is not: :class:`~.SpotLight`,
 :class:`~.DirectionalLight`, :class:`~.AmbientLight` and
 :class:`~.RectAreaLight` are all extended, so a scene using any of them cannot
@@ -322,7 +329,10 @@ See Also
 ========
 
 - :doc:`renderer_limitations` -- the complete list of what the renderer cannot do.
+- :doc:`the_render_daemon` -- the warm process that removes the fixed start-up
+  cost, and how to control it.
 - :doc:`settings` -- how the settings system works, including temporary overrides.
+- :doc:`saving_videos_and_images` -- the quality presets, per render.
 - :doc:`reflections_and_glass` -- the cost of bounces.
 - :doc:`lighting_and_shadows` -- the cost of lights and shadows.
 - :doc:`backgrounds_and_post_processing` -- anti-aliasing and bloom.

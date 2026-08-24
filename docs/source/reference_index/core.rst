@@ -20,10 +20,10 @@ Helper methods
 
 .. py:method:: algan.constants.color.Color.set_opacity
 
-   Return a copy of a colour with the requested opacity.
+   Return a copy of a color with the requested opacity.
 
 .. _reference-color-add-defaults:
 
 .. py:method:: algan.constants.color.Color.add_defaults
 
-   Pad colour channels to Algan's five-channel RGBA-plus-glow representation.
+   Pad color channels to Algan's five-channel RGBA-plus-glow representation.

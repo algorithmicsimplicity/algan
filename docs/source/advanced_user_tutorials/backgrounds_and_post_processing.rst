@@ -9,7 +9,7 @@ finished frame before it is encoded.
 Backgrounds
 ===========
 
-A Scene's background can be a colour, an image, or a function. Set it for one
+A Scene's background can be a color, an image, or a function. Set it for one
 render by passing ``background_color`` to
 :meth:`~algan.scene.Scene.save_video`, or for the Scene as a whole with
 :meth:`~algan.scene.Scene.set_background_color`:
@@ -27,10 +27,10 @@ render by passing ``background_color`` to
 
 The default background is black.
 
-A solid colour
---------------
+A solid color
+-------------
 
-Any Algan colour works, and arithmetic on colours is a convenient way to get a
+Any Algan color works, and arithmetic on colors is a convenient way to get a
 dark tint:
 
 .. code-block:: python
@@ -39,10 +39,10 @@ dark tint:
 
 .. important::
 
-    Be careful with ``BLUE * 0.15``. Colours have five components including
+    Be careful with ``BLUE * 0.15``. Colors have five components including
     opacity, so scaling one scales its alpha too -- and an alpha below 1 makes
     the whole output *transparent*, which changes the container to ``.mov``.
-    Build a dark colour with an explicit :class:`~algan.constants.color.Color`, or use
+    Build a dark color with an explicit :class:`~algan.constants.color.Color`, or use
     ``BLUE.set_opacity(1.0)`` after scaling.
 
 An image
@@ -78,7 +78,7 @@ seconds; all three arrive as broadcastable torch tensors:
     import torch
 
     def sunset(x, y, t):
-        # x, y and t all broadcast together, giving one colour per pixel per frame.
+        # x, y and t all broadcast together, giving one color per pixel per frame.
         base = torch.zeros_like(t + y + x)
         return torch.cat([base + 0.35 * y + 0.05,
                           base + 0.10 * y + 0.02,
@@ -100,7 +100,7 @@ The shape rules are the thing to get right:
   blue, glow, opacity) is the safe choice; supply fewer and the missing ones are
   filled from the last channel you gave, which can make the background
   accidentally transparent.
-* Alternatively return a single flat colour vector, which is treated as
+* Alternatively return a single flat color vector, which is treated as
   resolution-free and used everywhere.
 
 Because ``time`` is passed in, a procedural background can animate -- a drifting
@@ -108,14 +108,14 @@ gradient, a pulse, a scrolling pattern -- even though the background itself is n
 on the timeline.
 
 For maximum speed a background callable can be a Taichi ``@ti.func`` instead, which
-receives scalar normalized coordinates and a time and returns a colour vector; it is
+receives scalar normalized coordinates and a time and returns a color vector; it is
 evaluated for the whole render batch by one Taichi kernel writing directly into the
 output buffer.
 
 .. note::
 
     A procedural background is treated as **opaque**, because its alpha cannot be
-    known without evaluating the render. For transparent output use a colour with
+    known without evaluating the render. For transparent output use a color with
     alpha below 1 -- see :doc:`transparent_backgrounds`.
 
 Post-Processing
@@ -148,7 +148,7 @@ Mob as emitting light into nearby pixels; the bloom pass is what actually spread
 
     Scene.save_video()
 
-``glow`` can be set on the Mob or baked into a colour's fourth component, and it is
+``glow`` can be set on the Mob or baked into a color's fourth component, and it is
 an ordinary animatable attribute, so it animates like anything else.
 
 .. important::
@@ -210,10 +210,10 @@ Tonemapping
 -----------
 
 The renderer composites in linear HDR, and bloom and downsampling happen in
-linear light -- which is why a bright glow keeps its colour instead of clipping
+linear light -- which is why a bright glow keeps its color instead of clipping
 to white. Encoding to the output frame is the last step.
 
-**Tonemapping is off by default**, so an authored colour lands on the pixel it
+**Tonemapping is off by default**, so an authored color lands on the pixel it
 names: ``WHITE`` renders as 255, ``RED`` renders as ``(255, 0, 0)``, and a
 background you chose comes back byte for byte. Values above 1.0 are clipped.
 
@@ -230,12 +230,12 @@ an environment map.
 
 It costs a shift on *every* value, not just the ones above 1.0. The curve is
 not the identity anywhere except at 0: mid-tones lose about 10/255, an authored
-255 renders as 222, and saturated colours desaturate slightly. That is inherent
+255 renders as 222, and saturated colors desaturate slightly. That is inherent
 rather than a tuning problem -- a curve that is the identity on ``[0, 1]`` has
 nowhere left to put anything above 1.0, so display white and highlight headroom
 compete for the same top byte and you can have one or the other. Which is why
 the default is off: most Algan frames are flat fills and text, where the
-authored colour matters more than roll-off in the highlights.
+authored color matters more than roll-off in the highlights.
 
 ``tonemap_exposure`` is the right control for "the whole scene is too dark" --
 reach for it before you start raising every light's intensity. It applies
@@ -247,8 +247,9 @@ Writing your own pass
 A post-process is a callable taking the frame batch and Algan's render arena, and
 returning the frames modified. Pass any number of them and they run in order:
 
-.. code-block:: python
+.. algan:: BackgroundsCustomPass
 
+    from algan import *
     from algan.rendering.post_processing.bloom import bloom_filter
 
     def desaturate(frames, memory=None):
@@ -256,7 +257,10 @@ returning the frames modified. Pass any number of them and they run in order:
         frames[..., :3] = grey
         return frames
 
-    Scene.save_video("out", post_processes=(bloom_filter, desaturate))
+    square = Square(color=RED).scale(1.5).spawn()
+    square.rotate(180, OUT)
+
+    Scene.save_video(post_processes=(bloom_filter, desaturate))
 
 Frames arrive as a torch tensor on the render device.
 
@@ -273,5 +277,11 @@ See Also
 - :doc:`transparent_backgrounds` -- rendering with an alpha channel.
 - :doc:`lighting_and_shadows` -- environment maps, the 3-D equivalent of a
   background image.
+- :doc:`images_and_textures` -- painting an image onto geometry rather than
+  behind it.
 - :doc:`performance_and_quality` -- what anti-aliasing and bloom cost.
+- :doc:`renderer_limitations` -- what analytic anti-aliasing does and does not
+  resolve.
 - :doc:`settings` -- the settings system these knobs live in.
+- :doc:`saving_videos_and_images` -- passing ``background_color`` and
+  ``post_processes`` per render.

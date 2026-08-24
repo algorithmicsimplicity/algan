@@ -152,7 +152,7 @@ otherwise. Unlike the other sections it is mostly about *authoring*, so its
 fields are the ones you set once at the top of a script:
 
 ``background_color``
-    The colour behind everything, as an Algan
+    The color behind everything, as an Algan
     :class:`~algan.constants.color.Color`. Defaults to ``BLACK``. This is the
     process-wide default; ``Scene.set_background_color(...)`` changes one Scene
     and the ``background_color=`` argument to
@@ -162,11 +162,11 @@ fields are the ones you set once at the top of a script:
     :doc:`transparent_backgrounds`.
 
 ``frame``
-    Colour of the letterbox area outside the rendered frame, when the output
+    Color of the letterbox area outside the rendered frame, when the output
     aspect ratio does not fill the canvas. Defaults to ``BLACK``.
 
 ``text_color``
-    Default colour for :class:`~algan.mobs.text.Text` and
+    Default color for :class:`~algan.mobs.text.Text` and
     :class:`~algan.mobs.text.Tex`. Defaults to ``WHITE``.
 
 ``buffer``
@@ -251,6 +251,12 @@ See Also
 
 * :doc:`performance_and_quality` -- which of these settings to reach for, and what
   each one costs.
+* :doc:`saving_videos_and_images` -- the per-render form, which is usually what
+  you want.
 * :doc:`backgrounds_and_post_processing` -- the anti-aliasing and tonemapping
   settings in context.
 * :doc:`lighting_and_shadows` -- ``SETTINGS.raytracing.shadows``.
+* :doc:`the_render_daemon` -- why a warm daemon refuses a script that wants
+  different initialization-only or import-time values.
+* :doc:`multi_scene_projects` -- ``video_settings`` on a whole project, instead
+  of a global mutation at the top of the file.

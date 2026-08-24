@@ -15,10 +15,10 @@ Here's a basic example, playing two animations at the same time:
 
     from algan import *
 
-    mob = Square().spawn()
+    square = Square().spawn()
     with Sync():
-        mob.move(RIGHT * 2)
-        mob.rotate(90, OUT)
+        square.move(RIGHT * 2)
+        square.rotate(90, OUT)
 
     Scene.save_video()
 
@@ -37,8 +37,8 @@ The four basic contexts are:
    * - Context
      - Behaviour
    * - :class:`.Seq`
-     - with animations sequenced -- each animation starts when the previous one finishes. This
-       is the default behaviour when not in any context.
+     - with animations sequenced -- each animation starts when the previous one
+       finishes. This is the default behaviour when not in any context.
    * - :class:`.Sync`
      - with animations synchronized -- everything starts together at the same time.
    * - :class:`.Lag`
@@ -96,17 +96,17 @@ Two arguments control how long a context takes:
 
     from algan import *
 
-    mob1 = Circle().spawn()
+    circle = Circle().spawn()
 
     with Seq(run_time=1):
-        mob1.move(LEFT)
-        mob1.move(UP)
-        mob1.move(RIGHT * 2)
-        mob1.move(DOWN)
+        circle.move(LEFT)
+        circle.move(UP)
+        circle.move(RIGHT * 2)
+        circle.move(DOWN)
 
     with Seq(run_time_unit=5):
-        mob1.rotate(360, UP)
-        mob1.move_to(ORIGIN)
+        circle.rotate(360, UP)
+        circle.move_to(ORIGIN)
 
     Scene.save_video()
 
@@ -126,31 +126,31 @@ so you can set a house style on the outside and only override the exceptions.
 
     from algan import *
 
-    mob1 = Circle().spawn()
-    mob2 = Square().spawn()
+    circle = Circle().spawn()
+    square = Square().spawn()
 
     with Sync():
         with Seq():
             with Sync():
-                mob1.move(LEFT * 3)
-                mob1.rotate(180, UP)
+                circle.move(LEFT * 3)
+                circle.rotate(180, UP)
             with Sync():
-                mob1.move(UP)
-                mob1.color = YELLOW_A
+                circle.move(UP)
+                circle.color = YELLOW_A
             with Sync():
-                mob1.move(RIGHT * 3)
-                mob1.glow = 0.5
+                circle.move(RIGHT * 3)
+                circle.glow = 0.5
 
         with Seq():
             with Sync():
-                mob2.move(RIGHT * 3)
-                mob2.rotate(180, OUT)
+                square.move(RIGHT * 3)
+                square.rotate(180, OUT)
             with Sync():
-                mob2.move(DOWN)
-                mob2.color = GREEN_E
+                square.move(DOWN)
+                square.color = GREEN_E
             with Sync():
-                mob2.move(LEFT * 3)
-                mob2.glow = 0.5
+                square.move(LEFT * 3)
+                square.glow = 0.5
     Scene.wait()
 
     Scene.save_video()
@@ -174,15 +174,15 @@ You can pass a different one to any context:
 
     from algan import *
 
-    mobs = [Square(color=c).scale(0.4) for c in (BLUE, GREEN, YELLOW)]
-    group = Group(mobs)
+    squares = [Square(color=c).scale(0.4) for c in (BLUE, GREEN, YELLOW)]
+    group = Group(squares)
     group.arrange_in_line(DOWN, buffer=0.8).move(LEFT * 3).spawn()
 
     funcs = (rate_funcs.identity, rate_funcs.smooth, rate_funcs.ease_out_quintic)
     with Sync(run_time=2):
-        for mob, func in zip(mobs, funcs):
+        for square, func in zip(squares, funcs):
             with Seq(rate_func=func):
-                mob.move(RIGHT * 6)
+                square.move(RIGHT * 6)
 
     Scene.save_video()
 
@@ -205,16 +205,26 @@ differently. Here are some useful rate functions:
    * - ``rate_funcs.ease_in_expo`` / ``rate_funcs.ease_out_expo``
      - Sharp acceleration / deceleration.
 
+The :mod:`~algan.constants.rate_funcs` reference lists the whole catalogue.
+
+Writing your own rate function
+------------------------------
+
 A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
 ``[0, 1]``, so you can write your own:
 
-.. code-block:: python
+.. algan:: ControllingCustomRateFunc
+
+    from algan import *
 
     def bounce_out(t):
         return 1 - (1 - t) ** 2
 
-    with Seq(rate_func=bounce_out):
-        mob.move(DOWN * 2)
+    square = Square(color=BLUE).spawn()
+    with Seq(rate_func=bounce_out, run_time=2):
+        square.move(DOWN * 2)
+
+    Scene.save_video()
 
 ``rate_funcs.inversed(f)`` gives you the time-reversed version of any rate
 function, and passing ``rate_func_compose`` instead of ``rate_func`` composes
@@ -226,3 +236,23 @@ with the parent context's easing rather than replacing it.
     you want a long orbit to run at constant speed, put ``rate_func`` on the
     context that owns the orbit, not on an enclosing one that also holds other
     animations.
+
+.. seealso::
+
+    * :doc:`../advanced_user_tutorials/audio_and_speech` --
+      :class:`~algan.animation_timeline.animation_contexts.Audio` and
+      :class:`~algan.animation_timeline.animation_contexts.Speech` are contexts
+      too, and they take their duration from a sound file rather than from
+      ``run_time``.
+    * :doc:`../advanced_user_tutorials/animating_out_of_order` -- writing
+      animations to a point on the timeline of your own choosing, for when each
+      Mob's start time is a function of something about that Mob.
+
+Where To Next
+=============
+
+* :doc:`child_mobs` -- animating a whole collection of mobs as one.
+* :doc:`../galleries/built_in_animations` -- ready-made animations that compose
+  with every context on this page.
+* :doc:`../advanced_user_tutorials/custom_animations` -- writing an animation of
+  your own when no combination of the built-ins does the job.

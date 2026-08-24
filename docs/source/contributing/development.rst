@@ -1,6 +1,6 @@
-###########################
+###########
 Development
-###########################
+###########
 
 This page sets up Algan **from source**, for working on Algan itself. To
 install a released Algan and write animations with it, follow

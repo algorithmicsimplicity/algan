@@ -21,7 +21,7 @@ Fully transparent output
 Partially transparent output
 ============================
 
-Any colour with an opacity below one works, so you can render over a tint rather
+Any color with an opacity below one works, so you can render over a tint rather
 than over nothing:
 
 .. code-block:: python
@@ -73,16 +73,16 @@ How transparency is decided
 ===========================
 
 The Scene determines transparency from its final background tensor -- that is, from
-the alpha of whatever colour the background resolves to.
+the alpha of whatever color the background resolves to.
 
 .. important::
 
     Procedural background callables are always treated as **opaque**, because their
     alpha cannot be known without evaluating the render. If you want a transparent
-    output, use a colour with alpha below one; do not try to return a low alpha from
+    output, use a color with alpha below one; do not try to return a low alpha from
     a background function.
 
-    Watch out for colour arithmetic too: an Algan
+    Watch out for color arithmetic too: an Algan
     :class:`~algan.constants.color.Color` includes its
     opacity, so ``BLUE * 0.5`` halves the alpha as well as the brightness and will
     silently give you transparent output. Use
@@ -91,7 +91,9 @@ the alpha of whatever colour the background resolves to.
 See Also
 ========
 
-* :doc:`backgrounds_and_post_processing` -- opaque colours, images and procedural
+* :doc:`backgrounds_and_post_processing` -- opaque colors, images and procedural
   backgrounds.
+* :doc:`saving_videos_and_images` -- where the output file goes, and the rest of
+  ``save_video``'s parameters.
 * :doc:`lighting_and_shadows` -- environment maps, for a background that is part of
   the 3-D world.

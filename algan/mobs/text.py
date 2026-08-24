@@ -20,7 +20,7 @@ circuits, for cases where a fragment-shaded interior is wanted.
 :func:`make_manim_dir` prepares Manim's Tex/text scratch directories inside
 Algan's cache so nothing is written beside the user's script.
 
-See :doc:`/new_user_tutorials/text_and_math`.
+See :doc:`/advanced_user_tutorials/text_and_math`.
 """
 
 from __future__ import annotations

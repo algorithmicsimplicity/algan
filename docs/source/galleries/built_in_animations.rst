@@ -1,6 +1,6 @@
-====================
+===================
 Built-in Animations
-====================
+===================
 
 Beyond the Mob methods, Algan ships a set of ready-made animations for the
 things explanatory videos do over and over: drawing attention to something,
@@ -8,18 +8,25 @@ moving along a path, and applying a mathematical transformation to a whole
 diagram.
 
 They are all plain functions that take a Mob and record their animation on the
-timeline, so they compose with :doc:`animation contexts <combining_animations>`
+timeline, so they compose with :doc:`animation contexts <../new_user_tutorials/combining_animations>`
 exactly like anything else:
 
-.. code-block:: python
+.. algan:: AnimationsCompose
+
+    from algan import *
+
+    circle = Circle(color=BLUE).scale(0.6).move(LEFT * 2).spawn()
+    square = Square(color=YELLOW).scale(0.6).move(RIGHT * 2).spawn()
 
     with Sync():          # both at once
         Indicate(circle)
         Indicate(square)
 
     with Lag(0.3):        # a ripple down a list
-        for mob in mobs:
-            Indicate(mob)
+        for shape in (circle, square):
+            Indicate(shape)
+
+    Scene.save_video()
 
 Most of them take their own ``run_time``, which overrides the enclosing
 context's timing for that animation.
@@ -69,11 +76,11 @@ Drawing Attention
 
     from algan import *
 
-    a = Square(color=BLUE).scale(0.6).move(LEFT * 2).spawn()
-    b = Circle(color=YELLOW).scale(0.6).move(RIGHT * 2).spawn()
+    square = Square(color=BLUE).scale(0.6).move(LEFT * 2).spawn()
+    circle = Circle(color=YELLOW).scale(0.6).move(RIGHT * 2).spawn()
     with Sync():
-        Wiggle(a)
-        Blink(b, blinks=2)
+        Wiggle(square)
+        Blink(circle, blinks=2)
 
     Scene.save_video()
 
@@ -101,12 +108,23 @@ with a tapering stroke.
 To draw a shape on as if by hand, use :func:`~.draw_border_then_fill` -- it
 traces the outline and then floods the fill:
 
-.. code-block:: python
+.. algan:: AnimationsDrawBorderThenFill
+
+    from algan import *
+
+    circle = Circle(color=BLUE).scale(0.8).move(LEFT * 2).spawn(False)
+    square = Square(color=YELLOW).scale(0.8).move(RIGHT * 2).spawn(False)
 
     draw_border_then_fill([circle, square], run_time=2)
 
+    Scene.save_video()
+
+The ``spawn(False)`` is what stops the shapes fading in before they are drawn:
+like :meth:`~algan.mobs.text.Tex.write`, ``draw_border_then_fill`` is an
+animation rather than a lifespan change, so the Mob has to exist already.
+
 For text, :meth:`~algan.mobs.text.Tex.write` is the glyph-wise shorthand for the same effect
-(see :doc:`text_and_math`).
+(see :doc:`../advanced_user_tutorials/text_and_math`).
 
 An indefinitely repeating version of the same idea is
 :class:`~.AnimatedBoundary`, which keeps redrawing an outline around a Mob for as
@@ -255,16 +273,21 @@ Writing Your Own
 ================
 
 If none of these fit, an :func:`~.animated_function` gets you the same
-capabilities -- see :ref:`Animated Functions <animated-functions>` in
-:doc:`basic_animations`. For animations that run indefinitely rather than for a
-fixed duration, use :doc:`updaters`.
+capabilities -- see :doc:`../advanced_user_tutorials/custom_animations`. For
+animations that run indefinitely rather than for a fixed duration, use
+:doc:`../new_user_tutorials/updaters`.
 
-Where to next
+Where To Next
 =============
 
-* :doc:`updaters` -- animations that run indefinitely rather than for a fixed
+* :doc:`../new_user_tutorials/updaters` -- animations that run indefinitely rather than for a fixed
   duration.
-* :doc:`child_mobs` -- applying an animation to a whole hierarchy at once.
-* :doc:`combining_animations` -- the contexts that decide when these run.
-* :doc:`../advanced_user_tutorials/extending_algan` -- writing your own
-  reusable animation.
+* :doc:`../new_user_tutorials/child_mobs` -- applying an animation to a whole hierarchy at once.
+* :doc:`../new_user_tutorials/combining_animations` -- the contexts that decide when these run.
+* :doc:`../advanced_user_tutorials/custom_animations` -- writing an animation of
+  your own with :func:`~.animated_function`.
+* :doc:`../advanced_user_tutorials/animating_out_of_order` -- scheduling these
+  animations at times you compute yourself.
+* :doc:`mob_gallery` -- the Mobs to apply them to.
+* :doc:`../advanced_user_tutorials/extending_algan` -- packaging an animation of
+  your own up for reuse.

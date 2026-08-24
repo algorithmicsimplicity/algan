@@ -12,8 +12,8 @@ writing a new class, check whether one of these does the job:
    * - You want
      - Use
    * - A new animation
-     - :func:`~.animated_function`, or a composition of existing ones
-       (:doc:`../new_user_tutorials/basic_animations`)
+     - :func:`~.animated_function` (:doc:`custom_animations`), or a composition
+       of existing ones (:doc:`../galleries/built_in_animations`)
    * - A rule that holds continuously
      - An updater (:doc:`../new_user_tutorials/updaters`)
    * - A new shape
@@ -138,18 +138,23 @@ cloud holds its dots.
 
 There are two ways in, and the difference is *when* the packing happens:
 
-.. code-block:: python
+.. algan:: ExtendingPackedSpheres
 
     from algan import *
     import torch
 
-    centers = torch.rand(1000, 3) * 4 - 2
+    grid = torch.arange(12) * 0.5 - 2.75
+    centers = torch.stack(torch.meshgrid(grid, grid, indexing='ij'), -1)
+    centers = torch.cat((centers.reshape(-1, 2),
+                         torch.zeros(centers.numel() // 2, 1)), -1)
 
     # Built packed: no per-sphere Mob is ever constructed.
-    spheres = Sphere.from_batches(centers, radius=0.1, color=BLUE).spawn()
+    spheres = Sphere.from_batches(centers, radius=0.15, color=BLUE).spawn()
 
-    spheres.move(UP)      # moves all thousand
-    spheres[7].move(UP)   # moves one -- a view sharing the pack's rows
+    spheres.move(UP * 0.5)   # moves all 144
+    spheres[7].move(OUT)     # moves one -- a view sharing the pack's rows
+
+    Scene.save_video()
 
 ``from_batches`` is the one to reach for. It builds the packed geometry directly,
 so its cost barely grows with the member count; ``batch_mobs`` packs Mobs that
@@ -225,6 +230,9 @@ See Also
 
 - :doc:`shaders_and_materials` -- the extension points most "I need custom
   rendering" problems actually want.
+- :doc:`custom_animations` -- the animated-function decorator, in full.
+- :doc:`renderer_limitations` -- what the renderer does not do, which is where a
+  new primitive would have to fit.
 - :doc:`../developer_tutorials/index` -- Algan's internals.
 - :doc:`performance_and_quality` -- the constraints any renderer change is judged
   against.

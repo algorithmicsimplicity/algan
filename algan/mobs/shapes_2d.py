@@ -17,7 +17,7 @@ is constructed with Manim's arguments, including ``stroke_width`` and
 The ``Triangulated`` classes here build filled triangle meshes instead, for
 interiors that need per-fragment shading.
 
-See :doc:`/new_user_tutorials/mob_gallery`.
+See :doc:`/galleries/mob_gallery`.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-=====================
+====================
 Your First 3-D Scene
-=====================
+====================
 
 Everything so far has been flat 2-D shapes, but Algan's scene is genuinely
 three-dimensional and its renderer is a full-featured ray tracer:
@@ -57,6 +57,11 @@ So, we can animate a camera movement as follows:
 To aim the camera somewhere specific, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
 turns it to face a point, and :meth:`~.Camera.move_to_make_mob_center_of_view` frames a given Mob.
 
+.. seealso::
+
+    :doc:`../advanced_user_tutorials/cameras` -- field of view, clipping planes,
+    near-orthographic projection, and how to follow a moving subject.
+
 Lighting
 ========
 
@@ -67,15 +72,21 @@ Lights are Mobs, so you animate them like anything else.
 :meth:`~algan.scene.Scene.get_light_sources` returns a list of all mobs in the scene
 which act as light sources.
 
-.. code-block:: python
+.. algan:: ThreeDLightOrbit
 
-    default_light = Scene.get_light_sources()[0]
-    with Seq(run_time=4):
-        default_light.orbit(360, OUT, about_point=ORIGIN)
+    from algan import *
+
+    ball = Sphere(radius=1.2, color=BLUE).spawn()
+
+    light = Scene.get_light_sources()[0]
+    with Seq(run_time=4, rate_func=rate_funcs.identity):
+        light.orbit(360, OUT, about_point=ORIGIN)
+
+    Scene.save_video()
 
 .. note::
 
-    Flat 2-D shapes and text are drawn in their own colour and are **not** lit.
+    Flat 2-D shapes and text are drawn in their own color and are **not** lit.
     This is why a :class:`~.Square` and a :class:`~.Cube` look different.
 
 Casting Shadows
@@ -108,16 +119,20 @@ Two things worth noticing:
 * :meth:`~algan.scene.Scene.clear_light_sources` drops the default light first, so the
   lighting is entirely yours.
 * The shadow is hard-edged, because the light has no size. Giving the sun an
-  angular size softens the edge. See
-  :doc:`../advanced_user_tutorials/lighting_and_shadows` for that and the rest
-  of the lighting model.
+  angular size softens the edge.
+
+.. seealso::
+
+    :doc:`../advanced_user_tutorials/lighting_and_shadows` -- every light type,
+    soft shadows, environment maps, and how to build a three-point rig.
 
 Curved Surfaces
 ===============
 
 :class:`~.Surface` allows you to define a manifold surface of any shape,
-by providing a function which maps two intrinsic coordinates `u` and `v` (each in [0,1])
-to a coordinate in 3-D space. The function you provide must handle batched tensors.
+by providing a function which maps two intrinsic coordinates ``u`` and ``v``
+(each in ``[0, 1]``) to a coordinate in 3-D space. The function you provide must
+handle batched tensors.
 
 .. algan:: ThreeDSurface
 
@@ -135,6 +150,12 @@ to a coordinate in 3-D space. The function you provide must handle batched tenso
         surface.rotate(360, OUT)
 
     Scene.save_video()
+
+.. seealso::
+
+    :doc:`../advanced_user_tutorials/images_and_textures` -- painting an image
+    or a per-texel material property across a surface, and wrapping a map onto a
+    globe.
 
 Materials
 =========
@@ -159,8 +180,9 @@ so on, apply a material *before* spawning:
 
     Scene.save_video()
 
-Once a mob has used set_material, that material's properties will then be
-animatable attributes of the mob, so
+Once a mob has used
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`,
+that material's properties become animatable attributes of the mob, so
 ``metal.roughness = 0.9`` animates like any other change.
 
 .. important::
@@ -171,12 +193,18 @@ animatable attributes of the mob, so
     must all be called **before**
     :meth:`~algan.animatable_base.animatable.Animatable.spawn`.
 
-More on 3-D
------------
+.. seealso::
 
-3-D rendering is too broad of a topic to cover in this one little tutorial,
-so if you want to learn more you can check out the advanced user tutorials
-about 3-D rendering:
+    * :doc:`../advanced_user_tutorials/shaders_and_materials` -- the full
+      material catalogue and custom shaders.
+    * :doc:`../advanced_user_tutorials/reflections_and_glass` -- what
+      ``metalness``, ``roughness`` and ``transmission`` do to rays.
+
+Where To Next
+=============
+
+3-D rendering is too broad a topic to cover in one tutorial, so if you want to
+learn more, these advanced tutorials pick up where this one stops:
 
 * :doc:`../advanced_user_tutorials/cameras` -- field of view, clipping,
   orthographic projection, camera animation.
@@ -188,3 +216,7 @@ about 3-D rendering:
   refraction.
 * :doc:`../advanced_user_tutorials/three_d_models` -- importing ``.glb`` and
   ``.fbx`` model assets.
+* :doc:`../advanced_user_tutorials/renderer_limitations` -- what the renderer
+  does not do, and where its approximations show.
+
+Or carry on to :doc:`where_to` for the rest of what Algan can do.

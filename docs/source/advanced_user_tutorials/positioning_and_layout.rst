@@ -16,8 +16,8 @@ reach for the highest one that does the job:
 Every method below is a normal animation: it takes one second by default and
 obeys the surrounding animation context. Wrap it in ``with Off():`` to place
 something instantly, or ``with Sync():`` to run several placements at once --
-:doc:`combining_animations` covers those contexts in full, and
-:doc:`child_mobs` covers the :class:`~algan.mobs.group.Group` used at the end of
+:doc:`../new_user_tutorials/combining_animations` covers those contexts in full, and
+:doc:`../new_user_tutorials/child_mobs` covers the :class:`~algan.mobs.group.Group` used at the end of
 this page.
 
 The Coordinate System
@@ -88,11 +88,17 @@ Absolute Placement
    * - :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_x_coord`, :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_y_coord`, :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_z_coord`
      - Change one axis, leaving the others alone.
 
-.. code-block:: python
+.. algan:: PositioningAbsolute
 
-    mob.move_to(UP * 2 + LEFT * 3)
-    mob.move_to(RIGHT * 3, path_arc_angle=120)   # swing round instead of sliding
-    mob.set_y_coord(0)                           # drop back to the middle row
+    from algan import *
+
+    square = Square(color=BLUE).scale(0.5).spawn()
+
+    square.move_to(UP * 2 + LEFT * 3)
+    square.move_to(RIGHT * 3, path_arc_angle=120)   # swing round instead of sliding
+    square.set_y_coord(0)                           # drop back to the middle row
+
+    Scene.save_video()
 
 Screen-Relative Placement
 =========================
@@ -141,10 +147,17 @@ takes a ``buffer`` argument to override it.
 :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle` is the quickest way to say "put this
 diagram in the left half of the frame":
 
-.. code-block:: python
+.. algan:: PositioningFitToScreen
+
+    from algan import *
+
+    diagram = Group([Square(color=BLUE).scale(0.3).move(RIGHT * x + UP * y)
+                     for x in (-1, 0, 1) for y in (-1, 1)]).spawn()
 
     diagram.fit_to_screen_rectangle((0.0, 0.0), (0.5, 1.0))   # left half
     diagram.fit_to_screen_rectangle()                          # whole screen
+
+    Scene.save_video()
 
 It works on the bounding box of the whole hierarchy, so calling it on a
 :class:`~.Group` lays out the entire collection at once and preserves the
@@ -169,9 +182,18 @@ Relative Placement
 ``move_next_to`` also takes ``align_edge``, which adds a secondary alignment --
 so two Mobs placed side by side can additionally share a bottom edge:
 
-.. code-block:: python
+.. algan:: PositioningAlignEdge
 
-    caption.move_next_to(chart, RIGHT, align_edge=DOWN)
+    from algan import *
+
+    with Off():
+        chart = Rectangle(width=3, height=2, color=BLUE).spawn()
+        caption = Text("caption", font_size=32).spawn()
+
+    caption.move_next_to(chart, RIGHT)                    # centres line up
+    caption.move_next_to(chart, RIGHT, align_edge=DOWN)   # bottoms line up
+
+    Scene.save_video()
 
 Sizing
 ======
@@ -198,12 +220,12 @@ another:
 
     from algan import *
 
-    a = Square(color=BLUE).spawn()
-    b = Circle(color=YELLOW).move(RIGHT * 3).spawn()
+    square = Square(color=BLUE).spawn()
+    circle = Circle(color=YELLOW).move(RIGHT * 3).spawn()
 
-    a.scale_to_height(2.5)
-    b.scale_to_width(a.get_width())
-    b.move_next_to(a, RIGHT, buffer=0.5)
+    square.scale_to_height(2.5)
+    circle.scale_to_width(square.get_width())
+    circle.move_next_to(square, RIGHT, buffer=0.5)
 
     Scene.save_video()
 
@@ -211,7 +233,7 @@ another:
 
     ``get_width`` and friends are read at the moment you call them, on the Mob's
     *current* state. If you need a Mob to keep tracking another one as it
-    changes, use an updater instead -- see :doc:`updaters`.
+    changes, use an updater instead -- see :doc:`../new_user_tutorials/updaters`.
 
 Orientation
 ===========
@@ -247,8 +269,8 @@ For collections, put them in a :class:`~algan.mobs.group.Group` and let it do th
 
     from algan import *
 
-    mobs = [Square() for _ in range(9)]
-    group = Group(mobs).spawn()
+    squares = [Square() for _ in range(9)]
+    group = Group(squares).spawn()
     with Sync():
         group.arrange_in_line(RIGHT)
         group.fit_to_screen_rectangle()
@@ -261,16 +283,19 @@ For collections, put them in a :class:`~algan.mobs.group.Group` and let it do th
     Scene.save_video()
 
 :meth:`~algan.mobs.group.Group.arrange_in_line` and :meth:`~algan.mobs.group.Group.arrange_in_grid` are covered
-in :doc:`child_mobs` along with the rest of the Group and parent/child machinery.
+in :doc:`../new_user_tutorials/child_mobs` along with the rest of the Group and parent/child machinery.
 
-Where to next
--------------
+See Also
+========
 
 * :doc:`text_and_math` -- putting labels and formulae where you just learned to
   put shapes.
-* :doc:`combining_animations` -- the ``Off()`` and ``Sync()`` contexts used
+* :doc:`../new_user_tutorials/combining_animations` -- the ``Off()`` and ``Sync()`` contexts used
   above, in full.
-* :doc:`child_mobs` -- Groups, parent/child propagation, and the rest of the
+* :doc:`../new_user_tutorials/child_mobs` -- Groups, parent/child propagation, and the rest of the
   layout methods.
-* :doc:`../advanced_user_tutorials/cameras` -- moving the frame instead of the
-  Mobs.
+* :doc:`../new_user_tutorials/updaters` -- keeping one Mob tracking another as it
+  changes, which none of these one-shot methods does.
+* :doc:`cameras` -- moving the frame instead of the Mobs, and what the
+  screen-relative methods resolve against.
+* :doc:`../galleries/mob_gallery` -- the Mobs to position.

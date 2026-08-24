@@ -184,5 +184,8 @@ See Also
 
 * :doc:`../new_user_tutorials/combining_animations` -- the animation contexts
   ``Audio`` and ``Speech`` extend.
-* :doc:`../new_user_tutorials/text_and_math` -- putting on screen what the
-  narration is saying.
+* :doc:`text_and_math` -- putting on screen what the narration is saying.
+* :doc:`multi_scene_projects` -- installing one ``speech_source`` across every
+  scene of a video, and where transcripts land.
+* :doc:`saving_videos_and_images` -- the ``audio_codec`` and ``ffmpeg_params``
+  arguments to ``save_video``.

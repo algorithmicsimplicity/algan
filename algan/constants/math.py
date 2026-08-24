@@ -7,7 +7,7 @@ import :mod:`math` alongside Algan.
 behind the ``DEGREES`` / ``RADIANS`` suffixes. Because Algan's native angular
 unit is already degrees, ``rotate(90 * DEGREES)`` and ``rotate(90)`` are the same
 call -- the reverse of Manim, where ``DEGREES`` converts *into* the native
-radians. See :doc:`/manim_user_quickstart/migrating_from_manim`.
+radians. See :doc:`/manim_migration_guide`.
 
 ``KILOBYTES``, ``MEGABYTES`` and ``GIGABYTES`` are byte multipliers, used to write
 memory budgets in :data:`algan.SETTINGS` readably.

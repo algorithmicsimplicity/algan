@@ -47,14 +47,14 @@ it with ``as``:
     context all collapse to zero.
 
 Animating a wave effect
-***********************
+=======================
 
-Suppose that we have a bunch of mobs
+Suppose that we have a grid of squares
 
 .. code-block:: python
 
     n = 10
-    mobs = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
+    squares = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
 
 and we want to animate the effect of a wave passing through them, from the top-left of the
 screen to the
@@ -67,9 +67,9 @@ Instead, it is much simpler to specify for each Mob when its animation should st
 .. code-block:: python
 
     wave_direction = F.normalize(RIGHT + DOWN, p=2, dim=-1)
-    mob_dots = [(mob.location * wave_direction).sum().item() for mob in mobs]
-    min_dot = min(mob_dots)
-    max_dot = max(mob_dots)
+    square_dots = [(square.location * wave_direction).sum().item() for square in squares]
+    min_dot = min(square_dots)
+    max_dot = max(square_dots)
 
 We now have a list of the times at which each mob should start playing
 its animation. And we can use out of order animation to implement the animations.
@@ -80,29 +80,29 @@ its animation. And we can use out of order animation to implement the animations
     import torch.nn.functional as F
 
     n = 10
-    mobs = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
+    squares = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
 
     wave_direction = F.normalize(RIGHT + DOWN, p=2, dim=-1)
-    mob_dots = [(mob.location * wave_direction).sum().item() for mob in mobs]
-    min_dot = min(mob_dots)
-    max_dot = max(mob_dots)
+    square_dots = [(square.location * wave_direction).sum().item() for square in squares]
+    min_dot = min(square_dots)
+    max_dot = max(square_dots)
 
     with Seq() as context:
         # Get the current point in the timeline which this context is writing to.
         animation_start_time = context.current_time
-        for i in range(len(mobs)):
+        for i in range(len(squares)):
             # rescale to [0, 5], so the wave takes 5 seconds to propagate.
-            mob_start_time = 5 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
+            square_start_time = 5 * (square_dots[i] - min_dot) / (max_dot - min_dot)
 
             # Set the current time we write animations to,
-            # to the point in time when this mob should start
-            context.current_time = animation_start_time+mob_start_time
+            # to the point in time when this square should start
+            context.current_time = animation_start_time + square_start_time
 
             # Write the animation to this point on the timeline.
             with Seq(run_time=2):
-                original_color = mobs[i].color
-                mobs[i].color = RED
-                mobs[i].color = original_color
+                original_color = squares[i].color
+                squares[i].color = RED
+                squares[i].color = original_color
 
         # Now that we are done writing the animations, jump to the end of the context to
         # continue animating in order.
@@ -111,7 +111,7 @@ its animation. And we can use out of order animation to implement the animations
     Scene.save_video()
 
 When to reach for this
-**********************
+======================
 
 Out-of-order writing is the right tool when **each Mob's start time is a function
 of something about that Mob** -- its position, its value, its index in a sorted
@@ -127,7 +127,11 @@ For anything simpler, prefer the ordinary contexts:
   updater (see :doc:`../new_user_tutorials/updaters`).
 
 See Also
-********
+========
 
 * :doc:`../new_user_tutorials/combining_animations` -- the contexts this bypasses.
+* :doc:`../new_user_tutorials/updaters` -- the other escape from strict
+  sequencing, for rules that hold continuously.
+* :doc:`custom_animations` -- writing a new animation rather than rescheduling
+  existing ones.
 * :doc:`../developer_tutorials/index` -- how the timeline materializes state.

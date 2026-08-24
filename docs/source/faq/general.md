@@ -53,7 +53,7 @@ or extended lights. Algan refuses rather than silently dropping them. See
 Algan shells out to a real TeX installation — TeX Live, MiKTeX or MacTeX — so one has
 to be on your `PATH`. Use raw strings (`r"..."`) so Python does not eat the backslashes,
 and note that {class}`~algan.mobs.text.Tex` compiles in math mode, so `$` is never
-needed. See {doc}`../new_user_tutorials/text_and_math`.
+needed. See {doc}`../advanced_user_tutorials/text_and_math`.
 
 ## My transparent video will not play
 

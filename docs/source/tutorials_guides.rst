@@ -1,3 +1,4 @@
+==================
 Tutorials & Guides
 ==================
 
@@ -6,6 +7,7 @@ Tutorials & Guides
    :maxdepth: 2
 
    new_user_tutorials/index
-   manim_user_quickstart/index
+   galleries/index
    advanced_user_tutorials/index
+   manim_migration_guide
    developer_tutorials/index

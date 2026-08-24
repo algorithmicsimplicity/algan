@@ -31,7 +31,7 @@ construction, so they do not appear as ordinary class properties in
 
 .. py:attribute:: algan.animatable_base.mob.Mob.color
 
-   The Mob's colour, including its red, green, blue, glow, and opacity channels.
+   The Mob's color, including its red, green, blue, glow, and opacity channels.
 
 .. _reference-mob-opacity:
 

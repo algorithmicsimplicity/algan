@@ -4,7 +4,7 @@ For more information about Manim testing, see:
 
 -   :doc:`/contributing/development`, specifically the ``Tests`` bullet
     point under :ref:`polishing-changes-and-submitting-a-pull-request`
--   :doc:`/contributing/testing`
+-   :doc:`/contributing`
 
 .. autosummary::
    :toctree: ../reference

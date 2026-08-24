@@ -2,7 +2,7 @@
 Shaders and Materials
 =====================
 
-A *shader* decides how an object's brightness and colour change when light falls
+A *shader* decides how an object's brightness and color change when light falls
 on it. Algan gives you three levels of control:
 
 1. **Materials** (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`) -- Three.js-style material objects.
@@ -15,7 +15,7 @@ on it. Algan gives you three levels of control:
 .. important::
 
     Shading applies to **3-D objects** only. Flat 2-D shapes and text are drawn
-    in their own colour and do not interact with lighting.
+    in their own color and do not interact with lighting.
 
     All three of ``set_material``, ``set_shader`` and ``set_fragment_shader`` must
     be called **before** the Mob is spawned.
@@ -46,20 +46,20 @@ Manim-compatible variant.
     from algan import *
 
     with Sync():
-        mob1 = Sphere().move(LEFT * 2).set_material(
+        metal = Sphere().move(LEFT * 2).set_material(
             MeshStandardMaterial(color=RED, metalness=1.0, roughness=0.2)).spawn()
-        mob2 = Sphere().move(RIGHT * 2).set_material(
+        plastic = Sphere().move(RIGHT * 2).set_material(
             MeshPhongMaterial(color=BLUE, shininess=80)).spawn()
 
     with Seq(run_time_unit=5):
-        mob1.roughness = 1.0
-        mob1.metalness = 0.0
+        metal.roughness = 1.0
+        metal.metalness = 0.0
 
     Scene.save_video()
 
-Applying a material registers its numeric and colour properties as **animatable
-attributes** on the Mob, so ``mob1.roughness = 1.0`` above animates exactly like
-``mob1.color`` or ``mob1.location`` would. That is the whole point of the material
+Applying a material registers its numeric and color properties as **animatable
+attributes** on the Mob, so ``metal.roughness = 1.0`` above animates exactly like
+``metal.color`` or ``metal.location`` would. That is the whole point of the material
 workflow: you configure once and then animate the properties by name.
 
 Available materials
@@ -74,7 +74,7 @@ All of the Three.js mesh materials are provided, with matching default settings:
       - Lighting
       - Key properties (defaults)
     * - :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`
-      - Unlit (flat colour)
+      - Unlit (flat color)
       - ``color``
     * - :class:`~algan.rendering.shaders.materials.MeshLambertMaterial`
       - Diffuse (Lambert)
@@ -93,7 +93,7 @@ All of the Three.js mesh materials are provided, with matching default settings:
       - Cel / banded diffuse
       - ``color``, ``bands`` (3), ``emissive``
     * - :class:`~algan.rendering.shaders.materials.MeshNormalMaterial`
-      - Normal-as-colour
+      - Normal-as-color
       - ``flatShading`` (False)
     * - :class:`~algan.rendering.shaders.materials.MeshMatcapMaterial`
       - Material capture (approx.)
@@ -117,26 +117,36 @@ Material presets
 Common surfaces are available as ready-to-use constants: ``WOOD``, ``GLASS``,
 ``PLASTIC``, ``RUBBER``, ``CERAMIC``, ``STONE``, ``MIRROR``,
 ``BRUSHED_METAL``, ``CHROME`` and ``COPPER``. Apply them exactly like a material
-you constructed yourself::
+you constructed yourself:
 
-    desk = Prism().set_material(WOOD).spawn()
-    lens = Sphere(color=BLUE_A).set_material(GLASS).spawn()
+.. algan:: MaterialsPresets
 
-Neutral presets preserve the Mob's existing colour, while naturally coloured
-presets such as ``WOOD`` and ``COPPER`` supply a representative base colour.
-They configure PBR surface response and a flat base colour only; they do not add
+    from algan import *
+
+    with Off():
+        desk = Prism(dimensions=(7, 0.3, 4), color=GREY).move(DOWN * 1.6)
+        desk.set_material(WOOD).spawn()
+        lens = Sphere(radius=0.9, color=BLUE_A).set_material(GLASS).spawn()
+
+    lens.move(RIGHT * 2)
+
+    Scene.save_video()
+
+Neutral presets preserve the Mob's existing color, while naturally colored
+presets such as ``WOOD`` and ``COPPER`` supply a representative base color.
+They configure PBR surface response and a flat base color only; they do not add
 wood grain, stone detail or other texture maps.
 
-Colours and naming
-------------------
+Colors and naming
+-----------------
 
-Colours accept hex ints (``0xff0000``), hex strings (``"#ff0000"``), Algan colour
+Colors accept hex ints (``0xff0000``), hex strings (``"#ff0000"``), Algan color
 constants (``RED``), or RGB tuples.
 
 .. note::
 
     Algan deliberately deviates from Three.js in one place: a material's ``color``
-    defaults to ``None``, meaning "leave the Mob's own colour alone", where Three.js
+    defaults to ``None``, meaning "leave the Mob's own color alone", where Three.js
     would default it to white and silently repaint the Mob. Pass ``color`` explicitly
     when you want the material to set it.
 
@@ -151,7 +161,7 @@ Vertex shading vs. fragment shading
 -----------------------------------
 
 By default, materials are evaluated **per vertex**: lighting is computed at each
-triangle corner and the resulting colour interpolated across the face. That is fast
+triangle corner and the resulting color interpolated across the face. That is fast
 and looks good on the finely-tessellated curved surfaces typical of Algan scenes.
 
 For lighting that varies smoothly *within* a face -- crisp specular highlights, or
@@ -165,7 +175,7 @@ of them respond to the full lighting rig -- every light type, shadows and an
 environment map's diffuse contribution. Only a **custom per-vertex shader**
 (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader` with
 a plain function rather than a fragment stage) is still baked into vertex
-colours before the frame renders. That bake sees only a plain
+colors before the frame renders. That bake sees only a plain
 :class:`~.PointLight` and never receives a shadow, so using one in a scene that
 also has a directional, ambient, hemisphere, spot or rect-area light, an
 environment map, or ``shadows=True``, warns and names what is being dropped --
@@ -185,7 +195,7 @@ by raising the sample count:
     Sphere().set_material(MeshStandardMaterial(metalness=1.0, roughness=0.2)).spawn()
     Scene.save_video()
 
-Under path tracing the Mob's colour is treated as raw *albedo* and all illumination
+Under path tracing the Mob's color is treated as raw *albedo* and all illumination
 comes from the scene's lights, emissive materials and the environment map, so the
 result differs from the default preview -- that is the point. It is also
 dramatically slower; see :doc:`performance_and_quality`.
@@ -236,7 +246,7 @@ To write your own, declare the fixed parameters and append your own:
                   camera_location, light_origin, light_color,
                   light_intensity, ambient_light_intensity,
                   banding=4.0):
-        # ... torch operations returning a colour per vertex ...
+        # ... torch operations returning a color per vertex ...
         return color
 
     mob.set_shader(my_shader)   # before spawning
@@ -264,17 +274,23 @@ shade smoothly.
 
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader` accepts a built-in material shader, a
 :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`, or a **list** of these forming a pipeline run left to
-right -- each stage receives the previous stage's output colour:
+right -- each stage receives the previous stage's output color:
 
-.. code-block:: python
+.. algan:: MaterialsFragmentPipeline
 
     from algan import *
     from algan.rendering.shaders.fragment_shaders import cosine_color
     from algan.rendering.shaders.material_shaders import phong_shader
 
-    mob.set_fragment_shader([cosine_color, phong_shader])
+    ball = Sphere(radius=1.4, color=BLUE)
+    ball.set_fragment_shader([cosine_color, phong_shader])
+    ball.spawn()
 
-That recolours each fragment with a cosine wave and then lights the result with
+    ball.rotate(180, UP)
+
+    Scene.save_video()
+
+That recolors each fragment with a cosine wave and then lights the result with
 Blinn-Phong. As with vertex shaders, each stage's parameters become animatable
 attributes on the Mob (duplicate names across stages are suffixed).
 
@@ -304,10 +320,10 @@ Stage                  Lighting model
 ``STAGE_MANIM``        Manim's default 3-D lighting -- per light, a
                        ``0.5 * (n . to_light) ** 3`` offset, halved when the
                        surface faces away from the light and scaled by the
-                       light's colour. Resolved from ``manim_shader``;
+                       light's color. Resolved from ``manim_shader``;
                        installed as the default 3-D shading by
                        :meth:`~algan.scene.Scene.use_manim_defaults`.
-``STAGE_UNLIT``        No lighting: the fragment keeps its own colour. Resolved
+``STAGE_UNLIT``        No lighting: the fragment keeps its own color. Resolved
                        from ``null_shader`` and ``basic_material_shader``, and
                        what :class:`~.MeshBasicMaterial` maps to.
 ``STAGE_LAMBERT``      Diffuse only. Resolved from ``lambert_shader``.
@@ -327,7 +343,7 @@ So these two lines mean the same thing:
     mob.set_fragment_shader(phong_shader)
     mob.set_fragment_shader(STAGE_PHONG)
 
-and naming the stage is what lets you put a recolouring stage before the light:
+and naming the stage is what lets you put a recoloring stage before the light:
 
 .. code-block:: python
 
@@ -338,7 +354,7 @@ Shipped Stage Looks
 
 ``algan.rendering.shaders.fragment_stage_library`` collects ready-made stages,
 exported by ``from algan import *``. They are **additive** -- each adds to the
-colour it is handed rather than replacing it -- so they layer over a lit base:
+color it is handed rather than replacing it -- so they layer over a lit base:
 
 ===============  ==============================================================
 Stage            What it adds
@@ -349,7 +365,7 @@ Stage            What it adds
                  silhouette ring and two screen-space specular blobs.
 ===============  ==============================================================
 
-.. code-block:: python
+.. algan:: MaterialsFresnelRim
 
     from algan import *
 
@@ -359,8 +375,12 @@ Stage            What it adds
     ball.rim_power = 3.0
     ball.spawn()
 
+    ball.rotate(180, UP)
+
+    Scene.save_video()
+
 Stage parameters are plain numbers and tuples of the width the stage declares --
-``rim_color`` is a width-3 RGB triple. Assigning a five-channel Algan colour
+``rim_color`` is a width-3 RGB triple. Assigning a five-channel Algan color
 constant such as ``TEAL_A`` to it raises; use ``TEAL_A[..., :3]`` if you want to
 derive one from the palette.
 
@@ -407,8 +427,13 @@ the scatter contract documented in
 See Also
 ========
 
+- :doc:`../new_user_tutorials/three_d_basics` -- the gentler introduction to
+  materials.
 - :doc:`lighting_and_shadows` -- the lights these materials respond to.
 - :doc:`reflections_and_glass` -- what ``metalness``, ``roughness``,
   ``transmission`` and ``ior`` actually do to rays.
 - :doc:`images_and_textures` -- per-texel material properties.
+- :doc:`renderer_limitations` -- which materials are shaded per fragment, and
+  which Three.js properties are accepted and ignored.
+- :doc:`performance_and_quality` -- what distinct materials and shaders cost.
 - :doc:`extending_algan` -- adding new render primitives.

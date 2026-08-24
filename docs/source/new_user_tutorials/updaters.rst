@@ -12,8 +12,9 @@ that Algan runs once per frame, from the moment you add it until you take it awa
 
 Updaters are great for making passive/idle animations that always play.
 They also give you more freedom to define relations between mobs,
-compared to the parent-child relation. For example, you can use an updater
-to make one mob follow another *without* also changing its orientation.
+compared to the parent-child relation (see :doc:`child_mobs`). For example, you
+can use an updater to make one mob follow another *without* also changing its
+orientation.
 
 Here's a basic example: keeping a triangle spinning continuously while other
 animations play:
@@ -43,7 +44,7 @@ Let's break down how this works:
 * :meth:`~algan.animatable_base.animatable.Animatable.add_updater` attaches a function to the Mob and runs it on every frame.
 * The updater function takes two parameters: the **Mob** itself and the **elapsed time** ``t`` in seconds since the updater was added.
 * :meth:`~algan.animatable_base.animatable.Animatable.add_updater` returns an integer ID,
-  which you can pass to :meth:`~algan.animatable_base.animatable.Animatable.add_updater` to stop the updater later.
+  which you pass to :meth:`~algan.animatable_base.animatable.Animatable.remove_updater` to stop the updater later.
 
 Two important things to notice here:
 
@@ -65,23 +66,36 @@ Elapsed Time and Periodic Motion
 The second argument, ``t``, is the elapsed time in seconds since the updater was
 attached. It makes periodic and open-ended motion easy:
 
-.. code-block:: python
+.. algan:: UpdatersPeriodic
 
+    from algan import *
     import torch
 
-    # Spin continuously at 90 degrees per second
-    mob.add_updater(lambda mob, t: mob.rotate(t * 90, UP))
+    with Off():
+        ball = Circle(color=YELLOW).scale(0.5).move(LEFT * 3).spawn()
+        label = Text("ball", font_size=32).spawn()
 
-    # Bob up and down once per second
-    mob.add_updater(lambda mob, t: mob.move_to(start_pos + UP * 0.4 * torch.sin(t * 2 * PI)))
+    start_pos = ball.location
 
-    # Follow another mob without changing orientation
-    mob.add_updater(lambda mob, t: mob.move_next_to(other_mob, DOWN))
+    # Bob up and down once per second.
+    ball.add_updater(lambda mob, t: mob.move_to(start_pos + UP * 0.8 * torch.sin(t * 2 * PI)))
 
-Notice that theese examples set the Mob's state as a function of total elapsed time
+    # Follow the ball without taking its orientation.
+    label.add_updater(lambda mob, t: mob.move_next_to(ball, DOWN))
+
+    with Seq(run_time=4, rate_func=rate_funcs.identity):
+        ball.move(RIGHT * 6)
+
+    Scene.save_video()
+
+Notice that these updaters set the Mob's state as a function of total elapsed time
 ``t`` from a fixed reference point, rather than accumulating small increments
 each frame. Always write updaters as functions of ``t``: because Algan evaluates
 frames in parallel batches, incremental accumulation gives inconsistent results.
+
+Notice too that the bobbing composes with the ordinary ``move`` animation
+underneath it rather than fighting it: the timeline decides where the ball is,
+and the updater is applied on top of that result.
 
 .. important::
 
@@ -91,3 +105,22 @@ frames in parallel batches, incremental accumulation gives inconsistent results.
     ``math`` module. The ``math`` module will fail at render time with
     ``ValueError: only one element tensors can be converted to Python scalars``, a
     long way away from the line you actually wrote.
+
+.. seealso::
+
+    * :doc:`../advanced_user_tutorials/cameras` -- an updater on the camera is
+      how you follow a subject whose path you do not know in advance.
+    * :doc:`../advanced_user_tutorials/animating_out_of_order` -- the other way
+      to escape the "one animation after another" model: writing animations to
+      a point on the timeline you choose yourself.
+    * :doc:`../advanced_user_tutorials/custom_animations` -- when what you want
+      *is* a fixed-duration animation, but not one the built-ins provide.
+
+Where To Next
+=============
+
+* :doc:`three_d_basics` -- the last of the new-user tutorials: lights, cameras
+  and 3-D shapes.
+* :doc:`../galleries/built_in_animations` -- ready-made animations, including
+  :class:`~algan.animations.changing.AnimatedBoundary`, which is an
+  indefinitely-repeating effect like an updater.

@@ -1,3 +1,4 @@
+===========
 About Algan
 ===========
 
@@ -31,8 +32,9 @@ First steps
 
 * Follow :doc:`installation` to install Algan and its system dependencies.
 * Learn how to use Algan at :doc:`new_user_tutorials/getting_started` and subsequent tutorials.
-* Browse the catalogue of available objects at :doc:`new_user_tutorials/mob_gallery`.
-* Manim users can start with :doc:`manim_user_quickstart/index`.
+* Browse the catalogue of available objects at :doc:`galleries/mob_gallery`, and
+  the ready-made animations at :doc:`galleries/built_in_animations`.
+* Manim users can start with :doc:`manim_migration_guide`.
 
 Finding help
 ============

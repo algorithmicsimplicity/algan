@@ -1,3 +1,4 @@
+==================
 New User Tutorials
 ==================
 
@@ -7,6 +8,8 @@ Work through them in order the first time: each one builds on the previous.
 Afterwards they work as a stand alone reference for a particular topic.
 
 If you have not installed Algan yet, start with :doc:`../installation`.
+If you already know Manim, :doc:`../manim_migration_guide` maps what you know
+onto Algan and is a faster route in.
 
 .. toctree::
    :caption: Table of Contents

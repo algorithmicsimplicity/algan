@@ -37,7 +37,7 @@ Plain Text
         Text("plain", font_size=44),
         Text("bold", font_size=44, weight="BOLD"),
         Text("italic", font_size=44, slant="ITALIC"),
-        Text("coloured words", font_size=44, t2c={"coloured": YELLOW}),
+        Text("colored words", font_size=44, t2c={"colored": YELLOW}),
     ])
     lines.arrange_in_line(DOWN, buffer=0.35).move_to(ORIGIN).spawn()
     lines.wait()
@@ -53,7 +53,7 @@ Plain Text
    * - ``font_size``
      - Point size. ``48`` by default; ``100`` fills most of the frame.
    * - ``color``
-     - Colour of the whole string. Defaults to
+     - Color of the whole string. Defaults to
        ``SETTINGS.style.text_color`` (white).
    * - ``font``
      - Font family name, e.g. ``"Times New Roman"``.
@@ -62,12 +62,12 @@ Plain Text
    * - ``slant``
      - ``"NORMAL"`` or ``"ITALIC"``.
    * - ``t2c``
-     - Text-to-colour: ``{"word": YELLOW}`` colours just that substring.
+     - Text-to-color: ``{"word": YELLOW}`` colors just that substring.
        ``t2f``, ``t2s``, ``t2w`` do the same for font, slant and weight.
    * - ``line_spacing``
      - Gap between lines of a multi-line string.
    * - ``gradient``
-     - A colour gradient across the string.
+     - A color gradient across the string.
 
 Because ``font_size`` and :meth:`~algan.animatable_base.mob.Mob.scale` both change apparent size, pick
 one and stay with it. ``font_size`` is usually clearer for a fixed label;
@@ -127,7 +127,7 @@ formula where you want the seams, then animate that segment.
 
     Segments are not ``children``. A multi-part :class:`~.Tex` keeps every glyph
     in one packed batch, so ``formula.children`` has a single entry -- looping
-    over it colours the whole formula at once and any surrounding
+    over it colors the whole formula at once and any surrounding
     :class:`~.Lag` has nothing to stagger. Reach for
     :meth:`~algan.mobs.text.Tex.get_segment` whenever you want the pieces you
     passed in, and index the Mob directly (``formula[3]``) for individual glyphs.
@@ -175,11 +175,8 @@ separate from animations.
 ``write()`` takes ``run_time`` for the whole sequence and ``lag_ratio`` for how
 much each glyph overlaps the next (``0`` writes them all at once). It is shorthand
 for :func:`~.draw_border_then_fill` applied to the glyphs -- that function works
-on any iterable of Mobs, so you can use it on shapes too:
-
-.. code-block:: python
-
-    draw_border_then_fill([circle, square], run_time=2)
+on any iterable of Mobs, so you can use it on shapes too. See
+:doc:`../galleries/built_in_animations` for that.
 
 Animated Numbers
 ================
@@ -202,10 +199,15 @@ in between when you change it:
 needs more integer digits, the display grows automatically; the extra slots remain
 available so its width stays stable afterwards.
 
-Where to next
--------------
+See Also
+========
 
 * :doc:`positioning_and_layout` -- placing labels next to what they label.
-* :doc:`built_in_animations` -- drawing attention to a term you just introduced.
-* :doc:`../advanced_user_tutorials/audio_and_speech` -- syncing text with
-  narration.
+* :doc:`../galleries/built_in_animations` -- drawing attention to a term you just
+  introduced.
+* :doc:`audio_and_speech` -- syncing text with narration.
+* :doc:`images_and_textures` -- painting a gradient or an image across glyphs.
+* :doc:`importing_from_manim` -- ``MathTex``, ``Title`` and the rest of Manim's
+  text mobjects.
+* :doc:`../new_user_tutorials/combining_animations` -- the ``Lag`` context that
+  makes the per-glyph effects above cascade.

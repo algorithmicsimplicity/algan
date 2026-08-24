@@ -18,7 +18,7 @@ The compatibility *classes* -- ``Axes``, ``Brace`` and the rest, constructed
 without touching ``manim`` yourself -- are in
 :mod:`algan.mobs.manim_compat`.
 
-See :doc:`/new_user_tutorials/importing_from_manim`.
+See :doc:`/advanced_user_tutorials/importing_from_manim`.
 """
 
 from __future__ import annotations

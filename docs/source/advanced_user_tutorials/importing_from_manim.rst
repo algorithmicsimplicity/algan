@@ -16,7 +16,7 @@ is nothing extra to install.
     You can import Mobjects, but not Manim *animations*. Manim's ``Transform``,
     ``Create``, ``FadeIn`` and friends have no meaning on Algan's timeline. Use
     Algan's own animation system instead -- most of the common ones have direct
-    equivalents (see :doc:`built_in_animations`).
+    equivalents (see :doc:`../galleries/built_in_animations`).
 
 The ManimMob
 ============
@@ -29,12 +29,12 @@ Wrap any Manim Mobject in a :class:`~.ManimMob` and you have an Algan Mob:
     import manim as mn
 
     # Let's grab a complex plane from the Manim library.
-    mob = ManimMob(mn.ComplexPlane().add_coordinates()).spawn()
+    plane = ManimMob(mn.ComplexPlane().add_coordinates()).spawn()
 
     # Now we have a Mob we can animate with Algan.
     with Seq(run_time=5):
-        mob.scale(0.5)
-        mob.rotate(90, OUT)
+        plane.scale(0.5)
+        plane.rotate(90, OUT)
 
     Scene.save_video()
 
@@ -82,7 +82,7 @@ Importing a finished Manim diagram
 When you would rather assemble the whole thing in Manim, build it there,
 collect it into a single ``VGroup``, and wrap that group once:
 
-.. code-block:: python
+.. algan:: ImportingManimVGroup
 
     from algan import *
     import manim as mn
@@ -93,6 +93,9 @@ collect it into a single ``VGroup``, and wrap that group once:
     diagram.add(axes, axes.plot(lambda x: np.sin(x), color=mn.YELLOW))
 
     plot = ManimMob(diagram).spawn()
+    plot.scale(0.7)
+
+    Scene.save_video()
 
 Wrapping the finished ``VGroup`` gives you one Algan Mob whose parts are its
 children, so you can animate the whole diagram together or reach into
@@ -138,8 +141,7 @@ screen, which is what Manim draws and what a solid tube would not.
 Because all of this is ordinary geometry, the rest of Algan applies to it: an
 imported sphere casts and receives ray-traced shadows, shows up in reflections
 and refractions, and takes an Algan
-:doc:`material <../advanced_user_tutorials/shaders_and_materials>` like any
-native shape.
+:doc:`material <shaders_and_materials>` like any native shape.
 
 Two things to know. Manim tiles a surface at a fixed ``resolution``, and that
 tiling is the shape Algan reproduces -- raising it gives a rounder object, at
@@ -153,7 +155,7 @@ Importing an SVG
 An ``.svg`` file drawn in Inkscape, Illustrator or Figma comes in through the
 same door. :class:`~.SVGMobject` parses the file into cubic Bezier outlines,
 which is exactly what Algan's 2-D shapes are made of, so the result is a
-first-class Mob -- it scales without pixelating, takes Algan colours, and morphs
+first-class Mob -- it scales without pixelating, takes Algan colors, and morphs
 into other shapes:
 
 .. algan-doc-check: skip -- needs logo.svg, which does not ship with the docs
@@ -183,13 +185,13 @@ Only path geometry is imported. Embedded raster images, filters, gradients and
 text-as-text do not survive the conversion -- convert text to outlines in your
 editor before exporting.
 
-Colours and coordinates
-=======================
+Colors and coordinates
+======================
 
 The two libraries use different conventions, and the boundary is the
 ``ManimMob`` constructor:
 
-* **Colours.** Inside Manim code use Manim's colours (``mn.YELLOW``); once the
+* **Colors.** Inside Manim code use Manim's colors (``mn.YELLOW``); once the
   Mob is an Algan Mob, use Algan's (``YELLOW``).
 * **Coordinates.** Manim's ``UP``/``RIGHT`` and Algan's agree in direction, but
   Manim's z axis points the other way. Constructing in Manim and animating in
@@ -199,51 +201,22 @@ The two libraries use different conventions, and the boundary is the
   origin plane is about 7. Imported diagrams usually want a modest
   :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`.
 
-.. _manim-defaults:
-
 Matching Manim's framing exactly
 ================================
 
 Rather than rescaling each import, you can point the whole Scene at Manim's own
 defaults with :meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>`.
-Call it once, before you build anything::
+Call it once, before you build anything, and imported geometry lands on the
+pixels Manim would have put it on -- same 8-unit frame height, same perspective,
+same light position, same black background, and the z mirror that keeps a
+converted 3-D scene from rendering back-to-front.
 
-    from algan import *
-    import manim as mn
+:ref:`Matching Manim's defaults <migrating-manim-defaults>` in the
+:doc:`../manim_migration_guide` is the full treatment: what each of the four
+parts takes from Manim, how to decline one, and the two extras that are off by
+default.
 
-    Scene.use_manim_defaults()
-
-    ManimMob(mn.Square()).spawn()
-    ManimMob(mn.Sphere()).spawn()
-
-    Scene.save_video()
-
-It sets the four things that decide where imported geometry lands, and what
-colour it comes out:
-
-* **The frame.** Manim's frame is 8 world units tall and its width follows from
-  the aspect ratio, which is the same convention Algan's vertical ``fov`` uses.
-* **The camera.** Manim's ``ThreeDCamera`` is a pinhole camera 20 units from the
-  frame plane, so the vertical field of view is
-  ``2 * atan(4 / 20)`` = 22.62 degrees. Manim's plain 2-D camera is a flat
-  orthographic projection instead, but the two agree exactly at ``z = 0``, so this
-  one camera reproduces 2-D scenes exactly and 3-D scenes with Manim's own
-  perspective.
-* **The lighting.** Manim's single light, in Manim's position, and flat unlit
-  colour as the default shading -- which is what Manim's renderer actually does
-  to a vector Mobject -- with tonemapping off (Algan's own default, and set
-  explicitly here so an enabling Scene cannot break parity), so a flat fill
-  comes out byte-identical to Manim's.
-* **The z axis.** Manim's ``OUT`` is ``+z`` and Algan's is ``-z``, so
-  ``use_manim_defaults()`` also mirrors imported geometry in z. Without that a
-  converted 3-D scene renders back-to-front; flat ``z = 0`` geometry is
-  unaffected either way.
-
-Each part can be declined -- ``use_manim_defaults(shading=False)`` keeps Algan's
-lighting while taking Manim's framing. Two extras are off by default:
-``video_settings=True`` also switches the output to Manim's 1920x1080 at 60 fps,
-and ``shape_defaults=True`` makes Algan's *own* shapes (``Square``, ``Circle``,
-...) adopt Manim's colours and stroke styling.
+.. _manim-defaults:
 
 How close it gets
 -----------------
@@ -258,7 +231,7 @@ the residue is worth knowing:
   Manim's default ``stroke_width`` of 4 that is about 1 pixel at 854x480.
 * **3-D solids are shaded differently.** Manim shades a face by a two-point
   gradient across it (``shading_factor`` 0.2); Algan ray-traces. Silhouettes,
-  positions and base colours agree, the shading within a face does not.
+  positions and base colors agree, the shading within a face does not.
 
 ``benchmarks/_manim_defaults_parity_check.py`` renders the same scene through
 both engines and reports these numbers, if you want to measure them yourself.
@@ -273,28 +246,32 @@ their own names, so they can be constructed without touching ``manim``:
 :class:`~.Arc`, :class:`~.Annulus`, :class:`~.Ellipse`, :class:`~.Star`,
 :class:`~.Arrow` and more.
 
-.. code-block:: python
+They keep their Manim constructor arguments and methods, and are Algan Mobs in
+every other respect: Algan's positioning, sizing and animation methods all work
+on them, and their sizes can equally be set through their own Manim keyword
+arguments (``x_length``, ``y_length``).
+
+.. algan:: ImportingCompatClasses
 
     from algan import *
 
     plane = NumberPlane().scale(0.7).spawn()
     plane.rotate(30, UP)
 
-They keep their Manim constructor arguments and methods, and are Algan Mobs in
-every other respect: Algan's positioning, sizing and animation methods all work
-on them, and their sizes can equally be set through their own Manim keyword
-arguments (``x_length``, ``y_length``).
+    Scene.save_video()
 
-If you are coming to Algan from Manim, :doc:`../manim_user_quickstart/index` maps
+If you are coming to Algan from Manim, :doc:`../manim_migration_guide` maps
 the concepts across.
 
-Where to next
-=============
+See Also
+========
 
-* :doc:`../manim_user_quickstart/index` -- the full concept-by-concept mapping,
+* :doc:`../manim_migration_guide` -- the full concept-by-concept mapping,
   if you are porting a Manim project.
-* :doc:`../advanced_user_tutorials/three_d_models` -- importing ``.glb`` /
-  ``.fbx`` models rather than Manim geometry.
-* :doc:`../advanced_user_tutorials/index` -- materials, lighting, cameras,
-  audio and performance.
+* :doc:`../galleries/mob_gallery` -- which of these classes are available under
+  their own names, alongside Algan's native shapes.
+* :doc:`three_d_models` -- importing ``.glb`` / ``.fbx`` models rather than
+  Manim geometry.
+* :doc:`shaders_and_materials` -- giving imported geometry an Algan material.
+* :doc:`index` -- materials, lighting, cameras, audio and performance.
 * :doc:`../reference` -- the full API reference.

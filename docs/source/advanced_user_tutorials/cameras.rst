@@ -23,7 +23,7 @@ Moving the Camera
 
 The camera responds to every :class:`~algan.animatable_base.mob.Mob` movement and
 orientation method.
-:doc:`../new_user_tutorials/positioning_and_layout` lists them all; these are the
+:doc:`positioning_and_layout` lists them all; these are the
 ones that matter for camera work:
 
 .. list-table::
@@ -170,13 +170,23 @@ For the near-orthographic look of a long lens, narrow the fov and pull the camer
 back by the same factor, so that ``distance * tan(fov / 2)`` (the visible
 half-height at the subject) is unchanged:
 
-.. code-block:: python
+.. algan:: CameraLongLens
 
+    from algan import *
     import math
 
-    camera = Scene.get_camera()            # starts at OUT * 7, 3.5 units of
-    camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))   # half-height at z=0
-    camera.move_to(OUT * 70)               # 10x the distance, same framing
+    with Off():
+        camera = Scene.get_camera()        # starts at OUT * 7, 3.5 units of
+        camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))  # half-height at z=0
+        camera.move_to(OUT * 70)           # 10x the distance, same framing
+
+        cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+                       for i in range(4)]).spawn()
+
+    with Seq(run_time=3):
+        cubes.rotate(360, UP, about_point=ORIGIN)
+
+    Scene.save_video()
 
 Use :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to` or
 ``move`` to reposition a camera. ``move_center_to`` centres a *bounding box*, and
@@ -284,13 +294,23 @@ camera move will not keep the Mob pinned there. For something that must stay in 
 fixed screen position through a camera move -- a caption, a legend -- attach it to
 the camera as a child, or drive it with an updater:
 
-.. code-block:: python
+.. algan:: CameraChildCaption
 
-    caption = Text("figure 1", font_size=32)
-    Scene.get_camera().add_children([caption])
+    from algan import *
+
     with Off():
+        Group([Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
+               for i in (-1, 0, 1)]).spawn()
+
+        caption = Text("figure 1", font_size=32)
+        Scene.get_camera().add_children([caption])
         caption.move_to_screen_position(0.15, 0.1)
         caption.spawn()
+
+    with Seq(run_time=3, rate_func=rate_funcs.identity):
+        Scene.get_camera().rotate(90, UP, about_point=ORIGIN)
+
+    Scene.save_video()
 
 Because children follow their parent's basis (see
 :doc:`../new_user_tutorials/child_mobs`), the caption now travels with the camera.
@@ -298,7 +318,13 @@ Because children follow their parent's basis (see
 See Also
 ========
 
+* :doc:`../new_user_tutorials/three_d_basics` -- the gentler introduction.
+* :doc:`positioning_and_layout` -- the movement and orientation methods this page
+  applies to the camera, in full.
+* :doc:`../new_user_tutorials/updaters` -- the updater used above to track a
+  moving subject.
 * :doc:`lighting_and_shadows` -- lights, and the rig that goes with a camera move.
+* :doc:`renderer_limitations` -- what the camera model does not do, including
+  true orthographic projection and depth of field.
 * :doc:`performance_and_quality` -- what actually makes a render expensive, and what
   to do about it.
-* :doc:`../new_user_tutorials/three_d_basics` -- the gentler introduction.

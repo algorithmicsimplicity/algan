@@ -3,8 +3,8 @@ The Mob Gallery
 ===============
 
 This is a tour of the Mobs Algan ships with. Every one of them is a
-:class:`.Mob`, so everything in :doc:`basic_animations` applies to all of them:
-spawn them, move them, colour them, morph them into each other.
+:class:`.Mob`, so everything in :doc:`../new_user_tutorials/basic_animations` applies to all of them:
+spawn them, move them, color them, morph them into each other.
 
 The complete list, with every constructor argument, is in the
 :doc:`mobs reference <../reference_index/mobs>`.
@@ -60,9 +60,17 @@ which means they stay perfectly smooth however far you zoom in -- a
 All of them take ``color``, plus ``border_width`` and ``border_color`` for
 their outline:
 
-.. code-block:: python
+.. algan:: GalleryBorders
 
-    Circle(color=BLUE, border_color=WHITE, border_width=4)
+    from algan import *
+
+    with Off():
+        Group([Circle(color=BLUE, border_color=WHITE, border_width=w).scale(0.8)
+               for w in (0, 4, 16)]).arrange_in_line(RIGHT, buffer=0.4).spawn()
+
+    Scene.wait(1)
+
+    Scene.save_video()
 
 On a filled shape the border is drawn *inside* the outline, so raising
 ``border_width`` eats into the fill instead of growing the silhouette --
@@ -74,7 +82,7 @@ More 2-D shapes from the compatibility layer
 --------------------------------------------
 
 A second family of outline shapes comes from Algan's Manim compatibility layer
-(see :doc:`importing_from_manim`). They spawn, move and animate like any other
+(see :doc:`../advanced_user_tutorials/importing_from_manim`). They spawn, move and animate like any other
 Mob, but they are constructed with Manim's arguments:
 
 .. list-table::
@@ -98,9 +106,22 @@ Mob, but they are constructed with Manim's arguments:
 ``stroke_color`` -- Manim's names -- and ``border_width`` / ``border_color``
 raise :class:`TypeError`:
 
-.. code-block:: python
+.. algan:: GalleryCompatShapes
 
-    Star(n=6, color=BLUE, stroke_color=WHITE, stroke_width=4)
+    from algan import *
+
+    with Off():
+        Group([
+            Arc(radius=1, start_angle=0, angle=3.14),
+            Annulus(inner_radius=0.5, outer_radius=1.0),
+            Ellipse(width=2, height=1.2),
+            Star(n=6, color=BLUE, stroke_color=WHITE, stroke_width=4),
+            Arrow(start=LEFT, end=RIGHT),
+        ]).arrange_in_line(RIGHT, buffer=0.4).scale(0.8).spawn()
+
+    Scene.wait(1)
+
+    Scene.save_video()
 
 3-D Shapes
 ==========
@@ -173,7 +194,7 @@ Faceted shapes, built from explicit flat faces:
     is wider than the visible frame. Pass explicit sizes when you are laying
     several shapes out together.
 
-Unlike 2-D shapes, 3-D shapes respond to light. See :doc:`three_d_basics` to
+Unlike 2-D shapes, 3-D shapes respond to light. See :doc:`../new_user_tutorials/three_d_basics` to
 get started and
 :doc:`../advanced_user_tutorials/lighting_and_shadows` for the full lighting
 model.
@@ -184,7 +205,7 @@ Arbitrary Surfaces
 :class:`~.Surface` builds a curved surface from a function mapping 2-D
 parameters ``(u, v)`` -- both in ``[0, 1]`` -- to points in space. It is what
 the curved shapes above are made of, so anything :class:`~.Surface` can do --
-per-point colouring, texture maps, deforming the sheet over time -- they can do
+per-point coloring, texture maps, deforming the sheet over time -- they can do
 too.
 
 .. algan:: GallerySurface
@@ -204,7 +225,7 @@ too.
 
 The function receives a batched tensor of ``(u, v)`` pairs and must return the
 matching points, so write it with torch operations rather than a Python loop.
-:doc:`three_d_basics` works through a surface properly, and
+:doc:`../new_user_tutorials/three_d_basics` works through a surface properly, and
 :class:`~.Surface` also accepts texture maps -- see
 :doc:`../advanced_user_tutorials/images_and_textures`.
 
@@ -230,7 +251,7 @@ and morph like any other 2-D shape.
 
     Scene.save_video()
 
-:doc:`text_and_math` covers these properly, including per-glyph animation and
+:doc:`../advanced_user_tutorials/text_and_math` covers these properly, including per-glyph animation and
 the hand-writing effect.
 
 Images and Imported Models
@@ -297,15 +318,15 @@ all available. They keep their Manim constructor arguments and methods
 (``axes.plot``, ``axes.c2p``, ``axes.add_coordinates()``), and what those methods
 return is itself an Algan Mob you can spawn and animate independently.
 
-:doc:`importing_from_manim` covers this, and the route for anything the
+:doc:`../advanced_user_tutorials/importing_from_manim` covers this, and the route for anything the
 compatibility layer does not expose.
 
 Grouping
 ========
 
-:class:`~.Group` collects Mobs so you can move, scale and colour them as one,
+:class:`~.Group` collects Mobs so you can move, scale and color them as one,
 and provides :meth:`~.Group.arrange_in_line` and
-:meth:`~.Group.arrange_in_grid` for layout. See :doc:`child_mobs`.
+:meth:`~.Group.arrange_in_grid` for layout. See :doc:`../new_user_tutorials/child_mobs`.
 
 Numbers
 =======
@@ -323,14 +344,20 @@ between values:
 
     Scene.save_video()
 
-:doc:`text_and_math` shows it counting over a longer run and covers the
+:doc:`../advanced_user_tutorials/text_and_math` shows it counting over a longer run and covers the
 formatting options.
 
-Where to next
+Where To Next
 =============
 
-* :doc:`positioning_and_layout` -- getting these shapes where you want them.
-* :doc:`text_and_math` -- labels, formulae and animated numbers in full.
-* :doc:`three_d_basics` -- lighting, cameras and surfaces for the 3-D shapes.
-* :doc:`importing_from_manim` -- axes, plots and the rest of the compatibility
+* :doc:`built_in_animations` -- the ready-made animations to apply to these
+  shapes.
+* :doc:`../advanced_user_tutorials/positioning_and_layout` -- getting these shapes where you want them.
+* :doc:`../advanced_user_tutorials/text_and_math` -- labels, formulae and animated numbers in full.
+* :doc:`../new_user_tutorials/three_d_basics` -- lighting, cameras and surfaces for the 3-D shapes.
+* :doc:`../advanced_user_tutorials/importing_from_manim` -- axes, plots and the rest of the compatibility
   layer.
+* :doc:`../advanced_user_tutorials/shaders_and_materials` -- how the 3-D shapes
+  respond to light.
+* :doc:`../advanced_user_tutorials/extending_algan` -- building a shape of your
+  own, and packing thousands of them into one Mob.

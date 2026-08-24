@@ -15,7 +15,7 @@ Getting Started
   not find Algan.
 
 Your First Algan Program
-************************
+========================
 
 The simplest way to use Algan is to write a Python script and run it.
 
@@ -34,14 +34,14 @@ and copy this code into it:
     Scene.save_video("my_video")
 
 Now run the script from your terminal using ``uv run python my_first_algan.py``.
-If the execution is successful, you should find a new directory named `algan_outputs`
-in the same directory as your Python script, and inside of that directory there should
-be a video file `my_video.mp4` . Open this video file,
-and you will see your first Algan animation playing: "Hello World!" appearing on screen.
+If the execution is successful, you should find a new directory named
+``algan_outputs`` in the same directory as your Python script, and inside of that
+directory there should be a video file ``my_video.mp4``. Open this video file,
+and you will see your first Algan animation playing: "Hello World!" appearing on
+screen.
 
-***********
 Explanation
-***********
+===========
 
 Let's break down this minimal program line-by-line to see what's going on:
 
@@ -93,9 +93,39 @@ to be despawned, and if they are not despawned they will stick around until the 
 This final line instructs Algan to process all of the previously created mobs and animations you've defined
 in your script and render them into a video file with the given name.
 
-Where to next
-*************
+.. seealso::
 
-* :doc:`basic_animations` -- Continue with the new-user tutorials to learn about animating mobs.
-* :doc:`mob_gallery` -- See all of Algan's available mobs.
-* :doc:`saving_videos_and_images` -- See how to customize file output and video settings.
+    :doc:`../advanced_user_tutorials/text_and_math` -- everything
+    :class:`~algan.mobs.text.Text` can do, plus LaTeX with
+    :class:`~algan.mobs.text.Tex`, per-glyph animation, the hand-writing effect
+    and animated numbers.
+
+Naming your mobs
+================
+
+Every example in this documentation names a mob after *what it is* --
+``text``, ``square``, ``circle``, ``camera``. That is worth copying. A scene
+script is mostly a sequence of calls on names you chose, so ``circle.move(UP)``
+reads as what it does where ``mob1.move(UP)`` does not, and when a scene grows
+to a dozen objects the names are the only thing keeping it readable.
+
+Making it faster
+================
+
+The first run of an Algan script pays about twenty seconds of start-up: importing
+Torch and Taichi, and preparing the render kernels. You do not pay it twice.
+Algan keeps a warm background process around and re-runs your script on it, so
+every later run starts rendering almost immediately. Nothing is required of you
+-- it happens on the first run -- but :doc:`../advanced_user_tutorials/the_render_daemon`
+explains what it is doing and how to control it.
+
+Where To Next
+=============
+
+* :doc:`basic_animations` -- continue with the new-user tutorials to learn about
+  animating mobs.
+* :doc:`../galleries/mob_gallery` -- see all of Algan's available mobs.
+* :doc:`../advanced_user_tutorials/saving_videos_and_images` -- customize the
+  output file and the video quality.
+* :doc:`../manim_migration_guide` -- if you already know Manim, this maps what
+  you know onto Algan.

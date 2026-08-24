@@ -2,13 +2,13 @@
 Basic Animations
 ================
 
-In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob`s
+In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob` s
 and then changing them. By default, changes
 you make to a mob are animated over a one second period. More complex
 animation behaviour will be covered in the later :doc:`combining_animations` tutorial.
 
 Changing Animatable Attributes
-------------------------------
+==============================
 
 Every :class:`~algan.animatable_base.mob.Mob` has these animatable attributes:
 
@@ -29,7 +29,7 @@ Every :class:`~algan.animatable_base.mob.Mob` has these animatable attributes:
        :meth:`~algan.animatable_base.mob.Mob.scale`, not by hand.
    * - :ref:`color <reference-mob-color>`
      - :class:`~algan.constants.color.Color`
-     - The Mob's main colour.
+     - The Mob's main color.
    * - :ref:`glow <reference-mob-glow>`
      - float
      - How strongly the mob glows. ``0`` is off.
@@ -65,25 +65,38 @@ that interpolates from the old value to the new value.
     + UP`` and ``circle.location += UP`` work.
 
 A note on colors
-=================
+----------------
 
 An Algan :class:`~algan.constants.color.Color` carries five components: red, green, blue, glow and
 opacity, in that order. So glow and opacity can be set either on the Mob or baked
 into the color you assign:
 
-.. code-block:: python
+.. algan:: BasicColorComponents
 
-    circle.color = BLUE            # leaves glow and opacity alone
-    circle.glow = 0.5              # ... or set them separately
+    from algan import *
+
+    circle = Circle().spawn()
+
+    circle.color = BLUE                     # leaves glow and opacity alone
+    circle.glow = 0.5                       # ... or set them separately
     circle.opacity = 0.5
 
-    circle.color = BLUE.set_opacity(0.5)   # ... or together, in one animation
+    circle.color = GREEN.set_opacity(1.0)   # ... or together, in one animation
 
-Algan ships the full Manim colour palette: ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
+    Scene.save_video()
+
+Algan ships the full Manim color palette: ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
 on, plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
+.. seealso::
+
+    * :doc:`../advanced_user_tutorials/images_and_textures` -- painting a
+      gradient or an image across a shape instead of one flat color.
+    * :doc:`../advanced_user_tutorials/backgrounds_and_post_processing` -- what
+      ``glow`` actually does, and the bloom pass that makes it visible.
+
 Mob Methods
------------
+===========
 
 :class:`~algan.animatable_base.mob.Mob` s also have a bunch of common operations built in to them as methods.
 Most of the time, these are what you will use.
@@ -92,36 +105,54 @@ Most of the time, these are what you will use.
 
     from algan import *
 
-    mob = RegularPolygon(5).spawn()
-    mob.move(RIGHT * 2)
-    mob.rotate(360, OUT)
-    mob.rotate(360, UP)
-    mob.rotate(360, OUT, about_point=ORIGIN)
-    mob = mob.become(Circle(add_to_scene=False))
+    pentagon = RegularPolygon(5).spawn()
+    pentagon.move(RIGHT * 2)
+    pentagon.rotate(360, OUT)
+    pentagon.rotate(360, UP)
+    pentagon.rotate(360, OUT, about_point=ORIGIN)
+    pentagon = pentagon.become(Circle(add_to_scene=False))
 
     Scene.save_video()
 
 The methods used above:
 
-* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move` translates the Mob by a vector: ``mob.move(RIGHT)`` slides it
+* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move` translates the Mob by a vector: ``pentagon.move(RIGHT)`` slides it
   one unit right. To move to an absolute point instead, use
   :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`.
 * :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` turns the Mob about an axis through its own centre.
   Passing ``about_point`` turns it about *that* point instead, which sweeps the
-  Mob around in an arc: ``mob.rotate(180, OUT, about_point=ORIGIN)`` swings it
+  Mob around in an arc: ``pentagon.rotate(180, OUT, about_point=ORIGIN)`` swings it
   half way around the origin.
 * :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` morphs the Mob into a different Mob. It returns the
-  resulting Mob, so assign it back: ``mob = mob.become(Circle(add_to_scene=False))``.
+  resulting Mob, so assign it back: ``pentagon = pentagon.become(Circle(add_to_scene=False))``.
   Build the target with ``add_to_scene=False``: it is only there to say what shape
   to become, and is never itself drawn on screen. Without that flag Algan registers it as a
   Mob you meant to show, and warns that you never spawned it.
 
 Two more useful ones:
 
-* :meth:`~algan.animatable_base.mob.Mob.scale` grows or shrinks the Mob: ``mob.scale(2)`` doubles its size.
-* :meth:`~algan.animatable_base.animatable.Animatable.wait` holds the Mob still: ``mob.wait(2)`` leaves two
+* :meth:`~algan.animatable_base.mob.Mob.scale` grows or shrinks the Mob: ``pentagon.scale(2)`` doubles its size.
+* :meth:`~algan.animatable_base.animatable.Animatable.wait` holds the Mob still: ``pentagon.wait(2)`` leaves two
   seconds of nothing happening. ``Scene.wait(2)`` also does the same thing.
 
-:doc:`positioning_and_layout` covers the placement and sizing methods in full,
-and the :class:`~algan.animatable_base.mob.Mob` reference lists every method.
+The :class:`~algan.animatable_base.mob.Mob` reference lists every method.
 
+.. seealso::
+
+    * :doc:`../advanced_user_tutorials/positioning_and_layout` -- every
+      placement and sizing method, and when to reach for which.
+    * :doc:`../galleries/built_in_animations` -- ready-made animations for
+      drawing attention, moving along a path and transforming a diagram.
+    * :doc:`../advanced_user_tutorials/custom_animations` -- writing an
+      animation of your own with
+      :func:`~algan.animatable_base.animatable.animated_function`,
+      for anything the built-ins do not cover.
+
+Where To Next
+=============
+
+* :doc:`combining_animations` -- playing animations at the same time, at
+  different speeds, with different easing.
+* :doc:`../galleries/mob_gallery` -- every Mob these methods apply to.
+* :doc:`../advanced_user_tutorials/positioning_and_layout` -- the full placement
+  and sizing catalogue.

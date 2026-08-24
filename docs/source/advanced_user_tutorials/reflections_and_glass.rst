@@ -51,7 +51,7 @@ trick generally: it grounds objects that would otherwise float in a void.
 .. important::
 
     **A mirror needs something to reflect.** ``metalness=1`` means the surface has
-    no diffuse colour of its own at all, so a fully metallic object in an otherwise
+    no diffuse color of its own at all, so a fully metallic object in an otherwise
     empty scene renders *black* -- it is faithfully reflecting a black background.
 
     Three ways to fix that, in order of effectiveness:
@@ -59,7 +59,7 @@ trick generally: it grounds objects that would otherwise float in a void.
     1. Give the scene an environment map, so there is always something to reflect
        (see :doc:`lighting_and_shadows`).
     2. Put other objects around it.
-    3. Back the metalness off to ``0.7``-``0.9`` so some base colour shows through.
+    3. Back the metalness off to ``0.7``-``0.9`` so some base color shows through.
 
     Note also that a *convex* mirror shrinks whatever it reflects enormously. Flat
     or gently curved reflectors read much better than a mirrored sphere.
@@ -139,7 +139,7 @@ For glass you want ``transmission=1.0`` and ``opacity=1.0``. Fading a glass obje
 in and out is a change to ``opacity``; making it more or less glassy is a change to
 ``transmission``.
 
-A transmissive material's colour tints the light passing through it, so
+A transmissive material's color tints the light passing through it, so
 ``MeshPhysicalMaterial(color=GREEN, transmission=1.0)`` gives green glass.
 
 Controlling Bounce Depth
@@ -167,10 +167,27 @@ Glossy Reflections
 *traced* reflection at all, and that is what makes brushed metal look different
 from chrome:
 
-.. code-block:: python
+.. algan:: ReflectionsGlossy
 
-    chrome  = MeshStandardMaterial(metalness=1.0, roughness=0.0)   # mirror
-    brushed = MeshStandardMaterial(metalness=1.0, roughness=0.35)  # no mirror
+    from algan import *
+
+    with Off():
+        Group([Square(color=c).scale(0.6).move(RIGHT * x + UP * y)
+               for c, x, y in ((RED, -2, 1), (GREEN, 2, 1),
+                               (YELLOW, -2, -1), (BLUE, 2, -1))]
+              ).move(IN * 4).spawn()
+
+        chrome = Sphere(radius=0.9, color=GREY).move(LEFT * 1.6).set_material(
+            MeshStandardMaterial(metalness=1.0, roughness=0.0)).spawn()
+        brushed = Sphere(radius=0.9, color=GREY).move(RIGHT * 1.6).set_material(
+            MeshStandardMaterial(metalness=1.0, roughness=0.35)).spawn()
+
+    Scene.wait(2)
+
+    Scene.save_video()
+
+The left sphere reflects the squares behind the camera's subject; the right one
+does not.
 
 A mirror (``roughness=0``) reflects the scene exactly. As roughness rises the
 reflected image fades out and the surface's own shading -- its broad specular
@@ -270,3 +287,7 @@ See Also
   functions for ray-continuation behaviour Algan does not provide.
 - :doc:`lighting_and_shadows` -- environment maps and lighting rigs.
 - :doc:`images_and_textures` -- varying roughness, reflectivity and IOR per texel.
+- :doc:`renderer_limitations` -- exactly where reflection and refraction stop,
+  and what happens at the end of the bounce budget.
+- :doc:`performance_and_quality` -- the settings on this page, and what each
+  costs.

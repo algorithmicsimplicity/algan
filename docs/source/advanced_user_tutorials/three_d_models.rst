@@ -93,7 +93,7 @@ and tangent-space normal maps are loaded and applied too.
        default lit shader.
    * - ``load_textures``
      - Load diffuse texture maps. Default True; False (or a failed load) falls
-       back to the material's flat base colour.
+       back to the material's flat base color.
    * - ``normal_maps``
      - Apply tangent-space normal maps. Default True. Requires per-vertex UVs.
    * - ``smooth_normals``
@@ -210,7 +210,7 @@ Troubleshooting
      - The model's units. Try ``normalize=True``.
    * - Faceted where it should be smooth
      - The file has no authored normals; they are being derived per face.
-   * - Untextured / flat colour
+   * - Untextured / flat color
      - A texture failed to load, or the mesh has no UVs.
    * - Black or very dark
      - A metallic material with nothing to reflect. Add an environment map --
@@ -228,3 +228,9 @@ See Also
 - :doc:`images_and_textures` -- texturing surfaces you build yourself.
 - :doc:`shaders_and_materials` -- overriding an imported model's materials.
 - :doc:`lighting_and_shadows` -- lighting an imported asset.
+- :doc:`importing_from_manim` -- importing geometry from Manim instead of from a
+  model file.
+- :doc:`../new_user_tutorials/child_mobs` -- the parent/child rules that make
+  ``get_part`` behave, and moving a model with its parts.
+- :doc:`performance_and_quality` -- triangle count and normal maps, the two
+  things that make an imported model slow.

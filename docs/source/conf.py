@@ -70,6 +70,14 @@ redirects = {
     # Duplicates of installation/uv, removed so one page is canonical.
     "installation/installation": "uv.html",
     "new_user_tutorials/installation": "../installation/uv.html",
+    # The Manim quickstart collection became one page.
+    "manim_user_quickstart/index": "../manim_migration_guide.html",
+    "manim_user_quickstart/migrating_from_manim": "../manim_migration_guide.html",
+    # The two catalogue pages moved out of the advanced tutorials.
+    "advanced_user_tutorials/mob_gallery": "../galleries/mob_gallery.html",
+    "advanced_user_tutorials/built_in_animations": (
+        "../galleries/built_in_animations.html"
+    ),
 }
 
 # generate documentation from type hints

@@ -2,17 +2,17 @@
 Images and Textures
 ===================
 
-Algan can colour a surface from an image or an array instead of a single flat
-colour, and can drive a surface's *material* properties -- roughness, reflectivity,
+Algan can color a surface from an image or an array instead of a single flat
+color, and can drive a surface's *material* properties -- roughness, reflectivity,
 refractive index, surface normals -- from images too.
 
 There are four separate mechanisms, and it is worth knowing which is which:
 
 1. :class:`~.ImageMob` -- an image as a flat, textured Mob. What you want for
    showing a picture.
-2. :class:`~.Surface` texture arguments -- per-texel colour and material properties
+2. :class:`~.Surface` texture arguments -- per-texel color and material properties
    on any 3-D surface, sampled in the ray tracing kernel.
-3. The **texture grid** on a 2-D shape -- per-texel colour across a
+3. The **texture grid** on a 2-D shape -- per-texel color across a
    :class:`~.BezierCircuitCubic`, for gradients and images on a
    :class:`~.Square`, a :class:`~.Circle` or a :class:`~.Line`.
 4. :meth:`~algan.scene.Scene.set_background_color` -- an image behind the whole scene (see
@@ -70,21 +70,25 @@ while it keeps its texture. That is how you wrap a map onto a globe:
 
     from algan import *
 
-    # Start as a flat plane coloured by our image file.
-    mob = ImageMob('world_map.png').scale(2).spawn()
-    mob.wait()
+    # Start as a flat plane colored by our image file.
+    world = ImageMob('world_map.png').scale(2).spawn()
+    world.wait()
 
     with Seq(run_time_unit=10, rate_func=rate_funcs.identity):
-        for shape in (Sphere(radius=2), Cylinder(radius=1, height=2)):
+        for shape in (Sphere(radius=2, add_to_scene=False),
+                      Cylinder(radius=1, height=2, add_to_scene=False)):
             # Change the surface shape; the texture comes along.
-            mob.set_shape_to(shape)
-            mob.rotate(360, UP)
-            mob.rotate(360, RIGHT)
+            world.set_shape_to(shape)
+            world.rotate(360, UP)
+            world.rotate(360, RIGHT)
 
     Scene.save_video()
 
 :meth:`~.Surface.set_shape_to` re-maps the surface's intrinsic (UV) coordinates onto
-a new shape, and the texture follows them. Any :class:`~.Surface` works as a target.
+a new shape, and the texture follows them. Any :class:`~.Surface` works as a
+target. Build the target with ``add_to_scene=False``, as above: it only says what
+shape to become and is never drawn, and without the flag Algan registers it as a
+Mob you meant to show and warns that you never spawned it.
 
 .. note::
 
@@ -128,7 +132,7 @@ The available texture arguments:
      - What it drives
    * - ``color_texture``
      - ``[W, H, 5]``
-     - Base colour: red, green, blue, glow, opacity.
+     - Base color: red, green, blue, glow, opacity.
    * - ``roughness_texture``
      - ``[W, H, 1]``
      - How blurred reflections are, per texel.
@@ -145,7 +149,7 @@ The available texture arguments:
      - ``[W, H, 1]``
      - Glow strength, per texel.
 
-Colour and the three material property maps are sampled **bilinearly per fragment,
+Color and the three material property maps are sampled **bilinearly per fragment,
 inside the ray tracing kernel**, for both flat and curved (PN) triangles. A property
 without a map keeps the ordinary per-vertex value, and maps of different resolutions
 are resampled to a common one.
@@ -211,7 +215,7 @@ from a surface of the same shape:
     height = probe.get_texture_locations((128, 128))[..., 1:2]
     sphere = Sphere(radius=1.5, roughness_texture=(height / 1.5).clamp(0, 1))
 
-Because a texture is carried in ``(u, v)``, colours derived this way travel with
+Because a texture is carried in ``(u, v)``, colors derived this way travel with
 the surface when it later moves: they record where it *was* when you asked. Take
 the positions again inside an
 :meth:`~algan.animatable_base.animatable.Animatable.add_updater` callback for a
@@ -221,14 +225,28 @@ Animating a texture
 -------------------
 
 A texture map is an ordinary animatable attribute, so you animate it the way you
-animate a colour or a location: **assign a new one**. Algan interpolates the old
+animate a color or a location: **assign a new one**. Algan interpolates the old
 texture to the new one per texel over the current context's duration.
 
-.. code-block:: python
+.. algan:: TexturesAnimatedTexture
 
-    surface = Sphere(color_texture=day).spawn()
+    from algan import *
+    import torch
+
+    def stripes(horizontal):
+        index = torch.arange(32)
+        bands = (index.view(-1, 1) if horizontal else index.view(1, -1)) // 4 % 2
+        texture = torch.zeros(32, 32, 5)
+        texture[..., 0] = bands.expand(32, 32)          # red
+        texture[..., 2] = 1 - bands.expand(32, 32)      # blue
+        texture[..., 4] = 1.0                           # opacity
+        return texture
+
+    globe = Sphere(radius=1.5, color_texture=stripes(True)).spawn()
     with Seq(run_time=3):
-        surface.color_texture = night     # cross-fades, texel by texel
+        globe.color_texture = stripes(False)   # cross-fades, texel by texel
+
+    Scene.save_video()
 
 The replacement must have the same shape as the texture it replaces. Pass a single
 image when you construct the Mob -- one map, not a sequence of them; there is no
@@ -261,17 +279,17 @@ edges on the same grid column of a closed surface, so a glow map whose edges do
 not already agree shows its seam. Make the first and last column of a
 ``glow_texture`` match if you need it to wrap.
 
-Colouring a 2-D Shape
-=====================
+Coloring a 2-D Shape
+====================
 
 Algan's 2-D shapes -- :class:`~.Square`, :class:`~.Circle`, :class:`~.Polygon`,
 :class:`~.Line`, the glyphs of :class:`~.Text` and :class:`~.Tex` -- are not
 meshes. They are cubic bezier circuits (:class:`~.BezierCircuitCubic`), evaluated
-analytically by the renderer, so there are no vertices to hang colours off.
+analytically by the renderer, so there are no vertices to hang colors off.
 
-Instead a circuit carries a **texture grid**: a rectangular grid of colour
+Instead a circuit carries a **texture grid**: a rectangular grid of color
 samples laid across the shape's own frame, which the renderer interpolates
-bilinearly per fragment. It defaults to a single texel -- one flat colour, which
+bilinearly per fragment. It defaults to a single texel -- one flat color, which
 is all a shape needs most of the time -- so painting anything across a shape
 starts by asking for a grid:
 
@@ -289,7 +307,7 @@ starts by asking for a grid:
 
     Scene.save_video()
 
-``texture_grid_width`` and ``texture_grid_height`` are the number of colour
+``texture_grid_width`` and ``texture_grid_height`` are the number of color
 samples along each axis, and they are the resolution of everything painted on the
 shape. Both default to ``1``; giving only the width squares the grid up.
 
@@ -298,7 +316,7 @@ The ``(u, v)`` domain
 
 :meth:`~.BezierCircuitCubic.set_color_by_function` hands your function a
 ``[..., 2]`` tensor of ``(u, v)`` coordinates -- the same convention
-:class:`~.Surface` uses, so a colour function written for one works on the other.
+:class:`~.Surface` uses, so a color function written for one works on the other.
 ``u`` runs from 0 to 1 along the circuit's first basis row and ``v`` along its
 second, which for an upright 2-D shape means ``u`` left to right and ``v`` top to
 bottom. Return RGB, RGBA, or Algan's five-channel RGB + glow + alpha; the
@@ -343,18 +361,35 @@ left at ``(u, v) == (0, 0)``:
     shape wearing it.
 
 Both methods are recorded as animations, like any other attribute write, so the
-colours cross-fade over the current context's duration:
+colors cross-fade over the current context's duration:
 
-.. code-block:: python
+.. algan:: TexturesCircuitCrossFade
+
+    from algan import *
+    import torch
+
+    def cool(uv):
+        return torch.cat((torch.zeros_like(uv[..., :1]), uv[..., 1:],
+                          1 - uv[..., 1:]), -1)
+
+    def hot(uv):
+        return torch.cat((torch.ones_like(uv[..., :1]), 1 - uv[..., 1:],
+                          torch.zeros_like(uv[..., :1])), -1)
+
+    square = Square(texture_grid_width=64, border_width=0).scale(2)
+    square.set_color_by_function(cool)
+    square.spawn()
 
     with Seq(run_time=2):
         square.set_color_by_function(hot)   # cross-fades from whatever it was
 
-On a filled circuit these colour the fill and leave ``border_color`` alone. On an
-unfilled one, where the stroke is all there is, they colour the stroke. And on a
+    Scene.save_video()
+
+On a filled circuit these color the fill and leave ``border_color`` alone. On an
+unfilled one, where the stroke is all there is, they color the stroke. And on a
 multi-circuit Mob -- a :class:`~.Text`, a :class:`~.Tex`, which take the same
 grid arguments and pass them down to their packed glyphs -- each circuit is
-coloured over its own frame, so the pattern repeats per glyph:
+colored over its own frame, so the pattern repeats per glyph:
 
 .. algan:: TexturesTextGradient
     :save_last_frame:
@@ -373,13 +408,13 @@ coloured over its own frame, so the pattern repeats per glyph:
 
     Scene.save_video()
 
-Colouring along a line
-----------------------
+Coloring along a line
+---------------------
 
 A :class:`~.Line` is one-dimensional, and its texture grid follows: its control
 points are collinear, so the second basis row is synthesized perpendicular to the
 path and carries none of the shape's extent. ``texture_grid_height`` therefore
-defaults to a single row and ``texture_grid_width`` alone is the number of colour
+defaults to a single row and ``texture_grid_width`` alone is the number of color
 samples *along* the line.
 
 :meth:`Line.set_color_by_function <algan.mobs.shapes_2d.Line.set_color_by_function>`
@@ -425,7 +460,14 @@ the texture resolution before reducing anything else; see
 See Also
 ========
 
+- :doc:`../galleries/mob_gallery` -- :class:`~.ImageMob`, :class:`~.Surface` and
+  the shapes these textures go on.
 - :doc:`three_d_models` -- imported models bring their own textures and materials.
 - :doc:`shaders_and_materials` -- what each material property does.
 - :doc:`reflections_and_glass` -- the reflection and refraction those maps drive.
+- :doc:`lighting_and_shadows` -- the lights a normal map perturbs.
 - :doc:`backgrounds_and_post_processing` -- an image behind the whole scene.
+- :doc:`renderer_limitations` -- which maps are sampled per fragment and which
+  are baked, and what a circuit's color grid cannot do.
+- :doc:`performance_and_quality` -- what texture resolution costs in render
+  memory.
