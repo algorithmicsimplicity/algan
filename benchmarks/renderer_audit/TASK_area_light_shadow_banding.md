@@ -29,6 +29,12 @@ next reader will hit them:
   because fixing it redefines `intensity` for every existing `RectAreaLight`.
   The two are mechanically independent — visibility lives in the two shadow
   fans, radiance in `_light_eval` — so neither needs redoing for the other.
+* **§8's "that is where a change will show" needs a caveat.** It does show in
+  `materials_and_lighting` act 3 — 42 of 179 frames, 88–129, up to 15 channel
+  values, measured by rendering the scene under both arms — but the suite's
+  *reported* number does not move at all (245 at frame 156 either way), because
+  that maximum is this container's pre-existing drift somewhere else in the
+  video. A whole-video maximum localises nothing; diff the two arms directly.
 
 What follows is the original brief, unedited.
 

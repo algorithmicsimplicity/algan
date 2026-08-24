@@ -1369,6 +1369,21 @@ Two smaller things the same scene shows:
   this defect, only a way to make its steps smaller until the cap erases the
   shadow. `benchmarks/_area_light_shadow_check.py` is the acceptance harness
   and `ALGAN_AREA_LIGHT_SOFT_SHADOWS=0` restores the old behaviour.
+
+  **What it moves in the suites.** Only `materials_and_lighting`, and only its
+  act 3 — measured by rendering that scene under both arms of the flag rather
+  than by reading the baseline delta: **42 of 179 frames differ, frames 88–129,
+  by up to 15 channel values.** The suite's own max-vs-baseline number does
+  *not* move (245 at frame 156 on both arms), because on this container that
+  maximum is pre-existing drift living elsewhere in the video and it dwarfs the
+  shadow change — which is a warning about reading a whole-video maximum as if
+  it localised anything. The other five scenes are byte-identical between the
+  arms, and `tests/fast` is byte-identical to the pristine tree (its own 5
+  channel values at frame 27 is §6.8's pre-existing container disagreement,
+  unchanged). Both device baselines for `materials_and_lighting` therefore need
+  regenerating on the machines that own them; **not here**, for §6.8's reason —
+  a container already 231–245 off every committed baseline before any change
+  would bake its own drift into whatever it wrote.
 * **A three.js rect-area light does not illuminate a `lambert`, `phong` or
   `toon` surface at all.** `calib_lights.json` therefore gives its wall a
   `standard` material where the ported scene used Lambert; with Lambert the
