@@ -2377,14 +2377,57 @@ def set_fragment_shading(enabled):
     FRAGMENT_SHADING = bool(enabled)
 
 
+# What a RECT AREA LIGHT's shadow rays integrate. Each of its packed rows
+# stands for one cell of its emitter grid, but nothing downstream knew a cell
+# existed: RectAreaLight.build_aux left the shadow-radius column (packed
+# column 11) at zero, so every row took the single-hard-ray path in both
+# shadow fans and the union of K hard shadows was a staircase with K+1 levels
+# (measured [0.01, 0.25, 0.52, 0.74] on a k/4 grid at samples=4) wherever a
+# continuous ramp belongs.
+#
+# ON, build_aux packs each row's CELL half-extents and the rectangle's right
+# axis into columns the area type never used, and both shadow fans place
+# their SOFT_SHADOW_SAMPLES samples inside that cell, in the light's own
+# plane (an R2 low-discrepancy sequence whose s = 0 sample is exactly the
+# cell centre). Nothing about radiance, power fractions or ``intensity``
+# changes -- this is the visibility term only.
+#
+# COST, documented rather than hidden: a row with a non-zero emitter extent
+# fires SOFT_SHADOW_SAMPLES (default 8) shadow rays instead of 1 -- the same
+# rule a PointLight with a non-zero ``shadow_radius`` already obeys. An area
+# light has K rows, so its shadow cost goes from K rays to K * 8.
+# ``samples`` stays the user's dial for both quality and cost.
+#
+# KNOWN LIMITS, both deliberate exclusions. The deferred shadow prepass
+# (``wavefront_shadow``) reads neither light type nor radius and treats every
+# row as a hard point light; it is dead code today (the tracer always
+# compiles ``deferred_shadows == 0``) and must learn these columns before it
+# is ever revived. And the Monte Carlo megakernel's next-event estimation
+# reads packed columns 0-2 only, with extended lights rejected at preflight
+# when ``samples_per_pixel > 1`` anyway, so an area row never reaches it:
+# SPP > 1 keeps hard per-row rays.
+#
+# OFF restores today's row bit-for-bit. The flag is read host-side ONLY, in
+# build_aux, which packs zeros to the extra columns when it is off -- the
+# kernels' ``radius`` stays 0.0 and takes the existing single-ray path. There
+# is deliberately no ``ti.static`` gate: a compile-time switch would fork the
+# shade kernels into per-arm variants (and need one process per arm, since a
+# flipped template gate is resolved when the kernel compiles), while this
+# shape needs no recompile and one process can render both arms.
+AREA_LIGHT_SOFT_SHADOWS = env_flag("ALGAN_AREA_LIGHT_SOFT_SHADOWS", True)
+
+
 # When True, the deterministic ray tracer casts hard shadows: each shaded
 # triangle/PN fragment fires one shadow ray per point light and multiplies the
 # light that remains through every occluder's transparency. Fully opaque
 # occluders block the direct contribution. Implies per-fragment shading
 # (shadows are evaluated in the lighting model) and forces the general kernel.
-# Lights with a non-zero ``shadow_radius`` / ``shadow_angle`` (and area lights)
-# get *soft* shadows: a fixed deterministic fan of SOFT_SHADOW_SAMPLES rays is
-# traced across the emitter instead of a single ray. Off by default.
+# Soft emitters fire a deterministic fan of SOFT_SHADOW_SAMPLES rays instead
+# of a single ray: point/spot lights with a non-zero ``shadow_radius`` spread
+# theirs over the emitter disk (directional: over ``shadow_angle``, radius =
+# tan(half-angle)), and a RectAreaLight's rows each integrate visibility over
+# their own cell of the emitter grid when AREA_LIGHT_SOFT_SHADOWS is on --
+# see that flag for the cost. Off by default.
 SHADOWS = False
 
 # Number of shadow rays in the deterministic soft-shadow fan (per light with a
@@ -2403,9 +2446,11 @@ def set_ray_traced_shadows(enabled):
     and emissive terms remain unchanged. Shadows are evaluated inside the
     wavefront shade kernel's per-fragment lighting model, so this implies
     :func:`set_fragment_shading` for the render. Lights with a non-zero
-    ``shadow_radius`` / ``shadow_angle`` (and area lights) get *soft* shadows
-    via a deterministic fan of ``SOFT_SHADOW_SAMPLES`` rays. Refractive glass
-    transport still needs the physical path tracer
+    ``shadow_radius`` / ``shadow_angle`` get *soft* shadows via a
+    deterministic fan of ``SOFT_SHADOW_SAMPLES`` rays; a RectAreaLight's rows
+    do too -- each integrating visibility over its own cell of the emitter
+    grid -- when ``AREA_LIGHT_SOFT_SHADOWS`` is on (the default). Refractive
+    glass transport still needs the physical path tracer
     (``set_samples_per_pixel(n)`` with ``n > 1``). Only the deterministic
     renderer (``set_samples_per_pixel(1)``, non-physical) is affected. Set
     before rendering.

@@ -70,7 +70,8 @@ were not being shaded at all under this scene's lighting rig.
 | §6.2 | **[3]** `MeshToonMaterial`, `MeshNormalMaterial`, `MeshMatcapMaterial` and `MeshDepthMaterial` have no in-kernel port, so a rig without a plain `PointLight` leaves them unshaded — four flat discs, disc variance exactly 0.0000 | yes — the biggest one this run | **fixed** — each has an in-kernel stage now: every light type, per fragment, shadows received |
 | §6.3 | **[3]** A packed normal and a depth ramp went out through the sRGB OETF, which three.js pointedly does not do to either | yes | **fixed** — red and green now match three.js to the byte; only the world-vs-view-space channel is left |
 | §6.4 | **[3]** Phong's specular lobe has no `(shininess·0.5+1)·0.25` normalization, no multiplicative `n·l` and no Fresnel — the one lit material whose ratio to three.js is not a uniform π | yes | **fixed** — three.js's `BRDF_BlinnPhong` term for term, pinned by a unit test against the analytic formula |
-| §6.7 | **[3]** `RectAreaLight` is a mean of point samples, not a solid-angle integral: with the default `decay = 0` it has no distance falloff at all, so it floods a wall where the reference pools under the rectangle (32× under the light, 145× at the wall's edge) | yes — not a unit convention, a falloff shape | not fixed — the correction is specified in §6.7 and needs its own baselines |
+| §6.7 | **[3]** `RectAreaLight` is a mean of point samples, not a solid-angle integral: with the default `decay = 0` it has no distance falloff at all, so it floods a wall where the reference pools under the rectangle (32× under the light, 145× at the wall's edge) | yes — not a unit convention, a falloff shape | **falloff not fixed** — the correction is specified in §6.7 and needs its own baselines |
+| §6.7 | **[5]** …and its *shadow* was a stack of `samples` hard ones rather than a penumbra: levels `[0.01, 0.25, 0.52, 0.74]`, a `k/4` grid, flatness 0.87 against the path tracer's 0.49 | yes — the docstring promised smooth penumbras | **fixed** — each emitter row now integrates visibility over its own cell of the rectangle: no `k/K` grid at any count, flatness 0.73 at the shipped `samples = 4` and 0.54 at 16 |
 | §9.3 | **[4]** A mirror's image of a transmissive solid is dominated by twice-tinted *transmitted* light where the reference shows an untinted specular highlight — tint ratio g/r **1.77** against three's **0.95**, where the glass albedo is 1.30 and albedo² is 1.69 | probably — Fresnel favours the reference at the grazing angles a mirror sees a limb through | not fixed — §9.3 measures it and rules out three other causes |
 | §9.2 | **[4]** An escaped *secondary* ray returns the background colour, so a perfect mirror renders the backdrop exactly — 0.016 linear, the background's own value — and disappears into it. Three.js gives an escaped ray zero radiance unless `scene.environment` is set | neither — a convention, but one that decides whether a mirror is visible at all | documented, not changed |
 | §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention, now measurable as exactly π (§6.6 measures it as 3.15 at every pixel of a hemisphere-lit wall) | left alone, on purpose |
@@ -1329,6 +1330,60 @@ Two smaller things the same scene shows:
   twice, and a fix that corrects one and not the other leaves the light
   half-corrected. `TASK_area_light_shadow_banding.md` is the self-contained
   brief.
+
+  **[5] The shadow half is now fixed; the falloff half is not.** Each emitter
+  row carries `1/K` of the power *and* stands for one cell of the `k × k` grid,
+  so its **visibility** is now the average over that cell rather than a point
+  test at the cell's centre: the row packs its cell's half-extents and the
+  rectangle's basis, and both deterministic shadow fans place their
+  `SOFT_SHADOW_SAMPLES` rays inside the cell, in the light's own plane.
+  Radiance, power fractions and `intensity` are untouched — which is exactly
+  why this does *not* address the falloff above, and why the two remain
+  separate changes. Measured on the same scanline:
+
+  | | min | flatness | plateau levels | grid |
+  | --- | --- | --- | --- | --- |
+  | before | 0.009 | 0.87 | [0.01, 0.25, 0.52, 0.74] | `k/4` |
+  | `samples = 4` (shipped) | 0.039 | 0.73 | [0.07] | none |
+  | `samples = 9` | 0.035 | 0.59 | [0.05] | none |
+  | `samples = 16` | 0.032 | **0.54** | *none at all* | none |
+  | three_pathtrace | 0.000 | 0.49 | [0.0, 0.33, 0.56, 0.78] | none |
+
+  **The umbra lifts, 0.009 → 0.039, and that is the correction rather than a
+  side effect of it.** A `k × k` grid of point emitters spans only `(1 - 1/k)`
+  of the rectangle, so at the shipped `samples = 4` the old renderer cast its
+  shadow from an emitter **half** the authored width and height — measured, a
+  1.8 × 1.0 rectangle's emitter centres span 0.9 × 0.5 — and a too-small
+  emitter casts a too-large, too-dark umbra. Two things separate this from a
+  fix that merely floods the umbra: it **settles** (0.039 → 0.035 → 0.032 as
+  `samples` rises, while flatness falls onto the reference's 0.49), and with
+  shadows off the two arms render **byte-identically**, so nothing reached the
+  lighting term.
+
+  One ceiling this measurement turned up, pre-existing and worth knowing before
+  reaching for "just raise `samples`": `MAX_SHADOW_LIGHTS` is 16 and every
+  emitter sample spends one slot, so at `samples = 64` the surplus rows are lit
+  but unshadowed and the shadow washes out entirely (scanline minimum 0.73).
+  The render does warn — `truncation.py`'s `shadow_lights` counter names area
+  samples explicitly — but it means raising `samples` was never a route past
+  this defect, only a way to make its steps smaller until the cap erases the
+  shadow. `benchmarks/_area_light_shadow_check.py` is the acceptance harness
+  and `ALGAN_AREA_LIGHT_SOFT_SHADOWS=0` restores the old behaviour.
+
+  **What it moves in the suites.** Only `materials_and_lighting`, and only its
+  act 3 — measured by rendering that scene under both arms of the flag rather
+  than by reading the baseline delta: **42 of 179 frames differ, frames 88–129,
+  by up to 15 channel values.** The suite's own max-vs-baseline number does
+  *not* move (245 at frame 156 on both arms), because on this container that
+  maximum is pre-existing drift living elsewhere in the video and it dwarfs the
+  shadow change — which is a warning about reading a whole-video maximum as if
+  it localised anything. The other five scenes are byte-identical between the
+  arms, and `tests/fast` is byte-identical to the pristine tree (its own 5
+  channel values at frame 27 is §6.8's pre-existing container disagreement,
+  unchanged). Both device baselines for `materials_and_lighting` therefore need
+  regenerating on the machines that own them; **not here**, for §6.8's reason —
+  a container already 231–245 off every committed baseline before any change
+  would bake its own drift into whatever it wrote.
 * **A three.js rect-area light does not illuminate a `lambert`, `phong` or
   `toon` surface at all.** `calib_lights.json` therefore gives its wall a
   `standard` material where the ported scene used Lambert; with Lambert the
@@ -1408,15 +1463,24 @@ what the second run learned:
    1 is nobody's nearest coverage sample, so a fully covered fragment spawns
    seven rays. Fixing it would change what an existing measured configuration
    renders, on the arm that is now legacy.
-4. **Make `RectAreaLight` an integral rather than a mean** (§6.7). The one
-   finding of the third run that is left open, and the only measured
-   disagreement in this audit that is neither a fixed defect nor a unit
-   convention: the falloff has the wrong *shape*, so no choice of intensity
-   reconciles it. Give each emitter sample the rectangle's area element and an
-   inverse-square term instead of a flat `1/K`, so the sum converges to the
-   solid-angle form factor as `samples` grows. It redefines what `intensity`
-   means for every existing `RectAreaLight`, which is why it did not ride along
-   with the third run's fixes.
+4. **Make `RectAreaLight`'s RADIANCE an integral rather than a mean** (§6.7).
+   Its *visibility* now is (see §6.7's `[5]` update), so what is left is the
+   falloff — the only measured disagreement in this audit that is neither a
+   fixed defect nor a unit convention: it has the wrong *shape*, so no choice of
+   intensity reconciles it. Give each emitter sample the rectangle's area
+   element and an inverse-square term instead of a flat `1/K`, so the sum
+   converges to the solid-angle form factor as `samples` grows. It redefines
+   what `intensity` means for every existing `RectAreaLight`, which is why it
+   did not ride along with the third run's fixes or with the shadow half.
+
+   Two things the shadow work leaves for whoever takes this. The `k × k` cell
+   decomposition is now load-bearing in two places rather than one — the packed
+   cell extents assume it — so keep the same grid, as the `A/K` correction
+   does anyway. And the emitter *centres* still span only `(1 - 1/k)` of the
+   rectangle, which is a radiance-side error of the same family: at the shipped
+   `samples = 4` the light emits from the middle half of its own surface. The
+   shadow fix stopped shadowing from that shrunken proxy; the radiance term
+   still lights from it.
 5. **Bring `MeshNormalMaterial` and `MeshMatcapMaterial` onto three.js's
    definitions** (`OX_MATLIGHT_AUDIT.md` F3, F4), now that §6.2 has put them in
    the kernel where a camera basis is reachable. Normal packs *world*-space
