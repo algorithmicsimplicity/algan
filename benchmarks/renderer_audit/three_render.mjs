@@ -6,6 +6,7 @@
 //
 // Usage:
 //   node three_render.mjs <scene.json> --out <dir> [--mode raster|pathtrace|both] [--samples N]
+//                          [--gl swiftshader|hardware] [--tiles N]
 //
 // Prints a one-line JSON summary to stdout: {"scene":...,"outputs":[...],"samples":...,"seconds":...}
 // All diagnostics go to stderr.
@@ -15,14 +16,19 @@
 //   Recreate it anywhere with:  npm install three three-gpu-pathtracer playwright
 //   The directory is resolved from (first hit wins):
 //     1. --node-modules <dir> CLI flag
-//     2. $ALGAN_THREE_NODE_MODULES
+//     2. $AUDIT_THREE_NODE_MODULES  (deliberately NOT ALGAN_-prefixed: Algan warns about
+//        any ALGAN_ variable it does not itself honour, and this one is the audit's)
 //     3. ./node_modules next to this script
 //     4. the scratch project this tool was developed against (path below)
 //   Chromium is found via PLAYWRIGHT_BROWSERS_PATH; if Playwright cannot resolve a
 //   browser binary (revision mismatch) we fall back to globbing /opt/pw-browsers/chromium-*/.
-//   There is no GPU here: Chromium is launched with SwiftShader software WebGL2 via
+//   WebGL2 backend: --gl swiftshader (default) launches Chromium's software rasterizer via
 //     --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
 //     --no-sandbox --disable-dev-shm-usage --headless=new
+//   which is the only option on a machine without a GPU (the session this tool was written
+//   in). --gl hardware asks ANGLE for the real device instead (d3d11 on Windows, gl
+//   elsewhere); it is tens of times faster for the path tracer and is what makes a
+//   64-sample pass of every scene practical. The images agree -- see REPORT.md section 1.
 //
 // CONVENTIONS PINNED FOR THE AUDIT (do not change these to make images match):
 //   * Colour management: Three.js defaults — THREE.ColorManagement.enabled = true,
@@ -59,7 +65,7 @@ const FALLBACK_NODE_MODULES =
   '/tmp/claude-0/-home-user-algan/51960e50-b094-5117-954b-e7b85c715502/scratchpad/three/node_modules';
 
 function parseArgs(argv) {
-  const args = { mode: 'both', samples: 64 };
+  const args = { mode: 'both', samples: 64, gl: 'swiftshader', tiles: 1 };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -67,13 +73,39 @@ function parseArgs(argv) {
     else if (a === '--mode') args.mode = argv[++i];
     else if (a === '--samples') args.samples = Number(argv[++i]);
     else if (a === '--node-modules') args.nodeModules = argv[++i];
+    else if (a === '--gl') args.gl = argv[++i];
+    else if (a === '--tiles') args.tiles = Number(argv[++i]);
     else rest.push(a);
   }
-  if (!rest[0]) die('usage: node three_render.mjs <scene.json> --out <dir> [--mode raster|pathtrace|both] [--samples N]');
+  if (!rest[0]) die('usage: node three_render.mjs <scene.json> --out <dir> [--mode raster|pathtrace|both] [--samples N] [--gl swiftshader|hardware]');
   args.scenePath = path.resolve(rest[0]);
   if (!['raster', 'pathtrace', 'both'].includes(args.mode)) die(`bad --mode ${args.mode}`);
+  if (!['swiftshader', 'hardware'].includes(args.gl)) die(`bad --gl ${args.gl}`);
+  if (!Number.isInteger(args.tiles) || args.tiles < 1) die('bad --tiles');
   if (!Number.isFinite(args.samples) || args.samples < 1) die('bad --samples');
   return args;
+}
+
+// Chromium switches selecting the WebGL2 implementation. 'swiftshader' is the software
+// path and works anywhere; 'hardware' asks ANGLE for the real device -- d3d11 on Windows,
+// the platform GL driver elsewhere -- which is what makes a 64-sample path-traced pass of
+// every scene finish in minutes rather than days.
+function glArgs(kind) {
+  const common = ['--no-sandbox', '--disable-dev-shm-usage'];
+  if (kind === 'hardware') {
+    const backend = process.platform === 'win32' ? 'd3d11' : 'gl';
+    return [
+      '--use-gl=angle', `--use-angle=${backend}`,
+      '--enable-gpu', '--ignore-gpu-blocklist',
+      // Prefer the discrete GPU where the machine has both; ignored otherwise.
+      '--force_high_performance_gpu',
+      ...common,
+    ];
+  }
+  return [
+    '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+    ...common, '--headless=new',
+  ];
 }
 
 function die(msg) {
@@ -84,7 +116,7 @@ function die(msg) {
 function resolveNodeModules(flagValue) {
   const candidates = [
     flagValue,
-    process.env.ALGAN_THREE_NODE_MODULES,
+    process.env.AUDIT_THREE_NODE_MODULES,
     path.join(__dirname, 'node_modules'),
     FALLBACK_NODE_MODULES,
   ].filter(Boolean);
@@ -385,17 +417,60 @@ async function renderRaster(spec) {
   return { dataUrl, ms: performance.now() - t0 };
 }
 
+// three-gpu-pathtracer's material table reads material.color.r unguarded
+// (MaterialsTexture.js:193 -- every other field goes through getField with a
+// default), and MeshNormalMaterial and MeshDepthMaterial have no color: they
+// are not surface descriptions. Without this the whole pass throws before the
+// first sample, taking the scene's other ten objects with it.
+//
+// So the tracer is given a colour for those two, and ONLY those two, so the
+// rest of the frame can be path-traced. White, because that is what the Algan
+// back end gives the same two mobs (algan_render.py: a bare Surface would
+// otherwise bake its own default green into the vertices). Everything else
+// falls to the tracer's own defaults.
+//
+// What this does NOT do is produce a reference for those materials. The path
+// tracer has no normal-packing, no depth ramp, no toon banding and no matcap;
+// it converts every material to its own PBR model. Those panels are the
+// tracer's PBR stand-in, not three.js's material, and the returned
+// substitutedMaterials list is what says so beside the image.
+function substituteUnsupportedMaterials(scene) {
+  const substituted = [];
+  scene.traverse(o => {
+    const m = o.material;
+    if (!m || m.color) return;
+    m.color = new THREE.Color(1, 1, 1);
+    substituted.push((o.name || '<unnamed>') + ' (' + m.type + ')');
+  });
+  return substituted;
+}
+
 async function renderPathTrace(spec, samples, opts) {
   opts = opts || {};
   const t0 = performance.now();
   const renderer = makeRenderer(spec.render.width, spec.render.height);
+  // A lost context does not raise: renderSample() returns, pt.samples counts up, and
+  // toDataURL hands back a fully transparent frame. Left undetected that is written to
+  // disk and compared as though it were a render. Fail instead.
+  let contextLost = false;
+  renderer.domElement.addEventListener('webglcontextlost', () => { contextLost = true; });
   const pt = new WebGLPathTracer(renderer);
   pt.renderToCanvas = true;
   pt.renderDelay = 0;
   pt.minSamples = 1;
   pt.fadeDuration = 0;
   pt.dynamicLowRes = false;
-  pt.tiles.set(1, 1);
+  // How many draws one sample is split into. The path tracer's own default is 3x3;
+  // 1x1 draws the whole frame in a single call, which is what this used until a
+  // hardware GL device made it a problem: on Windows a draw call that runs longer
+  // than the display driver's watchdog (TDR, two seconds by default) resets the
+  // device, and a WebGL context killed that way keeps accepting renderSample()
+  // calls -- pt.samples counts up to 64 and the canvas is never presented. Splitting
+  // one sample across N*N scissored draws keeps each one short. It does not change
+  // what is accumulated: the seed and the stratified sequence advance once per
+  // sample, not per tile (PathTracingRenderer._renderSample yields per tile).
+  const tiles = Math.max(1, Math.round(opts.tiles || 1));
+  pt.tiles.set(tiles, tiles);
   // Flat spec-colour background, zero IBL: scene.background as a Color makes the path
   // tracer use a constant background map; scene.environment stays null so the tracer's
   // environmentIntensity resolves to 0 (WebGLPathTracer.updateEnvironment). No HDRI, no
@@ -405,6 +480,11 @@ async function renderPathTrace(spec, samples, opts) {
   // lights — AmbientLight is silently ignored. Flag it so the comparison knows.
   const ambientIgnored = (spec.lights || []).some(l => l.type === 'ambient');
   if (ambientIgnored) console.error('WARNING: path tracer does not support AmbientLight; ambient contribution is missing from this pass');
+  const substitutedMaterials = substituteUnsupportedMaterials(scene);
+  if (substitutedMaterials.length) {
+    console.error('WARNING: path tracer has no shading model for ' + substitutedMaterials.join(', ')
+      + '; traced as its own PBR default with a white base colour -- those objects are NOT a reference');
+  }
   await pt.setScene(scene, camera);
   // renderSample() no-ops while the tracer's shaders are still compiling, and
   // compilation only progresses when the event loop turns -- so a tight
@@ -429,9 +509,16 @@ async function renderPathTrace(spec, samples, opts) {
     }
   }
   if (pt.samples < 1) throw new Error('path tracer produced no samples');
+  if (contextLost || renderer.getContext().isContextLost()) {
+    throw new Error(
+      'WebGL context was lost during the path-traced pass (' + pt.samples + ' samples '
+      + 'counted, frame is empty). On a hardware device this is usually the display '
+      + 'driver watchdog killing an over-long draw call: raise --tiles, or fall back '
+      + 'to --gl swiftshader.');
+  }
   const dataUrl = renderer.domElement.toDataURL('image/png');
   renderer.dispose();
-  return { dataUrl, ms: performance.now() - t0, samples: pt.samples, ambientIgnored };
+  return { dataUrl, ms: performance.now() - t0, samples: pt.samples, ambientIgnored, substitutedMaterials };
 }
 
 window.renderThreeScene = async function (spec, opts) {
@@ -458,13 +545,7 @@ async function main() {
   const server = await startServer(nmDir);
   const port = server.address().port;
 
-  const launchOpts = {
-    headless: true,
-    args: [
-      '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-      '--no-sandbox', '--disable-dev-shm-usage', '--headless=new',
-    ],
-  };
+  const launchOpts = { headless: true, args: glArgs(args.gl) };
   const exe = findChromiumExecutable();
   if (exe) launchOpts.executablePath = exe;
   const browser = await chromium.launch(launchOpts);
@@ -477,12 +558,22 @@ async function main() {
     await page.goto(`http://127.0.0.1:${port}/`);
     await page.waitForFunction('typeof window.renderThreeScene === "function"', { timeout: 60000 });
     const revision = await page.evaluate('window.THREE_VERSION');
+    // Which WebGL2 implementation actually answered, recorded beside the image:
+    // --gl asks, the browser decides, and a silent fallback to SwiftShader is the
+    // difference between a four-minute pass and a four-hour one.
+    const glRenderer = await page.evaluate(() => {
+      const gl = document.createElement('canvas').getContext('webgl2');
+      if (!gl) return 'none';
+      const d = gl.getExtension('WEBGL_debug_renderer_info');
+      return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    });
+    console.error(`webgl2: ${glRenderer}`);
 
     console.error(`rendering ${name} (${spec.render.width}x${spec.render.height}, mode=${args.mode}, samples=${args.samples}) ...`);
     const t0 = Date.now();
     const result = await page.evaluate(
       ({ spec, opts }) => window.renderThreeScene(spec, opts),
-      { spec, opts: { mode: args.mode, samples: args.samples } },
+      { spec, opts: { mode: args.mode, samples: args.samples, tiles: args.tiles } },
     );
     const seconds = (Date.now() - t0) / 1000;
 
@@ -509,7 +600,14 @@ async function main() {
       height: spec.render.height,
       mode: args.mode,
       three_revision: revision,
+      gl: args.gl,
+      gl_renderer: glRenderer,
+      tiles: args.tiles,
       ambient_ignored_in_pathtrace: result.pathtrace ? result.pathtrace.ambientIgnored : false,
+      // Objects the path tracer cannot express, rendered as its PBR default so the
+      // rest of the frame can be traced. Not a reference -- see the note above
+      // substituteUnsupportedMaterials.
+      pathtrace_substituted_materials: result.pathtrace ? result.pathtrace.substitutedMaterials : [],
     };
     process.stdout.write(JSON.stringify(summary) + '\n');
   } finally {
