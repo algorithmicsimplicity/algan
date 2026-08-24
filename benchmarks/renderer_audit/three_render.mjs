@@ -65,7 +65,7 @@ const FALLBACK_NODE_MODULES =
   '/tmp/claude-0/-home-user-algan/51960e50-b094-5117-954b-e7b85c715502/scratchpad/three/node_modules';
 
 function parseArgs(argv) {
-  const args = { mode: 'both', samples: 64, gl: 'swiftshader', tiles: 1 };
+  const args = { mode: 'both', samples: 64, gl: 'swiftshader', tiles: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -81,6 +81,10 @@ function parseArgs(argv) {
   args.scenePath = path.resolve(rest[0]);
   if (!['raster', 'pathtrace', 'both'].includes(args.mode)) die(`bad --mode ${args.mode}`);
   if (!['swiftshader', 'hardware'].includes(args.gl)) die(`bad --gl ${args.gl}`);
+  // Default per backend: a hardware device needs the frame split or a single
+  // over-long draw trips the display driver's watchdog (see renderPathTrace);
+  // SwiftShader has no watchdog and every extra tile is pure per-draw overhead.
+  if (args.tiles === null) args.tiles = args.gl === 'hardware' ? 4 : 1;
   if (!Number.isInteger(args.tiles) || args.tiles < 1) die('bad --tiles');
   if (!Number.isFinite(args.samples) || args.samples < 1) die('bad --samples');
   return args;
@@ -478,8 +482,30 @@ async function renderPathTrace(spec, samples, opts) {
   const { scene, camera } = buildScene(spec);
   // three-gpu-pathtracer's getLights() only picks up rect-area/spot/point/directional
   // lights — AmbientLight is silently ignored. Flag it so the comparison knows.
-  const ambientIgnored = (spec.lights || []).some(l => l.type === 'ambient');
-  if (ambientIgnored) console.error('WARNING: path tracer does not support AmbientLight; ambient contribution is missing from this pass');
+  // three-gpu-pathtracer's getLights() (core/utils/sceneUpdateUtils.js) collects
+  // ONLY rectArea / spot / point / directional. An AmbientLight or a
+  // HemisphereLight is dropped without a word, so a scene carrying one is being
+  // path-traced with fewer lights than it declares -- which silently changes
+  // every shadow in the frame, not just the overall level.
+  const droppedTypes = ['ambient', 'hemisphere']
+    .filter(t => (spec.lights || []).some(l => l.type === t));
+  const ambientIgnored = droppedTypes.length > 0;
+  if (ambientIgnored) {
+    console.error('WARNING: path tracer does not support ' + droppedTypes.join(' or ')
+      + ' lights; that contribution is missing from this pass, and any comparison '
+      + 'against it is against a scene with ' + droppedTypes.length + ' fewer light(s)');
+  }
+  // MeshBasicMaterial is unlit on both engines, and the path tracer has no unlit
+  // model: it traces one as a smooth PBR dielectric (MaterialsTexture defaults
+  // metalness and roughness to 0), so in a scene with no lights it comes out black.
+  // That is the engine's answer, not a broken render -- say which objects it applies
+  // to so a black panel is read for what it is.
+  const unlit = [];
+  scene.traverse(o => { if (o.material && o.material.isMeshBasicMaterial) unlit.push(o.name || '<unnamed>'); });
+  if (unlit.length) {
+    console.error('WARNING: path tracer has no unlit material model; ' + unlit.join(', ')
+      + ' traced as PBR dielectrics (black without lights) -- those objects are NOT a reference');
+  }
   const substitutedMaterials = substituteUnsupportedMaterials(scene);
   if (substitutedMaterials.length) {
     console.error('WARNING: path tracer has no shading model for ' + substitutedMaterials.join(', ')
@@ -518,7 +544,10 @@ async function renderPathTrace(spec, samples, opts) {
   }
   const dataUrl = renderer.domElement.toDataURL('image/png');
   renderer.dispose();
-  return { dataUrl, ms: performance.now() - t0, samples: pt.samples, ambientIgnored, substitutedMaterials };
+  return {
+    dataUrl, ms: performance.now() - t0, samples: pt.samples,
+    ambientIgnored, droppedTypes, substitutedMaterials,
+  };
 }
 
 window.renderThreeScene = async function (spec, opts) {
@@ -604,6 +633,8 @@ async function main() {
       gl_renderer: glRenderer,
       tiles: args.tiles,
       ambient_ignored_in_pathtrace: result.pathtrace ? result.pathtrace.ambientIgnored : false,
+      // Which light types the tracer dropped, by spec type name.
+      pathtrace_dropped_light_types: result.pathtrace ? result.pathtrace.droppedTypes : [],
       // Objects the path tracer cannot express, rendered as its PBR default so the
       // rest of the frame can be traced. Not a reference -- see the note above
       // substituteUnsupportedMaterials.

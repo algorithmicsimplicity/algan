@@ -4,9 +4,11 @@ Two renderers, one scene description, the same frame. Where they disagree, this
 asks which one is closer to the physics, and fixes the cases where Algan is not
 and the fix is contained.
 
-Everything here was measured on this machine (a CPU-only cloud session,
-Ubuntu 24.04, 4 vCPU, no GPU — so Algan ran its CPU path throughout). Nothing is
-quoted from memory or from a design document without saying so.
+Everything here was measured, and nothing is quoted from memory or from a design
+document without saying so. Runs 1–3 were measured on a CPU-only cloud session
+(Ubuntu 24.04, 4 vCPU, no GPU — so Algan ran its CPU path throughout). Run 4
+re-measured every scene on a CUDA machine (Windows 10, GTX 1050); §9 is that run,
+and it says which numbers moved and which did not.
 
 Part of the work is Ox Alpha's, run as a subagent through OpenCode: it wrote
 `three_render.mjs` (the Three.js back end, both modes), the independent
@@ -35,6 +37,13 @@ the renderer, and until this run an authored 0.5 grey rendered 188. That, and
 §4.6, are what moved; everything marked **[2]** below is new or re-measured in
 this run.
 
+**The fourth run re-rendered every scene and put the path tracer against all of
+them**, including the two §6 scenes that had only ever had the rasterizer. It
+found no change in anything this document argues from — the anchors of §2, §6.1,
+§6.3 and §6.5 all read their recorded values — and two differences the earlier
+runs had no scene to expose, both in what a *secondary* ray sees. Everything
+marked **[4]** is from it, and §9 is where it lives.
+
 **The third run added §6**, and it is a different kind of addition: the first
 two runs audited *transport* — glass, mirrors, shadows, colour — on scenes
 written for this suite. The third audits *materials and lights*, by porting one
@@ -62,6 +71,8 @@ were not being shaded at all under this scene's lighting rig.
 | §6.3 | **[3]** A packed normal and a depth ramp went out through the sRGB OETF, which three.js pointedly does not do to either | yes | **fixed** — red and green now match three.js to the byte; only the world-vs-view-space channel is left |
 | §6.4 | **[3]** Phong's specular lobe has no `(shininess·0.5+1)·0.25` normalization, no multiplicative `n·l` and no Fresnel — the one lit material whose ratio to three.js is not a uniform π | yes | **fixed** — three.js's `BRDF_BlinnPhong` term for term, pinned by a unit test against the analytic formula |
 | §6.7 | **[3]** `RectAreaLight` is a mean of point samples, not a solid-angle integral: with the default `decay = 0` it has no distance falloff at all, so it floods a wall where the reference pools under the rectangle (32× under the light, 145× at the wall's edge) | yes — not a unit convention, a falloff shape | not fixed — the correction is specified in §6.7 and needs its own baselines |
+| §9.3 | **[4]** A mirror's image of a transmissive solid is dominated by twice-tinted *transmitted* light where the reference shows an untinted specular highlight — tint ratio g/r **1.77** against three's **0.95**, where the glass albedo is 1.30 and albedo² is 1.69 | probably — Fresnel favours the reference at the grazing angles a mirror sees a limb through | not fixed — §9.3 measures it and rules out three other causes |
+| §9.2 | **[4]** An escaped *secondary* ray returns the background colour, so a perfect mirror renders the backdrop exactly — 0.016 linear, the background's own value — and disappears into it. Three.js gives an escaped ray zero radiance unless `scene.environment` is set | neither — a convention, but one that decides whether a mirror is visible at all | documented, not changed |
 | §2.1 | Diffuse missing `1/π` | **no** — a light-unit convention, now measurable as exactly π (§6.6 measures it as 3.15 at every pixel of a hemisphere-lit wall) | left alone, on purpose |
 | §4.8 | **[2]** A flat ambient on every lit surface, 0.01 in linear light | yes, but an artistic default | left alone |
 | §4.10 | **[2]** Coloured glass casts a grey shadow where the reference's is green | yes | **fixed** — the payload is RGB; green/red 1.00 → 22.3, and the falloff across three sphere sizes matches Beer-Lambert |
@@ -950,7 +961,14 @@ TypeError: Cannot read properties of undefined (reading 'r')
 It is reading `material.color.r`, and `MeshNormalMaterial` and
 `MeshDepthMaterial` have no `color` — they are not surface descriptions.
 Giving them one to get the pass to run would be inventing a reference for a
-material the reference does not implement, so the back end does not.
+material the reference does not implement.
+
+**[4]** Since the fourth run the back end *does* give them one — white, only
+those two, and only in the path-traced pass — so that the scene's other ten
+spheres can be traced at all. What it does not do is call the result a
+reference: it names every object it had to substitute for on stderr and in the
+run's summary JSON, and §9.2 lists which panels of this scene the path tracer
+cannot answer and why.
 
 Where the path tracer *is* the right reference, it is used: §6.7 puts it
 against the rect-area light, and §6.5 against the four PBR spheres of row B,
@@ -1294,11 +1312,23 @@ own baselines rather than riding along with this one.
 
 Two smaller things the same scene shows:
 
-* **Algan's rect-area light casts shadows and three.js's cannot** — three
-  restricts rect-area lighting to `MeshPhysicalMaterial` and gives it no shadow
-  map at all. Algan is ahead here, but at `samples = 4` the penumbra is four
-  discrete overlapping copies rather than a gradient, which is visible in the
-  frame as banded ellipses.
+* **Algan's rect-area light casts shadows and three.js's rasterizer cannot** —
+  three restricts rect-area lighting to `MeshPhysicalMaterial` and gives it no
+  shadow map at all. Algan is ahead here, but at `samples = 4` the penumbra is
+  four discrete overlapping copies rather than a gradient, which is visible in
+  the frame as banded ellipses.
+
+  **[4]** That last sentence is now measured rather than observed, and the
+  reference for it exists: `three-gpu-pathtracer` *does* integrate a rect-area
+  light, so it casts the penumbra the rasterizer cannot. Rendering the scene one
+  light at a time and reading a scanline two probe-radii below `probe_rect`
+  (`shadow_band_probe.py`), Algan's shadow takes the levels
+  **[0.01, 0.25, 0.52, 0.74]** — a `k/4` grid, one step per emitter, flatness
+  0.87 — where the path tracer ramps monotonically and fits no such grid
+  (flatness 0.49). The staircase and the falloff are the same mechanism seen
+  twice, and a fix that corrects one and not the other leaves the light
+  half-corrected. `TASK_area_light_shadow_banding.md` is the self-contained
+  brief.
 * **A three.js rect-area light does not illuminate a `lambert`, `phong` or
   `toon` surface at all.** `calib_lights.json` therefore gives its wall a
   `standard` material where the ported scene used Lambert; with Lambert the
@@ -1402,9 +1432,20 @@ what the second run learned:
    fallback needs only the camera *up* vector, since its basis is built from
    the view direction. Both are documented approximations rather than
    accidents, which is why they are a follow-up and not a defect.
-6. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
+6. **Check the Fresnel weight the bounce loop gives a transmissive dielectric at
+   a wide angle of incidence** (§9.3) — **[4]**, and the only new finding about
+   Algan since the third run. A mirror's image of the glass sphere is dominated
+   by twice-tinted *transmitted* light where the reference shows an untinted
+   specular highlight; the tint ratio measures 1.77 against the albedo's 1.30 and
+   albedo squared's 1.69, and against three's 0.95. Total reflected energy is
+   comparable, so this is a split between two lobes rather than a gain: at
+   grazing incidence reflection should dominate and does not. §9.3 rules out the
+   background, the sheet-versus-wavefront route difference and the closed-shell
+   ceiling, so what is left is the weight itself, against the equations §4.2 was
+   pinned to.
+7. **Sheen albedo scaling and clearcoat base attenuation** (§4.4, §3) if glTF
    conformance rather than Three.js parity is the goal.
-7. **Consider decoding the legacy textured-wavefront colour banks**
+8. **Consider decoding the legacy textured-wavefront colour banks**
    (`_build_textured_scene`, `WF_TEXTURED`, off by default and marked
    unsupported): they are promoted from `tri_colors` *before* the decode runs, so
    if that path is ever revived it will have §2.2's bug.
@@ -1422,6 +1463,10 @@ what the second run learned:
 | `transfer_probe.py` | Algan's authored-colour → pixel transfer curve |
 | `glossy_probe.py` | glossy reflection: tap sweep, half-pixel crawl test, contact sheet |
 | `material_probe.py` | **[3]** per-object statistics, with each object's disc located by projecting the *spec* through the spec's camera |
+| `mirror_tint_probe.py` | **[4]** what a mirror is reflecting: disc energy, tint ratio against the reflected object's albedo and albedo², and how concentrated it is |
+| `shadow_band_probe.py` | **[4]** whether a shadow is one penumbra or a stack of hard ones: plateau levels along a scanline, and the emitter count they imply |
+| `TASK_mirror_transmitted_lobe.md` | **[4]** self-contained brief for fixing §9.3 |
+| `TASK_area_light_shadow_banding.md` | **[4]** self-contained brief for fixing the shadow half of §6.7 |
 | `OX_AUDIT.md` | Ox Alpha's independent source-level audit (runs 1–2) |
 | `OX_MATLIGHT_AUDIT.md` | **[3]** Ox Alpha's material-shader audit against the installed Three.js r185 source, finding by finding with file:line on both sides |
 
@@ -1431,13 +1476,19 @@ Reproduce:
 <venv-python> benchmarks/renderer_audit/algan_render.py \
     benchmarks/renderer_audit/scenes/showcase.json --out out --no-tonemap
 node benchmarks/renderer_audit/three_render.mjs \
-    benchmarks/renderer_audit/scenes/showcase.json --out out --mode both --samples 64
+    benchmarks/renderer_audit/scenes/showcase.json --out out --mode both --samples 64 \
+    --gl hardware
 <venv-python> benchmarks/renderer_audit/compare.py \
-    out/showcase.algan.png out/showcase.three_pathtrace.png --out out
+    out/showcase.algan.png out/showcase.three_pathtrace.png --out out \
+    --label-a algan --label-b three_pathtrace
 ```
 
 The Three.js back end needs `npm install three three-gpu-pathtracer playwright`
-in a scratch directory; `three_render.mjs` documents how it finds it. The glossy
+in a scratch directory, plus `npx playwright install chromium`, pointed at by
+`$AUDIT_THREE_NODE_MODULES`; `three_render.mjs` documents how it finds it.
+`--gl hardware` is **[4]**, and it is what makes a 64-sample pass of every scene
+take minutes rather than a day — SwiftShader spends about 35 s per sample. Leave
+it off on a machine with no GPU, and read §9.1 before using it on one that has. The glossy
 measurements in §4.5:
 
 ```
@@ -1448,9 +1499,12 @@ measurements in §4.5:
     --scene benchmarks/renderer_audit/scenes/calib_glossy.json
 ```
 
-The §6 scenes render in the rasterizer alone (`--mode raster`, about a second
-each — the path tracer is not the reference there, see §6), and the per-object
-numbers come from `material_probe.py`:
+The §6 scenes want the rasterizer as their reference (`--mode raster`, about a
+second each — the path tracer is not the reference for a material class, see §6).
+Since **[4]** they path-trace as well, and `--mode both` produces both in one
+launch; read the path-traced panel against §9.2, which says which of the twelve
+spheres it can and cannot answer. The per-object numbers come from
+`material_probe.py`:
 
 ```
 <venv-python> benchmarks/renderer_audit/algan_render.py \
@@ -1468,3 +1522,208 @@ node benchmarks/renderer_audit/three_render.mjs \
 other three removed, and reads a horizontal band of the wall above the probes
 (the probes themselves clip in Algan). §6.6's spot row uses a band below them,
 where the cone actually lands.
+
+---
+
+## 9. The fourth run: every scene against the path tracer — **[4]**
+
+Runs 1–3 were measured on a CPU-only cloud session. This one re-rendered all
+eleven scenes in `scenes/` on a CUDA machine (Windows 10, GTX 1050; Algan on
+`arch=cuda`, `--no-tonemap`, three.js at 64 samples), and pointed
+`three-gpu-pathtracer` at **all** of them rather than the eight it could
+previously accept. The question it was run to answer is whether the renderer work
+since §6 had moved any of the frames this document argues from.
+
+**It has not.** Every anchor reads its recorded value:
+
+| anchor | runs 1–3 | run 4 |
+| --- | --- | --- |
+| §2 `calib_diffuse` centre pixel, Algan | 202 | **202** |
+| §2 `calib_diffuse` centre pixel, three raster | 122 | **122** |
+| §6.1 `basic` disc, *both* engines | (88, 196, 221), std 0.0000 | **(88, 196, 221), std 0.0000** |
+| §6.3 `normal` red and green vs three raster | equal to the byte | **equal to the byte** (65, 105 on both sides) |
+| §6.2 disc variance, toon / normal / matcap / depth | non-zero, i.e. shaded | **0.111 / 0.038 / 0.019 / 0.006** |
+| §6.5 `glass` mean linear, Algan | (0.006, 0.010, 0.004) | **(0.007, 0.010, 0.004)** |
+| §6.5 `copper` mean linear, Algan | (0.018, 0.008, 0.002) | **(0.018, 0.008, 0.002)** |
+| §6.5 `mirror` mean linear, Algan | (0.016, 0.017, 0.016) | **(0.016, 0.017, 0.016)** |
+| §5 `showcase` exposure factor | 2.10 | **2.10** |
+
+The contact sheets in `out/` are this run's, and their second panel is the path
+tracer for every scene — which is why they are labelled `three_pathtrace` rather
+than `three`.
+
+### 9.1 What it took to run the path tracer on a GPU
+
+`three_render.mjs` launched Chromium with SwiftShader because the session it was
+written in had no GPU. Two changes were needed to use a real device, and the
+second is the one worth knowing about.
+
+**`--gl hardware`** asks ANGLE for the real device (d3d11 on Windows, the
+platform GL driver elsewhere) instead of the software rasterizer. SwiftShader
+spends about **35 s per sample**; the GPU spends about 30 ms, and a 64-sample
+pass costs roughly two minutes, nearly all of it the one-off shader compile. The
+default is still `swiftshader`, so a machine without a GPU is unaffected. The
+back end now records which implementation actually answered (`gl_renderer` in the
+summary JSON), because a silent fallback to SwiftShader is the difference between
+a four-minute pass and a four-hour one.
+
+**`--tiles N`** exists because the first hardware run wrote **two blank frames
+and did not notice**. `calib_shadow` and `calib_mirror` counted all 64 samples,
+reported success, and produced a fully transparent PNG; `compare.py` dutifully
+fitted an exposure factor of 0.0000 to it. The cause is Windows' display-driver
+watchdog: the harness had pinned `pt.tiles.set(1, 1)`, one draw call for the
+whole frame per sample, and on the heavier scenes that call outran the two-second
+TDR timeout and reset the device. A WebGL context killed that way keeps accepting
+`renderSample()` calls, so nothing raises. Splitting a sample across `N×N`
+scissored draws keeps each one short — it changes nothing about what is
+accumulated, since the seed and the stratified sequence advance once per sample
+rather than per tile (`PathTracingRenderer._renderSample` yields per tile) — and
+`--tiles` now defaults to 4 on hardware and 1 on SwiftShader, which has no
+watchdog and would only pay the per-draw overhead.
+
+Two guards went in beside it, because this failure mode was silent and should not
+have been. `renderPathTrace` now throws if the context was lost, naming `--tiles`
+and `--gl swiftshader` as the two ways out. And the harness's own environment
+variable was renamed `ALGAN_THREE_NODE_MODULES` → `AUDIT_THREE_NODE_MODULES`: it
+is the audit's, not Algan's, and Algan correctly warns about every
+`ALGAN_`-prefixed variable it does not itself honour, so the old name printed a
+spurious "check their spelling" warning on every Algan render in the suite.
+
+### 9.2 What the path tracer still cannot answer, now said at the point of failure
+
+`three-gpu-pathtracer` converts every material to its own PBR model. §6 already
+argued that this makes it the wrong reference for a *material class*, and gave
+the crash on `MeshNormalMaterial` as the proof. The back end now substitutes a
+white `color` for the two materials that have none, so the scene renders — and
+reports what it had to do, rather than leaving the reader to infer it from a
+strange-looking panel:
+
+```
+WARNING: path tracer does not support AmbientLight; ambient contribution is
+  missing from this pass
+WARNING: path tracer has no shading model for normal (MeshNormalMaterial),
+  depth (MeshDepthMaterial); traced as its own PBR default with a white base
+  colour -- those objects are NOT a reference
+WARNING: path tracer has no unlit material model; plus_x_red, plus_y_green,
+  ... traced as PBR dielectrics (black without lights) -- those objects are
+  NOT a reference
+```
+
+A second light type turned out to be dropped the same silent way:
+`getLights()` (`three-gpu-pathtracer/src/core/utils/sceneUpdateUtils.js`)
+collects only rect-area, spot, point and directional lights, so a
+**`HemisphereLight` never reaches the tracer** either. `calib_lights.json`
+declares four lights and the path tracer renders three of them, which moves
+every shadow in that frame and not merely its overall level. The back end now
+names the dropped types on stderr and in `pathtrace_dropped_light_types`.
+
+The unlit warning is the one this run turned up. **`calib_orient` path-traces to
+a black frame**: it has no lights and every box is `MeshBasicMaterial`, and the
+tracer has no unlit model — `MaterialsTexture` defaults an absent `metalness` and
+`roughness` to 0, so a basic material becomes a smooth dielectric with nothing to
+reflect. The same happens to the `basic` sphere of `materials_and_lighting`,
+which the rasterizer renders byte-identically to Algan (§6.1) and the path tracer
+renders as a *shaded* teal ball — (34, 84, 95), standard deviation 0.041, against
+a flat 0.0000 on both other engines. So of that scene's twelve spheres the path
+tracer speaks for five (`standard`, `physical`, `glass`, `mirror`, `copper`); on
+the rest it is reporting its own PBR stand-in.
+
+That is a limit of the reference, not a finding about Algan, and it is why §6
+puts the rasterizer against the material classes. It is recorded here so a black
+panel in `out/calib_orient.compare.jpg` is read for what it is.
+
+### 9.3 A mirror's image of a transmissive solid is the transmitted lobe, not the reflected one
+
+This is the run's one new finding about Algan, and no scene could have exposed it
+before `matlight_pbr_subset`: it takes a mirror *and* a transmissive solid in the
+same frame.
+
+There, the `mirror` sphere (metalness 1, roughness 0) reflects the `glass` sphere
+beside it (transmission 1, ior 1.5, pale green albedo). In Algan that reflection
+is a **broad green patch, brighter than the brightest pixel of the ball it is
+reflecting**; in the path tracer it is a small untinted highlight.
+
+| | the glass sphere itself | its reflection in the mirror |
+| --- | --- | --- |
+| algan | mean (18, 25, 11), max **(31, 40, 34)** | brightest-40 mean **(49, 79, 46)** |
+| three | mean (16, 24, 10) | brightest-40 mean (20, 37, 21) |
+
+Three causes were ruled out by measurement before the fourth was accepted:
+
+* **Not the background.** Re-rendered on black, the mirror's disc collapses from
+  34 to 1.6 in 8-bit but the green patch does not move (49, 79, 46 → 48, 77, 44).
+* **Not the two shading paths.** Primary visibility resolves through the sheet
+  route and a reflection through the wavefront bounce loop, so the two were
+  compared directly: with `ALGAN_ANALYTIC_AA=0` forcing the whole frame through
+  the wavefront, the glass disc and the reflected patch both reproduce to within
+  1.5/255. The routes agree.
+* **Not the closed-shell coverage ceiling.** A surface whose material transmits is
+  folded back to open at pack time (`primitives.py`, `declare_closed_shell`), so
+  the ceiling never applies to this sphere.
+
+What it *is* shows up in the tint. Measuring the whole mirror disc on a black
+background, so the numbers are purely reflected geometry:
+
+| glass sphere variant | mirror-disc total (linear R, G, B) | g/r | g/b |
+| --- | --- | --- | --- |
+| green, transmission 1 — the scene as authored | (4.81, 8.53, 3.14) | **1.77** | **2.72** |
+| green, transmission **0** | (68.5, 88.0, 48.9) | 1.28 | 1.80 |
+| **white**, transmission 1 | (10.2, 13.7, 14.1) | 1.34 | 0.97 |
+| three path tracer, green, transmission 1 | (7.64, 7.27, 5.49) | **0.95** | 1.32 |
+
+The glass albedo in linear light is (0.583, 0.760, 0.428), g/r **1.30**; albedo
+squared is g/r **1.69**. Algan's reflection sits at **1.77** — the tint applied
+about twice, which is what light crossing into a tinted medium and back out
+should look like. Make the same ball opaque and it drops to one albedo exactly
+(1.28 against 1.30); make it white and the tint goes away. So Algan's mirror is
+showing light that went *through* the glass.
+
+Three's sits at **0.95** — essentially untinted, because Fresnel reflection off a
+dielectric is achromatic and does not take the base colour. It is also far more
+concentrated: the brightest 2% of the mirror's pixels hold **95%** of its energy
+against Algan's **81%**, which is why it reads as a white dot where Algan reads
+as a green patch.
+
+Total energy is comparable — Algan (4.81, 8.53, 3.14) against three
+(7.64, 7.27, 5.49) — so this is not Algan inventing light. It is putting it in
+the transmitted lobe where the reference puts it in the reflected one. At the
+grazing angles a mirror sees a sphere's limb through, Fresnel reflectance
+approaches 1 and reflection should dominate, which favours the reference.
+
+This is not §4.2 (Fresnel evaluated on the wrong *side* of a glass surface,
+fixed) and not §4.5 (a rough *metal*'s reflection). It is the
+reflected/transmitted **split** on a secondary ray, and nothing in the audit
+covered it before. **`TASK_mirror_transmitted_lobe.md` is the self-contained
+brief for fixing it** — the measurement, the three ruled-out causes with the
+commands that ruled them out, the code, and what "fixed" has to measure. A follow-up should check the Fresnel weight the bounce loop
+applies when a continuation ray strikes a transmissive dielectric at a wide angle
+of incidence, against the same equations §4.2 was pinned to.
+
+### 9.4 A mirror renders the background, and so disappears into it
+
+Not a defect, but it decides whether a mirror is visible at all, and §6.5 left it
+unattributed ("Algan is brighter, but by an amount this scene cannot attribute").
+It can be attributed exactly.
+
+Algan's `mirror` sphere in `matlight_pbr_subset` reads **(34, 34, 34)** at its
+centre and (0.016, 0.017, 0.016) mean linear. The scene's background is
+`[0.133333, 0.133333, 0.133333]` — which is 34 in 8-bit and **0.0160 in linear
+light**. The sphere is painting back the backdrop's own value, and against that
+backdrop it looks transparent.
+
+The cause is what each engine gives a *secondary* ray that hits nothing. Algan
+commits an escaped ray's leftover throughput against the background
+(`wavefront_kernels_taichi.py`: "Ray escaped to the background this segment:
+commit its colour + leftover (background) throughput"), so a white metal returns
+the full background colour. Three.js treats a `Color` background as a camera-ray
+backdrop only — environment radiance comes from `scene.environment`, which this
+harness deliberately leaves null — so an escaped reflection ray returns zero and
+the mirror is black (path tracer 0.002 mean linear, rasterizer 0.007, both with a
+centre pixel of 0).
+
+Re-rendering the scene on a black background confirms it from the other side:
+Algan's mirror disc falls from 34 to 1.6. Neither behaviour is wrong about
+reflection itself — `calib_mirror` settles that, at reflection efficiency 0.900
+in Algan against 0.879 in the path tracer (§3) — but the two engines mean
+different things by a flat background, and a scene whose mirror has nothing but
+backdrop to reflect measures that difference and nothing else.
