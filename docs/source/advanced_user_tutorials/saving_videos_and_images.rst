@@ -147,7 +147,7 @@ The automatic choice only applies when you have not passed an explicit
 ``codec``; if your ``ffmpeg_params`` carry x264 rate-control flags
 (``-preset`` / ``-crf``) they are honoured by staying on ``libx264``.
 
-.. code-block:: python
+.. code-block:: bash
 
     # Keep encoding on the CPU even when an NVENC encoder is available.
     ALGAN_VIDEO_ENCODER=software python my_scene.py

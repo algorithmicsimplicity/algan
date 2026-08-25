@@ -2831,11 +2831,18 @@ def raytrace_render_wavefront(
                 remaining = num_covered_total - covered_start
                 attempt_primary = min(learned_primary_cap, remaining)
                 if gl_active:
+                    # Frames with no covered pixel own an empty ordinal range;
+                    # skip to the frame this tile starts in. The tile itself is
+                    # NOT clamped to that frame: the per-frame reflection
+                    # buffers are filled one frame-part at a time after the
+                    # drain (see the scatter loop below), so a tile spans as
+                    # many frames as the arena lets it. Clamping used to cost a
+                    # whole bounce loop -- traverse, shade and compaction
+                    # launches per iteration -- per FRAME rather than per
+                    # tile, which at PREVIEW put the glossy route at twice the
+                    # render time of the unprefiltered one.
                     while gl_bounds[gl_frame + 1] <= covered_start:
                         gl_frame += 1
-                    attempt_primary = min(
-                        attempt_primary, gl_bounds[gl_frame + 1] - covered_start
-                    )
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
@@ -3053,22 +3060,75 @@ def raytrace_render_wavefront(
                     _record_tile_truncations(alloc, pool)
 
                     if gl_active:
-                        # BEFORE the composite: both read the frame buffer's
-                        # raw prefilled background, and the composite
-                        # overwrites it with the finalized pixel.
-                        gloss_scatter(
-                            int(attempt_primary),
-                            int(attempt_primary),
-                            gl_frame * int(width) * int(height),
-                            gl_frame,
-                            int(width),
-                            float(gl_sigma_max),
-                            covered_idx,
-                            pix_accum,
-                            gl_main,
-                            gl_pyr,
-                            out,
-                        )
+                        # The reflection buffers hold ONE frame, so a tile that
+                        # spans several is scattered, composited and finished
+                        # one frame-part at a time, in frame order: the
+                        # scatter reads the raw prefilled background and must
+                        # precede the composite of the same pixels, and the
+                        # finish overwrites the composite's values for the
+                        # glossy pixels, so a frame's part is composited before
+                        # it is finished and the buffers are cleared only once
+                        # a frame's last pixel is in -- a frame whose pixels
+                        # straddle two tiles keeps its buffer across them.
+                        tile_start = covered_start
+                        tile_end = covered_start + attempt_primary
+                        ppf = int(width) * int(height)
+                        while covered_start < tile_end:
+                            frame_end = gl_bounds[gl_frame + 1]
+                            if frame_end <= covered_start:
+                                # A frame with no covered pixel: nothing to
+                                # scatter or finish, exactly as the skip at
+                                # the top of the tile treats it.
+                                gl_frame += 1
+                                continue
+                            part_end = min(tile_end, frame_end)
+                            a = covered_start - tile_start
+                            b = part_end - tile_start
+                            gloss_scatter(
+                                int(b - a),
+                                int(attempt_primary),
+                                gl_frame * ppf,
+                                gl_frame,
+                                int(width),
+                                float(gl_sigma_max),
+                                covered_idx[a:b],
+                                pix_accum,
+                                gl_main,
+                                gl_pyr,
+                                out,
+                                int(a),
+                            )
+                            wf_composite_accum_sparse(
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                1 if transparent else 0,
+                                0,
+                                covered_idx[a:b],
+                                pix_accum[a:b],
+                                t_val_sparse,
+                                float(rt_settings.TONEMAP_EXPOSURE),
+                                out,
+                            )
+                            covered_start = part_end
+                            if covered_start >= frame_end:
+                                # Frame complete: prefilter its reflection
+                                # buffer and composite the glossy pixels over
+                                # the values just written for them.
+                                _gloss_finish_frame(
+                                    gl_frame,
+                                    gl_levels,
+                                    gl_main,
+                                    gl_pyr,
+                                    int(width),
+                                    int(height),
+                                    t_val_sparse,
+                                    out,
+                                )
+                                _gloss_clear(gl_main, gl_pyr)
+                                gl_frame += 1
+                        memory.set_pointers(state_ptrs)
+                        break
 
                     wf_composite_accum_sparse(
                         int(time_start),
@@ -3077,28 +3137,13 @@ def raytrace_render_wavefront(
                         1 if transparent else 0,
                         0,
                         covered_idx,
-                        pix_accum[:attempt_primary] if gl_active else pix_accum,
+                        pix_accum,
                         t_val_sparse,
                         float(rt_settings.TONEMAP_EXPOSURE),
                         out,
                     )
                     memory.set_pointers(state_ptrs)
                     covered_start += attempt_primary
-                    if gl_active and covered_start >= gl_bounds[gl_frame + 1]:
-                        # Frame complete: prefilter its reflection buffer and
-                        # composite the glossy pixels over the values the tile
-                        # composites just wrote for them.
-                        _gloss_finish_frame(
-                            gl_frame,
-                            gl_levels,
-                            gl_main,
-                            gl_pyr,
-                            int(width),
-                            int(height),
-                            t_val_sparse,
-                            out,
-                        )
-                        _gloss_clear(gl_main, gl_pyr)
                     break
         return
 

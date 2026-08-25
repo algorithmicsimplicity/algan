@@ -312,6 +312,59 @@ already been wrapping correctly all along (it just predated the helper), and
 * Re-baseline, only after looking at the frames:
   `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q`
 
+## The T4 round (2026-08-25): the nn performance scenes
+
+A second reference workload, measured on a Google Colab box -- **Tesla T4, 2
+vCPUs, 12 GB RAM** -- which is a different machine from everything above (GTX
+1050, Windows): `benchmarks/performance/nn_scene_PREVIEW.py` (704x396, 10 fps,
+50 frames) and `nn_scene_UHD.py` (3840x2160, 60 fps, 30 frames), both a
+`NeuralNetMLPV3` (40 PN spheres with physical materials, 80 unlit cylinders and
+an idle updater that repositions all of them every frame), a textured
+`ImageMob` whose 1774x887 texture animates, and a `Text` label. Baseline
+reports are in `benchmarks/performance/reports/t4_baseline/`; read RUN 2.
+
+| item | state |
+| --- | --- |
+| **Wide attributes on the render device** | **shipped, byte-identical at PREVIEW.** The animated texture was 83% of batch preparation: a 7.87M-channel window gathered, lerped, written and premultiplied per frame on the CPU (~150 ms/frame), and the ImageMob's grid child carried a second, never-read copy. An `AttributeTimeline` at least 65536 channels wide now materializes its frame window and gathers its edit log on the render device (`materialize_device`, `ALGAN_WIDE_ATTR_RENDER_DEVICE=0` restores); texture writes stopped propagating to the grid. Image-only prep 100 -> 3.6 ms/frame |
+| **Per-device batch budgets** | **shipped.** The texture's bytes were charged to the 300 MB animation-device budget and capped every batch at 3 frames. `_get_render_device_memory_used_per_timestep` prices what lives on the render device against a budget of its own. 17 x 3-frame batches -> 3 batches at PREVIEW |
+| **Texture maps stay on their device** | **shipped.** `TrianglePrimitive` relocated texture maps to the corners' (CPU) device -- a T x 31 MB copy back per batch for the projection upload to copy up again |
+| **Constant material parameters broadcast, not gathered** | **shipped, bit-identical.** The per-surface primitive build expanded every constant parameter to the grid and gathered it per vertex: 808 gathers per 21-frame batch, ~1 ms each on this CPU |
+| **Encoder** | **shipped (Ox Alpha).** `libx264 -preset slower` on two cores stalled the frame queue and left a 14-18 s drain at UHD. `save_video` now picks `h264_nvenc` when an ffmpeg that can drive it exists (`ALGAN_VIDEO_ENCODER`, `algan/utils/video_encoding.py`); the benchmark scripts pass a fast x264 preset so the profile reads as it would on a full CPU |
+| **Glossy prefilter tiling** | **shipped, byte-identical.** The split-sum glossy route clamped the sparse tile loop to one frame, so every frame paid a whole bounce loop (traverse + shade + compaction launches per iteration): 319 shade launches for 50 PREVIEW frames against 40 with the loop per tile. The tile now spans frames and the per-frame reflection buffers are filled one frame-part at a time (`gloss_scatter` took a `row_base`). `wavefront_loop` 7.8 s -> 3.1 s at PREVIEW; inert at UHD where a chunk is one frame |
+| **Batch windows reproducible** | **shipped.** The merge headroom and the render-device budget derive from the device's total memory (or `available_memory_override`), not from what is free at the moment of asking. See the trap below |
+
+End to end, warm: **PREVIEW 36.5 s -> 7.7 s**, **UHD 50.0 s -> 30.9 s** (the
+UHD baseline carried 14.3 s of encoder drain; its render thread went 26.2 s ->
+26.1 s, which is where the remaining work is). Peak VRAM at UHD rose 8.4 -> 9.3
+GB (the texture windows now live on the device).
+
+**Three measurement traps from this round, all of which cost hours:**
+
+* **Batch windows move pixels, and windows moved with free VRAM.** The chord
+  count of every bezier segment is a maximum over the batch's frames, so two
+  renders whose windows differ draw different glyph edges (~5% of a 4K frame,
+  up to 80 channel values; `scratch_perf/ox/REPORT_batchwide_audit.md` lists
+  every batch-wide decision). The window was sized from `0.9 x` live free
+  VRAM, so a 100 MB tenant on the GPU -- Ox's verification renders, a probe --
+  turned an [19, 8, 3] split into [19, 11] and read as nondeterminism. Renders
+  with the same windows are byte-identical whatever the chunk plan, tile size
+  or arena size (`scratch_perf/tiles_chain.log`), and `ALGAN_ARENA_POISON`
+  (new, `ManualMemory`) showed no read-before-write. **Never pixel-compare
+  while anything else uses the GPU**, and pin `available_memory_override` for
+  a byte-reproducible render.
+* **A float32 atomic add saturates at 2^24**, so a Taichi checksum of more
+  than 16.7M ones reads 16777216 and looks like a stale read. Taichi kernels
+  do see torch's pending default-stream writes (`scratch_perf/probe_stream_race.py`).
+* **The profiler's own syncs** land every torch op's GPU time in the enclosing
+  stage's own column; `wavefront_loop`'s 12 s "own" at UHD is torch work in the
+  sparse tile loop, not Python.
+
+**What is left on this box, in order:** the UHD render thread (kernels 15 s:
+`wavefront_shade` 7.9, `raster_shadow_trace` 3.7, `wavefront_traverse_events`
+3.4; the sheet chain's torch passes ~8 s -- Ox is kernelising the largest,
+`scratch_perf/ox/brief_sheet_chain.md`); at PREVIEW the arena preflight (~0.6 s
+per batch: PN dice, merge, refit BVH) and the per-batch primitive build.
+
 ## The shape of the problem
 
 The render is a two-thread pipeline, and **prep is now the larger pole by a

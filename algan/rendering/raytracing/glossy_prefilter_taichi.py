@@ -165,12 +165,19 @@ def gloss_scatter(
         covered_idx: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(),
         gl_main: ti.types.ndarray(), gl_pyr: ti.types.ndarray(),
-        out: ti.types.ndarray()):
+        out: ti.types.ndarray(), row_base: int):
     """Move one drained tile's glossy pixels into the frame's buffers.
 
     Must run BEFORE ``wf_composite_accum_sparse`` for the same tile: both read
     the frame buffer's raw prefilled background, and the composite overwrites
     it with the finalized pixel.
+
+    ``row_base`` is where this call's pixels start in the tile's accumulator
+    rows: a tile may span several frames while the buffers written here hold
+    one, so the host scatters a tile one frame-part at a time, handing over
+    that part's slice of ``covered_idx`` and its row offset into the
+    tile-wide ``pix_accum`` (whose reflection rows sit ``gloss_base`` further
+    on, as before). A tile lying within one frame passes 0.
 
     ``csum`` here is deliberately the composite's own arithmetic, repeated
     rather than shared, because ``wf_composite_accum_sparse`` finalizes in the
@@ -178,14 +185,15 @@ def gloss_scatter(
     glossy pixel's final value is not known until the frame's prefilter has
     run, and a tonemap is not something you can add to afterwards.
     """
-    for r in range(num_covered):
+    for ri in range(num_covered):
+        r = ri + row_base
         gr = r + gloss_base
         sigma_scale = pix_accum[gr, GL_ROW_SIGMA_SCALE]
         if sigma_scale <= 0.0:
             # No prefiltered glossy branch at this pixel: it is an ordinary
             # covered pixel and the tile composite's value for it is final.
             continue
-        p = covered_idx[r] - frame_base
+        p = covered_idx[ri] - frame_base
 
         # The pixel's own colour, background folded in (wf_composite_accum
         # _sparse's expression, stopped before finalize_pixel_color).

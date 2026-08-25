@@ -26,6 +26,7 @@ from contextlib import contextmanager
 import torch
 
 from algan.constants.math import GIGABYTES
+from algan.environment import env_int
 from algan.settings import SETTINGS
 from algan.settings._startup import _RENDER_DEVICE
 
@@ -627,6 +628,14 @@ class ManualMemory:
         self.last_launch_frames = None
         self.stack = []
         self.managed = managed
+        # Diagnostic: ALGAN_ARENA_POISON=<byte 0..255> fills every fresh arena
+        # allocation with that byte (0xFF reads as NaN in a float lane and -1 in
+        # an int lane). The arena is a bump allocator, so an allocation that is
+        # read before it is written sees whatever the previous chunk -- or the
+        # previous *job*, or the allocator's earlier tenant -- left there; a
+        # render whose pixels move under the poison has such a read. Costs a
+        # fill per allocation, so it is off (-1) unless asked for.
+        self._poison = env_int("ALGAN_ARENA_POISON", -1) if managed else -1
         # Off by default: production pays one ``is not None`` test per
         # allocation.  See ``recording()`` and ``set_auto_record()``.
         self._recorder = None
@@ -737,6 +746,8 @@ class ManualMemory:
 
         def get_data():
             x = get_x()
+            if self._poison >= 0:
+                x.fill_(self._poison)
             if reverse:
                 self.current_reverse_pointer = new_pointer
             else:
