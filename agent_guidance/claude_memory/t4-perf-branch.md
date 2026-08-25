@@ -92,3 +92,11 @@ passes (`scratch_perf/ox/brief_sheet_chain.md`, GPU gated by scratch_perf/gpu_ga
 Window release committed (d535361): peak VRAM PREVIEW 6.2 GB, UHD 6.5 GB (baselines 6.2 /
 8.4). Warm: PREVIEW ~7.7-8.5 s, UHD ~30.4 s. A stuck pytest process held 4 GB VRAM for
 a while and distorted r4-r6 measurements -- check `nvidia-smi` before timing anything.
+
+**End state 2026-08-25:** branch head 2673a3d (all pushed). Commits: baseline reports;
+texture-on-GPU + per-device budgets (c0c3669); NVENC encoder (ed5c33f); gloss per-tile
+loop + reproducible windows + arena poison (547aff2); window release (d535361);
+wide-attr regression test (e1ccef9); NVENC frame floor (29ada76); Ox's three sheet-chain
+kernels (2673a3d). Warm: PREVIEW 36.5 -> 7.7 s, UHD 50.0 -> ~31-33 s (thermal/variance
+band); peak VRAM PREVIEW 6.2 GB, UHD 6.5 GB. Full tests/unit_tests: 2058 passed +
+the pre-existing per-machine fast-scene baseline failure.
