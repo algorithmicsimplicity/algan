@@ -163,6 +163,16 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # It is the same argument the raster path's exact fixed-point rule already makes
 # (``_ss_pixel`` in raster_taichi.py).
 #
+# That argument needs the edge functions to be exact negations, which held on
+# x64 and did NOT hold on CUDA: NVVM contracts ``x * y - z * w`` into an FMA,
+# and a contracted edge function is no longer antisymmetric. Both neighbours of
+# a shared edge then returned the SAME tiny value where the true one is zero --
+# negative, and each rejected (a black crack pixel down a quad's diagonal);
+# positive, and each accepted. ``_edge_fn`` below is what restores it, by
+# ordering the endpoints so both neighbours evaluate one identical expression;
+# read its docstring before touching the arithmetic. A 64x64 render of a lit
+# plane showed 16 crack pixels on CUDA and none on CPU before it.
+#
 # Import-time, not a live setting: it changes the compiled kernel body, so a
 # runtime toggle would silently reuse a cached kernel (the _AA_SAMPLES
 # cache-trap rule). Clear the Taichi cache when flipping it.
@@ -200,6 +210,37 @@ def _edge_is_canonical(px, py, qx, qy) -> bool:
     fill rule, and it is why that rule PARTITIONS its samples.
     """
     return (py < qy) or ((py == qy) and (px < qx))
+
+
+@ti.func
+def _edge_fn(px, py, qx, qy):
+    """Signed area of (ray, P, Q): the WBW edge function, made antisymmetric.
+
+    Watertightness rests on neighbours agreeing EXACTLY about a shared edge:
+    the two triangles see it as (P, Q) and (Q, P), and the sign test partitions
+    the ray between them only if their edge functions are exact negations.
+    Written as ``px * qy - py * qx`` that holds in plain IEEE -- multiplication
+    commutes and ``fl(x - y) == -fl(y - x)`` -- but NOT once the backend
+    contracts the expression into an FMA, which CUDA does and x64 does not.
+    ``fma(px, qy, -fl(py * qx))`` rounds only the SECOND product, so where the
+    true value is zero (both products equal) each neighbour returns minus its
+    own rounding error: the same nonzero value with the same SIGN, not
+    negatives. Both then reject (a crack pixel) or both accept.
+
+    So order the endpoints first, by the same total order that breaks the
+    exact-zero tie above, and let the second neighbour negate the first's
+    result. Both evaluate one bit-identical expression, so whatever the backend
+    does to it they agree, and negation is exact. On a target that does not
+    contract this is bit-for-bit what the direct form computed.
+    """
+    ax, ay, bx, by = px, py, qx, qy
+    swap = not _edge_is_canonical(px, py, qx, qy)
+    if swap:
+        ax, ay, bx, by = qx, qy, px, py
+    e = ax * by - ay * bx
+    if swap:
+        e = -e
+    return e
 
 
 @ti.func
@@ -257,9 +298,9 @@ def _tri_hit(ro, rd, v0, v1, v2):
             cxs = c_x - sx * c_z
             cys = c_y - sy * c_z
             # Edge functions, one per opposite vertex.
-            u = cxs * bys - cys * bxs
-            v = axs * cys - ays * cxs
-            w = bxs * ays - bys * axs
+            u = _edge_fn(cxs, cys, bxs, bys)
+            v = _edge_fn(axs, ays, cxs, cys)
+            w = _edge_fn(bxs, bys, axs, ays)
             lo = ti.min(u, ti.min(v, w))
             hi = ti.max(u, ti.max(v, w))
             inside = (lo >= 0.0) or (hi <= 0.0)

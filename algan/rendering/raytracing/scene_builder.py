@@ -201,6 +201,22 @@ def upload_primitive_source(primitive, device):
     ):
         if value.device != device:
             setattr(primitive, name, value.to(device))
+    # The default-material seed is a vertex-shader input like any other. A
+    # primitive built by the no-material fallback carries the process default
+    # material's parameter values (SETTINGS.style.default_material), and the
+    # tensor-valued ones -- DiffuseMaterial's ``emissive`` is a Color, built
+    # wherever the material was -- reach ``lambert_shader`` beside ``corners``
+    # and ``colors``. Left behind, they are the one CPU operand in an
+    # otherwise-uploaded expression, which is invisible on a CPU render and a
+    # device-mismatch RuntimeError on a CUDA one.
+    seed = getattr(primitive, "default_material_params", None)
+    if seed:
+        primitive.default_material_params = {
+            name: value.to(device)
+            if torch.is_tensor(value) and value.device != device
+            else value
+            for name, value in seed.items()
+        }
     if not hasattr(primitive, "shader_param_values"):
         return
     for i in range(len(primitive.shader_param_values)):
