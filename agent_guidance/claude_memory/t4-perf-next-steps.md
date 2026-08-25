@@ -38,3 +38,7 @@ warm PREVIEW 36.5 s -> 7.7 s, UHD 50.0 s -> 30.9 s; peak VRAM PREVIEW 6.2 GB, UH
   another GPU); the branch's fast frames are byte-identical to master's.
 - The `--fast` suite's second pytest in a chain once hung at interpreter exit while
   holding VRAM; run test batches in the foreground when the GPU matters.
+- NVENC refuses frames under ~145x49 and odd-sided 4:2:0 frames and ffmpeg's refusal
+  never reaches Python (an empty mp4 results); `select_video_encoder` keeps outputs
+  under 256x128 or odd-sided on libx264. Full `tests/unit_tests`: 2058 passed after
+  this (the 3 failures were exactly the 32x32 SMOKE_TEST renders).
