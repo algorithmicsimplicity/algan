@@ -243,6 +243,31 @@ texture to the new one per texel over the current context's duration.
 
     Scene.save_video()
 
+Reading a texture back gives the same ``[W, H, 5]`` image you assigned, so a new
+one can be arithmetic on the old:
+
+.. code-block:: python
+
+    globe.color_texture = globe.color_texture * 0.5   # cross-fades to half brightness
+
+It comes back as a :class:`~algan.constants.color.Color` -- one per texel -- so
+everything you can do to a color applies to a whole map:
+
+.. code-block:: python
+
+    globe.color_texture = globe.color_texture.mult_opacity(0.5)
+
+Its five channels are what the plain multiplication above covers, dimming opacity
+and glow along with the color. Reach for one of them through ``.rgb``, ``.glow``
+or ``.opacity`` and assign the result back -- the read is a copy, so writing into
+it alone changes nothing:
+
+.. code-block:: python
+
+    texels = globe.color_texture
+    texels.rgb = texels.rgb * 0.5
+    globe.color_texture = texels
+
 Normal maps
 -----------
 

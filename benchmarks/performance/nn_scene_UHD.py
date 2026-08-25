@@ -22,7 +22,7 @@ def scene():
 
     with Sync(run_time=run_time):
         nn.move(UP)
-        x.color_texture = x.color_texture.view(x.texture_width, -1, 5) * 0.5
+        x.color_texture = x.color_texture * 0.5
         label.move(RIGHT * 2)
 
 

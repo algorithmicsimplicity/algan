@@ -46,7 +46,7 @@ def _build_scene():
     with Off():
         mob = ImageMob(image).spawn()
     with Sync(run_time=1):
-        mob.color_texture = mob.color_texture.view(_SIDE, _SIDE, 5) * 0.5
+        mob.color_texture = mob.color_texture * 0.5
     return scene, mob
 
 

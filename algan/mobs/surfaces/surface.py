@@ -825,21 +825,18 @@ class Surface(Mob):
         becoming an 8x4 blue one ended red.
 
         Assigned through the property rather than the generic
-        ``_MORPH_ADOPTED_ATTRS`` list because the two are not symmetric: the
-        getter hands back the stored ``[1, 1, W*H*5]`` row and the setter wants
-        the ``[W, H, 5]`` image, so the value has to be reshaped on the way
-        across. The setter is also what detaches history when the two
-        resolutions cannot be interpolated.
+        ``_MORPH_ADOPTED_ATTRS`` list because the setter is what detaches
+        history when the two resolutions cannot be interpolated. It reads the
+        target through the uncopied row and folds that back into the ``[W, H,
+        5]`` image the setter wants, rather than through the public getter,
+        which would clone the widest attribute in the engine for nothing.
         """
         super()._adopt_structural_attrs(target)
         if getattr(target, "_color_texture_attr", None) is None:
             if getattr(self, "_color_texture_attr", None) is not None:
                 self.color_texture = None
             return self
-        stored = target._color_texture_uncopied()
-        self.color_texture = stored.reshape(
-            int(target.texture_height), int(target.texture_width), 5
-        )
+        self.color_texture = target._as_texture_image(target._color_texture_uncopied())
         return self
 
     #: Handedness of this surface's ``(u, v)`` parameterization: ``1`` when
@@ -1341,6 +1338,27 @@ class Surface(Mob):
         per-vertex colours instead. Assigning a texture whose resolution differs from
         the current one detaches history, since the two cannot be interpolated.
 
+        Reading it back gives the image in that same ``[W, H, 5]`` layout -- not the
+        flat ``W * H * 5`` row the timeline stores it as -- so arithmetic on it can
+        be assigned straight back::
+
+            surface.color_texture = surface.color_texture * 0.5  # half brightness
+
+        The value is a :class:`~algan.constants.color.Color`, one per texel, so the
+        colour API applies to a whole map at once::
+
+            surface.color_texture = surface.color_texture.mult_opacity(0.5)
+
+        Its five channels are ``(R, G, B, glow, alpha)``, which is why the plain
+        multiplication above dims the alpha and the glow along with the colour.
+        Reach for one of them through ``.rgb``, ``.glow`` or ``.opacity`` and assign
+        the result back -- the read is a copy, so writing into it alone changes
+        nothing::
+
+            texels = surface.color_texture
+            texels.rgb = texels.rgb * 0.5
+            surface.color_texture = texels
+
         On an axis where the surface closes on itself -- ``u`` on a
         :class:`~algan.mobs.shapes_3d.Sphere`, both axes on a
         :class:`~algan.mobs.shapes_3d.Torus` -- the image wraps: its last column of
@@ -1359,7 +1377,30 @@ class Surface(Mob):
         attr = getattr(self, "_color_texture_attr", None)
         if attr is None:
             return None
-        return self.get_animated_attribute(attr)
+        # A texel is a colour, so hand the map back as one: .rgb / .glow /
+        # .opacity and mult_opacity then apply to the whole image. Only on the
+        # public read -- the primitive build goes through
+        # _color_texture_uncopied, which keeps its cat and mult_opacity off
+        # Color's __torch_function__.
+        return self._as_texture_image(self.get_animated_attribute(attr)).as_subclass(
+            Color
+        )
+
+    def _as_texture_image(self, row):
+        """A stored ``[..., W*H*5]`` texture row as its ``[W, H, 5]`` image.
+
+        The timeline stores an attribute as a flat channel vector per row, which
+        for a texture is the whole picture in one row. The public shape is the
+        image, so the row is folded back here -- and the leading dims go with it
+        when there is exactly one row, since a texture belongs to the surface
+        rather than to a row of it.
+        """
+        leading = tuple(row.shape[:-1])
+        height, width = int(self.texture_height), int(self.texture_width)
+        image = row.reshape(*leading, height, width, 5)
+        if all(d == 1 for d in leading):
+            image = image.reshape(height, width, 5)
+        return image
 
     @property
     def _has_color_texture(self):
@@ -1376,9 +1417,10 @@ class Surface(Mob):
     def _color_texture_uncopied(self):
         """The colour texture as a read-only view, or None.
 
-        Same value as :attr:`color_texture` but without the defensive clone the
-        public property makes. Only for callers that feed the result straight
-        into out-of-place arithmetic -- mutating it corrupts the timeline's
+        Same texels as :attr:`color_texture`, but as the flat ``[..., W*H*5]``
+        row the timeline stores and without the defensive clone the public
+        property makes. Only for callers that feed the result straight into
+        out-of-place arithmetic -- mutating it corrupts the timeline's
         materialized state.
         """
         attr = getattr(self, "_color_texture_attr", None)
@@ -1396,6 +1438,11 @@ class Surface(Mob):
             return self
 
         texture = torch.as_tensor(texture)
+        # A texture belongs to the surface, not to a row of it, so a leading
+        # dim of 1 is a batch axis some other tensor carried along rather than
+        # a picture axis -- drop it before the shape is judged.
+        while texture.dim() > 3 and texture.shape[0] == 1:
+            texture = texture[0]
         if texture.dim() == 4:
             # A texture is an ordinary animatable attribute: animate it by
             # assigning a new image, not by handing over a sequence of them.
@@ -1408,8 +1455,15 @@ class Surface(Mob):
                 "interpolate to it."
             )
         if texture.dim() != 3 or texture.shape[-1] != 5:
+            current = (
+                f" This surface's is [{int(self.texture_height)}, "
+                f"{int(self.texture_width)}, 5]."
+                if self._has_color_texture
+                else ""
+            )
             raise ValueError(
-                f"color_texture must have shape [W, H, 5], got {tuple(texture.shape)}"
+                f"color_texture must have shape [W, H, 5], got "
+                f"{tuple(texture.shape)}.{current}"
             )
         texture_height, texture_width = texture.shape[-3:-1]
         attr = f"color_texture_{texture_height * texture_width}"

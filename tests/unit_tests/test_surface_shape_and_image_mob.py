@@ -130,6 +130,74 @@ def test_image_mob_remains_texture_backed_by_default():
     assert image.get_render_primitives().texture_map is not None
 
 
+def test_color_texture_reads_back_in_the_shape_it_was_assigned():
+    """The public shape is the image, both ways.
+
+    The timeline stores an attribute as one flat channel vector per row, and a
+    texture is a whole picture in one row -- so the getter used to hand back
+    ``[1, 1, W*H*5]`` while the setter accepted only ``[W, H, 5]``, and the
+    attribute did not round-trip.
+    """
+    texture = torch.zeros(6, 4, 5)
+    texture[..., 4] = 1.0
+    surface = Surface(grid_width=3, grid_height=3, color_texture=texture).spawn()
+
+    assert tuple(surface.color_texture.shape) == (6, 4, 5)
+    assert torch.equal(surface.color_texture, texture)
+
+
+def test_color_texture_round_trips_through_arithmetic():
+    """``surface.color_texture = surface.color_texture * 0.5`` is the idiom."""
+    texture = torch.zeros(6, 4, 5)
+    texture[..., :4] = 0.8
+    texture[..., 4] = 1.0
+    surface = Surface(grid_width=3, grid_height=3, color_texture=texture).spawn()
+    resolution = (surface.texture_height, surface.texture_width)
+
+    surface.color_texture = surface.color_texture * 0.5
+
+    assert torch.allclose(surface.color_texture, texture * 0.5)
+    # Same texel count, so the same timeline attribute: the assignment is an
+    # interpolated animation, not a history-detaching resize.
+    assert (surface.texture_height, surface.texture_width) == resolution
+
+
+def test_color_texture_reads_back_as_colours():
+    """A texel is a colour, so the map comes back as one.
+
+    The colour API then applies to the whole image at once. The stored row
+    stays a plain tensor: the primitive build reads that one, and keeping its
+    padding off ``Color``'s ``__torch_function__`` is deliberate.
+    """
+    texture = torch.zeros(6, 4, 5)
+    texture[..., :3] = 0.8
+    texture[..., 4] = 1.0
+    surface = Surface(grid_width=3, grid_height=3, color_texture=texture).spawn()
+
+    assert isinstance(surface.color_texture, Color)
+    assert not isinstance(surface._color_texture_uncopied(), Color)
+
+    surface.color_texture = surface.color_texture.mult_opacity(0.5)
+
+    assert torch.allclose(surface.color_texture.rgb, texture[..., :3])
+    assert torch.allclose(
+        surface.color_texture.opacity, torch.full_like(texture[..., 4:], 0.5)
+    )
+
+
+def test_color_texture_takes_a_leading_batch_dim_but_still_refuses_a_sequence():
+    """A texture belongs to the surface, not to a row of it."""
+    texture = torch.zeros(6, 4, 5)
+    texture[..., 4] = 1.0
+    surface = Surface(grid_width=3, grid_height=3, color_texture=texture).spawn()
+
+    surface.color_texture = texture.unsqueeze(0).unsqueeze(0)
+    assert tuple(surface.color_texture.shape) == (6, 4, 5)
+
+    with pytest.raises(ValueError, match="not a sequence"):
+        surface.color_texture = texture.unsqueeze(0).expand(3, -1, -1, -1)
+
+
 def test_textured_primitive_visible_when_only_its_texture_is_opaque():
     """A cut-out image must not be culled by its own transparent corners.
 
