@@ -1,0 +1,33 @@
+=== clean UHD (software encoder) vs baseline
+Encoding video with libx264
+frames compared: 30
+worst channel diff: 80 (frame 1)
+pixels over tol 2: worst frame 407326 of 8294400 (4.911%, frame 28); mean 357580.3/frame; 30 of 30 frames affected
+=== clean PREVIEW (software encoder) vs baseline
+frames compared: 50
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 278784 (0.000%, frame -1); mean 0.0/frame; 0 of 50 frames affected
+=== PREVIEW profile, glossy prefilter off (mode 2)
+RUN 2 (warm (steady state)): end-to-end 9.04s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+Scene.get_batch_of_primitives                            4     4.235    46.8%     0.576     6.4%     0.000     0.000
+ray traced render total                                  6     3.838    42.4%     0.021     0.2%     0.000     0.000
+wavefront_loop                                           6     3.655    40.4%     1.424    15.7%     0.000     0.000
+arena preflight (batch)                                  4     2.424    26.8%     0.012     0.1%     0.000     0.000
+AnimationTimeline.set_state_to_times                     4     1.760    19.5%     1.033    11.4%     0.000     0.000
+=== UHD profile, ALGAN_GPU_MAX_REG=64
+RUN 2 (warm (steady state)): end-to-end 31.96s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                 30    27.345    85.5%     0.117     0.4%     0.000     0.000
+wavefront_loop                                          30    26.334    82.4%    12.758    39.9%     0.000     0.000
+raster: sparse discovery                                30     8.675    27.1%     2.265     7.1%     0.000     0.000
+kernel: wavefront_shade                                240     8.395    26.3%     8.395    26.3%     0.236     8.151
+raster:   - compact_sheets                              30     4.627    14.5%     2.669     8.4%     0.000     0.000
+raster: sparse resolve                                  30     4.569    14.3%     4.569    14.3%     0.000     0.000
+kernel: raster_shadow_trace                             30     4.128    12.9%     4.128    12.9%     0.030     4.096
+kernel: wavefront_traverse_events                      240     3.572    11.2%     3.572    11.2%     0.180     3.385
+Scene.get_batch_of_primitives                            2     2.847     8.9%     0.500     1.6%     0.000     0.000

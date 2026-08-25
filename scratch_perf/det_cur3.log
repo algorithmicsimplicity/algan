@@ -1,0 +1,21 @@
+Rendering device set to cuda
+Encoding video with libx264
+Began rendering det_cur3_0.mp4
+Finished rendering det_cur3_0.mp4 in 89.9 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+rendered scratch_perf/det_cur3_0.mp4 89.9s
+Encoding video with libx264
+Began rendering det_cur3_1.mp4
+Finished rendering det_cur3_1.mp4 in 50.3 s
+rendered scratch_perf/det_cur3_1.mp4 50.3s
+Encoding video with libx264
+Began rendering det_cur3_2.mp4
+Finished rendering det_cur3_2.mp4 in 46.4 s
+rendered scratch_perf/det_cur3_2.mp4 46.4s
+DIFF scratch_perf/det_cur3_0.mp4 vs scratch_perf/det_cur3_1.mp4: frames compared: 30
+worst channel diff: 78 (frame 27)
+pixels over tol 2: worst frame 159703 of 8294400 (1.925%, frame 28); mean 28839.4/frame; 9 of 30 frames affected
+DIFF scratch_perf/det_cur3_1.mp4 vs scratch_perf/det_cur3_2.mp4: frames compared: 30
+worst channel diff: 78 (frame 27)
+pixels over tol 2: worst frame 159703 of 8294400 (1.925%, frame 28); mean 28839.4/frame; 9 of 30 frames affected

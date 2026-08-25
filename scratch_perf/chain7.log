@@ -1,0 +1,18 @@
+=== E2: new code, two UHD renders in one process (ultrafast)
+render 0: 77.8s arena 6149 MB chunks [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] tiles [4165590, 4165705, 4165728, 4165732, 4165753, 4165785, 4165844, 41
+render 1: 32.4s arena 6099 MB chunks [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] tiles [4119074, 4119190, 4119212, 4119216, 4119237, 4119269, 4119328, 41
+DIFF frames compared: 30
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 8294400 (0.000%, frame -1); mean 0.0/frame; 0 of 30 frames affected
+=== E2b: new-code render vs after_gloss_UHD (same code, earlier process)
+frames compared: 30
+worst channel diff: 54 (frame 15)
+pixels over tol 2: worst frame 578233 of 8294400 (6.971%, frame 17); mean 532396.9/frame; 30 of 30 frames affected
+=== E3: old code (stash) rendered now vs its earlier output tiles_default_0
+rendered scratch_perf/oldcode_now_UHD.mp4 74.8s
+ M algan/render_loop.py
+ M algan/rendering/raytracing/glossy_prefilter_tai
+ M algan/rendering/raytracing/tracer.py
+frames compared: 30
+worst channel diff: 54 (frame 15)
+pixels over tol 2: worst frame 578233 of 8294400 (6.971%, frame 17); mean 532396.9/frame; 30 of 30 frames affected

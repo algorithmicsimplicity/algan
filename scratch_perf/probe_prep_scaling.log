@@ -1,0 +1,99 @@
+Rendering device set to cpu
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=x64
+T=  3 set_state_to_times   0.924s  per-frame  307.9 ms
+T=  3 set_state_to_times   0.738s  per-frame  245.9 ms
+T=  6 set_state_to_times   1.221s  per-frame  203.5 ms
+T= 12 set_state_to_times   2.238s  per-frame  186.5 ms
+T= 24 set_state_to_times   5.461s  per-frame  227.5 ms
+functions 3 updaters 1
+  remat color_texture_1573538           1445.8 ms  active_state (24, 2, 7867690)
+T=  3 get_batch_of_primitives   1.640s per-frame  546.7 ms  end=3 nprims=4
+T= 12 get_batch_of_primitives   3.275s per-frame  272.9 ms  end=12 nprims=4
+T= 24 get_batch_of_primitives   5.698s per-frame  237.4 ms  end=24 nprims=4
+         106564 function calls (106216 primitive calls) in 2.468 seconds
+
+   Ordered by: cumulative time
+   List reduced from 211 to 45 due to restriction <45>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    2.468    2.468 /content/algan/algan/animation_timeline/timeline.py:2700(set_state_to_times)
+        1    0.174    0.174    2.466    2.466 /content/algan/algan/animation_timeline/timeline.py:2739(_replay_state_to_times)
+      178    0.807    0.005    1.590    0.009 /content/algan/algan/animatable_base/mob.py:1134(_apply_change)
+     1415    0.006    0.000    0.543    0.000 /content/algan/algan/animatable_base/animatable.py:1051(get_animated_attribute)
+     1415    0.003    0.000    0.505    0.000 /content/algan/algan/animation_timeline/timeline.py:2272(get_attr)
+     1415    0.484    0.000    0.502    0.000 /content/algan/algan/animation_timeline/timeline.py:970(get)
+       26    0.061    0.002    0.493    0.019 /content/algan/algan/animation_timeline/timeline.py:1443(rematerialize_state_at_times)
+       26    0.030    0.001    0.421    0.016 /content/algan/algan/animation_timeline/timeline.py:526(_query_row_states)
+       26    0.374    0.014    0.374    0.014 {method 'index_select' of 'torch._C.TensorBase' objects}
+      258    0.002    0.000    0.309    0.001 /content/algan/algan/animatable_base/animatable.py:843(_setattr_and_record_modification)
+      258    0.001    0.000    0.296    0.001 /content/algan/algan/animation_timeline/timeline.py:2422(modify_attribute)
+      258    0.293    0.001    0.295    0.001 /content/algan/algan/animation_timeline/timeline.py:1009(modify)
+        1    0.001    0.001    0.241    0.241 /content/algan/algan/mobs/neural_nets/neural_net.py:148(_update_neural_net_idle)
+   255/95    0.002    0.000    0.231    0.002 /content/algan/algan/animation_timeline/animation_contexts.py:181(wrapped)
+   255/95    0.004    0.000    0.229    0.002 /content/algan/algan/animatable_base/animatable.py:111(wrapper_func)
+       80    0.007    0.000    0.183    0.002 /content/algan/algan/mobs/shapes_3d.py:1019(_move_between_points)
+       50    0.005    0.000    0.131    0.003 /content/algan/algan/mobs/shapes_3d.py:1003(move_between_points)
+       80    0.001    0.000    0.081    0.001 /content/algan/algan/mobs/surfaces/surface.py:3446(set_location_by_function)
+      175    0.003    0.000    0.070    0.000 /content/algan/algan/animatable_base/mob.py:1338(location)
+       25    0.002    0.000    0.066    0.003 /content/algan/algan/mobs/shapes_3d.py:981(set_start_point)
+       95    0.000    0.000    0.045    0.000 /content/algan/algan/animatable_base/mob_movement.py:245(move_to)
+       95    0.001    0.000    0.044    0.000 /content/algan/algan/animatable_base/animatable.py:696(setattr_general)
+       80    0.001    0.000    0.043    0.001 /content/algan/algan/mobs/surfaces/surface.py:3475(target_function)
+     1667    0.005    0.000    0.040    0.000 /content/algan/algan/animatable_base/animatable.py:903(_get_attr_ranges)
+       80    0.017    0.000    0.037    0.000 /content/algan/algan/mobs/shapes_3d.py:939(coord_function)
+       80    0.010    0.000    0.030    0.000 /content/algan/algan/geometry/geometry.py:501(get_orthonormal_vector)
+      531    0.001    0.000    0.028    0.000 /content/algan/algan/animatable_base/mob.py:1327(location)
+      531    0.001    0.000    0.028    0.000 /content/algan/algan/animatable_base/mob.py:1353(basis)
+     1667    0.005    0.000    0.026    0.000 /content/algan/algan/animation_timeline/timeline.py:2143(trace_updater_mob_access)
+      210    0.001    0.000    0.020    0.000 /content/algan/algan/animatable_base/mob.py:1462(scale_coefficient)
+        5    0.000    0.000    0.015    0.003 /content/algan/algan/mobs/shapes_3d.py:992(set_end_point)
+      580    0.001    0.000    0.014    0.000 /content/algan/.venv/lib/python3.13/site-packages/torch/_tensor.py:882(norm)
+      290    0.003    0.000    0.013    0.000 /content/algan/.venv/lib/python3.13/site-packages/torch/nn/functional.py:5456(normalize)
+      580    0.005    0.000    0.013    0.000 /content/algan/.venv/lib/python3.13/site-packages/torch/functional.py:1698(norm)
+       26    0.013    0.000    0.013    0.000 {method 'masked_fill_' of 'torch._C.TensorBase' objects}
+      336    0.005    0.000    0.012    0.000 /content/algan/algan/animation_timeline/animation_contexts.py:338(__enter__)
+      351    0.004    0.000    0.010    0.000 /content/algan/algan/animation_timeline/timeline.py:2640(_collect_mob_ids)
+     1667    0.006    0.000    0.010    0.000 /content/algan/algan/animation_timeline/timeline.py:2167(_register_known_history_clones)
+     1142    0.009    0.000    0.009    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+       80    0.000    0.000    0.009    0.000 /content/algan/algan/mobs/surfaces/surface.py:3189(get_base_grid)
+     2928    0.002    0.000    0.009    0.000 {built-in method builtins.hasattr}
+     1667    0.008    0.000    0.008    0.000 /content/algan/algan/animation_timeline/timeline.py:912(_compact_span)
+      110    0.001    0.000    0.008    0.000 /content/algan/algan/animatable_base/mob_orientation.py:215(get_upwards_basis)
+      580    0.007    0.000    0.007    0.000 {built-in method torch._C._linalg.linalg_vector_norm}
+      531    0.004    0.000    0.007    0.000 /content/algan/algan/utils/tensor_utils.py:288(unsquish)
+
+
+         106564 function calls (106216 primitive calls) in 2.468 seconds
+
+   Ordered by: internal time
+   List reduced from 211 to 25 due to restriction <25>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      178    0.807    0.005    1.590    0.009 /content/algan/algan/animatable_base/mob.py:1134(_apply_change)
+     1415    0.484    0.000    0.502    0.000 /content/algan/algan/animation_timeline/timeline.py:970(get)
+       26    0.374    0.014    0.374    0.014 {method 'index_select' of 'torch._C.TensorBase' objects}
+      258    0.293    0.001    0.295    0.001 /content/algan/algan/animation_timeline/timeline.py:1009(modify)
+        1    0.174    0.174    2.466    2.466 /content/algan/algan/animation_timeline/timeline.py:2739(_replay_state_to_times)
+       26    0.061    0.002    0.493    0.019 /content/algan/algan/animation_timeline/timeline.py:1443(rematerialize_state_at_times)
+       26    0.030    0.001    0.421    0.016 /content/algan/algan/animation_timeline/timeline.py:526(_query_row_states)
+       80    0.017    0.000    0.037    0.000 /content/algan/algan/mobs/shapes_3d.py:939(coord_function)
+       26    0.013    0.000    0.013    0.000 {method 'masked_fill_' of 'torch._C.TensorBase' objects}
+       80    0.010    0.000    0.030    0.000 /content/algan/algan/geometry/geometry.py:501(get_orthonormal_vector)
+     1142    0.009    0.000    0.009    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+     1667    0.008    0.000    0.008    0.000 /content/algan/algan/animation_timeline/timeline.py:912(_compact_span)
+      580    0.007    0.000    0.007    0.000 {built-in method torch._C._linalg.linalg_vector_norm}
+       80    0.007    0.000    0.183    0.002 /content/algan/algan/mobs/shapes_3d.py:1019(_move_between_points)
+     1667    0.006    0.000    0.010    0.000 /content/algan/algan/animation_timeline/timeline.py:2167(_register_known_history_clones)
+    13235    0.006    0.000    0.006    0.000 {method 'get' of 'dict' objects}
+     1415    0.006    0.000    0.543    0.000 /content/algan/algan/animatable_base/animatable.py:1051(get_animated_attribute)
+     1667    0.005    0.000    0.026    0.000 /content/algan/algan/animation_timeline/timeline.py:2143(trace_updater_mob_access)
+     1667    0.005    0.000    0.040    0.000 /content/algan/algan/animatable_base/animatable.py:903(_get_attr_ranges)
+       50    0.005    0.000    0.131    0.003 /content/algan/algan/mobs/shapes_3d.py:1003(move_between_points)
+      336    0.005    0.000    0.012    0.000 /content/algan/algan/animation_timeline/animation_contexts.py:338(__enter__)
+      580    0.005    0.000    0.013    0.000 /content/algan/.venv/lib/python3.13/site-packages/torch/functional.py:1698(norm)
+   255/95    0.004    0.000    0.229    0.002 /content/algan/algan/animatable_base/animatable.py:111(wrapper_func)
+      351    0.004    0.000    0.010    0.000 /content/algan/algan/animation_timeline/timeline.py:2640(_collect_mob_ids)
+      531    0.004    0.000    0.007    0.000 /content/algan/algan/utils/tensor_utils.py:288(unsquish)
+
+

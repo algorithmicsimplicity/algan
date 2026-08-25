@@ -1,0 +1,1471 @@
+=== attempt 1 Tue Aug 25 05:31:25 AM UTC 2026
+=== ping ok, launching
+[0m
+> build · x-preview-f-free
+[0m
+[0m→ [0mRead scratch_perf/ox/brief_nvenc_binary.md
+[0m
+[0m# [0mTodos
+[•] Read prior brief/report + current implementation (video_encoding.py, algan_utils.py)
+[ ] Inspect installed moviepy 2.x binary-selection mechanism
+[ ] Implement binary probing + selection in video_encoding.py
+[ ] Wire writer override via context manager in algan_utils.py
+[ ] Add/update unit tests
+[ ] Run pytest on test_video_encoding.py + test_environment.py
+[ ] Run render_hd_encode_check.py with auto; capture logs + ffprobe
+[ ] Run ruff check --no-fix + format --check on touched files
+[ ] Write REPORT_nvenc_binary.md
+[0m
+[0m→ [0mRead scratch_perf/ox/brief_nvenc.md
+[0m→ [0mRead scratch_perf/ox/REPORT_nvenc.md
+[0m→ [0mRead algan/utils/video_encoding.py
+[0m✱ [0mGrep "select_video_encoder|get_file_writer|FFMPEG_BINARY"[90m in algan · 9 matches[0m
+[0m→ [0mRead algan/utils/algan_utils.py[90m [limit=140, offset=60][0m
+[0m→ [0mRead algan/utils/algan_utils.py[90m [limit=130, offset=290][0m
+[0m→ [0mRead tests/unit_tests/test_video_encoding.py
+[0m→ [0mRead scratch_perf/ox/render_hd_encode_check.py
+[0m
+[0m$ [0muv run python -c "
+import moviepy
+print('moviepy', moviepy.__version__)
+import inspect
+from moviepy.video.io import ffmpeg_writer
+src = inspect.getsource(ffmpeg_writer)
+print(src[:6000])
+"
+moviepy 2.1.2
+"""
+On the long term this will implement several methods to make videos
+out of VideoClips
+"""
+
+import subprocess as sp
+
+import numpy as np
+from proglog import proglog
+
+from moviepy.config import FFMPEG_BINARY
+from moviepy.tools import cross_platform_popen_params, ffmpeg_escape_filename
+
+
+class FFMPEG_VideoWriter:
+    """A class for FFMPEG-based video writing.
+
+    Parameters
+    ----------
+
+    filename : str
+      Any filename like ``"video.mp4"`` etc. but if you want to avoid
+      complications it is recommended to use the generic extension ``".avi"``
+      for all your videos.
+
+    size : tuple or list
+      Size of the output video in pixels (width, height).
+
+    fps : int
+      Frames per second in the output video file.
+
+    codec : str, optional
+      FFMPEG codec. It seems that in terms of quality the hierarchy is
+      'rawvideo' = 'png' > 'mpeg4' > 'libx264'
+      'png' manages the same lossless quality as 'rawvideo' but yields
+      smaller files. Type ``ffmpeg -codecs`` in a terminal to get a list
+      of accepted codecs.
+
+      Note for default 'libx264': by default the pixel format yuv420p
+      is used. If the video dimensions are not both even (e.g. 720x405)
+      another pixel format is used, and this can cause problem in some
+      video readers.
+
+    audiofile : str, optional
+      The name of an audio file that will be incorporated to the video.
+
+    audio_codec : str, optional
+      FFMPEG audio codec. If None, ``"copy"`` codec is used.
+
+    preset : str, optional
+      Sets the time that FFMPEG will take to compress the video. The slower,
+      the better the compression rate. Possibilities are: ``"ultrafast"``,
+      ``"superfast"``, ``"veryfast"``, ``"faster"``, ``"fast"``,  ``"medium"``
+      (default), ``"slow"``, ``"slower"``, ``"veryslow"``, ``"placebo"``.
+
+    bitrate : str, optional
+      Only relevant for codecs which accept a bitrate. "5000k" offers
+      nice results in general.
+
+    with_mask : bool, optional
+      Set to ``True`` if there is a mask in the video to be encoded.
+
+    pixel_format : str, optional
+      Optional: Pixel format for the output video file. If is not specified
+      ``"rgb24"`` will be used as the default format unless ``with_mask`` is
+      set as ``True``, then ``"rgba"`` will be used.
+
+    logfile : int, optional
+      File descriptor for logging output. If not defined, ``subprocess.PIPE``
+      will be used. Defined using another value, the log level of the ffmpeg
+      command will be "info", otherwise "error".
+
+    threads : int, optional
+      Number of threads used to write the output with ffmpeg.
+
+    ffmpeg_params : list, optional
+      Additional parameters passed to ffmpeg command.
+    """
+
+    def __init__(
+        self,
+        filename,
+        size,
+        fps,
+        codec="libx264",
+        audiofile=None,
+        audio_codec=None,
+        preset="medium",
+        bitrate=None,
+        with_mask=False,
+        logfile=None,
+        threads=None,
+        ffmpeg_params=None,
+        pixel_format=None,
+    ):
+        if logfile is None:
+            logfile = sp.PIPE
+        self.logfile = logfile
+        self.filename = filename
+        self.codec = codec
+        self.audio_codec = audio_codec
+        self.ext = self.filename.split(".")[-1]
+
+        pixel_format = "rgba" if with_mask else "rgb24"
+
+        # order is important
+        cmd = [
+            FFMPEG_BINARY,
+            "-y",
+            "-loglevel",
+            "error" if logfile == sp.PIPE else "info",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-s",
+            "%dx%d" % (size[0], size[1]),
+            "-pix_fmt",
+            pixel_format,
+            "-r",
+            "%.02f" % fps,
+            "-an",
+            "-i",
+            "-",
+        ]
+        if audiofile is not None:
+            if audio_codec is None:
+                audio_codec = "copy"
+            cmd.extend(["-i", audiofile, "-acodec", audio_codec])
+
+        if codec == "h264_nvenc":
+            cmd.extend(["-c:v", codec])
+        else:
+            cmd.extend(["-vcodec", codec])
+
+        cmd.extend(["-preset", preset])
+
+        if ffmpeg_params is not None:
+            cmd.extend(ffmpeg_params)
+
+        if bitrate is not None:
+            cmd.extend(["-b", bitrate])
+
+        if threads is not None:
+            cmd.extend(["-threads", str(threads)])
+
+        # Disable auto alt ref for transparent webm and set pix format yo yuva420p
+        if codec == "libvpx" and with_mask:
+            cmd.extend(["-pix_fmt", "yuva420p"])
+            cmd.extend(["-auto-alt-ref", "0"])
+        elif (
+            (codec == "libx264" or codec == "h264_nvenc")
+            and (size[0] % 2 == 0)
+            and (size[1] % 2 == 0)
+        ):
+            cmd.extend(["-pix_fmt", "yuva420p"])
+
+        cmd.extend([ffmpeg_escape_filename(filename)])
+
+        popen_params = cross_platform_popen_params(
+            {"stdout": sp.DEVNULL, "stderr": logfile, "stdin": sp.PIPE}
+        )
+
+        self.proc = sp.Popen(cmd, **popen_params)
+
+    def write_frame(self, img_array):
+        """Writes one frame in the file."""
+        try:
+            self.proc.stdin.write(img_array.tobytes())
+        except IOError as err:
+            _, ffmpeg_error = self.proc.communicate()
+            if ffmpeg_error is not None:
+                ffmpeg_error = ffmpeg_error.decode()
+            else:
+                # The error was redirected to a logfile with `write_logfile=True`,
+                # so read the error from that file instead
+                self.logfile.seek(0)
+                ffmpeg_error = self.logfile.read()
+
+            error = (
+                f"{err}\n\nMoviePy error: FFMPEG encountered the following error while "
+                f"writing file {self.filename}:\n\n {ffmpeg_error}"
+            )
+
+            if "Unknown encoder" in ffmpeg_error or "Unknown decoder" in ffmpeg_error:
+                error += (
+                    "\n\nThe video export failed be
+[0m
+Now let me inspect the remaining pieces: moviepy's config mechanism, the rest of `FFMPEG_VideoWriter` (does `close()` spawn anything?), how `render_to_video` finishes the file, the env declaration, and the docs paragraph.
+[0m$ [0muv run python -c "
+import inspect, moviepy.config
+print('--- config.py ---')
+print(inspect.getsource(moviepy.config))
+print('FFMPEG_BINARY =', moviepy.config.FFMPEG_BINARY)
+"
+--- config.py ---
+"""Third party programs configuration for MoviePy."""
+
+import os
+import subprocess as sp
+from pathlib import Path
+
+from moviepy.tools import cross_platform_popen_params
+
+
+try:
+    from dotenv import find_dotenv, load_dotenv
+
+    DOTENV = find_dotenv()
+    load_dotenv(DOTENV)
+except ImportError:
+    DOTENV = None
+
+FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "ffmpeg-imageio")
+FFPLAY_BINARY = os.getenv("FFPLAY_BINARY", "auto-detect")
+
+IS_POSIX_OS = os.name == "posix"
+
+
+def try_cmd(cmd):
+    """Verify if the OS support command invocation as expected by moviepy"""
+    try:
+        popen_params = cross_platform_popen_params(
+            {"stdout": sp.PIPE, "stderr": sp.PIPE, "stdin": sp.DEVNULL}
+        )
+        proc = sp.Popen(cmd, **popen_params)
+        proc.communicate()
+    except Exception as err:
+        return False, err
+    else:
+        return True, None
+
+
+if FFMPEG_BINARY == "ffmpeg-imageio":
+    from imageio.plugins.ffmpeg import get_exe
+
+    FFMPEG_BINARY = get_exe()
+
+elif FFMPEG_BINARY == "auto-detect":
+    if try_cmd(["ffmpeg"])[0]:
+        FFMPEG_BINARY = "ffmpeg"
+    elif not IS_POSIX_OS and try_cmd(["ffmpeg.exe"])[0]:
+        FFMPEG_BINARY = "ffmpeg.exe"
+    else:  # pragma: no cover
+        FFMPEG_BINARY = "unset"
+else:
+    success, err = try_cmd([FFMPEG_BINARY])
+    if not success:
+        raise IOError(
+            f"{err} - The path specified for the ffmpeg binary might be wrong"
+        )
+
+
+if FFPLAY_BINARY == "auto-detect":
+    if try_cmd(["ffplay"])[0]:
+        FFPLAY_BINARY = "ffplay"
+    elif not IS_POSIX_OS and try_cmd(["ffplay.exe"])[0]:
+        FFPLAY_BINARY = "ffplay.exe"
+    else:  # pragma: no cover
+        FFPLAY_BINARY = "unset"
+else:
+    success, err = try_cmd([FFPLAY_BINARY])
+    if not success:
+        raise IOError(
+            f"{err} - The path specified for the ffmpeg binary might be wrong"
+        )
+
+
+def check():
+    """Check if moviepy has found the binaries for FFmpeg."""
+    if try_cmd([FFMPEG_BINARY])[0]:
+        print(f"MoviePy: ffmpeg successfully found in '{FFMPEG_BINARY}'.")
+    else:  # pragma: no cover
+        print(f"MoviePy: can't find or access ffmpeg in '{FFMPEG_BINARY}'.")
+
+    if try_cmd([FFPLAY_BINARY])[0]:
+        print(f"MoviePy: ffplay successfully found in '{FFPLAY_BINARY}'.")
+    else:  # pragma: no cover
+        print(f"MoviePy: can't find or access ffplay in '{FFPLAY_BINARY}'.")
+
+    if DOTENV:
+        print(f"\n.env file content at {DOTENV}:\n")
+        print(Path(DOTENV).read_text())
+
+
+if __name__ == "__main__":  # pragma: no cover
+    check()
+
+FFMPEG_BINARY = /content/algan/.venv/lib/python3.13/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
+[0m
+[0m$ [0muv run python -c "
+import inspect
+from moviepy.video.io import ffmpeg_writer
+src = inspect.getsource(ffmpeg_writer)
+print(src[6000:11000])
+"
+cause FFMPEG didn't find the "
+                    "specified codec for video or audio. "
+                    "Please install this codec or change the codec when calling "
+                    "write_videofile.\nFor instance:\n"
+                    "  >>> clip.write_videofile('myvid.webm', audio='myaudio.mp3', "
+                    "codec='libvpx', audio_codec='aac')"
+                )
+
+            elif "incorrect codec parameters ?" in ffmpeg_error:
+                error += (
+                    "\n\nThe video export failed, possibly because the codec "
+                    f"specified for the video {self.codec} is not compatible with "
+                    f"the given extension {self.ext}.\n"
+                    "Please specify a valid 'codec' argument in write_videofile.\n"
+                    "This would be 'libx264' or 'mpeg4' for mp4, "
+                    "'libtheora' for ogv, 'libvpx for webm.\n"
+                    "Another possible reason is that the audio codec was not "
+                    "compatible with the video codec. For instance, the video "
+                    "extensions 'ogv' and 'webm' only allow 'libvorbis' (default) as a"
+                    "video codec."
+                )
+
+            elif "bitrate not specified" in ffmpeg_error:
+                error += (
+                    "\n\nThe video export failed, possibly because the bitrate "
+                    "specified was too high or too low for the video codec."
+                )
+
+            elif "Invalid encoder type" in ffmpeg_error:
+                error += (
+                    "\n\nThe video export failed because the codec "
+                    "or file extension you provided is not suitable for video"
+                )
+
+            raise IOError(error)
+
+    def close(self):
+        """Closes the writer, terminating the subprocess if is still alive."""
+        if self.proc:
+            self.proc.stdin.close()
+            if self.proc.stderr is not None:
+                self.proc.stderr.close()
+            self.proc.wait()
+
+            self.proc = None
+
+    # Support the Context Manager protocol, to ensure that resources are cleaned up.
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+
+def ffmpeg_write_video(
+    clip,
+    filename,
+    fps,
+    codec="libx264",
+    bitrate=None,
+    preset="medium",
+    write_logfile=False,
+    audiofile=None,
+    audio_codec=None,
+    threads=None,
+    ffmpeg_params=None,
+    logger="bar",
+    pixel_format=None,
+):
+    """Write the clip to a videofile. See VideoClip.write_videofile for details
+    on the parameters.
+    """
+    logger = proglog.default_bar_logger(logger)
+
+    if write_logfile:
+        logfile = open(filename + ".log", "w+")
+    else:
+        logfile = None
+
+    logger(message="MoviePy - Writing video %s\n" % filename)
+
+    has_mask = clip.mask is not None
+
+    with FFMPEG_VideoWriter(
+        filename,
+        clip.size,
+        fps,
+        codec=codec,
+        preset=preset,
+        bitrate=bitrate,
+        with_mask=has_mask,
+        logfile=logfile,
+        audiofile=audiofile,
+        audio_codec=audio_codec,
+        threads=threads,
+        ffmpeg_params=ffmpeg_params,
+        pixel_format=pixel_format,
+    ) as writer:
+        for t, frame in clip.iter_frames(
+            logger=logger, with_times=True, fps=fps, dtype="uint8"
+        ):
+            if clip.mask is not None:
+                mask = 255 * clip.mask.get_frame(t)
+                if mask.dtype != "uint8":
+                    mask = mask.astype("uint8")
+                frame = np.dstack([frame, mask])
+
+            writer.write_frame(frame)
+
+    if write_logfile:
+        logfile.close()
+    logger(message="MoviePy - Done !")
+
+
+def ffmpeg_write_image(filename, image, logfile=False, pixel_format=None):
+    """Writes an image (HxWx3 or HxWx4 numpy array) to a file, using ffmpeg.
+
+    Parameters
+    ----------
+
+    filename : str
+        Path to the output file.
+
+    image : np.ndarray
+        Numpy array with the image data.
+
+    logfile : bool, optional
+        Writes the ffmpeg output inside a logging file (``True``) or not
+        (``False``).
+
+    pixel_format : str, optional
+        Pixel format for ffmpeg. If not defined, it will be discovered checking
+        if the image data contains an alpha channel (``"rgba"``) or not
+        (``"rgb24"``).
+    """
+    if image.dtype != "uint8":
+        image = image.astype("uint8")
+
+    if not pixel_format:
+        pixel_format = "rgba" if (image.shape[2] == 4) else "rgb24"
+
+    cmd = [
+        FFMPEG_BINARY,
+        "-y",
+        "-s",
+        "%dx%d" % (image.shape[:2][::-1]),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        pixel_format,
+        "-i",
+        "-",
+        ffmpeg_escape_filename(filename),
+    ]
+
+    if logfile:
+        log_file = open(filename + ".log", "w+")
+    else:
+        log_file = sp.PIPE
+
+    popen_params = cross_platform_popen_params(
+        {"stdout":
+[0m
+[0m✱ [0mGrep "moviepy|ffmpeg_write|FFMPEG"[90m in algan · 26 matches[0m
+`close()` spawns nothing and audio is muxed by the same single invocation spawned at construction. Let me confirm no other moviepy/ffmpeg step runs between writer construction and close, then look at environment.py and the docs paragraph.
+[0m✱ [0mGrep "ALGAN_VIDEO_ENCODER|nvenc"[90m in docs/source · 4 matches[0m
+[0m→ [0mRead docs/source/advanced_user_tutorials/saving_videos_and_images.rst[90m [limit=45, offset=110, path=/content/algan/algan/environment.py, pattern=ALGAN_VIDEO_ENCODER|_LIVE_VARIABLES][0m
+[0m✱ [0mGrep "ALGAN_VIDEO_ENCODER|_LIVE_VARIABLES"[90m in algan/environment.py · 8 matches[0m
+All confirmed: moviepy 2.x binds `FFMPEG_BINARY` into `ffmpeg_writer`'s namespace at that module's import time and reads the module global per writer construction — there is no per-writer parameter. Now let me see the top of `_render_scene_to_file` for placement.
+[0m→ [0mRead algan/utils/algan_utils.py[90m [limit=65, offset=228][0m
+Placement is clear. Let me quickly check the `save_video` docstring section that mentions NVENC, then implement.
+[0m→ [0mRead algan/scene.py[90m [limit=30, offset=1370][0m
+[0m
+[0m← [0mEdit algan/utils/video_encoding.py
+Index: /content/algan/algan/utils/video_encoding.py
+===================================================================
+--- /content/algan/algan/utils/video_encoding.py
++++ /content/algan/algan/utils/video_encoding.py
+@@ -1,22 +1,28 @@
+ """Automatic choice of the FFmpeg video encoder behind ``save_video``.
+ 
+ Encoding a large render with ``libx264 -preset slower`` is pure CPU work and
+ can be the slowest stage of a render on a small machine, stalling the bounded
+-frame queue. When the FFmpeg binary that will actually run the encode carries
+-NVIDIA's ``h264_nvenc`` encoder and the driver can drive it, Algan moves
+-encoding onto the GPU.
++frame queue. When some FFmpeg binary on the machine carries NVIDIA's
++``h264_nvenc`` encoder and the driver can drive it, Algan moves encoding onto
++the GPU -- and points the writer at whichever binary that was, because moviepy
++is often configured with a stripped-down static build that has no NVENC
++encoders even though the system's ffmpeg has them.
+ 
+ :func:`select_video_encoder` makes that choice once per video, from the
+ caller's explicit arguments first and the ``ALGAN_VIDEO_ENCODER`` environment
+ variable second (``auto`` by default: hardware when usable, software
+-otherwise). The probe runs at most once per process.
++otherwise). :func:`resolve_encode_binary` says which binary must run it.
++Both answers come from one probe, run at most once per process.
+ """
+ 
+ from __future__ import annotations
+ 
++import os
++import shutil
+ import subprocess
+ import warnings
++from contextlib import contextmanager
+ 
+ from algan.environment import env_str
+ from algan.errors import AlganWarning
+ from algan.logging.logger import get_logger
+
+[0m
+`scene.py`'s wording stays true — no edit needed there. Now implementing the binary selection in `video_encoding.py`:
+[0m← [0mEdit algan/utils/video_encoding.py
+Index: /content/algan/algan/utils/video_encoding.py
+===================================================================
+--- /content/algan/algan/utils/video_encoding.py
++++ /content/algan/algan/utils/video_encoding.py
+@@ -71,9 +71,11 @@
+ 
+ #: Bound both probe invocations; a hung ffmpeg must not hang a render.
+ _PROBE_TIMEOUT_SECONDS = 10
+ 
+-#: Result of the usability probe: ``None`` until it has run, then a bool.
++#: Result of the usability probe: ``None`` until it has run, then a
++#: ``(usable, binary)`` pair where ``binary`` is the FFmpeg executable the
++#: probe found usable (``None`` when no candidate qualified).
+ _probe_cache = None
+ 
+ 
+ def select_video_encoder(
+
+[0m
+[0m← [0mEdit algan/utils/video_encoding.py
+Index: /content/algan/algan/utils/video_encoding.py
+===================================================================
+--- /content/algan/algan/utils/video_encoding.py
++++ /content/algan/algan/utils/video_encoding.py
+@@ -86,12 +86,14 @@
+ """Pick the codec and FFmpeg parameters a ``save_video`` render encodes with.
+ 
+ An explicit ``codec`` wins verbatim. Transparent output is untouched.
+ Otherwise the ``ALGAN_VIDEO_ENCODER`` environment variable decides:
+-``auto`` (the default) picks ``h264_nvenc`` when the FFmpeg binary
+-moviepy uses can drive it and software encoding otherwise, ``nvenc``
++``auto`` (the default) picks ``h264_nvenc`` when some FFmpeg binary on
++the machine can drive it and software encoding otherwise, ``nvenc``
+ forces hardware encoding, and ``software`` reproduces the historical
+-default exactly.
++default exactly. When hardware encoding is chosen,
++:func:`resolve_encode_binary` names the binary the writer must run --
++which is not necessarily the one moviepy is configured with.
+ 
+ Returns
+ -------
+ tuple
+
+[0m
+Now the docstring of `select_video_encoder` and the probe section rewrite:
+[0m← [0mEdit algan/utils/video_encoding.py
+Index: /content/algan/algan/utils/video_encoding.py
+===================================================================
+--- /content/algan/algan/utils/video_encoding.py
++++ /content/algan/algan/utils/video_encoding.py
+@@ -174,26 +174,51 @@
+ 
+     return moviepy.config.FFMPEG_BINARY
+ 
+ 
+-def _nvenc_usable() -> bool:
+-    """Whether ``h264_nvenc`` works with the FFmpeg binary moviepy will use.
++def _env_ffmpeg_binary() -> str | None:
++    # moviepy's own variable: when the user set it, it names exactly the
++    # binary moviepy will run, so it is the most specific candidate. The
++    # "auto" sentinel is skipped (it is not a path).
++    raw = os.environ.get("FFMPEG_BINARY")
++    if not raw or raw.strip().lower() == "auto":
++        return None
++    return raw
+ 
+-    Two conditions, because each fails independently in the field: the binary
+-    must have been built with the encoder, and the encoder must open (a build
+-    can ship it yet fail without a driver or on a headless GPU). Failures log
+-    at DEBUG -- falling back is the designed outcome, not a fault -- and the
+-    caller falls back to software encoding.
++
++def _system_ffmpeg_binary() -> str | None:
++    return shutil.which("ffmpeg")
++
++
++def _candidate_binaries() -> list[str]:
++    """The FFmpeg binaries worth probing, most specific first.
++
++    In order: the ``FFMPEG_BINARY`` environment variable if set (it points
++    moviepy at that binary too), moviepy's configured binary -- often
++    imageio-ffmpeg's static build, which carries no NVENC encoders even on
++    machines with a working NVENC driver -- and finally whatever ``ffmpeg``
++    is on the PATH. Duplicates are probed once.
+     """
++    candidates = [_env_ffmpeg_binary(), None, _system_ffmpeg_binary()]
+     try:
+-        binary = _moviepy_ffmpeg_binary()
++        candidates[1] = _moviepy_ffmpeg_binary()
+     except Exception:
+         logger.debug(
+             "NVENC probe: could not resolve moviepy's ffmpeg binary",
+             exc_info=True,
+         )
+-        return False
++    return [c for c in dict.fromkeys(candidates) if c is not None]
+ 
++
++def _binary_usable(binary: str) -> bool:
++    """Whether this FFmpeg binary can encode with ``h264_nvenc``.
++
++    Two conditions, because each fails independently in the field: the binary
++    must have been built with the encoder, and the encoder must open (a build
++    can ship it yet fail without a driver or on a headless GPU). Failures log
++    at DEBUG -- falling back to another binary or to software encoding is the
++    designed outcome, not a fault.
++    """
+     try:
+         listed = subprocess.run(
+             [binary, "-hide_banner", "-encoders"],
+             capture_output=True,
+@@ -204,10 +229,9 @@
+         logger.debug("NVENC probe: could not run %s -encoders", binary, exc_info=True)
+         return False
+     if "h264_nvenc" not in listed.stdout:
+         logger.debug(
+-            "NVENC probe: %s does not list h264_nvenc in -encoders; "
+-            "encoding on the CPU instead",
++            "NVENC probe: %s does not list h264_nvenc in -encoders",
+             binary,
+         )
+         return False
+ 
+@@ -236,19 +260,45 @@
+         return False
+     if test_encode.returncode != 0:
+         stderr = (test_encode.stderr or b"").decode(errors="replace").strip()
+         logger.debug(
+-            "NVENC probe: h264_nvenc failed a test encode (%s); "
+-            "encoding on the CPU instead",
++            "NVENC probe: h264_nvenc failed a test encode via %s (%s)",
++            binary,
+             stderr,
+         )
+         return False
+     logger.debug("NVENC probe: h264_nvenc is usable via %s", binary)
+     return True
+ 
+ 
+-def _nvenc_usable_once_per_process() -> bool:
+-    """Cached :func:`_nvenc_usable`; the answer cannot change within a process."""
++def _probe_once() -> tuple[bool, str | None]:
++    """Probe candidates in order; the first usable binary wins."""
++    candidates = _candidate_binaries()
++    if not candidates:
++        logger.debug("NVENC probe: no ffmpeg binary candidate found")
++        return False, None
++    for binary in candidates:
++        if _binary_usable(binary):
++            return True, binary
++    logger.debug(
++        "NVENC probe: none of %s can drive h264_nvenc; encoding on the CPU instead",
++        ", ".join(candidates),
++    )
++    return False, None
++
++
++def _probe_cached() -> tuple[bool, str | None]:
++    """Cached :func:`_probe_once`; the answer cannot change within a process."""
+     global _probe_cache
+     if _probe_cache is None:
+-        _probe_cache = _nvenc_usable()
++        _probe_cache = _probe_once()
+     return _probe_cache
++
++
++def _nvenc_usable() -> bool:
++    """Whether some candidate binary can drive ``h264_nvenc``."""
++    return _probe_cached()[0]
++
++
++def _nvenc_binary() -> str | None:
++    """The FFmpeg binary the probe found usable, or ``None`` if none was."""
++    return _probe_cached()[1]
+
+[0m
+I need to restructure the caching seam — the cache must wrap the uncached walk (`_probe_once`) so both the bool and the binary come from one memoized result. Let me view and fix the tail of the file:
+[0m→ [0mRead algan/utils/video_encoding.py[90m [offset=160][0m
+[0m
+[0m← [0mEdit algan/utils/video_encoding.py
+Index: /content/algan/algan/utils/video_encoding.py
+===================================================================
+--- /content/algan/algan/utils/video_encoding.py
++++ /content/algan/algan/utils/video_encoding.py
+@@ -293,12 +293,60 @@
+         _probe_cache = _probe_once()
+     return _probe_cache
+ 
+ 
+-def _nvenc_usable() -> bool:
+-    """Whether some candidate binary can drive ``h264_nvenc``."""
+-    return _probe_cached()[0]
++def resolve_encode_binary(codec: str | None) -> str | None:
++    """The FFmpeg binary the video writer must run for this codec.
+ 
+-
+-def _nvenc_binary() -> str | None:
+-    """The FFmpeg binary the probe found usable, or ``None`` if none was."""
++    ``None`` means the writer stays on whatever binary moviepy is
++    configured with -- the answer for every software codec. Only an NVENC
++    codec can move the binary, and only onto one a probe found usable:
++    candidates are tried in :func:`_candidate_binaries` order (the
++    ``FFMPEG_BINARY`` environment variable, moviepy's configured binary,
++    then ``ffmpeg`` on the PATH), and when none qualifies the writer keeps
++    moviepy's own binary -- for ``auto`` that pairs with the software
++    fallback, and for a forced ``nvenc`` it fails loudly at encode time
++    exactly as it did before binaries were selectable, which is the honest
++    outcome of forcing what the machine cannot serve.
++    """
++    if codec != _NVENC_CODEC:
++        return None
++    if _resolve_encoder_mode() == "software":
++        # 'software' pins today's behaviour; today the binary was moviepy's.
++        return None
++    # In auto mode this is the same cached probe the codec decision consulted;
++    # in forced mode it runs once here to serve the demand the caller made.
+     return _probe_cached()[1]
++
++
++@contextmanager
++def override_moviepy_ffmpeg_binary(binary: str | None):
++    """Point moviepy's FFmpeg writer at ``binary`` for the duration of the block.
++
++    Route taken: moviepy 2.x offers no per-writer binary argument -- its
++    ``FFMPEG_VideoWriter`` builds its command line from the module global
++    ``moviepy.video.io.ffmpeg_writer.FFMPEG_BINARY``, which that module bound
++    from ``moviepy.config`` at import time -- so both attributes are set here
++    and restored afterwards rather than only ``moviepy.config.FFMPEG_BINARY``
++    (which an already-imported writer module would never re-read). The writer
++    spawns its ffmpeg process at construction, so wrapping the construction is
++    enough: frame writes and close talk to the already-running process, and
++    unrelated moviepy use sees its own configuration again the moment the
++    block exits. ``None`` leaves everything untouched.
++    """
++    if binary is None:
++        yield
++        return
++    import moviepy.config
++    import moviepy.video.io.ffmpeg_writer as ffmpeg_writer_module
++
++    to_restore = (
++        (moviepy.config, moviepy.config.FFMPEG_BINARY),
++        (ffmpeg_writer_module, ffmpeg_writer_module.FFMPEG_BINARY),
++    )
++    try:
++        moviepy.config.FFMPEG_BINARY = binary
++        ffmpeg_writer_module.FFMPEG_BINARY = binary
++        yield
++    finally:
++        for module, previous in to_restore:
++            module.FFMPEG_BINARY = previous
+
+[0m
+[0m→ [0mRead algan/utils/video_encoding.py[90m [limit=25, offset=148][0m
+Now fix `_use_nvenc` (it still references the deleted `_nvenc_usable_once_per_process`):
+[0m
+[0m← [0mEdit algan/utils/video_encoding.py
+Index: /content/algan/algan/utils/video_encoding.py
+===================================================================
+--- /content/algan/algan/utils/video_encoding.py
++++ /content/algan/algan/utils/video_encoding.py
+@@ -160,9 +160,11 @@
+         return False
+     if mode == "nvenc":
+         # Forced: the caller asked for it whether or not the probe agrees.
+         return True
+-    return _nvenc_usable_once_per_process()
++    # Auto: hardware exactly when some candidate binary can drive it. The
++    # same cached probe later names that binary for the writer.
++    return _probe_cached()[0]
+ 
+ 
+ def _moviepy_ffmpeg_binary() -> str:
+     # Read live off the module so a user who repoints moviepy before
+
+[0m
+[0m← [0mEdit algan/utils/algan_utils.py
+Index: /content/algan/algan/utils/algan_utils.py
+===================================================================
+--- /content/algan/algan/utils/algan_utils.py
++++ /content/algan/algan/utils/algan_utils.py
+@@ -39,9 +39,13 @@
+ )
+ from algan.logging.logger import get_logger
+ from algan.rendering.camera import Camera
+ from algan.settings import SETTINGS
+-from algan.utils.video_encoding import select_video_encoder
++from algan.utils.video_encoding import (
++    override_moviepy_ffmpeg_binary,
++    resolve_encode_binary,
++    select_video_encoder,
++)
+ 
+ logger = get_logger()
+ 
+ 
+
+[0m
+Now wire it into `algan_utils.py`:
+[0m← [0mEdit algan/utils/algan_utils.py
+Index: /content/algan/algan/utils/algan_utils.py
+===================================================================
+--- /content/algan/algan/utils/algan_utils.py
++++ /content/algan/algan/utils/algan_utils.py
+@@ -341,8 +341,12 @@
+ # an explicit codec must win verbatim, caller-supplied parameters
+ # must not be confused with Algan's own, and its software fallback
+ # reproduces exactly the pair the fills below used to produce.
+ codec, ffmpeg_params = select_video_encoder(codec, ffmpeg_params, transparent)
++# A hardware pick can land on a binary other than moviepy's own
++# (moviepy is often configured with a static build that has no NVENC
++# encoders); None keeps moviepy's configuration untouched.
++encode_binary = resolve_encode_binary(codec)
+ if codec is None:
+     codec = "png" if transparent else "libx264"
+ if audio_codec is None:
+     audio_codec = "mp3"
+
+[0m
+[0m← [0mEdit algan/utils/algan_utils.py
+Index: /content/algan/algan/utils/algan_utils.py
+===================================================================
+--- /content/algan/algan/utils/algan_utils.py
++++ /content/algan/algan/utils/algan_utils.py
+@@ -375,18 +375,21 @@
+             encoding="utf-8",
+         )
+     logger.info("Audio rendered, now rendering video")
+ 
+-file_writer = get_file_writer(
+-    str(temp_file_path),
+-    video_settings.resolution,
+-    codec,
+-    video_settings.frames_per_second,
+-    scene.background_is_transparent(),
+-    ffmpeg_params,
+-    audiofile,
+-    audio_codec,
+-)
++# The writer spawns its ffmpeg process at construction, so the
++# override only needs to span this call; it is restored right after.
++with override_moviepy_ffmpeg_binary(encode_binary):
++    file_writer = get_file_writer(
++        str(temp_file_path),
++        video_settings.resolution,
++        codec,
++        video_settings.frames_per_second,
++        scene.background_is_transparent(),
++        ffmpeg_params,
++        audiofile,
++        audio_codec,
++    )
+ scene.render_to_video(
+     file_writer,
+     str(temp_file_path),
+     str(destination),
+
+[0m
+Now the tests — keep every existing assertion verbatim, re-point the probe stub at the new uncached seam (`_probe_once`), and add the new cases:
+[0m← [0mEdit tests/unit_tests/test_video_encoding.py
+Index: /content/algan/tests/unit_tests/test_video_encoding.py
+===================================================================
+--- /content/algan/tests/unit_tests/test_video_encoding.py
++++ /content/algan/tests/unit_tests/test_video_encoding.py
+@@ -1,8 +1,10 @@
+ """Tests for automatic video-encoder selection (``select_video_encoder``)."""
+ 
+ from __future__ import annotations
+ 
++from types import SimpleNamespace
++
+ import pytest
+ 
+ from algan.utils import video_encoding
+ from algan.utils.video_encoding import select_video_encoder
+
+[0m
+[0m← [0mEdit tests/unit_tests/test_video_encoding.py
+Index: /content/algan/tests/unit_tests/test_video_encoding.py
+===================================================================
+--- /content/algan/tests/unit_tests/test_video_encoding.py
++++ /content/algan/tests/unit_tests/test_video_encoding.py
+@@ -36,16 +36,61 @@
+     monkeypatch.delenv("ALGAN_VIDEO_ENCODER", raising=False)
+ 
+ 
+ def _patch_probe(monkeypatch, usable, calls=None):
++    """Stub the uncached probe: usable, via a binary worth naming."""
++    binary = "/probed/nvenc-ffmpeg" if usable else None
++
+     def probe():
+         if calls is not None:
+             calls.append(1)
+-        return usable
++        return usable, binary
+ 
+-    monkeypatch.setattr(video_encoding, "_nvenc_usable", probe)
++    monkeypatch.setattr(video_encoding, "_probe_once", probe)
+ 
+ 
++def _patch_candidates(monkeypatch, binaries, verdicts, calls=None):
++    """Stub the candidate list and per-binary usability, keeping the real
++    first-usable-wins walk of ``_probe_once`` under test."""
++
++    def usable(binary):
++        if calls is not None:
++            calls.append(binary)
++        return verdicts[binary]
++
++    monkeypatch.setattr(video_encoding, "_candidate_binaries", lambda: list(binaries))
++    monkeypatch.setattr(video_encoding, "_binary_usable", usable)
++
++
++def _patch_subprocess_probe(monkeypatch, capabilities):
++    """Drive the real ``_binary_usable`` through a fake subprocess.run.
++
++    ``capabilities`` maps binary -> dict with optional keys "lists_nvenc"
++    (default False) and "encodes" (default False); binaries absent from the
++    mapping fail to launch at all.
++    """
++
++    def run(cmd, **kwargs):
++        binary = cmd[0]
++        caps = capabilities.get(binary)
++        if caps is None:
++            raise OSError(f"cannot run {binary}")
++        if "-encoders" in cmd:
++            listing = (
++                " V..... h264_nvenc           NVIDIA NVENC H.264 encoder\n"
++                if caps.get("lists_nvenc")
++                else " V..... libx264              libx264 H.264\n"
++            )
++            return SimpleNamespace(returncode=0, stdout=listing, stderr="")
++        return SimpleNamespace(
++            returncode=0 if caps.get("encodes") else 1,
++            stdout=b"",
++            stderr=b"InitializeEncoder failed",
++        )
++
++    monkeypatch.setattr(video_encoding.subprocess, "run", run)
++
++
+ def test_auto_with_unusable_probe_returns_todays_software_pair(
+     monkeypatch,
+ ):
+     _patch_probe(monkeypatch, usable=False)
+
+[0m
+Existing assertions stay verbatim. Now append the new cases:
+[0m← [0mEdit tests/unit_tests/test_video_encoding.py
+Index: /content/algan/tests/unit_tests/test_video_encoding.py
+===================================================================
+--- /content/algan/tests/unit_tests/test_video_encoding.py
++++ /content/algan/tests/unit_tests/test_video_encoding.py
+@@ -159,4 +159,125 @@
+     _patch_probe(monkeypatch, usable=False, calls=calls)
+     monkeypatch.setenv("ALGAN_VIDEO_ENCODER", "nveng")
+     with pytest.warns(Warning, match="ALGAN_VIDEO_ENCODER='nveng' is not one of"):
+         assert select_video_encoder(None, None, False) == SOFTWARE_PAIR
++
++
++def test_moviepy_binary_without_nvenc_system_with_nvenc_picks_system(monkeypatch):
++    calls = []
++    _patch_candidates(
++        monkeypatch,
++        ["/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg"],
++        {"/fake/moviepy-ffmpeg": False, "/usr/bin/ffmpeg": True},
++        calls,
++    )
++    assert select_video_encoder(None, None, False) == NVENC_PAIR
++    # Moviepy's own binary was tried first and rejected...
++    assert calls == ["/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg"]
++    # ...so the writer must run the system binary that won, not moviepy's.
++    assert video_encoding.resolve_encode_binary("h264_nvenc") == "/usr/bin/ffmpeg"
++
++
++def test_no_candidate_usable_software_stays_on_moviepys_binary(monkeypatch):
++    calls = []
++    _patch_candidates(
++        monkeypatch,
++        ["/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg"],
++        {"/fake/moviepy-ffmpeg": False, "/usr/bin/ffmpeg": False},
++        calls,
++    )
++    assert select_video_encoder(None, None, False) == SOFTWARE_PAIR
++    # Software encoding never moves the binary off moviepy's configuration;
++    # even an NVENC question comes back empty rather than guessing.
++    assert video_encoding.resolve_encode_binary("libx264") is None
++    assert video_encoding.resolve_encode_binary("h264_nvenc") is None
++    # One probe served all three queries.
++    assert len(calls) == 2
++
++
++def test_first_usable_candidate_wins(monkeypatch):
++    _patch_candidates(
++        monkeypatch,
++        ["/env/ffmpeg", "/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg"],
++        {b: True for b in ("/env/ffmpeg", "/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg")},
++    )
++    assert select_video_encoder(None, None, False) == NVENC_PAIR
++    assert video_encoding.resolve_encode_binary("h264_nvenc") == "/env/ffmpeg"
++
++
++def test_candidate_order_is_env_then_moviepy_then_path(monkeypatch):
++    monkeypatch.setattr(
++        video_encoding, "_moviepy_ffmpeg_binary", lambda: "/env/ffmpeg"
++    )
++    monkeypatch.setattr(video_encoding.shutil, "which", lambda name: "/usr/bin/ffmpeg")
++    # With the variable set, moviepy resolves to it too: probed once.
++    monkeypatch.setenv("FFMPEG_BINARY", "/env/ffmpeg")
++    assert video_encoding._candidate_binaries() == [
++        "/env/ffmpeg",
++        "/usr/bin/ffmpeg",
++    ]
++    # Without it, moviepy's configured binary comes before the PATH.
++    monkeypatch.delenv("FFMPEG_BINARY", raising=False)
++    monkeypatch.setattr(
++        video_encoding, "_moviepy_ffmpeg_binary", lambda: "/moviepy/ffmpeg"
++    )
++    assert video_encoding._candidate_binaries() == [
++        "/moviepy/ffmpeg",
++        "/usr/bin/ffmpeg",
++    ]
++
++
++def test_unusable_candidates_are_skipped_by_the_real_check(monkeypatch):
++    """The launch failure and both usability failures route through DEBUG
++    logging and fall through to the working candidate."""
++    _patch_candidates(
++        monkeypatch,
++        ["/bin/missing-ffmpeg", "/fake/no-nvenc", "/fake/broken-nvenc", "/usr/bin/ffmpeg"],
++    )
++    _patch_subprocess_probe(
++        monkeypatch,
++        {
++            "/fake/no-nvenc": {"lists_nvenc": False},
++            "/fake/broken-nvenc": {"lists_nvenc": True, "encodes": False},
++            "/usr/bin/ffmpeg": {"lists_nvenc": True, "encodes": True},
++        },
++    )
++    assert video_encoding._probe_cached() == (True, "/usr/bin/ffmpeg")
++
++
++def test_forced_nvenc_mode_runs_a_usable_binary_when_one_exists(monkeypatch):
++    _patch_probe(monkeypatch, usable=True)
++    monkeypatch.setenv("ALGAN_VIDEO_ENCODER", "nvenc")
++    assert select_video_encoder(None, None, False) == NVENC_PAIR
++    assert video_encoding.resolve_encode_binary("h264_nvenc") == "/probed/nvenc-ffmpeg"
++
++
++def test_forced_nvenc_with_no_usable_binary_keeps_moviepys_binary(monkeypatch):
++    """The codec is still forced -- no silent fallback -- but without a usable
++    binary the writer stays on moviepy's own, failing loudly as before."""
++    _patch_probe(monkeypatch, usable=False)
++    monkeypatch.setenv("ALGAN_VIDEO_ENCODER", "nvenc")
++    assert select_video_encoder(None, None, False) == NVENC_PAIR
++    assert video_encoding.resolve_encode_binary("h264_nvenc") is None
++
++
++def test_override_moviepy_ffmpeg_binary_is_restored_afterwards():
++    moviepy_config = pytest.importorskip("moviepy.config")
++    ffmpeg_writer = pytest.importorskip("moviepy.video.io.ffmpeg_writer")
++
++    original_config = moviepy_config.FFMPEG_BINARY
++    original_writer = ffmpeg_writer.FFMPEG_BINARY
++    with video_encoding.override_moviepy_ffmpeg_binary("/chosen/ffmpeg"):
++        assert moviepy_config.FFMPEG_BINARY == "/chosen/ffmpeg"
++        assert ffmpeg_writer.FFMPEG_BINARY == "/chosen/ffmpeg"
++    assert moviepy_config.FFMPEG_BINARY == original_config
++    assert ffmpeg_writer.FFMPEG_BINARY == original_writer
++
++
++def test_override_without_a_binary_touches_nothing():
++    moviepy_config = pytest.importorskip("moviepy.config")
++    ffmpeg_writer = pytest.importorskip("moviepy.video.io.ffmpeg_writer")
++
++    before = (moviepy_config.FFMPEG_BINARY, ffmpeg_writer.FFMPEG_BINARY)
++    with video_encoding.override_moviepy_ffmpeg_binary(None):
++        pass
++    assert (moviepy_config.FFMPEG_BINARY, ffmpeg_writer.FFMPEG_BINARY) == before
+
+[0m
+[0m$ [0muv run -m pytest -q tests/unit_tests/test_video_encoding.py tests/unit_tests/test_environment.py 2>&1 | tail -15
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7e99112bc590>
+
+    def test_unusable_candidates_are_skipped_by_the_real_check(monkeypatch):
+        """The launch failure and both usability failures route through DEBUG
+        logging and fall through to the working candidate."""
+>       _patch_candidates(
+            monkeypatch,
+            ["/bin/missing-ffmpeg", "/fake/no-nvenc", "/fake/broken-nvenc", "/usr/bin/ffmpeg"],
+        )
+E       TypeError: _patch_candidates() missing 1 required positional argument: 'verdicts'
+
+tests/unit_tests/test_video_encoding.py:232: TypeError
+=========================== short test summary info ============================
+FAILED tests/unit_tests/test_video_encoding.py::test_unusable_candidates_are_skipped_by_the_real_check
+1 failed, 35 passed in 19.22s
+[0m
+[0m← [0mEdit tests/unit_tests/test_video_encoding.py
+Index: /content/algan/tests/unit_tests/test_video_encoding.py
+===================================================================
+--- /content/algan/tests/unit_tests/test_video_encoding.py
++++ /content/algan/tests/unit_tests/test_video_encoding.py
+@@ -228,11 +228,17 @@
+ 
+ def test_unusable_candidates_are_skipped_by_the_real_check(monkeypatch):
+     """The launch failure and both usability failures route through DEBUG
+     logging and fall through to the working candidate."""
+-    _patch_candidates(
+-        monkeypatch,
+-        ["/bin/missing-ffmpeg", "/fake/no-nvenc", "/fake/broken-nvenc", "/usr/bin/ffmpeg"],
++    monkeypatch.setattr(
++        video_encoding,
++        "_candidate_binaries",
++        lambda: [
++            "/bin/missing-ffmpeg",
++            "/fake/no-nvenc",
++            "/fake/broken-nvenc",
++            "/usr/bin/ffmpeg",
++        ],
+     )
+     _patch_subprocess_probe(
+         monkeypatch,
+         {
+
+[0m
+That test must stub only the candidate list, leaving the real `_binary_usable` in place:
+[0m$ [0muv run -m pytest -q tests/unit_tests/test_video_encoding.py tests/unit_tests/test_environment.py 2>&1 | tail -5
+....................................                                     [100%]
+36 passed in 20.70s
+[0m
+All 36 pass. Now the small docs touch-up so the paragraph stays truthful about binary selection:
+[0m← [0mEdit docs/source/advanced_user_tutorials/saving_videos_and_images.rst
+Index: /content/algan/docs/source/advanced_user_tutorials/saving_videos_and_images.rst
+===================================================================
+--- /content/algan/docs/source/advanced_user_tutorials/saving_videos_and_images.rst
++++ /content/algan/docs/source/advanced_user_tutorials/saving_videos_and_images.rst
+@@ -128,11 +128,18 @@
+ By default videos are encoded with FFmpeg's ``libx264`` at high quality
+ (``-crf 17 -preset slower``), which is CPU work. On machines with an NVIDIA
+ GPU whose driver exposes the NVENC encoder engine, Algan instead encodes with
+ ``h264_nvenc``, leaving the CPU to the renderer; on everything else it keeps
+-the software encoder. The choice is automatic and silent: Algan probes the
+-same FFmpeg binary it encodes with once per process, and falls back to
+-software encoding whenever hardware encoding is not usable.
++the software encoder. The choice is automatic and silent: once per process,
++Algan looks for an FFmpeg binary that can actually drive NVENC -- first the
++binary named by the ``FFMPEG_BINARY`` environment variable (if set), then the
++one moviepy is configured with, then ``ffmpeg`` on the ``PATH`` -- checks each
++for the encoder and a working test encode, and encodes with the first that
++passes, running that binary for the encode. This matters because moviepy is
++often configured with a stripped-down static FFmpeg build that has no NVENC
++encoders even on machines where the system's ffmpeg can use them. When no
++candidate qualifies, videos fall back to software encoding on moviepy's own
++binary.
+ 
+ You can pin the choice yourself by setting the ``ALGAN_VIDEO_ENCODER``
+ environment variable to ``software`` (always ``libx264``, today's exact
+ behaviour), ``nvenc`` (always ``h264_nvenc``), or ``auto`` (the default).
+
+[0m
+Docs done. Now the end-to-end verification. First check current state of the output directory and both binaries:
+[0m$ [0mls -la /content/algan/scratch_perf/ox/ && ls /content/algan/algan_outputs 2>/dev/null; echo "---system ffmpeg nvenc encoders---"; /usr/bin/ffmpeg -hide_banner -encoders 2>/dev/null | grep -i nvenc
+total 2696
+drwxr-xr-x 3 root root    4096 Aug 25 05:31 .
+drwxr-xr-x 4 root root    4096 Aug 25 05:49 ..
+drwxr-xr-x 2 root root    4096 Aug 25 05:20 algan_outputs
+-rw-r--r-- 1 root root    2710 Aug 25 05:21 brief_nvenc_binary.md
+-rw-r--r-- 1 root root    4642 Aug 25 04:45 brief_nvenc.md
+-rw-r--r-- 1 root root     851 Aug 25 05:14 render_hd_encode_check.py
+-rw-r--r-- 1 root root    8483 Aug 25 05:30 REPORT_nvenc.md
+-rw-r--r-- 1 root root   46367 Aug 25 05:49 run_nvenc_binary.log
+-rw-r--r-- 1 root root   37886 Aug 25 05:31 run_nvenc.log
+-rwxr-xr-x 1 root root     997 Aug 25 04:58 run_ox.sh
+-rw-r--r-- 1 root root 2614903 Aug 25 05:14 world_map.png
+profiling
+smoke.mp4
+---system ffmpeg nvenc encoders---
+ V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
+ V..... nvenc                NVIDIA NVENC H.264 encoder (codec h264)
+ V..... nvenc_h264           NVIDIA NVENC H.264 encoder (codec h264)
+ V..... nvenc_hevc           NVIDIA NVENC hevc encoder (codec hevc)
+ V....D hevc_nvenc           NVIDIA NVENC hevc encoder (codec hevc)
+[0m
+[0m$ [0mls -la /content/algan/scratch_perf/ox/algan_outputs/; echo "---moviepy (imageio) ffmpeg nvenc count---"; /content/algan/.venv/lib/python3.13/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2 -hide_banner -encoders 2>/dev/null | grep -ci nvenc
+total 1296
+drwxr-xr-x 2 root root   4096 Aug 25 05:20 .
+drwxr-xr-x 3 root root   4096 Aug 25 05:31 ..
+-rw-r--r-- 1 root root 260286 Aug 25 05:18 nn_HD_auto.mp4
+-rw-r--r-- 1 root root 791469 Aug 25 05:20 nn_HD_auto_sysffmpeg.mp4
+-rw-r--r-- 1 root root 260286 Aug 25 05:16 nn_HD_software.mp4
+---moviepy (imageio) ffmpeg nvenc count---
+0
+[0m
+There's already a `run_nvenc_binary.log` newer than the previous report — let me check what it is before touching anything:
+[0m$ [0mhead -30 /content/algan/scratch_perf/ox/run_nvenc_binary.log; echo ...; tail -20 /content/algan/scratch_perf/ox/run_nvenc_binary.log
+=== attempt 1 Tue Aug 25 05:31:25 AM UTC 2026
+=== ping ok, launching
+[0m
+> build · x-preview-f-free
+[0m
+[0m→ [0mRead scratch_perf/ox/brief_nvenc_binary.md
+[0m
+[0m# [0mTodos
+[•] Read prior brief/report + current implementation (video_encoding.py, algan_utils.py)
+[ ] Inspect installed moviepy 2.x binary-selection mechanism
+[ ] Implement binary probing + selection in video_encoding.py
+[ ] Wire writer override via context manager in algan_utils.py
+[ ] Add/update unit tests
+[ ] Run pytest on test_video_encoding.py + test_environment.py
+[ ] Run render_hd_encode_check.py with auto; capture logs + ffprobe
+[ ] Run ruff check --no-fix + format --check on touched files
+[ ] Write REPORT_nvenc_binary.md
+[0m
+[0m→ [0mRead scratch_perf/ox/brief_nvenc.md
+[0m→ [0mRead scratch_perf/ox/REPORT_nvenc.md
+[0m→ [0mRead algan/utils/video_encoding.py
+[0m✱ [0mGrep "select_video_encoder|get_file_writer|FFMPEG_BINARY"[90m in algan · 9 matches[0m
+[0m→ [0mRead algan/utils/algan_utils.py[90m [limit=140, offset=60][0m
+[0m→ [0mRead algan/utils/algan_utils.py[90m [limit=130, offset=290][0m
+[0m→ [0mRead tests/unit_tests/test_video_encoding.py
+[0m→ [0mRead scratch_perf/ox/render_hd_encode_check.py
+[0m
+[0m$ [0muv run python -c "
+import moviepy
+print('moviepy', moviepy.__version__)
+...
+profiling
+smoke.mp4
+---system ffmpeg nvenc encoders---
+ V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
+ V..... nvenc                NVIDIA NVENC H.264 encoder (codec h264)
+ V..... nvenc_h264           NVIDIA NVENC H.264 encoder (codec h264)
+ V..... nvenc_hevc           NVIDIA NVENC hevc encoder (codec hevc)
+ V....D hevc_nvenc           NVIDIA NVENC hevc encoder (codec hevc)
+[0m
+[0m$ [0mls -la /content/algan/scratch_perf/ox/algan_outputs/; echo "---moviepy (imageio) ffmpeg nvenc count---"; /content/algan/.venv/lib/python3.13/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2 -hide_banner -encoders 2>/dev/null | grep -ci nvenc
+total 1296
+drwxr-xr-x 2 root root   4096 Aug 25 05:20 .
+drwxr-xr-x 3 root root   4096 Aug 25 05:31 ..
+-rw-r--r-- 1 root root 260286 Aug 25 05:18 nn_HD_auto.mp4
+-rw-r--r-- 1 root root 791469 Aug 25 05:20 nn_HD_auto_sysffmpeg.mp4
+-rw-r--r-- 1 root root 260286 Aug 25 05:16 nn_HD_software.mp4
+---moviepy (imageio) ffmpeg nvenc count---
+0
+[0m
+There's already a `run_nvenc_binary.log` newer than the previous report — let me check what it is before touching anything:
+[0m
+That log is just this session's own transcript tee from the launcher — I'll leave it alone and use distinct filenames for my captures. Now move the stale software-encoded `nn_HD_auto.mp4` aside and run the auto arm:
+[0m$ [0mmv algan_outputs/nn_HD_auto.mp4 algan_outputs/nn_HD_auto_prev_libx264.mp4 && ALGAN_VIDEO_ENCODER=auto ALGAN_USE_DAEMON=0 ../.venv/bin/python render_hd_encode_check.py > run_auto_arm.log 2>&1; tail -25 run_auto_arm.log
+/bin/bash: line 1: ../.venv/bin/python: No such file or directory
+[0m
+[0m$ [0mmv algan_outputs/nn_HD_auto.mp4 algan_outputs/nn_HD_auto_prev_libx264.mp4 && ALGAN_VIDEO_ENCODER=auto ALGAN_USE_DAEMON=0 uv run python render_hd_encode_check.py > run_auto_arm.log 2>&1; tail -30 run_auto_arm.log
+mv: cannot stat 'algan_outputs/nn_HD_auto.mp4': No such file or directory
+/bin/bash: line 1: ../.venv/bin/python: No such file or directory
+[0m
+[0m$ [0mpwd && ls algan_outputs | head
+/content/algan/scratch_perf/ox
+nn_HD_auto_prev_libx264.mp4
+nn_HD_auto_sysffmpeg.mp4
+nn_HD_software.mp4
+[0m
+The rename already happened; only the render was skipped by the short-circuit. Running the auto arm now:
+[0m$ [0mALGAN_VIDEO_ENCODER=auto ALGAN_USE_DAEMON=0 uv run python render_hd_encode_check.py > run_auto_arm.log 2>&1; grep -E "Encoding video|Finished rendering|NVENC|Error|error" run_auto_arm.log | head -20
+Encoding video with h264_nvenc
+Finished rendering nn_HD_auto.mp4 in 84.9 s
+[0m
+NVENC is now chosen by `auto`. Capturing the probe's DEBUG walk and the ffprobe verification:
+[0m$ [0mffprobe -v error -show_streams -of default=noprint_wrappers=1 algan_outputs/nn_HD_auto.mp4 | grep -E "codec_name|^width|^height|pix_fmt|r_frame_rate|avg_frame_rate|^duration|nb_frames|profile=" ; echo "--- decode check ---"; ffmpeg -v error -i algan_outputs/nn_HD_auto.mp4 -f null - && echo "decode: zero errors"
+codec_name=h264
+profile=Main
+width=1920
+height=1080
+pix_fmt=yuv420p
+r_frame_rate=30/1
+avg_frame_rate=30/1
+duration_ts=7680
+duration=0.500000
+nb_frames=15
+--- decode check ---
+decode: zero errors
+[0m
+[0m$ [0mALGAN_USE_DAEMON=0 ALGAN_LOG_LEVEL=DEBUG uv run python -c "
+import os
+os.environ['ALGAN_USE_DAEMON'] = '0'
+from algan.utils.video_encoding import select_video_encoder, resolve_encode_binary
+print('selected:', select_video_encoder(None, None, False))
+print('binary :', resolve_encode_binary('h264_nvenc'))
+" 2>&1 | grep -E "NVENC|selected|binary"
+NVENC probe: /content/algan/.venv/lib/python3.13/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2 does not list h264_nvenc in -encoders
+NVENC probe: h264_nvenc is usable via /usr/bin/ffmpeg
+selected: ('h264_nvenc', ['-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '19', '-b:v', '0', '-pix_fmt', 'yuv420p'])
+binary : /usr/bin/ffmpeg
+[0m
+All green. Now lint and format checks on the touched Python files:
+[0m$ [0muv run ruff check --no-fix algan/utils/video_encoding.py algan/utils/algan_utils.py tests/unit_tests/test_video_encoding.py && uv run ruff format --check algan/utils/video_encoding.py algan/utils/algan_utils.py tests/unit_tests/test_video_encoding.py
+tests/unit_tests/test_video_encoding.py:52:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+   |
+51 |   def _patch_candidates(monkeypatch, binaries, verdicts, calls=None):
+52 | /     """Stub the candidate list and per-binary usability, keeping the real
+53 | |     first-usable-wins walk of ``_probe_once`` under test."""
+   | |____________________________________________________________^ D209
+54 |
+55 |       def usable(binary):
+   |
+   = help: Move closing quotes to new line
+
+tests/unit_tests/test_video_encoding.py:201:9: C420 [*] Unnecessary dict comprehension for iterable; use `dict.fromkeys` instead
+    |
+199 |         monkeypatch,
+200 |         ["/env/ffmpeg", "/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg"],
+201 |         {b: True for b in ("/env/ffmpeg", "/fake/moviepy-ffmpeg", "/usr/bin/ffmpeg")},
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ C420
+202 |     )
+203 |     assert select_video_encoder(None, None, False) == NVENC_PAIR
+    |
+    = help: Replace with `dict.fromkeys(iterable)`)
+
+tests/unit_tests/test_video_encoding.py:230:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+    |
+229 |   def test_unusable_candidates_are_skipped_by_the_real_check(monkeypatch):
+230 | /     """The launch failure and both usability failures route through DEBUG
+231 | |     logging and fall through to the working candidate."""
+    | |_________________________________________________________^ D209
+232 |       monkeypatch.setattr(
+233 |           video_encoding,
+    |
+    = help: Move closing quotes to new line
+
+tests/unit_tests/test_video_encoding.py:261:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+    |
+260 |   def test_forced_nvenc_with_no_usable_binary_keeps_moviepys_binary(monkeypatch):
+261 | /     """The codec is still forced -- no silent fallback -- but without a usable
+262 | |     binary the writer stays on moviepy's own, failing loudly as before."""
+    | |__________________________________________________________________________^ D209
+263 |       _patch_probe(monkeypatch, usable=False)
+264 |       monkeypatch.setenv("ALGAN_VIDEO_ENCODER", "nvenc")
+    |
+    = help: Move closing quotes to new line
+
+tests/unit_tests/test_video_encoding.py:278:12: SIM300 [*] Yoda condition detected
+    |
+276 |         assert moviepy_config.FFMPEG_BINARY == "/chosen/ffmpeg"
+277 |         assert ffmpeg_writer.FFMPEG_BINARY == "/chosen/ffmpeg"
+278 |     assert moviepy_config.FFMPEG_BINARY == original_config
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ SIM300
+279 |     assert ffmpeg_writer.FFMPEG_BINARY == original_writer
+    |
+    = help: Rewrite as `original_config == moviepy_config.FFMPEG_BINARY`
+
+tests/unit_tests/test_video_encoding.py:279:12: SIM300 [*] Yoda condition detected
+    |
+277 |         assert ffmpeg_writer.FFMPEG_BINARY == "/chosen/ffmpeg"
+278 |     assert moviepy_config.FFMPEG_BINARY == original_config
+279 |     assert ffmpeg_writer.FFMPEG_BINARY == original_writer
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ SIM300
+    |
+    = help: Rewrite as `original_writer == ffmpeg_writer.FFMPEG_BINARY`
+
+tests/unit_tests/test_video_encoding.py:289:12: SIM300 [*] Yoda condition detected
+    |
+287 |     with video_encoding.override_moviepy_ffmpeg_binary(None):
+288 |         pass
+289 |     assert (moviepy_config.FFMPEG_BINARY, ffmpeg_writer.FFMPEG_BINARY) == before
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ SIM300
+    |
+
+Found 7 errors.
+[*] 7 fixable with the `--fix` option.
+[0m
+[0m$ [0muv run ruff check --fix tests/unit_tests/test_video_encoding.py && uv run ruff format tests/unit_tests/test_video_encoding.py && uv run ruff check --no-fix algan/utils/video_encoding.py algan/utils/algan_utils.py tests/unit_tests/test_video_encoding.py && uv run ruff format --check algan/utils/video_encoding.py algan/utils/algan_utils.py tests/unit_tests/test_video_encoding.py
+Found 7 errors (7 fixed, 0 remaining).
+1 file reformatted
+All checks passed!
+3 files already formatted
+[0m
+Re-run the tests after the auto-fixes:
+[0m$ [0muv run -m pytest -q tests/unit_tests/test_video_encoding.py tests/unit_tests/test_environment.py 2>&1 | tail -3
+....................................                                     [100%]
+36 passed in 12.32s
+[0m
+[0m# [0mTodos
+[✓] Read prior brief/report + current implementation (video_encoding.py, algan_utils.py)
+[✓] Inspect installed moviepy 2.x binary-selection mechanism
+[✓] Implement binary probing + selection in video_encoding.py
+[✓] Wire writer override via context manager in algan_utils.py
+[✓] Add/update unit tests
+[✓] Run pytest on test_video_encoding.py + test_environment.py
+[✓] Run render_hd_encode_check.py with auto; capture logs + ffprobe
+[✓] Run ruff check --no-fix + format --check on touched files
+[•] Write REPORT_nvenc_binary.md
+[0m
+All verification steps pass. Writing the report:
+[0m← [0mWrite scratch_perf/ox/REPORT_nvenc_binary.md
+Wrote file successfully.
+[0m
+[0m$ [0mgit status --short && git stash list | head -3
+M algan/environment.py
+ M algan/scene.py
+ M algan/utils/algan_utils.py
+ M docs/source/advanced_user_tutorials/saving_videos_and_images.rst
+?? algan/utils/video_encoding.py
+?? algan_profile_report_nn_PREVIEW.txt
+?? algan_profile_report_nn_UHD.txt
+?? tests/unit_tests/test_video_encoding.py
+[0m
+Done. The brief is carried out in full; nothing committed.
+
+**What changed**
+- `algan/utils/video_encoding.py` — probe now walks candidate binaries in order (`FFMPEG_BINARY` env var → moviepy's configured binary → `shutil.which("ffmpeg")`), first one that lists `h264_nvenc` *and* passes a 256x256 test encode wins; cached once per process, failures at DEBUG. New `resolve_encode_binary(codec)` and an `override_moviepy_ffmpeg_binary` context manager.
+- `algan/utils/algan_utils.py` — wraps the single `get_file_writer(...)` call in that context manager when a non-default binary won. Route documented in-code: moviepy 2.1.2 has no per-writer binary arg — the writer reads the module global bound from `moviepy.config` at import time, so both attributes are set for the block and restored (the subprocess spawns at construction, so this window suffices).
+- Tests: all 8 original cases keep their assertions verbatim; 9 added (system-binary-wins, none-usable→software-on-moviepy's-binary, ordering/priority, real-check skip paths, forced-mode binary behaviour, override set/restore).
+- Docs paragraph updated to describe the binary search.
+
+**Verification (all verbatim in `scratch_perf/ox/REPORT_nvenc_binary.md`)**
+- `36 passed in 12.32s` on `test_video_encoding.py` + `test_environment.py`
+- Auto arm now logs `Encoding video with h264_nvenc` / `Finished rendering nn_HD_auto.mp4 in 84.9 s` (software arm last report: 89.0 s); DEBUG shows moviepy's imageio build rejected and `/usr/bin/ffmpeg` chosen
+- `ffprobe`: `codec_name=h264`, `profile=Main`, `nb_frames=15` (= 0.5s × 30fps), zero decode errors
+- `ruff check --no-fix` / `ruff format --check`: clean on all three touched Python files
+
+One judgement call worth flagging: forced `ALGAN_VIDEO_ENCODER=nvenc` still never falls back to software (existing test pinned), but it now probes to pick a usable binary; if none exists the writer keeps moviepy's binary and fails loudly, as before binaries were selectable.
+OX EXIT 0

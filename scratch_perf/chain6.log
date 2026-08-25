@@ -1,0 +1,8 @@
+=== fresh master UHD render (software encoder, quiet GPU) vs baseline video
+frames compared: 30
+worst channel diff: 67 (frame 28)
+pixels over tol 2: worst frame 63146 of 8294400 (0.761%, frame 28); mean 3497.0/frame; 3 of 30 frames affected
+=== fresh master vs branch (3-frame batches)
+frames compared: 30
+worst channel diff: 80 (frame 1)
+pixels over tol 2: worst frame 401499 of 8294400 (4.841%, frame 28); mean 355446.4/frame; 30 of 30 frames affected

@@ -1,0 +1,7 @@
+Rendering device set to cuda
+Encoding video with libx264
+Began rendering det_bisect_widetexoff_b3_0.mp4
+Finished rendering det_bisect_widetexoff_b3_0.mp4 in 92.6 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+rendered scratch_perf/det_bisect_widetexoff_b3_0.mp4 92.6s

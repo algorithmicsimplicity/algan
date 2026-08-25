@@ -1,0 +1,7 @@
+# Videos, images and binary dumps from the probes are regenerable and large.
+*.mp4
+*.png
+*.pstats
+*.json
+baseline_videos/
+ox/algan_outputs/
