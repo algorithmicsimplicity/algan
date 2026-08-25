@@ -40,6 +40,11 @@ from algan.errors import (
 from algan.logging.logger import get_logger
 from algan.rendering.camera import Camera
 from algan.settings import SETTINGS
+from algan.utils.video_encoding import (
+    override_moviepy_ffmpeg_binary,
+    resolve_encode_binary,
+    select_video_encoder,
+)
 
 logger = get_logger()
 
@@ -331,16 +336,23 @@ def _render_scene_to_file(
             # so authoring can continue after save_video returns.
             scene_finalized = False
 
+        transparent = scene.background_is_transparent()
+        # Selection sees the raw arguments, before defaults are filled in:
+        # an explicit codec must win verbatim, caller-supplied parameters
+        # must not be confused with Algan's own, and its software fallback
+        # reproduces exactly the pair the fills below used to produce.
+        codec, ffmpeg_params = select_video_encoder(codec, ffmpeg_params, transparent)
+        # A hardware pick can land on a binary other than moviepy's own
+        # (moviepy is often configured with a static build that has no NVENC
+        # encoders); None keeps moviepy's configuration untouched.
+        encode_binary = resolve_encode_binary(codec)
         if codec is None:
-            codec = "png" if scene.background_is_transparent() else "libx264"
+            codec = "png" if transparent else "libx264"
         if audio_codec is None:
             audio_codec = "mp3"
         if ffmpeg_params is None:
-            ffmpeg_params = (
-                ["-crf", "17", "-preset", "slower"]
-                if not scene.background_is_transparent()
-                else []
-            )
+            ffmpeg_params = [] if transparent else ["-crf", "17", "-preset", "slower"]
+        logger.info(f"Encoding video with {codec}")
 
         temp_file_path = destination.with_name(
             f"{destination.stem}_temp{destination.suffix}"
@@ -364,16 +376,19 @@ def _render_scene_to_file(
                 )
             logger.info("Audio rendered, now rendering video")
 
-        file_writer = get_file_writer(
-            str(temp_file_path),
-            video_settings.resolution,
-            codec,
-            video_settings.frames_per_second,
-            scene.background_is_transparent(),
-            ffmpeg_params,
-            audiofile,
-            audio_codec,
-        )
+        # The writer spawns its ffmpeg process at construction, so the
+        # override only needs to span this call; it is restored right after.
+        with override_moviepy_ffmpeg_binary(encode_binary):
+            file_writer = get_file_writer(
+                str(temp_file_path),
+                video_settings.resolution,
+                codec,
+                video_settings.frames_per_second,
+                scene.background_is_transparent(),
+                ffmpeg_params,
+                audiofile,
+                audio_codec,
+            )
         scene.render_to_video(
             file_writer,
             str(temp_file_path),

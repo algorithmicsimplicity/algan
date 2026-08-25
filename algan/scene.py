@@ -1380,6 +1380,11 @@ class Scene(RenderLoopMixin):
         codec, audio_codec, ffmpeg_params
             Encoder overrides passed through to FFmpeg. Each defaults to
             ``None``, letting Algan pick from the background's transparency.
+            With no explicit ``codec``, Algan encodes with ``libx264`` or --
+            when the machine's NVIDIA driver exposes NVENC -- the hardware
+            ``h264_nvenc`` encoder; set the ``ALGAN_VIDEO_ENCODER``
+            environment variable to ``software`` or ``nvenc`` to pin that
+            choice (see :doc:`/advanced_user_tutorials/saving_videos_and_images`).
 
         Returns
         -------
