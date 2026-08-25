@@ -37,7 +37,7 @@ from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
 from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
 from algan.settings.shape_style_profiles import _manim_shape_style_for
-from algan.utils.tensor_utils import cast_to_tensor
+from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
 def orient_faces_outward(vertex_coords, faces_list):
@@ -928,15 +928,21 @@ class Cylinder(Surface):
         The same expression ``coord_function`` samples the tube's rings at --
         negation included -- swept over the whole circle whatever ``v_range``
         is, since the discs are whole circles even on a half-pipe (matching
-        Manim). Read off the live basis, so it follows the tube.
+        Manim). Read off the live basis, so it follows the tube. The basis is
+        read uncopied: every consumer feeds it into out-of-place arithmetic.
         """
+        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
         u = -(azimuth * 2 * PI)
         return (
-            u.sin() * self.radius * self.get_right_basis()
-            + u.cos() * self.radius * self.get_forward_basis()
+            u.sin() * self.radius * basis_rows[..., 0, :]
+            + u.cos() * self.radius * basis_rows[..., 2, :]
         )
 
     def coord_function(self, uv):
+        # Same uncopied-basis read as _cap_ring_offsets: this runs per grid
+        # per stretch (set_location_by_function), where the clone would be a
+        # dead copy -- every result feeds out-of-place arithmetic.
+        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
         uv[..., 1:] /= uv[..., 1:].amax()
         # ``v_range`` is Manim's azimuthal domain, but Algan's grid carries the
         # azimuth on the *first* uv component and the axial parameter on the
@@ -946,9 +952,9 @@ class Cylinder(Surface):
         u = -(self.v_range[0] + uv[..., :1] * (self.v_range[1] - self.v_range[0]))
         v = uv[..., 1:]
         return (
-            u.sin() * self.radius * self.get_right_basis()
-            + (v - 0.5) * self.height * self.get_upwards_basis()
-            + u.cos() * self.radius * self.get_forward_basis()
+            u.sin() * self.radius * basis_rows[..., 0, :]
+            + (v - 0.5) * self.height * basis_rows[..., 1, :]
+            + u.cos() * self.radius * basis_rows[..., 2, :]
         )
 
     def normal_function(self, uv):
@@ -980,9 +986,15 @@ class Cylinder(Surface):
 
     @animated_function(animated_args={"interpolation": 0})
     def set_start_point(self, point, interpolation=1):
-        offset = self.get_upwards_basis() * 0.5
-        current_end = self.location + offset
-        current_start = self.location - offset
+        # Read uncopied: every result below feeds out-of-place arithmetic
+        # before any write happens (the writes land in _move_between_points),
+        # so the property getters' defensive clones would be dead copies on
+        # the per-synapse stretch path updaters hammer.
+        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
+        location = self.get_animated_attribute("location", copy=False)
+        offset = basis_rows[..., 1, :] * 0.5
+        current_end = location + offset
+        current_start = location - offset
         point = current_start * (1 - interpolation) + interpolation * cast_to_tensor(
             point
         )
@@ -991,9 +1003,11 @@ class Cylinder(Surface):
 
     @animated_function(animated_args={"interpolation": 0})
     def set_end_point(self, point, interpolation=1):
-        offset = self.get_upwards_basis() * 0.5
-        current_end = self.location + offset
-        current_start = self.location - offset
+        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
+        location = self.get_animated_attribute("location", copy=False)
+        offset = basis_rows[..., 1, :] * 0.5
+        current_end = location + offset
+        current_start = location - offset
         point = current_end * (1 - interpolation) + interpolation * cast_to_tensor(
             point
         )
@@ -1004,13 +1018,15 @@ class Cylinder(Surface):
     def move_between_points(self, start, end, interpolation=1):
         start = cast_to_tensor(start)
         end = cast_to_tensor(end)
+        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
+        location = self.get_animated_attribute("location", copy=False)
         offset = (
-            self.get_upwards_direction()
-            * self.scale_coefficient[..., 1].unsqueeze(-1)
+            F.normalize(basis_rows[..., 1, :], p=2, dim=-1)
+            * basis_rows.norm(p=2, dim=-1)[..., 1].unsqueeze(-1)
             * 0.5
         )
-        current_end = self.location + offset
-        current_start = self.location - offset
+        current_end = location + offset
+        current_start = location - offset
         start = current_start * (1 - interpolation) + interpolation * start
         end = current_end * (1 - interpolation) + interpolation * end
         self._move_between_points(start, end)

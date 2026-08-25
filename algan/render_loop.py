@@ -1860,7 +1860,9 @@ class RenderLoopMixin:
             key = (
                 actor.grid_width,
                 actor.grid_height,
-                tuple(actor.grid.location.shape),
+                # Shape only: read the location uncopied rather than clone
+                # every grid once per surface per batch just for ``.shape``.
+                tuple(actor.grid.get_animated_attribute("location", copy=False).shape),
             )
             groups[key].append(entry)
 

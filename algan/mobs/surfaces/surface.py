@@ -713,7 +713,17 @@ def get_render_primitives_batched(surfaces):
     ``ignore_normals`` False, and has identical grid dimensions and
     ``grid.location`` shape.
     """
-    grids = torch.stack([s._reshape_grid_for_render(s.grid.location) for s in surfaces])
+    # Read uncopied: the result only feeds ``reshape`` and ``torch.stack``,
+    # both out-of-place, so the property getter's defensive copy would be a
+    # second full-grid copy per surface per batch for nothing.
+    grids = torch.stack(
+        [
+            s._reshape_grid_for_render(
+                s.grid.get_animated_attribute("location", copy=False)
+            )
+            for s in surfaces
+        ]
+    )
     weld = surface_weld_flags(grids)
     vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids), weld)
     corners = grid_to_triangle_vertices(grids, weld)
@@ -3075,7 +3085,12 @@ class Surface(Mob):
         :class:`~algan.rendering.primitives.triangle_primitive.TrianglePrimitive`
             The surface's triangles for every frame of the batch.
         """
-        grid = self._reshape_grid_for_render(self.grid.location)
+        # Read uncopied: the grid only feeds reshapes and out-of-place
+        # gathers below (see get_render_primitives_batched for the same
+        # read on the batched path).
+        grid = self._reshape_grid_for_render(
+            self.grid.get_animated_attribute("location", copy=False)
+        )
         weld = surface_weld_flags(grid)
         if not self.ignore_normals:
             vertex_normals = grid_to_triangle_vertices(
@@ -3127,7 +3142,10 @@ class Surface(Mob):
             # geometry building only does arithmetic on these numbers, and a
             # subclass sends every operation through __torch_function__ (see
             # the matching note in BezierCircuitCubic.get_render_primitives).
-            grid_color = self.grid.get_animated_attribute("color").clone()
+            # Read uncopied and take the one defensive copy here: the values
+            # are mutated in place just below, and the public read's own clone
+            # would make it two.
+            grid_color = self.grid.get_animated_attribute("color", copy=False).clone()
             grid_color[..., -1:] *= self.grid.opacity
             grid_color[..., -2:-1] += self.grid.glow
             return grid_color
@@ -3310,7 +3328,7 @@ class Surface(Mob):
             The ``(u, v)`` coordinates, shape ``[W, H, 2]``.
         """
         device = (
-            self.grid.location.device
+            self.grid.get_animated_attribute("location", copy=False).device
             if hasattr(self, "grid") and hasattr(self.grid, "location")
             else None
         )
@@ -3584,7 +3602,11 @@ class Surface(Mob):
         """
 
         def target_function(uv):
-            return function(uv.clone()) + self.location
+            # The location read is uncopied: it only feeds this out-of-place
+            # add, and this runs per grid per shape rebuild.
+            return function(uv.clone()) + self.get_animated_attribute(
+                "location", copy=False
+            )
 
         self.coord_function_active = function
         new_loc = target_function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
