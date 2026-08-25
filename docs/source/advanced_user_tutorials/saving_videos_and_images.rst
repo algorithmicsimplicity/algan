@@ -122,6 +122,36 @@ small result object describing what it did, which is handy in scripts:
     result = Scene.save_video("my_video")
     print(result.output_path, result.duration_seconds)
 
+Choosing the video encoder
+==========================
+
+By default videos are encoded with FFmpeg's ``libx264`` at high quality
+(``-crf 17 -preset slower``), which is CPU work. On machines with an NVIDIA
+GPU whose driver exposes the NVENC encoder engine, Algan instead encodes with
+``h264_nvenc``, leaving the CPU to the renderer; on everything else it keeps
+the software encoder. The choice is automatic and silent: once per process,
+Algan looks for an FFmpeg binary that can actually drive NVENC -- first the
+binary named by the ``FFMPEG_BINARY`` environment variable (if set), then the
+one moviepy is configured with, then ``ffmpeg`` on the ``PATH`` -- checks each
+for the encoder and a working test encode, and encodes with the first that
+passes, running that binary for the encode. This matters because moviepy is
+often configured with a stripped-down static FFmpeg build that has no NVENC
+encoders even on machines where the system's ffmpeg can use them. When no
+candidate qualifies, videos fall back to software encoding on moviepy's own
+binary.
+
+You can pin the choice yourself by setting the ``ALGAN_VIDEO_ENCODER``
+environment variable to ``software`` (always ``libx264``, today's exact
+behaviour), ``nvenc`` (always ``h264_nvenc``), or ``auto`` (the default).
+The automatic choice only applies when you have not passed an explicit
+``codec``; if your ``ffmpeg_params`` carry x264 rate-control flags
+(``-preset`` / ``-crf``) they are honoured by staying on ``libx264``.
+
+.. code-block:: bash
+
+    # Keep encoding on the CPU even when an NVENC encoder is available.
+    ALGAN_VIDEO_ENCODER=software python my_scene.py
+
 Working with projects
 =====================
 

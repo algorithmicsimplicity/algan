@@ -72,9 +72,21 @@ with each other bitwise. Do not narrow it to f32: a real frame's sheets are
 81% one fragment and 17% two (both order-independent whatever the width), but
 the remaining 1.6% run to eleven, and ``sheet_cov`` feeds thresholds.
 
+The one-mesh reduction (``one_mesh_pixel_reduce``) carries the same-shaped
+float contract one stage earlier in the pipeline: its ``front``/``back``
+per-pixel coverage sums accumulate in f64 registers and are rounded through
+f32 by the caller, exactly as the torch ``scatter_add_`` pair it replaces was
+-- and for the same reason (a ceiling that wobbles in its low bits flips
+borderline fragments in and out of being clipped). Unlike the area sum it
+accumulates SERIALLY, one thread per pixel walking the pixel's own CSR run,
+so it is order-reproducible run to run by construction; agreement with the
+torch arm is again by measurement, at 4K shapes, bitwise after the round.
+
 ``benchmarks/_sheet_kernel_check.py`` is the parity harness; every kernel is
-gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``)
-so the torch passes stay runnable as the A/B arm.
+gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``,
+``RASTER_OPAQUE_TRUNC_KERNEL``, ``SHEET_ONE_MESH_KERNEL``,
+``SHEET_SAMPLE_DEPTH_KERNEL``) so the torch passes stay runnable as the A/B
+arm.
 """
 
 import taichi as ti
@@ -219,3 +231,167 @@ def sheet_conflict_rank(
                         cnt[b] += 1
                 rank[j] = r
                 j += 1
+
+
+@ti.kernel
+def opaque_prefix_keep(
+    opaque: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
+    counts: ti.types.ndarray(),  # [num_cov] i64 -- fragments per covered pixel
+    starts: ti.types.ndarray(),  # [num_cov] i64 -- CSR row start per pixel
+    num_cov: ti.i32,
+    keep: ti.types.ndarray(),  # [n] u8 OUT -- 1 where the fragment is kept
+):
+    """One pass: the opaque-prefix truncation's keep mask.
+
+    A pixel keeps the prefix through its FIRST proven-opaque fragment, so
+    ``keep[j]`` holds exactly when no opaque fragment of j's pixel lies
+    strictly before j. One thread per covered pixel walks its CSR run twice --
+    once to find that first opaque fragment, once to write the flags -- which
+    replaces the torch chain (an arange, a repeat_interleave over the whole
+    stream, a nonzero + index_select + scatter_reduce amin, and two full-length
+    elementwise passes) with one launch and no [n] intermediate but the output.
+
+    Integer flags compared identically in both arms, so agreement is exact by
+    construction.
+    """
+    for p in range(num_cov):
+        s = ti.cast(starts[p], ti.i32)
+        e = s + ti.cast(counts[p], ti.i32)
+        ke = e - 1
+        j = s
+        while j < e:
+            if opaque[j] != 0:
+                ke = j
+                break
+            j += 1
+        for jj in range(s, e):
+            keep[jj] = 1 if jj <= ke else 0
+
+
+@ti.kernel
+def one_mesh_pixel_reduce(
+    key: ti.types.ndarray(),  # [n] i64 -- sorted fragment keys
+    ref: ti.types.ndarray(),  # [n] i32 -- primitive refs (<0: circuit)
+    mat_opaque: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
+    msk: ti.types.ndarray(),  # [n] i32 -- mask words (backface bit read here)
+    cov: ti.types.ndarray(),  # [n] f32 -- exact areas
+    counts: ti.types.ndarray(),  # [num_cov] i64 -- fragments per covered pixel
+    starts: ti.types.ndarray(),  # [num_cov] i64
+    num_cov: ti.i32,
+    ppf: ti.i32,  # pixels per frame
+    time_start: ti.i32,
+    obj_rows: ti.i32,  # tri_obj.shape[0]
+    backface_bit: ti.i32,  # _AA_BACKFACE_BIT
+    tri_obj: ti.types.ndarray(),  # [obj_rows, N] -- fragment row -> surface id
+    lo: ti.types.ndarray(),  # [num_cov] i32 OUT, PRE-FILLED with 2**31 - 1
+    hi: ti.types.ndarray(),  # [num_cov] i32 OUT, PRE-FILLED with -1
+    front: ti.types.ndarray(),  # [num_cov] f64 OUT, PRE-ZEROED
+    back: ti.types.ndarray(),  # [num_cov] f64 OUT, PRE-ZEROED
+):
+    """One pass: per-pixel surface-id spread + facing-split coverage sums.
+
+    The torch block this replaces scattered four reductions over a
+    ``repeat_interleave`` segment map (amin/amax of usable surface ids, then
+    two f64 ``scatter_add_``s splitting coverage by backface bit). Here one
+    thread per covered pixel walks its own CSR run once, keeping all four
+    aggregates in registers -- so the segment map never exists and the float
+    sums accumulate in a fixed serial order (the torch atomics had none).
+
+    ``lo``/``hi`` are integer min/max, exact under any visit order; their fill
+    values differ from the torch arm's (i32 max vs 1<<40) only where a pixel
+    would have NO fragment, which cannot happen -- every covered pixel holds
+    at least one, and every usable surface id is < 2**31 - 1 -- so the values
+    are identical wherever they can be observed.
+
+    ``front``/``back`` carry the module-docstring float contract: f64
+    accumulation rounded through f32 by the caller, bitwise-equal to the torch
+    ``scatter_add_`` pair by measurement rather than by construction.
+    """
+    for p in range(num_cov):
+        s = ti.cast(starts[p], ti.i32)
+        e = s + ti.cast(counts[p], ti.i32)
+        lo_v = 2147483647
+        hi_v = -1
+        # f64 explicitly: a bare 0.0 infers f32 and the sum would silently
+        # narrow (Taichi warns "atomic add may lose precision").
+        fr = ti.f64(0.0)
+        bk = ti.f64(0.0)
+        for j in range(s, e):
+            r = ref[j]
+            sid = -1
+            if r >= 0 and mat_opaque[j] != 0:
+                row = ((key[j] >> 32) // ppf + time_start) % obj_rows
+                sid = ti.cast(tri_obj[row, r], ti.i32)
+            if sid < lo_v:
+                lo_v = sid
+            if sid > hi_v:
+                hi_v = sid
+            c = ti.cast(cov[j], ti.f64)
+            if (msk[j] & backface_bit) != 0:
+                bk += c
+            else:
+                fr += c
+        lo[p] = lo_v
+        hi[p] = hi_v
+        front[p] = fr
+        back[p] = bk
+
+
+@ti.kernel
+def one_mesh_pixel_apply(
+    counts: ti.types.ndarray(),  # [num_cov] i64
+    starts: ti.types.ndarray(),  # [num_cov] i64
+    num_cov: ti.i32,
+    one_mesh: ti.types.ndarray(),  # [num_cov] u8 (a bool viewed as bytes)
+    cap_pix: ti.types.ndarray(),  # [num_cov] f32 -- per-pixel ceiling
+    msk: ti.types.ndarray(),  # [n] i32 INOUT -- ONE_MESH bit folded in place
+    cap_s: ti.types.ndarray(),  # [n] f32 OUT -- 2.0 sentinel / ceiling
+    one_mesh_bit: ti.i32,  # _AA_ONE_MESH_BIT
+):
+    """One pass: fold the one-mesh flag and per-fragment caps into the stream.
+
+    Every row of ``msk``/``cap_s`` is written by exactly one thread (its own
+    pixel's walk, over the CSR ranges the counts sum to exactly once), so
+    plain read-modify-write needs no atomics. Values match the torch arm
+    exactly: flagged pixels take ``cap_pix``, everything else keeps the 2.0
+    no-ceiling sentinel.
+    """
+    for p in range(num_cov):
+        s = ti.cast(starts[p], ti.i32)
+        e = s + ti.cast(counts[p], ti.i32)
+        om = one_mesh[p] != 0
+        cp = cap_pix[p]
+        for j in range(s, e):
+            if om:
+                msk[j] = msk[j] | one_mesh_bit
+                cap_s[j] = cp
+            else:
+                cap_s[j] = 2.0
+
+
+@ti.kernel
+def sheet_lane_first_owner(
+    band: ti.types.ndarray(),  # [n] i64 -- sheet index of each SORTED fragment
+    msk: ti.types.ndarray(),  # [n] i32 -- mask words
+    n: ti.i32,
+    mask_all: ti.i32,  # _AA_MASK_ALL
+    first_lane: ti.types.ndarray(),  # [nb * _AA_NUM_SAMPLES] i32, PRE-FILLED n
+):
+    """One pass: per (sheet, sample lane), the earliest owner's sorted index.
+
+    The SHEET_SAMPLE_DEPTH lane loop asked, eight times over the stream, for
+    the minimum sorted position among the fragments of each sheet owning one
+    sample lane -- an amin scatter per lane over a full-length ``where`` copy.
+    Here one thread per fragment does all eight lanes' atomic mins into one
+    pre-initialised table; integer min is order-independent, so the result is
+    exactly the torch loop's whatever order the threads land in. Lanes a
+    sheet does not own keep the fill value, which the caller reads as "no
+    owner" exactly as it read the torch arm's sentinel.
+    """
+    for i in range(n):
+        b = ti.cast(band[i], ti.i32)
+        bits = msk[i] & mask_all
+        base = b * _AA_NUM_SAMPLES
+        for lane in ti.static(range(_AA_NUM_SAMPLES)):
+            if ((bits >> lane) & 1) != 0:
+                ti.atomic_min(first_lane[base + lane], i)

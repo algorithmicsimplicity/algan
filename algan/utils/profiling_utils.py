@@ -473,6 +473,39 @@ def install_pipeline_hooks():
     # enough.
     _try_wrap(rpl, "prepare_sparse_raster_coverage", "raster: sparse discovery")
     _try_wrap(rpl, "shade_sparse_raster_coverage", "raster: sparse resolve")
+    # The sparse discovery's host chain, split. Every one of these is a
+    # module-level function called through its own module's globals, so
+    # wrapping the module attribute is enough; ``compact_sheets`` is imported
+    # inside prepare_sparse_raster_coverage at call time, so wrapping it on
+    # ``sheets`` is what that import picks up. Without these the whole chain
+    # -- sorts, compaction, the one-mesh reduction -- reads as the discovery
+    # stage's own time, indistinguishable from launch overhead.
+    import algan.rendering.raytracing.sheets as sheets_mod
+
+    for _attr, _label in (
+        ("_window_pairs", "raster:   - window pairs"),
+        ("_exact_fragment_order", "raster:   - fragment sort"),
+        ("_gather_fragment_arrays", "raster:   - fragment gather"),
+    ):
+        _try_wrap(rpl, _attr, _label)
+    for _attr, _label in (
+        ("compact_sheets", "raster:   - compact_sheets"),
+        ("_lexsort", "raster:     - sheets lexsort"),
+        ("_shade_class", "raster:     - sheets shade class"),
+        ("_band_reduce", "raster:     - sheets band reduce"),
+        ("_conflict_rank", "raster:     - sheets conflict rank"),
+        ("_prim_split_after", "raster:     - sheets prim split"),
+        ("_band_composite", "raster:     - sheets band composite"),
+        ("_sibling_weights", "raster:     - sheets sibling weights"),
+        ("resolve_pixel_reference", "raster:     - sheets pixel reference"),
+    ):
+        _try_wrap(sheets_mod, _attr, _label)
+    # The wavefront loop's own host work: the per-batch raster tables, the
+    # bounded tile loop, and the active-ray compaction between bounces.
+    _try_wrap(rtr, "_build_raster_tables", "wavefront:   - raster tables (batch)")
+    _try_wrap(rtr, "_run_wavefront_tiles", "wavefront:   - tile loop")
+    if hasattr(rtr, "_ArenaRayCompactor"):
+        _try_wrap(rtr._ArenaRayCompactor, "select", "wavefront:   - compact active")
     _try_wrap(
         rpl, "precompute_triangle_projection", "raster:   - precompute tri projection"
     )
@@ -1030,7 +1063,9 @@ def run_nvprof_metrics(script_argv, timeout=1200):
 # ---------------------------------------------------------------------------
 # A single profiled render pass
 # ---------------------------------------------------------------------------
-def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
+def run_once(
+    scene_func, settings, tag="", run_index=0, telemetry=True, save_video_kwargs=None
+):
     TIMERS.reset()
     SCENE_STATS.clear()
     if torch.cuda.is_available():
@@ -1059,6 +1094,7 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
         video_settings=settings,
         # Each profiling run re-authors the scene from scratch.
         reset=True,
+        **(save_video_kwargs or {}),
     )
     if profiler is not None:
         profiler.disable()
@@ -1309,6 +1345,7 @@ def profile_scene(
     telemetry=None,
     nvprof=None,
     samples_per_pixel=1,
+    save_video_kwargs=None,
 ):
     """Profile ``scene_func`` end-to-end and write a report.
 
@@ -1338,6 +1375,13 @@ def profile_scene(
         Default auto (env ``ALGAN_PROFILE_NVPROF``, off).
     samples_per_pixel : int
         Reported for ray-throughput sizing on the Monte Carlo kernels.
+    save_video_kwargs : dict | None
+        Extra keyword arguments for ``Scene.save_video`` (``codec``,
+        ``ffmpeg_params``, ...). The encoder is part of what a run measures --
+        the ``video encode tail`` stage is the wait on it after the last frame
+        -- so on a box whose CPU is far slower than the target machine's, pass
+        a faster software preset (``ffmpeg_params=["-preset", "ultrafast"]``)
+        to keep the rest of the profile representative.
     """
     global SPP
     SPP = max(1, int(samples_per_pixel))
@@ -1347,7 +1391,14 @@ def profile_scene(
     if under_nvprof():
         install_instrumentation()
         os.makedirs(OUT_DIR, exist_ok=True)
-        run_once(scene_func, video_settings, tag, 0, telemetry=False)
+        run_once(
+            scene_func,
+            video_settings,
+            tag,
+            0,
+            telemetry=False,
+            save_video_kwargs=save_video_kwargs,
+        )
         return
 
     if runs is None:
@@ -1374,7 +1425,14 @@ def profile_scene(
             f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) ====="
         )
         results.append(
-            run_once(scene_func, video_settings, tag, i, telemetry=telemetry)
+            run_once(
+                scene_func,
+                video_settings,
+                tag,
+                i,
+                telemetry=telemetry,
+                save_video_kwargs=save_video_kwargs,
+            )
         )
 
     nvprof_results = None

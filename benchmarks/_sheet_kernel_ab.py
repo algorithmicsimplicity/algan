@@ -1,5 +1,7 @@
-"""A/B the compaction kernels in a real render:
-RASTER_FUSED_GATHER + SHEET_MASK_KERNEL + SHEET_RANK_KERNEL.
+"""A/B the compaction/emission host-pass kernels in a real render:
+RASTER_FUSED_GATHER + SHEET_MASK_KERNEL + SHEET_RANK_KERNEL
++ RASTER_OPAQUE_TRUNC_KERNEL + SHEET_ONE_MESH_KERNEL
++ SHEET_SAMPLE_DEPTH_KERNEL.
 
 Alternates the arms inside one process (wall-clock across processes swings ~2x
 with thermal throttling on this hardware) and reports the median of each arm,
@@ -71,11 +73,17 @@ ARMS = {
         "raster_fused_gather": False,
         "sheet_mask_kernel": False,
         "sheet_rank_kernel": False,
+        "raster_opaque_trunc_kernel": False,
+        "sheet_one_mesh_kernel": False,
+        "sheet_sample_depth_kernel": False,
     },
     "kernel": {
         "raster_fused_gather": True,
         "sheet_mask_kernel": True,
         "sheet_rank_kernel": True,
+        "raster_opaque_trunc_kernel": True,
+        "sheet_one_mesh_kernel": True,
+        "sheet_sample_depth_kernel": True,
     },
 }
 samples = {arm: [] for arm in ARMS}

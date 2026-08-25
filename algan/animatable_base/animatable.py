@@ -1692,3 +1692,21 @@ class Animatable:
             Bytes needed per frame, ``0`` for a Mob with no render primitives.
         """
         return 0
+
+    def _get_render_device_memory_used_per_timestep(self) -> int:
+        """Get this Mob's per-frame preparation cost on the *render* device.
+
+        :meth:`_get_memory_used_per_timestep` prices what a frame of batch
+        preparation allocates on the animation device. A wide attribute's
+        frame window materializes on the render device instead (see
+        :attr:`~algan.animation_timeline.timeline.AttributeTimeline.materialize_device`),
+        so a Mob carrying one reports those bytes here, against the render
+        device's own preparation budget, and leaves them out of the animation
+        device's. Everything else reports ``0``.
+
+        Returns
+        -------
+        int
+            Bytes needed per frame on the render device.
+        """
+        return 0

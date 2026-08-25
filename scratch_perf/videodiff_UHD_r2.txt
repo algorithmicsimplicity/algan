@@ -1,0 +1,12 @@
+frames compared: 30
+worst channel diff: 87 (frame 22)
+pixels over tol 2: worst frame 404694 of 8294400 (4.879%, frame 28); mean 357863.5/frame; 30 of 30 frames affected
+per-frame max-diff histogram (worst 8 buckets):
+  diff  87: 1 frames
+  diff  80: 2 frames
+  diff  78: 1 frames
+  diff  72: 1 frames
+  diff  71: 1 frames
+  diff  70: 1 frames
+  diff  67: 2 frames
+  diff  66: 1 frames

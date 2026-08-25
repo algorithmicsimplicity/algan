@@ -1,0 +1,12 @@
+=== fast suite
+fast suite: 30s of its 75s budget (40%)
+=========================== short test summary info ============================
+FAILED tests/fast/test_fast_render.py::test_the_fast_scene_renders_and_matches_its_baseline
+1 failed, 275 passed, 1922 deselected in 30.35s
+=== unit tests: timeline / surfaces / textures / render batch sizing
+...................................................                      [100%]
+51 passed in 10.02s
+=========================== short test summary info ============================
+FAILED tests/unit_tests/test_doc_examples.py::test_doc_example_uses_public_api[advanced_user_tutorials/saving_videos_and_images.rst:152]
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 104 passed, 1833 deselected in 19.60s

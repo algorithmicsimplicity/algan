@@ -76,6 +76,14 @@ _PROGRESS_MIN_LOGGED_FRAMES = 60
 #: the batch is frame-bound and the ordinary search is the cheaper answer.
 _ACTOR_SHARE_RETREAT = 0.5
 
+#: Share of the render device's free memory (outside the arena) that a batch's
+#: preparation may fill with the frame windows that materialize there (see
+#: RenderLoopMixin._render_device_prep_budget). The rest is left for the
+#: merge's and projection's transient out-of-arena scratch, which the batch
+#: preflight bounds against the same headroom, and for the prefetched
+#: successor batch that prepares while this one renders.
+_RENDER_PREP_FRACTION = 0.4
+
 
 @contextlib.contextmanager
 def _render_progress(total):
@@ -486,14 +494,31 @@ class RenderLoopMixin:
         transient out-of-place build scratch (see settings.MERGE_ON_GPU).
 
         The arena block was reserved from a fraction of the pool at
-        ``get_frames`` start, so the pool's *current* free bytes are exactly the
-        headroom the merge draws from. A margin is left for Taichi's own
-        allocation growth during the render that follows.
+        ``get_frames`` start; what the device holds outside it is the headroom
+        the merge draws from, with a margin left for Taichi's own allocation
+        growth during the render that follows.
+
+        Computed from the device's total memory (or ``available_memory_override``
+        when a run pins that) and the arena's actual size, NOT from what is free
+        at the moment of asking. This figure feeds the batch cost model, which
+        sizes the *next* batch window from it, and a window is not a harmless
+        performance choice: the frames that share a merge share the batch-wide
+        chord-count and promotion decisions, so a window that moved with
+        another tenant's momentary VRAM use moved pixels from one run to the
+        next -- measured on the T4 box as a second window of 8 frames in one
+        process and 11 in another, with ~5% of the frame's pixels differing.
+        A device genuinely short of memory still lands on the merge's own
+        out-of-memory retry, which is exact.
         """
         device = self.memory.data.device
         if device.type != "cuda":
             return float("inf")
-        return int(get_num_available_bytes(device) * 0.9)
+        override = SETTINGS.computing.available_memory_override
+        if override is not None:
+            total_bytes = int(override)
+        else:
+            _, total_bytes = torch.cuda.mem_get_info(device)
+        return int(max(0, total_bytes - len(self.memory)) * 0.9)
 
     @staticmethod
     def _may_slice_across_spawns():
@@ -1948,6 +1973,35 @@ class RenderLoopMixin:
             )
         ]
 
+    def _render_device_prep_budget(self):
+        """Render-device bytes a batch's preparation may hold at once.
+
+        The animation-device budget is a setting (``max_cpu_memory_used``) and
+        so is this one, in effect: a fixed share of what the device holds
+        outside the arena's fraction, computed from the device's *total*
+        memory (or ``available_memory_override`` when a run pins that) rather
+        than from what happens to be free. A batch window is not a harmless
+        performance choice -- it decides which frames share a merge, and with
+        it the batch-wide tessellation and chord decisions, so a window that
+        moved with another tenant's VRAM use would move pixels run to run.
+        The merge's and projection's own out-of-arena scratch stays bounded
+        separately by the batch preflight; a device genuinely short of memory
+        falls back on the render's out-of-memory retry, as the animation
+        budget does.
+        """
+        device = _RENDER_DEVICE
+        if device.type != "cuda":
+            return float("inf")
+        override = SETTINGS.computing.available_memory_override
+        if override is not None:
+            total_bytes = int(override)
+        else:
+            _, total_bytes = torch.cuda.mem_get_info(device)
+        outside_arena = total_bytes * (
+            1.0 - float(SETTINGS.computing.rendering_memory_fraction)
+        )
+        return int(outside_arena * _RENDER_PREP_FRACTION)
+
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
@@ -1974,9 +2028,23 @@ class RenderLoopMixin:
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
         actor_mem = [
-            (spawn, actor._get_memory_used_per_timestep())
+            (
+                spawn,
+                actor._get_memory_used_per_timestep(),
+                actor._get_render_device_memory_used_per_timestep(),
+            )
             for actor, spawn in primitive_actors
         ]
+        # Two budgets: what a frame allocates on the animation device, and
+        # what it allocates on the render device -- a wide attribute's window
+        # (a texture) materializes there, outside the render arena, and a
+        # batch that fits the first budget by a mile can still exhaust the
+        # second. Read once per fetch, since it is a measurement.
+        max_render_mem_used = (
+            self._render_device_prep_budget()
+            if any(render_mem for _, _, render_mem in actor_mem)
+            else float("inf")
+        )
 
         # Binary search for the largest batch that fits the animation-device
         # budget.  The selected actor set grows monotonically with duration, so
@@ -1989,10 +2057,15 @@ class RenderLoopMixin:
 
             def fits(duration):
                 cutoff = (start_time_ind + duration) / self.frames_per_second
-                mem_used = sum(
-                    mem * duration for spawn, mem in actor_mem if spawn <= cutoff
+                mem_used = 0
+                render_mem_used = 0
+                for spawn, mem, render_mem in actor_mem:
+                    if spawn <= cutoff:
+                        mem_used += mem * duration
+                        render_mem_used += render_mem * duration
+                return (
+                    mem_used <= max_mem_used and render_mem_used <= max_render_mem_used
                 )
-                return mem_used <= max_mem_used
 
             return _max_duration_that_fits(requested_duration, fits)
 
@@ -2194,6 +2267,11 @@ class RenderLoopMixin:
         render_state = self._materialize_render_state(
             start_time_ind, start_time_ind + duration
         )
+        # The batch's primitives are built: the texture windows that fed them
+        # (a whole image per frame, on the render device) have no reader left
+        # and would otherwise sit beside the next batch's until this one has
+        # rendered. See AnimationTimeline.release_wide_windows.
+        timeline.release_wide_windows()
         return primitive_collections, start_time_ind + duration, render_state
 
     def _emit_primitive_collections(self, primitive_class, primitives, out):

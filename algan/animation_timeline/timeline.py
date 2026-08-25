@@ -31,7 +31,8 @@ import math
 import numpy as np
 import torch
 
-from algan.environment import env_str
+from algan.environment import env_flag, env_str
+from algan.settings._startup import _RENDER_DEVICE
 from algan.utils.tensor_utils import cast_to_tensor
 
 #: Torch -> numpy dtypes for :func:`_sparsely_written_zeros`. Only the dtypes an
@@ -538,8 +539,13 @@ def _query_row_states(times, index, rows=None):
     D = sorted_values.shape[1]
     R = N if rows is None else rows.shape[0]
 
+    # The search runs where the (small) index lives; the values -- and so the
+    # result -- may live on the render device for a wide attribute (see
+    # AttributeTimeline._prepared_queries), where every gather below indexes
+    # a device tensor with animation-device indices, which torch allows.
+    out_device = sorted_values.device
     if U == 0 or R == 0 or T == 0:
-        return torch.zeros((T, R, D), dtype=sorted_values.dtype, device=head.device)
+        return torch.zeros((T, R, D), dtype=sorted_values.dtype, device=out_device)
 
     if rows is None:
         ends = head[1:]
@@ -573,7 +579,7 @@ def _query_row_states(times, index, rows=None):
     S = int(ranks.shape[0])
     # Every element is written below: constant rows by the broadcast
     # assignment, the rest by the chunked loop.
-    out = torch.empty((S, R, D), dtype=sorted_values.dtype, device=head.device)
+    out = torch.empty((S, R, D), dtype=sorted_values.dtype, device=out_device)
 
     # A row's answer depends on the rank only through where the search lands
     # among its own few edits, and that landing index is monotone in the rank.
@@ -600,7 +606,7 @@ def _query_row_states(times, index, rows=None):
             low_c = low_lo.index_select(0, const_cols)
             empty_c = low_c >= ends.index_select(0, const_cols)
             vals_c = sorted_values[low_c.clamp_(max=U - 1)]
-            vals_c.masked_fill_(empty_c.unsqueeze(-1), 0.0)
+            vals_c.masked_fill_(empty_c.unsqueeze(-1).to(out_device), 0.0)
             out[:, const_cols] = vals_c
             bases = bases.index_select(0, chg_cols)
             ends = ends.index_select(0, chg_cols)
@@ -618,13 +624,13 @@ def _query_row_states(times, index, rows=None):
             # Rows with no edit still live at t read as zero, exactly as the
             # kernel wrote them (masked_fill, not a multiply, so non-finite
             # recorded values cannot leak in as NaN).
-            values.masked_fill_(empty.unsqueeze(-1), 0.0)
+            values.masked_fill_(empty.unsqueeze(-1).to(out_device), 0.0)
             if chg_cols is None:
                 out[start:stop] = values
             else:
                 out[start:stop, chg_cols] = values
     if inverse is not None:
-        out = out.index_select(0, inverse)
+        out = out.index_select(0, inverse.to(out_device))
     return out
 
 
@@ -673,7 +679,9 @@ def generate_array_states(times, N, edits, *, active_rows=None, prepared=None):
     # primitive preparation for this batch.
     out = _sparsely_written_zeros((T, N, D), dtype, device)
     if active_rows.numel():
-        out.index_copy_(1, active_rows, _query_row_states(times, prepared, active_rows))
+        out.index_copy_(
+            1, active_rows, _query_row_states(times, prepared, active_rows).to(device)
+        )
     return out
 
 
@@ -730,6 +738,44 @@ def _generate_array_states_taichi(times, N, prepared, active_rows, T, D, dtype, 
 _INITIAL_RESERVATION_BYTES = 1 << 20
 
 
+#: Attributes at least this wide materialize their per-frame state on the render
+#: device (see :func:`_wide_attr_materialize_device`). A colour texture is
+#: ``H * W * 5`` channels -- 7.9M for a 1774x887 image -- while every geometric
+#: or material attribute is under 16, so the threshold only ever selects
+#: textures and leaves the ordinary attributes exactly where they were.
+WIDE_ATTR_MIN_CHANNELS = 1 << 16
+
+
+def _wide_attr_materialize_device(channels):
+    """Device a materialized ``[T, rows, channels]`` window should live on.
+
+    The edit log and the authoring state of every attribute stay on the
+    animation device (the CPU by default): they are written once and read by
+    a binary search. What a frame batch *materializes* is different -- for a
+    texture it is a whole image per frame per row, and replaying the
+    assignment that animates it is one lerp over all of those texels (``base
+    + change * a(t)``), then a copy into the buffer, then the premultiply the
+    primitive build does, and every one of those is a T x 31 MB pass that on a
+    two-core box costs ~150 ms per frame -- more than the whole rest of batch
+    preparation. On the render device the same passes are memory-bound at
+    hundreds of GB/s, and the result is where the renderer wanted it anyway
+    (the scene merge runs there by default), so the per-frame upload
+    disappears too. Returns ``None`` for the animation device.
+
+    ``ALGAN_WIDE_ATTR_RENDER_DEVICE=0`` keeps every attribute on the
+    animation device (A/B; the GPU lerp can differ from the CPU one in the
+    last ulp, so the arms are only expected to agree to within the usual
+    rounding tolerance).
+    """
+    if channels < WIDE_ATTR_MIN_CHANNELS:
+        return None
+    if _RENDER_DEVICE.type not in ("cuda", "mps"):
+        return None
+    if not env_flag("ALGAN_WIDE_ATTR_RENDER_DEVICE", True):
+        return None
+    return _RENDER_DEVICE
+
+
 def _initial_buffer_rows(channels, requested):
     """Rows to reserve up front for an attribute ``channels`` wide.
 
@@ -760,6 +806,9 @@ class AttributeTimeline:
     ):
         self.attr_name = attr_name
         self.record_end_points = record_end_points
+        # Where a materialized frame window lives; None = wherever the query
+        # built it (the animation device). See _wide_attr_materialize_device.
+        self.materialize_device = _wide_attr_materialize_device(channels)
         self.current_state = torch.empty(
             (1, _initial_buffer_rows(channels, buffer_size), channels)
         )  # latest state after all edits.
@@ -1013,6 +1062,11 @@ class AttributeTimeline:
         # identical edit history. Recording-time writes still invalidate it.
         if self.active_state is self.current_state:
             self.invalidate_prepared_queries(retain_edit_prefix=True)
+        elif torch.is_tensor(value) and value.device != self.active_state.device:
+            # A window materialized on the render device (materialize_device)
+            # takes replayed writes computed wherever the recorded arguments
+            # live; the authoring state never moves, so this is replay-only.
+            value = value.to(self.active_state.device)
         if isinstance(key, RowRanges):
             if (
                 not _opt_disabled("ranges")
@@ -1437,6 +1491,16 @@ class AttributeTimeline:
             prepared = _prepare_array_state_queries(
                 times, self.pointer, self._edits_sorted
             )
+            device = self.materialize_device
+            if device is not None and not _opt_disabled("torchquery"):
+                # A wide attribute's window materializes on the render device
+                # (materialize_device); gathering its values there too turns
+                # the per-batch T x width copy out of the edit log -- and the
+                # upload that followed it -- into one move of the log per
+                # render job. The index stays where the search runs. The
+                # Taichi reference query (ALGAN_OPT_DISABLE=torchquery) takes
+                # its arguments as one set, so it keeps the log where it was.
+                prepared.sorted_values = prepared.sorted_values.to(device)
             self._query_cache[key] = prepared
         return prepared
 
@@ -1484,16 +1548,28 @@ class AttributeTimeline:
                 prepared=self._prepared_queries(times),
             )
             self._clear_active_row_map()
+        device = self.materialize_device
+        if device is not None and self.active_state.device != device:
+            # The query gathers on the animation device (its edit log lives
+            # there); the materialized window moves once, as one contiguous
+            # copy, and everything that reads or replays over it works there.
+            self.active_state = self.active_state.to(device)
         if self.record_end_points:
             t = times.view(-1, 1)
             if active_rows is None:
                 self.active_state *= (
-                    (self._end_points[..., 0] <= t) & (t < self._end_points[..., 1])
-                ).unsqueeze(-1)
+                    ((self._end_points[..., 0] <= t) & (t < self._end_points[..., 1]))
+                    .unsqueeze(-1)
+                    .to(self.active_state.device)
+                )
             elif active_rows.numel():
-                rows = active_rows.to(self.active_state.device)
-                endpoint = self._end_points[:, rows].to(self.active_state.device)
-                mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
+                rows = active_rows.to(self._end_points.device)
+                endpoint = self._end_points[:, rows]
+                mask = (
+                    ((endpoint[..., 0] <= t) & (t < endpoint[..., 1]))
+                    .unsqueeze(-1)
+                    .to(self.active_state.device)
+                )
                 if compact:
                     # The compact buffer is already in active_rows order, so
                     # the mask lines up with it column for column -- no
@@ -1520,7 +1596,10 @@ class AttributeTimeline:
         if rows.numel() == 0 or self.active_state is self.current_state:
             return self
         self.prepare_for_queries()
-        device_rows = rows.to(device=self.active_state.device, dtype=torch.long)
+        # Kept on the rows' own (animation) device: they index the row map,
+        # which lives there, and torch accepts CPU indices into a buffer that
+        # materialized on the render device (materialize_device).
+        device_rows = rows.to(dtype=torch.long)
         if _opt_disabled("torchquery"):
             queried = generate_array_states(
                 times,
@@ -1537,9 +1616,11 @@ class AttributeTimeline:
             )
         if self.record_end_points:
             t = times.view(-1, 1)
-            endpoint = self._end_points[:, rows].to(self.active_state.device)
+            endpoint = self._end_points[:, rows].to(queried.device)
             mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
             queried = queried * mask
+        if queried.device != self.active_state.device:
+            queried = queried.to(self.active_state.device)
         if self._active_row_map is None:
             self.active_state[:, device_rows] = queried
             return self
@@ -2866,6 +2947,27 @@ class AnimationTimeline:
     def clear_buffers(self):
         for t in self.attr_to_timeline.values():
             t.clear_buffers()
+
+    def release_wide_windows(self):
+        """Drop the materialized windows of the wide attributes.
+
+        A window materialized on the render device (see
+        :func:`_wide_attr_materialize_device`) is a whole image per frame of
+        the batch, and nothing reads it once the batch's primitives are built:
+        the primitive holds its own premultiplied copy, the merge decodes that
+        into the buffer the arena is filled from, and the next batch's
+        preparation replaces the window outright. Left in place it would sit
+        beside the *next* batch's window while this one renders -- two batches
+        of texture frames on the device for one batch of pixels. The narrow
+        attributes are untouched: their windows are small, and the render
+        thread still reads camera and light state from them.
+        """
+        for t in self.attr_to_timeline.values():
+            if (
+                t.materialize_device is not None
+                and t.active_state is not t.current_state
+            ):
+                t.clear_buffers()
 
 
 class TimelineManager(AnimationTimeline):

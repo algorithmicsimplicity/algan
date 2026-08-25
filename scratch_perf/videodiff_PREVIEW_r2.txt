@@ -1,0 +1,5 @@
+frames compared: 50
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 278784 (0.000%, frame -1); mean 0.0/frame; 0 of 50 frames affected
+per-frame max-diff histogram (worst 8 buckets):
+  diff   0: 50 frames

@@ -1,0 +1,601 @@
+Rendering device set to cuda
+Began rendering profilingnn_PREVIEW_run1.mp4
+Finished rendering profilingnn_PREVIEW_run1.mp4 in 73.0 s
+Began rendering profilingnn_PREVIEW_run2.mp4
+Finished rendering profilingnn_PREVIEW_run2.mp4 in 26.4 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+[profiling] hooked 34 Taichi kernels (170 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+
+===== profiling run 2/2 (warm) =====
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.82.07  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: off (wall-time only)
+  hooked kernels (34): bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, path_trace_physical_stbvh, path_trace_scene_stbvh, pn_edge_chord_error, pn_patch_flatness_error, raster_bez_count, raster_bez_write, raster_shadow_trace, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_resolve_shade, wavefront_generate_rays, wavefront_shade, wavefront_shadow, wavefront_traverse, wavefront_traverse_events, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 73.22s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                 18    44.234    60.4%     0.103     0.1%     0.000     0.000
+wavefront_loop                                          18    43.587    59.5%    11.120    15.2%     0.000     0.000
+Scene.get_batch_of_primitives                           17    28.050    38.3%     2.984     4.1%     0.000     0.000
+raster: sparse resolve                                  50    22.776    31.1%    22.776    31.1%     0.000     0.000
+kernel: sheet_resolve_shade                            100    20.376    27.8%    20.376    27.8%    20.298     0.076
+AnimationTimeline.set_state_to_times                    17    13.425    18.3%     5.551     7.6%     0.000     0.000
+arena preflight (batch)                                 17    12.700    17.3%     0.091     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                 34     9.411    12.9%     7.964    10.9%     0.000     0.000
+raster: sparse discovery                                18     9.363    12.8%     9.363    12.8%     0.000     0.000
+kernel: wavefront_shade                                319     7.352    10.0%     7.352    10.0%     5.060     2.276
+merge collections + build BVHs                          17     6.789     9.3%     2.746     3.8%     0.000     0.000
+  - project_to_screen (prewarm)                         17     5.767     7.9%     0.845     1.2%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times         442     5.111     7.0%     5.111     7.0%     0.000     0.000
+AttributeTimeline.get                                74314     4.597     6.3%     4.597     6.3%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)     51     4.074     5.6%     0.195     0.3%     0.000     0.000
+logical PN:   - _dice_logical_pn                        51     3.878     5.3%     1.337     1.8%     0.000     0.000
+  - refit-BVH build (in merge)                          34     3.861     5.3%     3.861     5.3%     0.000     0.000
+kernel: raster_tri_count                                36     2.857     3.9%     2.857     3.9%     2.675     0.179
+kernel: raster_tri_write                                36     2.290     3.1%     2.290     3.1%     2.172     0.118
+kernel: wavefront_traverse_events                      319     2.125     2.9%     2.125     2.9%     1.139     0.971
+kernel: raster_shadow_trace                             50     2.118     2.9%     2.118     2.9%     1.290     0.827
+video encode tail (ffmpeg drain)                         1     2.081     2.8%     2.081     2.8%     0.000     0.000
+Surface.get_render_primitives                           17     1.875     2.6%     1.861     2.5%     0.000     0.000
+logical PN:     - subdivision levels                    51     1.641     2.2%     0.255     0.3%     0.000     0.000
+kernel: raster_bez_count                                18     1.365     1.9%     1.365     1.9%     1.336     0.028
+beziers: sample + pack (project_to_screen)              17     0.848     1.2%     0.018     0.0%     0.000     0.000
+kernel: raster_bez_write                                18     0.846     1.2%     0.846     1.2%     0.825     0.021
+logical PN:       - edge level search                   51     0.831     1.1%     0.151     0.2%     0.000     0.000
+logical PN:         - edge chord error                  68     0.681     0.9%     0.681     0.9%     0.000     0.000
+kernel: pn_edge_chord_error                             68     0.670     0.9%     0.670     0.9%     0.665     0.004
+logical PN:     - interpolate attrs                   1649     0.574     0.8%     0.574     0.8%     0.000     0.000
+AttributeTimeline.modify                              8190     0.548     0.7%     0.548     0.7%     0.000     0.000
+logical PN:       - patch level search                  51     0.533     0.7%     0.132     0.2%     0.000     0.000
+post-process (downsample/FXAA/glow)                     18     0.518     0.7%     0.078     0.1%     0.000     0.000
+free-VRAM probe (empty_cache)                           52     0.467     0.6%     0.467     0.6%     0.000     0.000
+beziers:   - _build_circuit_geometry                    17     0.429     0.6%     0.429     0.6%     0.000     0.000
+logical PN:         - patch flatness error             102     0.423     0.6%     0.423     0.6%     0.000     0.000
+kernel: pn_patch_flatness_error                        102     0.399     0.5%     0.399     0.5%     0.394     0.004
+beziers:   - _compute_samples_per_segment               17     0.352     0.5%     0.352     0.5%     0.000     0.000
+scene upload to arena                                   17     0.334     0.5%     0.334     0.5%     0.000     0.000
+post:   - bloom fft conv                                72     0.317     0.4%     0.317     0.4%     0.000     0.000
+kernel: bezier_chord_hull_error                         68     0.312     0.4%     0.312     0.4%     0.303     0.003
+kernel: gloss_composite                                 50     0.268     0.4%     0.268     0.4%     0.235     0.032
+kernel: compact_ray_slots                              369     0.257     0.4%     0.257     0.4%     0.188     0.056
+kernel: gloss_pyramid_level                            450     0.248     0.3%     0.248     0.3%     0.196     0.044
+  - bezier edge accel (in merge)                        17     0.182     0.2%     0.182     0.2%     0.000     0.000
+raster:   - precompute bez bounds                       17     0.162     0.2%     0.162     0.2%     0.000     0.000
+AttributeTimeline.add                                 2770     0.158     0.2%     0.158     0.2%     0.000     0.000
+logical PN:     - snap boundary                        170     0.124     0.2%     0.124     0.2%     0.000     0.000
+kernel: gloss_scatter                                   50     0.111     0.2%     0.111     0.2%     0.091     0.019
+kernel: sheet_conflict_rank                             18     0.105     0.1%     0.105     0.1%     0.088     0.016
+logical PN:     - evaluate normals                      85     0.104     0.1%     0.104     0.1%     0.000     0.000
+logical PN:     - evaluate patch                        85     0.098     0.1%     0.098     0.1%     0.000     0.000
+raster:   - precompute tri projection                   17     0.098     0.1%     0.098     0.1%     0.000     0.000
+post:   - tonemap/finalize                              18     0.097     0.1%     0.097     0.1%     0.000     0.000
+kernel: wf_composite_accum_sparse                       50     0.095     0.1%     0.095     0.1%     0.084     0.007
+kernel: sheet_band_reduce                               36     0.074     0.1%     0.074     0.1%     0.064     0.009
+memory reclaim (gc + cuda cache)                        69     0.068     0.1%     0.068     0.1%     0.000     0.000
+raster:   - precompute tri bounds                       17     0.067     0.1%     0.067     0.1%     0.000     0.000
+beziers:   - _build_frame_bounds                        17     0.050     0.1%     0.050     0.1%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                17     0.045     0.1%     0.035     0.0%     0.000     0.000
+kernel: mask_popcount                                   18     0.036     0.0%     0.036     0.0%     0.035     0.001
+background prefill                                      18     0.025     0.0%     0.025     0.0%     0.000     0.000
+post:   - device->host copy                             18     0.018     0.0%     0.018     0.0%     0.000     0.000
+post:   - bloom downsample                              18     0.009     0.0%     0.009     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                 -57.326   -78.3%
+
+GPU telemetry over render (494 samples @ ~10 Hz, min/avg/max):
+  utilization  0/10/88 %   mem-util 0/3/30 %
+  SM clock     585/912/1590 MHz   mem clock 5000/5000/5000 MHz
+  temperature  65/67/72 C   power 32/37/70 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6362 MB, peak reserved 6366 MB
+  batch 0: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6104 MB)
+    counts: num_colored_triangles=0, num_triangles=26798, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13402 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13402 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573708, 5) = 90.0 MB
+    tri_mat: (3, 26798, 34) = 10.4 MB
+    tri_pos: (3, 26798, 9) = 2.8 MB
+    tri_norm: (3, 26798, 9) = 2.8 MB
+    tri_tex_meta: (26798, 10) = 1.0 MB
+    tri_uvs: (1, 26798, 6) = 0.6 MB
+  batch 1: merged tensors 101.7 MB, BVHs 4.9 MB (cuda after merge 6094 MB)
+    counts: num_colored_triangles=0, num_triangles=26798, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13456 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13456 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573702, 5) = 90.0 MB
+    tri_mat: (1, 26798, 34) = 3.5 MB
+    tri_pos: (3, 26798, 9) = 2.8 MB
+    tri_norm: (3, 26798, 9) = 2.8 MB
+    tri_tex_meta: (26798, 10) = 1.0 MB
+    tri_uvs: (1, 26798, 6) = 0.6 MB
+  batch 2: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6094 MB)
+    counts: num_colored_triangles=0, num_triangles=26798, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13399 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13399 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573706, 5) = 90.0 MB
+    tri_mat: (3, 26798, 34) = 10.4 MB
+    tri_pos: (3, 26798, 9) = 2.8 MB
+    tri_norm: (3, 26798, 9) = 2.8 MB
+    tri_tex_meta: (26798, 10) = 1.0 MB
+    tri_uvs: (1, 26798, 6) = 0.6 MB
+  batch 3: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6094 MB)
+    counts: num_colored_triangles=0, num_triangles=26810, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13346 nodes, 0 leaves, 2.4 MB
+    tri_opaque_bvh: 0 instances, 13346 nodes, 0 leaves, 2.4 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26810, 34) = 10.4 MB
+    tri_pos: (3, 26810, 9) = 2.8 MB
+    tri_norm: (3, 26810, 9) = 2.8 MB
+    tri_tex_meta: (26810, 10) = 1.0 MB
+    tri_uvs: (1, 26810, 6) = 0.6 MB
+  batch 4: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6094 MB)
+    counts: num_colored_triangles=0, num_triangles=26810, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13401 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13401 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26810, 34) = 10.4 MB
+    tri_pos: (3, 26810, 9) = 2.8 MB
+    tri_norm: (3, 26810, 9) = 2.8 MB
+    tri_tex_meta: (26810, 10) = 1.0 MB
+    tri_uvs: (1, 26810, 6) = 0.6 MB
+  batch 5: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6094 MB)
+    counts: num_colored_triangles=0, num_triangles=26806, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13419 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13419 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26806, 34) = 10.4 MB
+    tri_pos: (3, 26806, 9) = 2.8 MB
+    tri_norm: (3, 26806, 9) = 2.8 MB
+    tri_tex_meta: (26806, 10) = 1.0 MB
+    tri_uvs: (1, 26806, 6) = 0.6 MB
+  batch 6: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6094 MB)
+    counts: num_colored_triangles=0, num_triangles=26826, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13448 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13448 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573714, 5) = 90.0 MB
+    tri_mat: (3, 26826, 34) = 10.4 MB
+    tri_pos: (3, 26826, 9) = 2.8 MB
+    tri_norm: (3, 26826, 9) = 2.8 MB
+    tri_tex_meta: (26826, 10) = 1.0 MB
+    tri_uvs: (1, 26826, 6) = 0.6 MB
+  batch 7: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26850, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13464 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13464 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573718, 5) = 90.0 MB
+    tri_mat: (3, 26850, 34) = 10.4 MB
+    tri_pos: (3, 26850, 9) = 2.8 MB
+    tri_norm: (3, 26850, 9) = 2.8 MB
+    tri_tex_meta: (26850, 10) = 1.0 MB
+    tri_uvs: (1, 26850, 6) = 0.6 MB
+  batch 8: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26854, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13502 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13502 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573718, 5) = 90.0 MB
+    tri_mat: (3, 26854, 34) = 10.4 MB
+    tri_pos: (3, 26854, 9) = 2.8 MB
+    tri_norm: (3, 26854, 9) = 2.8 MB
+    tri_tex_meta: (26854, 10) = 1.0 MB
+    tri_uvs: (1, 26854, 6) = 0.6 MB
+  batch 9: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26850, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13382 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13382 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26850, 34) = 10.4 MB
+    tri_pos: (3, 26850, 9) = 2.8 MB
+    tri_norm: (3, 26850, 9) = 2.8 MB
+    tri_tex_meta: (26850, 10) = 1.0 MB
+    tri_uvs: (1, 26850, 6) = 0.6 MB
+  batch 10: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26890, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13510 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13510 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573718, 5) = 90.0 MB
+    tri_mat: (3, 26890, 34) = 10.5 MB
+    tri_pos: (3, 26890, 9) = 2.8 MB
+    tri_norm: (3, 26890, 9) = 2.8 MB
+    tri_tex_meta: (26890, 10) = 1.0 MB
+    tri_uvs: (1, 26890, 6) = 0.6 MB
+  batch 11: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13430 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13430 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573714, 5) = 90.0 MB
+    tri_mat: (3, 26922, 34) = 10.5 MB
+    tri_pos: (3, 26922, 9) = 2.8 MB
+    tri_norm: (3, 26922, 9) = 2.8 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+    tri_uvs: (1, 26922, 6) = 0.6 MB
+  batch 12: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13494 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13494 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26922, 34) = 10.5 MB
+    tri_pos: (3, 26922, 9) = 2.8 MB
+    tri_norm: (3, 26922, 9) = 2.8 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+    tri_uvs: (1, 26922, 6) = 0.6 MB
+  batch 13: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26946, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13504 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13504 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573708, 5) = 90.0 MB
+    tri_mat: (3, 26946, 34) = 10.5 MB
+    tri_pos: (3, 26946, 9) = 2.8 MB
+    tri_norm: (3, 26946, 9) = 2.8 MB
+    tri_tex_meta: (26946, 10) = 1.0 MB
+    tri_uvs: (1, 26946, 6) = 0.6 MB
+  batch 14: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26942, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13517 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13517 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573708, 5) = 90.0 MB
+    tri_mat: (3, 26942, 34) = 10.5 MB
+    tri_pos: (3, 26942, 9) = 2.8 MB
+    tri_norm: (3, 26942, 9) = 2.8 MB
+    tri_tex_meta: (26942, 10) = 1.0 MB
+    tri_uvs: (1, 26942, 6) = 0.6 MB
+  batch 15: merged tensors 101.7 MB, BVHs 5.0 MB (cuda after merge 6086 MB)
+    counts: num_colored_triangles=0, num_triangles=26934, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13499 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13499 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573702, 5) = 90.0 MB
+    tri_mat: (1, 26934, 34) = 3.5 MB
+    tri_pos: (3, 26934, 9) = 2.8 MB
+    tri_norm: (3, 26934, 9) = 2.8 MB
+    tri_tex_meta: (26934, 10) = 1.0 MB
+    tri_uvs: (1, 26934, 6) = 0.6 MB
+  batch 16: merged tensors 69.6 MB, BVHs 3.3 MB (cuda after merge 6015 MB)
+    counts: num_colored_triangles=0, num_triangles=26934, num_circuits=41, num_frames=2
+    tri_bvh: 0 instances, 13518 nodes, 0 leaves, 1.7 MB
+    tri_opaque_bvh: 0 instances, 13518 nodes, 0 leaves, 1.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (2, 1573702, 5) = 60.0 MB
+    tri_mat: (1, 26934, 34) = 3.5 MB
+    tri_pos: (2, 26934, 9) = 1.8 MB
+    tri_norm: (2, 26934, 9) = 1.8 MB
+    tri_tex_meta: (26934, 10) = 1.0 MB
+    tri_uvs: (1, 26934, 6) = 0.6 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 26.69s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+Scene.get_batch_of_primitives                           17    16.563    62.1%     1.074     4.0%     0.000     0.000
+AnimationTimeline.set_state_to_times                    17     9.684    36.3%     4.189    15.7%     0.000     0.000
+ray traced render total                                 18     8.073    30.2%     0.087     0.3%     0.000     0.000
+arena preflight (batch)                                 17     7.882    29.5%     0.049     0.2%     0.000     0.000
+wavefront_loop                                          18     7.700    28.8%     4.367    16.4%     0.000     0.000
+merge collections + build BVHs                          17     4.908    18.4%     1.833     6.9%     0.000     0.000
+surfaces: get_render_primitives_batched                 34     4.251    15.9%     3.477    13.0%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times         442     3.897    14.6%     3.897    14.6%     0.000     0.000
+AttributeTimeline.get                                74036     3.020    11.3%     3.020    11.3%     0.000     0.000
+  - refit-BVH build (in merge)                          34     2.966    11.1%     2.966    11.1%     0.000     0.000
+  - project_to_screen (prewarm)                         17     2.863    10.7%     0.700     2.6%     0.000     0.000
+kernel: wavefront_shade                                319     2.388     8.9%     2.388     8.9%     0.494     1.880
+logical PN: dice + shade + pack (project_to_screen)     51     1.913     7.2%     0.133     0.5%     0.000     0.000
+raster: sparse discovery                                18     1.900     7.1%     1.900     7.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                        51     1.780     6.7%     0.835     3.1%     0.000     0.000
+Surface.get_render_primitives                           17     1.283     4.8%     1.279     4.8%     0.000     0.000
+raster: sparse resolve                                  50     1.172     4.4%     1.172     4.4%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     1.130     4.2%     1.130     4.2%     0.000     0.000
+kernel: wavefront_traverse_events                      319     0.956     3.6%     0.956     3.6%     0.244     0.701
+kernel: raster_shadow_trace                             50     0.745     2.8%     0.745     2.8%     0.058     0.685
+AttributeTimeline.modify                              8190     0.483     1.8%     0.483     1.8%     0.000     0.000
+logical PN:     - interpolate attrs                   1649     0.479     1.8%     0.479     1.8%     0.000     0.000
+free-VRAM probe (empty_cache)                           52     0.387     1.4%     0.387     1.4%     0.000     0.000
+post-process (downsample/FXAA/glow)                     18     0.266     1.0%     0.084     0.3%     0.000     0.000
+logical PN:     - subdivision levels                    51     0.259     1.0%     0.058     0.2%     0.000     0.000
+kernel: sheet_resolve_shade                            100     0.259     1.0%     0.259     1.0%     0.196     0.060
+beziers: sample + pack (project_to_screen)              17     0.250     0.9%     0.011     0.0%     0.000     0.000
+scene upload to arena                                   17     0.242     0.9%     0.242     0.9%     0.000     0.000
+AttributeTimeline.add                                 2770     0.232     0.9%     0.232     0.9%     0.000     0.000
+beziers:   - _build_circuit_geometry                    17     0.158     0.6%     0.158     0.6%     0.000     0.000
+kernel: compact_ray_slots                              369     0.144     0.5%     0.144     0.5%     0.079     0.058
+post:   - bloom fft conv                                72     0.143     0.5%     0.143     0.5%     0.000     0.000
+kernel: raster_tri_count                                36     0.139     0.5%     0.139     0.5%     0.025     0.113
+raster:   - precompute bez bounds                       17     0.131     0.5%     0.131     0.5%     0.000     0.000
+kernel: gloss_pyramid_level                            450     0.125     0.5%     0.125     0.5%     0.066     0.053
+kernel: raster_tri_write                                36     0.112     0.4%     0.112     0.4%     0.023     0.088
+  - bezier edge accel (in merge)                        17     0.108     0.4%     0.108     0.4%     0.000     0.000
+logical PN:       - patch level search                  51     0.106     0.4%     0.069     0.3%     0.000     0.000
+logical PN:     - snap boundary                        170     0.083     0.3%     0.083     0.3%     0.000     0.000
+logical PN:       - edge level search                   51     0.078     0.3%     0.036     0.1%     0.000     0.000
+raster:   - precompute tri projection                   17     0.073     0.3%     0.073     0.3%     0.000     0.000
+logical PN:     - evaluate patch                        85     0.072     0.3%     0.072     0.3%     0.000     0.000
+raster:   - precompute tri bounds                       17     0.056     0.2%     0.056     0.2%     0.000     0.000
+logical PN:         - patch flatness error             102     0.054     0.2%     0.054     0.2%     0.000     0.000
+logical PN:     - evaluate normals                      85     0.052     0.2%     0.052     0.2%     0.000     0.000
+beziers:   - _compute_samples_per_segment               17     0.050     0.2%     0.050     0.2%     0.000     0.000
+logical PN:         - edge chord error                  68     0.042     0.2%     0.042     0.2%     0.000     0.000
+memory reclaim (gc + cuda cache)                        69     0.037     0.1%     0.037     0.1%     0.000     0.000
+kernel: raster_bez_write                                18     0.033     0.1%     0.033     0.1%     0.020     0.013
+kernel: pn_patch_flatness_error                        102     0.031     0.1%     0.031     0.1%     0.026     0.003
+beziers:   - _build_frame_bounds                        17     0.031     0.1%     0.031     0.1%     0.000     0.000
+kernel: pn_edge_chord_error                             68     0.030     0.1%     0.030     0.1%     0.024     0.005
+BezierCircuitCubic.get_render_primitives                17     0.030     0.1%     0.024     0.1%     0.000     0.000
+kernel: gloss_scatter                                   50     0.027     0.1%     0.027     0.1%     0.015     0.012
+kernel: raster_bez_count                                18     0.023     0.1%     0.023     0.1%     0.011     0.012
+post:   - device->host copy                             18     0.022     0.1%     0.022     0.1%     0.000     0.000
+kernel: sheet_band_reduce                               36     0.021     0.1%     0.021     0.1%     0.016     0.004
+background prefill                                      18     0.020     0.1%     0.020     0.1%     0.000     0.000
+kernel: wf_composite_accum_sparse                       50     0.020     0.1%     0.020     0.1%     0.011     0.008
+kernel: bezier_chord_hull_error                         68     0.018     0.1%     0.018     0.1%     0.015     0.002
+kernel: gloss_composite                                 50     0.017     0.1%     0.017     0.1%     0.009     0.007
+post:   - tonemap/finalize                              18     0.011     0.0%     0.011     0.0%     0.000     0.000
+kernel: sheet_conflict_rank                             18     0.009     0.0%     0.009     0.0%     0.004     0.004
+kernel: mask_popcount                                   18     0.006     0.0%     0.006     0.0%     0.005     0.001
+post:   - bloom downsample                              18     0.006     0.0%     0.006     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                 -13.774   -51.6%
+
+GPU telemetry over render (199 samples @ ~10 Hz, min/avg/max):
+  utilization  0/24/71 %   mem-util 0/6/30 %
+  SM clock     585/1546/1590 MHz   mem clock 5000/5000/5000 MHz
+  temperature  70/74/76 C   power 33/48/83 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6302 MB, peak reserved 6324 MB
+  batch 0: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26798, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13402 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13402 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573708, 5) = 90.0 MB
+    tri_mat: (3, 26798, 34) = 10.4 MB
+    tri_pos: (3, 26798, 9) = 2.8 MB
+    tri_norm: (3, 26798, 9) = 2.8 MB
+    tri_tex_meta: (26798, 10) = 1.0 MB
+    tri_uvs: (1, 26798, 6) = 0.6 MB
+  batch 1: merged tensors 101.7 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26798, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13456 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13456 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573702, 5) = 90.0 MB
+    tri_mat: (1, 26798, 34) = 3.5 MB
+    tri_pos: (3, 26798, 9) = 2.8 MB
+    tri_norm: (3, 26798, 9) = 2.8 MB
+    tri_tex_meta: (26798, 10) = 1.0 MB
+    tri_uvs: (1, 26798, 6) = 0.6 MB
+  batch 2: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26798, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13399 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13399 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573706, 5) = 90.0 MB
+    tri_mat: (3, 26798, 34) = 10.4 MB
+    tri_pos: (3, 26798, 9) = 2.8 MB
+    tri_norm: (3, 26798, 9) = 2.8 MB
+    tri_tex_meta: (26798, 10) = 1.0 MB
+    tri_uvs: (1, 26798, 6) = 0.6 MB
+  batch 3: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26810, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13346 nodes, 0 leaves, 2.4 MB
+    tri_opaque_bvh: 0 instances, 13346 nodes, 0 leaves, 2.4 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26810, 34) = 10.4 MB
+    tri_pos: (3, 26810, 9) = 2.8 MB
+    tri_norm: (3, 26810, 9) = 2.8 MB
+    tri_tex_meta: (26810, 10) = 1.0 MB
+    tri_uvs: (1, 26810, 6) = 0.6 MB
+  batch 4: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26810, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13401 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13401 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26810, 34) = 10.4 MB
+    tri_pos: (3, 26810, 9) = 2.8 MB
+    tri_norm: (3, 26810, 9) = 2.8 MB
+    tri_tex_meta: (26810, 10) = 1.0 MB
+    tri_uvs: (1, 26810, 6) = 0.6 MB
+  batch 5: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26806, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13419 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13419 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26806, 34) = 10.4 MB
+    tri_pos: (3, 26806, 9) = 2.8 MB
+    tri_norm: (3, 26806, 9) = 2.8 MB
+    tri_tex_meta: (26806, 10) = 1.0 MB
+    tri_uvs: (1, 26806, 6) = 0.6 MB
+  batch 6: merged tensors 108.6 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26826, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13448 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13448 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 21 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573714, 5) = 90.0 MB
+    tri_mat: (3, 26826, 34) = 10.4 MB
+    tri_pos: (3, 26826, 9) = 2.8 MB
+    tri_norm: (3, 26826, 9) = 2.8 MB
+    tri_tex_meta: (26826, 10) = 1.0 MB
+    tri_uvs: (1, 26826, 6) = 0.6 MB
+  batch 7: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26850, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13464 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13464 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573718, 5) = 90.0 MB
+    tri_mat: (3, 26850, 34) = 10.4 MB
+    tri_pos: (3, 26850, 9) = 2.8 MB
+    tri_norm: (3, 26850, 9) = 2.8 MB
+    tri_tex_meta: (26850, 10) = 1.0 MB
+    tri_uvs: (1, 26850, 6) = 0.6 MB
+  batch 8: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26854, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13502 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13502 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573718, 5) = 90.0 MB
+    tri_mat: (3, 26854, 34) = 10.4 MB
+    tri_pos: (3, 26854, 9) = 2.8 MB
+    tri_norm: (3, 26854, 9) = 2.8 MB
+    tri_tex_meta: (26854, 10) = 1.0 MB
+    tri_uvs: (1, 26854, 6) = 0.6 MB
+  batch 9: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26850, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13382 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13382 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26850, 34) = 10.4 MB
+    tri_pos: (3, 26850, 9) = 2.8 MB
+    tri_norm: (3, 26850, 9) = 2.8 MB
+    tri_tex_meta: (26850, 10) = 1.0 MB
+    tri_uvs: (1, 26850, 6) = 0.6 MB
+  batch 10: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26890, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13510 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13510 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573718, 5) = 90.0 MB
+    tri_mat: (3, 26890, 34) = 10.5 MB
+    tri_pos: (3, 26890, 9) = 2.8 MB
+    tri_norm: (3, 26890, 9) = 2.8 MB
+    tri_tex_meta: (26890, 10) = 1.0 MB
+    tri_uvs: (1, 26890, 6) = 0.6 MB
+  batch 11: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13430 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13430 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573714, 5) = 90.0 MB
+    tri_mat: (3, 26922, 34) = 10.5 MB
+    tri_pos: (3, 26922, 9) = 2.8 MB
+    tri_norm: (3, 26922, 9) = 2.8 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+    tri_uvs: (1, 26922, 6) = 0.6 MB
+  batch 12: merged tensors 108.7 MB, BVHs 4.9 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13494 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13494 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573712, 5) = 90.0 MB
+    tri_mat: (3, 26922, 34) = 10.5 MB
+    tri_pos: (3, 26922, 9) = 2.8 MB
+    tri_norm: (3, 26922, 9) = 2.8 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+    tri_uvs: (1, 26922, 6) = 0.6 MB
+  batch 13: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26946, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13504 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13504 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573708, 5) = 90.0 MB
+    tri_mat: (3, 26946, 34) = 10.5 MB
+    tri_pos: (3, 26946, 9) = 2.8 MB
+    tri_norm: (3, 26946, 9) = 2.8 MB
+    tri_tex_meta: (26946, 10) = 1.0 MB
+    tri_uvs: (1, 26946, 6) = 0.6 MB
+  batch 14: merged tensors 108.7 MB, BVHs 5.0 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26942, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13517 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13517 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573708, 5) = 90.0 MB
+    tri_mat: (3, 26942, 34) = 10.5 MB
+    tri_pos: (3, 26942, 9) = 2.8 MB
+    tri_norm: (3, 26942, 9) = 2.8 MB
+    tri_tex_meta: (26942, 10) = 1.0 MB
+    tri_uvs: (1, 26942, 6) = 0.6 MB
+  batch 15: merged tensors 101.7 MB, BVHs 5.0 MB (cuda after merge 6042 MB)
+    counts: num_colored_triangles=0, num_triangles=26934, num_circuits=41, num_frames=3
+    tri_bvh: 0 instances, 13499 nodes, 0 leaves, 2.5 MB
+    tri_opaque_bvh: 0 instances, 13499 nodes, 0 leaves, 2.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (3, 1573702, 5) = 90.0 MB
+    tri_mat: (1, 26934, 34) = 3.5 MB
+    tri_pos: (3, 26934, 9) = 2.8 MB
+    tri_norm: (3, 26934, 9) = 2.8 MB
+    tri_tex_meta: (26934, 10) = 1.0 MB
+    tri_uvs: (1, 26934, 6) = 0.6 MB
+  batch 16: merged tensors 69.6 MB, BVHs 3.3 MB (cuda after merge 5972 MB)
+    counts: num_colored_triangles=0, num_triangles=26934, num_circuits=41, num_frames=2
+    tri_bvh: 0 instances, 13518 nodes, 0 leaves, 1.7 MB
+    tri_opaque_bvh: 0 instances, 13518 nodes, 0 leaves, 1.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (2, 1573702, 5) = 60.0 MB
+    tri_mat: (1, 26934, 34) = 3.5 MB
+    tri_pos: (2, 26934, 9) = 1.8 MB
+    tri_norm: (2, 26934, 9) = 1.8 MB
+    tri_tex_meta: (26934, 10) = 1.0 MB
+    tri_uvs: (1, 26934, 6) = 0.6 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /content/algan/.venv/bin/python3 benchmarks/performance/nn_scene_PREVIEW.py
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /content/algan/.venv/bin/python3 benchmarks/performance/nn_scene_PREVIEW.py
+report written to algan_profile_report_nn_PREVIEW.txt

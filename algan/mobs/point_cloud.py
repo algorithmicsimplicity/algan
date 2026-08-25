@@ -174,6 +174,12 @@ class PMobject(Group):
             for child in self._primitive_children()
         )
 
+    def _get_render_device_memory_used_per_timestep(self):
+        return sum(
+            child._get_render_device_memory_used_per_timestep()
+            for child in self._primitive_children()
+        )
+
     def get_render_primitives(self):
         """Build the native sphere primitives representing this point cloud."""
         primitives = []

@@ -1145,6 +1145,193 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
 
 
+def _opaque_prefix_keep(opaque_s, counts, num_frags):
+    """The opaque-prefix truncation's keep mask: ``keep[j]`` holds exactly when
+    fragment j precedes its pixel's first proven-opaque hit, inclusive.
+
+    Under ``RASTER_OPAQUE_TRUNC_KERNEL`` one kernel walks each covered pixel's
+    CSR run (``sheet_compact_taichi.opaque_prefix_keep``); the torch arm below
+    is what it replaced and stays as the A/B arm. That arm built a whole-stream
+    segment map with ``repeat_interleave`` to route an amin scatter per opaque
+    fragment, then compared two full-length arrays; the kernel needs neither
+    the map nor any [n] intermediate but its output. Both arms are integer
+    flag comparisons over identical ranges, so they agree by construction.
+    """
+    device = opaque_s.device
+    if not rt_settings.RASTER_OPAQUE_TRUNC_KERNEL or num_frags == 0:
+        positions = torch.arange(num_frags, dtype=torch.int64, device=device)
+        segments = torch.repeat_interleave(
+            torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
+        )
+        starts = torch.cumsum(counts, 0) - counts
+        ends = starts + counts - 1
+        first_opaque = torch.full(
+            (counts.numel(),), num_frags, dtype=torch.int64, device=device
+        )
+        opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
+        first_opaque.scatter_reduce_(
+            0,
+            segments.index_select(0, opaque_pos),
+            opaque_pos,
+            reduce="amin",
+            include_self=True,
+        )
+        del opaque_pos, starts
+        keep_end = torch.minimum(first_opaque, ends)
+        del first_opaque, ends
+        keep = positions <= keep_end.index_select(0, segments)
+        return keep
+    from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
+
+    starts = torch.cumsum(counts, 0) - counts
+    keep_u8 = torch.empty(num_frags, dtype=torch.uint8, device=device)
+    opaque_prefix_keep(
+        opaque_s.contiguous().view(torch.uint8),
+        counts,
+        starts,
+        int(counts.numel()),
+        keep_u8,
+    )
+    return keep_u8.view(torch.bool)
+
+
+def _one_mesh_pixel_caps(
+    key_s, ref_s, cov_s, msk_s, mat_opaque_s, counts, tri_obj, ppf, time_start
+):
+    """The one-mesh block (DESIGN_mesh_identity.md ss6.6): flags every pixel
+    whose fragments are all opaque triangles of ONE surface by folding
+    ``_AA_ONE_MESH_BIT`` into ``msk_s``, and returns ``(msk_s, cap_s)`` with
+    the per-fragment ceiling -- the larger of that surface's two sheets' exact
+    areas, 2.0 (the no-ceiling sentinel) everywhere else.
+
+    Under ``SHEET_ONE_MESH_KERNEL`` two kernels walk each covered pixel's CSR
+    run instead of scattering through a whole-stream segment map:
+    ``sheet_compact_taichi.one_mesh_pixel_reduce`` keeps the id spread and the
+    two facing-split coverage sums in registers, and
+    ``one_mesh_pixel_apply`` folds the results in place. The id spread is
+    integer min/max, exact under any order. The coverage sums are the one
+    float contract here (the caller rounds them f64 -> f32 before use): the
+    torch arm's ``scatter_add_`` atomics had no summation order at all, the
+    kernel walks its pixels serially in stream order, and both are expected
+    bitwise-equal after the round for the reason ``sheet_band_reduce``'s area
+    sum is -- verified by measurement in ``benchmarks/_sheet_kernel_check.py``,
+    not assumed.
+    """
+    device = key_s.device
+    num_covered = int(counts.numel())
+    if rt_settings.SHEET_ONE_MESH_KERNEL:
+        from algan.rendering.raytracing.sheet_compact_taichi import (
+            one_mesh_pixel_apply,
+            one_mesh_pixel_reduce,
+        )
+
+        starts = torch.cumsum(counts, 0) - counts
+        lo = torch.full((num_covered,), 2147483647, dtype=torch.int32, device=device)
+        hi = torch.full((num_covered,), -1, dtype=torch.int32, device=device)
+        front = torch.zeros(num_covered, dtype=torch.float64, device=device)
+        back = torch.zeros(num_covered, dtype=torch.float64, device=device)
+        one_mesh_pixel_reduce(
+            key_s,
+            ref_s,
+            mat_opaque_s.contiguous().view(torch.uint8),
+            msk_s,
+            cov_s,
+            counts,
+            starts,
+            num_covered,
+            int(ppf),
+            int(time_start),
+            int(tri_obj.shape[0]),
+            int(AA_BACKFACE_BIT),
+            tri_obj,
+            lo,
+            hi,
+            front,
+            back,
+        )
+        # The i32 fill differs from the torch arm's 1<<40 only on a pixel with
+        # no fragment at all, which cannot happen; see the kernel docstring.
+        one_mesh = (lo == hi) & (lo >= 0)
+        cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
+        del front, back, lo, hi
+        cap_s = torch.empty_like(cov_s)
+        one_mesh_pixel_apply(
+            counts,
+            starts,
+            num_covered,
+            one_mesh.view(torch.uint8),
+            cap_pix,
+            msk_s,
+            cap_s,
+            int(AA_ONE_MESH_BIT),
+        )
+        return msk_s, cap_s
+
+    frame_of = _tri_obj_row(key_s >> 32, ppf, time_start, tri_obj.shape[0])
+    safe_ref = ref_s.clamp_min(0).to(torch.int64)
+    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+    # A bezier fragment has ref < 0 and no surface id; a pixel holding
+    # one is never single-mesh. Same for a non-opaque fragment, whose
+    # far sheet is legitimately visible THROUGH the near one.
+    usable = (ref_s >= 0) & mat_opaque_s
+    sid = torch.where(usable, sid, torch.full_like(sid, -1))
+    del frame_of, safe_ref, usable
+    seg = torch.repeat_interleave(
+        torch.arange(num_covered, dtype=torch.int64, device=device), counts
+    )
+    lo = torch.full((num_covered,), 1 << 40, dtype=torch.int64, device=device)
+    hi = torch.full((num_covered,), -1, dtype=torch.int64, device=device)
+    lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
+    hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+    one_mesh = (lo == hi) & (lo >= 0)
+    del lo, hi, sid
+    # The mesh's coverage CEILING: the larger of the two sheets' exact areas.
+    # Well inside a silhouette a closed solid's sheets tile to the same area,
+    # so this is that area and the far sheet gets no room -- the suppression
+    # rule, recovered. At the BOUNDARY the near sheet's projected area shrinks
+    # toward zero while the footprint does not, and there the larger sheet is
+    # the right answer where suppression under-covers (measured: a 0.045-radius
+    # rod diced to (256, 2) is nearly all boundary, and suppression flips its
+    # signed error to -0.0344 and notches 1676 of 3508 interior pixels).
+    # Accumulated in FLOAT64 and rounded back, and that is load-bearing rather
+    # than cautious. ``scatter_add_`` is a float atomic add, so its summation
+    # order is not reproducible on CUDA -- measured, a 400k-into-5k reduction
+    # of this shape spreads 1.5e-05 across runs. That would be invisible in a
+    # colour, but this feeds a THRESHOLD: the kernel clips only when
+    # ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in its low bits
+    # flips borderline fragments in and out of being clipped, which is a
+    # finite coverage change, which bloom then amplifies. It was measured: two
+    # consecutive renders of ``materials_and_lighting`` differed by up to 28
+    # channel values over 9.6% of a frame, while the same scene with the rule
+    # OFF is bit-identical run to run.
+    #
+    # In float64 the reassociation error lands ~9 orders below a float32 ulp,
+    # so rounding the ceiling to float32 absorbs it: the reduction is bitwise
+    # reproducible in practice (verified over 6 runs, spread 0.0), and any
+    # residual last-bit float64 difference cannot survive the cast. Cost is
+    # nothing measurable -- it is one pass over the fragments, against a
+    # render this sits at ~1% of.
+    is_back = (msk_s & AA_BACKFACE_BIT) != 0
+    acc = torch.float64
+    cov_acc = cov_s.to(acc)
+    front = torch.zeros(num_covered, dtype=acc, device=device)
+    back = torch.zeros_like(front)
+    zero = torch.zeros((), dtype=acc, device=device)
+    front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
+    back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
+    cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
+    del front, back, cov_acc, is_back
+    msk_s = msk_s | torch.where(
+        one_mesh.index_select(0, seg),
+        torch.full_like(msk_s, AA_ONE_MESH_BIT),
+        torch.zeros_like(msk_s),
+    )
+    cap_s = torch.where(
+        one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0
+    )
+    return msk_s, cap_s
+
+
 def _tri_obj_row(pix, ppf, time_start, rows):
     """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
     ``pix``, which is the row the host has to read to ask the same question.
@@ -1603,29 +1790,7 @@ def prepare_sparse_raster_coverage(
         # in sparse sorted space: each pixel keeps the prefix through its first
         # opaque event.  The sort uses the exact same depth-bin/layer keys.
         if bool(opaque_s.any().item()):
-            num_cov = int(covered.numel())
-            positions = torch.arange(num_frags, dtype=torch.int64, device=device)
-            segments = torch.repeat_interleave(
-                torch.arange(num_cov, dtype=torch.int64, device=device), counts
-            )
-            starts = torch.cumsum(counts, 0) - counts
-            ends = starts + counts - 1
-            first_opaque = torch.full(
-                (num_cov,), num_frags, dtype=torch.int64, device=device
-            )
-            opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
-            first_opaque.scatter_reduce_(
-                0,
-                segments.index_select(0, opaque_pos),
-                opaque_pos,
-                reduce="amin",
-                include_self=True,
-            )
-            del opaque_pos, starts
-            keep_end = torch.minimum(first_opaque, ends)
-            del first_opaque, ends
-            keep = positions <= keep_end.index_select(0, segments)
-            del positions, segments, keep_end
+            keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
             truncated = int(keep.sum().item()) != num_frags
             keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
             del keep
@@ -1653,7 +1818,7 @@ def prepare_sparse_raster_coverage(
         # kernel because it is a segment reduction over the CSR the host already
         # has, and it rides in a spare frag_msk flag bit so no kernel argument
         # changes.
-        one_mesh_cap = None
+        #
         # The one-mesh ceiling stays under the sheet resolve, as DATA on the
         # sheet record. DESIGN_sheet_resolve.md §7 first deleted it as
         # "subsumed by per-sheet claims", and the Phase-2 ink-wobble A/B
@@ -1662,72 +1827,22 @@ def prepare_sparse_raster_coverage(
         # 0.060; the exact-fit angles go 0.000 -> 0.032). Only the §6.7 run
         # lanes are truly subsumed (compaction has no budget to truncate).
         if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
-            tri_obj = merged["tri_obj"]
-            ppf = int(width) * int(height)
-            frame_of = _tri_obj_row(pix_s, ppf, int(time_start), tri_obj.shape[0])
-            safe_ref = ref_s.clamp_min(0).to(torch.int64)
-            sid = tri_obj[frame_of, safe_ref].to(torch.int64)
-            # A bezier fragment has ref < 0 and no surface id; a pixel holding
-            # one is never single-mesh. Same for a non-opaque fragment, whose
-            # far sheet is legitimately visible THROUGH the near one.
-            usable = (ref_s >= 0) & mat_opaque_s
-            sid = torch.where(usable, sid, torch.full_like(sid, -1))
-            del frame_of, safe_ref, usable
-            seg = torch.repeat_interleave(
-                torch.arange(covered.numel(), dtype=torch.int64, device=device),
+            msk_s, cap_s = _one_mesh_pixel_caps(
+                key_s,
+                ref_s,
+                cov_s,
+                msk_s,
+                mat_opaque_s,
                 counts,
+                merged["tri_obj"],
+                int(width) * int(height),
+                int(time_start),
             )
-            lo = torch.full(
-                (covered.numel(),), 1 << 40, dtype=torch.int64, device=device
-            )
-            hi = torch.full((covered.numel(),), -1, dtype=torch.int64, device=device)
-            lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
-            hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
-            one_mesh = (lo == hi) & (lo >= 0)
-            del lo, hi, sid
-            # The mesh's coverage CEILING: the larger of the two sheets' exact
-            # areas. Well inside a silhouette a closed solid's sheets tile to
-            # the same area, so this is that area and the far sheet gets no room
-            # -- the suppression rule, recovered. At the BOUNDARY the near
-            # sheet's projected area shrinks toward zero while the footprint
-            # does not, and there the larger sheet is the right answer where
-            # suppression under-covers (measured: a 0.045-radius rod diced to
-            # (256, 2) is nearly all boundary, and suppression flips its signed
-            # error to -0.0344 and notches 1676 of 3508 interior pixels).
-            # Accumulated in FLOAT64 and rounded back, and that is load-bearing
-            # rather than cautious. ``scatter_add_`` is a float atomic add, so its
-            # summation order is not reproducible on CUDA -- measured, a 400k-into-
-            # 5k reduction of this shape spreads 1.5e-05 across runs. That would be
-            # invisible in a colour, but this feeds a THRESHOLD: the kernel clips
-            # only when ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in
-            # its low bits flips borderline fragments in and out of being clipped,
-            # which is a finite coverage change, which bloom then amplifies. It was
-            # measured: two consecutive renders of ``materials_and_lighting``
-            # differed by up to 28 channel values over 9.6% of a frame, while the
-            # same scene with the rule OFF is bit-identical run to run.
-            #
-            # In float64 the reassociation error lands ~9 orders below a float32
-            # ulp, so rounding the ceiling to float32 absorbs it: the reduction is
-            # bitwise reproducible in practice (verified over 6 runs, spread 0.0),
-            # and any residual last-bit float64 difference cannot survive the cast.
-            # Cost is nothing measurable -- it is one pass over the fragments,
-            # against a render this sits at ~1% of.
-            is_back = (msk_s & AA_BACKFACE_BIT) != 0
-            acc = torch.float64
-            cov_acc = cov_s.to(acc)
-            front = torch.zeros(covered.numel(), dtype=acc, device=device)
-            back = torch.zeros_like(front)
-            zero = torch.zeros((), dtype=acc, device=device)
-            front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
-            back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
-            cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
-            del front, back, cov_acc, is_back
-            msk_s = msk_s | torch.where(
-                one_mesh.index_select(0, seg),
-                torch.full_like(msk_s, AA_ONE_MESH_BIT),
-                torch.zeros_like(msk_s),
-            )
-            one_mesh_cap = (one_mesh, seg, cap_pix)
+        else:
+            # Per-fragment so the kernels index it exactly like frag_cov; 2.0
+            # is the "no ceiling" sentinel, which every non-one-mesh pixel
+            # keeps.
+            cap_s = torch.full_like(cov_s, 2.0)
 
         # SHEET_SAMPLE_DEPTH: mark MATERIAL-opaque triangles so the compaction
         # can tell a depth-gate enforcer sheet (material-opaque, full sample
@@ -1744,17 +1859,6 @@ def prepare_sparse_raster_coverage(
             )
 
         num_covered = int(covered.numel())
-        # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
-        # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
-        cap_s = torch.full_like(cov_s, 2.0)
-        if one_mesh_cap is not None:
-            cap_s = torch.where(
-                one_mesh_cap[0].index_select(0, one_mesh_cap[1]),
-                one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
-                cap_s,
-            )
-            one_mesh_cap = None
-            del one_mesh, seg, cap_pix
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
         frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
         frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)

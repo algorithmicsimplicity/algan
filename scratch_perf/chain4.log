@@ -1,0 +1,10 @@
+=== PREVIEW profile reference (glossy mode 3, ultrafast encoder)
+RUN 2 (warm (steady state)): end-to-end 9.90s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+Scene.get_batch_of_primitives                            3     4.977    50.3%     0.563     5.7%     0.000     0.000
+ray traced render total                                  5     3.997    40.4%     0.035     0.4%     0.000     0.000
+wavefront_loop                                           5     3.767    38.1%     1.341    13.6%     0.000     0.000
+arena preflight (batch)                                  3     2.856    28.9%     0.012     0.1%     0.000     0.000
+AnimationTimeline.set_state_to_times                     3     2.361    23.9%     1.380    13.9%     0.000     0.000

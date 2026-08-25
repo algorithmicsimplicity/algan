@@ -137,10 +137,17 @@ class TrianglePrimitive(RenderPrimitive):
                     merged_uvs.append(uv)
                 self.uvs = unsquish(torch.cat(merged_uvs, 1), -2, 3)
 
+            # Texture maps stay on whatever device built them. A colour map
+            # is a wide animated attribute whose frame window materializes on
+            # the render device (AttributeTimeline.materialize_device), and
+            # relocating it beside the corners meant copying every frame of it
+            # back to the CPU here only for the projection upload to copy it
+            # to the GPU again; the scene merge moves what it concatenates to
+            # its own device (scene_builder._append_texture).
             for triangle in triangle_collection:
                 tex = getattr(triangle, "texture_map", None)
                 if tex is not None:
-                    self.texture_map = tex.to(self.corners.device)
+                    self.texture_map = tex
                     break
 
             # Texture maps cannot be concatenated across primitives (each map
@@ -151,7 +158,7 @@ class TrianglePrimitive(RenderPrimitive):
             for triangle in triangle_collection:
                 tex = getattr(triangle, "material_texture_map", None)
                 if tex is not None:
-                    self.material_texture_map = tex.to(self.corners.device)
+                    self.material_texture_map = tex
                     self.material_texture_flags = getattr(
                         triangle, "material_texture_flags", 0
                     )
@@ -159,7 +166,7 @@ class TrianglePrimitive(RenderPrimitive):
             for triangle in triangle_collection:
                 tex = getattr(triangle, "normal_texture_map", None)
                 if tex is not None:
-                    self.normal_texture_map = tex.to(self.corners.device)
+                    self.normal_texture_map = tex
                     break
             return
 
@@ -183,20 +190,11 @@ class TrianglePrimitive(RenderPrimitive):
             if uvs.dim() == 3:
                 uvs = unsquish(uvs, -2, 3)
             self.uvs = uvs.to(self.corners.device)
-        self.texture_map = (
-            texture_map.to(self.corners.device) if texture_map is not None else None
-        )
-        self.material_texture_map = (
-            material_texture_map.to(self.corners.device)
-            if material_texture_map is not None
-            else None
-        )
+        # Left on the device that built them; see the collection branch above.
+        self.texture_map = texture_map
+        self.material_texture_map = material_texture_map
         self.material_texture_flags = material_texture_flags
-        self.normal_texture_map = (
-            normal_texture_map.to(self.corners.device)
-            if normal_texture_map is not None
-            else None
-        )
+        self.normal_texture_map = normal_texture_map
 
         if shader is None:
             # A mob that set no material of its own renders as the process

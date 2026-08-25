@@ -1140,10 +1140,21 @@ class Mob(
         # event carry a per-row change over many Mobs. It is an ordinary
         # recorded kwarg, so replay hands the same object back and the read and
         # the write both land on the rows the recording wrote.
-        change = change * interpolation
         current_value = self.get_animated_attribute(
             attr, include_descendants=recursive, copy=False, _scope=scope
         )
+        # A wide attribute's frame window materializes on the render device
+        # (AttributeTimeline.materialize_device) while the recorded ``change``
+        # and the interpolated ``interpolation`` arrive from the animation
+        # device: the lerp below is the T x width pass this exists to move, so
+        # bring the operands to the window rather than the window to them.
+        # Same ops in the same order on the ordinary (one-device) path.
+        device = current_value.device
+        if torch.is_tensor(change) and change.device != device:
+            change = change.to(device)
+        if torch.is_tensor(interpolation) and interpolation.device != device:
+            interpolation = interpolation.to(device)
+        change = change * interpolation
         if recursive and scope is None:
             change = self._distribute_over_packed_subtree(attr, change, current_value)
         new_value = current_value + change
@@ -1213,6 +1224,10 @@ class Mob(
         current_value = self.get_animated_attribute(
             attr, include_descendants=recursive, default=value, copy=False
         )
+        if value.device != current_value.device:
+            # See _apply_change: a wide attribute's window lives on the render
+            # device. Only a replayed write can land here with a mismatch.
+            value = value.to(current_value.device)
         if recursive:
             value = self._distribute_over_packed_subtree(attr, value, current_value)
         change = value - current_value

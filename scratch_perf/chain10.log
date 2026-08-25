@@ -1,0 +1,8 @@
+=== windows under a 2 GB tenant (new headroom code)
+rendered 62.1s windows [(0, 19), (19, 30)] preflight [(19, True, (857, 5240)), (11, True, (3398, 5240))]
+frames compared: 30
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 8294400 (0.000%, frame -1); mean 0.0/frame; 0 of 30 frames affected
+=== fresh profiles
+scratch_perf/report_PREVIEW_r3.txt:RUN 2 (warm (steady state)): end-to-end 7.66s
+scratch_perf/report_UHD_r3.txt:RUN 2 (warm (steady state)): end-to-end 30.88s

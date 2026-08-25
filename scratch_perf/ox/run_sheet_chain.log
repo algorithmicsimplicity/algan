@@ -1,0 +1,3787 @@
+=== attempt 1 Tue Aug 25 06:42:51 AM UTC 2026
+=== ping failed, sleeping 180s
+=== attempt 2 Tue Aug 25 06:47:51 AM UTC 2026
+=== ping failed, sleeping 180s
+=== attempt 3 Tue Aug 25 06:52:23 AM UTC 2026
+=== ping failed, sleeping 180s
+=== attempt 4 Tue Aug 25 06:57:23 AM UTC 2026
+=== ping ok, launching
+[0m
+> build · x-preview-f-free
+[0m
+[0m→ [0mRead scratch_perf/ox/brief_sheet_chain.md
+[0m
+[0m# [0mTodos
+[•] Read brief + CLAUDE.md guidance + referenced design docs
+[ ] Measure: _sheet_compact_breakdown.py and _sheet_stage_timing.py at 4K
+[ ] Identify biggest non-sort host-torch passes to kernelise
+[ ] Implement Taichi kernels behind settings toggles
+[ ] Extend _sheet_kernel_check.py unit half with edge cases
+[ ] Run _sheet_kernel_ab.py 3840 2160 3 with new toggles
+[ ] Lossless HD render A/B off vs on - 0 differing pixels
+[ ] uv run -m pytest -q --fast
+[ ] ruff check --no-fix and ruff format --check on touched files
+[ ] Write REPORT_sheet_chain.md
+[0m
+[0m→ [0mRead benchmarks/_sheet_compact_breakdown.py
+[0m→ [0mRead scratch_perf/report_UHD_r2.txt
+[0m→ [0mRead algan/rendering/raytracing/sheets.py
+[0m→ [0mRead algan/rendering/raytracing/sheets.py[90m [offset=1059][0m
+[0m→ [0mRead algan/rendering/raytracing/sheet_compact_taichi.py
+[0m✱ [0mGrep "def prepare_sparse_raster_coverage"[90m in algan/rendering/raytracing · 1 match[0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=500, offset=1150][0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=400, offset=1650][0m
+[0m→ [0mRead algan/rendering/raytracing/settings.py
+[0m✱ [0mGrep "SHEET_RANK_KERNEL|SHEET_MASK_KERNEL|RASTER_FUSED_GATHER|SOLID_SHELL_ALPHA"[90m in algan/rendering/raytracing/settings.py · 28 matches[0m
+[0m→ [0mRead algan/rendering/raytracing/settings.py[90m [limit=330, offset=981][0m
+[0m→ [0mRead algan/environment.py
+[0m→ [0mRead benchmarks/_sheet_kernel_check.py
+[0m→ [0mRead benchmarks/_sheet_kernel_ab.py
+[0m→ [0mRead benchmarks/_sheet_stage_timing.py
+[0m→ [0mRead scratch_perf/render_once.py
+[0m
+[0m$ [0mls -la /content/algan/scratch_perf/ /content/algan/scratch_perf/ox/ 2>/dev/null; cat /content/algan/scratch_perf/gpu_gate.txt 2>/dev/null; echo "---"; nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv 2>/dev/null | head -3
+/content/algan/scratch_perf/:
+total 84724
+drwxr-xr-x  4 root root    4096 Aug 25 06:57 .
+drwxr-xr-x 18 root root    4096 Aug 25 05:12 ..
+-rw-r--r--  1 root root 4299263 Aug 25 06:10 after_gloss_UHD.mp4
+-rw-r--r--  1 root root       5 Aug 25 04:37 baseline_done.flag
+drwxr-xr-x  2 root root    4096 Aug 25 04:53 baseline_videos
+-rw-r--r--  1 root root 1115633 Aug 25 06:08 before_gloss_PREVIEW.mp4
+-rw-r--r--  1 root root  653410 Aug 25 06:53 bounce_probe.mp4
+-rw-r--r--  1 root root     492 Aug 25 06:46 chain10.log
+-rw-r--r--  1 root root     792 Aug 25 06:48 chain11.log
+-rw-r--r--  1 root root     156 Aug 25 06:50 chain12.log
+-rw-r--r--  1 root root     119 Aug 25 06:57 chain13.log
+-rw-r--r--  1 root root    2858 Aug 25 06:03 chain2.log
+-rw-r--r--  1 root root     223 Aug 25 06:05 chain3.log
+-rw-r--r--  1 root root     992 Aug 25 06:07 chain4.log
+-rw-r--r--  1 root root     848 Aug 25 06:10 chain5.log
+-rw-r--r--  1 root root     454 Aug 25 06:13 chain6.log
+-rw-r--r--  1 root root    1275 Aug 25 06:18 chain7.log
+-rw-r--r--  1 root root     224 Aug 25 06:21 chain8.log
+-rw-r--r--  1 root root     707 Aug 25 06:40 chain9.log
+-rw-r--r--  1 root root 2558388 Aug 25 05:40 chunks_default_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:41 chunks_default_1.mp4
+-rw-r--r--  1 root root 2558390 Aug 25 05:43 chunks_fixed1_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:44 chunks_fixed1_1.mp4
+-rw-r--r--  1 root root     290 Aug 25 05:25 det_arm3.py
+-rw-r--r--  1 root root  718545 Aug 25 06:05 det_batch3_0.mp4
+-rw-r--r--  1 root root     502 Aug 25 06:05 det_batch3.log
+-rw-r--r--  1 root root     193 Aug 25 06:00 det_batch3.py
+-rw-r--r--  1 root root     330 Aug 25 06:20 det_bisect1.log
+-rw-r--r--  1 root root     257 Aug 25 06:15 det_bisect1.py
+-rw-r--r--  1 root root  719472 Aug 25 06:20 det_bisect_widetexoff_b3_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:57 det_clean_0.mp4
+-rw-r--r--  1 root root     285 Aug 25 05:57 det_clean.log
+-rw-r--r--  1 root root  304964 Aug 25 05:59 det_cleanp_0.mp4
+-rw-r--r--  1 root root     288 Aug 25 05:59 det_cleanp.log
+-rw-r--r--  1 root root  719956 Aug 25 05:27 det_cputex_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:28 det_cputex_1.mp4
+-rw-r--r--  1 root root     680 Aug 25 05:29 det_cputex.log
+-rw-r--r--  1 root root  719956 Aug 25 05:31 det_cur3_0.mp4
+-rw-r--r--  1 root root  720232 Aug 25 05:32 det_cur3_1.mp4
+-rw-r--r--  1 root root  719956 Aug 25 05:32 det_cur3_2.mp4
+-rw-r--r--  1 root root    1038 Aug 25 05:33 det_cur3.log
+-rw-r--r--  1 root root  719293 Aug 25 05:20 det_default_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:21 det_default_1.mp4
+-rw-r--r--  1 root root     686 Aug 25 05:22 det_default.log
+-rw-r--r--  1 root root    1582 Aug 25 05:17 determinism.py
+-rw-r--r--  1 root root  719956 Aug 25 05:24 det_noprefetch_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:25 det_noprefetch_1.mp4
+-rw-r--r--  1 root root     712 Aug 25 05:25 det_noprefetch.log
+-rw-r--r--  1 root root   42929 Aug 25 06:00 diff_clean_frame1_small.png
+-rw-r--r--  1 root root  407233 Aug 25 06:00 diff_frame1.png
+-rw-r--r--  1 root root  111309 Aug 25 05:24 diff_frame22_crop.png
+-rw-r--r--  1 root root  149628 Aug 25 05:24 diff_frame22.png
+-rw-r--r--  1 root root   19495 Aug 25 05:24 diff_frame22_small.png
+-rw-r--r--  1 root root  454580 Aug 25 06:00 diff_frame28.png
+-rw-r--r--  1 root root     411 Aug 25 05:21 env_full.patch
+-rw-r--r--  1 root root     383 Aug 25 05:21 env_mine.patch
+-rw-r--r--  1 root root    1357 Aug 25 06:20 fingerprint.py
+-rw-r--r--  1 root root  154711 Aug 25 05:24 frame22_small.png
+-rw-r--r--  1 root root     958 Aug 25 05:24 frame_diff_where.py
+-rw-r--r--  1 root root     140 Aug 25 06:53 .gitignore
+-rw-r--r--  1 root root     199 Aug 25 06:41 gpu_tenant.py
+-rw-r--r--  1 root root    2679 Aug 25 06:31 merge_off.json
+-rw-r--r--  1 root root    2679 Aug 25 06:31 merge_on.json
+-rw-r--r--  1 root root 4299263 Aug 25 06:18 oldcode_now_UHD.mp4
+drwxr-xr-x  3 root root    4096 Aug 25 06:42 ox
+-rw-r--r--  1 root root 4299263 Aug 25 06:37 poison_0.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:38 poison_255.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:39 poison_none.mp4
+-rw-r--r--  1 root root   62825 Aug 25 05:07 prep_T21.pstats
+-rw-r--r--  1 root root    1428 Aug 25 04:36 probe_batch_mem.py
+-rw-r--r--  1 root root    1839 Aug 25 05:01 probe_batch_plan.py
+-rw-r--r--  1 root root    1577 Aug 25 06:51 probe_bounce_iters.py
+-rw-r--r--  1 root root    1790 Aug 25 05:30 probe_chunks.py
+-rw-r--r--  1 root root    1468 Aug 25 04:54 probe_image_only.py
+-rw-r--r--  1 root root    1803 Aug 25 06:31 probe_merge_hash.py
+-rw-r--r--  1 root root   13378 Aug 25 05:07 probe_prep_cprofile.log
+-rw-r--r--  1 root root    1834 Aug 25 05:03 probe_prep_cprofile.py
+-rw-r--r--  1 root root    9246 Aug 25 04:43 probe_prep_scaling.log
+-rw-r--r--  1 root root    2443 Aug 25 04:42 probe_prep_scaling.py
+-rw-r--r--  1 root root    1417 Aug 25 04:47 probe_prep_variants.py
+-rw-r--r--  1 root root    1739 Aug 25 05:20 probe_sheet_counts.py
+-rw-r--r--  1 root root    1291 Aug 25 06:33 probe_stream_race.py
+-rw-r--r--  1 root root    1755 Aug 25 06:22 probe_texture_hash.py
+-rw-r--r--  1 root root    1005 Aug 25 04:46 probe_texture_rows.py
+-rw-r--r--  1 root root    2145 Aug 25 05:40 probe_tiles.py
+-rw-r--r--  1 root root    1626 Aug 25 06:47 probe_torch_profiler.py
+-rw-r--r--  1 root root    1663 Aug 25 06:28 probe_windows.py
+-rw-r--r--  1 root root    2455 Aug 25 04:44 profile_PREVIEW_animcuda.log
+-rw-r--r--  1 root root   40645 Aug 25 04:35 profile_PREVIEW_baseline.log
+-rw-r--r--  1 root root   26917 Aug 25 06:00 profile_PREVIEW_gloss2.log
+-rw-r--r--  1 root root   24310 Aug 25 05:09 profile_PREVIEW_r2.log
+-rw-r--r--  1 root root   26181 Aug 25 06:44 profile_PREVIEW_r3.log
+-rw-r--r--  1 root root   26182 Aug 25 06:57 profile_PREVIEW_r4.log
+-rw-r--r--  1 root root   26180 Aug 25 06:07 profile_PREVIEW_ref2.log
+-rw-r--r--  1 root root   40429 Aug 25 04:58 profile_PREVIEW_wideattr.log
+-rw-r--r--  1 root root   31918 Aug 25 04:37 profile_UHD_baseline.log
+-rw-r--r--  1 root root   26174 Aug 25 05:18 profile_UHD_cprof.log
+-rw-r--r--  1 root root   26079 Aug 25 05:12 profile_UHD_r2.log
+-rw-r--r--  1 root root   24907 Aug 25 06:46 profile_UHD_r3.log
+-rw-r--r--  1 root root      98 Aug 25 06:58 profile_UHD_r4.log
+-rw-r--r--  1 root root   25118 Aug 25 06:03 profile_UHD_reg64.log
+-rw-r--r--  1 root root  686725 Aug 25 05:43 reenc_a.mp4
+-rw-r--r--  1 root root  686725 Aug 25 05:44 reenc_b.mp4
+-rw-r--r--  1 root root 1115633 Aug 25 06:07 ref2_PREVIEW.mp4
+-rw-r--r--  1 root root     961 Aug 25 06:04 render_once.py
+-rw-r--r--  1 root root   39501 Aug 25 04:44 report_PREVIEW_animcuda.txt
+-rw-r--r--  1 root root   25719 Aug 25 06:00 report_PREVIEW_gloss2.txt
+-rw-r--r--  1 root root   23381 Aug 25 05:09 report_PREVIEW_r2.txt
+-rw-r--r--  1 root root   25197 Aug 25 06:44 report_PREVIEW_r3.txt
+-rw-r--r--  1 root root   25197 Aug 25 06:57 report_PREVIEW_r4.txt
+-rw-r--r--  1 root root   25196 Aug 25 06:07 report_PREVIEW_ref2.txt
+-rw-r--r--  1 root root   39500 Aug 25 04:58 report_PREVIEW_wideattr.txt
+-rw-r--r--  1 root root   25216 Aug 25 05:18 report_UHD_cprof.txt
+-rw-r--r--  1 root root   25178 Aug 25 05:12 report_UHD_r2.txt
+-rw-r--r--  1 root root   23950 Aug 25 06:46 report_UHD_r3.txt
+-rw-r--r--  1 root root   23946 Aug 25 06:03 report_UHD_reg64.txt
+-rw-r--r--  1 root root    1807 Aug 25 05:54 tiles_chain.log
+-rw-r--r--  1 root root 2558388 Aug 25 05:47 tiles_default_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:47 tiles_default_1.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:49 tiles_fixedA_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:50 tiles_fixedA_1.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:52 tiles_fixedB_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:53 tiles_fixedB_1.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 06:15 tiles_newcode_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 06:16 tiles_newcode_1.mp4
+-rw-r--r--  1 root root   18153 Aug 25 06:49 torch_profiler_UHD.log
+-rw-r--r--  1 root root  846916 Aug 25 06:49 tp_prof.mp4
+-rw-r--r--  1 root root  846916 Aug 25 06:49 tp_warm.mp4
+-rw-r--r--  1 root root     226 Aug 25 05:09 videodiff_PREVIEW_r2.txt
+-rw-r--r--  1 root root     226 Aug 25 04:58 videodiff_PREVIEW_wideattr.txt
+-rw-r--r--  1 root root     385 Aug 25 05:12 videodiff_UHD_r2.txt
+-rw-r--r--  1 root root 4299263 Aug 25 06:25 win_1.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:27 win_2.mp4
+-rw-r--r--  1 root root 4299260 Aug 25 06:30 win_b3.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:42 win_tenant.mp4
+
+/content/algan/scratch_perf/ox/:
+total 2796
+drwxr-xr-x 3 root root    4096 Aug 25 06:42 .
+drwxr-xr-x 4 root root    4096 Aug 25 06:57 ..
+drwxr-xr-x 2 root root    4096 Aug 25 05:52 algan_outputs
+-rw-r--r-- 1 root root    3293 Aug 25 06:35 brief_arena_reads.md
+-rw-r--r-- 1 root root    4028 Aug 25 06:05 brief_batchwide_audit.md
+-rw-r--r-- 1 root root    2710 Aug 25 05:21 brief_nvenc_binary.md
+-rw-r--r-- 1 root root    4642 Aug 25 04:45 brief_nvenc.md
+-rw-r--r-- 1 root root    3822 Aug 25 06:42 brief_sheet_chain.md
+-rw-r--r-- 1 root root    6059 Aug 25 06:25 probe_batchwide_audit.py
+-rw-r--r-- 1 root root     851 Aug 25 05:14 render_hd_encode_check.py
+-rw-r--r-- 1 root root   23990 Aug 25 06:29 REPORT_batchwide_audit.md
+-rw-r--r-- 1 root root    7312 Aug 25 05:55 REPORT_nvenc_binary.md
+-rw-r--r-- 1 root root    8483 Aug 25 05:30 REPORT_nvenc.md
+-rw-r--r-- 1 root root     123 Aug 25 06:40 run_arena_reads.log
+-rw-r--r-- 1 root root     242 Aug 25 05:52 run_auto_arm.log
+-rw-r--r-- 1 root root   19910 Aug 25 06:30 run_batchwide.log
+-rw-r--r-- 1 root root   61604 Aug 25 05:56 run_nvenc_binary.log
+-rw-r--r-- 1 root root   37886 Aug 25 05:31 run_nvenc.log
+-rwxr-xr-x 1 root root     997 Aug 25 04:58 run_ox.sh
+-rw-r--r-- 1 root root    2064 Aug 25 06:59 run_sheet_chain.log
+-rw-r--r-- 1 root root 2614903 Aug 25 05:14 world_map.png
+---
+name, memory.used [MiB], memory.total [MiB]
+Tesla T4, 11249 MiB, 15360 MiB
+[0m
+[0m$ [0mgit -C /content/algan status --short | head -20; git -C /content/algan branch --show-current; git -C /content/algan log --oneline -3
+M algan/animation_timeline/timeline.py
+ M algan/render_loop.py
+ D scratch_perf/gpu_gate.txt
+ M scratch_perf/ox/run_sheet_chain.log
+?? algan_profile_report_nn_PREVIEW.txt
+?? algan_profile_report_nn_UHD.txt
+perf/t4-nn-scene-throughput
+7f9931d Add the T4 round's probe scripts, Ox briefs/reports and run logs (scratch_perf/)
+4009d01 Keep the session's memory notes, probe scripts, Ox briefs/reports and logs in the repo
+547aff2 Glossy prefilter: one bounce loop per tile; reproducible batch windows; arena poison knob
+[0m
+[0m✱ [0mGlob "benchmarks/_video_diff.py"[90m in . · 1 match[0m
+[0m✱ [0mGrep "T5"[90m in algan/rendering/raytracing/DESIGN_optimization_targets.md · 5 matches[0m
+[0m✱ [0mGrep "T5"[90m in . · 20 matches[0m
+[0m→ [0mRead benchmarks/_video_diff.py
+[0m→ [0mRead DESIGN_optimization_targets.md[90m [limit=140, offset=790][0m
+[0m✱ [0mGrep "sheet_nfrag"[90m in . · 6 matches[0m
+Now let me examine the remaining pieces: the experimental settings mapping, `sheet_nfrag` consumers, and the `_gather_fragment_arrays` wrapper.
+[0m✱ [0mGrep "experimental|sheet_rank_kernel|sheet_mask_kernel"[90m in algan/settings · 21 matches[0m
+[0m→ [0mRead algan/settings/raytracing_settings.py[90m [limit=260][0m
+[0m→ [0mRead tests/unit_tests/test_environment.py
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=150, offset=1050][0m
+Now let me start measuring. First the GPU gate, then the breakdown script.
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; echo GATE-OPEN; cat /content/algan/scratch_perf/gpu_gate.txt
+GATE-OPEN
+GPU-FREE
+[0m
+[0m$ [0muv run python benchmarks/_sheet_compact_breakdown.py 2>&1 | tail -20
+=== compact_sheets pass costs, n=3,661,824 sheets=3,290,404, mean of 5 ===
+     29.8 ms   31.7%  bit-lane rank scan (8 x cumsum/gather over [n])
+     18.0 ms   19.1%  bit-lane union + fusion detector (8 x scatter_add, x2/frame)
+     17.5 ms   18.6%  _lexsort (3 stable argsorts)
+     10.3 ms   11.0%  6 x index_select on one permutation
+      8.7 ms    9.2%  torch.unique(sorted, return_inverse)
+      6.6 ms    7.0%  bit-lane popcount over [sheets] (x2 per frame)
+      3.2 ms    3.4%  segmented reductions (area/first/max/count)
+     94.1 ms  100.0%  (sum of the passes benchmarked)
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python benchmarks/_sheet_stage_timing.py 3840 2160 2>&1 | tail -12
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+
+=== 3840x2160 ===
+frame      wall   prepare  emission sort/oth  compact   |sorts  |elemwise
+    0   27.768s    7.375s    6.560s   0.163s   0.742s    0.087s     0.655s
+    1    2.856s    0.373s    0.023s   0.021s   0.280s    0.067s     0.213s
+    2    2.857s    0.368s    0.020s   0.030s   0.271s    0.071s     0.200s
+
+(prepare = coverage stage total; emission = its Taichi count/write kernels;
+ sorts = torch argsort/unique/cumsum/cummax anywhere in the frame;
+ compact = sheets.compact_sheets, a subset of 'host rest')
+[0m
+GPU gate open, measurements done. Per-frame at 4K on this box: `prepare`=0.37s (emission kernels only 0.02s warm), `compact_sheets`≈0.275s of which ~0.20s is non-sort host torch. Now I need a finer attribution of that 0.20s to pick the passes to kernelise. Let me write a probe that captures real compaction inputs and times each block verbatim.
+[0m$ [0mls /content/algan/benchmarks/performance/ && sed -n 1,40p /content/algan/benchmarks/performance/nn_scene_UHD.py
+nn_scene_PREVIEW.py
+nn_scene_UHD.py
+reports
+world_map.png
+import os
+
+os.environ["ALGAN_USE_DAEMON"] = "0"
+
+from algan import *
+from algan.utils.profiling_utils import profile_scene
+from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
+
+
+def scene():
+    run_time = 0.5
+    SETTINGS.raytracing.set(shadows=True)
+
+    with Off():
+        nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
+        x = ImageMob("world_map.png").move_next_to(nn, LEFT).spawn()
+        label = (
+            Text("Neural Net MLP v3 processing an image of the globe")
+            .move_next_to(nn, DOWN)
+            .spawn()
+        )
+
+    with Sync(run_time=run_time):
+        nn.move(UP)
+        x.color_texture = x.color_texture.view(x.texture_width, -1, 5) * 0.5
+        label.move(RIGHT * 2)
+
+
+# The encoder is part of the measurement (the "video encode tail" stage). This
+# benchmark box has 2 slow CPU cores, where libx264's default "slower" preset
+# cannot keep up with the renderer at all; a fast preset keeps the rest of the
+# profile representative of a machine with a full CPU (the output's quality is
+# not what is being measured here).
+profile_scene(
+    scene,
+    UHD,
+    "nn_UHD",
+    runs=2,
+    kernel_profiler=False,
+    save_video_kwargs=dict(ffmpeg_params=["-crf", "17", "-preset", "ultrafast"]),
+[0m
+[0m← [0mWrite scratch_perf/ox/probe_sheet_chain_breakdown.py
+Wrote file successfully.
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_sheet_chain_breakdown.py
+Index: /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
++++ /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
+@@ -142,14 +142,17 @@
+ new_group = torch.ones(n, dtype=torch.bool, device=device)
+ if n > 1:
+     new_group[1:] = (pix_o[1:] != pix_o[:-1]) | (g_o[1:] != g_o[:-1])
+ band_c = kw.get("band_c", 2.0)
+-split_after = sheets._prim_split_after(
+-    merged, cam_origin, pixel_world_scale, cov_in.get("tri_screen"), frame_rel,
+-    time_start, safe_ref, is_tri, t, t_o, order, band_c,
+-) if kw.get("tri_screen") is not None else None
+-if split_after is None:
+-    tri_screen = None
++tri_screen = kw.get("tri_screen")
++split_after = (
++    sheets._prim_split_after(
++        merged, cam_origin, pixel_world_scale, tri_screen, frame_rel,
++        time_start, safe_ref, is_tri, t, t_o, order, band_c,
++    )
++    if tri_screen is not None
++    else None
++)
+ shade_split = bool(kw.get("shade_split", False))
+ 
+ print(f"\ncaptured: n={n:,} covered={int(cov_in['num_covered']):,} "
+       f"shade_split={shade_split} positioned_depth={kw.get('positioned_depth')} "
+
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python scratch_perf/ox/probe_sheet_chain_breakdown.py 2>&1 | tail -20
+Rendering device set to cuda
+Finished rendering _probe_capture.png in 62.7 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+Traceback (most recent call last):
+  File "/content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py", line 117, in <module>
+    n = int(cov_in["num_fragments"])
+            ~~~~~~^^^^^^^^^^^^^^^^^
+KeyError: 'num_fragments'
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_sheet_chain_breakdown.py
+Index: /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
++++ /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
+@@ -48,9 +48,12 @@
+     width,
+     height,
+ ) = a[:7]
+ CAP.update(
+-    coverage={kk: vv.clone() for kk, vv in coverage.items() if torch.is_tensor(vv)},
++    coverage={
++        kk: (vv.clone() if torch.is_tensor(vv) else vv)
++        for kk, vv in coverage.items()
++    },
+     merged={
+         kk: merged[kk].clone()
+         for kk in ("tri_obj", "tri_norm", "tri_pos", "tri_closed")
+         if kk in merged and merged[kk] is not None
+
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python scratch_perf/ox/probe_sheet_chain_breakdown.py 2>&1 | tail -22
+Rendering device set to cuda
+Finished rendering _probe_capture.png in 62.4 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+
+captured: n=3,128,845 covered=755,877 shade_split=True positioned_depth=True sample_depth=True band_rule=prim
+solid-shell block triggers: True
+
+=== compact_sheets block costs on the real stream (n=3,128,845, nb=1,441,601), mean of 3 ===
+     24.0 ms   43.4%  S: solid-shell ceiling block
+     14.5 ms   26.3%  G: sample-depth lane loop (8 lanes)
+      4.6 ms    8.4%  A: per-band order stats (1,441,601 bands, positioned_depth)
+      4.2 ms    7.7%  E: final argsort + sibling weights + CSR
+      2.5 ms    4.6%  D: dominant fragment + nfrag
+      1.9 ms    3.5%  H: group diagnostics
+      1.5 ms    2.8%  C: shade-split band composite (_band_composite)
+      1.2 ms    2.1%  B: new_group/band_start/band_id construction
+      0.7 ms    1.3%  R: main _band_reduce (kernel, shipped)
+     55.2 ms   100%  (blocks benchmarked; sorts/unique/shade-class/prim-split/rank/reduce timed separately)
+[0m
+[0m← [0mWrite scratch_perf/ox/probe_prepare_blocks.py
+Wrote file successfully.
+[0m
+The compact-side picture is now measured. Before picking, I need the same attribution for the two `prepare_sparse_raster_coverage` blocks the brief names (one-mesh reduction, opaque-prefix truncation). Let me probe those on the captured real stream.
+[0m← [0mWrite scratch_perf/ox/probe_capture_nn.py
+Wrote file successfully.
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_capture_nn.py
+Index: /content/algan/scratch_perf/ox/probe_capture_nn.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_capture_nn.py
++++ /content/algan/scratch_perf/ox/probe_capture_nn.py
+@@ -77,19 +77,10 @@
+         label.move(RIGHT * 2)
+     Scene.save_frame("_probe_capture.png", UHD, at=0.25, overwrite=True)
+     sheets.compact_sheets = _orig
+     torch.cuda.synchronize()
+-
+-    def _strip(o):
+-        if isinstance(o, dict):
+-            return {kk: _strip(vv) for kk, vv in o.items()}
+-        if isinstance(o, torch.Tensor):
+-            return o.cpu().clone()
+-        return o
+-
+     os.makedirs(os.path.dirname(_CACHE), exist_ok=True)
+-    torch.save({k: v for k, v in CAP.items()}, _CACHE)
+-    del _strip
++    torch.save(CAP, _CACHE)
+     return CAP
+ 
+ 
+ if __name__ == "__main__":
+
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_prepare_blocks.py
+Index: /content/algan/scratch_perf/ox/probe_prepare_blocks.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_prepare_blocks.py
++++ /content/algan/scratch_perf/ox/probe_prepare_blocks.py
+@@ -25,11 +25,11 @@
+     _AA_ONE_MESH_BIT,
+ )
+ 
+ sys.path.insert(0, os.path.dirname(__file__))
+-import probe_capture_loader  # noqa: E402  noqa-strap: sets CAP via re-render
++import probe_capture_nn  # noqa: E402
+ 
+-CAP = probe_capture_loader.load()
++CAP = probe_capture_nn.load()
+ 
+ cov_in = CAP["coverage"]
+ merged = CAP["merged"]
+ n = int(cov_in["num_fragments"])
+
+[0m
+Now update the breakdown probe to use the shared capture (so it doesn't re-render):
+[0m✗ [0mEdit scratch_perf/ox/probe_sheet_chain_breakdown.py failed
+[91m[1mError: [0mCould not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.
+[0m→ [0mRead scratch_perf/ox/probe_sheet_chain_breakdown.py[90m [limit=80][0m
+[0m→ [0mRead scratch_perf/ox/probe_sheet_chain_breakdown.py[90m [limit=40, offset=80][0m
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_sheet_chain_breakdown.py
+Index: /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
++++ /content/algan/scratch_perf/ox/probe_sheet_chain_breakdown.py
+@@ -69,31 +69,13 @@
+ 
+ 
+ sheets.compact_sheets = _capture
+ 
+-SETTINGS = None
++sys.path.insert(0, os.path.dirname(__file__))
++import probe_capture_nn  # noqa: E402
+ 
+-
+-def build_and_capture():
+-    global SETTINGS
+-    from algan.settings import SETTINGS as S
+-
+-    SETTINGS = S
+-    S.raytracing.set(shadows=True)
+-    run_time = 0.5
+-    with Off():
+-        nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
+-        x = ImageMob("benchmarks/performance/world_map.png").move_next_to(nn, LEFT).spawn()
+-        label = Text("Neural Net MLP v3 processing an image of the globe").move_next_to(nn, DOWN).spawn()
+-    with Sync(run_time=run_time):
+-        nn.move(UP)
+-        x.color_texture = x.color_texture.view(x.texture_width, -1, 5) * 0.5
+-        label.move(RIGHT * 2)
+-    Scene.save_frame("_probe_capture.png", UHD, at=0.25, overwrite=True)
+-
+-
+-build_and_capture()
+ sheets.compact_sheets = _orig
++CAP = probe_capture_nn.load()
+ torch.cuda.synchronize()
+ 
+ cov_in = CAP["coverage"]
+ merged = CAP["merged"]
+
+[0m
+[0m$ [0mrm -f /tmp/opencode/nn_sheet_capture.pt; until grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python scratch_perf/ox/probe_prepare_blocks.py 2>&1 | tail -12
+Rendering device set to cuda
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+Traceback (most recent call last):
+  File "/content/algan/scratch_perf/ox/probe_prepare_blocks.py", line 29, in <module>
+    import probe_capture_nn  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/algan/scratch_perf/ox/probe_capture_nn.py", line 25
+    from algan import *  # noqa: E402,F403
+                      ^
+SyntaxError: import * only allowed at module level
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_capture_nn.py
+Index: /content/algan/scratch_perf/ox/probe_capture_nn.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_capture_nn.py
++++ /content/algan/scratch_perf/ox/probe_capture_nn.py
+@@ -12,18 +12,18 @@
+ import os
+ 
+ os.environ.setdefault("ALGAN_USE_DAEMON", "0")
+ 
++import torch  # noqa: E402
++from algan import *  # noqa: E402,F403
++
+ _CACHE = "/tmp/opencode/nn_sheet_capture.pt"
+ 
+ 
+ def load():
+-    import torch
+-
+     if os.path.exists(_CACHE):
+         return torch.load(_CACHE, weights_only=False)
+ 
+-    from algan import *  # noqa: E402,F403
+     from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
+     from algan.rendering.raytracing import sheets
+     from algan.settings import SETTINGS
+ 
+
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python scratch_perf/ox/probe_prepare_blocks.py 2>&1 | tail -10
+Finished rendering _probe_capture.png in 63.7 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+
+captured: n=3,128,845 covered=755,877 mean frags/pixel 4.14
+
+=== prepare_sparse_raster_coverage block costs, mean of 3 ===
+     15.3 ms   58.8%  T: opaque-prefix truncation (first_opaque + keep)
+     10.7 ms   41.2%  M: one-mesh reduction block (lo/hi + front/back f64 + apply)
+     26.0 ms   100%  (blocks benchmarked)
+[0m
+[0m$ [0msed -n 1,80p /content/algan/tests/unit_tests/test_sheet_compaction.py; grep -n "sample_depth\|positioned\|device\|cuda\|cpu" /content/algan/tests/unit_tests/test_sheet_compaction.py | head -30
+"""Sheet compaction (DESIGN_sheet_resolve.md P1/P2) on synthetic streams.
+
+Pure tensor assertions against hand-built fragment streams -- no render. These
+pin the semantics the Phase-2 resolve consumes: keying, banding, the exact-area
+sum, the mask union, the fusion detector, the dominant fragment, ordering, and
+the CSR.
+
+The two ``sheet_rank_kernel`` tests are the exception to "no kernel launch":
+they run the conflict-rank scan through both arms and compare, which is the
+only way to pin a kernel against the torch expression it replaced. They pay one
+small Taichi compile between them, which is why nothing here is marked ``fast``.
+"""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_BACKFACE_BIT as BACKFACE,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_LOSE_SHIFT as LOSE_SHIFT,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MASK_ALL as MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MAT_OPAQUE_BIT as MAT_OPAQUE,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_SLIVER_BIT as SLIVER,
+)
+from algan.rendering.raytracing.sheets import compact_sheets
+
+
+def _key(pix, t):
+    tb = int(torch.tensor([t], dtype=torch.float32).view(torch.int32)[0].item())
+    return (int(pix) << 32) | (tb & 0xFFFFFFFF)
+
+
+def _coverage(frags, num_tris=8, tri_norm=None):
+    """Build a coverage dict + merged scene from ``(pix, t, ref, cov, msk)``
+    rows (already in (pixel, depth) order, like the emission's).
+
+    Triangles are placed flat-on at depth ``t`` with a small extent so the
+    ``prim`` band rule sees a tiny per-fragment scale; the camera sits at the
+    origin looking down +z. ``tri_norm`` optionally supplies the per-triangle
+    vertex normals ``[1, num_tris, 9]`` the shade-split class reads.
+    """
+    n = len(frags)
+    pix = torch.tensor([f[0] for f in frags], dtype=torch.int64)
+    t = torch.tensor([f[1] for f in frags], dtype=torch.float32)
+    ref = torch.tensor([f[2] for f in frags], dtype=torch.int32)
+    cov = torch.tensor([f[3] for f in frags], dtype=torch.float32)
+    msk = torch.tensor([f[4] for f in frags], dtype=torch.int32)
+    key = torch.tensor([_key(f[0], f[1]) for f in frags], dtype=torch.int64)
+    covered, counts = torch.unique_consecutive(pix, return_counts=True)
+    run_offsets = torch.zeros(covered.numel() + 1, dtype=torch.int32)
+    run_offsets[1:] = torch.cumsum(counts.to(torch.int32), 0)
+    coverage = {
+        "frag_key": key,
+        "frag_ref": ref,
+        "frag_ab": torch.zeros(n, 2),
+        "frag_cov": cov,
+        "frag_msk": msk,
+        "frag_cap": torch.full((n,), 2.0),
+        "covered_idx": covered.to(torch.int32),
+        "run_offsets": run_offsets,
+        "num_fragments": n,
+        "num_covered": int(covered.numel()),
+    }
+    # tri_obj: triangles 0..3 belong to surface 0, 4..7 to surface 1.
+    tri_obj = torch.tensor([[0, 0, 0, 0, 1, 1, 1, 1][:num_tris]])
+    # Flat-on unit-scale triangles at per-ref depth 1 + ref * 0.001 (the band
+    # rule reads vertex distances, and only gaps matter here).
+    tp = torch.zeros(1, num_tris, 9)
+    for r in range(num_tris):
+        z = 1.0 + 0.001 * r
+        tp[0, r] = torch.tensor([0.0, 0, z, 0.05, 0, z, 0, 0.05, z])
+95:    positioned_depth=True,
+96:    sample_depth=False,
+113:        positioned_depth=positioned_depth,
+114:        sample_depth=sample_depth,
+728:    out = _compact(_CROSSING, band_rule="facing", positioned_depth=False)
+749:def test_positioned_depth_is_inert_when_every_fragment_owns_a_sample():
+758:    off = _compact(frags, band_rule="facing", positioned_depth=False)
+763:def test_sheet_positioned_depth_setting_reaches_the_live_module():
+769:        SETTINGS.raytracing.experimental.set(sheet_positioned_depth=False)
+771:        SETTINGS.raytracing.experimental.set(sheet_positioned_depth=True)
+807:    out = _compact(_opaque(_CROSSING_FULL), band_rule="facing", sample_depth=True)
+839:    out = _compact(frags, band_rule="facing", sample_depth=True)
+853:    out = _compact(_opaque(frags), band_rule="facing", sample_depth=True)
+873:        sample_depth=True,
+892:        sample_depth=True,
+910:        sample_depth=True,
+918:    on = _compact(_opaque(_CROSSING_FULL), band_rule="facing", sample_depth=True)
+919:    off = _compact(_opaque(_CROSSING_FULL), band_rule="facing", sample_depth=False)
+958:        sample_depth=True,
+979:    out = _compact(_opaque(frags), band_rule="facing", sample_depth=True)
+986:def test_sheet_sample_depth_setting_reaches_the_live_module():
+992:        SETTINGS.raytracing.experimental.set(sheet_sample_depth=False)
+994:        SETTINGS.raytracing.experimental.set(sheet_sample_depth=True)
+[0m
+Measurements are complete. Ranking of non-sort host-torch passes on the real nn-scene 4K stream:
+
+| pass | ms/frame | brief candidate |
+|---|---|---|
+| solid-shell ceiling (incl. its lexsort) | 24.0 | not listed (sort-heavy → leave sorts) |
+| **T: opaque-prefix truncation** | **15.3** | candidate #3 |
+| **G: sample-depth lane loop** | **14.5** | candidate #1 family (per-band reductions) |
+| **M: one-mesh reduction block** | **10.7** | candidate #2 |
+| A: per-band order stats | 4.6 | candidate #1 |
+| D/H/C/B | ≤2.5 each | candidate #1 |
+
+So I'll kernelise the three ≥10 ms passes (T, G, M) — covering all three named candidates' viable parts — and leave the sorts, the solid-shell sort core, and the sub-5 ms passes alone. Let me check how the existing unit tests drive these code paths before writing code.
+[0m$ [0mgrep -rn "set_default_device\|set_default_tensor" /content/algan/algan/ | head -5; grep -n "def init_taichi" -A 40 /content/algan/algan/rendering/taichi_runtime.py | head 2>/dev/null; grep -rn "def init_taichi" /content/algan/algan/rendering/*.py
+grep: /content/algan/algan/__pycache__/__init__.cpython-313.pyc: binary file matches
+grep: /content/algan/algan/mobs/__pycache__/triangulated_bezier_circuit.cpython-313.pyc: binary file matches
+/content/algan/algan/mobs/triangulated_bezier_circuit.py:235:        torch.set_default_device(torch.device("cpu"))
+/content/algan/algan/mobs/triangulated_bezier_circuit.py:569:        torch.set_default_device(_ANIMATION_DEVICE)
+/content/algan/algan/__init__.py:66:    torch.set_default_device(_ANIMATION_DEVICE)
+426:def init_taichi():
+427-    """Initialize Taichi on Algan's selected backend, once."""
+428-    if _already_initialized():
+429-        _install_taichi_compile_logger()
+430-        return
+431-    ti.init(**taichi_init_kwargs())
+432-    _install_taichi_compile_logger()
+/content/algan/algan/rendering/taichi_runtime.py:426:def init_taichi():
+[0m
+[0m$ [0msed -n 55,75p /content/algan/algan/__init__.py; grep -n "def taichi_init_kwargs" -B 5 -A 30 /content/algan/algan/rendering/taichi_runtime.py
+# constants. NOTE for library consumers: this means importing algan disables
+# autograd in the importing process; do not import algan into a process that
+# also trains torch models.
+torch.set_grad_enabled(False)
+c = torch.inference_mode()
+c.__enter__()
+
+from algan.settings import *
+from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
+
+if _ANIMATION_DEVICE.type != "cpu":
+    torch.set_default_device(_ANIMATION_DEVICE)
+torch.set_default_dtype(torch.float32)
+from algan.errors import *
+from algan.logging.logger import get_logger, set_log_level, set_progress_style
+
+get_logger().info(f"Rendering device set to {_RENDER_DEVICE}")
+
+from algan.constants.color import *
+from algan.constants.math import *
+from algan.constants.spatial import *
+373-    if render_device.type == "cpu":
+374-        return ti.cpu
+375-    return ti.gpu
+376-
+377-
+378:def taichi_init_kwargs():
+379-    """Algan's Taichi runtime config, as a kwargs dict.
+380-
+381-    Exposed so the profiler (:mod:`algan.utils.profiling_utils`) can launch
+382-    Taichi with the *exact same* performance config production uses, just
+383-    adding ``kernel_profiler=True`` -- otherwise the benchmark silently
+384-    measures a different (much faster) config than real renders. See
+385-    [[algan-render-benchmarking]].
+386-    """
+387-    kwargs = {
+388-        "arch": _taichi_arch(),
+389-        "fast_math": True,
+390-        # advanced_optimization defaults off (it raised register
+391-        # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
+392-        "advanced_optimization": env_flag("ALGAN_ADV_OPT", False),
+393-        # debug=True inserts a bounds-check on *every* ndarray access;
+394-        # the ray-trace megakernels do millions of array reads per ray
+395-        # (BVH nodes, packed geometry), so it ran them ~11x slower with
+396-        # no benefit to released renders. Keep it off (env ALGAN_TI_DEBUG=1
+397-        # re-enables it for kernel development).
+398-        "debug": env_flag("ALGAN_TI_DEBUG", False),
+399-        "offline_cache": True,
+400-        # The default 100 MB cache LRU-evicts large megakernel
+401-        # artifacts once several variants (general / no-PN / lean /
+402-        # path-trace / wavefront, plus per-config rebuilds) are
+403-        # compiled, forcing repeated ~minutes-long recompiles. Raise
+404-        # it (disk-backed) so every kernel stays cached. The field is
+405-        # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
+406-        # 19x the default).
+407-        "offline_cache_max_size_of_files": 1_000_000_000,
+408-    }
+[0m
+All measurements done. Now implementing. First, the three kernels in `sheet_compact_taichi.py`:
+[0m← [0mEdit algan/rendering/raytracing/sheet_compact_taichi.py
+Index: /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
++++ /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+@@ -71,11 +71,23 @@
+ with each other bitwise. Do not narrow it to f32: a real frame's sheets are
+ 81% one fragment and 17% two (both order-independent whatever the width), but
+ the remaining 1.6% run to eleven, and ``sheet_cov`` feeds thresholds.
+ 
++The one-mesh reduction (``one_mesh_pixel_reduce``) carries the same-shaped
++float contract one stage earlier in the pipeline: its ``front``/``back``
++per-pixel coverage sums accumulate in f64 registers and are rounded through
++f32 by the caller, exactly as the torch ``scatter_add_`` pair it replaces was
++-- and for the same reason (a ceiling that wobbles in its low bits flips
++borderline fragments in and out of being clipped). Unlike the area sum it
++accumulates SERIALLY, one thread per pixel walking the pixel's own CSR run,
++so it is order-reproducible run to run by construction; agreement with the
++torch arm is again by measurement, at 4K shapes, bitwise after the round.
++
+ ``benchmarks/_sheet_kernel_check.py`` is the parity harness; every kernel is
+-gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``)
+-so the torch passes stay runnable as the A/B arm.
++gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``,
++``RASTER_OPAQUE_TRUNC_KERNEL``, ``SHEET_ONE_MESH_KERNEL``,
++``SHEET_SAMPLE_DEPTH_KERNEL``) so the torch passes stay runnable as the A/B
++arm.
+ """
+ 
+ import taichi as ti
+ 
+
+[0m
+Now append the three new kernels at the end of `sheet_compact_taichi.py`:
+[0m← [0mEdit algan/rendering/raytracing/sheet_compact_taichi.py
+Index: /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
++++ /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+@@ -230,4 +230,167 @@
+                         r = ti.max(r, cnt[b])
+                         cnt[b] += 1
+                 rank[j] = r
+                 j += 1
++
++
++@ti.kernel
++def opaque_prefix_keep(
++    opaque: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
++    counts: ti.types.ndarray(),  # [num_cov] i64 -- fragments per covered pixel
++    starts: ti.types.ndarray(),  # [num_cov] i64 -- CSR row start per pixel
++    num_cov: ti.i32,
++    keep: ti.types.ndarray(),  # [n] u8 OUT -- 1 where the fragment is kept
++):
++    """One pass: the opaque-prefix truncation's keep mask.
++
++    A pixel keeps the prefix through its FIRST proven-opaque fragment, so
++    ``keep[j]`` holds exactly when no opaque fragment of j's pixel lies
++    strictly before j. One thread per covered pixel walks its CSR run twice --
++    once to find that first opaque fragment, once to write the flags -- which
++    replaces the torch chain (an arange, a repeat_interleave over the whole
++    stream, a nonzero + index_select + scatter_reduce amin, and two full-length
++    elementwise passes) with one launch and no [n] intermediate but the output.
++
++    Integer flags compared identically in both arms, so agreement is exact by
++    construction.
++    """
++    for p in range(num_cov):
++        s = ti.cast(starts[p], ti.i32)
++        e = s + ti.cast(counts[p], ti.i32)
++        ke = e - 1
++        j = s
++        while j < e:
++            if opaque[j] != 0:
++                ke = j
++                break
++            j += 1
++        for jj in range(s, e):
++            keep[jj] = 1 if jj <= ke else 0
++
++
++@ti.kernel
++def one_mesh_pixel_reduce(
++    key: ti.types.ndarray(),  # [n] i64 -- sorted fragment keys
++    ref: ti.types.ndarray(),  # [n] i32 -- primitive refs (<0: circuit)
++    mat_opaque: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
++    msk: ti.types.ndarray(),  # [n] i32 -- mask words (backface bit read here)
++    cov: ti.types.ndarray(),  # [n] f32 -- exact areas
++    counts: ti.types.ndarray(),  # [num_cov] i64 -- fragments per covered pixel
++    starts: ti.types.ndarray(),  # [num_cov] i64
++    num_cov: ti.i32,
++    ppf: ti.i32,  # pixels per frame
++    time_start: ti.i32,
++    obj_rows: ti.i32,  # tri_obj.shape[0]
++    backface_bit: ti.i32,  # _AA_BACKFACE_BIT
++    tri_obj: ti.types.ndarray(),  # [obj_rows, N] -- fragment row -> surface id
++    lo: ti.types.ndarray(),  # [num_cov] i32 OUT, PRE-FILLED with 2**31 - 1
++    hi: ti.types.ndarray(),  # [num_cov] i32 OUT, PRE-FILLED with -1
++    front: ti.types.ndarray(),  # [num_cov] f64 OUT, PRE-ZEROED
++    back: ti.types.ndarray(),  # [num_cov] f64 OUT, PRE-ZEROED
++):
++    """One pass: per-pixel surface-id spread + facing-split coverage sums.
++
++    The torch block this replaces scattered four reductions over a
++    ``repeat_interleave`` segment map (amin/amax of usable surface ids, then
++    two f64 ``scatter_add_``s splitting coverage by backface bit). Here one
++    thread per covered pixel walks its own CSR run once, keeping all four
++    aggregates in registers -- so the segment map never exists and the float
++    sums accumulate in a fixed serial order (the torch atomics had none).
++
++    ``lo``/``hi`` are integer min/max, exact under any visit order; their fill
++    values differ from the torch arm's (i32 max vs 1<<40) only where a pixel
++    would have NO fragment, which cannot happen -- every covered pixel holds
++    at least one, and every usable surface id is < 2**31 - 1 -- so the values
++    are identical wherever they can be observed.
++
++    ``front``/``back`` carry the module-docstring float contract: f64
++    accumulation rounded through f32 by the caller, bitwise-equal to the torch
++    ``scatter_add_`` pair by measurement rather than by construction.
++    """
++    for p in range(num_cov):
++        s = ti.cast(starts[p], ti.i32)
++        e = s + ti.cast(counts[p], ti.i32)
++        lo_v = 2147483647
++        hi_v = -1
++        fr = 0.0
++        bk = 0.0
++        for j in range(s, e):
++            r = ref[j]
++            sid = -1
++            if r >= 0 and mat_opaque[j] != 0:
++                row = ((key[j] >> 32) // ppf + time_start) % obj_rows
++                sid = ti.cast(tri_obj[row, r], ti.i32)
++            if sid < lo_v:
++                lo_v = sid
++            if sid > hi_v:
++                hi_v = sid
++            c = ti.cast(cov[j], ti.f64)
++            if (msk[j] & backface_bit) != 0:
++                bk += c
++            else:
++                fr += c
++        lo[p] = lo_v
++        hi[p] = hi_v
++        front[p] = fr
++        back[p] = bk
++
++
++@ti.kernel
++def one_mesh_pixel_apply(
++    counts: ti.types.ndarray(),  # [num_cov] i64
++    starts: ti.types.ndarray(),  # [num_cov] i64
++    num_cov: ti.i32,
++    one_mesh: ti.types.ndarray(),  # [num_cov] u8 (a bool viewed as bytes)
++    cap_pix: ti.types.ndarray(),  # [num_cov] f32 -- per-pixel ceiling
++    msk: ti.types.ndarray(),  # [n] i32 INOUT -- ONE_MESH bit folded in place
++    cap_s: ti.types.ndarray(),  # [n] f32 OUT -- 2.0 sentinel / ceiling
++    n: ti.i32,
++    one_mesh_bit: ti.i32,  # _AA_ONE_MESH_BIT
++):
++    """One pass: fold the one-mesh flag and per-fragment caps into the stream.
++
++    Every row of ``msk``/``cap_s`` is written by exactly one thread (its own
++    pixel's walk), so plain read-modify-write needs no atomics. Values match
++    the torch arm exactly: flagged pixels take ``cap_pix``, everything else
++    keeps the 2.0 no-ceiling sentinel.
++    """
++    for p in range(num_cov):
++        s = ti.cast(starts[p], ti.i32)
++        e = s + ti.cast(counts[p], ti.i32)
++        om = one_mesh[p] != 0
++        cp = cap_pix[p]
++        for j in range(s, e):
++            if j < n:
++                if om:
++                    msk[j] = msk[j] | one_mesh_bit
++                    cap_s[j] = cp
++                else:
++                    cap_s[j] = 2.0
++
++
++@ti.kernel
++def sheet_lane_first_owner(
++    band: ti.types.ndarray(),  # [n] i64 -- sheet index of each SORTED fragment
++    msk: ti.types.ndarray(),  # [n] i32 -- mask words
++    n: ti.i32,
++    mask_all: ti.i32,  # _AA_MASK_ALL
++    first_lane: ti.types.ndarray(),  # [nb * _AA_NUM_SAMPLES] i32, PRE-FILLED n
++):
++    """One pass: per (sheet, sample lane), the earliest owner's sorted index.
++
++    The SHEET_SAMPLE_DEPTH lane loop asked, eight times over the stream, for
++    the minimum sorted position among the fragments of each sheet owning one
++    sample lane -- an amin scatter per lane over a full-length ``where`` copy.
++    Here one thread per fragment does all eight lanes' atomic mins into one
++    pre-initialised table; integer min is order-independent, so the result is
++    exactly the torch loop's whatever order the threads land in. Lanes a
++    sheet does not own keep the fill value, which the caller reads as "no
++    owner" exactly as it read the torch arm's sentinel.
++    """
++    for i in range(n):
++        b = ti.cast(band[i], ti.i32)
++        bits = msk[i] & mask_all
++        base = b * _AA_NUM_SAMPLES
++        for l in ti.static(range(_AA_NUM_SAMPLES)):
++            if ((bits >> l) & 1) != 0:
++                ti.atomic_min(first_lane[base + l], i)
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/sheet_compact_taichi.py
+Index: /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
++++ /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+@@ -343,30 +343,29 @@
+     one_mesh: ti.types.ndarray(),  # [num_cov] u8 (a bool viewed as bytes)
+     cap_pix: ti.types.ndarray(),  # [num_cov] f32 -- per-pixel ceiling
+     msk: ti.types.ndarray(),  # [n] i32 INOUT -- ONE_MESH bit folded in place
+     cap_s: ti.types.ndarray(),  # [n] f32 OUT -- 2.0 sentinel / ceiling
+-    n: ti.i32,
+     one_mesh_bit: ti.i32,  # _AA_ONE_MESH_BIT
+ ):
+     """One pass: fold the one-mesh flag and per-fragment caps into the stream.
+ 
+     Every row of ``msk``/``cap_s`` is written by exactly one thread (its own
+-    pixel's walk), so plain read-modify-write needs no atomics. Values match
+-    the torch arm exactly: flagged pixels take ``cap_pix``, everything else
+-    keeps the 2.0 no-ceiling sentinel.
++    pixel's walk, over the CSR ranges the counts sum to exactly once), so
++    plain read-modify-write needs no atomics. Values match the torch arm
++    exactly: flagged pixels take ``cap_pix``, everything else keeps the 2.0
++    no-ceiling sentinel.
+     """
+     for p in range(num_cov):
+         s = ti.cast(starts[p], ti.i32)
+         e = s + ti.cast(counts[p], ti.i32)
+         om = one_mesh[p] != 0
+         cp = cap_pix[p]
+         for j in range(s, e):
+-            if j < n:
+-                if om:
+-                    msk[j] = msk[j] | one_mesh_bit
+-                    cap_s[j] = cp
+-                else:
+-                    cap_s[j] = 2.0
++            if om:
++                msk[j] = msk[j] | one_mesh_bit
++                cap_s[j] = cp
++            else:
++                cap_s[j] = 2.0
+ 
+ 
+ @ti.kernel
+ def sheet_lane_first_owner(
+
+[0m
+Now the wrappers in `raster_pipeline.py`. First the helper functions, placed after `_gather_fragment_arrays`:
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1145,10 +1145,8 @@
+     return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
+ 
+ 
+ def _tri_obj_row(pix, ppf, time_start, rows):
+-    """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
+-    ``pix``, which is the row the host has to read to ask the same question.
+ 
+     A fragment's key carries ``lp = (f - time_start) * ppf + p - tile_start``
+     (``raster_taichi._pair_pixel``), so the pixel index is CHUNK-relative; the
+     resolve turns it back into a frame with ``f = time_start + g // ppf`` and
+
+[0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=20, offset=1146][0m
+I broke the docstring. Let me repair it:
+[0m
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1145,8 +1145,10 @@
+     return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
+ 
+ 
+ def _tri_obj_row(pix, ppf, time_start, rows):
++    """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
++    ``pix``, which is the row the host has to read to ask the same question.
+ 
+     A fragment's key carries ``lp = (f - time_start) * ppf + p - tile_start``
+     (``raster_taichi._pair_pixel``), so the pixel index is CHUNK-relative; the
+     resolve turns it back into a frame with ``f = time_start + g // ppf`` and
+
+[0m
+Now insert the two wrapper helpers before `_tri_obj_row`:
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1144,8 +1144,193 @@
+     )
+     return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
+ 
+ 
++def _opaque_prefix_keep(opaque_s, counts, num_frags):
++    """The opaque-prefix truncation's keep mask: ``keep[j]`` holds exactly when
++    fragment j precedes its pixel's first proven-opaque hit, inclusive.
++
++    Under ``RASTER_OPAQUE_TRUNC_KERNEL`` one kernel walks each covered pixel's
++    CSR run (``sheet_compact_taichi.opaque_prefix_keep``); the torch arm below
++    is what it replaced and stays as the A/B arm. That arm built a whole-stream
++    segment map with ``repeat_interleave`` to route an amin scatter per opaque
++    fragment, then compared two full-length arrays; the kernel needs neither
++    the map nor any [n] intermediate but its output. Both arms are integer
++    flag comparisons over identical ranges, so they agree by construction.
++    """
++    device = opaque_s.device
++    if not rt_settings.RASTER_OPAQUE_TRUNC_KERNEL or num_frags == 0:
++        positions = torch.arange(num_frags, dtype=torch.int64, device=device)
++        segments = torch.repeat_interleave(
++            torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
++        )
++        starts = torch.cumsum(counts, 0) - counts
++        ends = starts + counts - 1
++        first_opaque = torch.full(
++            (counts.numel(),), num_frags, dtype=torch.int64, device=device
++        )
++        opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
++        first_opaque.scatter_reduce_(
++            0,
++            segments.index_select(0, opaque_pos),
++            opaque_pos,
++            reduce="amin",
++            include_self=True,
++        )
++        del opaque_pos, starts
++        keep_end = torch.minimum(first_opaque, ends)
++        del first_opaque, ends
++        keep = positions <= keep_end.index_select(0, segments)
++        return keep
++    from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
++
++    starts = torch.cumsum(counts, 0) - counts
++    keep_u8 = torch.empty(num_frags, dtype=torch.uint8, device=device)
++    opaque_prefix_keep(
++        opaque_s.contiguous().view(torch.uint8),
++        counts,
++        starts,
++        int(counts.numel()),
++        keep_u8,
++    )
++    return keep_u8.view(torch.bool)
++
++
++def _one_mesh_pixel_caps(
++    key_s, ref_s, cov_s, msk_s, mat_opaque_s, counts, tri_obj, ppf, time_start
++):
++    """The one-mesh block (DESIGN_mesh_identity.md ss6.6): flags every pixel
++    whose fragments are all opaque triangles of ONE surface by folding
++    ``_AA_ONE_MESH_BIT`` into ``msk_s``, and returns ``(msk_s, cap_s)`` with
++    the per-fragment ceiling -- the larger of that surface's two sheets' exact
++    areas, 2.0 (the no-ceiling sentinel) everywhere else.
++
++    Under ``SHEET_ONE_MESH_KERNEL`` two kernels walk each covered pixel's CSR
++    run instead of scattering through a whole-stream segment map:
++    ``sheet_compact_taichi.one_mesh_pixel_reduce`` keeps the id spread and the
++    two facing-split coverage sums in registers, and
++    ``one_mesh_pixel_apply`` folds the results in place. The id spread is
++    integer min/max, exact under any order. The coverage sums are the one
++    float contract here (the caller rounds them f64 -> f32 before use): the
++    torch arm's ``scatter_add_`` atomics had no summation order at all, the
++    kernel walks its pixels serially in stream order, and both are expected
++    bitwise-equal after the round for the reason ``sheet_band_reduce``'s area
++    sum is -- verified by measurement in ``benchmarks/_sheet_kernel_check.py``,
++    not assumed.
++    """
++    device = key_s.device
++    num_covered = int(counts.numel())
++    if rt_settings.SHEET_ONE_MESH_KERNEL:
++        from algan.rendering.raytracing.sheet_compact_taichi import (
++            one_mesh_pixel_apply,
++            one_mesh_pixel_reduce,
++        )
++
++        starts = torch.cumsum(counts, 0) - counts
++        lo = torch.full((num_covered,), 2147483647, dtype=torch.int32, device=device)
++        hi = torch.full((num_covered,), -1, dtype=torch.int32, device=device)
++        front = torch.zeros(num_covered, dtype=torch.float64, device=device)
++        back = torch.zeros(num_covered, dtype=torch.float64, device=device)
++        one_mesh_pixel_reduce(
++            key_s,
++            ref_s,
++            mat_opaque_s.contiguous().view(torch.uint8),
++            msk_s,
++            cov_s,
++            counts,
++            starts,
++            num_covered,
++            int(ppf),
++            int(time_start),
++            int(tri_obj.shape[0]),
++            int(_AA_BACKFACE_BIT),
++            tri_obj,
++            lo,
++            hi,
++            front,
++            back,
++        )
++        # The i32 fill differs from the torch arm's 1<<40 only on a pixel with
++        # no fragment at all, which cannot happen; see the kernel docstring.
++        one_mesh = (lo == hi) & (lo >= 0)
++        cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
++        del front, back, lo, hi
++        cap_s = torch.empty_like(cov_s)
++        one_mesh_pixel_apply(
++            counts,
++            starts,
++            num_covered,
++            one_mesh.view(torch.uint8),
++            cap_pix,
++            msk_s,
++            cap_s,
++            int(_AA_ONE_MESH_BIT),
++        )
++        return msk_s, cap_s
++
++    frame_of = _tri_obj_row(key_s >> 32, ppf, time_start, tri_obj.shape[0])
++    safe_ref = ref_s.clamp_min(0).to(torch.int64)
++    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
++    # A bezier fragment has ref < 0 and no surface id; a pixel holding
++    # one is never single-mesh. Same for a non-opaque fragment, whose
++    # far sheet is legitimately visible THROUGH the near one.
++    usable = (ref_s >= 0) & mat_opaque_s
++    sid = torch.where(usable, sid, torch.full_like(sid, -1))
++    del frame_of, safe_ref, usable
++    seg = torch.repeat_interleave(
++        torch.arange(num_covered, dtype=torch.int64, device=device), counts
++    )
++    lo = torch.full((num_covered,), 1 << 40, dtype=torch.int64, device=device)
++    hi = torch.full((num_covered,), -1, dtype=torch.int64, device=device)
++    lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
++    hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
++    one_mesh = (lo == hi) & (lo >= 0)
++    del lo, hi, sid
++    # The mesh's coverage CEILING: the larger of the two sheets' exact areas.
++    # Well inside a silhouette a closed solid's sheets tile to the same area,
++    # so this is that area and the far sheet gets no room -- the suppression
++    # rule, recovered. At the BOUNDARY the near sheet's projected area shrinks
++    # toward zero while the footprint does not, and there the larger sheet is
++    # the right answer where suppression under-covers (measured: a 0.045-radius
++    # rod diced to (256, 2) is nearly all boundary, and suppression flips its
++    # signed error to -0.0344 and notches 1676 of 3508 interior pixels).
++    # Accumulated in FLOAT64 and rounded back, and that is load-bearing rather
++    # than cautious. ``scatter_add_`` is a float atomic add, so its summation
++    # order is not reproducible on CUDA -- measured, a 400k-into-5k reduction
++    # of this shape spreads 1.5e-05 across runs. That would be invisible in a
++    # colour, but this feeds a THRESHOLD: the kernel clips only when
++    # ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in its low bits
++    # flips borderline fragments in and out of being clipped, which is a
++    # finite coverage change, which bloom then amplifies. It was measured: two
++    # consecutive renders of ``materials_and_lighting`` differed by up to 28
++    # channel values over 9.6% of a frame, while the same scene with the rule
++    # OFF is bit-identical run to run.
++    #
++    # In float64 the reassociation error lands ~9 orders below a float32 ulp,
++    # so rounding the ceiling to float32 absorbs it: the reduction is bitwise
++    # reproducible in practice (verified over 6 runs, spread 0.0), and any
++    # residual last-bit float64 difference cannot survive the cast. Cost is
++    # nothing measurable -- it is one pass over the fragments, against a
++    # render this sits at ~1% of.
++    is_back = (msk_s & _AA_BACKFACE_BIT) != 0
++    acc = torch.float64
++    cov_acc = cov_s.to(acc)
++    front = torch.zeros(num_covered, dtype=acc, device=device)
++    back = torch.zeros_like(front)
++    zero = torch.zeros((), dtype=acc, device=device)
++    front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
++    back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
++    cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
++    del front, back, cov_acc, is_back
++    msk_s = msk_s | torch.where(
++        one_mesh.index_select(0, seg),
++        torch.full_like(msk_s, _AA_ONE_MESH_BIT),
++        torch.zeros_like(msk_s),
++    )
++    cap_s = torch.where(one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0)
++    return msk_s, cap_s
++
++
+ def _tri_obj_row(pix, ppf, time_start, rows):
+     """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
+     ``pix``, which is the row the host has to read to ask the same question.
+ 
+
+[0m
+[0m$ [0msed -n 1,80p /content/algan/algan/rendering/raytracing/raster_pipeline.py
+"""Host orchestration for the deterministic hybrid raster front-end.
+
+The frontend emits exact primary coverage for the whole prepared frame window
+at once (not per GPU tile): each primitive is split into ``RASTER_CHUNK``-sized
+candidate chunks, exact hits are emitted, the surviving fragment records are
+ordered by the classic deterministic ``(depth-bin, descending layer)``
+relation, and ``sheets.compact_sheets`` aggregates them into the per-pixel
+sheet records the resolve kernel consumes (DESIGN_sheet_resolve.md).  Future
+work should benchmark a true square screen-tile/bin architecture for better
+projection reuse and cache locality.
+
+Large transient arrays are allocated from ``ManualMemory`` so failed raster
+attempts can restore the arena pointer and retry a smaller primary slice.
+Torch sort/index scratch remains allocator-owned because PyTorch's radix sort
+cannot write directly into an arena view.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from algan.environment import env_str
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    MIN_HIT_DISTANCE,
+)
+from algan.settings import SETTINGS
+
+rt_settings = SETTINGS.raytracing
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_DUMP_COLS as AA_DUMP_COLS,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MASK_ALL as AA_MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MAT_OPAQUE_BIT as AA_MAT_OPAQUE_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
+    _BEZ_BORDER_BITS,
+    AA_FULL_COVERAGE,
+    RASTER_CHUNK,
+    Z_SENTINEL,
+    _aa_run_full,
+    raster_bez_count,
+    raster_bez_write,
+    raster_shadow_trace,
+    raster_tri_count,
+    raster_tri_write,
+)
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    DEPTH_TIE_EPSILON,
+)
+
+# Per-fragment walk dump (DESIGN_analytic_aa_v2.md ss7.1). Debug-only:
+# ``ALGAN_AA_DUMP="px,py,frame"`` (kernel pixel coordinates -- an output PNG's
+# row y is kernel row ``height - 1 - y``) makes both walk kernels record one
+# row per fragment they process at that pixel, printed after the launch and
+# kept here for the golden-walk harness (``benchmarks/_aa_dump_check.py``) to
+# recompute and diff. Read live per launch; the kernels compile the dump path
+# out entirely when it is off, so the production kernels are untouched.
+_AA_DUMP_ROWS = 512
+LAST_AA_DUMP = {}
+
+
+def _aa_group(aa_bez, aa_tri):
+    """The emission's ``aa_grp`` value for this batch.
+
+    One definition, because the emission truncation below and the historical
+    kernel readers had to agree about it, and they drifted once --
+    ``ANALYTIC_AA_ONE_MESH`` set ``aa_grp = 3``, which ``_aa_run_full`` treats
+    as the relaxed gate, while the truncation still tested
+    ``ANALYTIC_AA_RUN_FULL`` alone and therefore withheld the mitigation. That
+[0m
+[0m$ [0mpython - <<'EOF'
+import re
+p = 'algan/rendering/raytracing/raster_pipeline.py'
+s = open(p).read()
+s = s.replace("int(_AA_BACKFACE_BIT),", "int(AA_BACKFACE_BIT),")
+s = s.replace("int(_AA_ONE_MESH_BIT),", "int(AA_ONE_MESH_BIT),")
+s = s.replace("is_back = (msk_s & _AA_BACKFACE_BIT) != 0", "is_back = (msk_s & AA_BACKFACE_BIT) != 0")
+s = s.replace("torch.full_like(msk_s, _AA_ONE_MESH_BIT)", "torch.full_like(msk_s, AA_ONE_MESH_BIT)")
+open(p, 'w').write(s)
+print("done")
+EOF
+done
+[0m
+Now rewrite the two call sites in `prepare_sparse_raster_coverage` to use the helpers:
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1787,31 +1787,9 @@
+ # every transparent/opaque record behind it.  Reproduce that relation
+ # in sparse sorted space: each pixel keeps the prefix through its first
+ # opaque event.  The sort uses the exact same depth-bin/layer keys.
+ if bool(opaque_s.any().item()):
+-    num_cov = int(covered.numel())
+-    positions = torch.arange(num_frags, dtype=torch.int64, device=device)
+-    segments = torch.repeat_interleave(
+-        torch.arange(num_cov, dtype=torch.int64, device=device), counts
+-    )
+-    starts = torch.cumsum(counts, 0) - counts
+-    ends = starts + counts - 1
+-    first_opaque = torch.full(
+-        (num_cov,), num_frags, dtype=torch.int64, device=device
+-    )
+-    opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
+-    first_opaque.scatter_reduce_(
+-        0,
+-        segments.index_select(0, opaque_pos),
+-        opaque_pos,
+-        reduce="amin",
+-        include_self=True,
+-    )
+-    del opaque_pos, starts
+-    keep_end = torch.minimum(first_opaque, ends)
+-    del first_opaque, ends
+-    keep = positions <= keep_end.index_select(0, segments)
+-    del positions, segments, keep_end
++    keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
+     truncated = int(keep.sum().item()) != num_frags
+     keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
+     del keep
+     if truncated:
+
+[0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=130, offset=1625][0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=160, offset=1755][0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=60, offset=1914][0m
+[0m
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1815,110 +1815,33 @@
+ # sheet must not add coverage on top. Marked here rather than in the
+ # kernel because it is a segment reduction over the CSR the host already
+ # has, and it rides in a spare frag_msk flag bit so no kernel argument
+ # changes.
+-one_mesh_cap = None
++#
+ # The one-mesh ceiling stays under the sheet resolve, as DATA on the
+ # sheet record. DESIGN_sheet_resolve.md §7 first deleted it as
+ # "subsumed by per-sheet claims", and the Phase-2 ink-wobble A/B
+ # REFUTED that: with the cap gone the coarse Cylinder's far sheet
+ # re-claims the corr residue and wobble regresses 2-4x (0.015 ->
+ # 0.060; the exact-fit angles go 0.000 -> 0.032). Only the §6.7 run
+ # lanes are truly subsumed (compaction has no budget to truncate).
+ if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
+-    tri_obj = merged["tri_obj"]
+-    ppf = int(width) * int(height)
+-    frame_of = _tri_obj_row(pix_s, ppf, int(time_start), tri_obj.shape[0])
+-    safe_ref = ref_s.clamp_min(0).to(torch.int64)
+-    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+-    # A bezier fragment has ref < 0 and no surface id; a pixel holding
+-    # one is never single-mesh. Same for a non-opaque fragment, whose
+-    # far sheet is legitimately visible THROUGH the near one.
+-    usable = (ref_s >= 0) & mat_opaque_s
+-    sid = torch.where(usable, sid, torch.full_like(sid, -1))
+-    del frame_of, safe_ref, usable
+-    seg = torch.repeat_interleave(
+-        torch.arange(covered.numel(), dtype=torch.int64, device=device),
++    msk_s, cap_s = _one_mesh_pixel_caps(
++        key_s,
++        ref_s,
++        cov_s,
++        msk_s,
++        mat_opaque_s,
+         counts,
++        merged["tri_obj"],
++        int(width) * int(height),
++        int(time_start),
+     )
+-    lo = torch.full(
+-        (covered.numel(),), 1 << 40, dtype=torch.int64, device=device
+-    )
+-    hi = torch.full((covered.numel(),), -1, dtype=torch.int64, device=device)
+-    lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
+-    hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+-    one_mesh = (lo == hi) & (lo >= 0)
+-    del lo, hi, sid
+-    # The mesh's coverage CEILING: the larger of the two sheets' exact
+-    # areas. Well inside a silhouette a closed solid's sheets tile to
+-    # the same area, so this is that area and the far sheet gets no room
+-    # -- the suppression rule, recovered. At the BOUNDARY the near
+-    # sheet's projected area shrinks toward zero while the footprint
+-    # does not, and there the larger sheet is the right answer where
+-    # suppression under-covers (measured: a 0.045-radius rod diced to
+-    # (256, 2) is nearly all boundary, and suppression flips its signed
+-    # error to -0.0344 and notches 1676 of 3508 interior pixels).
+-    # Accumulated in FLOAT64 and rounded back, and that is load-bearing
+-    # rather than cautious. ``scatter_add_`` is a float atomic add, so its
+-    # summation order is not reproducible on CUDA -- measured, a 400k-into-
+-    # 5k reduction of this shape spreads 1.5e-05 across runs. That would be
+-    # invisible in a colour, but this feeds a THRESHOLD: the kernel clips
+-    # only when ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in
+-    # its low bits flips borderline fragments in and out of being clipped,
+-    # which is a finite coverage change, which bloom then amplifies. It was
+-    # measured: two consecutive renders of ``materials_and_lighting``
+-    # differed by up to 28 channel values over 9.6% of a frame, while the
+-    # same scene with the rule OFF is bit-identical run to run.
+-    #
+-    # In float64 the reassociation error lands ~9 orders below a float32
+-    # ulp, so rounding the ceiling to float32 absorbs it: the reduction is
+-    # bitwise reproducible in practice (verified over 6 runs, spread 0.0),
+-    # and any residual last-bit float64 difference cannot survive the cast.
+-    # Cost is nothing measurable -- it is one pass over the fragments,
+-    # against a render this sits at ~1% of.
+-    is_back = (msk_s & AA_BACKFACE_BIT) != 0
+-    acc = torch.float64
+-    cov_acc = cov_s.to(acc)
+-    front = torch.zeros(covered.numel(), dtype=acc, device=device)
+-    back = torch.zeros_like(front)
+-    zero = torch.zeros((), dtype=acc, device=device)
+-    front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
+-    back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
+-    cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
+-    del front, back, cov_acc, is_back
+-    msk_s = msk_s | torch.where(
+-        one_mesh.index_select(0, seg),
+-        torch.full_like(msk_s, AA_ONE_MESH_BIT),
+-        torch.zeros_like(msk_s),
+-    )
+-    one_mesh_cap = (one_mesh, seg, cap_pix)
+-
+-# SHEET_SAMPLE_DEPTH: mark MATERIAL-opaque triangles so the compaction
+-# can tell a depth-gate enforcer sheet (material-opaque, full sample
+-# union, full exact coverage) from a translucent one. Classification is
+-# uniform within a surface -- the bit comes from the material, and one
+-# band never spans two meshes -- so per-fragment is per-band. Rides the
+-# mask word as data; every reader masks with AA_MASK_ALL or tests named
+-# flag bits, so it is inert where unread.
+-if rt_settings.SHEET_SAMPLE_DEPTH and num_frags:
+-    msk_s = msk_s | torch.where(
+-        mat_opaque_s & (ref_s >= 0),
+-        torch.full_like(msk_s, AA_MAT_OPAQUE_BIT),
+-        torch.zeros_like(msk_s),
+-    )
+-
+-num_covered = int(covered.numel())
+-# Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
+-# "no ceiling" sentinel, which every non-one-mesh pixel keeps.
+-cap_s = torch.full_like(cov_s, 2.0)
+-if one_mesh_cap is not None:
+-    cap_s = torch.where(
+-        one_mesh_cap[0].index_select(0, one_mesh_cap[1]),
+-        one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
+-        cap_s,
+-    )
+-    one_mesh_cap = None
+-    del one_mesh, seg, cap_pix
++else:
++    # Per-fragment so the kernels index it exactly like frag_cov; 2.0
++    # is the "no ceiling" sentinel, which every non-one-mesh pixel
++    # keeps.
++    cap_s = torch.full_like(cov_s, 2.0)
+ frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
+ frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+ frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
+ frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+
+[0m
+I accidentally removed the SHEET_SAMPLE_DEPTH marking block in that edit — let me verify and restore it:
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=70, offset=1810][0m
+[0m
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1840,8 +1840,23 @@
+     # Per-fragment so the kernels index it exactly like frag_cov; 2.0
+     # is the "no ceiling" sentinel, which every non-one-mesh pixel
+     # keeps.
+     cap_s = torch.full_like(cov_s, 2.0)
++
++# SHEET_SAMPLE_DEPTH: mark MATERIAL-opaque triangles so the compaction
++# can tell a depth-gate enforcer sheet (material-opaque, full sample
++# union, full exact coverage) from a translucent one. Classification is
++# uniform within a surface -- the bit comes from the material, and one
++# band never spans two meshes -- so per-fragment is per-band. Rides the
++# mask word as data; every reader masks with AA_MASK_ALL or tests named
++# flag bits, so it is inert where unread.
++if rt_settings.SHEET_SAMPLE_DEPTH and num_frags:
++    msk_s = msk_s | torch.where(
++        mat_opaque_s & (ref_s >= 0),
++        torch.full_like(msk_s, AA_MAT_OPAQUE_BIT),
++        torch.zeros_like(msk_s),
++    )
++
+ frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
+ frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+ frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
+ frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/raster_pipeline.py
+Index: /content/algan/algan/rendering/raytracing/raster_pipeline.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/raster_pipeline.py
++++ /content/algan/algan/rendering/raytracing/raster_pipeline.py
+@@ -1855,8 +1855,9 @@
+         torch.full_like(msk_s, AA_MAT_OPAQUE_BIT),
+         torch.zeros_like(msk_s),
+     )
+ 
++num_covered = int(covered.numel())
+ frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
+ frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+ frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
+ frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+
+[0m
+Now `sheets.py` — extract the sample-depth lane loop into a helper with both arms:
+[0m← [0mEdit algan/rendering/raytracing/sheets.py
+Index: /content/algan/algan/rendering/raytracing/sheets.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheets.py
++++ /content/algan/algan/rendering/raytracing/sheets.py
+@@ -725,8 +725,67 @@
+     wmsk = union.to(msk.dtype) | flags
+     return torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
+ 
+ 
++def _lane_first_owners(band_id, msk_o, t_o, nb, n):
++    """``SHEET_SAMPLE_DEPTH``'s per-sample nearest-owner table.
++
++    Returns ``[nb, AA_NUM_SAMPLES]`` float32: for each sheet and sub-pixel
++    sample lane, the exact depth of the sheet's earliest fragment owning THAT
++    lane (the stream is depth-ascending within a group, so the first owner in
++    sorted order is the minimum), or +inf where the sheet does not own the
++    lane -- the datum the sheet record otherwise lacks
++    (OX_SHEET_INTERPENETRATION_AUDIT.md ss6). The classification downstream
++    never compares an unowned lane.
++
++    Under ``SHEET_SAMPLE_DEPTH_KERNEL`` one kernel performs all eight lanes'
++    amin scatters in a single pass over the stream
++    (``sheet_compact_taichi.sheet_lane_first_owner``); the torch arm below is
++    what it replaced and stays as the A/B arm -- one masked full-length
++    ``where`` plus an amin ``scatter_reduce_`` per lane. Both arms reduce the
++    same integers (sorted positions) per (sheet, lane) slot, so they agree
++    exactly whatever order the atomics land in; everything after the table is
++    identical arithmetic on identical values.
++    """
++    device = msk_o.device
++    inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
++    if rt_settings.SHEET_SAMPLE_DEPTH_KERNEL and nb:
++        from algan.rendering.raytracing.sheet_compact_taichi import (
++            sheet_lane_first_owner,
++        )
++
++        # Uninitialized nowhere: the fill value IS the "no owner" sentinel.
++        first_lane = torch.full(
++            (nb * AA_NUM_SAMPLES,), n, dtype=torch.int32, device=device
++        )
++        sheet_lane_first_owner(
++            band_id.contiguous(), msk_o.contiguous(), n, int(AA_MASK_ALL), first_lane
++        )
++        has = first_lane < n
++        d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
++        return torch.where(has, d_lane, inf).view(nb, AA_NUM_SAMPLES)
++
++    big = torch.full((), n, dtype=torch.int64, device=device)
++    sample_depths = torch.full(
++        (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
++    )
++    for lane in range(AA_NUM_SAMPLES):
++        owns = ((msk_o >> lane) & 1) != 0
++        masked = torch.where(owns, torch.arange_like_mask(band_id, n), big)
++        del owns
++        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
++        first_sorted.scatter_reduce_(
++            0, band_id, masked, reduce="amin", include_self=True
++        )
++        del masked
++        has = first_sorted < n
++        d_lane = t_o.index_select(0, first_sorted.clamp_max(max(n - 1, 0)))
++        sample_depths[:, lane] = torch.where(has, d_lane, inf)
++        del first_sorted, has, d_lane
++    del big, inf
++    return sample_depths
++
++
+ def compact_sheets(
+     coverage,
+     merged,
+     cam_origin,
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/sheets.py
+Index: /content/algan/algan/rendering/raytracing/sheets.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheets.py
++++ /content/algan/algan/rendering/raytracing/sheets.py
+@@ -764,14 +764,15 @@
+     d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
+     return torch.where(has, d_lane, inf).view(nb, AA_NUM_SAMPLES)
+ 
+ big = torch.full((), n, dtype=torch.int64, device=device)
++positions = torch.arange(n, dtype=torch.int64, device=device)
+ sample_depths = torch.full(
+     (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+ )
+ for lane in range(AA_NUM_SAMPLES):
+     owns = ((msk_o >> lane) & 1) != 0
+-    masked = torch.where(owns, torch.arange_like_mask(band_id, n), big)
++    masked = torch.where(owns, positions, big)
+     del owns
+     first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
+     first_sorted.scatter_reduce_(
+         0, band_id, masked, reduce="amin", include_self=True
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/sheets.py
+Index: /content/algan/algan/rendering/raytracing/sheets.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheets.py
++++ /content/algan/algan/rendering/raytracing/sheets.py
+@@ -781,9 +781,9 @@
+         has = first_sorted < n
+         d_lane = t_o.index_select(0, first_sorted.clamp_max(max(n - 1, 0)))
+         sample_depths[:, lane] = torch.where(has, d_lane, inf)
+         del first_sorted, has, d_lane
+-    del big, inf
++    del big, positions, inf
+     return sample_depths
+ 
+ 
+ def compact_sheets(
+
+[0m
+Now replace the inline sample-depth block in `compact_sheets` with a call to the helper:
+[0m← [0mEdit algan/rendering/raytracing/sheets.py
+Index: /content/algan/algan/rendering/raytracing/sheets.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheets.py
++++ /content/algan/algan/rendering/raytracing/sheets.py
+@@ -1268,36 +1268,14 @@
+     del min_pos_p, has_pos
+ 
+ # ---- SHEET_SAMPLE_DEPTH: per-sample nearest-owner depths ---------------
+ # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
+-# owning sample bit s (OX_SHEET_INTERPENETRATION_AUDIT.md ss6 -- the datum
+-# the sheet record otherwise lacks). The stream is depth-ascending within
+-# a group, so the FIRST owner of a lane in sorted order is the minimum --
+-# one masked amin-scatter over sorted positions per lane, in the style of
+-# the positioned_depth block above, each lane's temporaries freed before
+-# the next. A sheet that does not own a lane keeps infinity there; the
+-# classification below never compares an unowned lane.
++# owning sample bit s. See ``_lane_first_owners``, which computes the
++# table (one masked amin scatter per lane in torch, one kernel pass under
++# ``SHEET_SAMPLE_DEPTH_KERNEL``).
+ sample_depths = None
+ if sample_depth:
+-    big = torch.full((), n, dtype=torch.int64, device=device)
+-    inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
+-    sample_depths = torch.full(
+-        (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+-    )
+-    for lane in range(AA_NUM_SAMPLES):
+-        owns = ((msk_o >> lane) & 1) != 0
+-        masked = torch.where(owns, positions, big)
+-        del owns
+-        first_lane = torch.full((nb,), n, dtype=torch.int64, device=device)
+-        first_lane.scatter_reduce_(
+-            0, band_id, masked, reduce="amin", include_self=True
+-        )
+-        del masked
+-        has = first_lane < n
+-        d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
+-        sample_depths[:, lane] = torch.where(has, d_lane, inf)
+-        del first_lane, has, d_lane
+-    del big, inf
++    sample_depths = _lane_first_owners(band_id, msk_o, t_o, nb, n)
+ del t_o
+ del positions, msk_o
+ 
+ # Dominant fragment: largest exact area, earliest original position on
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1018,8 +1018,32 @@
+     global RASTER_FUSED_GATHER
+     RASTER_FUSED_GATHER = bool(enabled)
+ 
+ 
++# Kernel opaque-prefix truncation in the sparse emission
++# (sheet_compact_taichi.opaque_prefix_keep, behind
++# ``_opaque_prefix_keep``). Each covered pixel keeps its fragment prefix
++# through the first proven-opaque hit; torch routed an amin scatter per opaque
++# fragment through a whole-stream repeat_interleave segment map and then
++# compared two full-length arrays to build the keep mask -- four [n]
++# intermediates and two device syncs (nonzero) for a per-pixel prefix scan.
++# One kernel walks each pixel's CSR run instead: find the first opaque
++# fragment, write the flags.
++#
++# Bit-identical by construction: both arms are integer flag comparisons over
++# identical ranges. Measured on the real nn-scene 3840x2160 stream (3.13 M
++# fragments over 756 k covered pixels): 15.3 ms -> 1.1 ms per frame.
++RASTER_OPAQUE_TRUNC_KERNEL = env_flag("ALGAN_RASTER_OPAQUE_TRUNC_KERNEL", True)
++
++
++def set_raster_opaque_trunc_kernel(enabled):
++    """Toggle the kernel opaque-prefix truncation mask (see
++    ``RASTER_OPAQUE_TRUNC_KERNEL``). Takes effect at the next batch's emission.
++    """
++    global RASTER_OPAQUE_TRUNC_KERNEL
++    RASTER_OPAQUE_TRUNC_KERNEL = bool(enabled)
++
++
+ # Covered-pixel-compacted resolve: the emission already knows exactly which
+ # pixels hold fragments, so the resolve launches one thread per COVERED pixel
+ # instead of one per screen pixel that early-outs, turning the resolve from
+ # O(screen pixels) into O(covered pixels).  Empty pixels keep the frame
+
+[0m
+Now the toggles in `settings.py`. First `RASTER_OPAQUE_TRUNC_KERNEL`, next to the other raster compaction-kernel toggle:
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1019,20 +1019,19 @@
+     RASTER_FUSED_GATHER = bool(enabled)
+ 
+ 
+ # Kernel opaque-prefix truncation in the sparse emission
+-# (sheet_compact_taichi.opaque_prefix_keep, behind
+-# ``_opaque_prefix_keep``). Each covered pixel keeps its fragment prefix
+-# through the first proven-opaque hit; torch routed an amin scatter per opaque
+-# fragment through a whole-stream repeat_interleave segment map and then
+-# compared two full-length arrays to build the keep mask -- four [n]
+-# intermediates and two device syncs (nonzero) for a per-pixel prefix scan.
+-# One kernel walks each pixel's CSR run instead: find the first opaque
++# (sheet_compact_taichi.opaque_prefix_keep, behind ``_opaque_prefix_keep``).
++# Each covered pixel keeps its fragment prefix through the first proven-opaque
++# hit; torch routed an amin scatter per opaque fragment through a whole-stream
++# repeat_interleave segment map and then compared two full-length arrays to
++# build the keep mask -- several [n] intermediates and two device syncs
++# (nonzero) for what is a per-pixel prefix scan over the CSR the host already
++# has. One kernel walks each pixel's run instead: find the first opaque
+ # fragment, write the flags.
+ #
+ # Bit-identical by construction: both arms are integer flag comparisons over
+-# identical ranges. Measured on the real nn-scene 3840x2160 stream (3.13 M
+-# fragments over 756 k covered pixels): 15.3 ms -> 1.1 ms per frame.
++# identical ranges.
+ RASTER_OPAQUE_TRUNC_KERNEL = env_flag("ALGAN_RASTER_OPAQUE_TRUNC_KERNEL", True)
+ 
+ 
+ def set_raster_opaque_trunc_kernel(enabled):
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1168,8 +1168,34 @@
+     global SHEET_MASK_KERNEL
+     SHEET_MASK_KERNEL = bool(enabled)
+ 
+ 
++# Kernel one-mesh reduction in the sparse emission
++# (sheet_compact_taichi.one_mesh_pixel_reduce / one_mesh_pixel_apply, behind
++# ``raster_pipeline._one_mesh_pixel_caps``). The per-pixel surface-id spread
++# and the two facing-split f64 coverage sums behind ANALYTIC_AA_ONE_MESH were
++# four scatter reductions routed through a whole-stream repeat_interleave
++# segment map, plus two full-length f64 ``where`` temporaries; two kernels now
++# walk each covered pixel's CSR run with all four aggregates in registers, and
++# the segment map never exists.
++#
++# The id spread is integer min/max -- exact under any order. The coverage sums
++# keep their float64 accumulate / float32 round contract (ss6.6.4): the torch
++# arm's atomic ``scatter_add_`` had no summation order at all, the kernel walks
++# its pixels serially in stream order, and both are expected bitwise-equal
++# after the round for the reason ``sheet_band_reduce``'s area sum is --
++# verified by measurement in benchmarks/_sheet_kernel_check.py, not assumed.
++SHEET_ONE_MESH_KERNEL = env_flag("ALGAN_SHEET_ONE_MESH_KERNEL", True)
++
++
++def set_sheet_one_mesh_kernel(enabled):
++    """Toggle the kernel one-mesh reduction in the sparse emission (see
++    ``SHEET_ONE_MESH_KERNEL``). Takes effect at the next batch's emission.
++    """
++    global SHEET_ONE_MESH_KERNEL
++    SHEET_ONE_MESH_KERNEL = bool(enabled)
++
++
+ # Order a sheet by its nearest POSITIONED fragment -- one that owns at least
+ # one sub-pixel sample -- instead of by its nearest fragment of any kind
+ # (sheets.compact_sheets).
+ #
+
+[0m
+Now `SHEET_ONE_MESH_KERNEL` (after `SHEET_MASK_KERNEL`) and `SHEET_SAMPLE_DEPTH_KERNEL` (after `SHEET_SAMPLE_DEPTH`):
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1279,8 +1279,29 @@
+     global SHEET_SAMPLE_DEPTH
+     SHEET_SAMPLE_DEPTH = bool(enabled)
+ 
+ 
++# Kernel lane-owner scan behind SHEET_SAMPLE_DEPTH
++# (sheet_compact_taichi.sheet_lane_first_owner, behind
++# ``sheets._lane_first_owners``). Building the per-sample nearest-owner depth
++# table asked, once per sample lane, "which sorted fragment of each sheet owns
++# this lane earliest" -- eight masked full-length ``where`` copies and eight
++# amin ``scatter_reduce_`` passes over the stream. One kernel does all eight
++# lanes' atomic mins in a single pass into one pre-initialised table.
++#
++# Bit-identical: integer amin per (sheet, lane) slot, order-independent, and
++# every step after the table is identical arithmetic on identical values.
++SHEET_SAMPLE_DEPTH_KERNEL = env_flag("ALGAN_SHEET_SAMPLE_DEPTH_KERNEL", True)
++
++
++def set_sheet_sample_depth_kernel(enabled):
++    """Toggle the kernel lane-owner scan of SHEET_SAMPLE_DEPTH (see
++    ``SHEET_SAMPLE_DEPTH_KERNEL``). Takes effect at the next batch's emission.
++    """
++    global SHEET_SAMPLE_DEPTH_KERNEL
++    SHEET_SAMPLE_DEPTH_KERNEL = bool(enabled)
++
++
+ # Kernel conflict-rank scan in the compaction
+ # (sheet_compact_taichi.sheet_conflict_rank). A fragment's conflict rank --
+ # the largest, over the sample lanes it claims, of how many EARLIER fragments
+ # of its band claim the same lane -- keys a band's sub-bands when the fill
+
+[0m
+Now register the fields in `raytracing_settings.py` and declare env vars in `environment.py`:
+[0m← [0mEdit algan/settings/raytracing_settings.py
+Index: /content/algan/algan/settings/raytracing_settings.py
+===================================================================
+--- /content/algan/algan/settings/raytracing_settings.py
++++ /content/algan/algan/settings/raytracing_settings.py
+@@ -69,16 +69,19 @@
+ "RASTER_BEZ_PRECOMPUTE",
+ "RASTER_TRI_PRECOMPUTE",
+ "RASTER_EMPTY_SKIP",
+ "RASTER_FUSED_GATHER",
++"RASTER_OPAQUE_TRUNC_KERNEL",
+ "RASTER_PAIR_FLAGS",
+ "RASTER_COVERED_SHADE",
+ "RASTER_SPARSE_COVERAGE",
+ "SHEET_MASK_KERNEL",
++"SHEET_ONE_MESH_KERNEL",
+ "SHEET_POSITIONED_DEPTH",
+ "SHEET_RANK_KERNEL",
+ "SHEET_RESOLVE",
+ "SHEET_SAMPLE_DEPTH",
++"SHEET_SAMPLE_DEPTH_KERNEL",
+ "SHEET_SHADE_SPLIT",
+ "ANALYTIC_AA",
+ "ANALYTIC_AA_BEZ",
+ "ANALYTIC_AA_TRI",
+
+[0m
+[0m← [0mEdit algan/settings/raytracing_settings.py
+Index: /content/algan/algan/settings/raytracing_settings.py
+===================================================================
+--- /content/algan/algan/settings/raytracing_settings.py
++++ /content/algan/algan/settings/raytracing_settings.py
+@@ -187,16 +187,19 @@
+ "raster_bez_precompute": "set_raster_bez_precompute",
+ "raster_tri_precompute": "set_raster_tri_precompute",
+ "raster_empty_skip": "set_raster_empty_skip",
+ "raster_fused_gather": "set_raster_fused_gather",
++"raster_opaque_trunc_kernel": "set_raster_opaque_trunc_kernel",
+ "raster_pair_flags": "set_raster_pair_flags",
+ "raster_covered_shade": "set_raster_covered_shade",
+ "raster_sparse_coverage": "set_raster_sparse_coverage",
+ "sheet_mask_kernel": "set_sheet_mask_kernel",
++"sheet_one_mesh_kernel": "set_sheet_one_mesh_kernel",
+ "sheet_positioned_depth": "set_sheet_positioned_depth",
+ "sheet_rank_kernel": "set_sheet_rank_kernel",
+ "sheet_resolve": "set_sheet_resolve",
+ "sheet_sample_depth": "set_sheet_sample_depth",
++"sheet_sample_depth_kernel": "set_sheet_sample_depth_kernel",
+ "sheet_shade_split": "set_sheet_shade_split",
+ "analytic_aa": "set_analytic_aa",
+ "glossy_reflection": "set_glossy_reflection",
+ "wf_textured": "set_textured_wavefront",
+
+[0m
+[0m← [0mEdit algan/environment.py
+Index: /content/algan/algan/environment.py
+===================================================================
+--- /content/algan/algan/environment.py
++++ /content/algan/algan/environment.py
+@@ -124,8 +124,9 @@
+ "ALGAN_RASTER_BEZ_PRECOMPUTE",
+ "ALGAN_RASTER_COVERED_SHADE",
+ "ALGAN_RASTER_EMPTY_SKIP",
+ "ALGAN_RASTER_FUSED_GATHER",
++"ALGAN_RASTER_OPAQUE_TRUNC_KERNEL",
+ "ALGAN_RASTER_PAIR_FLAGS",
+ "ALGAN_RASTER_SPARSE_COVERAGE",
+ "ALGAN_RASTER_SS",
+ "ALGAN_RASTER_STRADDLE_CLIP",
+
+[0m
+[0m← [0mEdit algan/environment.py
+Index: /content/algan/algan/environment.py
+===================================================================
+--- /content/algan/algan/environment.py
++++ /content/algan/algan/environment.py
+@@ -137,12 +137,14 @@
+ "ALGAN_SHADOW_IDENTITY_REJECT",
+ "ALGAN_SHADOW_NEAR_FRACTION",
+ "ALGAN_SHADOW_TERMINATOR",
+ "ALGAN_SHEET_MASK_KERNEL",
++"ALGAN_SHEET_ONE_MESH_KERNEL",
+ "ALGAN_SHEET_POSITIONED_DEPTH",
+ "ALGAN_SHEET_RANK_KERNEL",
+ "ALGAN_SHEET_RESOLVE",
+ "ALGAN_SHEET_SAMPLE_DEPTH",
++"ALGAN_SHEET_SAMPLE_DEPTH_KERNEL",
+ "ALGAN_SHEET_SHADE_SPLIT",
+ "ALGAN_SOLID_SHELL_ALPHA",
+ "ALGAN_SPARSE_DISCOVERY_SAFETY",
+ "ALGAN_SPLIT_TIME_WEIGHT",
+
+[0m
+[0m← [0mWrite /tmp/opencode/smoke_kernels.py
+Wrote file successfully.
+[0m
+Quick compile/parity smoke test before extending the harness:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python /tmp/opencode/smoke_kernels.py 2>&1 | tail -15
+bk += c
+                ^^^^^^^
+Atomic add may lose precision: f32 <- f64
+[W 08/25/26 07:48:13.133 78818] TaichiWarning
+File "/content/algan/algan/rendering/raytracing/sheet_compact_taichi.py", line 331, in one_mesh_pixel_reduce:
+                fr += c
+                ^^^^^^^
+Atomic add may lose precision: f32 <- f64
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+trunc keep equal: True torch.bool torch.bool
+one_mesh msk equal: True
+one_mesh cap bitwise: True
+one-mesh pixels flagged: 506
+lane depths bitwise: True
+[0m
+[0m← [0mEdit algan/rendering/raytracing/sheet_compact_taichi.py
+Index: /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
++++ /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+@@ -311,10 +311,12 @@
+ s = ti.cast(starts[p], ti.i32)
+ e = s + ti.cast(counts[p], ti.i32)
+ lo_v = 2147483647
+ hi_v = -1
+-fr = 0.0
+-bk = 0.0
++# f64 explicitly: a bare 0.0 infers f32 and the sum would silently
++# narrow (Taichi warns "atomic add may lose precision").
++fr = ti.f64(0.0)
++bk = ti.f64(0.0)
+ for j in range(s, e):
+     r = ref[j]
+     sid = -1
+     if r >= 0 and mat_opaque[j] != 0:
+
+[0m
+Kernels pass parity, but Taichi warned that `fr`/`bk` were inferred **f32** (`0.0` literal), so the accumulate wasn't really f64. Fixing:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python /tmp/opencode/smoke_kernels.py 2>&1 | grep -v "^\[W" | tail -8
+Rendering device set to cuda
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+trunc keep equal: True torch.bool torch.bool
+one_mesh msk equal: True
+one_mesh cap bitwise: True
+one-mesh pixels flagged: 506
+lane depths bitwise: True
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -1,24 +1,28 @@
+ """A/B parity for the compaction kernels
+-(RASTER_FUSED_GATHER, SHEET_MASK_KERNEL, SHEET_RANK_KERNEL).
++(RASTER_FUSED_GATHER, SHEET_MASK_KERNEL, SHEET_RANK_KERNEL,
++RASTER_OPAQUE_TRUNC_KERNEL, SHEET_ONE_MESH_KERNEL, SHEET_SAMPLE_DEPTH_KERNEL).
+ 
+ The kernels replace multi-pass torch loops with one pass, and all are meant to
+ be BIT-IDENTICAL to the arm they replace: the gather copies bits, the mask
+ reductions are integer, the conflict-rank scan is an integer serial walk in
+-the stream's own order, and the exact-area sum keeps the f64 accumulator the
+-torch ``scatter_add_`` had -- that last one by measurement rather than by
+-construction, since an f64 atomic add reassociates and only the f32 cast makes
+-it agree. This checks two ways, because the two catch different mistakes:
++the stream's own order, the truncation keep-mask is an integer flag compare,
++the lane-owner scan is an integer amin per slot, and both float reductions
++(the exact-area sum, the one-mesh coverage sums) keep an f64 accumulator that
++is only ever read through an f32 round -- that last one by measurement rather
++than by construction, since an f64 atomic add reassociates and only the f32
++cast makes it agree. This checks two ways, because the two catch different
++mistakes:
+ 
+ * **unit** -- the kernels against the exact torch expressions they replaced,
+   on random inputs at a 4K frame's shapes, including the ones the render never
+   produces (empty bands, every-sample-shared bands, sliver flags, 4096
+   addends in a single area sum, a conflict-rank stream whose FIRST band flag
+   is clear -- compact_sheets never emits one, but the helper must agree with
+-  its torch arm on any input), plus a repeat-run check on the area;
++  its torch arm on any input), plus a repeat-run check on each float sum;
+ * **end to end** -- four rendered frames of a scene carrying PN surfaces, flat
+-  polyhedra, transparency, bezier circuits and text, hashed with all three
+-  toggles ON and all three OFF.
++  polyhedra, transparency, bezier circuits and text, hashed with all six
++  toggles ON and all six OFF.
+ 
+     <venv-python> benchmarks/_sheet_kernel_check.py
+ """
+ 
+@@ -32,15 +36,20 @@
+ from PIL import Image  # noqa: E402
+ 
+ from algan import *  # noqa: E402,F403
+ from algan.constants.math import GIGABYTES  # noqa: E402
+-from algan.rendering.raytracing import sheets  # noqa: E402
++from algan.rendering.raytracing import raster_pipeline, sheets  # noqa: E402
+ from algan.rendering.raytracing.raster_pipeline import (  # noqa: E402
+     _gather_fragment_arrays,
++    _one_mesh_pixel_caps,
++    _opaque_prefix_keep,
++    _tri_obj_row,
+ )
+ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
++    _AA_BACKFACE_BIT,
+     _AA_MASK_ALL,
+     _AA_NUM_SAMPLES,
++    _AA_ONE_MESH_BIT,
+     _AA_SLIVER_BIT,
+ )
+ from algan.settings import SETTINGS  # noqa: E402
+ 
+
+[0m
+All parity holds. Now extend `benchmarks/_sheet_kernel_check.py`'s unit half:
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -284,9 +284,257 @@
+     "leading run: row 0 rank 0, kernel arm reproducible",
+     int(want[0]) == 0 and bits_equal(again, want),
+ )
+ 
+-# ------------------------------------------------------------- end to end
++# --------------------------------------------- unit: opaque-prefix truncation
++print("\n_opaque_prefix_keep vs the torch first_opaque/keep chain it replaced")
++
++
++def torch_keep(opaque, counts):
++    """The exact statements the kernel replaces (verbatim from the pre-kernel
++    truncation block)."""
++    device = opaque.device
++    num_frags = int(opaque.numel())
++    num_cov = int(counts.numel())
++    positions = torch.arange(num_frags, dtype=torch.int64, device=device)
++    segments = torch.repeat_interleave(
++        torch.arange(num_cov, dtype=torch.int64, device=device), counts
++    )
++    starts = torch.cumsum(counts, 0) - counts
++    ends = starts + counts - 1
++    first_opaque = torch.full((num_cov,), num_frags, dtype=torch.int64, device=device)
++    opaque_pos = opaque.nonzero(as_tuple=True)[0]
++    first_opaque.scatter_reduce_(
++        0,
++        segments.index_select(0, opaque_pos),
++        opaque_pos,
++        reduce="amin",
++        include_self=True,
++    )
++    del opaque_pos, starts
++    keep_end = torch.minimum(first_opaque, ends)
++    del first_opaque, ends
++    keep = positions <= keep_end.index_select(0, segments)
++    return keep
++
++
++def trunc_case(label, opaque, counts):
++    EXPERIMENTAL.set(raster_opaque_trunc_kernel=False)
++    want = _opaque_prefix_keep(opaque, counts, int(opaque.numel()))
++    EXPERIMENTAL.set(raster_opaque_trunc_kernel=True)
++    got = _opaque_prefix_keep(opaque, counts, int(opaque.numel()))
++    ref = torch_keep(opaque, counts)
++    ok = (
++        bits_equal(want.view(torch.uint8), ref.view(torch.uint8))
++        and bits_equal(got.view(torch.uint8), ref.view(torch.uint8))
++        and want.dtype == got.dtype == torch.bool
++    )
++    check(
++        f"{label} (kept {int(ref.sum())} of {ref.numel()})",
++        ok,
++    )
++
++
++trunc_n = 3_661_824
++trunc_counts = torch.full((755_877,), 4, dtype=torch.int64, device=DEV)
++trunc_counts[-1] += trunc_n - int(trunc_counts.sum())
++trunc_case("4K shapes, ~20% opaque", torch.rand(trunc_n, generator=g, device=DEV) < 0.2, trunc_counts)
++trunc_case("no opaque at all", torch.zeros(trunc_n, dtype=torch.bool, device=DEV), trunc_counts)
++trunc_case("every fragment opaque", torch.ones(trunc_n, dtype=torch.bool, device=DEV), trunc_counts)
++first_only = torch.zeros(trunc_n, dtype=torch.bool, device=DEV)
++starts = torch.cumsum(trunc_counts, 0) - trunc_counts
++first_only[starts] = True  # the first fragment of every pixel
++trunc_case("first fragment of each pixel opaque", first_only, trunc_counts)
++last_only = torch.zeros(trunc_n, dtype=torch.bool, device=DEV)
++last_only[starts + trunc_counts - 1] = True  # the LAST fragment of each pixel
++trunc_case("last fragment of each pixel opaque", last_only, trunc_counts)
++one_pix_counts = torch.tensor([trunc_n], dtype=torch.int64, device=DEV)
++trunc_case(
++    "single pixel holding the whole stream",
++    torch.rand(trunc_n, generator=g, device=DEV) < 0.5,
++    one_pix_counts,
++)
++tiny_counts = torch.tensor([3, 0 + 1, 1], dtype=torch.int64, device=DEV)[:2]
++tiny_counts = torch.tensor([3, 1], dtype=torch.int64, device=DEV)
++tiny_opaque = torch.tensor([False, False, True, False], device=DEV)
++trunc_case("n == 4, two pixels", tiny_opaque, tiny_counts)
++
++# ----------------------------------------------------- unit: one-mesh records
++print("\n_one_mesh_pixel_caps vs the torch one-mesh block it replaced")
++
++
++def torch_one_mesh(key, ref, cov, msk, mat_opaque, counts, tri_obj, ppf, time_start):
++    """Verbatim pre-kernel block."""
++    device = key.device
++    num_covered = int(counts.numel())
++    frame_of = _tri_obj_row(key >> 32, ppf, time_start, tri_obj.shape[0])
++    safe_ref = ref.clamp_min(0).to(torch.int64)
++    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
++    usable = (ref >= 0) & mat_opaque
++    sid = torch.where(usable, sid, torch.full_like(sid, -1))
++    seg = torch.repeat_interleave(
++        torch.arange(num_covered, dtype=torch.int64, device=device), counts
++    )
++    lo = torch.full((num_covered,), 1 << 40, dtype=torch.int64, device=device)
++    hi = torch.full((num_covered,), -1, dtype=torch.int64, device=device)
++    lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
++    hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
++    one_mesh = (lo == hi) & (lo >= 0)
++    is_back = (msk & _AA_BACKFACE_BIT) != 0
++    cov_acc = cov.to(torch.float64)
++    front = torch.zeros(num_covered, dtype=torch.float64, device=device)
++    back = torch.zeros_like(front)
++    zero = torch.zeros((), dtype=torch.float64, device=device)
++    front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
++    back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
++    cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov.dtype)
++    msk_out = msk | torch.where(
++        one_mesh.index_select(0, seg),
++        torch.full_like(msk, _AA_ONE_MESH_BIT),
++        torch.zeros_like(msk),
++    )
++    cap_s = torch.where(one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0)
++    return msk_out, cap_s
++
++
++def mesh_case(label, key, ref, cov, msk, mat_opaque, counts, tri_obj, ppf=100, time_start=0):
++    args = (key, ref, cov, msk, mat_opaque, counts, tri_obj, ppf, time_start)
++    EXPERIMENTAL.set(sheet_one_mesh_kernel=False)
++    w_msk, w_cap = _one_mesh_pixel_caps(*args)
++    EXPERIMENTAL.set(sheet_one_mesh_kernel=True)
++    g_msk, g_cap = _one_mesh_pixel_caps(*args)
++    ok = bits_equal(w_msk, g_msk) and bits_equal(w_cap, g_cap)
++    flagged = int(((g_msk & _AA_ONE_MESH_BIT) != 0).sum())
++    # The f64 sums are the one float contract: the kernel must also reproduce
++    # ITSELF bitwise across runs (the torch atomics cannot promise that).
++    repeats = [_one_mesh_pixel_caps(*args)[1] for _ in range(4)]
++    ok = ok and all(bits_equal(r, g_cap) for r in repeats)
++    check(f"{label} (flagged fragments: {flagged})", ok)
++
++
++mesh_n = 3_128_845
++mesh_cov_n = 700_000
++mesh_counts = torch.full((mesh_cov_n,), 4, dtype=torch.int64, device=DEV)
++mesh_counts[-1] += mesh_n - int(mesh_counts.sum())
++mesh_key = torch.randint(0, 100 << 32, (mesh_n,), generator=g, device=DEV, dtype=torch.int64)
++# Keys must be pixel-clustered for counts to be a valid CSR; rebuild properly:
++pix = torch.repeat_interleave(torch.arange(mesh_cov_n, dtype=torch.int64, device=DEV), mesh_counts)
++tb = torch.randint(0, 1 << 31, (mesh_n,), generator=g, device=DEV, dtype=torch.int64)
++mesh_key = (pix << 32) | tb
++del pix, tb
++mesh_ref = torch.randint(-1, 12, (mesh_n,), generator=g, device=DEV, dtype=torch.int32)
++mesh_mat = torch.rand(mesh_n, generator=g, device=DEV) < 0.8
++mesh_msk = torch.randint(0, 1 << 22, (mesh_n,), generator=g, device=DEV, dtype=torch.int32)
++mesh_cov = torch.rand(mesh_n, generator=g, device=DEV)
++mesh_obj = torch.randint(0, 3, (1, 12), generator=g, device=DEV, dtype=torch.int64)
++mesh_case(
++    "4K shapes, mixed surfaces/facings/opacity",
++    mesh_key,
++    mesh_ref,
++    mesh_cov,
++    mesh_msk,
++    mesh_mat,
++    mesh_counts,
++    mesh_obj,
++)
++
++# One surface everywhere: every usable pixel flags and takes a real ceiling.
++same_obj = torch.zeros(1, 12, dtype=torch.int64, device=DEV)
++mesh_case(
++    "one surface everywhere",
++    mesh_key,
++    mesh_ref.clamp_min(0),
++    mesh_cov,
++    mesh_msk,
++    torch.ones_like(mesh_mat),
++    mesh_counts,
++    same_obj,
++)
++
++# Circuits only: nothing usable, nothing flagged, caps at the sentinel.
++mesh_case(
++    "circuits only (no flags, sentinel caps)",
++    mesh_key,
++    torch.full((mesh_n,), -7, dtype=torch.int32, device=DEV),
++    mesh_cov,
++    mesh_msk,
++    mesh_mat,
++    mesh_counts,
++    mesh_obj,
++)
++
++# Single-fragment pixels: the walk degenerates to one row.
++solo_counts = torch.ones(mesh_n, dtype=torch.int64, device=DEV)
++solo_key = torch.arange(mesh_n, dtype=torch.int64, device=DEV) << 8
++mesh_case(
++    "every pixel a single fragment",
++    solo_key,
++    mesh_ref.clamp_min(0),
++    mesh_cov,
++    mesh_msk,
++    torch.ones_like(mesh_mat),
++    solo_counts,
++    same_obj,
++)
++
++# All-backface single-surface pixels: front stays 0, cap = back's own area.
++back_msk = mesh_msk.clone()
++back_msk[mesh_ref >= 0] |= _AA_BACKFACE_BIT
++mesh_case(
++    "all fragments back-facing",
++    mesh_key,
++    mesh_ref.clamp_min(0),
++    mesh_cov,
++    back_msk,
++    torch.ones_like(mesh_mat),
++    mesh_counts,
++    same_obj,
++)
++
++# ---------------------------------------------------- unit: lane-owner table
++print("\n_lane_first_owners vs the eight-lane amin loop it replaced")
++
++
++def lane_case(label, band, msk, t_o, nb, n):
++    EXPERIMENTAL.set(sheet_sample_depth_kernel=False)
++    want = sheets._lane_first_owners(band, msk, t_o, nb, n)
++    EXPERIMENTAL.set(sheet_sample_depth_kernel=True)
++    got = sheets._lane_first_owners(band, msk, t_o, nb, n)
++    ok = (
++        bits_equal(want, got)
++        and want.shape == (nb, _AA_NUM_SAMPLES)
++        and bool(torch.isinf(want[want == want].all()) or True)
++    )
++    inf_want = int(torch.isinf(want).sum())
++    check(f"{label} (inf entries: {inf_want})", ok)
++
++
++lane_n = 3_128_845
++lane_nb = 1_441_601
++lane_band = torch.randint(0, lane_nb, (lane_n,), generator=g, device=DEV)
++lane_msk = torch.randint(0, 1 << (_AA_NUM_SAMPLES + 4), (lane_n,), generator=g, device=DEV, dtype=torch.int32)
++lane_t = torch.rand(lane_n, generator=g, device=DEV) * 10 + 1.0
++lane_case("4K shapes, random bands/masks", lane_band, lane_msk, lane_t, lane_nb, lane_n)
++
++# EMPTY BANDS: ids allocated past the highest used one stay at the sentinel --
++# every unowned (band, lane) slot must come back +inf in both arms.
++wide_band = torch.randint(0, lane_nb // 2, (lane_n,), generator=g, device=DEV)
++lane_case("half the band table unused", wide_band, lane_msk, lane_t, lane_nb, lane_n)
++
++# Single-fragment bands: each owner is its band's only claimant.
++solo_band = torch.arange(lane_n, dtype=torch.int64, device=DEV)
++lane_case("every fragment its own sheet", solo_band, lane_msk, lane_t, lane_n, lane_n)
++
++# One sheet owning everything with every lane claimed: the saturated table.
++dense_band = torch.zeros(lane_n, dtype=torch.int64, device=DEV)
++full_msk_l = torch.full((lane_n,), _AA_MASK_ALL, dtype=torch.int32, device=DEV)
++lane_case("one sheet, every lane claimed by everything", dense_band, full_msk_l, lane_t, 1, lane_n)
++
++# Donors only: no lane owned anywhere -- every entry must be +inf.
++donor_msk = torch.full((lane_n,), _AA_SLIVER_BIT, dtype=torch.int32, device=DEV)
++lane_case("donors only (no lane owned)", dense_band, donor_msk, lane_t, 1, lane_n)
++
++
+ print("\nrendered frames, all three toggles ON vs all three OFF")
+ SETTINGS.computing.set(available_memory_override=2 * GIGABYTES)
+ sphere = Sphere().scale(1.4).move(LEFT * 3).set_color(GREEN).spawn()
+ cube = Cube().scale(1.1).move(RIGHT * 3).set_color(BLUE).spawn()
+
+[0m
+Now add the three new unit sections before the end-to-end section:
+[0m$ [0mgrep -n "end to end\|rendered frames" /content/algan/benchmarks/_sheet_kernel_check.py | head
+22:* **end to end** -- four rendered frames of a scene carrying PN surfaces, flat
+537:print("\nrendered frames, all three toggles ON vs all three OFF")
+[0m
+[0m→ [0mRead benchmarks/_sheet_kernel_check.py[90m [limit=75, offset=470][0m
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -532,10 +532,10 @@
+ # Donors only: no lane owned anywhere -- every entry must be +inf.
+ donor_msk = torch.full((lane_n,), _AA_SLIVER_BIT, dtype=torch.int32, device=DEV)
+ lane_case("donors only (no lane owned)", dense_band, donor_msk, lane_t, 1, lane_n)
+ 
+-
+-print("\nrendered frames, all three toggles ON vs all three OFF")
++# ------------------------------------------------------------- end to end
++print("\nrendered frames, all six toggles ON vs all six OFF")
+ SETTINGS.computing.set(available_memory_override=2 * GIGABYTES)
+ sphere = Sphere().scale(1.4).move(LEFT * 3).set_color(GREEN).spawn()
+ cube = Cube().scale(1.1).move(RIGHT * 3).set_color(BLUE).spawn()
+ glass = Sphere().scale(0.9).move(UP * 1.2).spawn()
+
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -498,13 +498,9 @@
+ EXPERIMENTAL.set(sheet_sample_depth_kernel=False)
+ want = sheets._lane_first_owners(band, msk, t_o, nb, n)
+ EXPERIMENTAL.set(sheet_sample_depth_kernel=True)
+ got = sheets._lane_first_owners(band, msk, t_o, nb, n)
+-ok = (
+-    bits_equal(want, got)
+-    and want.shape == (nb, _AA_NUM_SAMPLES)
+-    and bool(torch.isinf(want[want == want].all()) or True)
+-)
++ok = bits_equal(want, got) and want.shape == (nb, _AA_NUM_SAMPLES)
+ inf_want = int(torch.isinf(want).sum())
+ check(f"{label} (inf entries: {inf_want})", ok)
+ 
+ 
+
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -352,9 +352,8 @@
+     "single pixel holding the whole stream",
+     torch.rand(trunc_n, generator=g, device=DEV) < 0.5,
+     one_pix_counts,
+ )
+-tiny_counts = torch.tensor([3, 0 + 1, 1], dtype=torch.int64, device=DEV)[:2]
+ tiny_counts = torch.tensor([3, 1], dtype=torch.int64, device=DEV)
+ tiny_opaque = torch.tensor([False, False, True, False], device=DEV)
+ trunc_case("n == 4, two pixels", tiny_opaque, tiny_counts)
+ 
+
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -413,10 +413,14 @@
+ mesh_n = 3_128_845
+ mesh_cov_n = 700_000
+ mesh_counts = torch.full((mesh_cov_n,), 4, dtype=torch.int64, device=DEV)
+ mesh_counts[-1] += mesh_n - int(mesh_counts.sum())
+-mesh_key = torch.randint(0, 100 << 32, (mesh_n,), generator=g, device=DEV, dtype=torch.int64)
+-# Keys must be pixel-clustered for counts to be a valid CSR; rebuild properly:
++mesh_ref = torch.randint(-1, 12, (mesh_n,), generator=g, device=DEV, dtype=torch.int32)
++mesh_mat = torch.rand(mesh_n, generator=g, device=DEV) < 0.8
++mesh_msk = torch.randint(0, 1 << 22, (mesh_n,), generator=g, device=DEV, dtype=torch.int32)
++mesh_cov = torch.rand(mesh_n, generator=g, device=DEV)
++mesh_obj = torch.randint(0, 3, (1, 12), generator=g, device=DEV, dtype=torch.int64)
++# Keys must be pixel-clustered for counts to be a valid CSR over them:
+ pix = torch.repeat_interleave(torch.arange(mesh_cov_n, dtype=torch.int64, device=DEV), mesh_counts)
+ tb = torch.randint(0, 1 << 31, (mesh_n,), generator=g, device=DEV, dtype=torch.int64)
+ mesh_key = (pix << 32) | tb
+ del pix, tb
+
+[0m
+Now update the end-to-end hash section's toggle sets:
+[0m→ [0mRead benchmarks/_sheet_kernel_check.py[90m [limit=50, offset=536][0m
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -557,15 +557,20 @@
+         out.append(hashlib.sha256(arr.tobytes()).hexdigest())
+     return out
+ 
+ 
+-EXPERIMENTAL.set(
+-    raster_fused_gather=False, sheet_mask_kernel=False, sheet_rank_kernel=False
+-)
++_ALL_OFF = {
++    "raster_fused_gather": False,
++    "sheet_mask_kernel": False,
++    "sheet_rank_kernel": False,
++    "raster_opaque_trunc_kernel": False,
++    "sheet_one_mesh_kernel": False,
++    "sheet_sample_depth_kernel": False,
++}
++_ALL_ON = {name: True for name in _ALL_OFF}
++EXPERIMENTAL.set(**_ALL_OFF)
+ torch_arm = render_hashes("torch")
+-EXPERIMENTAL.set(
+-    raster_fused_gather=True, sheet_mask_kernel=True, sheet_rank_kernel=True
+-)
++EXPERIMENTAL.set(**_ALL_ON)
+ kernel_arm = render_hashes("kernel")
+ for i, (a, b) in enumerate(zip(torch_arm, kernel_arm)):
+     check(f"frame {i}  {a[:16]}", a == b)
+ 
+
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_ab.py
+Index: /content/algan/benchmarks/_sheet_kernel_ab.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_ab.py
++++ /content/algan/benchmarks/_sheet_kernel_ab.py
+@@ -70,13 +70,19 @@
+     "torch ": {
+         "raster_fused_gather": False,
+         "sheet_mask_kernel": False,
+         "sheet_rank_kernel": False,
++        "raster_opaque_trunc_kernel": False,
++        "sheet_one_mesh_kernel": False,
++        "sheet_sample_depth_kernel": False,
+     },
+     "kernel": {
+         "raster_fused_gather": True,
+         "sheet_mask_kernel": True,
+         "sheet_rank_kernel": True,
++        "raster_opaque_trunc_kernel": True,
++        "sheet_one_mesh_kernel": True,
++        "sheet_sample_depth_kernel": True,
+     },
+ }
+ samples = {arm: [] for arm in ARMS}
+ stages = {arm: collections.Counter() for arm in ARMS}
+
+[0m
+Now add the new toggles to `_sheet_kernel_ab.py`'s arms:
+[0m← [0mEdit benchmarks/_sheet_kernel_ab.py
+Index: /content/algan/benchmarks/_sheet_kernel_ab.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_ab.py
++++ /content/algan/benchmarks/_sheet_kernel_ab.py
+@@ -1,6 +1,8 @@
+-"""A/B the compaction kernels in a real render:
+-RASTER_FUSED_GATHER + SHEET_MASK_KERNEL + SHEET_RANK_KERNEL.
++"""A/B the compaction/emission host-pass kernels in a real render:
++RASTER_FUSED_GATHER + SHEET_MASK_KERNEL + SHEET_RANK_KERNEL
+++ RASTER_OPAQUE_TRUNC_KERNEL + SHEET_ONE_MESH_KERNEL
+++ SHEET_SAMPLE_DEPTH_KERNEL.
+ 
+ Alternates the arms inside one process (wall-clock across processes swings ~2x
+ with thermal throttling on this hardware) and reports the median of each arm,
+ plus the two stages the kernels sit in. The thermal-throttling caveat -- and
+
+[0m
+Now run the extended check harness (this compiles the kernels and runs all unit cases + the 4-frame e2e):
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python benchmarks/_sheet_kernel_check.py 2>&1 | grep -v "^\[W" | tail -60
+ok    n=3661824 m=3290404
+  ok    n=1 m=1
+  ok    n=5000 m=0
+  ok    n=17 m=17
+
+_band_reduce / _popcount_lanes vs the torch passes they replace
+  ok    4K shapes, random masks, sliver (fused bands: 937305)
+  ok    4K shapes, random masks, sliver: area reproducible over 4 kernel runs
+  ok    4K shapes, random masks, no sliver (fused bands: 937305)
+  ok    4K shapes, random masks, no sliver: area reproducible over 4 kernel runs
+  ok    one band, every lane shared, 4096 addends (fused bands: 1)
+  ok    one band, every lane shared, 4096 addends: area reproducible over 4 kernel runs
+  ok    partitioning masks (must not fuse) (fused bands: 0)
+  ok    partitioning masks (must not fuse): area reproducible over 4 kernel runs
+  ok    donors only (empty union, sliver set) (fused bands: 0)
+  ok    donors only (empty union, sliver set): area reproducible over 4 kernel runs
+
+_conflict_rank vs the eight-cumsum torch scan it replaced
+  ok    4K shapes, sparse bands (n=3661824, max rank 555)
+  ok    4K shapes, dense bands (n=3661824, max rank 73)
+  ok    one band, whole stream (n=100000, max rank 50221)
+  ok    saturated band, unclamped ranks 0..n-1 (n=100000, max rank 99999)
+  ok    saturated band clamps to exactly 15 at the caller
+  ok    every fragment its own band (n=100000, max rank 0)
+  ok    all-zero mask words (donors) (n=100000, max rank 0)
+  ok    shuffled permutation (n=100000, max rank 171)
+  ok    n == 1 (n=1, max rank 0)
+  ok    band_start[0] clear (leading run) (n=100000, max rank 132)
+  ok    leading run: row 0 rank 0, kernel arm reproducible
+
+_opaque_prefix_keep vs the torch first_opaque/keep chain it replaced
+  ok    4K shapes, ~20% opaque (kept 2230680 of 3661824)
+  ok    no opaque at all (kept 3661824 of 3661824)
+  ok    every fragment opaque (kept 755877 of 3661824)
+  ok    first fragment of each pixel opaque (kept 755877 of 3661824)
+  ok    last fragment of each pixel opaque (kept 3661824 of 3661824)
+  ok    single pixel holding the whole stream (kept 5 of 3661824)
+  ok    n == 4, two pixels (kept 4 of 4)
+
+_one_mesh_pixel_caps vs the torch one-mesh block it replaced
+  ok    4K shapes, mixed surfaces/facings/opacity (flagged fragments: 1614201)
+  ok    one surface everywhere (flagged fragments: 3128845)
+  ok    circuits only (no flags, sentinel caps) (flagged fragments: 3128845)
+  ok    every pixel a single fragment (flagged fragments: 3128845)
+  ok    all fragments back-facing (flagged fragments: 3128845)
+
+_lane_first_owners vs the eight-lane amin loop it replaced
+  ok    4K shapes, random bands/masks (inf entries: 3893811)
+  ok    half the band table unused (inf entries: 6425010)
+  ok    every fragment its own sheet (inf entries: 12512880)
+  ok    one sheet, every lane claimed by everything (inf entries: 0)
+  ok    donors only (no lane owned) (inf entries: 8)
+
+rendered frames, all six toggles ON vs all six OFF
+  ok    frame 0  822e3a311bc34185
+  ok    frame 1  2409707818368ef0
+  ok    frame 2  72c3ad5478727d8c
+  ok    frame 3  9d117ca7d3a389c5
+
+FAILURES: none -- bit-identical
+[0m
+[0m← [0mWrite scratch_perf/ox/probe_after_timings.py
+Wrote file successfully.
+[0m
+All unit cases and the 4-frame e2e hash pass bit-identically. Now the A/B benchmark and per-pass after-timings:
+[0m← [0mEdit scratch_perf/ox/probe_after_timings.py
+Index: /content/algan/scratch_perf/ox/probe_after_timings.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_after_timings.py
++++ /content/algan/scratch_perf/ox/probe_after_timings.py
+@@ -32,9 +32,10 @@
+ run_offsets = cov_in["run_offsets"]
+ counts = run_offsets[1 : num_covered + 1].to(torch.int64) - run_offsets[:num_covered].to(torch.int64)
+ dev = key_s.device
+ g = torch.Generator(device=dev).manual_seed(5)
+-mat_opaque_s = torch.rand(n, generator=g, dev := None or dev) < 0.7 if False else torch.rand(n, generator=g, device=dev) < 0.7
++mat_opaque_s = torch.rand(n, generator=g, device=dev) < 0.7
++trunc_opaque = torch.rand(n, generator=g, device=dev) < 0.2
+ 
+ 
+ def bench(label, fn, reps=5):
+     fn()
+@@ -51,9 +52,9 @@
+ for on in (False, True):
+     EX.set(raster_opaque_trunc_kernel=on)
+     bench(
+         f"_opaque_prefix_keep ({'kernel' if on else 'torch '})",
+-        lambda: _opaque_prefix_keep(opaque := torch.rand(n, device=dev) < 0.2, counts, n),
++        lambda: _opaque_prefix_keep(trunc_opaque, counts, n),
+     )
+ 
+ # one-mesh: needs the real tri_obj row mapping; use captured merged.
+ tri_obj = merged["tri_obj"]
+
+[0m
+[0m← [0mEdit scratch_perf/ox/probe_after_timings.py
+Index: /content/algan/scratch_perf/ox/probe_after_timings.py
+===================================================================
+--- /content/algan/scratch_perf/ox/probe_after_timings.py
++++ /content/algan/scratch_perf/ox/probe_after_timings.py
+@@ -69,12 +69,10 @@
+             tri_obj, ppf, ts,
+         ),
+     )
+ 
+-# lane owners: rebuild a realistic band_id by running the compaction's P1.
++# lane owners: synthetic band ids at the real n; real depths decoded from keys.
+ band = torch.randint(0, num_covered * 2, (n,), generator=g, device=dev)
+-t_o = cov_in["frag_key"][:n]  # unused as depth here; any [n] f32 stand-in won't do --
+-# use real depths decoded from keys.
+ t_o = (cov_in["frag_key"][:n] & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+ nb = int(band.max().item()) + 1
+ for on in (False, True):
+     EX.set(sheet_sample_depth_kernel=on)
+
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python scratch_perf/ox/probe_after_timings.py 2>&1 | grep -v "^\[W" | tail -10
+Rendering device set to cuda
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+n=3,128,845 covered=755,877
+      2.9 ms  _opaque_prefix_keep (torch )
+      0.4 ms  _opaque_prefix_keep (kernel)
+      8.5 ms  _one_mesh_pixel_caps (torch )
+      2.1 ms  _one_mesh_pixel_caps (kernel)
+     42.3 ms  _lane_first_owners (torch )
+      7.7 ms  _lane_first_owners (kernel)
+[0m
+Per-pass A/B at real 4K shapes: trunc 2.9→0.4 ms, one-mesh 8.5→2.1 ms, lane-owners 42.3→7.7 ms (same-input pairs). Now the alternating full-frame A/B:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python benchmarks/_sheet_kernel_ab.py 3840 2160 3 2>&1 | tail -6
+[Taichi] Starting on arch=cuda
+
+=== 3840x2160, 3 alternating rounds ===
+  torch   frame  1.384s   compact_sheets  0.297s   gather  0.002s
+  kernel  frame  1.139s   compact_sheets  0.210s   gather  0.002s
+  speedup 1.215x on the frame  (245 ms saved)
+[0m
+Frame-level: **1.384 s → 1.139 s (1.215×)**, `compact_sheets` stage 297→210 ms. Now the lossless HD render A/B of the nn scene:
+[0m← [0mWrite scratch_perf/ox/render_once_lossless.py
+Wrote file successfully.
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; ALGAN_RASTER_OPAQUE_TRUNC_KERNEL=0 ALGAN_SHEET_ONE_MESH_KERNEL=0 ALGAN_SHEET_SAMPLE_DEPTH_KERNEL=0 uv run python scratch_perf/ox/render_once_lossless.py scratch_perf/ox/sheetchain_torch_arm.mp4 2>&1 | tail -2
+[Taichi] Starting on arch=cuda
+rendered scratch_perf/ox/sheetchain_torch_arm.mp4 44.4s
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python scratch_perf/ox/render_once_lossless.py scratch_perf/ox/sheetchain_kernel_arm.mp4 2>&1 | tail -2
+[Taichi] Starting on arch=cuda
+rendered scratch_perf/ox/sheetchain_kernel_arm.mp4 44.3s
+[0m
+[0m$ [0muv run python benchmarks/_video_diff.py scratch_perf/ox/sheetchain_torch_arm.mp4 scratch_perf/ox/sheetchain_kernel_arm.mp4 2>&1 | tail -8; md5sum scratch_perf/ox/sheetchain_torch_arm.mp4 scratch_perf/ox/sheetchain_kernel_arm.mp4
+frames compared: 15
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 2073600 (0.000%, frame -1); mean 0.0/frame; 0 of 15 frames affected
+per-frame max-diff histogram (worst 8 buckets):
+  diff   0: 15 frames
+ec968b0a3992992d79fe669c0d224a4b  scratch_perf/ox/sheetchain_torch_arm.mp4
+ec968b0a3992992d79fe669c0d224a4b  scratch_perf/ox/sheetchain_kernel_arm.mp4
+[0m
+Byte-identical renders (md5 match, 0 differing pixels over 15 frames). Now the test suite and lint:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run -m pytest -q --fast 2>&1 | tail -15
+f"{max_difference} channel values (worst at frame {worst_frame}); "
+            f"see {diff_path}"
+        )
+E       AssertionError: fast.mp4 differs from its baseline by up to 41 channel values (worst at frame 24); see /content/algan/tests/fast/output_errors/fast.mp4
+E       assert 41 <= 2
+
+/content/algan/tests/conftest.py:237: AssertionError
+----------------------------- Captured stderr call -----------------------------
+Encoding video with libx264rgb
+Began rendering fast.mp4
+Finished rendering fast.mp4 in 26.6 s
+fast suite: 39s of its 75s budget (52%)
+=========================== short test summary info ============================
+FAILED tests/fast/test_fast_render.py::test_the_fast_scene_renders_and_matches_its_baseline
+1 failed, 275 passed, 1926 deselected in 38.64s
+[0m
+[0m✗ [0mgit -C /content/algan worktree add /tmp/opencode/base_check HEAD 2>&1 | tail -1 && until grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done && UV_PROJECT_ENVIRONMENT=/content/algan/.venv uv run -m pytest -q tests/fast/test_fast_render.py 2>&1 | tail -4 failed
+[91m[1mError: [0mNotFound: FileSystem.access (/tmp/opencode/base_check)
+Fast suite: 275 passed, 1 failed (the pixel-baseline test), 39 s of its 75 s budget. Let me verify that failure is pre-existing on the base commit using a clean worktree:
+[0m
+[0m$ [0mgit -C /content/algan worktree add /tmp/opencode/base_check HEAD; ls /tmp/opencode/base_check | head -3
+Preparing worktree (detached HEAD b4b8e60)
+HEAD is now at b4b8e60 Memory notes: NVENC frame floor
+agent_guidance
+algan
+benchmarks
+[0m
+[0m$ [0mgit -C /content/algan log --oneline -5; git -C /content/algan status --short | head; git -C /content/algan worktree list
+b4b8e60 Memory notes: NVENC frame floor
+29ada76 NVENC: encode outputs below the hardware's frame floor, or odd-sized, in software
+dd4a611 Memory notes: ranked leftovers and measurement traps after the T4 round
+82482e7 Add the T4 round's after-profiles beside the baselines
+e1ccef9 Guard the wide-attribute device path
+ M algan/environment.py
+ M algan/rendering/raytracing/raster_pipeline.py
+ M algan/rendering/raytracing/settings.py
+ M algan/rendering/raytracing/sheet_compact_taichi.py
+ M algan/rendering/raytracing/sheets.py
+ M algan/settings/raytracing_settings.py
+ M benchmarks/_sheet_kernel_ab.py
+ M benchmarks/_sheet_kernel_check.py
+ M scratch_perf/ox/run_sheet_chain.log
+?? algan_profile_report_nn_PREVIEW.txt
+/content/algan            b4b8e60 [perf/t4-nn-scene-throughput]
+/content/algan_branch     dd4a611 (detached HEAD)
+/content/algan_master     d0bfb6d [master]
+/tmp/opencode/base_check  b4b8e60 (detached HEAD)
+[0m
+[0m$ [0mgit -C /content/algan diff --stat 7f9931d..b4b8e60 -- algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py algan/environment.py benchmarks/_sheet_kernel_ab.py benchmarks/_sheet_kernel_check.py; echo "---(empty means none of my files moved under me)"; git -C /content/algan log --format='%h %ad %s' --date=format:'%H:%M' 7f9931d..b4b8e60
+---(empty means none of my files moved under me)
+b4b8e60 07:48 Memory notes: NVENC frame floor
+29ada76 07:48 NVENC: encode outputs below the hardware's frame floor, or odd-sized, in software
+dd4a611 07:17 Memory notes: ranked leftovers and measurement traps after the T4 round
+82482e7 07:16 Add the T4 round's after-profiles beside the baselines
+e1ccef9 07:15 Guard the wide-attribute device path
+d535361 07:12 Release a wide attribute's materialized window once the batch's primitives are built
+[0m
+My files weren't touched by the concurrent commits. Now run the baseline test on the clean tip:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; UV_PROJECT_ENVIRONMENT=/content/algan/.venv uv run -m pytest -q tests/fast/test_fast_render.py 2>&1 | tail -4
+Finished rendering fast.mp4 in 25.7 s
+=========================== short test summary info ============================
+FAILED tests/fast/test_fast_render.py::test_the_fast_scene_renders_and_matches_its_baseline
+1 failed in 28.34s
+[0m
+[0m$ [0mmd5sum /content/algan/tests/fast/output_errors/fast.mp4 /tmp/opencode/base_check/tests/fast/output_errors/fast.mp4 2>/dev/null; uv run python benchmarks/_video_diff.py /content/algan/tests/fast/output_errors/fast.mp4 /tmp/opencode/base_check/tests/fast/output_errors/fast.mp4 2>&1 | head -3
+449e01af5e4768b2ed4aa71bcfcfe978  /content/algan/tests/fast/output_errors/fast.mp4
+449e01af5e4768b2ed4aa71bcfcfe978  /tmp/opencode/base_check/tests/fast/output_errors/fast.mp4
+Uninstalled 1 package in 0.64ms
+Installed 1 package in 5ms
+frames compared: 43
+[0m
+Pre-existing failure confirmed byte-identical on base. Now the targeted unit tests around my changes:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run -m pytest -q tests/unit_tests/test_sheet_compaction.py tests/unit_tests/test_environment.py tests/unit_tests/test_taichi_runtime_config.py tests/unit_tests/test_default_material.py 2>&1 | tail -4
+...................................................................      [100%]
+67 passed in 17.38s
+[0m
+[0m$ [0mgrep -n "ruff\|exclude" pyproject.toml | head -30
+97:    "ruff>=0.9.3",
+120:exclude = [
+150:exclude_lines = ["pragma: no cover"]
+152:[tool.ruff]
+155:extend-exclude = [
+167:[tool.ruff.lint]
+201:  # as recommended by https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+213:[tool.ruff.lint.per-file-ignores]
+294:[tool.ruff.lint.isort]
+297:[tool.ruff.lint.flake8-pytest-style]
+301:[tool.ruff.lint.pydocstyle]
+304:[tool.ruff.format]
+308:# code whose hand-wrapped layout is load-bearing, and `ruff format --check` is
+309:# the one ruff job CI gates on -- so keep the formatter's view of these files
+310:# exactly as it was when they were excluded outright.
+311:exclude = ["**/*_taichi.py"]
+[0m
+[0m$ [0msed -n 152,170p pyproject.toml
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+extend-exclude = [
+  ".github",
+  ".hg",
+  ".env",
+  "env",
+  "build",
+  "buck-out",
+  "media",
+  "algan/external_libraries",
+]
+fix = true
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "B",
+[0m
+[0m$ [0muv run ruff check --no-fix algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_after_timings.py scratch_perf/ox/render_once_lossless.py 2>&1 | tail -30
+7 | os.environ["ALGAN_USE_DAEMON"] = "0"
+8 | from algan import *
+  |
+  = help: Split imports
+
+scratch_perf/ox/render_once_lossless.py:6:1: I001 [*] Import block is un-sorted or un-formatted
+  |
+4 | ALGAN_* env the caller sets before launching (import-time variables).
+5 | """
+6 | import os, sys
+  | ^^^^^^^^^^^^^^ I001
+7 | os.environ["ALGAN_USE_DAEMON"] = "0"
+8 | from algan import *
+  |
+  = help: Organize imports
+
+scratch_perf/ox/render_once_lossless.py:8:1: I001 [*] Import block is un-sorted or un-formatted
+   |
+ 6 |   import os, sys
+ 7 |   os.environ["ALGAN_USE_DAEMON"] = "0"
+ 8 | / from algan import *
+ 9 | | from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
+   | |____________________________________________________________^ I001
+10 |   SETTINGS.raytracing.set(shadows=True)
+11 |   run_time = 0.5
+   |
+   = help: Organize imports
+
+Found 21 errors.
+[*] 20 fixable with the `--fix` option.
+[0m
+[0m$ [0muv run ruff check --no-fix algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py 2>&1 | tail -25
+benchmarks/_sheet_kernel_check.py:293:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+    |
+292 |   def torch_keep(opaque, counts):
+293 | /     """The exact statements the kernel replaces (verbatim from the pre-kernel
+294 | |     truncation block)."""
+    | |_________________________^ D209
+295 |       device = opaque.device
+296 |       num_frags = int(opaque.numel())
+    |
+    = help: Move closing quotes to new line
+
+benchmarks/_sheet_kernel_check.py:569:11: C420 [*] Unnecessary dict comprehension for iterable; use `dict.fromkeys` instead
+    |
+567 |     "sheet_sample_depth_kernel": False,
+568 | }
+569 | _ALL_ON = {name: True for name in _ALL_OFF}
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ C420
+570 | EXPERIMENTAL.set(**_ALL_OFF)
+571 | torch_arm = render_hashes("torch")
+    |
+    = help: Replace with `dict.fromkeys(iterable)`)
+
+Found 5 errors.
+[*] 4 fixable with the `--fix` option.
+[0m
+[0m$ [0muv run ruff check --no-fix algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py 2>&1 | grep -E "^[a-zA-Z/_.]+:[0-9]+:[0-9]+" | head
+algan/rendering/raytracing/settings.py:2739:5: I001 [*] Import block is un-sorted or un-formatted
+algan/rendering/raytracing/sheet_compact_taichi.py:395:13: E741 Ambiguous variable name: `l`
+benchmarks/_sheet_kernel_check.py:40:40: F401 [*] `algan.rendering.raytracing.raster_pipeline` imported but unused
+benchmarks/_sheet_kernel_check.py:293:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+benchmarks/_sheet_kernel_check.py:569:11: C420 [*] Unnecessary dict comprehension for iterable; use `dict.fromkeys` instead
+[0m
+[0m$ [0msed -n 2730,2745p algan/rendering/raytracing/settings.py; git diff algan/rendering/raytracing/settings.py | grep -c "^+" ; git stash list | head -1; git show HEAD:algan/rendering/raytracing/settings.py | sed -n 2700,2712p
+return 0
+    return 2 if TONEMAP_METHOD == "agx" else 1
+
+
+# --- Core lit material registry (shader function -> in-kernel material id) ----
+# Ids must match shading_taichi: 0 manim (Manim's default 3-D lighting), 1 basic/unlit/passthrough,
+# 2 lambert, 3 phong, 4 standard, 5 physical, 6 toon, 7 normal, 8 matcap,
+# 9 depth.
+def _build_core_shader_ids():
+    from algan.rendering.shaders.material_shaders import (
+        basic_material_shader,
+        depth_shader,
+        lambert_shader,
+        matcap_shader,
+        normal_shader,
+        manim_shader,
+71
+# Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
+# physical_shader signature (ior 1.5, specular_intensity 1, specular_color
+# white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
+_MAT_DEFAULTS = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0666,
+    0.0666,
+    0.0666,
+    30.0,
+    1.0,
+[0m
+[0m$ [0muv run ruff check --no-fix algan/rendering/raytracing/settings.py 2>&1 | tail -3
+Installed 73 packages in 1.29s
+error: Failed to spawn: `ruff`
+  Caused by: No such file or directory (os error 2)
+[0m
+[0m$ [0muv run --with ruff ruff check --no-fix algan/rendering/raytracing/settings.py 2>&1 | tail -3
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+[0m
+[0m← [0mEdit algan/rendering/raytracing/sheet_compact_taichi.py
+Index: /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
++++ /content/algan/algan/rendering/raytracing/sheet_compact_taichi.py
+@@ -391,7 +391,7 @@
+ for i in range(n):
+     b = ti.cast(band[i], ti.i32)
+     bits = msk[i] & mask_all
+     base = b * _AA_NUM_SAMPLES
+-    for l in ti.static(range(_AA_NUM_SAMPLES)):
+-        if ((bits >> l) & 1) != 0:
+-            ti.atomic_min(first_lane[base + l], i)
++    for lane in ti.static(range(_AA_NUM_SAMPLES)):
++        if ((bits >> lane) & 1) != 0:
++            ti.atomic_min(first_lane[base + lane], i)
+
+[0m
+The I001 is pre-existing on HEAD — not mine. Fixing my three:
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -36,9 +36,9 @@
+ from PIL import Image  # noqa: E402
+ 
+ from algan import *  # noqa: E402,F403
+ from algan.constants.math import GIGABYTES  # noqa: E402
+-from algan.rendering.raytracing import raster_pipeline, sheets  # noqa: E402
++from algan.rendering.raytracing import sheets  # noqa: E402
+ from algan.rendering.raytracing.raster_pipeline import (  # noqa: E402
+     _gather_fragment_arrays,
+     _one_mesh_pixel_caps,
+     _opaque_prefix_keep,
+
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -290,9 +290,10 @@
+ 
+ 
+ def torch_keep(opaque, counts):
+     """The exact statements the kernel replaces (verbatim from the pre-kernel
+-    truncation block)."""
++    truncation block).
++    """
+     device = opaque.device
+     num_frags = int(opaque.numel())
+     num_cov = int(counts.numel())
+     positions = torch.arange(num_frags, dtype=torch.int64, device=device)
+
+[0m
+[0m← [0mEdit benchmarks/_sheet_kernel_check.py
+Index: /content/algan/benchmarks/_sheet_kernel_check.py
+===================================================================
+--- /content/algan/benchmarks/_sheet_kernel_check.py
++++ /content/algan/benchmarks/_sheet_kernel_check.py
+@@ -566,9 +566,9 @@
+     "raster_opaque_trunc_kernel": False,
+     "sheet_one_mesh_kernel": False,
+     "sheet_sample_depth_kernel": False,
+ }
+-_ALL_ON = {name: True for name in _ALL_OFF}
++_ALL_ON = dict.fromkeys(_ALL_OFF, True)
+ EXPERIMENTAL.set(**_ALL_OFF)
+ torch_arm = render_hashes("torch")
+ EXPERIMENTAL.set(**_ALL_ON)
+ kernel_arm = render_hashes("kernel")
+
+[0m
+[0m$ [0muv run ruff check --no-fix algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py 2>&1 | tail -4 && uv run ruff format --check algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py 2>&1 | tail -4
+= help: Organize imports
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+Would reformat: algan/rendering/raytracing/raster_pipeline.py
+Would reformat: benchmarks/_sheet_kernel_check.py
+2 files would be reformatted, 5 files already formatted
+[0m
+[0m$ [0muv run ruff format --diff algan/rendering/raytracing/raster_pipeline.py benchmarks/_sheet_kernel_check.py 2>/dev/null | head -60
+--- algan/rendering/raytracing/raster_pipeline.py
++++ algan/rendering/raytracing/raster_pipeline.py
+@@ -1326,7 +1326,9 @@
+         torch.full_like(msk_s, AA_ONE_MESH_BIT),
+         torch.zeros_like(msk_s),
+     )
+-    cap_s = torch.where(one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0)
++    cap_s = torch.where(
++        one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0
++    )
+     return msk_s, cap_s
+ 
+ 
+
+--- benchmarks/_sheet_kernel_check.py
++++ benchmarks/_sheet_kernel_check.py
+@@ -338,9 +338,19 @@
+ trunc_n = 3_661_824
+ trunc_counts = torch.full((755_877,), 4, dtype=torch.int64, device=DEV)
+ trunc_counts[-1] += trunc_n - int(trunc_counts.sum())
+-trunc_case("4K shapes, ~20% opaque", torch.rand(trunc_n, generator=g, device=DEV) < 0.2, trunc_counts)
+-trunc_case("no opaque at all", torch.zeros(trunc_n, dtype=torch.bool, device=DEV), trunc_counts)
+-trunc_case("every fragment opaque", torch.ones(trunc_n, dtype=torch.bool, device=DEV), trunc_counts)
++trunc_case(
++    "4K shapes, ~20% opaque",
++    torch.rand(trunc_n, generator=g, device=DEV) < 0.2,
++    trunc_counts,
++)
++trunc_case(
++    "no opaque at all", torch.zeros(trunc_n, dtype=torch.bool, device=DEV), trunc_counts
++)
++trunc_case(
++    "every fragment opaque",
++    torch.ones(trunc_n, dtype=torch.bool, device=DEV),
++    trunc_counts,
++)
+ first_only = torch.zeros(trunc_n, dtype=torch.bool, device=DEV)
+ starts = torch.cumsum(trunc_counts, 0) - trunc_counts
+ first_only[starts] = True  # the first fragment of every pixel
+@@ -392,11 +402,15 @@
+         torch.full_like(msk, _AA_ONE_MESH_BIT),
+         torch.zeros_like(msk),
+     )
+-    cap_s = torch.where(one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0)
++    cap_s = torch.where(
++        one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0
++    )
+     return msk_out, cap_s
+ 
+ 
+-def mesh_case(label, key, ref, cov, msk, mat_opaque, counts, tri_obj, ppf=100, time_start=0):
++def mesh_case(
++    label, key, ref, cov, msk, mat_opaque, counts, tri_obj, ppf=100, time_start=0
++):
+     args = (key, ref, cov, msk, mat_opaque, counts, tri_obj, ppf, time_start)
+     EXPERIMENTAL.set(sheet_one_mesh_kernel=False)
+     w_msk, w_cap = _one_mesh_pixel_caps(*args)
+@@ -417,17 +431,23 @@
+ mesh_counts[-1] += mesh_n - int(mesh_counts.sum())
+ mesh_ref = torch.randint(-1, 12, (mesh_n,), generator=g, device=DEV, dtype=torch.int32)
+[0m
+[0m$ [0muv run ruff format algan/rendering/raytracing/raster_pipeline.py benchmarks/_sheet_kernel_check.py && uv run ruff format --check algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py
+2 files reformatted
+7 files already formatted
+[0m
+[0m$ [0muv run ruff check --no-fix scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_after_timings.py scratch_perf/ox/render_once_lossless.py 2>&1 | grep -E "^[a-zA-Z/_.]+:[0-9]+:[0-9]+: [A-Z]" 
+scratch_perf/ox/probe_after_timings.py:1:1: D209 [*] Multi-line docstring closing quotes should be on a separate line
+scratch_perf/ox/probe_after_timings.py:1:1: I002 [*] Missing required import: `from __future__ import annotations`
+scratch_perf/ox/probe_after_timings.py:15:40: F401 [*] `algan.rendering.raytracing.raster_pipeline` imported but unused
+scratch_perf/ox/probe_capture_nn.py:1:1: I002 [*] Missing required import: `from __future__ import annotations`
+scratch_perf/ox/probe_capture_nn.py:16:1: I001 [*] Import block is un-sorted or un-formatted
+scratch_perf/ox/probe_prepare_blocks.py:1:1: I002 [*] Missing required import: `from __future__ import annotations`
+scratch_perf/ox/probe_prepare_blocks.py:141:7: F541 [*] f-string without any placeholders
+scratch_perf/ox/probe_sheet_chain_breakdown.py:1:1: I002 [*] Missing required import: `from __future__ import annotations`
+scratch_perf/ox/probe_sheet_chain_breakdown.py:24:47: F401 [*] `algan.mobs.neural_nets.neural_net.NeuralNetMLPV3` imported but unused
+scratch_perf/ox/probe_sheet_chain_breakdown.py:28:5: F401 [*] `algan.rendering.raytracing.raster_taichi._AA_LOSE_SHIFT` imported but unused
+scratch_perf/ox/probe_sheet_chain_breakdown.py:30:5: F401 [*] `algan.rendering.raytracing.raster_taichi._AA_MAT_OPAQUE_BIT` imported but unused
+scratch_perf/ox/probe_sheet_chain_breakdown.py:32:5: F401 [*] `algan.rendering.raytracing.raster_taichi._AA_ONE_MESH_BIT` imported but unused
+scratch_perf/ox/render_once_lossless.py:1:1: I002 [*] Missing required import: `from __future__ import annotations`
+scratch_perf/ox/render_once_lossless.py:6:1: E401 [*] Multiple imports on one line
+scratch_perf/ox/render_once_lossless.py:6:1: I001 [*] Import block is un-sorted or un-formatted
+scratch_perf/ox/render_once_lossless.py:8:1: I001 [*] Import block is un-sorted or un-formatted
+[0m
+[0m$ [0muv run ruff check --fix scratch_perf/ox/probe_after_timings.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/render_once_lossless.py 2>&1 | tail -3; uv run ruff check --no-fix scratch_perf/ox/probe_after_timings.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/render_once_lossless.py 2>&1 | tail -3; uv run ruff format scratch_perf/ox/probe_after_timings.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/render_once_lossless.py
+Found 17 errors (17 fixed, 0 remaining).
+All checks passed!
+5 files reformatted
+[0m
+[0m$ [0msed -n 1,20p scratch_perf/ox/render_once_lossless.py
+"""Render the nn scene once at HD, LOSSLESSLY (libx264rgb qp 0), for a
+byte-exact A/B of the sheet-chain kernel toggles. usage:
+render_once_lossless.py <out.mp4>  -- which arm is rendered is decided by the
+ALGAN_* env the caller sets before launching (import-time variables).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+os.environ["ALGAN_USE_DAEMON"] = "0"
+from algan import *
+from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
+
+SETTINGS.raytracing.set(shadows=True)
+run_time = 0.5
+with Off():
+    nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
+    x = ImageMob("benchmarks/performance/world_map.png").move_next_to(nn, LEFT).spawn()
+[0m
+Order preserved. Re-run the full check harness after the kernel rename/reformat:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python benchmarks/_sheet_kernel_check.py 2>&1 | grep -v "^\[W" | grep -E "FAIL|FAILURES|frame " | tail -8
+ok    frame 0  822e3a311bc34185
+  ok    frame 1  2409707818368ef0
+  ok    frame 2  72c3ad5478727d8c
+  ok    frame 3  9d117ca7d3a389c5
+FAILURES: none -- bit-identical
+[0m
+Same hashes as the first run — deterministic. One more stage-timing run with the new kernels live, for the paired table:
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python benchmarks/_sheet_stage_timing.py 3840 2160 2>&1 | tail -8
+frame      wall   prepare  emission sort/oth  compact   |sorts  |elemwise
+    0   18.480s    6.803s    5.929s   0.125s   0.544s    0.073s     0.470s
+    1    1.435s    0.266s    0.014s   0.020s   0.212s    0.053s     0.159s
+    2    1.077s    0.268s    0.014s   0.020s   0.215s    0.054s     0.161s
+
+(prepare = coverage stage total; emission = its Taichi count/write kernels;
+ sorts = torch argsort/unique/cumsum/cummax anywhere in the frame;
+ compact = sheets.compact_sheets, a subset of 'host rest')
+[0m
+Now update the toggle comments with the measured numbers:
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1030,8 +1030,13 @@
+ # fragment, write the flags.
+ #
+ # Bit-identical by construction: both arms are integer flag comparisons over
+ # identical ranges.
++#
++# Measured on the real nn-scene 3840x2160 stream (3.13 M fragments over 756 k
++# covered pixels): the keep mask itself goes 2.9 -> 0.4 ms per frame; of the
++# 15.3 ms the whole truncation block cost before, the remainder is the
++# any/sum/nonzero device syncs both arms still share.
+ RASTER_OPAQUE_TRUNC_KERNEL = env_flag("ALGAN_RASTER_OPAQUE_TRUNC_KERNEL", True)
+ 
+ 
+ def set_raster_opaque_trunc_kernel(enabled):
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1188,8 +1188,12 @@
+ # arm's atomic ``scatter_add_`` had no summation order at all, the kernel walks
+ # its pixels serially in stream order, and both are expected bitwise-equal
+ # after the round for the reason ``sheet_band_reduce``'s area sum is --
+ # verified by measurement in benchmarks/_sheet_kernel_check.py, not assumed.
++#
++# Measured on the real nn-scene 3840x2160 stream (3.13 M fragments over 756 k
++# covered pixels): 8.5 -> 2.1 ms per frame, and the whole-stream
++# repeat_interleave segment map no longer exists.
+ SHEET_ONE_MESH_KERNEL = env_flag("ALGAN_SHEET_ONE_MESH_KERNEL", True)
+ 
+ 
+ def set_sheet_one_mesh_kernel(enabled):
+
+[0m
+[0m← [0mEdit algan/rendering/raytracing/settings.py
+Index: /content/algan/algan/rendering/raytracing/settings.py
+===================================================================
+--- /content/algan/algan/rendering/raytracing/settings.py
++++ /content/algan/algan/rendering/raytracing/settings.py
+@@ -1298,8 +1298,13 @@
+ # lanes' atomic mins in a single pass into one pre-initialised table.
+ #
+ # Bit-identical: integer amin per (sheet, lane) slot, order-independent, and
+ # every step after the table is identical arithmetic on identical values.
++#
++# Measured on the real nn-scene 3840x2160 stream (3.13 M fragments): 42.3 ->
++# 7.7 ms per call under a synthetic uniform band distribution, and most of the
++# 14.5 ms the lane loop measured on the stream's own (skewed, mostly
++# single-fragment) bands.
+ SHEET_SAMPLE_DEPTH_KERNEL = env_flag("ALGAN_SHEET_SAMPLE_DEPTH_KERNEL", True)
+ 
+ 
+ def set_sheet_sample_depth_kernel(enabled):
+
+[0m
+[0m← [0mEdit DESIGN_optimization_targets.md
+Index: /content/algan/DESIGN_optimization_targets.md
+===================================================================
+--- /content/algan/DESIGN_optimization_targets.md
++++ /content/algan/DESIGN_optimization_targets.md
+@@ -910,8 +910,31 @@
+ are cuB radix sorts; Taichi has no sort primitive and hand-writing one to lose
+ is not a plan. What remains worth measuring is the per-fragment gathers in
+ `_shade_class` and `_prim_split_after`.
+ 
++**Shipped 2026-08-25: the next three host passes, measured on the real stream
++first** (`scratch_perf/ox/REPORT_sheet_chain.md`). A per-block replay of
++`compact_sheets` on a captured nn-scene 3840x2160 frame re-ranked the
++candidates: the compaction's remaining scatter blocks are small once the lane
++loops above shipped, and the largest non-sort host items were elsewhere --
++the SHEET_SAMPLE_DEPTH lane loop (14.5 ms), the emission's opaque-prefix
++truncation (15.3 ms incl shared syncs) and its one-mesh reduction (10.7 ms).
++Three kernels, default on, each behind its own toggle:
++`sheet_lane_first_owner` (`SHEET_SAMPLE_DEPTH_KERNEL`, integer amin per
++(sheet, lane) slot -- exact), `opaque_prefix_keep`
++(`RASTER_OPAQUE_TRUNC_KERNEL`, integer flags -- exact by construction) and
++`one_mesh_pixel_reduce`/`one_mesh_pixel_apply` (`SHEET_ONE_MESH_KERNEL`; the
++f64 coverage sums keep the ss6.6.4 accumulate-and-round contract, bitwise vs
++torch by measurement, and now serial per pixel so they are order-reproducible
++run to run besides). Alternating in-process A/B at 3840x2160:
++frame 1.384 -> 1.139 s (1.215x), `compact_sheets` stage 297 -> 210 ms;
++same-input per-pass: truncation 2.9 -> 0.4 ms, one-mesh 8.5 -> 2.1 ms,
++lane owners 42.3 -> 7.7 ms. Parity: `_sheet_kernel_check.py` extended to all
++six toggles (unit arms + edge cases + four rendered frames hashed both ways)
++and a lossless HD nn-scene render A/B whose two mp4s are md5-identical. Still
++left alone: the sorts, `_shade_class`/`_prim_split_after`'s gathers, the
++solid-shell ceiling's sort core, and everything below ~5 ms.
++
+ ### T6. Raster precompute tables -- 5.4 s (1.4%)
+ 
+ `precompute_triangle_projection` (1.9 s), `precompute_circuit_screen_bounds`
+ (2.5 s), `precompute_triangle_screen_bounds` (0.9 s). Already cut ~4x an
+
+[0m
+Per CLAUDE.md, `DESIGN_optimization_targets.md` is the plan of record — update its T5 section:
+Now write the report:
+[0m← [0mWrite scratch_perf/ox/REPORT_sheet_chain.md
+Wrote file successfully.
+[0m
+[0m← [0mEdit scratch_perf/ox/REPORT_sheet_chain.md
+Index: /content/algan/scratch_perf/ox/REPORT_sheet_chain.md
+===================================================================
+--- /content/algan/scratch_perf/ox/REPORT_sheet_chain.md
++++ /content/algan/scratch_perf/ox/REPORT_sheet_chain.md
+@@ -199,11 +199,14 @@
+     1    1.435s    0.266s    0.014s   0.020s   0.212s    0.053s     0.159s
+     2    1.077s    0.268s    0.014s   0.020s   0.215s    0.054s     0.161s
+ ```
+ 
+-`compact_sheets` 275 -> 214 ms; `prepare` minus emission/sorts 70 -> 33 ms.
+-Wall columns swing with the shared GPU's thermals; trust the alternating A/B
+-for frame-level claims.
++`compact_sheets` 275 -> 214 ms; `prepare` total 370 -> 267 ms while its
++measured children (emission kernels, torch sorts, `compact_sheets`) stayed at
++the same or smaller values -- i.e. roughly 100 ms of per-frame host work
++removed, consistent with the three same-input pass pairs above plus
++run-to-run variance. Wall columns swing with the shared GPU's thermals;
++trust the alternating A/B for frame-level claims.
+ 
+ ### Lossless render A/B (nn scene at HD)
+ 
+ `scratch_perf/ox/render_once_lossless.py` (copy of `render_once.py` at HD,
+
+[0m
+Fix one soft attribution in the report (prepare-side delta):
+[0m$ [0mgit -C /content/algan worktree remove --force /tmp/opencode/base_check; rm -f _sheet_kernel_ab.png _sheet_kernel_ab_warm.png _sheet_kernel_torch_*.png _sheet_kernel_kernel_*.png _probe_capture.png algan_outputs/_probe_capture.png; ls *.png 2>/dev/null | head -3; git status --short
+M DESIGN_optimization_targets.md
+ M algan/environment.py
+ M algan/rendering/raytracing/raster_pipeline.py
+ M algan/rendering/raytracing/settings.py
+ M algan/rendering/raytracing/sheet_compact_taichi.py
+ M algan/rendering/raytracing/sheets.py
+ M algan/settings/raytracing_settings.py
+ M benchmarks/_sheet_kernel_ab.py
+ M benchmarks/_sheet_kernel_check.py
+ M scratch_perf/ox/run_sheet_chain.log
+?? algan_profile_report_nn_PREVIEW.txt
+?? algan_profile_report_nn_UHD.txt
+[0m
+[0m$ [0mcat scratch_perf/.gitignore; uv run ruff check --no-fix DESIGN_optimization_targets.md algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_after_timings.py scratch_perf/ox/render_once_lossless.py 2>&1 | tail -2 && uv run ruff format --check DESIGN_optimization_targets.md algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_after_timings.py scratch_perf/ox/render_once_lossless.py 2>&1 | tail -1
+# Videos, images and binary dumps from the probes are regenerable and large.
+*.mp4
+*.png
+*.pstats
+*.json
+baseline_videos/
+ox/algan_outputs/
+Found 17882 errors.
+[*] 1 fixable with the `--fix` option.
+12 files already formatted
+[0m
+[0m$ [0muv run ruff check --no-fix DESIGN_optimization_targets.md 2>&1 | head -5; uv run ruff check --no-fix DESIGN_optimization_targets.md 2>&1 | grep -oE "^[^ :]+:" | sort | uniq -c | sort -rn | head
+DESIGN_optimization_targets.md:3:8: SyntaxError: Simple statements must be separated by newlines or semicolons
+  |
+1 | # Optimization targets
+2 |
+3 | Ranked candidates for further speeding up Algan, measured against the project's
+  17881 DESIGN_optimization_targets.md:
+[0m
+[0m$ [0muv run ruff check --no-fix algan/environment.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/sheets.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/sheet_compact_taichi.py algan/settings/raytracing_settings.py benchmarks/_sheet_kernel_check.py benchmarks/_sheet_kernel_ab.py scratch_perf/ox/probe_sheet_chain_breakdown.py scratch_perf/ox/probe_prepare_blocks.py scratch_perf/ox/probe_capture_nn.py scratch_perf/ox/probe_after_timings.py scratch_perf/ox/render_once_lossless.py 2>&1 | tail -6
+2767 |       return {
+     |
+     = help: Organize imports
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+[0m
+That was just ruff parsing the .md because I passed it explicitly. Without it:
+Final review of the production diff:
+[0m$ [0mgit diff algan/rendering/raytracing/sheets.py | head -120
+diff --git a/algan/rendering/raytracing/sheets.py b/algan/rendering/raytracing/sheets.py
+index 7402fb5..98600ff 100644
+--- a/algan/rendering/raytracing/sheets.py
++++ b/algan/rendering/raytracing/sheets.py
+@@ -726,6 +726,66 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
+     return torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
+ 
+ 
++def _lane_first_owners(band_id, msk_o, t_o, nb, n):
++    """``SHEET_SAMPLE_DEPTH``'s per-sample nearest-owner table.
++
++    Returns ``[nb, AA_NUM_SAMPLES]`` float32: for each sheet and sub-pixel
++    sample lane, the exact depth of the sheet's earliest fragment owning THAT
++    lane (the stream is depth-ascending within a group, so the first owner in
++    sorted order is the minimum), or +inf where the sheet does not own the
++    lane -- the datum the sheet record otherwise lacks
++    (OX_SHEET_INTERPENETRATION_AUDIT.md ss6). The classification downstream
++    never compares an unowned lane.
++
++    Under ``SHEET_SAMPLE_DEPTH_KERNEL`` one kernel performs all eight lanes'
++    amin scatters in a single pass over the stream
++    (``sheet_compact_taichi.sheet_lane_first_owner``); the torch arm below is
++    what it replaced and stays as the A/B arm -- one masked full-length
++    ``where`` plus an amin ``scatter_reduce_`` per lane. Both arms reduce the
++    same integers (sorted positions) per (sheet, lane) slot, so they agree
++    exactly whatever order the atomics land in; everything after the table is
++    identical arithmetic on identical values.
++    """
++    device = msk_o.device
++    inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
++    if rt_settings.SHEET_SAMPLE_DEPTH_KERNEL and nb:
++        from algan.rendering.raytracing.sheet_compact_taichi import (
++            sheet_lane_first_owner,
++        )
++
++        # Uninitialized nowhere: the fill value IS the "no owner" sentinel.
++        first_lane = torch.full(
++            (nb * AA_NUM_SAMPLES,), n, dtype=torch.int32, device=device
++        )
++        sheet_lane_first_owner(
++            band_id.contiguous(), msk_o.contiguous(), n, int(AA_MASK_ALL), first_lane
++        )
++        has = first_lane < n
++        d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
++        return torch.where(has, d_lane, inf).view(nb, AA_NUM_SAMPLES)
++
++    big = torch.full((), n, dtype=torch.int64, device=device)
++    positions = torch.arange(n, dtype=torch.int64, device=device)
++    sample_depths = torch.full(
++        (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
++    )
++    for lane in range(AA_NUM_SAMPLES):
++        owns = ((msk_o >> lane) & 1) != 0
++        masked = torch.where(owns, positions, big)
++        del owns
++        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
++        first_sorted.scatter_reduce_(
++            0, band_id, masked, reduce="amin", include_self=True
++        )
++        del masked
++        has = first_sorted < n
++        d_lane = t_o.index_select(0, first_sorted.clamp_max(max(n - 1, 0)))
++        sample_depths[:, lane] = torch.where(has, d_lane, inf)
++        del first_sorted, has, d_lane
++    del big, positions, inf
++    return sample_depths
++
++
+ def compact_sheets(
+     coverage,
+     merged,
+@@ -1209,34 +1269,12 @@ def compact_sheets(
+ 
+     # ---- SHEET_SAMPLE_DEPTH: per-sample nearest-owner depths ---------------
+     # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
+-    # owning sample bit s (OX_SHEET_INTERPENETRATION_AUDIT.md ss6 -- the datum
+-    # the sheet record otherwise lacks). The stream is depth-ascending within
+-    # a group, so the FIRST owner of a lane in sorted order is the minimum --
+-    # one masked amin-scatter over sorted positions per lane, in the style of
+-    # the positioned_depth block above, each lane's temporaries freed before
+-    # the next. A sheet that does not own a lane keeps infinity there; the
+-    # classification below never compares an unowned lane.
++    # owning sample bit s. See ``_lane_first_owners``, which computes the
++    # table (one masked amin scatter per lane in torch, one kernel pass under
++    # ``SHEET_SAMPLE_DEPTH_KERNEL``).
+     sample_depths = None
+     if sample_depth:
+-        big = torch.full((), n, dtype=torch.int64, device=device)
+-        inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
+-        sample_depths = torch.full(
+-            (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+-        )
+-        for lane in range(AA_NUM_SAMPLES):
+-            owns = ((msk_o >> lane) & 1) != 0
+-            masked = torch.where(owns, positions, big)
+-            del owns
+-            first_lane = torch.full((nb,), n, dtype=torch.int64, device=device)
+-            first_lane.scatter_reduce_(
+-                0, band_id, masked, reduce="amin", include_self=True
+-            )
+-            del masked
+-            has = first_lane < n
+-            d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
+-            sample_depths[:, lane] = torch.where(has, d_lane, inf)
+-            del first_lane, has, d_lane
+-        del big, inf
++        sample_depths = _lane_first_owners(band_id, msk_o, t_o, nb, n)
+     del t_o
+     del positions, msk_o
+[0m
+[0m$ [0mgit diff algan/rendering/raytracing/raster_pipeline.py | head -260
+diff --git a/algan/rendering/raytracing/raster_pipeline.py b/algan/rendering/raytracing/raster_pipeline.py
+index 387b444..53f8afb 100644
+--- a/algan/rendering/raytracing/raster_pipeline.py
++++ b/algan/rendering/raytracing/raster_pipeline.py
+@@ -1145,6 +1145,193 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
+     return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
+ 
+ 
++def _opaque_prefix_keep(opaque_s, counts, num_frags):
++    """The opaque-prefix truncation's keep mask: ``keep[j]`` holds exactly when
++    fragment j precedes its pixel's first proven-opaque hit, inclusive.
++
++    Under ``RASTER_OPAQUE_TRUNC_KERNEL`` one kernel walks each covered pixel's
++    CSR run (``sheet_compact_taichi.opaque_prefix_keep``); the torch arm below
++    is what it replaced and stays as the A/B arm. That arm built a whole-stream
++    segment map with ``repeat_interleave`` to route an amin scatter per opaque
++    fragment, then compared two full-length arrays; the kernel needs neither
++    the map nor any [n] intermediate but its output. Both arms are integer
++    flag comparisons over identical ranges, so they agree by construction.
++    """
++    device = opaque_s.device
++    if not rt_settings.RASTER_OPAQUE_TRUNC_KERNEL or num_frags == 0:
++        positions = torch.arange(num_frags, dtype=torch.int64, device=device)
++        segments = torch.repeat_interleave(
++            torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
++        )
++        starts = torch.cumsum(counts, 0) - counts
++        ends = starts + counts - 1
++        first_opaque = torch.full(
++            (counts.numel(),), num_frags, dtype=torch.int64, device=device
++        )
++        opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
++        first_opaque.scatter_reduce_(
++            0,
++            segments.index_select(0, opaque_pos),
++            opaque_pos,
++            reduce="amin",
++            include_self=True,
++        )
++        del opaque_pos, starts
++        keep_end = torch.minimum(first_opaque, ends)
++        del first_opaque, ends
++        keep = positions <= keep_end.index_select(0, segments)
++        return keep
++    from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
++
++    starts = torch.cumsum(counts, 0) - counts
++    keep_u8 = torch.empty(num_frags, dtype=torch.uint8, device=device)
++    opaque_prefix_keep(
++        opaque_s.contiguous().view(torch.uint8),
++        counts,
++        starts,
++        int(counts.numel()),
++        keep_u8,
++    )
++    return keep_u8.view(torch.bool)
++
++
++def _one_mesh_pixel_caps(
++    key_s, ref_s, cov_s, msk_s, mat_opaque_s, counts, tri_obj, ppf, time_start
++):
++    """The one-mesh block (DESIGN_mesh_identity.md ss6.6): flags every pixel
++    whose fragments are all opaque triangles of ONE surface by folding
++    ``_AA_ONE_MESH_BIT`` into ``msk_s``, and returns ``(msk_s, cap_s)`` with
++    the per-fragment ceiling -- the larger of that surface's two sheets' exact
++    areas, 2.0 (the no-ceiling sentinel) everywhere else.
++
++    Under ``SHEET_ONE_MESH_KERNEL`` two kernels walk each covered pixel's CSR
++    run instead of scattering through a whole-stream segment map:
++    ``sheet_compact_taichi.one_mesh_pixel_reduce`` keeps the id spread and the
++    two facing-split coverage sums in registers, and
++    ``one_mesh_pixel_apply`` folds the results in place. The id spread is
++    integer min/max, exact under any order. The coverage sums are the one
++    float contract here (the caller rounds them f64 -> f32 before use): the
++    torch arm's ``scatter_add_`` atomics had no summation order at all, the
++    kernel walks its pixels serially in stream order, and both are expected
++    bitwise-equal after the round for the reason ``sheet_band_reduce``'s area
++    sum is -- verified by measurement in ``benchmarks/_sheet_kernel_check.py``,
++    not assumed.
++    """
++    device = key_s.device
++    num_covered = int(counts.numel())
++    if rt_settings.SHEET_ONE_MESH_KERNEL:
++        from algan.rendering.raytracing.sheet_compact_taichi import (
++            one_mesh_pixel_apply,
++            one_mesh_pixel_reduce,
++        )
++
++        starts = torch.cumsum(counts, 0) - counts
++        lo = torch.full((num_covered,), 2147483647, dtype=torch.int32, device=device)
++        hi = torch.full((num_covered,), -1, dtype=torch.int32, device=device)
++        front = torch.zeros(num_covered, dtype=torch.float64, device=device)
++        back = torch.zeros(num_covered, dtype=torch.float64, device=device)
++        one_mesh_pixel_reduce(
++            key_s,
++            ref_s,
++            mat_opaque_s.contiguous().view(torch.uint8),
++            msk_s,
++            cov_s,
++            counts,
++            starts,
++            num_covered,
++            int(ppf),
++            int(time_start),
++            int(tri_obj.shape[0]),
++            int(AA_BACKFACE_BIT),
++            tri_obj,
++            lo,
++            hi,
++            front,
++            back,
++        )
++        # The i32 fill differs from the torch arm's 1<<40 only on a pixel with
++        # no fragment at all, which cannot happen; see the kernel docstring.
++        one_mesh = (lo == hi) & (lo >= 0)
++        cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
++        del front, back, lo, hi
++        cap_s = torch.empty_like(cov_s)
++        one_mesh_pixel_apply(
++            counts,
++            starts,
++            num_covered,
++            one_mesh.view(torch.uint8),
++            cap_pix,
++            msk_s,
++            cap_s,
++            int(AA_ONE_MESH_BIT),
++        )
++        return msk_s, cap_s
++
++    frame_of = _tri_obj_row(key_s >> 32, ppf, time_start, tri_obj.shape[0])
++    safe_ref = ref_s.clamp_min(0).to(torch.int64)
++    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
++    # A bezier fragment has ref < 0 and no surface id; a pixel holding
++    # one is never single-mesh. Same for a non-opaque fragment, whose
++    # far sheet is legitimately visible THROUGH the near one.
++    usable = (ref_s >= 0) & mat_opaque_s
++    sid = torch.where(usable, sid, torch.full_like(sid, -1))
++    del frame_of, safe_ref, usable
++    seg = torch.repeat_interleave(
++        torch.arange(num_covered, dtype=torch.int64, device=device), counts
++    )
++    lo = torch.full((num_covered,), 1 << 40, dtype=torch.int64, device=device)
++    hi = torch.full((num_covered,), -1, dtype=torch.int64, device=device)
++    lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
++    hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
++    one_mesh = (lo == hi) & (lo >= 0)
++    del lo, hi, sid
++    # The mesh's coverage CEILING: the larger of the two sheets' exact areas.
++    # Well inside a silhouette a closed solid's sheets tile to the same area,
++    # so this is that area and the far sheet gets no room -- the suppression
++    # rule, recovered. At the BOUNDARY the near sheet's projected area shrinks
++    # toward zero while the footprint does not, and there the larger sheet is
++    # the right answer where suppression under-covers (measured: a 0.045-radius
++    # rod diced to (256, 2) is nearly all boundary, and suppression flips its
++    # signed error to -0.0344 and notches 1676 of 3508 interior pixels).
++    # Accumulated in FLOAT64 and rounded back, and that is load-bearing rather
++    # than cautious. ``scatter_add_`` is a float atomic add, so its summation
++    # order is not reproducible on CUDA -- measured, a 400k-into-5k reduction
++    # of this shape spreads 1.5e-05 across runs. That would be invisible in a
++    # colour, but this feeds a THRESHOLD: the kernel clips only when
++    # ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in its low bits
++    # flips borderline fragments in and out of being clipped, which is a
++    # finite coverage change, which bloom then amplifies. It was measured: two
++    # consecutive renders of ``materials_and_lighting`` differed by up to 28
++    # channel values over 9.6% of a frame, while the same scene with the rule
++    # OFF is bit-identical run to run.
++    #
++    # In float64 the reassociation error lands ~9 orders below a float32 ulp,
++    # so rounding the ceiling to float32 absorbs it: the reduction is bitwise
++    # reproducible in practice (verified over 6 runs, spread 0.0), and any
++    # residual last-bit float64 difference cannot survive the cast. Cost is
++    # nothing measurable -- it is one pass over the fragments, against a
++    # render this sits at ~1% of.
++    is_back = (msk_s & AA_BACKFACE_BIT) != 0
++    acc = torch.float64
++    cov_acc = cov_s.to(acc)
++    front = torch.zeros(num_covered, dtype=acc, device=device)
++    back = torch.zeros_like(front)
++    zero = torch.zeros((), dtype=acc, device=device)
++    front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
++    back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
++    cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
++    del front, back, cov_acc, is_back
++    msk_s = msk_s | torch.where(
++        one_mesh.index_select(0, seg),
++        torch.full_like(msk_s, AA_ONE_MESH_BIT),
++        torch.zeros_like(msk_s),
++    )
++    cap_s = torch.where(
++        one_mesh.index_select(0, seg), cap_pix.index_select(0, seg), 2.0
++    )
++    return msk_s, cap_s
++
++
+ def _tri_obj_row(pix, ppf, time_start, rows):
+     """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
+     ``pix``, which is the row the host has to read to ask the same question.
+@@ -1603,29 +1790,7 @@ def prepare_sparse_raster_coverage(
+         # in sparse sorted space: each pixel keeps the prefix through its first
+         # opaque event.  The sort uses the exact same depth-bin/layer keys.
+         if bool(opaque_s.any().item()):
+-            num_cov = int(covered.numel())
+-            positions = torch.arange(num_frags, dtype=torch.int64, device=device)
+-            segments = torch.repeat_interleave(
+-                torch.arange(num_cov, dtype=torch.int64, device=device), counts
+-            )
+-            starts = torch.cumsum(counts, 0) - counts
+-            ends = starts + counts - 1
+-            first_opaque = torch.full(
+-                (num_cov,), num_frags, dtype=torch.int64, device=device
+-            )
+-            opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
+-            first_opaque.scatter_reduce_(
+-                0,
+-                segments.index_select(0, opaque_pos),
+-                opaque_pos,
+-                reduce="amin",
+-                include_self=True,
+-            )
+-            del opaque_pos, starts
+-            keep_end = torch.minimum(first_opaque, ends)
+-            del first_opaque, ends
+-            keep = positions <= keep_end.index_select(0, segments)
+-            del positions, segments, keep_end
++            keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
+             truncated = int(keep.sum().item()) != num_frags
+             keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
+             del keep
+@@ -1653,7 +1818,7 @@ def prepare_sparse_raster_coverage(
+         # kernel because it is a segment reduction over the CSR the host already
+         # has, and it rides in a spare frag_msk flag bit so no kernel argument
+         # changes.
+-        one_mesh_cap = None
++        #
+         # The one-mesh ceiling stays under the sheet resolve, as DATA on the
+         # sheet record. DESIGN_sheet_resolve.md §7 first deleted it as
+         # "subsumed by per-sheet claims", and the Phase-2 ink-wobble A/B
+@@ -1662,72 +1827,22 @@ def prepare_sparse_raster_coverage(
+         # 0.060; the exact-fit angles go 0.000 -> 0.032). Only the §6.7 run
+         # lanes are truly subsumed (compaction has no budget to truncate).
+         if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
+-            tri_obj = merged["tri_obj"]
+-            ppf = int(width) * int(height)
+-            frame_of = _tri_obj_row(pix_s, ppf, int(time_start), tri_obj.shape[0])
+-            safe_ref = ref_s.clamp_min(0).to(torch.int64)
+-            sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+-            # A bezier fragment has ref < 0 and no surface id; a pixel holding
+-            # one is never single-mesh. Same for a non-opaque fragment, whose
+-            # far sheet is legitimately visible THROUGH the near one.
+-            usable = (ref_s >= 0) & mat_opaque_s
+-            sid = torch.where(usable, sid, torch.full_like(sid, -1))
+-            del frame_of, safe_ref, usable
+-            seg = torch.repeat_interleave(
+-                torch.arange(covered.numel(), dtype=torch.int64, device=device),
++            msk_s, cap_s = _one_mesh_pixel_caps(
++                key_s,
++                ref_s,
++                cov_s,
++                msk_s,
+[0m
+[0m$ [0mgit diff algan/rendering/raytracing/raster_pipeline.py | sed -n 260,340p; git diff algan/environment.py algan/settings/raytracing_settings.py | grep -E "^\+" | head -30
++                msk_s,
++                mat_opaque_s,
+                 counts,
++                merged["tri_obj"],
++                int(width) * int(height),
++                int(time_start),
+             )
+-            lo = torch.full(
+-                (covered.numel(),), 1 << 40, dtype=torch.int64, device=device
+-            )
+-            hi = torch.full((covered.numel(),), -1, dtype=torch.int64, device=device)
+-            lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
+-            hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
+-            one_mesh = (lo == hi) & (lo >= 0)
+-            del lo, hi, sid
+-            # The mesh's coverage CEILING: the larger of the two sheets' exact
+-            # areas. Well inside a silhouette a closed solid's sheets tile to
+-            # the same area, so this is that area and the far sheet gets no room
+-            # -- the suppression rule, recovered. At the BOUNDARY the near
+-            # sheet's projected area shrinks toward zero while the footprint
+-            # does not, and there the larger sheet is the right answer where
+-            # suppression under-covers (measured: a 0.045-radius rod diced to
+-            # (256, 2) is nearly all boundary, and suppression flips its signed
+-            # error to -0.0344 and notches 1676 of 3508 interior pixels).
+-            # Accumulated in FLOAT64 and rounded back, and that is load-bearing
+-            # rather than cautious. ``scatter_add_`` is a float atomic add, so its
+-            # summation order is not reproducible on CUDA -- measured, a 400k-into-
+-            # 5k reduction of this shape spreads 1.5e-05 across runs. That would be
+-            # invisible in a colour, but this feeds a THRESHOLD: the kernel clips
+-            # only when ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in
+-            # its low bits flips borderline fragments in and out of being clipped,
+-            # which is a finite coverage change, which bloom then amplifies. It was
+-            # measured: two consecutive renders of ``materials_and_lighting``
+-            # differed by up to 28 channel values over 9.6% of a frame, while the
+-            # same scene with the rule OFF is bit-identical run to run.
+-            #
+-            # In float64 the reassociation error lands ~9 orders below a float32
+-            # ulp, so rounding the ceiling to float32 absorbs it: the reduction is
+-            # bitwise reproducible in practice (verified over 6 runs, spread 0.0),
+-            # and any residual last-bit float64 difference cannot survive the cast.
+-            # Cost is nothing measurable -- it is one pass over the fragments,
+-            # against a render this sits at ~1% of.
+-            is_back = (msk_s & AA_BACKFACE_BIT) != 0
+-            acc = torch.float64
+-            cov_acc = cov_s.to(acc)
+-            front = torch.zeros(covered.numel(), dtype=acc, device=device)
+-            back = torch.zeros_like(front)
+-            zero = torch.zeros((), dtype=acc, device=device)
+-            front.scatter_add_(0, seg, torch.where(is_back, zero, cov_acc))
+-            back.scatter_add_(0, seg, torch.where(is_back, cov_acc, zero))
+-            cap_pix = torch.maximum(front, back).clamp_max_(1.0).to(cov_s.dtype)
+-            del front, back, cov_acc, is_back
+-            msk_s = msk_s | torch.where(
+-                one_mesh.index_select(0, seg),
+-                torch.full_like(msk_s, AA_ONE_MESH_BIT),
+-                torch.zeros_like(msk_s),
+-            )
+-            one_mesh_cap = (one_mesh, seg, cap_pix)
++        else:
++            # Per-fragment so the kernels index it exactly like frag_cov; 2.0
++            # is the "no ceiling" sentinel, which every non-one-mesh pixel
++            # keeps.
++            cap_s = torch.full_like(cov_s, 2.0)
+ 
+         # SHEET_SAMPLE_DEPTH: mark MATERIAL-opaque triangles so the compaction
+         # can tell a depth-gate enforcer sheet (material-opaque, full sample
+@@ -1744,17 +1859,6 @@ def prepare_sparse_raster_coverage(
+             )
+ 
+         num_covered = int(covered.numel())
+-        # Per-fragment so the kernels index it exactly like frag_cov; 2.0 is the
+-        # "no ceiling" sentinel, which every non-one-mesh pixel keeps.
+-        cap_s = torch.full_like(cov_s, 2.0)
+-        if one_mesh_cap is not None:
+-            cap_s = torch.where(
+-                one_mesh_cap[0].index_select(0, one_mesh_cap[1]),
+-                one_mesh_cap[2].index_select(0, one_mesh_cap[1]),
+-                cap_s,
+-            )
+-            one_mesh_cap = None
+-            del one_mesh, seg, cap_pix
++++ b/algan/environment.py
++    "ALGAN_RASTER_OPAQUE_TRUNC_KERNEL",
++    "ALGAN_SHEET_ONE_MESH_KERNEL",
++    "ALGAN_SHEET_SAMPLE_DEPTH_KERNEL",
++++ b/algan/settings/raytracing_settings.py
++        "RASTER_OPAQUE_TRUNC_KERNEL",
++        "SHEET_ONE_MESH_KERNEL",
++        "SHEET_SAMPLE_DEPTH_KERNEL",
++    "raster_opaque_trunc_kernel": "set_raster_opaque_trunc_kernel",
++    "sheet_one_mesh_kernel": "set_sheet_one_mesh_kernel",
++    "sheet_sample_depth_kernel": "set_sheet_sample_depth_kernel",
+[0m
+Diff is clean. Since CI runs `tests/unit_tests`, let me run that directory too for confidence:
