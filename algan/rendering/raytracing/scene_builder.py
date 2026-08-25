@@ -1345,6 +1345,12 @@ def _merge_scene(primitives):
         """
         if tex is None:
             return (-1, 0, 0)
+        if tex.device != device:
+            # Maps arrive on whatever device built them -- a colour map's
+            # frame window materializes on the render device, a material or
+            # normal map is a plain host tensor -- and the buffer they share
+            # is built on the merge device.
+            tex = tex.to(device)
         if tex.dim() == 3:  # [W, H, C]
             tex = tex.unsqueeze(0)  # [1, W, H, C]
         if is_color and rt_settings.LINEAR_COLOR_SPACE and tex.shape[-1] >= 3:

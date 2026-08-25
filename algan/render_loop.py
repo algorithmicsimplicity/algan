@@ -76,6 +76,14 @@ _PROGRESS_MIN_LOGGED_FRAMES = 60
 #: the batch is frame-bound and the ordinary search is the cheaper answer.
 _ACTOR_SHARE_RETREAT = 0.5
 
+#: Share of the render device's free memory (outside the arena) that a batch's
+#: preparation may fill with the frame windows that materialize there (see
+#: RenderLoopMixin._render_device_prep_budget). The rest is left for the
+#: merge's and projection's transient out-of-arena scratch, which the batch
+#: preflight bounds against the same headroom, and for the prefetched
+#: successor batch that prepares while this one renders.
+_RENDER_PREP_FRACTION = 0.4
+
 
 @contextlib.contextmanager
 def _render_progress(total):
@@ -1948,6 +1956,24 @@ class RenderLoopMixin:
             )
         ]
 
+    def _render_device_prep_budget(self):
+        """Render-device bytes a batch's preparation may hold at once.
+
+        The animation-device budget is a setting (``max_cpu_memory_used``); the
+        render device's is measured, as the arena's is: what the device has
+        free right now, outside the arena the render reserved at job start,
+        with room left for the merge's and projection's own out-of-arena
+        scratch, which the batch preflight bounds separately. Read without
+        releasing torch's cached blocks -- a prefetch runs beside the render
+        thread's launches -- so the figure is what the driver has free, and
+        conservative by exactly torch's idle cache.
+        """
+        device = _RENDER_DEVICE
+        if device.type != "cuda":
+            return float("inf")
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        return int(free_bytes * _RENDER_PREP_FRACTION)
+
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
@@ -1974,9 +2000,23 @@ class RenderLoopMixin:
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
         actor_mem = [
-            (spawn, actor._get_memory_used_per_timestep())
+            (
+                spawn,
+                actor._get_memory_used_per_timestep(),
+                actor._get_render_device_memory_used_per_timestep(),
+            )
             for actor, spawn in primitive_actors
         ]
+        # Two budgets: what a frame allocates on the animation device, and
+        # what it allocates on the render device -- a wide attribute's window
+        # (a texture) materializes there, outside the render arena, and a
+        # batch that fits the first budget by a mile can still exhaust the
+        # second. Read once per fetch, since it is a measurement.
+        max_render_mem_used = (
+            self._render_device_prep_budget()
+            if any(render_mem for _, _, render_mem in actor_mem)
+            else float("inf")
+        )
 
         # Binary search for the largest batch that fits the animation-device
         # budget.  The selected actor set grows monotonically with duration, so
@@ -1989,10 +2029,15 @@ class RenderLoopMixin:
 
             def fits(duration):
                 cutoff = (start_time_ind + duration) / self.frames_per_second
-                mem_used = sum(
-                    mem * duration for spawn, mem in actor_mem if spawn <= cutoff
+                mem_used = 0
+                render_mem_used = 0
+                for spawn, mem, render_mem in actor_mem:
+                    if spawn <= cutoff:
+                        mem_used += mem * duration
+                        render_mem_used += render_mem * duration
+                return (
+                    mem_used <= max_mem_used and render_mem_used <= max_render_mem_used
                 )
-                return mem_used <= max_mem_used
 
             return _max_duration_that_fits(requested_duration, fits)
 

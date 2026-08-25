@@ -1191,6 +1191,12 @@ class Arrow3D(Mob):
             for part in self._renderable_descendants()
         )
 
+    def _get_render_device_memory_used_per_timestep(self):
+        return sum(
+            part._get_render_device_memory_used_per_timestep()
+            for part in self._renderable_descendants()
+        )
+
     def get_render_primitives(self):
         # The whole subtree, not just the shaft and the head: their end discs
         # are children of theirs and are not Scene actors, so this is the only
@@ -1735,6 +1741,12 @@ class Polyhedron(Mob):
     def _get_memory_used_per_timestep(self):
         return sum(
             mob._get_memory_used_per_timestep() for mob in self._face_primitive_mobs()
+        )
+
+    def _get_render_device_memory_used_per_timestep(self):
+        return sum(
+            mob._get_render_device_memory_used_per_timestep()
+            for mob in self._face_primitive_mobs()
         )
 
     def get_render_primitives(self):

@@ -1423,7 +1423,18 @@ class Surface(Mob):
         self.texture_height = int(texture_height)
         self.texture_width = int(texture_width)
         self.register_attrs_as_animatable([attr])
-        setattr(self, attr, squish(texture, -3, -1))
+        # The surface's own row is the only one anything reads: the grid child
+        # shades from the map through the surface, never from a row of its own.
+        # A recursive write (the default for every attribute) would hand the
+        # grid a row too, and a row of this attribute is a whole image -- so
+        # every frame of every batch would materialize, lerp and copy a second
+        # 30 MB texture that no code path consumes.
+        prs = self._prevent_recursive_sets
+        self._prevent_recursive_sets = True
+        try:
+            setattr(self, attr, squish(texture, -3, -1))
+        finally:
+            self._prevent_recursive_sets = prs
         return self
 
     def _get_u_values_and_v_values(self):
@@ -2898,11 +2909,42 @@ class Surface(Mob):
         if attr is None:
             return 0
         timeline = self.scene.timeline_manager.attr_to_timeline.get(attr)
+        if timeline is not None and timeline.materialize_device is not None:
+            # The window lives on the render device; priced there instead
+            # (_get_render_device_memory_used_per_timestep). What stays on
+            # the animation device is the edit log, which is per render job,
+            # not per frame.
+            return 0
         inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
         copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
         return rows * texels * 4 * copies
+
+    def _get_render_device_memory_used_per_timestep(self) -> int:
+        """This surface's colour-texture cost for one frame on the render device.
+
+        Zero unless the texture's frame window materializes there (see
+        :meth:`_color_texture_bytes_per_timestep`, which then prices it at
+        zero on the animation device). Per frame, per row, the render device
+        holds the materialized window itself; the replayed assignment's lerp
+        (``base + change * a``, two transients at its peak); the premultiplied
+        map :meth:`get_render_primitives` builds; the linear-light decode and
+        the concatenation the scene merge makes of it; and the arena copy the
+        render reads -- so the estimate counts six images, which is the peak of
+        that sequence with the transients released between steps and a margin
+        for the wrap padding a closed surface adds.
+        """
+        attr = getattr(self, "_color_texture_attr", None)
+        if attr is None:
+            return 0
+        timeline = self.scene.timeline_manager.attr_to_timeline.get(attr)
+        if timeline is None or timeline.materialize_device is None:
+            return 0
+        inds = timeline.mob_id_to_inds.get(self.id)
+        rows = 1 if inds is None else int(inds.numel())
+        texels = int(self.texture_height) * int(self.texture_width) * 5
+        return rows * texels * 4 * 6
 
     def _packed_grid_count(self):
         """Number of independent grids concatenated into ``self.grid``.
@@ -3001,12 +3043,26 @@ class Surface(Mob):
         """
         weld = weld or (False, False, False)
 
+        corners = self._flatten_packed_triangle_vertices(
+            grid_to_triangle_vertices(grid, weld)
+            if precomputed_corners is None
+            else precomputed_corners
+        )
+
         def expand_grid_to_verts(x):
             # Same weld as the corners: a pole weld drops triangles, so every
             # per-vertex attribute has to be gathered through the same index
             # list or the primitive's arrays disagree on length.
             if x.shape[-2] == 1:
-                x = x.expand(*x.shape[:-2], self.grid.location.shape[-2], -1)
+                # A per-surface constant -- every material parameter arrives
+                # this way -- reads the same at every triangle vertex, so the
+                # expand-then-gather below only copied it W*H-fold and then
+                # vertex-fold. Broadcast it straight to the vertex layout
+                # instead: bit-identical (a gather of a broadcast is the
+                # broadcast), and it removes the ~1 ms gather per parameter
+                # per surface that was the largest item of a batch's primitive
+                # build on the reference neural-net scene.
+                return x.expand(*x.shape[:-2], corners.shape[-2], x.shape[-1])
             x = self._reshape_grid_for_render(x)
             return self._flatten_packed_triangle_vertices(
                 grid_to_triangle_vertices(x, weld)
@@ -3062,6 +3118,12 @@ class Surface(Mob):
             # Pad as a plain tensor, before mult_opacity, so the cat stays off
             # Color's __torch_function__.
             texels = self._color_texture_uncopied()
+            # The window may live on the render device (a wide attribute, see
+            # AttributeTimeline.materialize_device) while opacity is an
+            # ordinary animation-device attribute.
+            opacity = self.opacity.unsqueeze(-2)
+            if opacity.device != texels.device:
+                opacity = opacity.to(texels.device)
             texture_map = (
                 wrap_pad_texture(
                     texels.view(
@@ -3073,15 +3135,10 @@ class Surface(Mob):
                     closed_axes,
                 )
                 .as_subclass(Color)
-                .mult_opacity(self.opacity.unsqueeze(-2))
+                .mult_opacity(opacity)
             )
 
         colors = expand_grid_to_verts(compute_grid_color())
-        corners = self._flatten_packed_triangle_vertices(
-            grid_to_triangle_vertices(grid, weld)
-            if precomputed_corners is None
-            else precomputed_corners
-        )
         normals = (
             None
             if vertex_normals is None
