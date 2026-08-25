@@ -1,3 +1,4 @@
+====
 Mobs
 ====
 
@@ -25,7 +26,7 @@ Mobs
    ~algan.mobs.manim_mob
    ~algan.mobs.numeric_display
 
-Delegated Manim methods
+Delegated Manim Methods
 -----------------------
 
 Compatibility Mobs forward methods that are provided by the backing Manim
@@ -38,7 +39,7 @@ object. The most commonly used example is ``Axes.plot``:
    Delegate ``plot`` to the backing Manim :class:`~algan.mobs.manim_compat.Axes` and convert the returned
    geometry into an Algan Mob.
 
-SceneData fields
+SceneData Fields
 ----------------
 
 The importer IR is a dataclass, so its fields are constructor parameters rather

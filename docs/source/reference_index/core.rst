@@ -1,3 +1,4 @@
+====
 Core
 ====
 
@@ -13,17 +14,17 @@ Core
    ~algan.geometry.geometry
    ~algan.logging.logger
 
-Helper methods
+Helper Methods
 --------------
 
 .. _reference-color-set-opacity:
 
 .. py:method:: algan.constants.color.Color.set_opacity
 
-   Return a copy of a color with the requested opacity.
+   Return a copy of this color with the specified opacity.
 
 .. _reference-color-add-defaults:
 
 .. py:method:: algan.constants.color.Color.add_defaults
 
-   Pad color channels to Algan's five-channel RGBA-plus-glow representation.
+   Pad color channels to Algan's 5-channel RGBA-plus-glow representation.

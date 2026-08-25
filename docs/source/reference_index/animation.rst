@@ -1,3 +1,4 @@
+=========
 Animation
 =========
 
@@ -19,13 +20,13 @@ Animation
    ~algan.animations.changing
    ~algan.animations.indication
 
-Runtime Mob attributes
+Runtime Mob Attributes
 ----------------------
 
 These attributes are registered dynamically by
-:class:`~algan.animatable_base.mob.Mob` during
-construction, so they do not appear as ordinary class properties in
-``autoclass``. They are still part of the public Mob API.
+:class:`~algan.animatable_base.mob.Mob` on construction, so they do not appear
+as ordinary class properties in Sphinx ``autoclass``. They are still part of the
+public Mob API.
 
 .. _reference-mob-color:
 
@@ -37,7 +38,7 @@ construction, so they do not appear as ordinary class properties in
 
 .. py:attribute:: algan.animatable_base.mob.Mob.opacity
 
-   The Mob's independent opacity multiplier.
+   The Mob's opacity multiplier (0.0 is invisible, 1.0 is opaque).
 
 .. _reference-mob-glow:
 
@@ -49,10 +50,10 @@ construction, so they do not appear as ordinary class properties in
 
 .. py:attribute:: algan.animatable_base.mob.Mob.children
 
-   The live list of child Mobs in the hierarchy.
+   The list of direct child Mobs attached to this Mob.
 
 .. _reference-text-character-mobs:
 
 .. py:attribute:: algan.mobs.text.Text.character_mobs
 
-   The lazy indexed sequence of individual glyph Mobs.
+   The sequence of individual glyph Mobs making up this text.

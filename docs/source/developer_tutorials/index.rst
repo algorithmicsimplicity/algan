@@ -2,13 +2,12 @@
 Developer Tutorials
 ===================
 
-These tutorials are meant to help developers and contributors get up to speed
-with how the Algan internal systems work, to help them in extending or debugging
-the internal systems. Regular users do not need to know this stuff.
+These guides walk through how Algan works under the hood. They are written for
+contributors and developers who want to extend, debug, or optimize the internal
+systems. (If you just want to make animations, you can safely skip these!).
 
 .. toctree::
    :caption: Table of Contents
    :maxdepth: 2
 
    overview_internals
-

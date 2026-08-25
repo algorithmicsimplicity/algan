@@ -2,21 +2,16 @@
 Images and Textures
 ===================
 
-Algan can color a surface from an image or an array instead of a single flat
-color, and can drive a surface's *material* properties -- roughness, reflectivity,
-refractive index, surface normals -- from images too.
+Algan can texture 3-D surfaces with images or numpy/torch arrays, and use texture
+maps to drive material properties like roughness, reflectivity, index of
+refraction, and surface normals.
 
-There are four separate mechanisms, and it is worth knowing which is which:
+There are four ways to use images in Algan:
 
-1. :class:`~.ImageMob` -- an image as a flat, textured Mob. What you want for
-   showing a picture.
-2. :class:`~.Surface` texture arguments -- per-texel color and material properties
-   on any 3-D surface, sampled in the ray tracing kernel.
-3. The **texture grid** on a 2-D shape -- per-texel color across a
-   :class:`~.BezierCircuitCubic`, for gradients and images on a
-   :class:`~.Square`, a :class:`~.Circle` or a :class:`~.Line`.
-4. :meth:`~algan.scene.Scene.set_background_color` -- an image behind the whole scene (see
-   :doc:`backgrounds_and_post_processing`).
+1. **ImageMob:** A flat, textured plane for displaying photos or graphics on screen.
+2. ** :class:`~.Surface` texture maps:** Per-texel material and color maps sampled inside the GPU raytracer.
+3. **2-D shape texture grids:** Color gradients and image fills across 2-D shapes (:class:`~.Circle`, :class:`~.Square`, text glyphs).
+4. **Background images:** A static backdrop behind your entire scene (see :doc:`backgrounds_and_post_processing`).
 
 .. note::
 
@@ -54,7 +49,7 @@ you texture something with data you computed rather than loaded.
 .. important::
 
     The per-material texture arguments on :class:`~algan.mobs.surfaces.surface.Surface`
-    -- ``color_texture``, ``roughness_texture``, ``normal_texture`` and the rest --
+    (``color_texture``, ``roughness_texture``, ``normal_texture`` and the rest)
     take **tensors only**. Handing one a file path raises ``TypeError``. Load the
     image yourself first, with :func:`~algan.utils.file_utils.get_image`, or use
     :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`, which takes a
@@ -74,7 +69,7 @@ while it keeps its texture. That is how you wrap a map onto a globe:
     world = ImageMob('world_map.png').scale(2).spawn()
     world.wait()
 
-    with Seq(run_time_unit=10, rate_func=rate_funcs.identity):
+    with Seq(run_time_unit=5, rate_func=rate_funcs.identity):
         for shape in (Sphere(radius=2, add_to_scene=False),
                       Cylinder(radius=1, height=2, add_to_scene=False)):
             # Change the surface shape; the texture comes along.
@@ -248,10 +243,6 @@ texture to the new one per texel over the current context's duration.
 
     Scene.save_video()
 
-The replacement must have the same shape as the texture it replaces. Pass a single
-image when you construct the Mob -- one map, not a sequence of them; there is no
-time axis on a texture argument.
-
 Normal maps
 -----------
 
@@ -355,10 +346,7 @@ left at ``(u, v) == (0, 0)``:
     A circuit has no separate texture map: the texture grid **is** the
     resolution. That is the difference from
     :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`, which keeps
-    the image at its own resolution however coarse the surface's grid is. Ask for
-    a grid comparable to the detail you need -- and reach for
-    :class:`~.ImageMob` when what you want is the picture itself rather than a
-    shape wearing it.
+    the image at its own resolution however coarse the surface's grid is.
 
 Both methods are recorded as animations, like any other attribute write, so the
 colors cross-fade over the current context's duration:
@@ -387,8 +375,8 @@ colors cross-fade over the current context's duration:
 
 On a filled circuit these color the fill and leave ``border_color`` alone. On an
 unfilled one, where the stroke is all there is, they color the stroke. And on a
-multi-circuit Mob -- a :class:`~.Text`, a :class:`~.Tex`, which take the same
-grid arguments and pass them down to their packed glyphs -- each circuit is
+multi-circuit Mob (e.g. a :class:`~.Text`, a :class:`~.Tex`), which take the same
+grid arguments and pass them down to their packed glyphs, each circuit is
 colored over its own frame, so the pattern repeats per glyph:
 
 .. algan:: TexturesTextGradient

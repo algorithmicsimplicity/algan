@@ -1,20 +1,20 @@
-###########
+===========
 Development
-###########
+===========
 
-This page sets up Algan **from source**, for working on Algan itself. To
-install a released Algan and write animations with it, follow
+This page explains how to set up Algan **from source** to work on Algan itself.
+If you just want to install a released version to make animations, follow
 :doc:`../installation/uv` instead.
 
-Ask questions on the `Discord server <https://discord.gg/NvarFmvXKm>`__ and
-report bugs on the `issue tracker
+Have questions or want to discuss changes? Head over to our `Discord server
+<https://discord.gg/NvarFmvXKm>`__ or the `GitHub issue tracker
 <https://github.com/algorithmicsimplicity/algan/issues>`__.
 
-System dependencies
+System Dependencies
 ===================
 
-Install these before the Python packages; two of Algan's dependencies build
-from source and will fail without them.
+Install these before installing Python dependencies, as two of Algan's packages
+compile native extensions from source:
 
 .. tab-set::
 
@@ -47,11 +47,11 @@ from source and will fail without them.
    .. tab-item:: Windows
 
       Install `MiKTeX <https://miktex.org>`__ and add an `FFmpeg build
-      <https://ffmpeg.org/download.html>`__ to ``PATH``. The Cairo and Pango
-      headers are not needed: ``pycairo`` and ``manimpango`` both ship Windows
-      wheels.
+      <https://ffmpeg.org/download.html>`__ to your ``PATH``. Cairo and Pango
+      headers are not required because ``pycairo`` and ``manimpango`` ship
+      pre-built Windows wheels.
 
-Why each of these is needed:
+Why each dependency is needed:
 
 * **A C compiler, Python headers, pkg-config, Cairo and Pango headers** —
   ``manimpango`` publishes no Linux wheels at all and ``pycairo`` may also
@@ -64,8 +64,10 @@ Why each of these is needed:
   with ``imageio-ffmpeg``, but the documentation build shells out to a system
   ``ffmpeg``.
 
-Getting the source
-==================
+Getting the Source Code
+=======================
+
+Clone the repository and set up an editable environment using ``uv``:
 
 .. code-block:: bash
 
@@ -74,80 +76,75 @@ Getting the source
    uv venv
    uv sync --locked --all-extras --dev
 
-``uv sync`` installs Algan itself in editable mode alongside every runtime,
-optional and development dependency, pinned to the versions in ``uv.lock``.
+``uv sync`` installs Algan in editable mode along with all runtime, optional, and
+development dependencies pinned to the versions in ``uv.lock``.
 
 .. important::
 
-   Use ``--locked``. Resolving fresh instead of installing the lockfile picks
-   up newer releases of Manim, Torch and OpenCV than the ones Algan is tested
-   against, and those have broken Algan before.
+   Always pass ``--locked``. Resolving without the lockfile may pull in newer
+   releases of upstream dependencies (such as Torch or Manim) that have not been
+   tested and could introduce breaking changes.
 
    If you change a dependency in ``pyproject.toml``, re-run ``uv lock`` and
    commit the updated ``uv.lock`` with your change.
 
-Torch and your GPU
-------------------
+PyTorch and Hardware Acceleration
+---------------------------------
 
-The lockfile installs a CUDA build of Torch. Algan runs without a GPU — it
-falls back to the CPU automatically, and the test suite passes there — but
-rendering is much slower. For a ROCm or a CPU-only build, install the wheel
+The lockfile installs a CUDA build of PyTorch by default. Algan works without a
+GPU by falling back to CPU execution (and all tests pass on CPU), but rendering
+will be significantly slower. For a ROCm or a CPU-only build, install the wheel
 for your platform from https://pytorch.org/get-started/locally/ over the
-top, replacing ``pip3`` with ``uv pip`` in the command PyTorch gives you.
+top, replacing ``pip3`` with ``uv pip`` in the command PyTorch gives you.`.
 
-Running the interpreter
+Running the Interpreter
 =======================
 
-Every command below is written as ``<venv-python>``, meaning the virtual
-environment's interpreter:
+Run commands through ``uv run`` (e.g. ``uv run pytest -q --fast``) or use the
+virtual environment's Python interpreter directly:
 
 * Linux / macOS: ``.venv/bin/python``
 * Windows: ``.venv\Scripts\python.exe``
 
-The system ``python`` will not do — it has none of the pinned dependencies.
-Alternatively, prefix commands with ``uv run`` (``uv run pytest -q --fast``),
-which resolves the environment for you on every platform.
+Do not use your system Python, as it will not have the locked virtual environment
+packages.
 
 Testing
 =======
 
+We provide two testing loops:
+
 .. code-block:: bash
 
-   <venv-python> -m pytest -q --fast   # the development loop, ~1 minute
-   <venv-python> -m pytest -q          # everything, ~12 minutes
+   uv run pytest -q --fast   # Fast development loop (~1 minute)
+   uv run pytest -q          # Full test suite (~12 minutes)
 
-Run ``--fast`` after every change and the full suite before opening a pull
-request. ``--fast`` runs a hand-curated set of about 190 tests -- those marked
-``fast``, and nothing else -- covering the machinery every animation and render
-goes through, plus one pixel-compared render. It reports where it landed
-against its budget. Pass no path: it uses ``testpaths`` from ``pyproject.toml``.
+Run ``--fast`` after every code change, and run the full test suite before opening
+a pull request.
 
-A test you add is outside that set unless you mark it, which is deliberate:
-mark ``fast`` only when a change elsewhere in the codebase is liable to break
-it. ``tests/README.md`` documents what is in the fast suite, what is left out,
-and where each omission is covered instead.
+The ``--fast`` suite runs a curated set of ~190 tests covering the core animation
+pipeline, scene management, timeline materialization, and a deterministic
+pixel-compared render test.
 
 .. note::
 
-   Render tests compare frames pixel-wise against baselines checked in per
-   device, under ``expected_outputs_cuda/`` or ``expected_outputs_cpu/``. Both
-   sets are committed, so the comparison runs on a CPU-only machine too. CPU and
-   CUDA renders are not bit-identical, though, so re-baseline only for the device
-   you are on -- and a device with no baseline directory renders the scene and
-   silently skips the comparison.
+   Render tests compare generated frames against baselines committed in
+   ``expected_outputs_cuda/`` or ``expected_outputs_cpu/``. Because CPU and GPU
+   rasterization differences are expected, baseline files are maintained
+   separately for each backend.
 
-Re-baselining a render
-----------------------
+Updating Baseline Videos
+------------------------
 
-When a change legitimately alters rendered output, regenerate the baselines for
-your device and **look at the result** before committing it:
+When a change you've made legitimately and intentionally alters rendered output,
+regenerate the baselines for your device and **look at the result** before committing it:
 
 .. code-block:: bash
 
-   ALGAN_UPDATE_FAST_BASELINE=1 .venv/bin/python -m pytest -q tests/fast
-   ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/bin/python -m pytest -q tests/full_renders
+   ALGAN_UPDATE_FAST_BASELINE=1 uv run pytest -q tests/fast
+   ALGAN_UPDATE_FULL_RENDER_BASELINES=1 uv run pytest -q tests/full_renders
 
-Diff videos for a failing comparison land in that suite's ``output_errors/``.
+If a comparison fails, a diff video will be produced in that suite's ``output_errors/`` dir.
 Small deviations (a channel or two) across runs are expected and tolerated;
 anything larger is a real change and needs an explanation in the pull request.
 
@@ -156,14 +153,14 @@ Documentation
 
 .. code-block:: bash
 
-   <venv-python> docs/make_and_open_docs.py
+   uv run python docs/make_and_open_docs.py
 
-This renders every embedded example video, so it is slow and needs a system
-``ffmpeg``. For a structural or autodoc-only check:
+This renders every embedded example video, so it is quite slow.
+For a structural or autodoc-only check:
 
 .. code-block:: bash
 
-   <venv-python> docs/make_and_open_docs.py --skip-examples --no-open
+   uv run python docs/make_and_open_docs.py --skip-examples --no-open
 
 Docstrings on the public API follow ``DOCSTRINGS.md``; read it before writing
 or editing one.
@@ -179,9 +176,8 @@ scripts with rendering stubbed out. The third tier actually renders them and is
 opt-in behind ``ALGAN_RUN_DOC_RENDERS=1``.
 
 Prefer ``.. algan::`` over ``.. code-block:: python`` when an example is a
-complete script *and* its rendered result teaches the reader something -- the
-directive renders it during a full build and embeds the video. Keep
-``code-block`` for fragments, for anti-examples, and for anything needing an
+complete script and the video will get the point across faster than text can.
+Keep ``code-block`` for fragments, for anti-examples, and for anything needing an
 asset the repository does not carry; mark those last two so the test skips them:
 
 .. code-block:: rst
@@ -198,8 +194,8 @@ Linting
 
 .. code-block:: bash
 
-   <venv-python> -m ruff check --no-fix
-   <venv-python> -m ruff format --check
+   uv run ruff check --no-fix
+   uv run ruff format --check
 
 .. warning::
 
@@ -217,20 +213,4 @@ Opening a pull request
 ``.github/pull_request_template.md`` is the layout, and it asks for the things a
 diff cannot show: what the change is for, whether rendered output moved, which
 suites you ran and on what hardware, and which documentation pages moved with
-it. Write it in your own words -- a summary generated from the diff restates the
-diff, which is the one thing a reviewer can already see.
-
-The output question is the one to answer carefully. Say whether any rendered
-frame changed; if it did, say which baselines you regenerated, on which device,
-and why the new frames are the correct ones (see `Re-baselining a render`_). If
-a test was already failing before your change, say so and say how you know,
-rather than leaving it for a reviewer to rediscover.
-
-Repository conventions
-======================
-
-``CLAUDE.md`` records the repository-specific rules a change is expected to
-follow, and ``AGENTS_DETAILED.md`` is the architecture reference. In
-particular: preserve Scene containment, keep Taichi sources named
-``*_taichi.py``, and validate rendering changes against a small deterministic
-scene before running long benchmarks.
+it.

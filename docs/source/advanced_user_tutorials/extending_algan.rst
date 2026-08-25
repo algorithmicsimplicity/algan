@@ -2,141 +2,63 @@
 Extending Algan
 ===============
 
-Most things you might want are reachable without touching Algan's internals. Before
-writing a new class, check whether one of these does the job:
+Before diving into Algan's internals to create a new class from scratch, check
+whether your goal can be achieved with existing extension hooks:
 
 .. list-table::
    :header-rows: 1
    :widths: 40 60
 
-   * - You want
-     - Use
-   * - A new animation
-     - :func:`~.animated_function` (:doc:`custom_animations`), or a composition
-       of existing ones (:doc:`../galleries/built_in_animations`)
-   * - A rule that holds continuously
-     - An updater (:doc:`../new_user_tutorials/updaters`)
-   * - A new shape
-     - :class:`~.Surface` with your own coordinate function, or
-       :class:`~.Polygon` / :class:`~.Polyhedron` with your own vertices
-   * - A new look under light
-     - A material, a vertex shader, or a fragment-shader pipeline
-       (:doc:`shaders_and_materials`)
-   * - New ray-continuation behaviour
-     - A custom scatter function on a fragment stage
-       (:doc:`shaders_and_materials`)
-   * - A new full-frame effect
-     - A post-process pass
-       (:doc:`backgrounds_and_post_processing`)
-   * - Geometry from another library
+   * - What you want
+     - What to use
+   * - A custom mathematical animation
+     - :func:`~.animated_function` (:doc:`custom_animations`)
+   * - Continuous real-time behavior
+     - Updaters (:doc:`../new_user_tutorials/updaters`)
+   * - A new parametric 3-D surface
+     - :class:`~.Surface` with a custom coordinate function
+   * - Custom lighting / shading effects
+     - Materials or fragment shader pipelines (:doc:`shaders_and_materials`)
+   * - Custom post-processing image filters
+     - Post-processing passes (:doc:`backgrounds_and_post_processing`)
+   * - External 2-D/3-D assets
      - :class:`~.ManimMob` or :class:`~.ThreeDModelMob`
 
-What is left after that is genuinely new *geometry* -- a shape that cannot be built
-out of triangles or cubic Bezier curves -- which is what this page is about.
+Building Custom Mob Classes
+===========================
 
-How Rendering Reaches Your Mob
-==============================
+If you need a new shape, subclass an existing Mob base class:
 
-Two things have to be true for a Mob to appear on screen.
+* **2-D Outlines & Shapes:** Subclass :class:`~.BezierCircuitCubic`. (See :class:`~.Circle` or :class:`~.Polygon` for reference implementations).
+* **3-D Curved Surfaces:** Subclass :class:`~.Surface` and provide a parametric coordinate function ``(u, v) -> (x, y, z)``.
+* **Polyhedral Meshes:** Subclass :class:`~.Polyhedron` and supply vertex and face arrays.
 
-**It must be registered with the Scene.** The render loop iterates over the Scene's
-actors; it does not walk the Mob hierarchy looking for things to draw. Ordinary Mob
-construction registers the Mob automatically. If you construct something with
-``add_to_scene=False`` -- as internal machinery sometimes does for intermediate
-objects -- it will never render, no matter how correct its geometry is or whether you
-spawned it.
+Registering Custom Animatable Attributes
+----------------------------------------
 
-**It must produce render primitives.** A renderable Mob defines
-``get_render_primitives()``, returning geometry in one of the forms the renderer
-understands:
-
-* **Flat triangles** -- the general case, and what 3-D shapes and imported models
-  reduce to.
-* **PN (curved) triangles** -- triangles with per-vertex normals that are diced
-  adaptively at render time, so a :class:`~.Surface` stays smooth as the camera moves
-  in.
-* **Cubic Bezier circuits** -- closed outlines with exact curved edges, used for 2-D
-  shapes, text and LaTeX.
-
-Each batch of frames is assembled by packing every primitive into contiguous
-per-geometry-type arrays and building a spatio-temporal bounding volume hierarchy
-over them, covering all the frames in the batch at once. That is why moving geometry
-costs more than static geometry, and why the classes in
-``algan/rendering/primitives/`` are about primitive construction and batching rather
-than being a separate renderer.
-
-Adding a Mob Class
-==================
-
-The usual case is a new Mob built from existing primitives -- which is most new
-shapes. Subclass the Mob type whose geometry you want and supply your own points:
-
-* For a 2-D outline, subclass :class:`~.BezierCircuitCubic`. Look at
-  :class:`~.Circle` and :class:`~.Polygon` for the pattern.
-* For a curved 3-D surface, subclass :class:`~.Surface` and pass a coordinate
-  function. :class:`~.Sphere` and :class:`~.Cylinder` are both a few lines each.
-* For an explicit mesh, look at :class:`~.Polyhedron`.
-
-If your class has properties of its own that should be animatable, register them:
+If your custom Mob class introduces new attributes that should animate smoothly
+over time on the timeline, register them during `__init__`:
 
 .. code-block:: python
 
     class Ribbon(Surface):
         def __init__(self, twist=0.0, **kwargs):
-            super().__init__(self._shape, **kwargs)
+            super().__init__(self._shape_func, **kwargs)
+            # Register custom attribute with the timeline engine
             self.register_attrs_as_animatable(["twist"])
             self.twist = twist
 
-``register_attrs_as_animatable`` is what gives an attribute the interpolation,
-recording and per-frame materialization every built-in attribute has -- after that,
-``ribbon.twist = 2.0`` animates like ``ribbon.color`` does.
-:class:`~.BezierCircuitCubic` does exactly this for ``border_width`` and
-``border_color``.
-
 .. important::
 
-    Register the attributes **before** assigning them. Assigning first stores a plain
-    Python value that the timeline knows nothing about.
+    Always call ``self.register_attrs_as_animatable(["attr_name"])`` **before**
+    assigning the initial value in ``__init__``.
 
-Helpers Outside the Star Import
-===============================
+Batching Large Numbers of Mobs
+==============================
 
-``from algan import *`` is deliberately curated: it carries the names you need to
-author a scene, and leaves out lower-level helpers that would otherwise spend a name
-in every user's namespace. Those helpers are still public and still supported --
-import them from the module that defines them:
-
-.. code-block:: python
-
-    from algan.geometry.geometry import (
-        get_orthonormal_vector,
-        get_rotation_around_axis,
-        get_rotation_between_bases,
-        map_global_to_local_coords,
-        map_local_to_global_coords,
-        project_onto_basis,
-        rotate_vector_around_axis,
-    )
-    from algan.utils.animation_utils import animate_lagged_by_location
-    from algan.utils.mob_utils import batch_mobs
-
-These are the ones worth knowing about when writing a custom animation or Mob:
-the ``algan.geometry.geometry`` functions convert between world and Mob-local
-coordinate frames and build rotation matrices, ``animate_lagged_by_location``
-staggers an animation across a batch by where each element sits in space, and
-``batch_mobs`` packs several Mobs into one batched Mob so they animate as a single
-recorded operation.
-
-Packing Many Objects Into One Mob
-=================================
-
-A scene with a thousand spheres does not need a thousand Mobs. Algan can hold
-them all in one packed Mob: one Scene actor, one set of timeline rows, and one
-``get_render_primitives`` call per frame batch instead of a thousand of each.
-This is how :class:`~algan.mobs.text.Text` holds its glyphs and how a point
-cloud holds its dots.
-
-There are two ways in, and the difference is *when* the packing happens:
+If your scene features hundreds or thousands of identical shapes (like a point
+cloud or a large particle grid), don't create thousands of separate Mob
+instances. Instead, pack them into a single batched Mob:
 
 .. algan:: ExtendingPackedSpheres
 
@@ -148,91 +70,28 @@ There are two ways in, and the difference is *when* the packing happens:
     centers = torch.cat((centers.reshape(-1, 2),
                          torch.zeros(centers.numel() // 2, 1)), -1)
 
-    # Built packed: no per-sphere Mob is ever constructed.
+    # Builds 144 spheres in a single packed batch
     spheres = Sphere.from_batches(centers, radius=0.15, color=BLUE).spawn()
 
-    spheres.move(UP * 0.5)   # moves all 144
-    spheres[7].move(OUT)     # moves one -- a view sharing the pack's rows
+    spheres.move(UP * 0.5)   # Moves all 144 spheres at once
+    spheres[7].move(OUT)     # Moves an individual sphere view
 
     Scene.save_video()
 
-``from_batches`` is the one to reach for. It builds the packed geometry directly,
-so its cost barely grows with the member count; ``batch_mobs`` packs Mobs that
-already exist, so it saves the render-time cost but still pays to construct every
-member. Use ``batch_mobs`` when the members come from somewhere you do not
-control, and ``from_batches`` when you are creating them.
+This stores all items in a single contiguous GPU buffer, keeping rendering
+memory and CPU timeline overhead minimal.
 
-Both give you the same thing: a Mob whose ``location`` carries one row per
-member, whose ``len()`` is the member count, and which you index for a view onto
-a single member. To give a class its own ``from_batches``, build its geometry for
-every member at once and then call ``pack_animatable_rows`` (for the packed Mob)
-and ``pack_member_rows`` (for a component like a vertex grid, where each member
-owns a block of rows) from ``algan.utils.mob_utils``.
+Contributing Extensions
+=======================
 
-The one thing packing costs you is independent lifespans. A pack is a single Mob
-with a single ``[spawn, despawn)`` interval, so its members appear and disappear
-together. Stagger an entrance by animating opacity instead -- which is what
-``Tex.write()`` does across a page of glyphs.
-
-Adding a Render Primitive
-=========================
-
-If your geometry genuinely cannot be expressed as triangles or cubic Bezier circuits,
-you need a new primitive type, which means touching the renderer. This is a
-substantial change rather than a subclass: a primitive type has to be packed into the
-merged per-batch arrays, given a bounding volume hierarchy, and handled in the Taichi
-traversal, shading and shadow kernels -- each of which is compile-time specialised on
-which geometry types are present.
-
-Start by reading, in this order:
-
-1. ``algan/rendering/raytracing/primitives.py`` -- how triangle and Bezier circuit
-   primitives declare their per-vertex and per-surface data.
-2. ``algan/rendering/raytracing/scene_builder.py`` -- how a batch's primitives are
-   packed and how the hierarchies are built.
-3. ``algan/rendering/raytracing/tracer.py`` -- the entry point and how it dispatches
-   between the deterministic wavefront pipeline and the Monte Carlo path tracer.
-
-Then see the developer documentation: :doc:`../developer_tutorials/index` covers the
-internals, and ``AGENTS_DETAILED.md`` in the repository is the detailed architecture
-and contract reference.
-
-Working on Algan's Kernels
-==========================
-
-If you do end up in the Taichi kernels, three things will cost you time if you do not
-know them:
-
-* **The offline kernel cache does not invalidate on ``@ti.func`` edits.** Clear it
-  with ``clear_cache(taichi_kernels=True)`` before benchmarking or A/B-testing a
-  kernel change, or you will be measuring the old kernel.
-* **Never edit a ``*_taichi.py`` file while a render process or warm daemon is
-  running.** The JIT reads sources at first launch and can compile half-edited code.
-* **Kernel files must keep the ``_taichi`` filename suffix.** Ruff is configured to
-  leave those files alone, because the ``from __future__ import annotations`` it
-  would otherwise insert breaks Taichi kernel compilation. Note also that a plain
-  ``ruff check`` rewrites files in this repository -- use ``ruff check --no-fix``
-  unless you mean to apply fixes.
-
-Contributing
-============
-
-If you build something generally useful, contributions are welcome -- see
-:doc:`../contributing`. Two expectations worth knowing up front:
-
-* **Optimizations are held to byte-identical output**, validated by an A/B parity
-  script, and new behaviour goes behind a setting so the default path stays identical.
-* **Rendering changes are validated pixel-wise** against checked-in expected outputs,
-  so a change that legitimately alters output comes with re-baselined videos.
+If you create new shapes or animations that would benefit other users, we'd love
+to review your PR! Check out :doc:`../contributing` and
+:doc:`../contributing/development` for development setup and testing guidelines.
 
 See Also
 ========
 
-- :doc:`shaders_and_materials` -- the extension points most "I need custom
-  rendering" problems actually want.
-- :doc:`custom_animations` -- the animated-function decorator, in full.
-- :doc:`renderer_limitations` -- what the renderer does not do, which is where a
-  new primitive would have to fit.
-- :doc:`../developer_tutorials/index` -- Algan's internals.
-- :doc:`performance_and_quality` -- the constraints any renderer change is judged
-  against.
+* :doc:`custom_animations` -- creating animated functions with ``@animated_function``.
+* :doc:`shaders_and_materials` -- custom shader stages and material models.
+* :doc:`../developer_tutorials/overview_internals` -- Algan's internal architecture.
+* :doc:`../contributing` -- contributing guidelines.

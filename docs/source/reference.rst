@@ -1,11 +1,13 @@
+================
 Reference Manual
 ================
 
-The reference manual documents Algan's public modules, classes, functions, and
-settings. For guided examples, start with :doc:`new_user_tutorials/index`.
+Detailed API documentation for all of Algan's modules, classes, methods, and
+functions. If you are looking for guides and tutorials, head to
+:doc:`new_user_tutorials/index` or :doc:`advanced_user_tutorials/index`.
 
-Core inheritance
-================
+Class Hierarchies
+=================
 
 Animatables and Mobs
 --------------------
@@ -32,7 +34,7 @@ Scenes
    :parts: 1
    :top-classes: algan.scene.Scene
 
-Module index
+Module Index
 ============
 
 .. toctree::

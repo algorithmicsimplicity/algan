@@ -2,14 +2,14 @@
 Built-in Animations
 ===================
 
-Beyond the Mob methods, Algan ships a set of ready-made animations for the
-things explanatory videos do over and over: drawing attention to something,
-moving along a path, and applying a mathematical transformation to a whole
-diagram.
+Beyond standard Mob methods, Algan ships with a collection of ready-made
+animations for common video patterns: drawing attention to elements, moving
+objects along paths, and applying mathematical transformations across entire
+diagrams.
 
-They are all plain functions that take a Mob and record their animation on the
-timeline, so they compose with :doc:`animation contexts <../new_user_tutorials/combining_animations>`
-exactly like anything else:
+These are standard functions that take a Mob and record animations on the
+timeline, so they compose seamlessly with :doc:`animation contexts
+<../new_user_tutorials/combining_animations>`:
 
 .. algan:: AnimationsCompose
 
@@ -18,21 +18,23 @@ exactly like anything else:
     circle = Circle(color=BLUE).scale(0.6).move(LEFT * 2).spawn()
     square = Square(color=YELLOW).scale(0.6).move(RIGHT * 2).spawn()
 
-    with Sync():          # both at once
+    with Sync():          # Both at the same time
         Indicate(circle)
         Indicate(square)
 
-    with Lag(0.3):        # a ripple down a list
+    with Lag(0.3):        # Cascading ripple across elements
         for shape in (circle, square):
             Indicate(shape)
 
     Scene.save_video()
 
-Most of them take their own ``run_time``, which overrides the enclosing
-context's timing for that animation.
+Most animation functions take an optional ``run_time`` argument, which overrides
+the enclosing context's timing for that specific animation.
 
 Drawing Attention
 =================
+
+Here are the built-in ways to draw the viewer's eye to a specific Mob:
 
 .. algan:: AnimationsIndication
 
@@ -56,21 +58,17 @@ Drawing Attention
    * - Animation
      - What it does
    * - :func:`~.Indicate`
-     - Briefly scales the Mob up and tints it. The default "look here".
-       ``scale_factor``, ``color``.
+     - Briefly scales the Mob up and tints its color. The standard "look here" effect.
    * - :func:`~.Circumscribe`
-     - Traces a shape around the Mob. ``shape``, ``buff``, ``fade_in``,
-       ``fade_out``.
+     - Draws an animated bounding outline around the Mob.
    * - :func:`~.Flash`
-     - Fires a burst of short lines outward from a point or Mob.
-       ``num_lines``, ``line_length``, ``flash_radius``.
+     - Emits a quick radial burst of short rays from a point or Mob.
    * - :func:`~.FocusOn`
-     - Dims everything else and closes in on a point. ``opacity``, ``color``.
+     - Dims the rest of the scene and targets a specific point.
    * - :func:`~.Wiggle`
-     - Rocks the Mob back and forth. ``n_wiggles``, ``rotation_angle``.
+     - Wiggles the Mob back and forth.
    * - :func:`~.Blink`
-     - Flicks the Mob's visibility. ``blinks``, ``time_on``, ``time_off``,
-       ``hide_at_end``.
+     - Rapidly toggles the Mob's visibility.
 
 .. algan:: AnimationsWiggleBlink
 
@@ -88,7 +86,7 @@ Highlighting an Outline
 =======================
 
 :func:`~.ShowPassingFlash` sends a bright segment travelling along a Mob's
-outline -- the standard way to trace a path or emphasise the boundary of a
+outline; the standard way to trace a path or emphasise the boundary of a
 region:
 
 .. algan:: AnimationsPassingFlash
@@ -105,8 +103,8 @@ region:
 whole outline. :func:`~.ShowPassingFlashWithThinningStrokeWidth` does the same
 with a tapering stroke.
 
-To draw a shape on as if by hand, use :func:`~.draw_border_then_fill` -- it
-traces the outline and then floods the fill:
+To draw a shape on screen as if by hand, use :func:`~.draw_border_then_fill`. It
+first traces the outer border and then animates the fill:
 
 .. algan:: AnimationsDrawBorderThenFill
 
@@ -119,12 +117,12 @@ traces the outline and then floods the fill:
 
     Scene.save_video()
 
-The ``spawn(False)`` is what stops the shapes fading in before they are drawn:
-like :meth:`~algan.mobs.text.Tex.write`, ``draw_border_then_fill`` is an
-animation rather than a lifespan change, so the Mob has to exist already.
+Notice that we called ``spawn(False)`` so the shapes don't play their default
+fade-in before being drawn.
 
-For text, :meth:`~algan.mobs.text.Tex.write` is the glyph-wise shorthand for the same effect
-(see :doc:`../advanced_user_tutorials/text_and_math`).
+For text and LaTeX, :meth:`~algan.mobs.text.Tex.write` provides the convenient
+glyph-by-glyph handwriting equivalent (see
+:doc:`../advanced_user_tutorials/text_and_math`).
 
 An indefinitely repeating version of the same idea is
 :class:`~.AnimatedBoundary`, which keeps redrawing an outline around a Mob for as
@@ -151,8 +149,8 @@ the outline is traced and ``colors`` the palette it cycles through.
 Moving Along a Path
 ===================
 
-:func:`~.MoveAlongPath` walks a Mob along another Mob's outline. Any Bezier Mob
-works as the path -- a circle, a polygon, a hand-drawn curve:
+:func:`~.MoveAlongPath` moves a Mob along the trajectory of another Mob's
+outline. Any curve, line, or polygon can serve as the path:
 
 .. algan:: AnimationsMoveAlongPath
 
@@ -164,15 +162,15 @@ works as the path -- a circle, a polygon, a hand-drawn curve:
 
     Scene.save_video()
 
-If you want the path invisible, spawn it inside ``with Off():`` and set its
-opacity to zero, or simply never spawn it -- the geometry is read from the Mob,
-not from the screen.
+If you want the path itself to be invisible, you can leave it unspawned, the
+geometry is read directly from the Mob object.
 
 Transforming Whole Diagrams
 ===========================
 
-These apply a mathematical map to every point of a Mob, which is how you show a
-linear transformation, a change of coordinates, or a flow.
+These functions apply spatial or mathematical mappings across all points of a
+Mob, making it easy to illustrate linear transformations, coordinate changes, or
+vector flows:
 
 .. list-table::
    :header-rows: 1
@@ -181,19 +179,19 @@ linear transformation, a change of coordinates, or a flow.
    * - Animation
      - What it does
    * - :func:`~.ApplyMatrix`
-     - Applies a 2×2 or 3×3 matrix. The clearest way to show a linear map.
+     - Applies a 2×2 or 3×3 transformation matrix.
    * - :func:`~.ApplyPointwiseFunction`
      - Applies any point-to-point function.
    * - :func:`~.ApplyComplexFunction`
      - Treats the xy-plane as the complex plane and applies a complex function.
    * - :func:`~.Homotopy`
-     - A time-dependent deformation ``(x, y, z, t) -> (x, y, z)``.
+     - A continuous time-dependent deformation ``(x, y, z, t) -> (x, y, z)``.
    * - :func:`~.ComplexHomotopy`
-     - The same, in complex coordinates.
+     - Time-dependent deformation on the complex plane.
    * - :func:`~.PhaseFlow`
-     - Integrates a vector field, flowing points along it.
+     - Integrates a vector field to flow points along it over time.
    * - :func:`~.ApplyWave`
-     - Sends a ripple across the Mob.
+     - Propagates a wave distortion across a Mob.
 
 .. algan:: AnimationsApplyMatrix
 
@@ -269,13 +267,13 @@ only how long the viewer watches it.
 
     Scene.save_video()
 
-Writing Your Own
-================
+Custom Animations
+=================
 
-If none of these fit, an :func:`~.animated_function` gets you the same
-capabilities -- see :doc:`../advanced_user_tutorials/custom_animations`. For
-animations that run indefinitely rather than for a fixed duration, use
-:doc:`../new_user_tutorials/updaters`.
+If you need an animation that isn't covered here, you can write your own using
+:func:`~algan.animatable_base.animatable.animated_function` (see
+:doc:`../advanced_user_tutorials/custom_animations`), or attach a continuous
+updater (see :doc:`../new_user_tutorials/updaters`).
 
 Where To Next
 =============
@@ -289,5 +287,3 @@ Where To Next
 * :doc:`../advanced_user_tutorials/animating_out_of_order` -- scheduling these
   animations at times you compute yourself.
 * :doc:`mob_gallery` -- the Mobs to apply them to.
-* :doc:`../advanced_user_tutorials/extending_algan` -- packaging an animation of
-  your own up for reuse.

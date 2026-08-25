@@ -27,7 +27,7 @@ Key capabilities include:
   Scene timeline as visual animation, making it easy to line up animations
   with voice-over narration.
 
-First steps
+First Steps
 ===========
 
 * Follow :doc:`installation` to install Algan and its system dependencies.
@@ -36,15 +36,17 @@ First steps
   the ready-made animations at :doc:`galleries/built_in_animations`.
 * Manim users can start with :doc:`manim_migration_guide`.
 
-Finding help
+Getting Help
 ============
 
-For API details, use the :doc:`reference manual <reference>` and documentation
-search. Installation and usage bugs can be reported on the Algan GitHub issue
-tracker. Come hang out in the discord server <algan_discord> to chat with
-the developers and other Algan users.
+* For individual classes, methods, and functions, check the
+  :doc:`reference manual <reference>` or use the documentation search.
+* Found a bug or have a suggestion? Open an issue on our `GitHub issue tracker
+  <https://github.com/algorithmicsimplicity/algan/issues>`_.
+* Join our `Discord server <https://discord.gg/NvarFmvXKm>`_ to chat with the
+  developers and fellow Algan users.
 
-Documentation index
+Documentation Index
 ===================
 
 .. toctree::

@@ -1,3 +1,4 @@
+=========
 Rendering
 =========
 
@@ -22,12 +23,12 @@ Rendering
    ~rendering.post_processing
    ~rendering.memory_model
 
-Runtime light attributes
+Runtime Light Attributes
 ------------------------
 
 These attributes are registered dynamically by
 :class:`~algan.rendering.lights.Light` during construction, so they do not
-appear as ordinary class properties in ``autoclass``. They are still part of
+appear as ordinary class properties in ``autoclass``. They are full parts of
 the public Light API.
 
 .. py:attribute:: algan.rendering.lights.Light.intensity

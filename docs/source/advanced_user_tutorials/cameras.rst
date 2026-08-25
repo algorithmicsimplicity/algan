@@ -2,10 +2,9 @@
 Cameras
 =======
 
-Every Scene has one :class:`~algan.rendering.camera.Camera`, and it is a
-:class:`~algan.animatable_base.mob.Mob` -- so you move,
-rotate and animate it with the same methods you use on everything else, inside the
-same animation contexts.
+Every Scene in Algan has one :class:`~algan.rendering.camera.Camera`. And
+because the camera is itself a :class:`~algan.animatable_base.mob.Mob`, you move,
+rotate, and animate it using the exact same methods you use for everything else.
 
 .. code-block:: python
 
@@ -13,24 +12,23 @@ same animation contexts.
 
     camera = Scene.get_camera()
 
-By default it sits at ``ORIGIN + OUT * 7`` looking at the ``ORIGIN``, with a
-perspective projection whose vertical field of view is about 53°. With the default
-resolution that makes the visible area at the origin plane roughly 12.4 × 7 world
+By default, the camera sits at ``ORIGIN + OUT * 7`` aimed towards ``ORIGIN``,
+using a perspective projection with a vertical field of view of ~53°. At the
+origin plane (``z = 0``), the default framing spans approximately 12.4 × 7 world
 units.
 
-Moving the Camera
-=================
+Moving and Animating the Camera
+===============================
 
-The camera responds to every :class:`~algan.animatable_base.mob.Mob` movement and
-orientation method.
-:doc:`positioning_and_layout` lists them all; these are the
+The camera supports all standard :class:`~algan.animatable_base.mob.Mob` movement and
+orientation method. These are the
 ones that matter for camera work:
 
 .. list-table::
    :header-rows: 1
    :widths: 40 60
 
-   * - Call
+   * - Method
      - Effect
    * - ``camera.move(OUT * 2)``
      - Dolly back, keeping the same aim.
@@ -39,13 +37,13 @@ ones that matter for camera work:
    * - ``camera.look_at(point)``
      - Turn to face a point without moving.
    * - ``camera.orbit(deg, UP, about_point=p)``
-     - Travel around ``p`` *without* turning -- a tracking shot past the subject.
+     - Swings along a circle around ``p`` *without* changing its pointing direction.
    * - ``camera.move_to_make_mob_center_of_view(mob)``
-     - Reframe so a given Mob is centred.
+     - Automatically reframes so the target Mob is centered.
 
-The turntable is the workhorse of 3-D explanation, and the thing to get right is
-using :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`
-rather than :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.orbit`:
+The turntable shot is the classic way to show off a 3-D scene. Notice that we use
+:meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` with
+``about_point``:
 
 .. algan:: CameraTurntable
 
@@ -60,30 +58,19 @@ rather than :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.or
 
     Scene.save_video()
 
-``rotate`` carries the camera's orientation with it, so it stays aimed at the
-origin all the way round. ``orbit`` would move it along the same circle while
-leaving it pointing in its original direction, and the scene would swing out of
-frame.
+``rotate`` turns the camera's orientation along with its circular path, so it
+stays pointed straight at the center throughout the turn.
 
-.. important::
+.. tip::
 
-    Give camera moves ``rate_func=rate_funcs.identity``. The default
-    ``rate_funcs.smooth`` eases in and out, which reads as the *world* speeding up
-    and slowing down rather than as a camera move.
+    For continuous camera rotations, pass ``rate_func=rate_funcs.identity`` so
+    the speed stays constant rather than easing in and out.
 
-    Moving the camera is not expensive in itself. The renderer's acceleration
-    structure bounds where the *geometry* goes, so sweeping the camera around a
-    scene that is standing still does not inflate it. What costs is how much of
-    the frame the geometry fills: surfaces are diced more finely as they grow on
-    screen, and a batch of frames is tessellated for its most demanding frame.
-    A move that ends in a close-up is the expensive kind -- see
-    :doc:`performance_and_quality`.
+Tracking a Moving Target
+========================
 
-Following a subject
-===================
-
-For a camera that keeps tracking something whose path you do not know in advance,
-use an updater (see :doc:`../new_user_tutorials/updaters`):
+To make the camera continuously follow an object as it moves, attach a simple
+updater (see :doc:`../new_user_tutorials/updaters`):
 
 .. algan:: CameraTracking
 
@@ -105,12 +92,12 @@ use an updater (see :doc:`../new_user_tutorials/updaters`):
 
 .. _camera-fov:
 
-Field of View
-=============
+Field of View (FOV)
+===================
 
-``fov`` is the vertical field of view in degrees. A small fov is a telephoto lens
--- flattened perspective, as though the subject were far away; a large fov is
-wide-angle, with exaggerated depth:
+``fov`` sets the vertical field of view in degrees. Small FOVs act like a
+telephoto lens (flattening depth and perspective), while large FOVs give a
+wide-angle view with exaggerated perspective:
 
 .. algan:: CameraFov
 
@@ -127,86 +114,23 @@ wide-angle, with exaggerated depth:
 
     Scene.save_video()
 
-.. code-block:: python
-
-    camera.set_fov(30)          # telephoto
-    camera.fov = 30             # equivalent property form
-    print(camera.get_fov())     # read it back
-
-:meth:`~algan.rendering.camera.Camera.set_fov` works by moving the camera's screen,
-so on a spawned
-camera it animates like any other camera change -- which is what makes the
-dolly-zoom above possible.
+Because :meth:`~algan.rendering.camera.Camera.set_fov` works by adjusting the
+distance to the internal screen plane, it animates smoothly on the timeline like
+any other property, making dramatic "dolly zoom" effects simple.
 
 Algan also exposes the underlying perspective controls directly:
 :meth:`~algan.rendering.camera.Camera.set_distance_to_screen` moves the focus point relative to the
 screen plane, and the constructor's ``screen_distance`` / ``screen_scale`` set
 them up front. ``fov`` is derived from these, so use one or the other, not both.
 
-.. _camera-aspect-fov:
-
-Aspect ratio widens the horizontal field of view
-------------------------------------------------
-
-``fov`` is *vertical* (as in Three.js). The horizontal field of view is derived
-from it and the output aspect ratio, so **changing the resolution's shape changes
-how wide the camera sees** while the vertical stays fixed. The default 53 degree
-vertical fov gives roughly:
-
-=====================  ==============================
-Resolution             Horizontal field of view
-=====================  ==============================
-1920 x 1080 (16:9)     ~82 degrees
-2560 x 1080 (21:9)     ~96 degrees
-1438 x 426 (3.4:1)     ~119 degrees
-=====================  ==============================
-
-At 119 degrees the frame edge is 59 degrees off axis, and a sphere there is
-projected as an ellipse stretched by ``1 / cos(59 deg)``, about 1.9x. That is
-correct perspective -- a real 119 degree lens does the same thing -- but it is
-rarely what a wide banner or panorama still is after.
-
-For the near-orthographic look of a long lens, narrow the fov and pull the camera
-back by the same factor, so that ``distance * tan(fov / 2)`` (the visible
-half-height at the subject) is unchanged:
-
-.. algan:: CameraLongLens
-
-    from algan import *
-    import math
-
-    with Off():
-        camera = Scene.get_camera()        # starts at OUT * 7, 3.5 units of
-        camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))  # half-height at z=0
-        camera.move_to(OUT * 70)           # 10x the distance, same framing
-
-        cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
-                       for i in range(4)]).spawn()
-
-    with Seq(run_time=3):
-        cubes.rotate(360, UP, about_point=ORIGIN)
-
-    Scene.save_video()
-
-Use :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to` or
-``move`` to reposition a camera. ``move_center_to`` centres a *bounding box*, and
-a Camera's box spans both it and its internal screen plane, so the camera would
-land half the screen distance too far back.
-
-If you want as little perspective as possible, see :ref:`Near-Orthographic
-Projection <camera-orthographic>` below.
-
 .. _camera-orthographic:
 
 Near-Orthographic Projection
 ============================
 
-Algan's renderer has no true parallel-ray orthographic projection.
-:meth:`~algan.rendering.camera.Camera.set_near_orthographic` approximates one the
-way a photographer does: it moves the camera a very long way from its screen and
-narrows the lens to match, so foreshortening shrinks to almost nothing. That is
-what you want for technical diagrams, cross-sections, and anything where the
-viewer must compare sizes.
+If you are building technical diagrams, engineering cross-sections, or 2-D plots
+where you need exact parallel lines without perspective distortion, use
+:meth:`~algan.rendering.camera.Camera.set_near_orthographic`:
 
 .. algan:: CameraOrthographic
 
@@ -222,19 +146,8 @@ viewer must compare sizes.
 
     Scene.save_video()
 
-The four cubes are near enough the same apparent size to read as equal. Compare
-it with :ref:`the perspective version <camera-fov>` above.
-
-``set_near_orthographic(distance=...)`` takes the camera-to-screen distance, which
-defaults to ``1e5``. A smaller value keeps a little depth cue; a larger one flattens
-further.
-
-.. note::
-
-    :meth:`~algan.rendering.camera.Camera.set_to_orthographic` is a legacy name
-    for the same approximation. It warns and delegates to
-    :meth:`~algan.rendering.camera.Camera.set_near_orthographic`; call the latter
-    directly.
+This pushes the camera far away while narrowing the lens, removing perspective
+foreshortening so distant and near objects appear identical in scale.
 
 Clipping Planes
 ===============
@@ -256,16 +169,8 @@ environment map shows through. ``0`` disables each, which is the default.
 
     Scene.save_video()
 
-Five spheres are spawned; the two beyond 11 units are clipped away.
-
-.. code-block:: python
-
-    camera.set_near(0.5)        # hide anything within 0.5 units of the camera
-    camera.set_far(50)          # hide anything beyond 50 units
-    camera.set_far(0)           # no far clipping (the default)
-
-The most common use for ``near`` is stopping foreground geometry from filling the
-frame when the camera pushes into a scene.
+Setting ``camera.set_near(0.5)`` is the standard way to stop foreground objects
+from blocking the view when flying a camera deep into a scene.
 
 .. important::
 
@@ -291,7 +196,7 @@ these Mob methods all resolve against it:
 
 Each of them resolves the camera *once*, when the call is recorded, so a later
 camera move will not keep the Mob pinned there. For something that must stay in a
-fixed screen position through a camera move -- a caption, a legend -- attach it to
+fixed screen position through a camera move (e.g. a caption, a legend) attach it to
 the camera as a child, or drive it with an updater:
 
 .. algan:: CameraChildCaption
@@ -312,8 +217,8 @@ the camera as a child, or drive it with an updater:
 
     Scene.save_video()
 
-Because children follow their parent's basis (see
-:doc:`../new_user_tutorials/child_mobs`), the caption now travels with the camera.
+Because child Mobs automatically inherit their parent's movement and rotation,
+the caption stays perfectly pinned to the screen throughout the turn.
 
 See Also
 ========

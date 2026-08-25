@@ -2,45 +2,42 @@
 Audio and Speech
 ================
 
-Audio belongs to a Scene. Each :class:`~algan.scene.Scene` has its own
-:class:`~algan.sound.audio_effect.AudioManager`, transcript, speech source, and
-list of timed audio effects. This keeps separately-authored Scenes from sharing
-narration state accidentally.
+Algan lets you synchronize animations directly with sound files and voice-over
+narration. Each :class:`~algan.scene.Scene` maintains its own
+:class:`~algan.sound.audio_effect.AudioManager`, audio tracks, and speech
+source.
 
-Audio contexts
+Audio Contexts
 ==============
 
 Use :class:`~algan.animation_timeline.animation_contexts.Audio` to align an
-animation context with a sound file. Its duration is taken from the audio clip:
+animation block's duration to a sound file:
 
-.. algan-doc-check: skip -- needs music.wav, which does not ship with the docs
+.. algan-doc-check: skip -- requires music.wav asset
 
 .. code-block:: python
 
     from algan import *
 
-    with Scene() as scene:
-        circle = Circle().spawn()
+    circle = Circle().spawn()
 
-        with Audio("music.wav"):
-            circle.rotate(360, OUT)
-            circle.scale(2)
+    with Audio("music.wav"):
+        circle.rotate(360, OUT)
+        circle.scale(2)
 
-        scene.save_video("music_scene.mp4")
+    Scene.save_video("music_scene.mp4")
 
-This inverts the usual relationship between animation and timing. Ordinarily you
-say how long an animation takes; inside an ``Audio`` or ``Speech`` context the
-*sound* sets the duration and the animations inside are fitted to it, exactly as a
-``run_time`` would (see
-:doc:`../new_user_tutorials/combining_animations`). That is what makes narrated
-video practical to author: write the narration, and the visuals follow it.
+This flips the usual animation workflow on its head: instead of manually
+calculating how many seconds each visual action should take, the audio clip
+determines the duration, and all animations inside the block automatically scale
+to match.
 
-Both contexts take ``wait_at_end``, a number of extra seconds to hold after the
-clip finishes -- useful for letting a point land before the next line starts.
+Both ``Audio`` and ``Speech`` contexts take ``wait_at_end``, a number of extra seconds to hold after the
+clip finishes, so you can add longer pauses to parts of the narration.
 ``Speech`` defaults it to 1 second; ``Audio`` defaults it to 0.
 
-``Audio`` accepts either a path string or a MoviePy ``AudioFileClip``. You can
-therefore trim or otherwise prepare a clip before passing it to Algan:
+``Audio`` accepts string file paths or MoviePy ``AudioFileClip`` objects (allowing you
+to trim or preprocess audio beforehand):
 
 .. code-block:: python
 
@@ -50,13 +47,11 @@ therefore trim or otherwise prepare a clip before passing it to Algan:
     with Audio(clip):
         mob.move(RIGHT)
 
-The context adds an :class:`~algan.sound.audio_effect.AudioEffect` to its owning
-Scene at the context's start time. During ``save_video``, Algan composes all
-Scene effects into a temporary audio track and passes it to the video writer.
-
-Speech contexts
+Speech Contexts
 ===============
 
+:class:`~algan.animation_timeline.animation_contexts.Speech` is a specialized
+context that generates synthetic voice narration from text:
 :class:`~algan.animation_timeline.animation_contexts.Speech` is an Audio context
 whose clip is generated from a script segment:
 
@@ -66,33 +61,32 @@ whose clip is generated from a script segment:
 
     from algan import *
 
-    with Scene() as scene:
-        title = Text("Gradient descent").spawn()
+    title = Text("Gradient descent").spawn()
 
-        with Speech("Gradient descent follows the slope downhill."):
-            title.move(UP)
-            title.color = BLUE
+    with Speech("Gradient descent follows the slope downhill."):
+        title.move(UP)
+        title.color = BLUE
 
-        scene.save_video("gradient_descent.mp4")
+    Scene.save_video("gradient_descent.mp4")
 
 .. important::
 
     The default speech generator synthesizes through ``pyttsx3``, which drives a
     **system** text-to-speech engine rather than shipping one. macOS and Windows
     have one built in (NSSpeechSynthesizer and SAPI5), so ``Speech`` works out of
-    the box there. On Linux -- including CI containers and most Docker images --
+    the box there. On Linux (including CI containers and most Docker images)
     ``pyttsx3`` falls back to **eSpeak**, which is not installed by default and
     is not a Python dependency Algan can pull in for you. Without it, a
-    ``Speech`` context raises at synthesis time:
+    ``Speech`` context raises at synthesis time. You
+    can install it with:
 
-    .. code-block:: shell
+    .. code-block:: bash
 
-        sudo apt install espeak-ng          # Debian/Ubuntu
-        sudo dnf install espeak-ng          # Fedora
+        sudo apt install espeak-ng   # Debian / Ubuntu
+        sudo dnf install espeak-ng   # Fedora
 
     If you would rather not depend on a system engine at all, supply your own
-    generator (see `A custom speech generator`_) or use recorded narration --
-    neither goes near ``pyttsx3``.
+    generator (see `A custom speech generator`_) or use recorded narration.
 
 By default, the Scene's AudioManager uses Algan's pyttsx3 speech generator. Each
 ``Speech`` context appends its script to ``scene.audio_manager.video_transcript``.
@@ -112,17 +106,17 @@ a process-global singleton:
     from algan import *
     from algan.utils.audio_utils import get_speech_generator_from_file
 
-    with Scene() as scene:
-        generator = get_speech_generator_from_file(
-            audio_file="narration.wav",
-            transcript_file="narration.txt",
-        )
-        scene.audio_manager.set_speech_source(generator)
+    generator = get_speech_generator_from_file(
+        audio_file="narration.wav",
+        transcript_file="narration.txt",
+    )
+    Scene.set_speech_source(generator)
 
-        diagram = Circle().spawn()
-        with Speech("First we draw a circle."):
-            diagram.scale(1.5)
+    diagram = Circle().spawn()
+    with Speech("First we draw a circle."):
+        diagram.scale(1.5)
 
+    Scene.save_video("narrated_diagram.mp4")
         scene.save_video("narrated_diagram.mp4")
 
 ``get_speech_generator_from_file`` aligns the transcript to the audio and
@@ -144,7 +138,7 @@ MoviePy audio clip:
         # Select or synthesize a clip for this exact script segment.
         return AudioFileClip("prepared_segment.wav")
 
-    scene.audio_manager.set_speech_source(speech_generator)
+    Scene.audio_manager.set_speech_source(speech_generator)
 
 The generator is Scene-local. Two Scenes can use different voices or recorded
 sources in the same process without interfering with one another.
@@ -157,27 +151,11 @@ can run in parallel with a visual change inside a narration segment:
 
 .. code-block:: python
 
-    with Speech("The object now changes shape."):
+    with Speech("The object now transforms into a triangle."):
         with Sync():
-            with Audio("transform.wav"):
+            with Audio("whoosh.wav"):
                 pass
-            mob.become(Triangle(scene=mob.scene, add_to_scene=False))
-
-All nested contexts must resolve to the same Scene's AnimationManager. Mixing
-mobs or explicit animation managers from different Scenes in one context is
-rejected.
-
-Practical notes
-===============
-
-* Use audio formats supported by MoviePy/FFmpeg.
-* Keep the source clip open until rendering finishes; Algan closes its composed
-  output clip after writing.
-* Audio is rendered only when the Scene contains effects.
-* Audio effects stay on the Scene after ``save_video`` returns, along with the
-  rest of the timeline. Pass ``reset=True`` to discard them together with the
-  Scene's other authored state.
-* ``save_frame`` does not render audio and never modifies the Scene.
+            mob.become(Triangle(add_to_scene=False))
 
 See Also
 ========

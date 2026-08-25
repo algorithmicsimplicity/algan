@@ -42,9 +42,8 @@ it with ``as``:
 
 .. important::
 
-    Timeline events must be recorded against a context that is *entered* -- that is
-    what ``with ... as context:`` gives you. Times written outside any entered
-    context all collapse to zero.
+    Timeline events can *not* be recorded against the default context,
+    you must record them inside a ``with ... as context:`` block.
 
 Animating a wave effect
 =======================
@@ -82,56 +81,36 @@ its animation. And we can use out of order animation to implement the animations
     n = 10
     squares = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
 
+    # Calculate wave arrival time for each square based on its position
     wave_direction = F.normalize(RIGHT + DOWN, p=2, dim=-1)
     square_dots = [(square.location * wave_direction).sum().item() for square in squares]
     min_dot = min(square_dots)
     max_dot = max(square_dots)
 
     with Seq() as context:
-        # Get the current point in the timeline which this context is writing to.
-        animation_start_time = context.current_time
+        start_time = context.current_time
+
         for i in range(len(squares)):
             # rescale to [0, 5], so the wave takes 5 seconds to propagate.
             square_start_time = 5 * (square_dots[i] - min_dot) / (max_dot - min_dot)
 
-            # Set the current time we write animations to,
-            # to the point in time when this square should start
-            context.current_time = animation_start_time + square_start_time
+            # Jump the timeline pointer to when this square should animate
+            context.current_time = start_time + square_start_time
 
             # Write the animation to this point on the timeline.
             with Seq(run_time=2):
                 original_color = squares[i].color
                 squares[i].color = RED
-                squares[i].color = original_color
+                squares[i].color = BLUE
 
-        # Now that we are done writing the animations, jump to the end of the context to
-        # continue animating in order.
+        # Jump to the end of the context so future animations continue in order
         context.current_time = context.end_time
 
     Scene.save_video()
 
-When to reach for this
-======================
-
-Out-of-order writing is the right tool when **each Mob's start time is a function
-of something about that Mob** -- its position, its value, its index in a sorted
-order. The wave above is the canonical case: the start time comes from a dot
-product, so computing it directly is far simpler than working out the lag ratios
-that would produce the same effect.
-
-For anything simpler, prefer the ordinary contexts:
-
-* A fixed stagger across a list is :class:`~.Lag` (see
-  :doc:`../new_user_tutorials/combining_animations`).
-* A rule that holds continuously, rather than a set of scheduled animations, is an
-  updater (see :doc:`../new_user_tutorials/updaters`).
-
 See Also
 ========
 
-* :doc:`../new_user_tutorials/combining_animations` -- the contexts this bypasses.
-* :doc:`../new_user_tutorials/updaters` -- the other escape from strict
-  sequencing, for rules that hold continuously.
-* :doc:`custom_animations` -- writing a new animation rather than rescheduling
-  existing ones.
-* :doc:`../developer_tutorials/index` -- how the timeline materializes state.
+* :doc:`../new_user_tutorials/combining_animations` -- ``Seq``, ``Sync``, and ``Lag`` contexts.
+* :doc:`../new_user_tutorials/updaters` -- continuous frame updates.
+* :doc:`custom_animations` -- creating custom animation functions.

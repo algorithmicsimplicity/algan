@@ -12,15 +12,15 @@ is nothing extra to install.
 
 .. note::
 
-    You can import Mobjects, but not Manim *animations*. Manim's ``Transform``,
-    ``Create``, ``FadeIn`` and friends have no meaning on Algan's timeline. Use
-    Algan's own animation system instead -- most of the common ones have direct
-    equivalents (see :doc:`../galleries/built_in_animations`).
+    You can import Manim *objects* (geometry), but not Manim *animations*.
+    Manim's ``Transform``, ``Create``, and ``FadeIn`` don't exist on Algan's
+    timeline. Instead, animate the imported Mobs using Algan's own animation
+    methods and contexts.
 
 The ManimMob
 ============
 
-Wrap any Manim Mobject in a :class:`~.ManimMob` and you have an Algan Mob:
+Wrap any Manim Mobject in :class:`~.ManimMob` to turn it into an Algan Mob:
 
 .. algan:: ImportingManimMob
 
@@ -39,12 +39,12 @@ Wrap any Manim Mobject in a :class:`~.ManimMob` and you have an Algan Mob:
 
 .. important::
 
-    Do not use both ``from algan import *`` and ``from manim import *`` -- the
-    two libraries share many names and the definitions would clash. Import one of
-    them under a short alias, as with ``import manim as mn`` above.
+    Do not use both ``from algan import *`` and ``from manim import *`` in the
+    same file, as many class names clash. Import Manim under an alias (like
+    ``import manim as mn``).
 
-Plotting on axes
-================
+Plotting Functions on Axes
+==========================
 
 Graphing is the usual reason to reach for Manim's geometry, and it needs no
 wrapping at all: :class:`~.Axes` is available under its own name, and what
@@ -71,9 +71,9 @@ like any other.
 
     Scene.save_video()
 
-The same holds for the other builder methods -- ``plot_parametric_curve``,
-``get_axis_labels``, ``get_graph_label``, ``Brace.get_text`` -- so you can keep
-each returned piece as its own Mob and animate them independently.
+Helper methods like ``plot_parametric_curve``, ``get_axis_labels``, and
+``get_graph_label`` work the same way: they return Mobs that you can spawn and
+animate independently.
 
 Importing a finished Manim diagram
 ==================================
@@ -100,12 +100,12 @@ Wrapping the finished ``VGroup`` gives you one Algan Mob whose parts are its
 children, so you can animate the whole diagram together or reach into
 ``plot.children`` for an individual piece.
 
-Three-dimensional Manim geometry
-================================
+3-D Manim Geometry
+==================
 
 Manim's 3-D Mobjects import too, and they arrive as real 3-D geometry rather
-than as something flattened to face you. A :class:`~.Surface` -- and everything
-built on it, ``Sphere``, ``Torus``, ``Cone`` -- is a grid of curved quad tiles
+than as something flattened to face you. A :class:`~.Surface` (and everything
+built on it e.g. ``Sphere``, ``Torus``, ``Cone``) is a grid of curved quad tiles
 in Manim, and each tile becomes one of the same curved patches Algan's own
 3-D shapes are made of: it is diced to triangles afresh in every frame, as
 finely as that frame needs and no more, so the silhouette stays smooth however
@@ -133,28 +133,13 @@ far you push the camera in.
 
     Scene.save_video()
 
-A 3-D *path* -- a ``ParametricFunction`` tracing a helix, a knot, a field line --
-keeps its true position in space while its stroke keeps a constant width on
-screen, which is what Manim draws and what a solid tube would not.
-
-Because all of this is ordinary geometry, the rest of Algan applies to it: an
-imported sphere casts and receives ray-traced shadows, shows up in reflections
-and refractions, and takes an Algan
-:doc:`material <shaders_and_materials>` like any native shape.
-
-Two things to know. Manim tiles a surface at a fixed ``resolution``, and that
-tiling is the shape Algan reproduces -- raising it gives a rounder object, at
-the usual cost. And Manim's z axis points opposite to Algan's, so a ``Sphere``
-imported as-is has its poles pointing at the camera; rotate it about
-:data:`~algan.constants.spatial.RIGHT` if you want them upright, as above.
-
 Importing an SVG
 ================
 
 An ``.svg`` file drawn in Inkscape, Illustrator or Figma comes in through the
 same door. :class:`~.SVGMobject` parses the file into cubic Bezier outlines,
 which is exactly what Algan's 2-D shapes are made of, so the result is a
-first-class Mob -- it scales without pixelating, takes Algan colors, and morphs
+first-class Mob: it scales without pixelating, takes Algan colors, and morphs
 into other shapes:
 
 .. algan-doc-check: skip -- needs logo.svg, which does not ship with the docs
@@ -173,18 +158,18 @@ Each path in the file becomes its own Mob inside the result, reachable through
 :ref:`children <reference-mob-children>` (the top-level Mob holds a
 :class:`~.Group`, whose children are the paths), so you can animate an individual
 piece without disturbing the rest. Unlike a :class:`~.Group`, an
-:class:`~.SVGMobject` is not itself indexable -- ``logo[0]`` raises.
+:class:`~.SVGMobject` is not itself indexable.
 
 The path is resolved by Manim, which looks for it relative to the working
-directory rather than to your script -- so unlike :class:`~.ImageMob`, launching
+directory rather than to your script. So unlike :class:`~.ImageMob`, launching
 Python from a different directory can lose an SVG that sits beside your ``.py``
 file. Pass an absolute path if that matters.
 
 Only path geometry is imported. Embedded raster images, filters, gradients and
-text-as-text do not survive the conversion -- convert text to outlines in your
+text-as-text do not survive the conversion. Convert text to outlines in your
 editor before exporting.
 
-Colors and coordinates
+Colors and Coordinates
 ======================
 
 The two libraries use different conventions, and the boundary is the
@@ -206,9 +191,22 @@ Matching Manim's framing exactly
 Rather than rescaling each import, you can point the whole Scene at Manim's own
 defaults with :meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>`.
 Call it once, before you build anything, and imported geometry lands on the
-pixels Manim would have put it on -- same 8-unit frame height, same perspective,
+pixels Manim would have put it on: same 8-unit frame height, same perspective,
 same light position, same black background, and the z mirror that keeps a
 converted 3-D scene from rendering back-to-front.
+
+.. code-block:: python
+
+    from algan import *
+    import manim as mn
+
+    Scene.use_manim_defaults()
+
+    square = ManimMob(mn.Square(color=mn.BLUE)).spawn()
+    square.move(RIGHT)
+
+    Scene.save_video()
+
 
 :ref:`Matching Manim's defaults <migrating-manim-defaults>` in the
 :doc:`../manim_migration_guide` is the full treatment: what each of the four
@@ -232,10 +230,7 @@ the residue is worth knowing:
   gradient across it (``shading_factor`` 0.2); Algan ray-traces. Silhouettes,
   positions and base colors agree, the shading within a face does not.
 
-``benchmarks/_manim_defaults_parity_check.py`` renders the same scene through
-both engines and reports these numbers, if you want to measure them yourself.
-
-Native compatibility classes
+Native Compatibility Classes
 ============================
 
 For convenience, Algan also exposes many of Manim's composite Mobjects under
@@ -259,9 +254,6 @@ arguments (``x_length``, ``y_length``).
 
     Scene.save_video()
 
-If you are coming to Algan from Manim, :doc:`../manim_migration_guide` maps
-the concepts across.
-
 See Also
 ========
 
@@ -272,5 +264,4 @@ See Also
 * :doc:`three_d_models` -- importing ``.glb`` / ``.fbx`` models rather than
   Manim geometry.
 * :doc:`shaders_and_materials` -- giving imported geometry an Algan material.
-* :doc:`index` -- materials, lighting, cameras, audio and performance.
 * :doc:`../reference` -- the full API reference.

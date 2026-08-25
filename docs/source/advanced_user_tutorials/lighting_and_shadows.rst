@@ -19,8 +19,9 @@ The Default Light
 Every scene starts with a single white :class:`~.PointLight` positioned above and
 to the right of the camera. That is what gives 3-D shapes their shading.
 
-Lights are :class:`~.Mob` s, so a light is spawned, animated and despawned like
-anything else -- and **spawning one registers it with the Scene automatically**:
+Because lights are :class:`~.Mob` s, you spawn, move, animate, and despawn them
+just like any other shape. **Spawning a light registers it with the Scene
+automatically**:
 
 .. algan:: LightingRegistering
 
@@ -28,30 +29,30 @@ anything else -- and **spawning one registers it with the Scene automatically**:
 
     ball = Sphere(radius=1.2, color=WHITE).spawn()
 
-    # The scene's existing lights (a live list; index 0 is the default one).
+    # The scene's existing lights (index 0 is the default point light)
     lights = Scene.get_light_sources()
 
     with Off():
-        # Add another light: spawning is all it takes.
+        # Spawning a new light automatically adds it to the scene
         PointLight(location=LEFT * 5 + OUT * 3, color=BLUE, intensity=2).spawn()
 
-        # Or remove one particular light.
+        # Remove the default light
         Scene.remove_light_source(lights[0])
 
     ball.rotate(180, UP)
 
     Scene.save_video()
 
-:meth:`~algan.scene.Scene.clear_light_sources` takes control of the lighting
-completely, dropping every light the Scene has.
+To start with a blank slate call :meth:`~algan.scene.Scene.clear_light_sources`,
+which removes all existing lights.
 
 .. important::
 
    Wrap scene setup in ``with Off():``. Lights are Mobs, so each ``spawn()``
-   records a one-second fade by default -- build a three-light rig outside
-   ``Off()`` and your video opens with three seconds of darkness.
+   records a one-second fade by default, and building a three-light rig outside
+   ``Off()`` would make your video open with three seconds of darkness.
 
-Because they are Mobs, lights animate:
+Because lights are standard Mobs, you can animate them directly on the timeline:
 
 .. algan:: LightingAnimatedLight
 
@@ -76,8 +77,8 @@ Every light takes an ``intensity`` multiplier, and every light's ``location``,
 Point Light
 -----------
 
-:class:`~.PointLight` emits in all directions from a single point. By default it
-has no distance falloff -- an Algan convention that keeps scenes evenly lit -- but
+:class:`~.PointLight` emits light in all directions from a single point. By
+default, it has no distance falloff (keeping scene lighting clean and even), but
 you can opt into physically-correct attenuation with ``decay`` and a finite
 ``distance`` range:
 
@@ -87,7 +88,7 @@ you can opt into physically-correct attenuation with ``decay`` and a finite
 
     with Off():
         Scene.clear_light_sources()
-        # Inverse-square falloff, fading out by 20 units.
+        # Inverse-square falloff (decay=2), fading out by 20 units
         PointLight(location=UP * 4, color=WHITE, intensity=30, decay=2,
                    distance=20).spawn()
 
@@ -176,8 +177,8 @@ dim over a shot.
 
 .. note::
 
-    A light's *shape* parameters -- ``decay``, ``distance``, cone angles and
-    emitter sizes -- are still plain per-light constants rather than animatable
+    A light's *shape* parameters (``decay``, ``distance``, cone angles and
+    emitter sizes), are still plain per-light constants rather than animatable
     attributes: they are read when a frame batch is prepared rather than
     recorded on the timeline. To show two of those settings, render two videos.
 
@@ -232,7 +233,7 @@ light, it supports ``decay`` and ``distance``.
 Rect-Area Light
 ---------------
 
-:class:`~.RectAreaLight` is a glowing rectangle -- a softbox. It produces smooth,
+:class:`~.RectAreaLight` is a glowing rectangle (a softbox). It produces smooth,
 soft lighting and, with shadows enabled, soft-edged shadows, because Algan samples
 it at a grid of ``samples`` emitter points. More samples give a smoother result at
 a proportional cost.
@@ -311,9 +312,9 @@ proportional cost.
    through each occluder's opacity, so stacked translucent surfaces compound and a
    fully opaque one blocks. Ambient and emissive terms are unaffected.
 
-   What the deterministic renderer cannot do is refractive transport -- caustics,
-   and light bent as it passes through glass. That is the reason to reach for the
-   Monte Carlo path tracer, at a large cost in time. Note that raising
+   What the deterministic renderer cannot do is refractive transport: caustics,
+   and light bent as it passes through glass. These require using the
+   Monte Carlo path tracer, at the cost of a large increase in render time. Note that raising
    ``samples_per_pixel`` above 1 also gives up most of this page: see
    :ref:`renderer-capabilities`.
 
@@ -321,7 +322,7 @@ proportional cost.
    :class: seealso
 
    Shadow-casting lights are collected into a fixed-size per-pixel list whose
-   length is a compile-time constant (default 16 -- enough for a key/fill/rim rig
+   length is a compile-time constant (default 16, enough for a key/fill/rim rig
    plus a 4×4-sample area light). Lights beyond that are still *lit*, just not
    shadowed, and each sample of a :class:`~.RectAreaLight` counts toward the limit,
    so an under-capped area light simply gets a shallower shadow. If you need denser
@@ -333,7 +334,7 @@ Environment Maps
 
 An environment map wraps the scene in a 360° image. It acts as a **skybox**
 (visible in the background and in reflections and refractions) and, optionally, as
-**image-based lighting** -- the whole scene lit by the colors of the map.
+**image-based lighting** (the whole scene lit by the colors of the map).
 
 Pass an equirectangular image (a longitude × latitude panorama, sky at the top) to
 :meth:`Scene.set_environment_map <.Scene.set_environment_map>`, also available as
@@ -354,8 +355,7 @@ the top-level ``set_environment_map``:
 
     Scene.save_video()
 
-Any equirectangular image works -- the world map here is just one that ships with
-these docs. A real studio panorama gives a much better result.
+Any equirectangular image works. A real studio panorama gives a much better result.
 
 - ``intensity`` scales the map's brightness.
 - ``ambient=True`` (the default) also lights surfaces from the map. Set it to
@@ -369,14 +369,15 @@ directory.
 
 An environment map is the single biggest improvement you can make to a metal or
 glass object: a mirror with nothing to reflect renders black. See
+
 :doc:`reflections_and_glass`.
 
 Building a Rig
 ==============
 
-Real lighting is rarely one light. The standard three-point setup -- a bright key
+Real lighting is rarely one light. The standard three-point setup is a bright key
 with the shadow, a dimmer fill opposite it to keep the shadow side readable, and a
-rim from behind to separate the subject from the background -- plus a little
+rim from behind to separate the subject from the background, plus a little
 ambient:
 
 .. algan:: LightingThreePointRig
@@ -392,16 +393,19 @@ ambient:
         SpotLight(location=UP * 6 + RIGHT * 4 + OUT * 4, target=ORIGIN,
                   color=WHITE, intensity=60, angle=30, penumbra=0.5,
                   decay=2, shadow_radius=0.3).spawn()
+
         # Fill: dimmer, from the opposite side, no shadow.
         PointLight(location=LEFT * 6 + OUT * 2, color=WHITE, intensity=4).spawn()
+
         # Rim: from behind, slightly cool.
         DirectionalLight(location=IN * 8 + UP * 4, target=ORIGIN,
                          color=Color((0.6, 0.7, 1.0))).spawn()
+
         # Ambient: stops the shadow side going pure black.
         AmbientLight(color=WHITE, intensity=0.25).spawn()
 
         Sphere().spawn()
-        Cube(side_length=6, color=GREY).move(DOWN * 4).spawn()   # floor
+        Cube(side_length=6, color=GREY).move(DOWN * 4).spawn()   # Ground floor
 
     Scene.wait(2)
 

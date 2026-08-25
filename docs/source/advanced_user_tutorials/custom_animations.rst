@@ -4,22 +4,18 @@
 Custom Animations
 =================
 
-Combining attribute changes and mob methods in animation contexts
-will cover most of your every-day needs.
+Combining built-in Mob methods and attribute changes inside animation contexts
+will handle most of your animation needs.
+
 But if you need an animation which can't be created by combining the
 existing ones, then you can make your own animations using the
 :func:`~algan.animatable_base.animatable.animated_function` decorator.
 
-Before writing one, check that none of these is what you actually want:
-
-* a combination of existing Mob methods inside
-  :doc:`animation contexts <../new_user_tutorials/combining_animations>`;
-* one of the ready-made animations in :doc:`../galleries/built_in_animations`
-  -- there is already an ``ApplyMatrix``, a ``Homotopy`` and a ``PhaseFlow``;
-* an :doc:`updater <../new_user_tutorials/updaters>`, if the rule should hold
-  continuously rather than for a fixed duration;
-* :doc:`animating_out_of_order`, if what you need is not a new animation but a
-  different *time* to write existing ones to.
+Before writing a custom animation function, check if one of these is what you need instead:
+* Combining standard Mob methods inside :doc:`../new_user_tutorials/combining_animations`.
+* Built-in animations in :doc:`../galleries/built_in_animations` (e.g. ``ApplyMatrix``, ``Homotopy``, ``PhaseFlow``).
+* An :doc:`updater <../new_user_tutorials/updaters>` if the behavior should run continuously.
+* :doc:`animating_out_of_order` if you just need to schedule animations at specific timestamps.
 
 Animated functions
 ==================
@@ -34,7 +30,7 @@ frame.
     from algan import *
     import numpy as np
 
-    # A function mapping a scalar parameter t to a point in space.
+    # Function mapping a scalar parameter t to a 3-D position
     def path_func(t):
         return UP * np.sin(t) + RIGHT * (t - PI)
 
@@ -104,5 +100,3 @@ See Also
   function composes with.
 * :doc:`../new_user_tutorials/updaters` -- the other way to write behaviour of
   your own, for rules that hold continuously.
-* :doc:`extending_algan` -- packaging animations, Mobs and primitives of your
-  own for reuse.

@@ -1,68 +1,49 @@
 # FAQ: General Usage
 
-## Why is nothing in my video?
+## Why is my video empty?
 
-Mobs have to be spawned. Constructing a `Square()` records nothing on its own —
-`Square().spawn()` is what puts it on screen and makes it animatable. Algan warns
-about this (`NeverSpawnedMobWarning`) when a Mob is never spawned.
+Mobs must be spawned before they show up on screen. Constructing a `Square()` defines the object, but `Square().spawn()` is what actually puts it on screen and makes it animatable on the timeline. If you create a Mob without spawning it, Algan will warn you with a `NeverSpawnedMobWarning`.
 
-## Why did my first render take minutes?
+## Why did my first render take a couple of minutes?
 
-Almost none of that is your animation. Every fresh `python my_scene.py` re-imports
-the library and compiles Taichi kernels before it can draw a pixel. Compiled kernels
-are cached, so later runs are much faster, and the render daemon keeps a warm process
-alive so you only pay it once:
+Almost none of that time is spent rendering your actual animation. On the very first run, Algan compiles its GPU raytracing kernels in Taichi. Those kernels are cached to disk, so every subsequent render starts right away.
+
+To avoid Python startup overhead during development, use the render daemon with `--watch`:
 
 ```bash
 uv run python -m algan.daemon my_scene.py --watch
 ```
 
-See {doc}`../new_user_tutorials/getting_started`.
+See {doc}`../advanced_user_tutorials/the_render_daemon`.
 
-## Do I need a GPU?
+## Do I need a dedicated GPU?
 
-No. Algan picks CUDA, then MPS, then CPU. CPU renders work and are just slower. Set
-`ALGAN_RENDER_DEVICE` before `import algan` to override the choice.
+No. Algan will automatically detect and use CUDA (NVIDIA) or MPS (Apple Silicon). If no compatible GPU is found, it falls back to your CPU. CPU renders produce identical visual output, just at a slower rendering speed. You can override device selection with the `ALGAN_RENDER_DEVICE` environment variable.
 
-## Can I render again after calling `save_video()`?
+## Can I keep animating after calling `save_video()`?
 
-Yes. `save_video()` leaves the Scene exactly as you authored it: Mobs stay spawned,
-the timeline keeps its recording, and you can render again — including a preview from
-inside a `with` block that has not finished yet. Pass `reset=True` if you want the old
-destructive behaviour.
+Yes! Calling `Scene.save_video()` does not destroy your scene. Mobs stay spawned and the timeline keeps its history, so you can continue adding animations or re-render at a different quality preset. If you want the old behavior that resets everything after rendering, pass `reset=True`.
 
-## My change to `SETTINGS.video` had no effect
+## Why didn't my change to `SETTINGS.video` do anything?
 
-`SETTINGS.video` is read when a Scene is *constructed*, and Algan creates its default
-Scene as soon as you build your first Mob. Set it at the top of your script, before any
-Mob exists, or pass the settings to the render call instead:
+`SETTINGS.video` is read when a `Scene` is first created, and Algan creates its default Scene as soon as your first Mob is instantiated. Make sure you set your settings at the very top of your script before creating any Mobs, or pass the preset directly into your render call:
 
 ```python
-Scene.save_video("out", HD)
+Scene.save_video("my_video", HD)
 ```
 
-## Why does raising `samples_per_pixel` make my scene raise an error?
+## Why did setting `samples_per_pixel > 1` raise an error?
 
-Because it changes renderer. Above 1 you get the Monte Carlo path tracer, which does
-not implement environment maps, refractive materials, custom fragment-shader pipelines
-or extended lights. Algan refuses rather than silently dropping them. See
-{ref}`renderer-capabilities`.
+Setting `samples_per_pixel` higher than 1 switches from the deterministic wavefront raytracer to the stochastic Monte Carlo path tracer. The path tracer doesn't support refractive materials, environment maps, or custom fragment pipelines. Instead of silently dropping those features, Algan raises an error to alert you. See {ref}`renderer-capabilities`.
 
-## LaTeX fails to compile
+## Why is my LaTeX not compiling?
 
-Algan shells out to a real TeX installation — TeX Live, MiKTeX or MacTeX — so one has
-to be on your `PATH`. Use raw strings (`r"..."`) so Python does not eat the backslashes,
-and note that {class}`~algan.mobs.text.Tex` compiles in math mode, so `$` is never
-needed. See {doc}`../advanced_user_tutorials/text_and_math`.
+Algan calls out to a local LaTeX installation (TeX Live, MiKTeX, or MacTeX) on your system `PATH`. Make sure to use raw strings (`r"..."`) in Python so backslashes aren't escaped, and remember that {class}`~algan.mobs.text.Tex` already runs in math mode (so you don't need `$...$`). See {doc}`../advanced_user_tutorials/text_and_math`.
 
-## My transparent video will not play
+## Why won't my transparent video play?
 
-Use a `.mov` path. Algan's default codec for transparent output is `png`, which cannot
-go in an MP4 (Algan rejects that outright) or a WebM (which needs its codec stated
-explicitly). See {doc}`../advanced_user_tutorials/transparent_backgrounds`.
+Make sure you render with a `.mov` container extension. Algan's default transparent video codec uses PNG frames, which is supported in QuickTime `.mov` containers but not in standard `.mp4` files. See {doc}`../advanced_user_tutorials/transparent_backgrounds`.
 
-## Where did my output go?
+## Where are my rendered files saved?
 
-`algan_outputs/` next to your script, unless you said otherwise. A bare filename goes to
-the output directory; anything with a directory in it is used as written. `save_video()`
-returns a result object whose `output_path` tells you exactly where the file landed.
+By default, Algan creates an `algan_outputs/` folder in the same directory as your Python script. If you provide a bare filename like `"my_scene"`, it saves there. If you provide a path with folders (like `"renders/test.mp4"`), Algan respects that path directly. `Scene.save_video()` returns a `RenderResult` object whose `output_path` property tells you the exact file location.

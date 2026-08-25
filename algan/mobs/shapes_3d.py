@@ -1436,8 +1436,8 @@ class Torus(Surface):
 
     def __init__(
         self,
-        major_radius=3,
-        minor_radius=1,
+        major_radius=1.5,
+        minor_radius=0.5,
         u_range=(0, torch.pi * 2),
         v_range=(0, torch.pi * 2),
         resolution=None,

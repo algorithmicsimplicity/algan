@@ -13,7 +13,7 @@ The complete list, with every constructor argument, is in the
 ==========
 
 Algan's 2-D shapes are cubic Bezier circuits (:class:`~.BezierCircuitCubic`),
-which means they stay perfectly smooth however far you zoom in -- a
+which means they stay perfectly smooth however far you zoom in. A
 :class:`~.Circle` is a real circle, not a many-sided polygon.
 
 .. algan:: GalleryShapes2D
@@ -73,8 +73,8 @@ their outline:
     Scene.save_video()
 
 On a filled shape the border is drawn *inside* the outline, so raising
-``border_width`` eats into the fill instead of growing the silhouette --
-bordered text stays legible and neighbouring glyphs never fuse. An unfilled
+``border_width`` eats into the fill instead of growing the silhouette.
+This makes bordered text stay legible and neighbouring glyphs never fuse. An unfilled
 shape (``filled=False``, and :class:`~.Line`) has no interior to eat into, so
 its stroke stays centred on the path.
 
@@ -92,19 +92,18 @@ Mob, but they are constructed with Manim's arguments:
    * - Class
      - Notes
    * - :class:`~.Arc`
-     - ``radius``, ``start_angle``, ``angle``.
+     - Sized with ``radius``, ``start_angle``, and ``angle``.
    * - :class:`~.Annulus`
-     - ``inner_radius``, ``outer_radius`` -- a ring.
+     - A ring defined by ``inner_radius`` and ``outer_radius``.
    * - :class:`~.Ellipse`
-     - ``width``, ``height``.
+     - Sized with ``width`` and ``height``.
    * - :class:`~.Star`
-     - ``n`` points, ``outer_radius``, ``inner_radius``.
+     - Defined by ``n`` points, ``outer_radius``, and ``inner_radius``.
    * - :class:`~.Arrow`
-     - From a start point to an end point, with a head.
+     - An arrow from a start point to an end point, with a customizable head.
 
-``color`` works on these too, but the outline is ``stroke_width`` and
-``stroke_color`` -- Manim's names -- and ``border_width`` / ``border_color``
-raise :class:`TypeError`:
+These shapes use Manim's stroke naming: pass ``stroke_width`` and
+``stroke_color`` instead of ``border_width`` / ``border_color``:
 
 .. algan:: GalleryCompatShapes
 
@@ -129,10 +128,9 @@ raise :class:`TypeError`:
 3-D shapes are triangle meshes, and they come in two families that differ in
 how Algan turns them into triangles.
 
-*Curved* shapes -- everything built on :class:`~.Surface` -- are tessellated to
-the resolution the current render needs, so they stay smooth as you move the
-camera in. *Faceted* shapes are genuinely flat-sided, so their faces are their
-triangles and there is nothing to refine.
+* **Curved shapes:** Built on :class:`~.Surface`. These are tessellated
+  dynamically so they stay smooth even when the camera moves close.
+* **Faceted polyhedra:** Flat-sided solids built from explicit polygon faces.
 
 .. algan:: GalleryShapes3D
 
@@ -149,7 +147,7 @@ triangles and there is nothing to refine.
 
     Scene.save_video()
 
-Curved shapes, tessellated from a :class:`~.Surface`:
+Curved 3-D Shapes:
 
 .. list-table::
    :header-rows: 1
@@ -158,20 +156,19 @@ Curved shapes, tessellated from a :class:`~.Surface`:
    * - Class
      - Notes
    * - :class:`~.Sphere`
-     - ``radius``.
+     - Sized with ``radius``.
    * - :class:`~.Cylinder`
-     - ``radius``, ``height``, ``direction``.
+     - Sized with ``radius``, ``height``, and ``direction``.
    * - :class:`~.Cone`
-     - ``base_radius``, ``height``, ``direction``.
+     - Sized with ``base_radius``, ``height``, and ``direction``.
    * - :class:`~.Torus`
-     - ``major_radius``, ``minor_radius``.
+     - Sized with ``major_radius`` and ``minor_radius``.
    * - :class:`~.Dot3D`, :class:`~.Line3D`
-     - A small :class:`~.Sphere` and a thin :class:`~.Cylinder`, for marking
-       points and edges in 3-D scenes.
+     - A small 3-D sphere and cylinder for marking points and 3-D segments.
    * - :class:`~.Arrow3D`
-     - A :class:`~.Cylinder` shaft and a :class:`~.Cone` tip, grouped.
+     - A 3-D arrow combining a cylinder shaft and cone tip.
 
-Faceted shapes, built from explicit flat faces:
+Faceted 3-D Shapes:
 
 .. list-table::
    :header-rows: 1
@@ -180,33 +177,25 @@ Faceted shapes, built from explicit flat faces:
    * - Class
      - Notes
    * - :class:`~.Cube`
-     - ``side_length``. A :class:`~.Prism` with equal sides.
+     - Sized with ``side_length``.
    * - :class:`~.Prism`
-     - ``dimensions`` -- a box. Handy as a floor or a wall.
+     - A 3-D box sized with ``dimensions``. Great for walls, pedestals, or floors.
    * - :class:`~.Tetrahedron`, :class:`~.Octahedron`, :class:`~.Icosahedron`, :class:`~.Dodecahedron`
-     - Platonic solids, sized by ``edge_length``.
+     - Platonic solids sized with ``edge_length``.
    * - :class:`~.Polyhedron`, :class:`~.ConvexHull3D`
-     - Build a solid from your own vertices and faces, or from a point cloud.
-
-.. note::
-
-    Watch the defaults: :class:`~.Torus` defaults to ``major_radius=3``, which
-    is wider than the visible frame. Pass explicit sizes when you are laying
-    several shapes out together.
+     - Custom 3-D solids constructed from your own vertices and faces, or point clouds.
 
 Unlike 2-D shapes, 3-D shapes respond to light. See :doc:`../new_user_tutorials/three_d_basics` to
 get started and
 :doc:`../advanced_user_tutorials/lighting_and_shadows` for the full lighting
 model.
 
-Arbitrary Surfaces
-==================
+Parametric Surfaces
+===================
 
-:class:`~.Surface` builds a curved surface from a function mapping 2-D
-parameters ``(u, v)`` -- both in ``[0, 1]`` -- to points in space. It is what
-the curved shapes above are made of, so anything :class:`~.Surface` can do --
-per-point coloring, texture maps, deforming the sheet over time -- they can do
-too.
+:class:`~.Surface` lets you build any custom curved 3-D surface by defining a
+function that maps 2-D coordinates ``(u, v)`` in ``[0, 1]`` to 3-D points in
+space:
 
 .. algan:: GallerySurface
     :save_last_frame:
@@ -225,7 +214,7 @@ too.
 
 The function receives a batched tensor of ``(u, v)`` pairs and must return the
 matching points, so write it with torch operations rather than a Python loop.
-:doc:`../new_user_tutorials/three_d_basics` works through a surface properly, and
+:doc:`../new_user_tutorials/three_d_basics` works through this in more detail, and
 :class:`~.Surface` also accepts texture maps -- see
 :doc:`../advanced_user_tutorials/images_and_textures`.
 
@@ -291,9 +280,8 @@ loads no matter where you launch Python from. See
 Diagrams and Plots
 ==================
 
-Axes, plots, number lines and other diagram furniture come from Algan's Manim
-compatibility layer, built on Algan's bundled Manim geometry. They are available
-under their own names and animate as ordinary Algan Mobs:
+Coordinate axes, function graphs, bar charts, and data tables come from Algan's
+Manim compatibility layer. They animate as standard Algan Mobs:
 
 .. algan:: GalleryAxes
 
@@ -328,8 +316,8 @@ Grouping
 and provides :meth:`~.Group.arrange_in_line` and
 :meth:`~.Group.arrange_in_grid` for layout. See :doc:`../new_user_tutorials/child_mobs`.
 
-Numbers
-=======
+Animated Numbers
+================
 
 :class:`~.NumericDisplay` shows a number you can animate, counting smoothly
 between values:

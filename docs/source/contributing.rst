@@ -1,30 +1,32 @@
-############
+============
 Contributing
-############
+============
 
-Algan welcomes focused contributions to the renderer, animation system, mobs,
-documentation, tests, and developer tooling. Before making a large change, open
-or review an issue on the `Algan issue tracker
-<https://github.com/algorithmicsimplicity/algan/issues>`__ so the design and
-scope can be discussed.
+We welcome contributions to Algan! Whether you want to fix a bug, improve
+documentation, add a new Mob, or optimize GPU render kernels, we'd love your
+help.
 
-Repository-specific development rules are recorded in ``AGENTS.md``. In
-particular, contributors should preserve Scene containment, keep Taichi source
-files named ``*_taichi.py``, avoid formatting those kernel files automatically,
-and validate rendering changes with a small deterministic scene before running
-long benchmarks.
+If you are planning a large change or new feature, it is always a good idea to
+open an issue on the `GitHub issue tracker
+<https://github.com/algorithmicsimplicity/algan/issues>`_ or mention it on
+`Discord <https://discord.gg/NvarFmvXKm>`_ first, so we can align on design and
+approach before you write lots of code.
 
-A useful pull request normally contains:
+What makes a great pull request:
 
-* a clear explanation of the problem and chosen design;
-* tests for behavioral changes;
-* updated tutorials, reference stubs, and docstrings for public API changes;
-* output-parity evidence for renderer optimizations, or an explicit explanation
-  of intended visual differences;
-* any new settings, fallbacks, or compatibility behavior required by the change.
+* **Clear motivation and approach:** A short summary of what you are solving and
+  why you chose this implementation.
+* **Tests:** Unit or render tests covering any behavioral changes.
+* **Documentation:** Updated docstrings, tutorials, and examples for any public
+  API changes.
+* **Deterministic validation:** For renderer optimizations or fixes, verify
+  rendered outputs on a small scene before running full benchmarks.
 
-Development setup and validation
+Getting Started with Development
 ================================
+
+To set up a local development environment, install system dependencies, run the
+test suite, and build the documentation locally, follow the guide below:
 
 .. toctree::
    :maxdepth: 2
