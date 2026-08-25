@@ -331,12 +331,13 @@ reports are in `benchmarks/performance/reports/t4_baseline/`; read RUN 2.
 | **Constant material parameters broadcast, not gathered** | **shipped, bit-identical.** The per-surface primitive build expanded every constant parameter to the grid and gathered it per vertex: 808 gathers per 21-frame batch, ~1 ms each on this CPU |
 | **Encoder** | **shipped (Ox Alpha).** `libx264 -preset slower` on two cores stalled the frame queue and left a 14-18 s drain at UHD. `save_video` now picks `h264_nvenc` when an ffmpeg that can drive it exists (`ALGAN_VIDEO_ENCODER`, `algan/utils/video_encoding.py`); the benchmark scripts pass a fast x264 preset so the profile reads as it would on a full CPU |
 | **Glossy prefilter tiling** | **shipped, byte-identical.** The split-sum glossy route clamped the sparse tile loop to one frame, so every frame paid a whole bounce loop (traverse + shade + compaction launches per iteration): 319 shade launches for 50 PREVIEW frames against 40 with the loop per tile. The tile now spans frames and the per-frame reflection buffers are filled one frame-part at a time (`gloss_scatter` took a `row_base`). `wavefront_loop` 7.8 s -> 3.1 s at PREVIEW; inert at UHD where a chunk is one frame |
+| **Wide windows released after the primitive build** | **shipped, byte-identical.** The texture's materialized window (an image per frame of the batch, on the render device) was kept until the next batch's rematerialization replaced it, so two batches' windows sat on the device while one rendered. `AnimationTimeline.release_wide_windows` drops it once the batch's primitives are built. Peak VRAM at UHD 9.3 GB -> 6.5 GB (baseline 8.4), at PREVIEW 9.0 -> 6.2 GB (baseline 6.2) |
 | **Batch windows reproducible** | **shipped.** The merge headroom and the render-device budget derive from the device's total memory (or `available_memory_override`), not from what is free at the moment of asking. See the trap below |
 
 End to end, warm: **PREVIEW 36.5 s -> 7.7 s**, **UHD 50.0 s -> 30.9 s** (the
 UHD baseline carried 14.3 s of encoder drain; its render thread went 26.2 s ->
-26.1 s, which is where the remaining work is). Peak VRAM at UHD rose 8.4 -> 9.3
-GB (the texture windows now live on the device).
+26.1 s, which is where the remaining work is). Peak VRAM at UHD 8.4 -> 6.5 GB and at
+PREVIEW 6.2 -> 6.2 GB, with the windows released as above.
 
 **Three measurement traps from this round, all of which cost hours:**
 

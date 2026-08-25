@@ -2948,6 +2948,27 @@ class AnimationTimeline:
         for t in self.attr_to_timeline.values():
             t.clear_buffers()
 
+    def release_wide_windows(self):
+        """Drop the materialized windows of the wide attributes.
+
+        A window materialized on the render device (see
+        :func:`_wide_attr_materialize_device`) is a whole image per frame of
+        the batch, and nothing reads it once the batch's primitives are built:
+        the primitive holds its own premultiplied copy, the merge decodes that
+        into the buffer the arena is filled from, and the next batch's
+        preparation replaces the window outright. Left in place it would sit
+        beside the *next* batch's window while this one renders -- two batches
+        of texture frames on the device for one batch of pixels. The narrow
+        attributes are untouched: their windows are small, and the render
+        thread still reads camera and light state from them.
+        """
+        for t in self.attr_to_timeline.values():
+            if (
+                t.materialize_device is not None
+                and t.active_state is not t.current_state
+            ):
+                t.clear_buffers()
+
 
 class TimelineManager(AnimationTimeline):
     """Per-scene animation timeline.

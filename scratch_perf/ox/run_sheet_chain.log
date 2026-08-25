@@ -3,3 +3,260 @@
 === attempt 2 Tue Aug 25 06:47:51 AM UTC 2026
 === ping failed, sleeping 180s
 === attempt 3 Tue Aug 25 06:52:23 AM UTC 2026
+=== ping failed, sleeping 180s
+=== attempt 4 Tue Aug 25 06:57:23 AM UTC 2026
+=== ping ok, launching
+[0m
+> build · x-preview-f-free
+[0m
+[0m→ [0mRead scratch_perf/ox/brief_sheet_chain.md
+[0m
+[0m# [0mTodos
+[•] Read brief + CLAUDE.md guidance + referenced design docs
+[ ] Measure: _sheet_compact_breakdown.py and _sheet_stage_timing.py at 4K
+[ ] Identify biggest non-sort host-torch passes to kernelise
+[ ] Implement Taichi kernels behind settings toggles
+[ ] Extend _sheet_kernel_check.py unit half with edge cases
+[ ] Run _sheet_kernel_ab.py 3840 2160 3 with new toggles
+[ ] Lossless HD render A/B off vs on - 0 differing pixels
+[ ] uv run -m pytest -q --fast
+[ ] ruff check --no-fix and ruff format --check on touched files
+[ ] Write REPORT_sheet_chain.md
+[0m
+[0m→ [0mRead benchmarks/_sheet_compact_breakdown.py
+[0m→ [0mRead scratch_perf/report_UHD_r2.txt
+[0m→ [0mRead algan/rendering/raytracing/sheets.py
+[0m→ [0mRead algan/rendering/raytracing/sheets.py[90m [offset=1059][0m
+[0m→ [0mRead algan/rendering/raytracing/sheet_compact_taichi.py
+[0m✱ [0mGrep "def prepare_sparse_raster_coverage"[90m in algan/rendering/raytracing · 1 match[0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=500, offset=1150][0m
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=400, offset=1650][0m
+[0m→ [0mRead algan/rendering/raytracing/settings.py
+[0m✱ [0mGrep "SHEET_RANK_KERNEL|SHEET_MASK_KERNEL|RASTER_FUSED_GATHER|SOLID_SHELL_ALPHA"[90m in algan/rendering/raytracing/settings.py · 28 matches[0m
+[0m→ [0mRead algan/rendering/raytracing/settings.py[90m [limit=330, offset=981][0m
+[0m→ [0mRead algan/environment.py
+[0m→ [0mRead benchmarks/_sheet_kernel_check.py
+[0m→ [0mRead benchmarks/_sheet_kernel_ab.py
+[0m→ [0mRead benchmarks/_sheet_stage_timing.py
+[0m→ [0mRead scratch_perf/render_once.py
+[0m
+[0m$ [0mls -la /content/algan/scratch_perf/ /content/algan/scratch_perf/ox/ 2>/dev/null; cat /content/algan/scratch_perf/gpu_gate.txt 2>/dev/null; echo "---"; nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv 2>/dev/null | head -3
+/content/algan/scratch_perf/:
+total 84724
+drwxr-xr-x  4 root root    4096 Aug 25 06:57 .
+drwxr-xr-x 18 root root    4096 Aug 25 05:12 ..
+-rw-r--r--  1 root root 4299263 Aug 25 06:10 after_gloss_UHD.mp4
+-rw-r--r--  1 root root       5 Aug 25 04:37 baseline_done.flag
+drwxr-xr-x  2 root root    4096 Aug 25 04:53 baseline_videos
+-rw-r--r--  1 root root 1115633 Aug 25 06:08 before_gloss_PREVIEW.mp4
+-rw-r--r--  1 root root  653410 Aug 25 06:53 bounce_probe.mp4
+-rw-r--r--  1 root root     492 Aug 25 06:46 chain10.log
+-rw-r--r--  1 root root     792 Aug 25 06:48 chain11.log
+-rw-r--r--  1 root root     156 Aug 25 06:50 chain12.log
+-rw-r--r--  1 root root     119 Aug 25 06:57 chain13.log
+-rw-r--r--  1 root root    2858 Aug 25 06:03 chain2.log
+-rw-r--r--  1 root root     223 Aug 25 06:05 chain3.log
+-rw-r--r--  1 root root     992 Aug 25 06:07 chain4.log
+-rw-r--r--  1 root root     848 Aug 25 06:10 chain5.log
+-rw-r--r--  1 root root     454 Aug 25 06:13 chain6.log
+-rw-r--r--  1 root root    1275 Aug 25 06:18 chain7.log
+-rw-r--r--  1 root root     224 Aug 25 06:21 chain8.log
+-rw-r--r--  1 root root     707 Aug 25 06:40 chain9.log
+-rw-r--r--  1 root root 2558388 Aug 25 05:40 chunks_default_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:41 chunks_default_1.mp4
+-rw-r--r--  1 root root 2558390 Aug 25 05:43 chunks_fixed1_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:44 chunks_fixed1_1.mp4
+-rw-r--r--  1 root root     290 Aug 25 05:25 det_arm3.py
+-rw-r--r--  1 root root  718545 Aug 25 06:05 det_batch3_0.mp4
+-rw-r--r--  1 root root     502 Aug 25 06:05 det_batch3.log
+-rw-r--r--  1 root root     193 Aug 25 06:00 det_batch3.py
+-rw-r--r--  1 root root     330 Aug 25 06:20 det_bisect1.log
+-rw-r--r--  1 root root     257 Aug 25 06:15 det_bisect1.py
+-rw-r--r--  1 root root  719472 Aug 25 06:20 det_bisect_widetexoff_b3_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:57 det_clean_0.mp4
+-rw-r--r--  1 root root     285 Aug 25 05:57 det_clean.log
+-rw-r--r--  1 root root  304964 Aug 25 05:59 det_cleanp_0.mp4
+-rw-r--r--  1 root root     288 Aug 25 05:59 det_cleanp.log
+-rw-r--r--  1 root root  719956 Aug 25 05:27 det_cputex_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:28 det_cputex_1.mp4
+-rw-r--r--  1 root root     680 Aug 25 05:29 det_cputex.log
+-rw-r--r--  1 root root  719956 Aug 25 05:31 det_cur3_0.mp4
+-rw-r--r--  1 root root  720232 Aug 25 05:32 det_cur3_1.mp4
+-rw-r--r--  1 root root  719956 Aug 25 05:32 det_cur3_2.mp4
+-rw-r--r--  1 root root    1038 Aug 25 05:33 det_cur3.log
+-rw-r--r--  1 root root  719293 Aug 25 05:20 det_default_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:21 det_default_1.mp4
+-rw-r--r--  1 root root     686 Aug 25 05:22 det_default.log
+-rw-r--r--  1 root root    1582 Aug 25 05:17 determinism.py
+-rw-r--r--  1 root root  719956 Aug 25 05:24 det_noprefetch_0.mp4
+-rw-r--r--  1 root root  719944 Aug 25 05:25 det_noprefetch_1.mp4
+-rw-r--r--  1 root root     712 Aug 25 05:25 det_noprefetch.log
+-rw-r--r--  1 root root   42929 Aug 25 06:00 diff_clean_frame1_small.png
+-rw-r--r--  1 root root  407233 Aug 25 06:00 diff_frame1.png
+-rw-r--r--  1 root root  111309 Aug 25 05:24 diff_frame22_crop.png
+-rw-r--r--  1 root root  149628 Aug 25 05:24 diff_frame22.png
+-rw-r--r--  1 root root   19495 Aug 25 05:24 diff_frame22_small.png
+-rw-r--r--  1 root root  454580 Aug 25 06:00 diff_frame28.png
+-rw-r--r--  1 root root     411 Aug 25 05:21 env_full.patch
+-rw-r--r--  1 root root     383 Aug 25 05:21 env_mine.patch
+-rw-r--r--  1 root root    1357 Aug 25 06:20 fingerprint.py
+-rw-r--r--  1 root root  154711 Aug 25 05:24 frame22_small.png
+-rw-r--r--  1 root root     958 Aug 25 05:24 frame_diff_where.py
+-rw-r--r--  1 root root     140 Aug 25 06:53 .gitignore
+-rw-r--r--  1 root root     199 Aug 25 06:41 gpu_tenant.py
+-rw-r--r--  1 root root    2679 Aug 25 06:31 merge_off.json
+-rw-r--r--  1 root root    2679 Aug 25 06:31 merge_on.json
+-rw-r--r--  1 root root 4299263 Aug 25 06:18 oldcode_now_UHD.mp4
+drwxr-xr-x  3 root root    4096 Aug 25 06:42 ox
+-rw-r--r--  1 root root 4299263 Aug 25 06:37 poison_0.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:38 poison_255.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:39 poison_none.mp4
+-rw-r--r--  1 root root   62825 Aug 25 05:07 prep_T21.pstats
+-rw-r--r--  1 root root    1428 Aug 25 04:36 probe_batch_mem.py
+-rw-r--r--  1 root root    1839 Aug 25 05:01 probe_batch_plan.py
+-rw-r--r--  1 root root    1577 Aug 25 06:51 probe_bounce_iters.py
+-rw-r--r--  1 root root    1790 Aug 25 05:30 probe_chunks.py
+-rw-r--r--  1 root root    1468 Aug 25 04:54 probe_image_only.py
+-rw-r--r--  1 root root    1803 Aug 25 06:31 probe_merge_hash.py
+-rw-r--r--  1 root root   13378 Aug 25 05:07 probe_prep_cprofile.log
+-rw-r--r--  1 root root    1834 Aug 25 05:03 probe_prep_cprofile.py
+-rw-r--r--  1 root root    9246 Aug 25 04:43 probe_prep_scaling.log
+-rw-r--r--  1 root root    2443 Aug 25 04:42 probe_prep_scaling.py
+-rw-r--r--  1 root root    1417 Aug 25 04:47 probe_prep_variants.py
+-rw-r--r--  1 root root    1739 Aug 25 05:20 probe_sheet_counts.py
+-rw-r--r--  1 root root    1291 Aug 25 06:33 probe_stream_race.py
+-rw-r--r--  1 root root    1755 Aug 25 06:22 probe_texture_hash.py
+-rw-r--r--  1 root root    1005 Aug 25 04:46 probe_texture_rows.py
+-rw-r--r--  1 root root    2145 Aug 25 05:40 probe_tiles.py
+-rw-r--r--  1 root root    1626 Aug 25 06:47 probe_torch_profiler.py
+-rw-r--r--  1 root root    1663 Aug 25 06:28 probe_windows.py
+-rw-r--r--  1 root root    2455 Aug 25 04:44 profile_PREVIEW_animcuda.log
+-rw-r--r--  1 root root   40645 Aug 25 04:35 profile_PREVIEW_baseline.log
+-rw-r--r--  1 root root   26917 Aug 25 06:00 profile_PREVIEW_gloss2.log
+-rw-r--r--  1 root root   24310 Aug 25 05:09 profile_PREVIEW_r2.log
+-rw-r--r--  1 root root   26181 Aug 25 06:44 profile_PREVIEW_r3.log
+-rw-r--r--  1 root root   26182 Aug 25 06:57 profile_PREVIEW_r4.log
+-rw-r--r--  1 root root   26180 Aug 25 06:07 profile_PREVIEW_ref2.log
+-rw-r--r--  1 root root   40429 Aug 25 04:58 profile_PREVIEW_wideattr.log
+-rw-r--r--  1 root root   31918 Aug 25 04:37 profile_UHD_baseline.log
+-rw-r--r--  1 root root   26174 Aug 25 05:18 profile_UHD_cprof.log
+-rw-r--r--  1 root root   26079 Aug 25 05:12 profile_UHD_r2.log
+-rw-r--r--  1 root root   24907 Aug 25 06:46 profile_UHD_r3.log
+-rw-r--r--  1 root root      98 Aug 25 06:58 profile_UHD_r4.log
+-rw-r--r--  1 root root   25118 Aug 25 06:03 profile_UHD_reg64.log
+-rw-r--r--  1 root root  686725 Aug 25 05:43 reenc_a.mp4
+-rw-r--r--  1 root root  686725 Aug 25 05:44 reenc_b.mp4
+-rw-r--r--  1 root root 1115633 Aug 25 06:07 ref2_PREVIEW.mp4
+-rw-r--r--  1 root root     961 Aug 25 06:04 render_once.py
+-rw-r--r--  1 root root   39501 Aug 25 04:44 report_PREVIEW_animcuda.txt
+-rw-r--r--  1 root root   25719 Aug 25 06:00 report_PREVIEW_gloss2.txt
+-rw-r--r--  1 root root   23381 Aug 25 05:09 report_PREVIEW_r2.txt
+-rw-r--r--  1 root root   25197 Aug 25 06:44 report_PREVIEW_r3.txt
+-rw-r--r--  1 root root   25197 Aug 25 06:57 report_PREVIEW_r4.txt
+-rw-r--r--  1 root root   25196 Aug 25 06:07 report_PREVIEW_ref2.txt
+-rw-r--r--  1 root root   39500 Aug 25 04:58 report_PREVIEW_wideattr.txt
+-rw-r--r--  1 root root   25216 Aug 25 05:18 report_UHD_cprof.txt
+-rw-r--r--  1 root root   25178 Aug 25 05:12 report_UHD_r2.txt
+-rw-r--r--  1 root root   23950 Aug 25 06:46 report_UHD_r3.txt
+-rw-r--r--  1 root root   23946 Aug 25 06:03 report_UHD_reg64.txt
+-rw-r--r--  1 root root    1807 Aug 25 05:54 tiles_chain.log
+-rw-r--r--  1 root root 2558388 Aug 25 05:47 tiles_default_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:47 tiles_default_1.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:49 tiles_fixedA_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:50 tiles_fixedA_1.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:52 tiles_fixedB_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 05:53 tiles_fixedB_1.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 06:15 tiles_newcode_0.mp4
+-rw-r--r--  1 root root 2558388 Aug 25 06:16 tiles_newcode_1.mp4
+-rw-r--r--  1 root root   18153 Aug 25 06:49 torch_profiler_UHD.log
+-rw-r--r--  1 root root  846916 Aug 25 06:49 tp_prof.mp4
+-rw-r--r--  1 root root  846916 Aug 25 06:49 tp_warm.mp4
+-rw-r--r--  1 root root     226 Aug 25 05:09 videodiff_PREVIEW_r2.txt
+-rw-r--r--  1 root root     226 Aug 25 04:58 videodiff_PREVIEW_wideattr.txt
+-rw-r--r--  1 root root     385 Aug 25 05:12 videodiff_UHD_r2.txt
+-rw-r--r--  1 root root 4299263 Aug 25 06:25 win_1.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:27 win_2.mp4
+-rw-r--r--  1 root root 4299260 Aug 25 06:30 win_b3.mp4
+-rw-r--r--  1 root root 4299263 Aug 25 06:42 win_tenant.mp4
+
+/content/algan/scratch_perf/ox/:
+total 2796
+drwxr-xr-x 3 root root    4096 Aug 25 06:42 .
+drwxr-xr-x 4 root root    4096 Aug 25 06:57 ..
+drwxr-xr-x 2 root root    4096 Aug 25 05:52 algan_outputs
+-rw-r--r-- 1 root root    3293 Aug 25 06:35 brief_arena_reads.md
+-rw-r--r-- 1 root root    4028 Aug 25 06:05 brief_batchwide_audit.md
+-rw-r--r-- 1 root root    2710 Aug 25 05:21 brief_nvenc_binary.md
+-rw-r--r-- 1 root root    4642 Aug 25 04:45 brief_nvenc.md
+-rw-r--r-- 1 root root    3822 Aug 25 06:42 brief_sheet_chain.md
+-rw-r--r-- 1 root root    6059 Aug 25 06:25 probe_batchwide_audit.py
+-rw-r--r-- 1 root root     851 Aug 25 05:14 render_hd_encode_check.py
+-rw-r--r-- 1 root root   23990 Aug 25 06:29 REPORT_batchwide_audit.md
+-rw-r--r-- 1 root root    7312 Aug 25 05:55 REPORT_nvenc_binary.md
+-rw-r--r-- 1 root root    8483 Aug 25 05:30 REPORT_nvenc.md
+-rw-r--r-- 1 root root     123 Aug 25 06:40 run_arena_reads.log
+-rw-r--r-- 1 root root     242 Aug 25 05:52 run_auto_arm.log
+-rw-r--r-- 1 root root   19910 Aug 25 06:30 run_batchwide.log
+-rw-r--r-- 1 root root   61604 Aug 25 05:56 run_nvenc_binary.log
+-rw-r--r-- 1 root root   37886 Aug 25 05:31 run_nvenc.log
+-rwxr-xr-x 1 root root     997 Aug 25 04:58 run_ox.sh
+-rw-r--r-- 1 root root    2064 Aug 25 06:59 run_sheet_chain.log
+-rw-r--r-- 1 root root 2614903 Aug 25 05:14 world_map.png
+---
+name, memory.used [MiB], memory.total [MiB]
+Tesla T4, 11249 MiB, 15360 MiB
+[0m
+[0m$ [0mgit -C /content/algan status --short | head -20; git -C /content/algan branch --show-current; git -C /content/algan log --oneline -3
+M algan/animation_timeline/timeline.py
+ M algan/render_loop.py
+ D scratch_perf/gpu_gate.txt
+ M scratch_perf/ox/run_sheet_chain.log
+?? algan_profile_report_nn_PREVIEW.txt
+?? algan_profile_report_nn_UHD.txt
+perf/t4-nn-scene-throughput
+7f9931d Add the T4 round's probe scripts, Ox briefs/reports and run logs (scratch_perf/)
+4009d01 Keep the session's memory notes, probe scripts, Ox briefs/reports and logs in the repo
+547aff2 Glossy prefilter: one bounce loop per tile; reproducible batch windows; arena poison knob
+[0m
+[0m✱ [0mGlob "benchmarks/_video_diff.py"[90m in . · 1 match[0m
+[0m✱ [0mGrep "T5"[90m in algan/rendering/raytracing/DESIGN_optimization_targets.md · 5 matches[0m
+[0m✱ [0mGrep "T5"[90m in . · 20 matches[0m
+[0m→ [0mRead benchmarks/_video_diff.py
+[0m→ [0mRead DESIGN_optimization_targets.md[90m [limit=140, offset=790][0m
+[0m✱ [0mGrep "sheet_nfrag"[90m in . · 6 matches[0m
+Now let me examine the remaining pieces: the experimental settings mapping, `sheet_nfrag` consumers, and the `_gather_fragment_arrays` wrapper.
+[0m✱ [0mGrep "experimental|sheet_rank_kernel|sheet_mask_kernel"[90m in algan/settings · 21 matches[0m
+[0m→ [0mRead algan/settings/raytracing_settings.py[90m [limit=260][0m
+[0m→ [0mRead tests/unit_tests/test_environment.py
+[0m→ [0mRead algan/rendering/raytracing/raster_pipeline.py[90m [limit=150, offset=1050][0m
+Now let me start measuring. First the GPU gate, then the breakdown script.
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; echo GATE-OPEN; cat /content/algan/scratch_perf/gpu_gate.txt
+GATE-OPEN
+GPU-FREE
+[0m
+[0m$ [0muv run python benchmarks/_sheet_compact_breakdown.py 2>&1 | tail -20
+=== compact_sheets pass costs, n=3,661,824 sheets=3,290,404, mean of 5 ===
+     29.8 ms   31.7%  bit-lane rank scan (8 x cumsum/gather over [n])
+     18.0 ms   19.1%  bit-lane union + fusion detector (8 x scatter_add, x2/frame)
+     17.5 ms   18.6%  _lexsort (3 stable argsorts)
+     10.3 ms   11.0%  6 x index_select on one permutation
+      8.7 ms    9.2%  torch.unique(sorted, return_inverse)
+      6.6 ms    7.0%  bit-lane popcount over [sheets] (x2 per frame)
+      3.2 ms    3.4%  segmented reductions (area/first/max/count)
+     94.1 ms  100.0%  (sum of the passes benchmarked)
+[0m
+[0m$ [0muntil grep -q "GPU-FREE" /content/algan/scratch_perf/gpu_gate.txt; do sleep 20; done; uv run python benchmarks/_sheet_stage_timing.py 3840 2160 2>&1 | tail -12
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
+[Taichi] Starting on arch=cuda
+
+=== 3840x2160 ===
+frame      wall   prepare  emission sort/oth  compact   |sorts  |elemwise
+    0   27.768s    7.375s    6.560s   0.163s   0.742s    0.087s     0.655s
+    1    2.856s    0.373s    0.023s   0.021s   0.280s    0.067s     0.213s
+    2    2.857s    0.368s    0.020s   0.030s   0.271s    0.071s     0.200s
+
+(prepare = coverage stage total; emission = its Taichi count/write kernels;
+ sorts = torch argsort/unique/cumsum/cummax anywhere in the frame;
+ compact = sheets.compact_sheets, a subset of 'host rest')
+[0m

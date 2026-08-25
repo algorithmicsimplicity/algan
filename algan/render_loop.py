@@ -2267,6 +2267,11 @@ class RenderLoopMixin:
         render_state = self._materialize_render_state(
             start_time_ind, start_time_ind + duration
         )
+        # The batch's primitives are built: the texture windows that fed them
+        # (a whole image per frame, on the render device) have no reader left
+        # and would otherwise sit beside the next batch's until this one has
+        # rendered. See AnimationTimeline.release_wide_windows.
+        timeline.release_wide_windows()
         return primitive_collections, start_time_ind + duration, render_state
 
     def _emit_primitive_collections(self, primitive_class, primitives, out):
