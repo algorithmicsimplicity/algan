@@ -726,6 +726,66 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     return torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
 
 
+def _lane_first_owners(band_id, msk_o, t_o, nb, n):
+    """``SHEET_SAMPLE_DEPTH``'s per-sample nearest-owner table.
+
+    Returns ``[nb, AA_NUM_SAMPLES]`` float32: for each sheet and sub-pixel
+    sample lane, the exact depth of the sheet's earliest fragment owning THAT
+    lane (the stream is depth-ascending within a group, so the first owner in
+    sorted order is the minimum), or +inf where the sheet does not own the
+    lane -- the datum the sheet record otherwise lacks
+    (OX_SHEET_INTERPENETRATION_AUDIT.md ss6). The classification downstream
+    never compares an unowned lane.
+
+    Under ``SHEET_SAMPLE_DEPTH_KERNEL`` one kernel performs all eight lanes'
+    amin scatters in a single pass over the stream
+    (``sheet_compact_taichi.sheet_lane_first_owner``); the torch arm below is
+    what it replaced and stays as the A/B arm -- one masked full-length
+    ``where`` plus an amin ``scatter_reduce_`` per lane. Both arms reduce the
+    same integers (sorted positions) per (sheet, lane) slot, so they agree
+    exactly whatever order the atomics land in; everything after the table is
+    identical arithmetic on identical values.
+    """
+    device = msk_o.device
+    inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
+    if rt_settings.SHEET_SAMPLE_DEPTH_KERNEL and nb:
+        from algan.rendering.raytracing.sheet_compact_taichi import (
+            sheet_lane_first_owner,
+        )
+
+        # Uninitialized nowhere: the fill value IS the "no owner" sentinel.
+        first_lane = torch.full(
+            (nb * AA_NUM_SAMPLES,), n, dtype=torch.int32, device=device
+        )
+        sheet_lane_first_owner(
+            band_id.contiguous(), msk_o.contiguous(), n, int(AA_MASK_ALL), first_lane
+        )
+        has = first_lane < n
+        d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
+        return torch.where(has, d_lane, inf).view(nb, AA_NUM_SAMPLES)
+
+    big = torch.full((), n, dtype=torch.int64, device=device)
+    positions = torch.arange(n, dtype=torch.int64, device=device)
+    sample_depths = torch.full(
+        (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+    )
+    for lane in range(AA_NUM_SAMPLES):
+        owns = ((msk_o >> lane) & 1) != 0
+        masked = torch.where(owns, positions, big)
+        del owns
+        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
+        first_sorted.scatter_reduce_(
+            0, band_id, masked, reduce="amin", include_self=True
+        )
+        del masked
+        has = first_sorted < n
+        d_lane = t_o.index_select(0, first_sorted.clamp_max(max(n - 1, 0)))
+        sample_depths[:, lane] = torch.where(has, d_lane, inf)
+        del first_sorted, has, d_lane
+    del big, positions, inf
+    return sample_depths
+
+
 def compact_sheets(
     coverage,
     merged,
@@ -1209,34 +1269,12 @@ def compact_sheets(
 
     # ---- SHEET_SAMPLE_DEPTH: per-sample nearest-owner depths ---------------
     # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
-    # owning sample bit s (OX_SHEET_INTERPENETRATION_AUDIT.md ss6 -- the datum
-    # the sheet record otherwise lacks). The stream is depth-ascending within
-    # a group, so the FIRST owner of a lane in sorted order is the minimum --
-    # one masked amin-scatter over sorted positions per lane, in the style of
-    # the positioned_depth block above, each lane's temporaries freed before
-    # the next. A sheet that does not own a lane keeps infinity there; the
-    # classification below never compares an unowned lane.
+    # owning sample bit s. See ``_lane_first_owners``, which computes the
+    # table (one masked amin scatter per lane in torch, one kernel pass under
+    # ``SHEET_SAMPLE_DEPTH_KERNEL``).
     sample_depths = None
     if sample_depth:
-        big = torch.full((), n, dtype=torch.int64, device=device)
-        inf = torch.full((), float("inf"), dtype=torch.float32, device=device)
-        sample_depths = torch.full(
-            (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
-        )
-        for lane in range(AA_NUM_SAMPLES):
-            owns = ((msk_o >> lane) & 1) != 0
-            masked = torch.where(owns, positions, big)
-            del owns
-            first_lane = torch.full((nb,), n, dtype=torch.int64, device=device)
-            first_lane.scatter_reduce_(
-                0, band_id, masked, reduce="amin", include_self=True
-            )
-            del masked
-            has = first_lane < n
-            d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
-            sample_depths[:, lane] = torch.where(has, d_lane, inf)
-            del first_lane, has, d_lane
-        del big, inf
+        sample_depths = _lane_first_owners(band_id, msk_o, t_o, nb, n)
     del t_o
     del positions, msk_o
 

@@ -1019,6 +1019,34 @@ def set_raster_fused_gather(enabled):
     RASTER_FUSED_GATHER = bool(enabled)
 
 
+# Kernel opaque-prefix truncation in the sparse emission
+# (sheet_compact_taichi.opaque_prefix_keep, behind ``_opaque_prefix_keep``).
+# Each covered pixel keeps its fragment prefix through the first proven-opaque
+# hit; torch routed an amin scatter per opaque fragment through a whole-stream
+# repeat_interleave segment map and then compared two full-length arrays to
+# build the keep mask -- several [n] intermediates and two device syncs
+# (nonzero) for what is a per-pixel prefix scan over the CSR the host already
+# has. One kernel walks each pixel's run instead: find the first opaque
+# fragment, write the flags.
+#
+# Bit-identical by construction: both arms are integer flag comparisons over
+# identical ranges.
+#
+# Measured on the real nn-scene 3840x2160 stream (3.13 M fragments over 756 k
+# covered pixels): the keep mask itself goes 2.9 -> 0.4 ms per frame; of the
+# 15.3 ms the whole truncation block cost before, the remainder is the
+# any/sum/nonzero device syncs both arms still share.
+RASTER_OPAQUE_TRUNC_KERNEL = env_flag("ALGAN_RASTER_OPAQUE_TRUNC_KERNEL", True)
+
+
+def set_raster_opaque_trunc_kernel(enabled):
+    """Toggle the kernel opaque-prefix truncation mask (see
+    ``RASTER_OPAQUE_TRUNC_KERNEL``). Takes effect at the next batch's emission.
+    """
+    global RASTER_OPAQUE_TRUNC_KERNEL
+    RASTER_OPAQUE_TRUNC_KERNEL = bool(enabled)
+
+
 # Covered-pixel-compacted resolve: the emission already knows exactly which
 # pixels hold fragments, so the resolve launches one thread per COVERED pixel
 # instead of one per screen pixel that early-outs, turning the resolve from
@@ -1146,6 +1174,36 @@ def set_sheet_mask_kernel(enabled):
     SHEET_MASK_KERNEL = bool(enabled)
 
 
+# Kernel one-mesh reduction in the sparse emission
+# (sheet_compact_taichi.one_mesh_pixel_reduce / one_mesh_pixel_apply, behind
+# ``raster_pipeline._one_mesh_pixel_caps``). The per-pixel surface-id spread
+# and the two facing-split f64 coverage sums behind ANALYTIC_AA_ONE_MESH were
+# four scatter reductions routed through a whole-stream repeat_interleave
+# segment map, plus two full-length f64 ``where`` temporaries; two kernels now
+# walk each covered pixel's CSR run with all four aggregates in registers, and
+# the segment map never exists.
+#
+# The id spread is integer min/max -- exact under any order. The coverage sums
+# keep their float64 accumulate / float32 round contract (ss6.6.4): the torch
+# arm's atomic ``scatter_add_`` had no summation order at all, the kernel walks
+# its pixels serially in stream order, and both are expected bitwise-equal
+# after the round for the reason ``sheet_band_reduce``'s area sum is --
+# verified by measurement in benchmarks/_sheet_kernel_check.py, not assumed.
+#
+# Measured on the real nn-scene 3840x2160 stream (3.13 M fragments over 756 k
+# covered pixels): 8.5 -> 2.1 ms per frame, and the whole-stream
+# repeat_interleave segment map no longer exists.
+SHEET_ONE_MESH_KERNEL = env_flag("ALGAN_SHEET_ONE_MESH_KERNEL", True)
+
+
+def set_sheet_one_mesh_kernel(enabled):
+    """Toggle the kernel one-mesh reduction in the sparse emission (see
+    ``SHEET_ONE_MESH_KERNEL``). Takes effect at the next batch's emission.
+    """
+    global SHEET_ONE_MESH_KERNEL
+    SHEET_ONE_MESH_KERNEL = bool(enabled)
+
+
 # Order a sheet by its nearest POSITIONED fragment -- one that owns at least
 # one sub-pixel sample -- instead of by its nearest fragment of any kind
 # (sheets.compact_sheets).
@@ -1229,6 +1287,32 @@ def set_sheet_sample_depth(enabled):
     """
     global SHEET_SAMPLE_DEPTH
     SHEET_SAMPLE_DEPTH = bool(enabled)
+
+
+# Kernel lane-owner scan behind SHEET_SAMPLE_DEPTH
+# (sheet_compact_taichi.sheet_lane_first_owner, behind
+# ``sheets._lane_first_owners``). Building the per-sample nearest-owner depth
+# table asked, once per sample lane, "which sorted fragment of each sheet owns
+# this lane earliest" -- eight masked full-length ``where`` copies and eight
+# amin ``scatter_reduce_`` passes over the stream. One kernel does all eight
+# lanes' atomic mins in a single pass into one pre-initialised table.
+#
+# Bit-identical: integer amin per (sheet, lane) slot, order-independent, and
+# every step after the table is identical arithmetic on identical values.
+#
+# Measured on the real nn-scene 3840x2160 stream (3.13 M fragments): 42.3 ->
+# 7.7 ms per call under a synthetic uniform band distribution, and most of the
+# 14.5 ms the lane loop measured on the stream's own (skewed, mostly
+# single-fragment) bands.
+SHEET_SAMPLE_DEPTH_KERNEL = env_flag("ALGAN_SHEET_SAMPLE_DEPTH_KERNEL", True)
+
+
+def set_sheet_sample_depth_kernel(enabled):
+    """Toggle the kernel lane-owner scan of SHEET_SAMPLE_DEPTH (see
+    ``SHEET_SAMPLE_DEPTH_KERNEL``). Takes effect at the next batch's emission.
+    """
+    global SHEET_SAMPLE_DEPTH_KERNEL
+    SHEET_SAMPLE_DEPTH_KERNEL = bool(enabled)
 
 
 # Kernel conflict-rank scan in the compaction

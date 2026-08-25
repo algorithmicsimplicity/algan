@@ -911,6 +911,29 @@ are cuB radix sorts; Taichi has no sort primitive and hand-writing one to lose
 is not a plan. What remains worth measuring is the per-fragment gathers in
 `_shade_class` and `_prim_split_after`.
 
+**Shipped 2026-08-25: the next three host passes, measured on the real stream
+first** (`scratch_perf/ox/REPORT_sheet_chain.md`). A per-block replay of
+`compact_sheets` on a captured nn-scene 3840x2160 frame re-ranked the
+candidates: the compaction's remaining scatter blocks are small once the lane
+loops above shipped, and the largest non-sort host items were elsewhere --
+the SHEET_SAMPLE_DEPTH lane loop (14.5 ms), the emission's opaque-prefix
+truncation (15.3 ms incl shared syncs) and its one-mesh reduction (10.7 ms).
+Three kernels, default on, each behind its own toggle:
+`sheet_lane_first_owner` (`SHEET_SAMPLE_DEPTH_KERNEL`, integer amin per
+(sheet, lane) slot -- exact), `opaque_prefix_keep`
+(`RASTER_OPAQUE_TRUNC_KERNEL`, integer flags -- exact by construction) and
+`one_mesh_pixel_reduce`/`one_mesh_pixel_apply` (`SHEET_ONE_MESH_KERNEL`; the
+f64 coverage sums keep the ss6.6.4 accumulate-and-round contract, bitwise vs
+torch by measurement, and now serial per pixel so they are order-reproducible
+run to run besides). Alternating in-process A/B at 3840x2160:
+frame 1.384 -> 1.139 s (1.215x), `compact_sheets` stage 297 -> 210 ms;
+same-input per-pass: truncation 2.9 -> 0.4 ms, one-mesh 8.5 -> 2.1 ms,
+lane owners 42.3 -> 7.7 ms. Parity: `_sheet_kernel_check.py` extended to all
+six toggles (unit arms + edge cases + four rendered frames hashed both ways)
+and a lossless HD nn-scene render A/B whose two mp4s are md5-identical. Still
+left alone: the sorts, `_shade_class`/`_prim_split_after`'s gathers, the
+solid-shell ceiling's sort core, and everything below ~5 ms.
+
 ### T6. Raster precompute tables -- 5.4 s (1.4%)
 
 `precompute_triangle_projection` (1.9 s), `precompute_circuit_screen_bounds`
