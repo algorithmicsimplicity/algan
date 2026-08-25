@@ -1,0 +1,1 @@
+- [T4 perf branch](t4-perf-branch.md) — perf/t4-nn-scene-throughput: texture-on-GPU timeline shipped, PREVIEW 36.5→17 s; NVENC via Ox pending
