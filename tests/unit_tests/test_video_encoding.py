@@ -288,3 +288,20 @@ def test_override_without_a_binary_touches_nothing():
     with video_encoding.override_moviepy_ffmpeg_binary(None):
         pass
     assert before == (moviepy_config.FFMPEG_BINARY, ffmpeg_writer.FFMPEG_BINARY)
+
+
+def test_small_or_odd_outputs_stay_on_software_even_when_nvenc_is_usable(
+    monkeypatch,
+):
+    """NVENC refuses frames under its minimum size and odd-sided 4:2:0 frames,
+    and a refused encoder leaves an empty file with no error in Python -- the
+    SMOKE_TEST-sized renders of the unit suite found this. Those outputs stay
+    on x264 whatever the probe or the mode says.
+    """
+    _patch_probe(monkeypatch, usable=True)
+    assert select_video_encoder(None, None, False, (64, 36)) == SOFTWARE_PAIR
+    assert select_video_encoder(None, None, False, (704, 395)) == SOFTWARE_PAIR
+    assert select_video_encoder(None, None, False, (704, 396)) == NVENC_PAIR
+    monkeypatch.setenv("ALGAN_VIDEO_ENCODER", "nvenc")
+    assert select_video_encoder(None, None, False, (64, 36)) == SOFTWARE_PAIR
+    assert select_video_encoder(None, None, False, None) == NVENC_PAIR

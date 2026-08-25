@@ -341,7 +341,9 @@ def _render_scene_to_file(
         # an explicit codec must win verbatim, caller-supplied parameters
         # must not be confused with Algan's own, and its software fallback
         # reproduces exactly the pair the fills below used to produce.
-        codec, ffmpeg_params = select_video_encoder(codec, ffmpeg_params, transparent)
+        codec, ffmpeg_params = select_video_encoder(
+            codec, ffmpeg_params, transparent, tuple(video_settings.resolution)
+        )
         # A hardware pick can land on a binary other than moviepy's own
         # (moviepy is often configured with a static build that has no NVENC
         # encoders); None keeps moviepy's configuration untouched.

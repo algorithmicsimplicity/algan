@@ -64,6 +64,37 @@ _NVENC_FFMPEG_PARAMS = [
 #: parameters they are honoured by staying on the software encoder.
 _X264_ONLY_FLAGS = ("-preset", "-crf")
 
+#: The smallest frame NVENC is asked to encode. The hardware's documented H.264
+#: floor is 145x49 on current parts and a 64x64 canary fails outright; a
+#: unit-test-sized render (the SMOKE_TEST preset) under this floor produced an
+#: empty file with no Python-visible error, so anything smaller -- and any
+#: odd-sized frame, which 4:2:0 hardware encoding rejects -- stays on x264.
+_NVENC_MIN_RESOLUTION = (256, 128)
+
+
+def _nvenc_accepts(resolution) -> bool:
+    """Whether a frame of ``resolution`` (``(width, height)``) can go to NVENC."""
+    if resolution is None:
+        return True
+    width, height = int(resolution[0]), int(resolution[1])
+    if width < _NVENC_MIN_RESOLUTION[0] or height < _NVENC_MIN_RESOLUTION[1]:
+        logger.debug(
+            "NVENC skipped: %dx%d is below the %dx%d floor; encoding in software",
+            width,
+            height,
+            *_NVENC_MIN_RESOLUTION,
+        )
+        return False
+    if width % 2 or height % 2:
+        logger.debug(
+            "NVENC skipped: %dx%d has an odd side; encoding in software",
+            width,
+            height,
+        )
+        return False
+    return True
+
+
 #: NVENC refuses to open an encoder below its minimum frame dimension (a
 #: 64x64 canary fails outright on current drivers), so the test encode uses a
 #: size any real render clears but that still costs nothing.
@@ -82,6 +113,7 @@ def select_video_encoder(
     codec: str | None,
     ffmpeg_params: list[str] | None,
     transparent: bool,
+    resolution: tuple[int, int] | None = None,
 ) -> tuple[str | None, list[str] | None]:
     """Pick the codec and FFmpeg parameters a ``save_video`` render encodes with.
 
@@ -110,6 +142,12 @@ def select_video_encoder(
         those flags would fail or change meaning under NVENC.
     transparent
         Whether the output carries alpha; such output is returned untouched.
+    resolution
+        The output's ``(width, height)`` in pixels, when known. NVENC refuses
+        frames below its minimum dimensions and odd-sized 4:2:0 frames, and a
+        refused encoder leaves an empty file behind, so an output under
+        ``_NVENC_MIN_RESOLUTION`` or with an odd side is encoded in software
+        whatever the mode says. ``None`` skips the check.
     """
     # An explicit codec is the caller's decision, whatever it says, and
     # transparent output (.mov/.png) keeps today's behaviour untouched.
@@ -126,7 +164,7 @@ def select_video_encoder(
     ):
         return _SOFTWARE_CODEC, list(ffmpeg_params)
 
-    if _use_nvenc():
+    if _use_nvenc() and _nvenc_accepts(resolution):
         if ffmpeg_params is None:
             return _NVENC_CODEC, list(_NVENC_FFMPEG_PARAMS)
         # Neutral caller parameters (container/mux flags, say) ride along;
