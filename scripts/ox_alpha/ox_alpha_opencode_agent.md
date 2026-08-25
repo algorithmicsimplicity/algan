@@ -647,19 +647,6 @@ survive only because pre-existing code happened to declare them
 unconditionally. It also caught its own test bug mid-round (the first draft
 forgot to apply its parametrized settings) and reported it unprompted.
 
-Two smaller things:
-
-- **It flags the specialisations its own test does not compile.** Its report
-  named `sec_aa > 1` as an uncompiled variant of both fans. That is exactly the
-  fifth-task pattern of honest gap-disclosure, and it was right to flag it —
-  my acceptance harness renders at `anti_alias_level 3` and covers it, but
-  nothing in its own work did.
-- **A prompt that says "do not run renders or suites, I will" is respected
-  literally**, and is the right instruction when you need the machine. It ran
-  only the two commands the brief named. Budget your own render time around
-  that rather than hoping it will measure things for you — it will not, and per
-  §4 it is weak at designing the experiment anyway.
-
 **UPDATE: REVIEW FROM A NINTH TASK (mirror/transmitted-lobe fix, 2026-08-24)**
 
 Two runs landed, both `--variant max`, both from a file: a read-only audit of

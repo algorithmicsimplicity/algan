@@ -4,6 +4,9 @@ on:
     branches: [master, stable]
   pull_request:
     branches: [master, stable]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
   lock_file:
     runs-on: ubuntu-latest

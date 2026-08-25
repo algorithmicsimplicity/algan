@@ -5,7 +5,7 @@ Treat the source code as authoritative.
 
 Algan is in private beta and deliberately carries **no compatibility aliases for its own API**: there is exactly one Algan name for each Algan thing. If you find a second spelling of an Algan API, that is a bug to remove, not a surface to preserve.
 
-The Manim compatibility layer is the one deliberate exception, and it is a separate surface rather than a second spelling of Algan's. `Mobject = Mob`, `GenericGraph = Graph`, `install_opengl_aliases()` and the wrapper classes in `algan/mobs/manim_compat.py`, `manim_parity.py`, `opengl_compat.py` and `point_cloud.py` exist so a Manim script keeps working under the names its author already wrote; they are exported and supported. The rule to apply: never add an Algan-side alias for an Algan name, and never delete a Manim-side name merely because it duplicates one.
+The Manim compatibility layer is the one deliberate exception, and it is a separate surface rather than a second spelling of Algan's. `Mobject = Mob`, `GenericGraph = Graph`, `install_opengl_aliases()` and the wrapper classes in `../algan/mobs/manim_compat.py`, `manim_parity.py`, `opengl_compat.py` and `point_cloud.py` exist so a Manim script keeps working under the names its author already wrote; they are exported and supported. The rule to apply: never add an Algan-side alias for an Algan name, and never delete a Manim-side name merely because it duplicates one.
 
 ## Project overview
 
@@ -17,7 +17,7 @@ Algan is a lazy animation system. User code records scene state, animated functi
 
 Run commands from the repository root.
 
-Use the repository virtual environment rather than system Python. Commands on this page are written as `<venv-python>`; **`CLAUDE.md` defines the per-platform interpreter path** and is the only place it is written down.
+Use the repository virtual environment rather than system Python.
 
 `uv run python` resolves the right one on every platform.
 
@@ -26,26 +26,26 @@ Use the repository virtual environment rather than system Python. Commands on th
 ### Tests
 
 ```text
-<venv-python> -m pytest -q --fast
-<venv-python> -m pytest -q
+uv run -m pytest -q --fast
+uv run -m pytest -q
 ```
 
-The first command is the development loop and the one to run after every change. It is **opt-in and hand-curated**: only tests marked `fast` run, everything else is deselected, and the set is 191 tests covering the timeline, Mob transforms and hierarchy, the Scene, `SETTINGS`, the public authoring surface, plus one pixel-compared render under `tests/fast/`. It reports where it landed against a 75 s budget when it finishes. Treat that report as meaningless until the third consecutive run — any change touching a kernel makes the first run pay a cold Taichi compile. The second command is everything, about twelve minutes, and adds the six dense render scenes under `tests/full_renders/` plus every per-feature and per-subsystem test. Run it after touching the renderer and before pushing.
+The first command is the development loop and the one to run after every change. It is **opt-in and hand-curated**: only tests marked `fast` run, everything else is deselected, and the set is 191 tests covering the timeline, Mob transforms and hierarchy, the Scene, `SETTINGS`, the public authoring surface, plus one pixel-compared render under `../tests/fast`. It reports where it landed against a 75 s budget when it finishes. Treat that report as meaningless until the third consecutive run — any change touching a kernel makes the first run pay a cold Taichi compile. The second command is everything, about twelve minutes, and adds the six dense render scenes under `../tests/full_renders` plus every per-feature and per-subsystem test. Run it after touching the renderer and before pushing.
 
-A new test is unmarked, and therefore outside the fast suite, unless a change *elsewhere* in the codebase is liable to break it. There is no `slow` marker: it used to mean "outside the fast suite", which is now the default. Note that Taichi's cost is per kernel variant and is charged to whichever test reaches that variant first, so admitting one test of a group can pull in the whole variant's compile cost. `tests/README.md` holds the full membership table, the rule for marking, the re-baselining commands and the rules for editing the fast scene.
+A new test is unmarked, and therefore outside the fast suite, unless a change *elsewhere* in the codebase is liable to break it. There is no `slow` marker: it used to mean "outside the fast suite", which is now the default. Note that Taichi's cost is per kernel variant and is charged to whichever test reaches that variant first, so admitting one test of a group can pull in the whole variant's compile cost. `../tests/README.md` holds the full membership table, the rule for marking, the re-baselining commands and the rules for editing the fast scene.
 
-Both render suites compare rendered pixels against expected CPU or CUDA baselines in their own directory, through one shared fixture in `tests/conftest.py`. Small platform-dependent pixel differences are tolerated. Legitimate renderer changes may require deliberate baseline updates.
+Both render suites compare rendered pixels against expected CPU or CUDA baselines in their own directory, through one shared fixture in `../tests/conftest.py`. Small platform-dependent pixel differences are tolerated. Legitimate renderer changes may require deliberate baseline updates.
 
 Do not run multiple render tests concurrently on Windows. Killed render processes can leave child processes alive and output files locked.
 
 ### Documentation
 
 ```text
-<venv-python> docs/make_and_open_docs.py
-<venv-python> docs/make_and_open_docs.py --skip-examples --no-open
+uv run python docs/make_and_open_docs.py
+uv run python docs/make_and_open_docs.py --skip-examples --no-open
 ```
 
-The normal Sphinx build renders embedded examples and is therefore slow. Use `--skip-examples` for structural/autodoc checks that do not need fresh videos. Documentation source is under `docs/source/`. Checked-in API stubs under `docs/source/reference/` must be kept consistent with public modules, classes, and methods.
+The normal Sphinx build renders embedded examples and is therefore slow. Use `--skip-examples` for structural/autodoc checks that do not need fresh videos. Documentation source is under `../docs/source`. Checked-in API stubs under `../docs/source/reference` must be kept consistent with public modules, classes, and methods.
 
 Use `Scene.save_video(file_path, video_settings)` and `Scene.save_frame(file_path, video_settings)` in new examples; the settings argument is positional, so `Scene.save_video("my_video", HD)` is the form the tutorials teach.
 
@@ -58,7 +58,7 @@ uv build
 uv publish
 ```
 
-Bump the package version in `pyproject.toml` before publishing when that file is present in the checkout.
+Bump the package version in `../pyproject.toml` before publishing when that file is present in the checkout.
 
 ### Ruff
 
@@ -125,7 +125,7 @@ This dual binding is a convenience layer, not a reason to hide Scene ownership i
 
 ## Animation and timeline architecture
 
-The animation implementation lives under `algan/animation_timeline/` and the animatable/mob base implementation lives under `algan/animatable_base/`.
+The animation implementation lives under `../algan/animation_timeline` and the animatable/mob base implementation lives under `../algan/animatable_base`.
 
 Each Scene's `TimelineManager` owns all recorded animation data for mobs in that Scene:
 
@@ -169,7 +169,7 @@ Parent changes normally propagate to descendants through batched timeline row op
 
 One Mob can stand for many logical objects. Its animatable attributes carry one row per member, its components carry a block of rows per member, and `parent_batch_sizes` maps between the two. `Mob.__getitem__` slices that map to produce a **view** sharing the pack's id, rows and lifespan; `BatchedMobViewSequence` presents those views as a sequence.
 
-Two ways in, differing only in when the packing happens. `from_batches` on a class that can build its geometry for many objects at once (`BezierCircuitCubic`, `Surface`) never constructs the per-member Mobs; `batch_mobs` packs Mobs that already exist. Both are built on `pack_animatable_rows` (the pack itself, one row per member) and `pack_member_rows` (a component, a block of rows per member) in `algan/utils/mob_utils.py`, and both write through `_setattr_and_rebatch_without_record`, so they are valid only on fresh history.
+Two ways in, differing only in when the packing happens. `from_batches` on a class that can build its geometry for many objects at once (`BezierCircuitCubic`, `Surface`) never constructs the per-member Mobs; `batch_mobs` packs Mobs that already exist. Both are built on `pack_animatable_rows` (the pack itself, one row per member) and `pack_member_rows` (a component, a block of rows per member) in `../algan/utils/mob_utils.py`, and both write through `_setattr_and_rebatch_without_record`, so they are valid only on fresh history.
 
 Two invariants are easy to break and hard to see:
 
@@ -191,7 +191,7 @@ Important mob implementations include:
 - `PointCloud`/point-cloud mobs;
 - Manim compatibility wrappers and conversion helpers.
 
-A Bezier circuit is resolved against its own plane, so its control points are projected onto that plane when the geometry is built — the identity for a shape that is genuinely planar, a different shape for one that is not. `algan/mobs/nonplanar_circuit.py` classifies every circuit once, in `BezierCircuitCubic.__init__`, per sub-path (so a packed circuit is judged on its members, not on their non-planar union): planar circuits are untouched and keep the analytic path; a non-planar **filled** one renders each closed sub-path as logical PN patches, the same primitive `Surface` produces; a non-planar **unfilled** one is split into near-straight runs, each its own circuit whose plane is turned to face the camera about the run's axis (which is what stops a 3-D path's stroke vanishing wherever its osculating plane goes edge-on). The plan is topology only — geometry is rebuilt from the live control points every batch, so animation and transforms follow — but the *decision* is fixed at construction, exactly as the circuit's plane is. `batch_mobs` clones its first member before packing the rest, so anything derived from geometry at construction must be redone in `_after_repack()`; `from_batches` needs no hook because the constructor already sees every member. `ALGAN_NONPLANAR_CIRCUITS=0` restores the flattening.
+A Bezier circuit is resolved against its own plane, so its control points are projected onto that plane when the geometry is built — the identity for a shape that is genuinely planar, a different shape for one that is not. `../algan/mobs/nonplanar_circuit.py` classifies every circuit once, in `BezierCircuitCubic.__init__`, per sub-path (so a packed circuit is judged on its members, not on their non-planar union): planar circuits are untouched and keep the analytic path; a non-planar **filled** one renders each closed sub-path as logical PN patches, the same primitive `Surface` produces; a non-planar **unfilled** one is split into near-straight runs, each its own circuit whose plane is turned to face the camera about the run's axis (which is what stops a 3-D path's stroke vanishing wherever its osculating plane goes edge-on). The plan is topology only — geometry is rebuilt from the live control points every batch, so animation and transforms follow — but the *decision* is fixed at construction, exactly as the circuit's plane is. `batch_mobs` clones its first member before packing the rest, so anything derived from geometry at construction must be redone in `_after_repack()`; `from_batches` needs no hook because the constructor already sees every member. `ALGAN_NONPLANAR_CIRCUITS=0` restores the flattening.
 
 Shader/material setup that changes primitive layout or registers shader parameters must occur before spawning unless the implementation explicitly supports timeline-safe mutation. Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, and related classes) rather than restoring removed ad-hoc reflectivity/roughness APIs.
 
@@ -211,7 +211,7 @@ scene.save_frame(file_path=None, video_settings=None, at=None, *,
 
 Both return a `RenderResult` (`status`, `output_path`, `duration_seconds`, `render_plan`). `save_frame` returns a list of them only when `at` is a sequence.
 
-`render_plan` is the last batch's `RenderPlan`, also left on `scene.last_render_plan`: which renderer ran, what it could not honor, and `truncations` — a `TruncationCounts` of how often each of the render path's four fixed ceilings bound (`algan/rendering/raytracing/truncation.py`). Those counters are unconditional and render-job-scoped, so a zero is a reading rather than a missing instrument, and each ceiling warns **once per render** at `WARNING` — not `PERF`, which is for the budget events (batch splits, pool retries) that are the memory model working as designed. A truncation moves the image.
+`render_plan` is the last batch's `RenderPlan`, also left on `scene.last_render_plan`: which renderer ran, what it could not honor, and `truncations` — a `TruncationCounts` of how often each of the render path's four fixed ceilings bound (`../algan/rendering/raytracing/truncation.py`). Those counters are unconditional and render-job-scoped, so a zero is a reading rather than a missing instrument, and each ceiling warns **once per render** at `WARNING` — not `PERF`, which is for the budget events (batch splits, pool retries) that are the memory model working as designed. A truncation moves the image.
 
 ### Output-path resolution
 
@@ -311,7 +311,7 @@ The old `COMPUTING_DEFAULTS`, `DIRECTORY_DEFAULTS`, `STYLE_DEFAULTS` and `RENDER
 
 ## Rendering pipeline
 
-The render loop is implemented in `algan/render_loop.py` as `RenderLoopMixin`, mixed into `Scene`. It is responsible for:
+The render loop is implemented in `../algan/render_loop.py` as `RenderLoopMixin`, mixed into `Scene`. It is responsible for:
 
 - choosing frame windows according to animation and render memory budgets;
 - materializing the Scene timeline at frame times;
@@ -327,7 +327,7 @@ The render loop is implemented in `algan/render_loop.py` as `RenderLoopMixin`, m
 
 ### Scene merge and acceleration structures
 
-`algan/rendering/raytracing/scene_builder.py` packs projected primitives into contiguous tensor arrays grouped by geometry type and builds the corresponding spatio-temporal acceleration structures. The merged dictionary is the contract consumed by the tracer orchestration and Taichi kernels.
+`../algan/rendering/raytracing/scene_builder.py` packs projected primitives into contiguous tensor arrays grouped by geometry type and builds the corresponding spatio-temporal acceleration structures. The merged dictionary is the contract consumed by the tracer orchestration and Taichi kernels.
 
 Do not casually change merged-field widths, ordering, dtype, or lifetime. Those changes affect memory estimators, arena preflight, kernel signatures, projection/merge paths, and potentially cached Taichi variants.
 
@@ -338,9 +338,9 @@ Do not casually change merged-field widths, ordering, dtype, or lifetime. Those 
 - `samples_per_pixel == 1` selects the deterministic wavefront renderer. It uses bounded primary-ray tiles, traversal, shading, compaction, compositing, and a shared continuation pool for reflective/refractive splits. Tile overflow is retried with fewer primaries rather than approximated.
 - `samples_per_pixel > 1` selects the Monte Carlo path-tracing megakernel. Some deterministic-only features are rejected or handled according to the unsupported-feature policy.
 
-The deterministic renderer resolves primary visibility through the sheet route (`algan/rendering/raytracing/DESIGN_sheet_resolve.md`) when the batch qualifies: exact analytic-coverage fragments are emitted for flat triangles and Bezier circuits, compacted on the host into per-pixel depth-banded sheets (`sheets.py`), and resolved/shaded — shadow events included — by the one kernel body in `sheet_resolve_taichi.py`, while reflection/refraction continuations remain in the ray-based wavefront system. It is the only analytic-coverage resolve; batches the route rejects (analytic AA off, transparent background with an env map, SPP > 1, route toggles off) render through the classic supersampled wavefront. `analytic_raster_route_active` in `tracer.py` is the single host-side route decision shared by allocation planning and rendering. Do not describe the current renderer as either a pure rasterizer or a pure one-primary-ray-per-pixel tracer.
+The deterministic renderer resolves primary visibility through the sheet route (`../algan/rendering/raytracing/DESIGN_sheet_resolve.md`) when the batch qualifies: exact analytic-coverage fragments are emitted for flat triangles and Bezier circuits, compacted on the host into per-pixel depth-banded sheets (`sheets.py`), and resolved/shaded — shadow events included — by the one kernel body in `sheet_resolve_taichi.py`, while reflection/refraction continuations remain in the ray-based wavefront system. It is the only analytic-coverage resolve; batches the route rejects (analytic AA off, transparent background with an env map, SPP > 1, route toggles off) render through the classic supersampled wavefront. `analytic_raster_route_active` in `tracer.py` is the single host-side route decision shared by allocation planning and rendering. Do not describe the current renderer as either a pure rasterizer or a pure one-primary-ray-per-pixel tracer.
 
-The classes under `algan/rendering/primitives/` are still used for primitive construction and batching. They are not a separate supported legacy raster backend. New renderer work belongs in the active raytracing/hybrid pipeline unless a deliberate new backend is being introduced through the registries.
+The classes under `../algan/rendering/primitives` are still used for primitive construction and batching. They are not a separate supported legacy raster backend. New renderer work belongs in the active raytracing/hybrid pipeline unless a deliberate new backend is being introduced through the registries.
 
 ### Materials and fragment pipelines
 
@@ -372,8 +372,8 @@ Taichi kernel work has several repository-specific hazards:
 
 - The offline cache does not reliably invalidate when an imported `@ti.func` changes. Clear it before trustworthy A/B tests of kernel-source edits with `clear_cache(taichi_kernels=True)`.
 - Never edit `*_taichi.py` while a render is running. The JIT can compile mixed old/new source.
-- The render daemon restarts itself after any Algan source change: it fingerprints every `.py` under `algan/` at startup, re-checks at each run launch, and refuses the run and shuts down if anything differs, so the script runs in a fresh process with the edited code. No hand restart, but the cold start (and, for kernel edits, a full recompile) is still paid. See `DESIGN_daemon_lifecycle.md`.
-- The daemon also refuses a run whose *import-time* environment differs from the one it imported algan with (`_IMPORT_TIME_VARIABLES` in `algan/environment.py`), because those values are already module-level defaults by then: a script setting a renderer toggle before its own `import algan` would otherwise be served with the daemon's value. Live variables are swapped in per run and can be changed mid-script. When a run ends the daemon resets its state and hands the render's GPU memory back to the driver (`gc.collect()` + `torch.cuda.empty_cache()`), so an idle daemon holds the warm process and nothing else; `ALGAN_DAEMON_RELEASE_MEMORY=0` opts out.
+- The render daemon restarts itself after any Algan source change: it fingerprints every `.py` under `../algan` at startup, re-checks at each run launch, and refuses the run and shuts down if anything differs, so the script runs in a fresh process with the edited code. No hand restart, but the cold start (and, for kernel edits, a full recompile) is still paid. See `DESIGN_daemon_lifecycle.md`.
+- The daemon also refuses a run whose *import-time* environment differs from the one it imported algan with (`_IMPORT_TIME_VARIABLES` in `../algan/environment.py`), because those values are already module-level defaults by then: a script setting a renderer toggle before its own `import algan` would otherwise be served with the daemon's value. Live variables are swapped in per run and can be changed mid-script. When a run ends the daemon resets its state and hands the render's GPU memory back to the driver (`gc.collect()` + `torch.cuda.empty_cache()`), so an idle daemon holds the warm process and nothing else; `ALGAN_DAEMON_RELEASE_MEMORY=0` opts out.
 - Cold compilation can take minutes and separate renderer routes may compile separate megakernels.
 - `ALGAN_TI_DEBUG=1` is for debugging only and severely reduces performance.
 - Prefer `ti.static(bool(template_value))` for template gates rather than Python identity tests such as `is not None` inside kernel code.
@@ -393,7 +393,7 @@ For performance changes:
 - record render route and relevant live settings;
 - validate output parity before accepting a speedup.
 
-Use focused parity/benchmark scripts under `benchmarks/` when present. The default path should remain output-compatible unless the change intentionally modifies rendering. If adding an experimental optimization, provide a kill switch and keep capability checks, memory estimation, and fallback behavior coherent.
+Use focused parity/benchmark scripts under `../benchmarks` when present. The default path should remain output-compatible unless the change intentionally modifies rendering. If adding an experimental optimization, provide a kill switch and keep capability checks, memory estimation, and fallback behavior coherent.
 
 ### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
 
@@ -465,7 +465,7 @@ Do not add a second spelling for something that already has a name. If a rename 
 
 `from algan import *` is the documented entry point, so `algan.__all__` is effectively the public surface. `algan/__init__.py` builds it from a rule plus two deny-lists (`_INTERNAL_EXPORT_MODULES`, `_INTERNAL_EXPORT_NAMES`) and one allow-list (`_EXTRA_EXPORTS`). Generic helper names must not leak: `mean`, `interpolate`, `offset`, `shuffle`, `broadcast*`, `traverse`, `squish` and friends would shadow whatever the user imported before Algan.
 
-When you add a name, decide which side it is on. Public mobs, animations, contexts, materials, shaders, constants and settings belong in the namespace; tensor utilities, mixins, primitive builders, registries and dev tooling do not. `tests/unit_tests/test_ux_regressions.py` asserts both directions.
+When you add a name, decide which side it is on. Public mobs, animations, contexts, materials, shaders, constants and settings belong in the namespace; tensor utilities, mixins, primitive builders, registries and dev tooling do not. `../tests/unit_tests/test_ux_regressions.py` asserts both directions.
 
 When changing a public class, method, setting, material field, or render argument:
 
@@ -476,30 +476,30 @@ When changing a public class, method, setting, material field, or render argumen
 
 ## Vendored code
 
-`algan/external_libraries/` contains vendored Manim, ground, and sect code. Treat it as read-only unless the task specifically requires a vendored patch and the consequences are understood. Prefer adapters and compatibility code in Algan-owned modules.
+`../algan/external_libraries` contains vendored Manim, ground, and sect code. Treat it as read-only unless the task specifically requires a vendored patch and the consequences are understood. Prefer adapters and compatibility code in Algan-owned modules.
 
 ## Repository map
 
-- `algan/scene.py` — Scene container, active-scene method binding, still/video entry points, reset and Scene-owned manager construction.
-- `algan/scene_manager.py` — singleton active-Scene stack and lazy default Scene.
-- `algan/render_loop.py` — materialization-to-frame pipeline, batching, prefetch, memory preflight, and video streaming.
-- `algan/animation_timeline/` — animation contexts, per-Scene timeline, attribute timelines, event replay, and updater materialization.
-- `algan/animatable_base/` — `Animatable`, `Mob`, hierarchy, transforms/layout, material support, and morphing.
-- `algan/animations/` — built-in composable animations.
-- `algan/mobs/` — shapes, text, surfaces, meshes/models, plots, point clouds, groups, and compatibility mobs.
-- `algan/rendering/raytracing/` — scene merge, STBVHs, hybrid primary rasterization, deterministic wavefront kernels, Monte Carlo kernels, shading, and renderer settings compatibility.
-- `algan/rendering/shaders/` — material classes, material shaders, PBR shaders, and fragment pipelines.
-- `algan/rendering/post_processing/` — bloom, anti-aliasing, tonemapping, and post-process memory estimation.
-- `algan/rendering/primitives/` — primitive construction/batching bases used by the active renderer.
-- `algan/rendering/camera.py` and `lights.py` — Scene-owned camera and light mobs.
-- `algan/settings/` — `SETTINGS` sections, presets, and startup-only environment configuration.
-- `algan/sound/` — Scene-owned audio manager and audio effects.
-- `algan/utils/` — memory arena, profiling, file/audio helpers, Taichi warm-start/fast-launch patches, and development utilities.
-- `algan/daemon.py` — warm-process scene-script rerender daemon with Scene/settings reset between runs.
-- `algan/external_libraries/` — vendored dependencies; normally do not modify.
-- `tests/` — render regression and behavior tests when included in the checkout.
-- `benchmarks/` — targeted profiling, A/B, and output-parity scripts when included.
-- `docs/` — Sphinx documentation and rendered examples.
+- `../algan/scene.py` — Scene container, active-scene method binding, still/video entry points, reset and Scene-owned manager construction.
+- `../algan/scene_manager.py` — singleton active-Scene stack and lazy default Scene.
+- `../algan/render_loop.py` — materialization-to-frame pipeline, batching, prefetch, memory preflight, and video streaming.
+- `../algan/animation_timeline` — animation contexts, per-Scene timeline, attribute timelines, event replay, and updater materialization.
+- `../algan/animatable_base` — `Animatable`, `Mob`, hierarchy, transforms/layout, material support, and morphing.
+- `../algan/animations` — built-in composable animations.
+- `../algan/mobs` — shapes, text, surfaces, meshes/models, plots, point clouds, groups, and compatibility mobs.
+- `../algan/rendering/raytracing` — scene merge, STBVHs, hybrid primary rasterization, deterministic wavefront kernels, Monte Carlo kernels, shading, and renderer settings compatibility.
+- `../algan/rendering/shaders` — material classes, material shaders, PBR shaders, and fragment pipelines.
+- `../algan/rendering/post_processing` — bloom, anti-aliasing, tonemapping, and post-process memory estimation.
+- `../algan/rendering/primitives` — primitive construction/batching bases used by the active renderer.
+- `../algan/rendering/camera.py` and `lights.py` — Scene-owned camera and light mobs.
+- `../algan/settings` — `SETTINGS` sections, presets, and startup-only environment configuration.
+- `../algan/sound` — Scene-owned audio manager and audio effects.
+- `../algan/utils` — memory arena, profiling, file/audio helpers, Taichi warm-start/fast-launch patches, and development utilities.
+- `../algan/daemon.py` — warm-process scene-script rerender daemon with Scene/settings reset between runs.
+- `../algan/external_libraries` — vendored dependencies; normally do not modify.
+- `../tests` — render regression and behavior tests when included in the checkout.
+- `../benchmarks` — targeted profiling, A/B, and output-parity scripts when included.
+- `../docs` — Sphinx documentation and rendered examples.
 
 ## Canonical authoring examples
 

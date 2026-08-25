@@ -2,13 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-`AGENTS_DETAILED.md` is the detailed architecture and contract reference. This file is the
+**if you are running on Claude Code Cloud then you must also read agent_guidance/CLAUDE_CLOUD.md**
+
+`agent_guidance/AGENTS_DETAILED.md` is the detailed architecture and contract reference. This file is the
 operational quick-start: commands, hazards, and the API shape. When the two
 disagree, the source code wins, then AGENTS_DETAILED.md.
 
 ## Project Overview
 
-Algan is a 3D animation engine for explanatory math videos, designed as a successor to Manim: it keeps Manim's ease of use while providing the 3D graphics capabilities of Three.js. It uses PyTorch for animation math and custom Taichi kernels for GPU ray-traced rendering. Algan produces the animations in AlgorithmicSimplicity videos.
+Algan is a 3D animation engine for explanatory math videos, designed as a successor to Manim: it keeps Manim's ease of use while providing the 3D graphics capabilities of Three.js. It uses PyTorch for animation math and custom Taichi kernels for GPU ray-traced rendering.
 
 Algan is **lazy**: running a user script does not compute animations, it *records*
 them on the Scene's timeline. `Scene.save_video()` materializes that recording in
@@ -17,45 +19,17 @@ batches of frames, builds render primitives, and renders them.
 ## Commands
 
 ### Running Python
-Always use the local venv; the default system Python lacks taichi and the other pinned dependencies.
 
-**This is the one place the interpreter path is written down.** Commands in this
-file, `AGENTS_DETAILED.md`, `tests/README.md` and the design docs
-are all written as `<venv-python>` — substitute your platform's:
+use `uv run python`
 
-| Platform | `<venv-python>` |
-| --- | --- |
-| Linux / macOS | `.venv/bin/python` |
-| Windows | `.venv\Scripts\python.exe` |
-
-`uv run python` works on every platform if you would rather not think about it.
-
-(The published contributor guide, `docs/source/contributing/development.rst`,
-repeats the paths deliberately: outside contributors read it without this file.
-It is the only other copy — keep the two in step.)
-
-### Cloud sessions (Claude Code on the web)
-A cloud session is a fresh Ubuntu 24.04 VM, **4 vCPUs / 16 GB RAM / 30 GB disk**, with no GPU and nothing installed beyond the base image. `.claude/hooks/session-start.sh` provisions it before you get control: apt build/LaTeX/ffmpeg packages, then `uv sync --locked --all-extras --dev`. It is a no-op on a local checkout. If a build or a Tex test fails with missing headers or a missing `latex`, read that script first — the environment is probably mid-provision or the apt step warned and continued.
-
-What is different here, and what it means for what you can conclude:
-- **No GPU.** `_auto_render_device` falls back to CPU and everything works, just slower. Renders and the suite both pass.
-- **`tests/fast`'s pixel comparison does run here; `tests/full_renders`' does not usefully.** Both `expected_outputs_cpu/` and `expected_outputs_cuda/` are committed (7 files each), so nothing skips for want of a baseline. But the two suites behave differently across machines, and the difference is measured, not assumed: on a GitHub runner the fast scene matched its CPU baseline *exactly*, while five of six full-render scenes missed by 29–204 channel values against a tolerance of 2. The full-render baselines are per **machine**, not merely per device — `pn_criterion_kernel` runs under Taichi's `fast_math` and which tessellation levels sit on the borderline depends on the CPU evaluating the criterion. What matched is 2-D circuits and flat triangle meshes; what moved carries PN surfaces, shadows, refraction or glTF. So `test_full_render_scene` skips itself when `CI` is set (`ALGAN_RUN_FULL_RENDERS=1` overrides, on a machine whose baselines they are).
-- **What that means for a cloud session.** `tests/fast` genuinely validates a renderer change on the CPU path — treat a pass there as real. Do not treat `tests/full_renders` here as evidence either way unless you generated its baselines on this machine. CUDA-specific behaviour and CPU/CUDA divergence remain uncheckable, so a kernel change still wants a CUDA machine before it ships. And read the skip reasons rather than assuming a pass: a suite with no baseline directory for its device renders the scene and silently skips (`no <device> fast-suite baseline is available`).
-- **Re-baseline here only deliberately.** `ALGAN_UPDATE_*_BASELINE=1` writes `expected_outputs_cpu/` only — it cannot touch the CUDA set, which has to be regenerated on a CUDA machine, so a change that moves output needs *both* before it is complete. Never re-baseline to turn a red test green: confirm the visual change is the one you intended (diff videos land in the suite's `output_errors/`) and say in the commit why output moved. Judge "intended" against `expected_outputs_cuda/` when those are the fresher set — a correct CPU render moves *toward* the CUDA baseline frame by frame, even though it never reaches it.
-- **Render twice; baseline the second.** The first render on a fresh container populates the Manim Tex geometry cache, and its `MathTex` glyph antialiasing differs from every run after it — measured at 18 channel values over 100 frames of `text_and_media`, against a tolerance of 2. Baseline the cold run and the suite fails on the next run for no visible reason. `tests/README.md` has the measurement.
-- **`download.pytorch.org` is blocked** by the default Trusted network policy, so the CPU-only Torch wheels are unreachable and there is no CPU build of Torch on PyPI. The lockfile's CUDA build is installed instead (~5 GB of `nvidia-*` wheels) and runs fine on CPU. To avoid the download, set the environment's Network access to **Custom** at claude.ai/code, add `download.pytorch.org`, and keep "include default list of common package managers" checked.
-- **Watch the disk.** A full install lands around 12 GB of the 30 GB. `df` reports the allowance, not the machine, so "Avail 0" with low "Used" means the allowance is spent.
-
-Persistence: the container is ephemeral and nothing outside git survives it. Commit anything worth keeping. Repo-level config (`CLAUDE.md`, `.claude/settings.json`, the hook) is what carries over; the environment's own **setup script** and **environment variables**, configured in the environment dialog at claude.ai/code, persist separately and are snapshotted after their first run.
 
 ### Testing
 ```
-<venv-python> -m pytest -q --fast    # THE development loop: 191 curated tests
-<venv-python> -m pytest -q           # everything, ~12 min, before pushing
+uv run -m pytest -q --fast    # THE development loop: 191 curated tests
+uv run -m pytest -q           # everything, ~12 min, before pushing
 ```
 - **`--fast` is the suite to run after every change.** It is **opt-in**: only tests marked `fast` run, everything else is deselected. It prints where it landed against a 75s budget (`fast suite: 21s of its 75s budget (28%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
 - **A test you add is outside it unless you mark it.** Mark `fast` only when a change *elsewhere* in the codebase is liable to break the test — the timeline, the Mob base, the Scene, anything that records or materializes state. A test that only fails when its own module changes is a feature test: leave it unmarked. Being cheap is not a reason. `tests/README.md` lists what is in and why.
-- There is **no `slow` marker** any more — it meant "outside the fast suite", which is now every unmarked test.
 - What is in: the timeline (recording/replay/state query/materialization), lifespans, rate functions, Mob transforms + hierarchy + layout, Scene containment, `SETTINGS`, the public authoring surface (`test_ux_regressions.py`), and **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is most of the budget.
 - **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never un-mark a test off run 1 or 2.
 - Run the **full** suite after touching the renderer, and before pushing. It is also what CI runs: CI names `tests/unit_tests tests/fast` as paths and does *not* pass `--fast`, so everything portable runs there.
@@ -67,12 +41,9 @@ Persistence: the container is ephemeral and nothing outside git survives it. Com
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 
 ### Documentation
-- Build: `<venv-python> docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
+- Build: `uv run python docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
 - Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated.
 - **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
-
-### Building / Publishing
-- `uv build` from the project root; `uv publish` after bumping the version in pyproject.toml.
 
 ### Linting — read before running ruff
 - Ruff is configured with `fix = true`: a plain `ruff check` **rewrites files**. Use `ruff check --no-fix` unless you intend to apply fixes.
@@ -93,38 +64,6 @@ separate surface rather than a second spelling of Algan's: `Mobject = Mob`,
 working with the names its author already wrote. Those names are exported and
 supported. Do not add an Algan-side alias for an Algan name, and do not delete a
 Manim-side name because it duplicates one.
-
-`Scene.use_manim_defaults()` (`algan/manim_defaults.py`) is the *settings* half of
-that surface: it points a Scene's camera, field of view, lighting and background at
-Manim's own defaults so imported geometry lands on the pixels Manim would use.
-Three things in it are load-bearing and were each established by measurement, not
-by reading Manim's docs — `benchmarks/_manim_defaults_parity_check.py` is the
-experiment:
-- **fov 22.62 degrees at distance 20.** Manim's frame is 8 units tall and its
-  `ThreeDCamera` scales by `f / (f - z)` with `f = 20`, which is a pinhole eye 20
-  units from the frame plane. Manim's *2-D* camera is orthographic instead, but
-  the two agree exactly at `z = 0`, so one Algan perspective camera serves both.
-- **Tonemapping off.** This is now Algan's own default too (it was not when
-  `use_manim_defaults()` was written), so the call is belt-and-braces against a
-  Scene that turned it on. Off, a flat fill is byte-identical to Manim's — and
-  it stays that way under the linear working space, because decode-then-encode
-  with no arithmetic between is the identity. On, an authored white cannot
-  render 255: Khronos Neutral reserves headroom by mapping linear 1.0 to 0.869,
-  which lands white on 240 with the transfer function applied and 222 without.
-  `TONEMAP_FINDINGS.md` has the measurements and why the default moved.
-  What *does* diverge from Manim under the linear space is antialiased edges
-  and alpha compositing, which Cairo does in gamma space and Algan now does in
-  linear light; flat interiors are unaffected.
-- **The z mirror.** Manim's `OUT` is `+z` and Algan's is `-z`, so the two screen
-  bases are mirror images and no camera placement can reconcile them; the
-  geometry and the camera are both mirrored (`Scene.manim_coordinates`, read by
-  `ManimMob`). Flat `z = 0` geometry is unaffected, which is why the existing
-  Manim baselines did not move.
-
-Two known residuals, both Algan renderer conventions rather than settings: a
-*filled* circuit's border is drawn inside its path where Manim centres a stroke on
-it (half a stroke width — unfilled strokes match to ~0.3 px), and Manim shades a
-3-D face by a two-point gradient where Algan ray-traces.
 
 ```python
 from algan import *
@@ -186,7 +125,7 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 - Attribute changes on a parent propagate to children (the hierarchy is `children`/`components`; `Group.mobs` aliases `children`).
 - Shapes: 2D shapes (`shapes_2d.py`) and `Text`/`Tex` (`text.py`) are cubic bezier circuits (`bezier_circuit.py`); 3D shapes (`shapes_3d.py`) are triangle meshes via `Surface` (`surfaces/surface.py`); `ThreeDModelMob` (`three_d_models/`) imports .glb/.fbx; `ManimMob` wraps Manim mobjects.
 - **A circuit that is not flat does not get flattened.** Circuits are resolved against their own plane, so building their geometry projects the control points onto it. `algan/mobs/nonplanar_circuit.py` classifies each one at construction, per sub-path: planar (everything 2-D — unchanged, analytic path); non-planar + filled → each closed sub-path becomes logical PN patches, the same primitive `Surface` produces, which is how a Manim `Sphere` imports; non-planar + unfilled → split into near-straight runs, each its own circuit whose plane faces the camera about the run's axis, so a 3-D path keeps its position and a constant screen-space stroke. The decision is fixed at construction (like the plane itself); the geometry is rebuilt from live control points every batch. `ALGAN_NONPLANAR_CIRCUITS=0` restores flattening. `tests/unit_tests/test_nonplanar_circuits.py` is the guard.
-- **A Mob can be packed**: one Mob standing for N logical objects, with one attribute row per member and `parent_batch_sizes` mapping a component's row blocks back to them. `Text` packs its glyphs this way and a point cloud packs its dots. Build one with a class's `from_batches` (`BezierCircuitCubic`, `Surface` — never constructs the per-member Mobs) or with `batch_mobs` (packs Mobs that already exist). Index it (`pack[3]`) for a view sharing the pack's rows and lifespan; members therefore cannot spawn or despawn independently. See `AGENTS_DETAILED.md` for the two invariants that fail silently.
+- **A Mob can be packed**: one Mob standing for N logical objects, with one attribute row per member and `parent_batch_sizes` mapping a component's row blocks back to them. `Text` packs its glyphs this way and a point cloud packs its dots. Build one with a class's `from_batches` (`BezierCircuitCubic`, `Surface` — never constructs the per-member Mobs) or with `batch_mobs` (packs Mobs that already exist). Index it (`pack[3]`) for a view sharing the pack's rows and lifespan; members therefore cannot spawn or despawn independently. See `agent_guidance/AGENTS_DETAILED.md` for the two invariants that fail silently.
 - To be renderable, a mob defines `get_render_primitives()` returning flat triangles or cubic bezier circuits. Curved surfaces reach the renderer as *logical PN* patches diced to flat triangles per frame (`algan/rendering/logical_pn.py`); no curved-patch primitive exists in the renderer. A patch's dice is **per direction** — `2 ** level` rows fanning from one corner, each cut into at most `2 ** across` columns — so a direction the surface is flat along (a cylinder's length) costs one cell however finely the curved direction is cut. Equal levels are the uniform grid exactly. Both the construction grid (`geometry_tolerance`, per axis) and the render dice (per patch per frame) are chosen by measurement, and the render criteria stop at the logical surface's own accuracy rather than resolving the PN patch's error. The dice budget is the finer of two tolerances at the frame's resolution: `render_tolerance` (a fraction of frame height) and `render_tolerance_pixels` (an absolute pixel count, default 1.0, which is what binds from roughly 1080p up).
 - **A flat cap's rim is sized at construction, because nothing downstream can refine it.** A `Cylinder`'s end discs and a `Cone`'s base are `_CapDisc`s whose vertex normals are one constant, so the PN patch and its PN edge curves *are* the flat triangle and its straight chords. Every render-time criterion measures a diced triangle against the patch's **own** cubic, so all of them return zero at level 0 and whatever polygon the rim was built as is the polygon that ships. A body's ring count is only adequate because the body's PN patches curve back onto the true surface; a cap inherited that count without inheriting the credit that justified it, which is how a `Cylinder(radius=0.45)` cap rendered as a 14-gon 22.6x outside `geometry_tolerance` while the tube beside it stayed round. The disc now grows its rim in whole multiples of the body's ring until the chord polygon meets that tolerance — whole multiples so every one of the body's ring vertices stays a rim vertex. `tests/unit_tests/test_cap_disc_rim.py` is the guard, `benchmarks/_cap_rim_probe.py` renders it.
 - Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, ...) rather than ad-hoc reflectivity/roughness APIs.
