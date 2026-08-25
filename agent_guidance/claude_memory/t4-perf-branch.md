@@ -89,3 +89,6 @@ profiler hooks, DESIGN T4 section). Warm: PREVIEW 7.66 s, UHD 30.9 s. UHD GPU ti
 (torch.profiler, 6 frames): wavefront_shade 32%, raster_shadow_trace 16%,
 traverse_events 13.5%, torch sorts/copies/cats ~35%. Ox is on the sheet-chain torch
 passes (`scratch_perf/ox/brief_sheet_chain.md`, GPU gated by scratch_perf/gpu_gate.txt).
+Window release committed (d535361): peak VRAM PREVIEW 6.2 GB, UHD 6.5 GB (baselines 6.2 /
+8.4). Warm: PREVIEW ~7.7-8.5 s, UHD ~30.4 s. A stuck pytest process held 4 GB VRAM for
+a while and distorted r4-r6 measurements -- check `nvidia-smi` before timing anything.
