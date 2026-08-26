@@ -34,6 +34,13 @@ exits non-zero.
 ``ALGAN_DAEMON_CHILD=1`` is set by the daemon around its own execution of a
 script, and is what stops the handoff from recursing.
 
+**A script being debugged is never handed off** (:func:`debugger_name`). The
+daemon would execute it in a process no debugger is attached to, so every
+breakpoint in it would simply be skipped and the run would look like the
+debugger had failed. Setting ``ALGAN_USE_DAEMON=1`` explicitly overrides that,
+for the one arrangement where warm and debuggable are both true: a daemon that
+is *itself* running under the debugger. Both paths say which one they took.
+
 A run on the daemon is meant to be indistinguishable from a run in its own
 process, since with auto-start even a first run lands there. What the daemon
 reproduces: ``sys.argv``, the working directory, the full environment, stdout
@@ -269,14 +276,98 @@ def read_state():
     return state
 
 
+#: Modules that are only imported into a process something is debugging, most
+#: specific first: debugpy vendors pydevd, so a VS Code session has both and
+#: should be named after the one the user actually started. They are checked by
+#: name rather than by asking the debugger anything, because a debugged process
+#: does not always have a Python-level trace function: pydevd's frame-eval
+#: accelerator and, on 3.12+, ``sys.monitoring`` both leave ``sys.gettrace()``
+#: empty while breakpoints work perfectly well.
+_DEBUGGER_MODULES = (
+    ("debugpy", "debugpy (VS Code)"),
+    ("pydevd", "pydevd (PyCharm / PyDev)"),
+    ("ptvsd", "ptvsd"),
+)
+
+
+def debugger_name():
+    """Name what is debugging or tracing this process, or ``None`` if nothing is.
+
+    Three signals, cheapest and most specific first: a debugger's own module in
+    ``sys.modules``, a tool registered against ``sys.monitoring``'s debugger
+    slot (3.12+), and finally any Python-level trace function at all.
+
+    That last one is deliberately broad. It names ``pdb``, but it also names
+    ``coverage``, and a coverage run wants exactly the same treatment: whatever
+    is tracing this process is doing so to watch *these* frames, and the frames
+    the daemon runs are not these. Detection never raises -- an unrecognised
+    tracing tool costs one cold start, while an exception here would break an
+    ordinary import.
+    """
+    try:
+        for module, label in _DEBUGGER_MODULES:
+            if module in sys.modules:
+                return label
+        monitoring = getattr(sys, "monitoring", None)  # 3.12+
+        if monitoring is not None:
+            tool = monitoring.get_tool(monitoring.DEBUGGER_ID)
+            if tool:
+                return str(tool)
+        if sys.gettrace() is not None:
+            return "a tracing tool (sys.gettrace)"
+    except Exception:  # noqa: BLE001 -- never break an import over this
+        return None
+    return None
+
+
+def _declines_for_a_debugger():
+    """Whether a debugger attached here rules the handoff out. Explains itself.
+
+    The daemon executes the script in *its* process, which no debugger is
+    attached to, so a handoff silently swallows every breakpoint in the script
+    -- the run just completes. Since the whole point of the handoff is that it
+    is invisible, the only way a user can tell it is why their breakpoints
+    stopped working is if it says so.
+
+    An explicit ``ALGAN_USE_DAEMON=1`` still wins, for the workflow where the
+    *daemon* is the process under the debugger (see the render-daemon docs);
+    that case is announced too, so a session that hands off and hits no
+    breakpoint is not a mystery either way. Nothing is said when there was no
+    handoff to lose in the first place.
+    """
+    debugger = debugger_name()
+    if debugger is None:
+        return False
+    # Nothing to hand off to and nothing that would start one: the run was
+    # always going to be cold, so there is no handoff to explain away.
+    if not env_flag("ALGAN_AUTO_DAEMON", True) and read_state() is None:
+        return True
+    if env_flag("ALGAN_USE_DAEMON", False):
+        _warn(
+            f"{debugger} is watching this process, but ALGAN_USE_DAEMON=1 is "
+            "set, so this script is being handed to the render daemon anyway. "
+            "It executes there, so breakpoints in it are hit only if that "
+            "daemon is itself running under a debugger."
+        )
+        return False
+    _warn(
+        f"{debugger} is watching this process, so this script is running here "
+        "rather than on the render daemon, which would execute it in another "
+        "process where your breakpoints do not exist. This run pays the "
+        "startup cost the daemon exists to avoid. ALGAN_USE_DAEMON=1 forces "
+        "the handoff; ALGAN_USE_DAEMON=0 silences this."
+    )
+    return True
+
+
 def should_try(main_module=None):
     """Whether this process is an ordinary scene-script run worth handing off.
 
     Deliberately conservative: anything that is not plainly ``python foo.py``
-    -- a REPL, ``python -c``, a notebook, a test runner, the daemon's own
-    execution of a script -- runs in-process as before. A false positive would
-    silently reroute an unrelated process into a shared daemon, which is much
-    worse than a false negative costing one cold start.
+    -- a REPL, ``python -c``, a notebook, a test runner, a debugger session,
+    the daemon's own execution of a script -- runs in-process as before. A
+    false positive would silently reroute an unrelated process into a shared
+    daemon, which is much worse than a false negative costing one cold start.
     """
     if env_flag("ALGAN_DAEMON_CHILD", False):
         return False
@@ -300,7 +391,12 @@ def should_try(main_module=None):
     path = getattr(main_module, "__file__", None)
     if not isinstance(path, str) or not path.endswith(".py"):
         return False
-    return os.path.isfile(path)
+    if not os.path.isfile(path):
+        return False
+    # Last, because it is the one condition that explains itself out loud: a
+    # process that was never a handoff candidate must not be told why it is not
+    # being handed off.
+    return not _declines_for_a_debugger()
 
 
 def script_of(main_module=None):

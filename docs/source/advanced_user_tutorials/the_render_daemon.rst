@@ -16,6 +16,8 @@ Either way, the start-up cost is paid once and every later run begins rendering
 almost immediately.
 
 Nothing is required of you to get this. A plain ``python scene.py`` uses it.
+Running a script under a debugger is the one case where the daemon deliberately
+steps aside, so that your breakpoints still work; see `Debugging a scene`_.
 
 How the handoff works
 =====================
@@ -218,6 +220,61 @@ Variables read *live* are unaffected: the client's environment is swapped in for
 the run, so flipping one between two renders inside a script works warm exactly
 as it does cold. See :doc:`settings` for the two categories.
 
+Debugging a scene
+=================
+
+**A script you are debugging is never handed to the daemon.** Your debugger is
+attached to *your* process; the daemon would run the script in *its* process,
+where your breakpoints do not exist, so the run would sail past every one of them
+and finish -- looking for all the world like the debugger had stopped working.
+
+So when Algan sees that something is debugging the process, it declines the
+handoff, runs the script in your own process, and says so once:
+
+.. code-block:: text
+
+    [algan] pydevd (PyCharm / PyDev) is watching this process, so this script is
+    running here rather than on the render daemon, which would execute it in another
+    process where your breakpoints do not exist. This run pays the startup cost the
+    daemon exists to avoid. ALGAN_USE_DAEMON=1 forces the handoff;
+    ALGAN_USE_DAEMON=0 silences this.
+
+Debug runs therefore pay the start-up cost again. Nothing else about them
+changes, and no daemon is started in the background either.
+
+What counts as debugging: pydevd (PyCharm and PyDev, and VS Code through
+debugpy), debugpy, ptvsd, a debugger registered against ``sys.monitoring`` on
+Python 3.12 and later, ``pdb``, and -- deliberately -- anything else that has
+installed a Python trace function, ``coverage`` included. They all want to watch
+the frames of *this* process, and the frames the daemon runs are not these.
+
+Keeping the daemon and your breakpoints
+---------------------------------------
+
+There is one arrangement where a run is warm *and* debuggable: debug the daemon
+rather than the script. Launch ``python -m algan.daemon`` under your IDE's
+debugger -- in PyCharm, a run configuration whose target is the module
+``algan.daemon``, started with Debug -- and then run your scenes normally from a
+terminal. The daemon executes each client's script on its own main thread, from
+the script's real path, so breakpoints you set in the scene file (and in Algan
+itself) are hit inside the debugged daemon and suspend it in the IDE, while the
+script's output still streams back to the terminal you launched it from.
+
+Worth knowing before you set this up:
+
+* Your IDE, not the terminal, is where a suspended run lives -- and the script
+  still has no stdin, as on any daemon run.
+* Tracing costs the daemon speed for as long as the session lasts -- Algan's
+  per-frame Python work runs under the debugger's tracer, though the Taichi
+  kernels themselves are unaffected.
+* The daemon is single-threaded for runs, so a script suspended at a breakpoint
+  queues every other script launched against it.
+* Editing Algan's own source still shuts the daemon down (see above), which ends
+  the debug session with it; start it again from the IDE.
+* A script launched from the debugger *as well* declines the handoff, as
+  described above. Set ``ALGAN_USE_DAEMON=1`` for it to force the handoff into
+  the daemon your breakpoints are in.
+
 Turning it off
 ==============
 
@@ -231,6 +288,9 @@ Turning it off
      - Disable the handoff entirely, even when a daemon is running.
    * - ``ALGAN_AUTO_DAEMON=0``
      - Keep using a daemon that is already running, but never start a new one.
+   * - ``ALGAN_USE_DAEMON=1``
+     - Hand off even from a process under a debugger, which is otherwise
+       declined. For a daemon that is itself being debugged.
 
 Benchmarks in this repository set ``ALGAN_USE_DAEMON=0``, because a warm process
 also carries the previous run's adaptive renderer state -- which is exactly what
@@ -248,7 +308,8 @@ Environment variables
      - Meaning
    * - ``ALGAN_USE_DAEMON``
      - ``1``
-     - Use a daemon at all.
+     - Use a daemon at all. Set to ``1`` *explicitly* it also overrides the
+       refusal to hand off from a process under a debugger.
    * - ``ALGAN_AUTO_DAEMON``
      - ``1``
      - Start one when none is running.
