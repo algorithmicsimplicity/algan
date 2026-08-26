@@ -3,6 +3,23 @@
 This file gives coding agents the detailed repository-specific context needed to work safely and effectively on Algan.
 Treat the source code as authoritative.
 
+`../CLAUDE.md` is the operational quick-start — commands, hazards, and the API shape — and is always loaded. This file
+holds what is cross-cutting (Scene ownership, the repository map, release and Taichi/daemon mechanics) and indexes the
+topic references below. **Read only the topic file your task touches.** When the docs and the source disagree, the
+source wins.
+
+## Detail references
+
+| Touching | Read |
+| --- | --- |
+| `animation_timeline/`, recording, replay, materialization, updaters, audio | [`timeline.md`](timeline.md) |
+| `mobs/`, `animatable_base/`, packing, circuits, PN patches, tessellation | [`mobs_geometry.md`](mobs_geometry.md) |
+| `rendering/`, any `*_taichi.py`, shading, shadows, colour, post-processing | [`rendering.md`](rendering.md) |
+| `ManualMemory`, batch sizing, optimization work, A/B parity fixtures | [`memory_perf.md`](memory_perf.md) |
+| public names, `SETTINGS`, output paths, `ALGAN_` variables | [`api_settings.md`](api_settings.md) |
+
+Also in this directory: `CLAUDE_CLOUD.md` (read it if you are running on Claude Code Cloud).
+
 Algan is in private beta and deliberately carries **no compatibility aliases for its own API**: there is exactly one Algan name for each Algan thing. If you find a second spelling of an Algan API, that is a bug to remove, not a surface to preserve.
 
 The Manim compatibility layer is the one deliberate exception, and it is a separate surface rather than a second spelling of Algan's. `Mobject = Mob`, `GenericGraph = Graph`, `install_opengl_aliases()` and the wrapper classes in `../algan/mobs/manim_compat.py`, `manim_parity.py`, `opengl_compat.py` and `point_cloud.py` exist so a Manim script keeps working under the names its author already wrote; they are exported and supported. The rule to apply: never add an Algan-side alias for an Algan name, and never delete a Manim-side name merely because it duplicates one.
@@ -21,24 +38,7 @@ Use the repository virtual environment rather than system Python.
 
 `uv run python` resolves the right one on every platform.
 
-## Common commands
-
-### Tests
-
-```text
-uv run -m pytest -q --fast
-uv run -m pytest -q
-```
-
-The first command is the development loop and the one to run after every change. It is **opt-in and hand-curated**: only tests marked `fast` run, everything else is deselected, and the set is 191 tests covering the timeline, Mob transforms and hierarchy, the Scene, `SETTINGS`, the public authoring surface, plus one pixel-compared render under `../tests/fast`. It reports where it landed against a 75 s budget when it finishes. Treat that report as meaningless until the third consecutive run — any change touching a kernel makes the first run pay a cold Taichi compile. The second command is everything, about twelve minutes, and adds the six dense render scenes under `../tests/full_renders` plus every per-feature and per-subsystem test. Run it after touching the renderer and before pushing.
-
-A new test is unmarked, and therefore outside the fast suite, unless a change *elsewhere* in the codebase is liable to break it. There is no `slow` marker: it used to mean "outside the fast suite", which is now the default. Note that Taichi's cost is per kernel variant and is charged to whichever test reaches that variant first, so admitting one test of a group can pull in the whole variant's compile cost. `../tests/README.md` holds the full membership table, the rule for marking, the re-baselining commands and the rules for editing the fast scene.
-
-Both render suites compare rendered pixels against expected CPU or CUDA baselines in their own directory, through one shared fixture in `../tests/conftest.py`. Small platform-dependent pixel differences are tolerated. Legitimate renderer changes may require deliberate baseline updates.
-
-Do not run multiple render tests concurrently on Windows. Killed render processes can leave child processes alive and output files locked.
-
-### Documentation
+## Documentation
 
 ```text
 uv run python docs/make_and_open_docs.py
@@ -51,7 +51,7 @@ Use `Scene.save_video(file_path, video_settings)` and `Scene.save_frame(file_pat
 
 The `.. algan::` directive executes its body and embeds the resulting video. It prefers a file named after the directive, and otherwise embeds whichever video the example just wrote, so examples may name their own output. An example must produce exactly one video.
 
-### Build and publish
+## Build and publish
 
 ```text
 uv build
@@ -59,12 +59,6 @@ uv publish
 ```
 
 Bump the package version in `../pyproject.toml` before publishing when that file is present in the checkout.
-
-### Ruff
-
-Ruff is configured to apply fixes. Use `ruff check --no-fix` for inspection unless rewriting files is intentional.
-
-Never allow Ruff or another automatic formatter to insert `from __future__ import annotations` into Taichi kernel source files: it turns a kernel's runtime-evaluated annotations into strings and breaks compilation. Taichi kernel modules are named `*_taichi.py`, and new kernel modules must preserve that suffix -- the ruff config keys off it to disable `I002` and `SIM` there, and to keep the formatter off those files entirely. The rest of the lint rules do apply to them.
 
 ## Core ownership model: Scenes are independent containers
 
@@ -123,249 +117,6 @@ This dual binding is a convenience layer, not a reason to hide Scene ownership i
 
 `Scene.instance()` and `Scene.current()` resolve the active Scene. New low-level code should normally use an explicit Scene reference rather than repeatedly resolving the active Scene.
 
-## Animation and timeline architecture
-
-The animation implementation lives under `../algan/animation_timeline` and the animatable/mob base implementation lives under `../algan/animatable_base`.
-
-Each Scene's `TimelineManager` owns all recorded animation data for mobs in that Scene:
-
-- one `AttributeTimeline` per animatable attribute;
-- shared attribute buffers keyed by mob id and row ranges;
-- timestamped attribute edit records;
-- recorded animated-function applications;
-- updater events and their dependency traces;
-- mob lifespans represented as `[spawn, despawn)` intervals;
-- materialization and replay state for a requested frame-time batch.
-
-Mobs do not carry independent per-attribute animation histories. Their getters and setters read and write rows in their Scene's timeline.
-
-### Animation contexts
-
-`AnimationManager` owns the active context tree for one Scene. The main contexts are:
-
-- `Seq`: sequential child animations;
-- `Sync`: simultaneous child animations;
-- `Lag(ratio)`: partially overlapping child animations;
-- `Off`: instantaneous/non-animated changes;
-- `Audio` and `Speech`: timing contexts that also register Scene-owned audio effects.
-
-Mob methods decorated with `@animated_function` bind their Scene's `AnimationManager` automatically.
-
-Critical timeline rule: events must be recorded against a context that is entered and exited. Context exit finalizes retroactively rescaled timestamps. Do not manually record events against the top-level context's raw timespan. `add_updater` and `remove_updater` demonstrate the correct pattern by opening an `Off(record_funcs=False, ...)` context.
-
-Timestamps are lazy because parent contexts can rescale child timing on exit. Treat an event's final start/end as unresolved until the relevant context tree has closed.
-
-Overlapping edits to the same timeline rows are replayed in execution order using resolved replay windows. Do not simplify this to ordinary independent interpolation without preserving same-row overlap behavior.
-
-## Animatable and Mob model
-
-`Animatable` handles Scene ownership, ids, timeline-backed attributes, lifespans, spawn/despawn, cloning, animated functions, and updaters.
-
-`Mob` adds geometry-independent 3D state and behavior, including location, basis, scale, color, opacity, glow, hierarchy propagation, movement/layout, morphing, and shader/material configuration.
-
-Parent changes normally propagate to descendants through batched timeline row operations. The canonical hierarchy is `children`/`components`; `Group.mobs` is an alias of `children`. Keep hierarchy operations Scene-homogeneous and cycle-safe.
-
-### Packed mobs
-
-One Mob can stand for many logical objects. Its animatable attributes carry one row per member, its components carry a block of rows per member, and `parent_batch_sizes` maps between the two. `Mob.__getitem__` slices that map to produce a **view** sharing the pack's id, rows and lifespan; `BatchedMobViewSequence` presents those views as a sequence.
-
-Two ways in, differing only in when the packing happens. `from_batches` on a class that can build its geometry for many objects at once (`BezierCircuitCubic`, `Surface`) never constructs the per-member Mobs; `batch_mobs` packs Mobs that already exist. Both are built on `pack_animatable_rows` (the pack itself, one row per member) and `pack_member_rows` (a component, a block of rows per member) in `../algan/utils/mob_utils.py`, and both write through `_setattr_and_rebatch_without_record`, so they are valid only on fresh history.
-
-Two invariants are easy to break and hard to see:
-
-- A recursive write covers the whole subtree, so a value expressed per member must be distributed over each descendant's rows first (`Mob._distribute_over_packed_subtree`). Without it a packed Mob cannot be moved at all.
-- The subtree is addressed in **buffer** order, not descendant order — `RowRanges.from_runs` sorts and coalesces the runs. A distribution built in descendant order still matches on row count and silently gives every member a neighbour's value.
-
-Members share one lifespan, because they share one id. Staggered entrances go through opacity, which is what `Tex.write()` does.
-
-Renderable mobs implement `get_render_primitives()`. The primary geometry families consumed by the renderer are:
-
-- flat triangle primitives;
-- cubic Bezier circuit primitives.
-
-Important mob implementations include:
-
-- 2D shapes and text, represented primarily as cubic Bezier circuits;
-- `Surface` and 3D shapes, represented as flat triangle meshes (curved surfaces are diced from logical PN patches per frame);
-- `TriangleMesh` and `ThreeDModelMob` for imported 3D assets;
-- `PointCloud`/point-cloud mobs;
-- Manim compatibility wrappers and conversion helpers.
-
-A Bezier circuit is resolved against its own plane, so its control points are projected onto that plane when the geometry is built — the identity for a shape that is genuinely planar, a different shape for one that is not. `../algan/mobs/nonplanar_circuit.py` classifies every circuit once, in `BezierCircuitCubic.__init__`, per sub-path (so a packed circuit is judged on its members, not on their non-planar union): planar circuits are untouched and keep the analytic path; a non-planar **filled** one renders each closed sub-path as logical PN patches, the same primitive `Surface` produces; a non-planar **unfilled** one is split into near-straight runs, each its own circuit whose plane is turned to face the camera about the run's axis (which is what stops a 3-D path's stroke vanishing wherever its osculating plane goes edge-on). The plan is topology only — geometry is rebuilt from the live control points every batch, so animation and transforms follow — but the *decision* is fixed at construction, exactly as the circuit's plane is. `batch_mobs` clones its first member before packing the rest, so anything derived from geometry at construction must be redone in `_after_repack()`; `from_batches` needs no hook because the constructor already sees every member. `ALGAN_NONPLANAR_CIRCUITS=0` restores the flattening.
-
-Shader/material setup that changes primitive layout or registers shader parameters must occur before spawning unless the implementation explicitly supports timeline-safe mutation. Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, and related classes) rather than restoring removed ad-hoc reflectivity/roughness APIs.
-
-## Rendering API
-
-The public rendering API is Scene-owned, and these are the only spellings:
-
-```python
-scene.save_video(file_path=None, video_settings=None, *, overwrite=True, reset=False,
-                 background_color=None, animate_fade_out=None, post_processes=None,
-                 codec=None, audio_codec=None, ffmpeg_params=None)
-scene.save_frame(file_path=None, video_settings=None, at=None, *,
-                 overwrite=True, background_color=None, post_processes=None)
-```
-
-`Scene.save_video` carries the user-facing signature and documentation; `algan.utils.algan_utils._render_scene_to_file` carries the implementation. Keep them in sync — do not push parameters back into `*args, **kwargs`, because that is what made the signature invisible to `help()`, IDEs and autodoc.
-
-Both return a `RenderResult` (`status`, `output_path`, `duration_seconds`, `render_plan`). `save_frame` returns a list of them only when `at` is a sequence.
-
-`render_plan` is the last batch's `RenderPlan`, also left on `scene.last_render_plan`: which renderer ran, what it could not honor, and `truncations` — a `TruncationCounts` of how often each of the render path's four fixed ceilings bound (`../algan/rendering/raytracing/truncation.py`). Those counters are unconditional and render-job-scoped, so a zero is a reading rather than a missing instrument, and each ceiling warns **once per render** at `WARNING` — not `PERF`, which is for the budget events (batch splits, pool retries) that are the memory model working as designed. A truncation moves the image.
-
-### Output-path resolution
-
-Both still and video output use the same resolver, `_resolve_output_destination`:
-
-- a bare filename is placed under `SETTINGS.paths.output_root / SETTINGS.paths.output_directory`;
-- a relative path with an explicit parent and an absolute path are used as supplied;
-- missing still-image extensions default to `.png`;
-- missing video extensions default to `.mp4` for opaque output and `.mov` for transparent output;
-- parent directories are created automatically.
-
-`output_root` defaults to the directory of `__main__.__file__`, falling back to the working directory; `output_filename` defaults to that script's stem. Do not reintroduce multiple independent `file_name`, `output_path`, and `output_dir` parameters, and do not resurrect `base_directory`.
-
-### `save_frame`
-
-`save_frame` renders one timestamp or a sequence of them (`at`). Multiple timestamps produce files whose names append the timestamp to the resolved stem. Temporary video-settings and background overrides are fully restored afterwards.
-
-`save_frame` never mutates the Scene: nothing is despawned and the timeline is untouched, so it is safe to call repeatedly while authoring. When no timestamp is supplied it renders just after the current authored context time, offset by 1.5 frames. Explicit timestamps must be finite and non-negative.
-
-Keeping the timeline untouched takes more than not recording anything: rendering *resolves* replay windows (`AnimationTimeline._resolve_replay_windows`), freezing each edit's and event's context-rescaled end time into a plain `replay_end` float. From inside an unfinished context those ends are pre-rescale — a `run_time` rescales its block retroactively, on exit — and only recording a new edit invalidates them, so a resolution left behind by a mid-authoring render silently truncates the animations of a later render. `save_frame` and `show_frame` therefore wrap their render in `AnimationTimeline.preserving_authoring_state()`, which restores the resolution state (and drops lifespans created for a render's transient mobs). Any render that leaves the Scene re-renderable must do the same — see the `reset` contract below.
-
-### `save_video` and the `reset` contract
-
-`reset` defaults to **False**: the Scene is left exactly as authored. Mobs stay spawned, references stay valid, the timeline keeps its recording, and rendering again produces the accumulated timeline (the earlier animation plus whatever was added). Independent clips need independent Scenes.
-
-Three pieces of finalization are therefore conditional:
-
-- the zero-duration guard (one frame of `wait` for an all-`Off()` scene) always runs, because it decides how many frames are rendered;
-- the end-of-scene despawn of every actor runs when a fade-out was requested (it is part of the requested output) or when `reset=True`;
-- `render_to_video` closes the camera and light lifespans only when the Scene is being finalized, via `despawn_camera_and_lights`.
-
-Both lifespans extend past the last rendered frame index either way, so output is unaffected by these gates. `RenderLoopMixin.get_frames` calls `timeline_manager.clear_buffers()` when it finishes, restoring `active_state` to `current_state`; that is what makes a non-reset Scene queryable again after a render.
-
-`reset=False` also passes `preserve_authoring_state=True` into `render_to_video`, which rolls back the two pieces of state the render itself derives: the appended `scene_times` window, and the replay-window resolution (via `preserving_authoring_state()`, as for `save_frame`). The snapshot is taken around the `get_frames` loop rather than around the whole call, because the fade-out and the zero-duration guard record on the timeline first and edits made after a snapshot would fall outside it.
-
-Together with the conditional finalization above, that makes a `reset=False` render legal **from inside an unfinished block**: render a preview mid-`Seq`/`Speech`, keep authoring, and the final render is identical to one where the preview never happened. The frame window for such a render comes from `_recorded_end_time_for_render()`, which takes the max over the whole open context chain — the innermost open context covers only its own block, while an enclosing `Sync` can already hold animations running past it. Every open context shares one un-rescaled timeframe, so their ends are directly comparable; with all blocks closed this is just the root context's end, exactly as before.
-
-With `reset=True` the Scene's timeline, animation and audio managers are rebuilt in `finally` on both success and failure, and authored mobs must not be reused. `overwrite=False` returns a skipped result without finalizing anything. Harnesses that re-author a scene per run (profilers, repeated benchmark passes) should pass `reset=True` explicitly.
-
-Transparent output cannot use MP4. Use MOV or WebM, or an opaque background.
-
-### Scene-function discovery
-
-Use the `@scene_function` decorator for zero-argument scene entry points consumed by `render_all_funcs`. It is deliberately not named `scene`, which would collide with the conventional variable name for a Scene instance. Legacy implicit discovery of every zero-argument function remains as a warning-producing fallback and may accidentally render helpers.
-
-`render_all_funcs` creates an isolated Scene for each function. Scene functions should either rely on that active Scene or accept no arguments and explicitly obtain it; helper constructors should still propagate Scene ownership from their inputs.
-
-## Settings system
-
-Runtime-adjustable public configuration is rooted at the stable process-global `SETTINGS` object:
-
-- `SETTINGS.computing`;
-- `SETTINGS.paths`;
-- `SETTINGS.style`;
-- `SETTINGS.video`;
-- `SETTINGS.raytracing`.
-
-Section objects have stable identity and must not be replaced. Mutate them in place with `set`:
-
-```python
-SETTINGS.video.set(HD)
-SETTINGS.video.set(frames_per_second=60)
-SETTINGS.raytracing.set(samples_per_pixel=1)
-```
-
-Shared presets such as `SMOKE_TEST`, `PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD` and `THUMBNAIL` are immutable. Calling `set` on a preset returns a new preset and leaves the shared constant unchanged:
-
-```python
-HD_60 = HD.set(frames_per_second=60)
-```
-
-Unknown field names are rejected with a close-match suggestion by both `set(...)` and direct attribute assignment — `SETTINGS.video.fps = 60` raises rather than silently attaching a junk attribute.
-
-`SETTINGS.raytracing` is split by stability. Directly on the section are the settings that describe what the renderer *produces*: `samples_per_pixel`, `max_bounces`, `shadows`, `ambient_light`, `light_intensity`, `indirect_bounce_strength`, `glossy_reflection`, `analytic_aa`, `tonemapping`, `tonemap_method`, `tonemap_exposure`, `unsupported_feature_policy`. Every other switch is a kernel/performance gate and lives on `SETTINGS.raytracing.experimental`; writing one through the parent raises an error naming the right location. **Reads are deliberately unrestricted** — engine modules bind `rt_settings = SETTINGS.raytracing` once and read experimental switches off it on the hot path — so only mutation is gated. `to_dict()`, `as_preset()`, `_restore()` and `SETTINGS.snapshot()` continue to cover every field.
-
-When adding a renderer toggle, add it to `_FIELD_TO_LEGACY` and leave it out of `_PUBLIC_FIELDS` unless it changes rendered output in a way users are meant to control.
-
-Use `SETTINGS.snapshot()`/`SETTINGS.restore()` for complete public-settings state capture, and `SETTINGS.override(...)` or section-level `override(...)` for temporary changes. Do not hand-roll partial restoration that leaves live settings leaked into later tests or daemon runs.
-
-Engine modules must read mutable settings live through `SETTINGS`. Never import a mutable ray-tracing setting by value at module import time; doing so freezes the old value and makes public setters ineffective. Immutable constants may be imported by value.
-
-Initialization-only settings intentionally have no public mutable Python object. Set these before importing `algan`:
-
-- `ALGAN_ANIMATION_DEVICE`;
-- `ALGAN_RENDER_DEVICE`;
-- `ALGAN_HOME`;
-- `ALGAN_CACHE_DIR`;
-- `TI_OFFLINE_CACHE_FILE_PATH`;
-- `ALGAN_SOFT_SHADOW_SAMPLES`;
-- `ALGAN_HDR_BUFFER_F16`.
-
-`RENDERER_REGISTRY` and `KERNEL_REGISTRY` are runtime service registries, not user settings, and therefore live outside `SETTINGS` and outside the star-import namespace.
-
-`SETTINGS.computing` rejects `render_device`, `animation_device` and `render_on_cpu` with a message naming the environment variable to use instead, rather than a generic "unknown setting".
-
-The old `COMPUTING_DEFAULTS`, `DIRECTORY_DEFAULTS`, `STYLE_DEFAULTS` and `RENDERING_DEFAULTS` facades and the `algan.settings.render_settings` / `algan.settings.style_defaults` modules have been **deleted**. Do not reintroduce them.
-
-## Rendering pipeline
-
-The render loop is implemented in `../algan/render_loop.py` as `RenderLoopMixin`, mixed into `Scene`. It is responsible for:
-
-- choosing frame windows according to animation and render memory budgets;
-- materializing the Scene timeline at frame times;
-- building and batching actor render primitives;
-- snapshotting camera and light state;
-- optionally prefetching the next batch on a worker thread;
-- projecting, merging, and uploading scene data;
-- invoking the configured render kernel;
-- applying post-processing and streaming frames to the writer;
-- reducing the frame window and retrying on render-memory exhaustion.
-
-`ALGAN_PREFETCH_BATCHES=0` disables next-batch prefetch. Keep Scene render-state snapshots immutable so preparation can run safely while the previous batch renders.
-
-### Scene merge and acceleration structures
-
-`../algan/rendering/raytracing/scene_builder.py` packs projected primitives into contiguous tensor arrays grouped by geometry type and builds the corresponding spatio-temporal acceleration structures. The merged dictionary is the contract consumed by the tracer orchestration and Taichi kernels.
-
-Do not casually change merged-field widths, ordering, dtype, or lifetime. Those changes affect memory estimators, arena preflight, kernel signatures, projection/merge paths, and potentially cached Taichi variants.
-
-### Renderer dispatch
-
-`render_batch_raytraced` is the production render entry point registered in `KERNEL_REGISTRY`.
-
-- `samples_per_pixel == 1` selects the deterministic wavefront renderer. It uses bounded primary-ray tiles, traversal, shading, compaction, compositing, and a shared continuation pool for reflective/refractive splits. Tile overflow is retried with fewer primaries rather than approximated.
-- `samples_per_pixel > 1` selects the Monte Carlo path-tracing megakernel. Some deterministic-only features are rejected or handled according to the unsupported-feature policy.
-
-The deterministic renderer resolves primary visibility through the sheet route (`../algan/rendering/raytracing/DESIGN_sheet_resolve.md`) when the batch qualifies: exact analytic-coverage fragments are emitted for flat triangles and Bezier circuits, compacted on the host into per-pixel depth-banded sheets (`sheets.py`), and resolved/shaded — shadow events included — by the one kernel body in `sheet_resolve_taichi.py`, while reflection/refraction continuations remain in the ray-based wavefront system. It is the only analytic-coverage resolve; batches the route rejects (analytic AA off, transparent background with an env map, SPP > 1, route toggles off) render through the classic supersampled wavefront. `analytic_raster_route_active` in `tracer.py` is the single host-side route decision shared by allocation planning and rendering. Do not describe the current renderer as either a pure rasterizer or a pure one-primary-ray-per-pixel tracer.
-
-The classes under `../algan/rendering/primitives` are still used for primitive construction and batching. They are not a separate supported legacy raster backend. New renderer work belongs in the active raytracing/hybrid pipeline unless a deliberate new backend is being introduced through the registries.
-
-### Materials and fragment pipelines
-
-Three.js-style material objects configure shaders and register animatable shader parameters. Per-fragment pipelines and custom scatter behavior are composed into flat Taichi template tuples. Nested tuples do not work as kernel template arguments.
-
-A scene with custom fragment shading/scatter may force deterministic fragment-shading paths and alter continuation-pool requirements. Keep capability detection, memory estimation, render planning, and actual kernel dispatch consistent.
-
-### Manual memory
-
-`ManualMemory` is the render-time arena. It provides deterministic forward allocations and pointer restore/reset behavior. Many render paths depend on exact arena byte estimates. When adding buffers:
-
-- update all corresponding memory estimators and preflight calculations;
-- account for dtype alignment and fixed versus per-frame/per-ray scaling;
-- restore arena pointers at the same lifetime boundary at which data becomes dead;
-- test one-frame and multi-frame windows;
-- test retry behavior rather than relying on host OOM exceptions.
-
-The whole package enters process-global `torch.inference_mode()` during import. Importing Algan therefore disables autograd for the importing process. Do not use the same process for Algan rendering and Torch model training.
-
-## Audio
-
-Audio is Scene-owned. `AudioManager` stores the Scene's speech source and transcript. `Audio`/`Speech` contexts add `AudioEffect` objects to the owning Scene and derive timing from that Scene's animation manager.
-
-Do not add process-global transcript or speech-generator state. When constructing `Speech` or `Audio` contexts in low-level code, bind the relevant Scene animation manager explicitly.
-
 ## Taichi rules and failure modes
 
 Taichi kernel work has several repository-specific hazards:
@@ -379,100 +130,6 @@ Taichi kernel work has several repository-specific hazards:
 - Prefer `ti.static(bool(template_value))` for template gates rather than Python identity tests such as `is not None` inside kernel code.
 - Keep Taichi template argument structures flat.
 - Preserve the `*_taichi.py` filename convention.
-
-## Performance and renderer validation
-
-Optimize general moving and animated scenes, not only static-scene fast paths.
-
-For performance changes:
-
-- compare warm in-process alternating A/B runs when possible;
-- use device-side kernel-profiler timings to separate launch/synchronization from kernel execution;
-- avoid drawing conclusions from a single cross-process wall-clock run;
-- verify the intended optimization gate actually engaged;
-- record render route and relevant live settings;
-- validate output parity before accepting a speedup.
-
-Use focused parity/benchmark scripts under `../benchmarks` when present. The default path should remain output-compatible unless the change intentionally modifies rendering. If adding an experimental optimization, provide a kill switch and keep capability checks, memory estimation, and fallback behavior coherent.
-
-### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
-
-Some scenes render slightly differently every run, with no change to the code
-or the settings, so they cannot serve as byte-identical A/B fixtures.
-
-Every branch of a pixel commits its premultiplied colour and its leftover
-background throughput into the shared per-pixel accumulator `pix_accum` with
-`ti.atomic_add` (`wavefront_kernels_taichi.py` ~3063-3095, `raster_taichi.py`
-~4655-4665). Float atomic add is *commutative but not associative*, and the
-order in which branches of one pixel reach the accumulator is GPU scheduling
-order, which varies run to run. A pixel carrying one or two branches is
-therefore still bit-exact; a pixel carrying **three or more** is not.
-
-Multi-branch pixels come from the shared continuation pool, which is only used
-when `_split_pool_ratio` exceeds 1 — reflective/refractive geometry *and*
-analytic AA (or `ANALYTIC_AA_SECONDARY_SAMPLES > 1`, which puts N sub-pixel
-reflection taps on one pixel). Measured on 3 cubes + 2 spheres + a reflective
-ground at MD over 60 frames (`benchmarks/_split_determinism_check.py`): every
-tile's `pix_accum` digest differs between two runs in one process, while the
-merged scene tensors feeding the kernels hash identically. Turning off any one
-ingredient — `max_bounces=0`, `analytic_aa=False`, or all-unlit materials —
-makes the digests match and the frames byte-identical.
-
-The output effect is bounded and small. `wf_composite_accum` truncates to `u8`
-(~line 1324), so a reassociation difference can move a channel by at most 1: the
-measured spread is `|d| = 1` on tens of channel samples out of 165M, and the
-encoded mp4 came out bit-identical. This is a parity-fixture constraint, not a
-rendering defect.
-
-Practical rules:
-
-- Do not use a scene with reflective/refractive geometry under analytic AA as a
-  byte-identical parity fixture. Establish the arm's own run-to-run floor first,
-  or pin one of the ingredients off.
-- A *larger* difference than `|d| = 1` is NOT this mechanism. Branches are never
-  silently dropped: a continuation that does not fit raises the pool's overflow
-  flag, and the host discards and retries the tile with fewer primaries
-  (deterministically — verified by starving the pool to force 13 retries, which
-  changed nothing). Suspect the change under test instead. That "never" is now
-  instrumented rather than asserted: the host reads the flag on *every* tile,
-  including the split-free ones at `pool_ratio == 1` that used to short-circuit
-  past it, and counts any reservation past the capacity as
-  `RenderPlan.truncations.dropped_continuations` — which reads zero on the
-  shipped renderer and is there to catch the change that makes it stop.
-- The fix, if byte-identical A/B on reflective scenes is ever needed, is to
-  accumulate in fixed point: integer atomic add *is* associative and
-  commutative, so the sum stops depending on arrival order. That trades a scale
-  factor and a conversion for reproducibility; it has not been needed so far.
-
-For source-only correctness checks, at minimum run import/compile checks on modified non-Taichi modules. For visual renderer changes, render a minimal `SMOKE_TEST` scene or a single diagnostic frame. Do not run a long benchmark merely to prove that code imports.
-
-## API-change discipline
-
-Algan has removed its transitional aliases ahead of public release. The canonical forms are the only forms:
-
-- `Scene.save_video` / `scene.save_video` — there is no module-level `render_to_file` or `render`, and no `Scene.render_to_file`/`Scene.render`;
-- `Scene.save_frame` for stills, with `at` rather than `time_stamps`;
-- `video_settings` / `VideoSettings` — `render_settings`, `RenderSettings` and `set_render_settings` are gone;
-- one `file_path` rather than separate filename/directory arguments;
-- `SETTINGS` sections rather than the old defaults globals;
-- Scene-owned managers rather than singleton managers;
-- `@scene_function` rather than `@scene`;
-- `draw_border_then_fill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand.
-
-Do not add a second spelling for something that already has a name. If a rename is genuinely warranted, rename in place and update every call site — the project is pre-release specifically so this stays cheap.
-
-### The star-import namespace is the API
-
-`from algan import *` is the documented entry point, so `algan.__all__` is effectively the public surface. `algan/__init__.py` builds it from a rule plus two deny-lists (`_INTERNAL_EXPORT_MODULES`, `_INTERNAL_EXPORT_NAMES`) and one allow-list (`_EXTRA_EXPORTS`). Generic helper names must not leak: `mean`, `interpolate`, `offset`, `shuffle`, `broadcast*`, `traverse`, `squish` and friends would shadow whatever the user imported before Algan.
-
-When you add a name, decide which side it is on. Public mobs, animations, contexts, materials, shaders, constants and settings belong in the namespace; tensor utilities, mixins, primitive builders, registries and dev tooling do not. `../tests/unit_tests/test_ux_regressions.py` asserts both directions.
-
-When changing a public class, method, setting, material field, or render argument:
-
-- update root exports in `algan/__init__.py` as needed;
-- update docs and checked-in autosummary stubs;
-- search docs, tests, examples and benchmarks for stale call sites and fix all of them, since nothing keeps the old name working;
-- add or update tests for the new behavior.
 
 ## Vendored code
 
@@ -501,41 +158,3 @@ When changing a public class, method, setting, material field, or render argumen
 - `../benchmarks` — targeted profiling, A/B, and output-parity scripts when included.
 - `../docs` — Sphinx documentation and rendered examples.
 
-## Canonical authoring examples
-
-Module-level concise authoring remains supported through the lazy default Scene:
-
-```python
-from algan import *
-
-square = Square().spawn()
-square.move(RIGHT)
-
-with Sync():
-    square.rotate(90, OUT)
-    square.color = BLUE
-
-Scene.save_video("example.mp4")
-```
-
-Explicit Scene ownership is preferred for reusable code, tests, nested scenes, and multiprocessing:
-
-```python
-from algan import *
-
-with Scene(video_settings=SMOKE_TEST) as scene:
-    square = Square(scene=scene).spawn(animate=False)
-    with Sync(animation_manager=scene.animation_manager):
-        square.move(RIGHT)
-        square.rotate(45, OUT)
-
-    scene.save_frame("diagnostic.png")
-    result = scene.save_video(
-        "diagnostic.mp4",
-        SMOKE_TEST,
-        overwrite=True,
-        animate_fade_out=False,
-    )
-```
-
-`save_video` leaves `scene` intact by default, so mob references stay valid and you can keep authoring. Remember that Algan records onto one timeline: rendering again produces the accumulated animation, not just the new part. Use a separate Scene per independent clip, and pass `reset=True` only when you deliberately want the Scene discarded.

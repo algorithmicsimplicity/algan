@@ -326,7 +326,7 @@ every run. The effect is bounded at one channel value by the `u8` truncation in
 the compositor (measured: `|d| = 1` on tens of samples out of 165M, absorbed
 entirely by the video encoder), which is why the render suites are not flaky
 from it. It does mean a scene like that cannot be a *byte-identical* A/B parity
-fixture; `../agent_guidance/AGENTS_DETAILED.md` covers how to pick one, and
+fixture; `../agent_guidance/memory_perf.md` covers how to pick one, and
 `benchmarks/_split_determinism_check.py` measures a scene's own run-to-run
 floor.
 

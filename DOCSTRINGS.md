@@ -11,7 +11,7 @@ and as a rendered page in the Sphinx reference. It has to answer "what will this
 what do I type" without a single look at the implementation.
 
 Internal mechanics (timeline rows, replay windows, arena pointers, kernel arg widths) do **not**
-belong in user-facing docstrings. They belong in `#` comments, in `agent_guidance/AGENTS_DETAILED.md`, or in the
+belong in user-facing docstrings. They belong in `#` comments, in the topic references under `agent_guidance/`, or in the
 docstrings of the internal objects themselves.
 
 ---
