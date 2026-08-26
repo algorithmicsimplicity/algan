@@ -303,10 +303,18 @@ because the payload transport was still being solved. Do this first.
    tests, and per-toggle lossless A/B renders at 0 differing pixels with
    kernel-launch proof). Four defects in the recovered patch were found and
    fixed in verification, one load-bearing: a `mask.is_cuda` gate that made
-   every CPU check of the pair-expand toggle vacuous. **T4 timing not yet
-   measured** — that A/B is the next Kaggle run. Remaining after this:
-   `compact_sheets`' other blocks and the audit's option A prologue hoist
-   (−6%, not done).
+   every CPU check of the pair-expand toggle vacuous.
+   **T4 A/B measured** (tag `r3sheet`, log
+   `scratch_perf/r3/t4_r3sheet_run.log`): UHD warm **28.04 -> 26.79 s**
+   (-4.5%), PREVIEW warm 5.88 -> 5.72 s (-2.7%). Stage evidence matches the
+   wall delta: `window pairs` 1.141 -> 0.244 s, `compact_sheets` excl
+   2.222 -> 1.858 s, every untouched stage flat to the millisecond.
+   Cumulative vs master's 29.90 s baseline: **-10.4% at UHD**. T4
+   pixel-identity was not directly measured (lossy arm encodes); the CPU
+   lossless A/Bs at 0 differing pixels plus the kernels' order-independent
+   math (integer rows; float amax) are the identity evidence. Remaining
+   after this: `compact_sheets`' other blocks and the audit's option A
+   prologue hoist (−6% of dispatches, not done).
 3. **The arena preflight — the best remaining host-side prize, and now
    quantified.** It is 24% of PREVIEW on the T4 and runs serial on the render
    thread by design, so its CUDA peak can be measured uncontended. Round 2
