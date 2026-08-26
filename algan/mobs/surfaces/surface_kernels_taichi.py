@@ -19,18 +19,19 @@ must keep the torch path.
     call sites. Pure permutation, so this one *is* byte-identical: it copies the
     same elements the advanced index copies.
 
-    **It does not pay, and ships off by default** (see
+    **Roughly a wash, so it ships off by default** (see
     ``taichi_runtime._CPU_PREP_KERNELS_ON_BY_DEFAULT``; opt in with
-    ``ALGAN_OPT_ENABLE=cpugather``). Measured at **0.69-1.03x** against
-    ``torch``'s advanced index on the shapes the batched build passes. It is the
-    same shape of work the timeline query turned out to be -- one load and one
-    store per element with nothing to fuse -- so it is bandwidth-bound, and
-    torch's vectorized gather already saturates the load while a kernel adds
-    launch overhead. Making the channel copy a compile-time unroll
-    (``channels: ti.template()``) moved it barely at all, which is the
-    confirmation rather than a fix. Kept because it is correct and the
-    measurement should be reproducible on hardware with different memory
-    bandwidth.
+    ``ALGAN_OPT_ENABLE=cpugather``): **0.84-1.20x** against torch's advanced
+    index on the shapes the batched build passes.
+
+    Its first version measured **0.68x**, and the cause was the loop, not the
+    work. It used ``ti.ndrange(B, L)`` with three-dimensional addressing, which
+    ``benchmarks/_taichi_loop_shapes_taichi.py`` measures at 4.3 GB/s against a
+    flat 1-D loop's 14-22 on the same bytes. Rewriting it in the form below --
+    one flat parallel loop per output vertex, flat offsets throughout -- is what
+    took it to parity. The remaining gap is the structural one: even Taichi's
+    best form streams below torch's vectorized gather, and there is nothing here
+    to fuse that would pay for the difference.
 
 **Watertightness.** The gather is an exact copy, so vertex positions are
 unchanged and the mesh topology cannot move. The normals kernel is *not*
@@ -158,9 +159,10 @@ def grid_normals_sides_crosses(
 
 @ti.kernel
 def gather_grid_to_triangles(
-        flat_grid: ti.types.ndarray(dtype=ti.f32, ndim=3),  # [B, W * H, C]
+        flat_grid: ti.types.ndarray(dtype=ti.f32, ndim=1),  # [B * W * H * C]
         indices: ti.types.ndarray(dtype=ti.i64, ndim=1),  # [L], L = triangles * 3
-        out: ti.types.ndarray(dtype=ti.f32, ndim=3),  # [B, L, C]
+        out: ti.types.ndarray(dtype=ti.f32, ndim=1),  # [B * L * C]
+        points: ti.i64,  # W * H
         channels: ti.template(),  # C, as a template so the copy unrolls
 ):
     """``flat_grid[..., indices, :]``, written directly.
@@ -176,11 +178,20 @@ def gather_grid_to_triangles(
     coincident duplicates, and it arrives here already built, so welding is
     carried through unchanged.
     """
-    for b, i in ti.ndrange(flat_grid.shape[0], indices.shape[0]):
-        source = indices[i]
-        # Taichi specializes on template arguments, so this is a compile-time
-        # range and the per-vertex copy unrolls to `channels` loads and stores
-        # instead of a runtime-bounded loop. The channel count is 3 or 5 here,
-        # so it costs a couple of specializations.
+    gathered = indices.shape[0]
+    # One flat parallel loop per output vertex, and flat offsets rather than
+    # multi-dimensional addresses. Both matter more than they look: measured on
+    # a pure copy of the same bytes, `ti.ndrange` over two or three dimensions
+    # runs at 1.8-4.4 GB/s against a flat 1-D loop's 22.5, because Taichi
+    # flattens an ndrange into one parallel loop and recovers each index per
+    # iteration. Multi-dimensional ndarray indexing costs again on top. The
+    # first version of this kernel used `ti.ndrange(B, L)` with 3-D indexing
+    # and ran at 0.68x of torch's advanced index; this shape runs at 1.17x.
+    for n in range(out.shape[0] // channels):
+        b = n // gathered
+        source = (b * points + indices[n - b * gathered]) * channels
+        destination = n * channels
+        # Compile-time range (Taichi specializes on template arguments), so the
+        # per-vertex copy unrolls instead of running a runtime-bounded loop.
         for c in ti.static(range(channels)):
-            out[b, i, c] = flat_grid[b, source, c]
+            out[destination + c] = flat_grid[source + c]

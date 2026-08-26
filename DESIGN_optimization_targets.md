@@ -41,7 +41,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
 | **P9** widening the batched bezier build | **shipped**, byte-identical (a lossless two-arm render: 0 differing pixels), gated by `ALGAN_BEZIER_GROUP_RUNS`. A clashing group is split into **maximal runs of consecutive batchable actors** instead of reverted wholesale -- the layout constraint is positional, not group-wide. On a clashing scene, 97.6% of circuits move from the per-actor build to the batched one and `get_batch_of_primitives` runs at **0.43-0.48x**. It also turned up a real defect in the builder it widens: it flattened curves to twice the per-actor path's chord tolerance, masked by the analytic-AA route's clamp. See P9 |
 | **T5** sparse-coverage host chain | **the host loops are done; T5's own item is the one that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame), and the conflict-rank scan followed on 2026-08-21 (`SHEET_RANK_KERNEL`, default on, bit-identical, 33 -> 6 ms of a 1080p frame on CPU). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Three measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
-| **P13** the sides-and-crosses block as a CPU Taichi kernel | **shipped, default on** -- **2.3-5.0x on `compute_grid_vertex_normals`** (the block itself is 8-11x; the rest of the function is unchanged, so Amdahl caps it there). Dispatched only when Taichi's arch is the CPU, because on CUDA Taichi would stage every argument through VRAM on the prep worker. **Not bit-identical** -- 1-2 ulp on ~4% of elements, and the cause is `torch.cross`'s rounding on the cross product's cancelling third component, not Taichi (`fast_math=False` changes nothing). Two-arm full renders: 4 of 6 scenes byte-identical, `solids_and_camera` 13 pixels at 1 channel value, `materials_and_lighting` 0.006% of pixels past tolerance -- the documented epsilon/tie machinery. Watertightness holds structurally and is asserted. **Two sibling kernels do NOT pay and ship off**: the `grid_to_triangle_vertices` gather (0.69-1.03x) and `TrianglePrimitive`'s colour bake (0.79-0.81x), both byte-identical. See P13 |
+| **P13** the sides-and-crosses block as a CPU Taichi kernel | **shipped, default on** -- **2.3-5.0x on `compute_grid_vertex_normals`** (the block itself is 8-11x; the rest of the function is unchanged, so Amdahl caps it there). Dispatched only when Taichi's arch is the CPU, because on CUDA Taichi would stage every argument through VRAM on the prep worker. **Not bit-identical** -- 1-2 ulp on ~4% of elements, and the cause is `torch.cross`'s rounding on the cross product's cancelling third component, not Taichi (`fast_math=False` changes nothing). Two-arm full renders: 4 of 6 scenes byte-identical, `solids_and_camera` 13 pixels at 1 channel value, `materials_and_lighting` 0.006% of pixels past tolerance -- the documented epsilon/tie machinery. Watertightness holds structurally and is asserted. **Two sibling kernels do not pay and ship off**: the `grid_to_triangle_vertices` gather (0.84-1.20x) and `TrianglePrimitive`'s colour bake (0.89-0.92x), both byte-identical. Both were *slower* at first for a reason worth knowing -- `ti.ndrange` over several dimensions runs a copy at 1.7-4.3 GB/s against a flat 1-D loop's 14-22, same bytes (`_taichi_loop_shapes_taichi.py`). See P13 |
 | **T3**, **T6** | untouched; both shrank in share |
 
 **Read this before picking anything up.** The 2026-08-16 round moved the
@@ -1908,19 +1908,49 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 >
 > | kernel | row | measured |
 > | --- | --- | --- |
-> | `gather_grid_to_triangles` | `grid_to_triangle_vertices`, ~20% of the stage | **0.69-1.03x** |
-> | `apply_glow_and_opacity` | `TrianglePrimitive` colour bake, 13.5% | **0.79-0.81x** |
+> | `gather_grid_to_triangles` | `grid_to_triangle_vertices`, ~20% of the stage | **0.84-1.20x** |
+> | `apply_glow_and_opacity` | `TrianglePrimitive` colour bake, 13.5% | **0.89-0.92x** |
 >
-> They are the same shape of work the timeline query turned out to be: a
-> memory-bound copy with nothing to fuse, where torch's vectorized
-> `index_select`/`clone` already saturates the load and a kernel only adds launch
-> overhead. The colour bake's "three passes to one" premise overcounted -- the
-> two in-place passes touch one channel each, so torch moves ~`14N` floats
-> against the kernel's `10N`, a 1.4x traffic saving rather than 3x. Making both
-> channel loops compile-time unrolls (`channels: ti.template()`) moved them
-> barely at all, which is the confirmation that they are bandwidth-bound rather
-> than codegen-bound. **The lesson generalizes: in this pipeline a kernel wins
-> where there are intermediates to fuse, and loses where there are not.**
+> Both first measured **worse** than that -- 0.69-1.03x and 0.79-0.81x -- and
+> chasing why produced the more useful finding, recorded in
+> `benchmarks/_taichi_loop_shapes_taichi.py`. "Memory-bound" explains why a
+> kernel is not *faster*; it does not explain why one is *slower*. Copying the
+> same 35 MB four ways:
+>
+> | form | GB/s |
+> | --- | --- |
+> | `torch.Tensor.copy_` | 30-59 |
+> | ti flat 1-D loop | 14-22 |
+> | ti nested plain loops, 3-D indexing | ~7.3 |
+> | ti `ndrange(B, L)` + static channel | ~4.3 |
+> | ti `ndrange(B, L, C)` | **1.7-1.9** |
+>
+> **`ti.ndrange` over several dimensions is expensive**: Taichi flattens it into
+> one parallel loop and recovers each index per iteration, and that arithmetic
+> dominates a copy whose useful work is one load and one store. Multi-dimensional
+> ndarray addressing costs again on top, ~2-3x. Rewriting the gather to a flat
+> loop with flat offsets took it from 0.68x to parity; the same rewrite took the
+> colour bake from 0.79x to 0.90x. **Neither kernel was slow because gathers or
+> copies are slow -- they were slow because of how the loops were written.**
+>
+> What is left is structural: even Taichi's best form streams below torch's
+> vectorized `copy_`, and a bake that is one add and one multiply over a
+> full-width copy cannot make that back. The colour bake's "three passes to one"
+> premise also overcounted -- the two in-place passes touch one channel each, so
+> torch moves ~`14N` floats against the kernel's `10N`, a 1.4x traffic saving
+> rather than 3x. Launch overhead is ~80 us per call, which only matters for
+> small work. `advanced_optimization` is **not** the explanation, which is worth
+> recording because it is the obvious suspect: `ALGAN_ADV_OPT=1` changes nothing
+> outside noise.
+>
+> **The flattening does not help the normals kernel** (0.87-1.12x, so it keeps
+> its `ndrange(B, W, H)`), and that is the rule rather than an exception: index
+> overhead matters in proportion to how little work each element does. ~57 flops
+> per grid point swamps it; one load and one store does not.
+>
+> **The lesson generalizes: in this pipeline a kernel wins where there are
+> intermediates to fuse, and loses where there are not -- but before concluding
+> a kernel cannot win, check the loop shape.**
 >
 > **Concurrency note.** Batch prep runs on a `ThreadPoolExecutor` worker while
 > the main thread renders, so on a CPU arch both threads now launch Taichi

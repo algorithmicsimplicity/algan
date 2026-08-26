@@ -508,13 +508,15 @@ def _gather_triangles_on_cpu(flat_grid, indices):
     points, channels = flat_grid.shape[-2], flat_grid.shape[-1]
     leading = flat_grid.shape[:-2]
     gathered = indices.shape[0]
-    batched = flat_grid.reshape(-1, points, channels)
+    batches = flat_grid.numel() // (points * channels)
     out = torch.empty(
-        (batched.shape[0], gathered, channels),
-        dtype=flat_grid.dtype,
-        device=flat_grid.device,
+        (batches, gathered, channels), dtype=flat_grid.dtype, device=flat_grid.device
     )
-    gather_grid_to_triangles(batched, indices, out, channels)
+    # Flattened views on both sides: the kernel indexes with flat offsets, which
+    # measured 1.7x faster than the multi-dimensional form (see its comment).
+    gather_grid_to_triangles(
+        flat_grid.reshape(-1), indices, out.view(-1), points, channels
+    )
     return out.reshape(*leading, gathered, channels)
 
 

@@ -81,10 +81,10 @@ def _bake_glow_and_opacity(colors, opacity, glow):
 
             out = torch.empty_like(colors)
             apply_glow_and_opacity(
-                colors.view(rows, channels),
+                colors.view(-1),
                 packed_glow[0],
                 packed_opacity[0],
-                out.view(rows, channels),
+                out.view(-1),
                 packed_glow[1],
                 packed_opacity[1],
                 channels,
