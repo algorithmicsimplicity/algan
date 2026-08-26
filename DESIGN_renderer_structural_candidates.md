@@ -140,43 +140,59 @@ pattern.
 
 `_cat_collections` (`raytracing/utils.py:51`) broadcasts every collection's
 time axis to the batch maximum and then **materializes** it with
-`torch.cat(...).contiguous()`. `_expand_frames` hands out stride-0 views, so
-the expansion is free until the cat; the cat is where a parked mesh becomes T
-physical copies because one other mob of its geometry type moved. Downstream,
-everything that iterates the merged arrays then does per-frame work on static
-rows: the projection table (`[T, N, 13]`), the screen-bounds tables, the
-refit-BVH's per-frame bounds reduction and per-(frame, child) link words, the
-upload, and the arena peak that sizes the chunk.
+`torch.cat(...).contiguous()`. The Ox merge audit
+(`scratch_perf/ox/REPORT_struct_merge.md`) confirmed the mechanism and moved
+its origin one step earlier: **the T identical rows exist before the merge
+ever runs** — timeline materialization hands every attribute back as a dense
+`[T, rows, D]` window whether or not the mob moved, and
+`_pack_projected_flat_geometry` packs dense — "the merge's contribution is
+preventing them from ever going back to 1" (its whole-array `_dedup_time` is
+the one recovery point, and one mover voids it per table). Downstream,
+everything then does per-frame work on static rows: the projection and
+screen-bounds tables (confirmed: no static shortcut anywhere, and the lights
+are expanded per frame too), the refit-BVH's per-frame bounds reduction and
+link words, the upload, and the arena peak that sizes the chunk. The audit's
+field table prices it: `tri_mat` is 136 B/(frame·tri) and survives at full T
+when *any* material slot animates anywhere; `tri_colors`/`tri_extra` 60 each
+under the same all-or-nothing rule; `tri_pos` (36) and the bounds/flag tables
+(~50) are never collapsed at all.
 
-The pipeline already knows what is static and throws it away: `_dedup_time`
-collapses whole-static arrays (defeated by one mover), the dice computes
-`distinct_frames`/`geometry_static` per call (T4), and the criterion kernels
-already take **one real frame plus a stride the kernel multiplies its frame
-index by** (`_frame_broadcast_base`, `DESIGN_optimization_targets.md`
-"Maintaining the shipped kernels") — the exact mechanism this item generalizes.
+The pipeline already computes static-ness and throws it away — the audit
+names five signals and where each dies. The sharpest: **both BVH builders
+already implement the static case** (`build_stbvh`: `Tc == 1` → one instance
+spanning all frames, `stbvh.py:692-735`; `build_refit_bvh` accepts `Tc == 1`
+and "dedupes to one time slice", `refit_bvh.py:284-298`) — and both branches
+are **dead code**, because `_pack_frame_visibility` unifies bounds against
+the corners' frame count so `frame_lo/hi` always arrive with T rows. The
+others: `geometry_static` (dies at the dice's dense `allocate()`),
+`_frame_broadcast_base`'s stride-0 detection (feeds only the level-search
+kernels — but it is the proven precedent: one real frame plus a stride the
+kernel multiplies by), `_dedup_time` (cannot say *which rows* were constant),
+and the frame-valid masks (key on visibility, not constancy).
 
-**What to build.** Two designs, in ascending fidelity:
+**What to build.** In ascending cost:
 
-* **Static/dynamic block split**: partition each geometry type's collections
-  by staticness before the cat, keep two merged blocks with their own time
-  lengths. Kernels already read each array as `f % shape[0]`, but per-row
-  arrays indexed `[t, n]` need the block boundary threaded through — every
-  consumer gains one branch or one extra launch per block.
-* **Per-row stride**: one `int8`/bitmask array `row_is_static[n]`; consumers
-  index `pos[f * stride[n], n]`. One extra load per access, single arrays,
-  no reordering — likely the cheaper retrofit given how many consumers there
-  are.
+1. **Stop expanding at pack where a consumer already handles length-1**:
+   let `_pack_frame_visibility` keep a static collection's bounds at
+   `[1, N, 3]` and the BVH builders' existing static branches wake up.
+2. **Static/dynamic block split**: partition each geometry type's
+   collections by staticness before the cat, two merged blocks with their
+   own time lengths. Kernels already read each array as `f % shape[0]`;
+   per-row `[t, n]` arrays need the block boundary threaded through.
+3. **Per-row stride**: `pos[f * stride[n], n]` with a per-primitive stride
+   word. One extra load per access, single arrays, no reordering — but no
+   consumer supports mixed strides today; the audit's claim-5 inventory
+   (four kernel modules, the raster host tables, the sheets host chain, both
+   BVH builders, the bezier acceleration) is the change list.
 
-**Impact.** Breadth: every mixed static/moving scene — which is the *general
-moving scene* the project's own performance discipline names as the target.
-Depth: proportional to the static fraction of merged bytes and of every
-per-frame pass over them; the probe's static texture case (item 1) is the
-extreme end of the same distribution. Confidence: medium — the mechanism is
-proven (`_frame_broadcast_base`), but the consumer inventory is wide
-(`CLAUDE.md`: do not casually change merged-field shapes; the Ox merge audit's
-consumer list is the map). Cost: the largest build in this document; do item 1
-first — it is this item's cheapest slice and pays for the estimator work both
-need.
+**Impact.** Breadth: every mixed static/moving scene — the *general moving
+scene* the project's performance discipline names as the target. Depth:
+proportional to the static fraction of merged bytes and of every per-frame
+pass over them; the probe's static texture case (item 1) is the extreme end
+of the same distribution. Confidence: medium-high for (1) — the consumer
+already exists; medium beyond. Cost: (1) is small; (3) is the largest build
+in this document. Do item 1 first — it is this item's cheapest slice and pays
+for the estimator work both need.
 
 ## 4. Split the resolve monolith: the sheet stream was designed for material-sorted shading and never got it
 
@@ -195,6 +211,18 @@ old sorted-material experiment wanted and could not afford *per fragment* is
 affordable *per sheet* (measured S/F compaction 0.39-1.00 on the six pixel
 scenes, i.e. up to a 2.6x shrink there and more on dense diced geometry — and
 the stream already exists on the host).
+
+The Ox launches audit (`scratch_perf/ox/REPORT_struct_launches.md`)
+inventoried what every thread actually carries: an 8-float per-sample
+transmittance vector plus band/cap/bounce scalars at pixel scope, and per
+sheet a **48-float `lvis` vector** (3 x `MAX_SHADOW_LIGHTS` = 16, declared
+unconditionally because the direct-specular add-back re-reads it), an 8-float
+slot vector, and four reflection/refraction continuation blocks with up to
+32-tap unrolled jitter fans — all compiled into every variant whose batch
+flags allow them, paid by matte threads that never take the branches. It also
+confirmed the mode-1/mode-2 double walk re-fetches everything (only
+`_shade_tri_hit`, the visibility read and the spawns differ between modes)
+and that the item-9 event tables carry no material payload today.
 
 **What to build.** Three stages sharing the sheet tables: (a) transport walk —
 per-pixel, small state, writes each sheet's visible weight and per-sample
@@ -263,12 +291,20 @@ small / moderate / small / moderate respectively.
 
 ## 6. Batch amnesia: nothing frame-invariant survives a batch boundary
 
-Every batch rebuilds from scratch: the PN dice (T4 collapsed identical frames
-*within* a batch; across batches a parked `Sphere` re-dices every ~4-100
-frames), the bezier chord counts and circuit geometry, the BVH *topology*
-(binned SAH over ever-visible primitives, rebuilt per batch even when the
-actor set is unchanged — the refit machinery updates bounds per *frame* but
-the topology itself is per-batch), and the projection precomputes. Each is
+Every batch rebuilds from scratch — the Ox merge audit confirmed there is no
+cross-batch persistence of geometry *values* anywhere (what does persist is
+pure topology: dice patterns, subdivision indices, sample-weight tensors):
+the PN dice (T4 collapsed identical frames *within* a batch; across batches a
+parked `Sphere` re-searches levels and re-evaluates every patch), the bezier
+circuit geometry and edge-acceleration tables, the BVH *topology* (binned SAH
+over ever-visible primitives, rebuilt per batch even when the actor set is
+unchanged — the refit machinery updates bounds per *frame* but the topology
+itself is per-batch), and the projection precomputes. One caution the audit
+added: **bezier chord counts cannot be reused verbatim across batches** — the
+search reduces its error over all frames of the batch (`amax` at
+`primitives.py:3018`), so the count is window-dependent by construction and
+caching it across windows changes rendered edges (the same batch-window
+sensitivity `scratch_perf/ox/REPORT_batchwide_audit.md` catalogues). Each is
 individually modest by the shipped measurements (dice 2.9% post-T4; BVH build
 ~1% of a shadowed render, which is why §G's TLAS/BLAS deferral stands; T6's
 tables 1.4%), and item 1 lengthening batches shrinks all of them — which is
@@ -312,11 +348,18 @@ Two enablers rather than wins:
   feature pays argument gymnastics (`layer_offsets` smuggling), and the
   remaining ~0.8 ms/launch pybind floor only a descriptor removes. Do it with
   or before item 4.
-* The **per-chunk sync inventory** (Ox launches audit): the bounce loop's
+* The **per-chunk sync inventory** (Ox launches audit, Question A: seventeen
+  host passes between launches, each classified). The bounce loop's
   per-iteration count readback and per-tile pool readback are known and
-  accepted (§13.7 ranked the sync-free loop low on measurement); the audit's
-  value is the list of *avoidable* syncs — host passes re-deriving per-batch
-  facts per chunk. Fix opportunistically.
+  accepted (§13.7 ranked the sync-free loop low on measurement); the
+  *avoidable* ones the audit found are worth their few lines each:
+  `_shadow_identity_epsilons` reduces the **entire batch's `tri_pos`** to a
+  scene diagonal and syncs on `.item()` at **every resolve call — once per
+  tile attempt** — for an answer fixed per batch
+  (`raster_pipeline.py:1379-1388`, called at `:2235`); two diagnostic
+  counters sync unconditionally per compaction (`sheets.py:1313-1314`); and
+  `gen_meta`/`layer_offsets_t` re-materialize batch-constant scalars into the
+  arena per chunk. Fix the first one on sight; the rest opportunistically.
 
 ## Anti-candidates — measured or decided; do not re-attempt without new evidence
 
@@ -335,6 +378,14 @@ Two enablers rather than wins:
   skips beats a gather.
 * **Byte-formula memory accounting**: the runtime model measures; keep it
   that way (`RENDERER_WORK_QUEUE.md`, "found sound").
+* **A per-pixel bezier evaluation accelerator**: already built. This audit
+  went in expecting a candidate here and found the pruning shipped —
+  16-band scanline bins for crossing parity, an 8x8 spatial grid for border
+  distance, circuit-level early-outs (`bezier_acceleration.py`), applied at
+  emission, traversal and every shadow walker; only the sheet resolve skips
+  it, correctly, because it re-uses the emission's stored hit. The worst
+  case degenerates on adversarial glyphs, but that is data, not structure
+  (Ox launches audit, claim 3 — REFUTED as asked).
 
 ## The boundary this document does not cross
 
