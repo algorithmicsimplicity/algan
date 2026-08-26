@@ -1,4 +1,14 @@
 {
+  "skillOverrides": {
+    "docx": "off",
+    "pptx": "off",
+    "xlsx": "off",
+    "pdf": "off",
+    "morning": "off",
+    "import-memory": "off",
+    "explainer-video-storyboard": "off",
+    "design": "off"
+  },
   "hooks": {
     "SessionStart": [
       {
