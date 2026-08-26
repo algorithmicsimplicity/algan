@@ -41,7 +41,7 @@ def _broadcast_channel(values, rows):
     let a stride of 0 do the broadcasting. Returns None for anything else, which
     makes the caller fall back to torch.
     """
-    if values.shape[-1] != 1 or values.dtype != torch.float32:
+    if values.shape[-1] != 1 or values.dtype != torch.float32 or values.numel() == 0:
         return None
     if all(stride == 0 for stride in values.stride()[:-1]):
         # Broadcast from a single element: take that one element, not N copies.
@@ -65,6 +65,7 @@ def _bake_glow_and_opacity(colors, opacity, glow):
     channels = colors.shape[-1]
     if (
         channels >= 2
+        and colors.numel() > 0
         and colors.dtype == torch.float32
         and colors.device.type == "cpu"
         and colors.is_contiguous()
@@ -86,6 +87,7 @@ def _bake_glow_and_opacity(colors, opacity, glow):
                 out.view(rows, channels),
                 packed_glow[1],
                 packed_opacity[1],
+                channels,
             )
             return out
 

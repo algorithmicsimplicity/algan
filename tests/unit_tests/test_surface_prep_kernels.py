@@ -17,6 +17,7 @@ Every test skips on a GPU arch, where the kernels are not dispatched at all.
 import pytest
 import torch
 
+import algan.rendering.taichi_runtime as taichi_runtime
 from algan.mobs.surfaces.surface import (
     compute_grid_vertex_normals,
     get_grid_to_triangle_indices,
@@ -28,6 +29,20 @@ from algan.rendering.taichi_runtime import cpu_prep_kernel_enabled, taichi_arch_
 pytestmark = pytest.mark.skipif(
     not taichi_arch_is_cpu(), reason="the prep kernels only dispatch on a CPU arch"
 )
+
+
+@pytest.fixture
+def all_kernels_on(monkeypatch):
+    """Opt the two off-by-default kernels in for the parity tests.
+
+    Only ``cpunormals`` ships enabled -- the gather and the colour bake measured
+    slower than torch (see ``_CPU_PREP_KERNELS_ON_BY_DEFAULT``). Their
+    correctness still has to be asserted, so the tests that exercise them turn
+    them on explicitly.
+    """
+    monkeypatch.setattr(
+        taichi_runtime, "_OPT_ENABLED", frozenset(("cpugather", "cpucolors"))
+    )
 
 
 def _sphere_grid(w=24, h=12, frames=2):
@@ -57,7 +72,7 @@ def _torch_arm(monkeypatch):
     monkeypatch.setattr(tl, "_OPT_DISABLED", frozenset(("cpukernels",)))
 
 
-def test_the_kernels_are_actually_dispatched():
+def test_the_kernels_are_actually_dispatched(all_kernels_on):
     """Guard against the whole suite passing because nothing ever ran.
 
     The gather declined silently once already: its index table is flattened to
@@ -80,9 +95,17 @@ def test_the_kernels_are_actually_dispatched():
     assert _gather_triangles_on_cpu(flat, indices) is not None
 
 
-def test_opt_disable_returns_the_torch_path(monkeypatch):
+def test_opt_disable_returns_the_torch_path(monkeypatch, all_kernels_on):
     _torch_arm(monkeypatch)
     assert not cpu_prep_kernel_enabled("cpunormals")
+    assert not cpu_prep_kernel_enabled("cpugather")
+    assert not cpu_prep_kernel_enabled("cpucolors")
+
+
+def test_only_the_normals_kernel_is_on_by_default(monkeypatch):
+    """The two that measured slower than torch must stay opt-in."""
+    monkeypatch.setattr(taichi_runtime, "_OPT_ENABLED", frozenset())
+    assert cpu_prep_kernel_enabled("cpunormals")
     assert not cpu_prep_kernel_enabled("cpugather")
     assert not cpu_prep_kernel_enabled("cpucolors")
 
@@ -127,7 +150,7 @@ def test_pole_normals_collapse_to_one_vector():
         assert torch.equal(pole, pole[..., :1, :].expand_as(pole))
 
 
-def test_welded_gather_shares_vertices_so_the_mesh_stays_closed():
+def test_welded_gather_shares_vertices_so_the_mesh_stays_closed(all_kernels_on):
     """A welded seam gathers column 0 twice, not two columns 1.7e-7 apart."""
     grid = _cylinder_grid()
     welded = grid_to_triangle_vertices(grid, weld=(True, False, False))
@@ -147,7 +170,9 @@ def test_welded_gather_shares_vertices_so_the_mesh_stays_closed():
     [(False, False, False), (True, False, False), (True, True, True)],
     ids=["open", "wrap_x", "wrap_and_poles"],
 )
-def test_gather_is_byte_identical_to_the_advanced_index(weld, monkeypatch):
+def test_gather_is_byte_identical_to_the_advanced_index(
+    weld, monkeypatch, all_kernels_on
+):
     grid = _sphere_grid()
     kernel = grid_to_triangle_vertices(grid, weld=weld)
     with monkeypatch.context() as patch:
@@ -161,7 +186,7 @@ def test_gather_is_byte_identical_to_the_advanced_index(weld, monkeypatch):
     [((1, 1, 1), (1, 1, 1)), ((1, 1, 1), (1, 7, 1)), ((3, 7, 1), (3, 7, 1))],
     ids=["both scalar", "per-row glow", "both per-row"],
 )
-def test_colour_bake_is_byte_identical(opacity_shape, glow_shape):
+def test_colour_bake_is_byte_identical(opacity_shape, glow_shape, all_kernels_on):
     """Broadcast from one element or carried per row, the kernel must match."""
     from algan.utils.tensor_utils import broadcast_all
 
@@ -180,6 +205,41 @@ def test_colour_bake_is_byte_identical(opacity_shape, glow_shape):
     # The input must survive: shader_param_values reads the unmodified colours
     # after the bake, which a clone guaranteed and an in-place kernel would not.
     assert not torch.equal(kernel, colors)
+
+
+def test_empty_inputs_fall_back_instead_of_reaching_a_kernel(all_kernels_on):
+    """Empty inputs must never reach a kernel.
+
+    A zero-extent tensor has nothing for Taichi to bind, and the compact form of
+    a broadcast channel would index element 0 of an empty buffer.
+    """
+    from algan.mobs.surfaces.surface import (
+        _gather_triangles_on_cpu,
+        _sides_and_crosses_on_cpu,
+    )
+    from algan.utils.tensor_utils import broadcast_all
+
+    assert _sides_and_crosses_on_cpu(torch.zeros(0, 4, 4, 3)) is None
+    assert (
+        _gather_triangles_on_cpu(
+            torch.zeros(0, 16, 3), torch.zeros(6, dtype=torch.int64)
+        )
+        is None
+    )
+    assert (
+        _gather_triangles_on_cpu(
+            torch.zeros(2, 16, 3), torch.zeros(0, dtype=torch.int64)
+        )
+        is None
+    )
+
+    # Matching empty leading dims: torch will not broadcast 0 rows against 1.
+    colors, opacity, glow = broadcast_all(
+        [torch.zeros(0, 5), torch.zeros(0, 1), torch.zeros(0, 1)], ignored_dims=[-1]
+    )
+    baked = _bake_glow_and_opacity(colors, opacity, glow)
+    assert baked.shape == colors.shape
+    assert baked.numel() == 0
 
 
 def test_colour_bake_leaves_a_non_float32_input_to_torch():

@@ -17,8 +17,20 @@ must keep the torch path.
 ``gather_grid_to_triangles``
     :func:`grid_to_triangle_vertices`' gather, ~20% of the stage across its two
     call sites. Pure permutation, so this one *is* byte-identical: it copies the
-    same elements the advanced index copies, and writing them from a kernel
-    skips torch's index-expansion machinery.
+    same elements the advanced index copies.
+
+    **It does not pay, and ships off by default** (see
+    ``taichi_runtime._CPU_PREP_KERNELS_ON_BY_DEFAULT``; opt in with
+    ``ALGAN_OPT_ENABLE=cpugather``). Measured at **0.69-1.03x** against
+    ``torch``'s advanced index on the shapes the batched build passes. It is the
+    same shape of work the timeline query turned out to be -- one load and one
+    store per element with nothing to fuse -- so it is bandwidth-bound, and
+    torch's vectorized gather already saturates the load while a kernel adds
+    launch overhead. Making the channel copy a compile-time unroll
+    (``channels: ti.template()``) moved it barely at all, which is the
+    confirmation rather than a fix. Kept because it is correct and the
+    measurement should be reproducible on hardware with different memory
+    bandwidth.
 
 **Watertightness.** The gather is an exact copy, so vertex positions are
 unchanged and the mesh topology cannot move. The normals kernel is *not*
@@ -149,6 +161,7 @@ def gather_grid_to_triangles(
         flat_grid: ti.types.ndarray(dtype=ti.f32, ndim=3),  # [B, W * H, C]
         indices: ti.types.ndarray(dtype=ti.i64, ndim=1),  # [L], L = triangles * 3
         out: ti.types.ndarray(dtype=ti.f32, ndim=3),  # [B, L, C]
+        channels: ti.template(),  # C, as a template so the copy unrolls
 ):
     """``flat_grid[..., indices, :]``, written directly.
 
@@ -163,8 +176,11 @@ def gather_grid_to_triangles(
     coincident duplicates, and it arrives here already built, so welding is
     carried through unchanged.
     """
-    C = flat_grid.shape[2]
     for b, i in ti.ndrange(flat_grid.shape[0], indices.shape[0]):
         source = indices[i]
-        for c in range(C):
+        # Taichi specializes on template arguments, so this is a compile-time
+        # range and the per-vertex copy unrolls to `channels` loads and stores
+        # instead of a runtime-bounded loop. The channel count is 3 or 5 here,
+        # so it costs a couple of specializations.
+        for c in ti.static(range(channels)):
             out[b, i, c] = flat_grid[b, source, c]

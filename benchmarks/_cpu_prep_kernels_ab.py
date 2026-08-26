@@ -35,6 +35,7 @@ cap_process_memory(float(os.environ.get("ALGAN_PREP_AB_MEM_GB", "10")))
 import torch  # noqa: E402
 
 import algan.animation_timeline.timeline as tl  # noqa: E402
+import algan.rendering.taichi_runtime as taichi_runtime  # noqa: E402
 from algan.mobs.surfaces.surface import (  # noqa: E402
     compute_grid_vertex_normals,
     get_grid_to_triangle_indices,
@@ -53,6 +54,10 @@ ROUNDS = int(os.environ.get("AB_ROUNDS", "5"))
 
 def _arm(kernels):
     tl._OPT_DISABLED = frozenset(() if kernels else ("cpukernels",))
+    # cpugather and cpucolors ship off by default (they measured slower than
+    # torch -- which is what this script is for), so the kernel arm has to opt
+    # them in explicitly or it would silently measure torch against torch.
+    taichi_runtime._OPT_ENABLED = frozenset(("cpugather", "cpucolors"))
 
 
 def _bits(t):

@@ -491,11 +491,16 @@ def _gather_triangles_on_cpu(flat_grid, indices):
         flat_grid.dtype != torch.float32
         or flat_grid.device.type != "cpu"
         or flat_grid.dim() < 2
+        or flat_grid.numel() == 0
         or not flat_grid.is_contiguous()
         or indices.dim() != 1
+        or indices.numel() == 0
         or indices.dtype != torch.int64
         or not indices.is_contiguous()
     ):
+        # Empty declines rather than being handled: Taichi has no use for a
+        # zero-extent ndarray and torch's advanced index already does the right
+        # thing with one.
         return None
 
     from algan.mobs.surfaces.surface_kernels_taichi import gather_grid_to_triangles
@@ -509,7 +514,7 @@ def _gather_triangles_on_cpu(flat_grid, indices):
         dtype=flat_grid.dtype,
         device=flat_grid.device,
     )
-    gather_grid_to_triangles(batched, indices, out)
+    gather_grid_to_triangles(batched, indices, out, channels)
     return out.reshape(*leading, gathered, channels)
 
 
@@ -527,6 +532,7 @@ def _sides_and_crosses_on_cpu(grid):
         or grid.device.type != "cpu"
         or grid.dim() < 3
         or grid.shape[-1] != 3
+        or grid.numel() == 0
         or not grid.is_contiguous()
     ):
         return None

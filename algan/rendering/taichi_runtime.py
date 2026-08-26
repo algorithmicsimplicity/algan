@@ -397,6 +397,34 @@ def taichi_arch_is_cpu():
     return _taichi_arch() == ti.cpu
 
 
+#: CPU batch-prep kernels that are dispatched by default.
+#:
+#: Only ``cpunormals`` pays. ``benchmarks/_cpu_prep_kernels_ab.py`` measures the
+#: other two at **0.69-1.03x** (the gather) and **0.79-0.81x** (the colour bake)
+#: -- both byte-identical, both slower than the torch call they replace, on the
+#: shapes the batched build passes. They are the same shape of work the timeline
+#: query turned out to be: a memory-bound copy with nothing to fuse, where
+#: torch's vectorized ``index_select``/``clone`` already saturates the load and a
+#: kernel only adds launch overhead. Making the channel loop a compile-time
+#: unroll (``channels: ti.template()``) moved them barely at all, which is the
+#: confirmation that they are bandwidth-bound rather than codegen-bound.
+#:
+#: They are kept, tested and opt-in rather than deleted so the measurement is
+#: reproducible and so a machine with different memory bandwidth can be checked
+#: with ``ALGAN_OPT_ENABLE=cpugather,cpucolors`` instead of a rebuild.
+_CPU_PREP_KERNELS_ON_BY_DEFAULT = frozenset(("cpunormals",))
+
+_OPT_ENABLED = None
+
+
+def _opt_enabled(name):
+    """Whether ``ALGAN_OPT_ENABLE`` names this off-by-default optimization."""
+    global _OPT_ENABLED
+    if _OPT_ENABLED is None:
+        _OPT_ENABLED = frozenset(env_str("ALGAN_OPT_ENABLE", "").split(","))
+    return name in _OPT_ENABLED
+
+
 def cpu_prep_kernel_enabled(name):
     """Whether the CPU batch-prep kernel called ``name`` should be dispatched.
 
@@ -404,10 +432,15 @@ def cpu_prep_kernel_enabled(name):
     ``ALGAN_OPT_DISABLE=cpukernels`` (all of them) or ``ALGAN_OPT_DISABLE=<name>``
     is set, so each kernel keeps the bisect switch the other prep optimizations
     use and an A/B can run the torch arm without a rebuild.
+
+    A kernel outside :data:`_CPU_PREP_KERNELS_ON_BY_DEFAULT` additionally needs
+    naming in ``ALGAN_OPT_ENABLE``, because it measured slower than torch.
     """
     from algan.animation_timeline.timeline import _opt_disabled
 
     if _opt_disabled("cpukernels") or _opt_disabled(name):
+        return False
+    if name not in _CPU_PREP_KERNELS_ON_BY_DEFAULT and not _opt_enabled(name):
         return False
     return taichi_arch_is_cpu()
 
