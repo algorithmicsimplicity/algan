@@ -1427,17 +1427,27 @@ def _shadow_identity_epsilons(merged):
     triangle of the same mesh keeps. Degenerate batches -- no triangles, or a
     bounding box that is not finite -- fall back to ``MIN_HIT_DISTANCE`` so a
     pathological scene can never end up with a zero or NaN floor.
+
+    The scene diagonal is fixed for the batch (``tri_pos`` is immutable once
+    merged) but this is called once per TILE ATTEMPT, and the reduction ends
+    in a device sync (``.item()``) -- so the diagonal is computed once and
+    cached on the merged scene; only the (cheap, toggle-respecting) floor
+    arithmetic runs per call.
     """
-    tri_pos = merged["tri_pos"]
-    scale = 0.0
-    if tri_pos.numel():
-        # tri_pos is [frames, N, 9]: three vertices, three coordinates each.
-        verts = tri_pos.reshape(-1, 3, 3)
-        lo = verts.amin(dim=(0, 1))
-        hi = verts.amax(dim=(0, 1))
-        diag = (hi - lo).norm().item()
-        if math.isfinite(diag):
-            scale = diag
+    scale = merged.get("_shadow_scene_diag")
+    if scale is None:
+        tri_pos = merged["tri_pos"]
+        scale = 0.0
+        if tri_pos.numel():
+            # tri_pos is [frames, N, 9]: three vertices, three coordinates
+            # each.
+            verts = tri_pos.reshape(-1, 3, 3)
+            lo = verts.amin(dim=(0, 1))
+            hi = verts.amax(dim=(0, 1))
+            diag = (hi - lo).norm().item()
+            if math.isfinite(diag):
+                scale = diag
+        merged["_shadow_scene_diag"] = scale
     eps_self = float(rt_settings.SHADOW_EPS_RELATIVE) * scale
     if not (eps_self > 0.0) or not math.isfinite(eps_self):
         eps_self = float(MIN_HIT_DISTANCE)

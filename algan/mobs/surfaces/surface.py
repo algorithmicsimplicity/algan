@@ -3077,6 +3077,15 @@ class Surface(Mob):
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
         copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
+        if getattr(self, "_texture_window_collapsed", False):
+            # The previous build proved the window constant and collapsed it
+            # (TEXTURE_WINDOW_COLLAPSE), so the premultiply/pad copies are per
+            # batch rather than per frame; only the materialized window itself
+            # still scales with the frame count. Priced off the previous
+            # build, like ``_texture_is_wrap_padded`` above -- a texture that
+            # STARTS animating re-prices dense one batch late, covered by the
+            # out-of-render-memory retry.
+            copies = 1
         return rows * texels * 4 * copies
 
     def _get_render_device_memory_used_per_timestep(self) -> int:
@@ -3102,7 +3111,16 @@ class Surface(Mob):
         inds = timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
-        return rows * texels * 4 * 6
+        factor = 6
+        if getattr(self, "_texture_window_collapsed", False):
+            # The previous build collapsed the window's downstream copies to
+            # one frame (TEXTURE_WINDOW_COLLAPSE): the per-frame residue is
+            # the materialized window itself, plus margin for the handful of
+            # per-batch images (premultiplied map, decode, merge concat,
+            # arena copy) the collapse amortizes. Same read-off-the-previous-
+            # build contract as the animation-device estimate.
+            factor = 2
+        return rows * texels * 4 * factor
 
     def _packed_grid_count(self):
         """Number of independent grids concatenated into ``self.grid``.
@@ -3290,6 +3308,32 @@ class Surface(Mob):
             opacity = self.opacity.unsqueeze(-2)
             if opacity.device != texels.device:
                 opacity = opacity.to(texels.device)
+            # The timeline materializes the window dense -- one image per
+            # frame whether or not anything edited it -- and every copy below
+            # (wrap pad, premultiply, and the merge's decode/concat/upload
+            # downstream) used to be made per frame. When the window and the
+            # opacity are byte-identical across the batch, one frame carries
+            # it: every consumer reads texture time as ``f % shape[0]``
+            # (rt_settings.TEXTURE_WINDOW_COLLAPSE kills this for byte-level
+            # A/B). Opacity first -- it is a handful of floats against a full
+            # image pass.
+            from algan.rendering.raytracing import settings as _rts
+
+            collapsed = (
+                _rts.TEXTURE_WINDOW_COLLAPSE
+                and texels.shape[0] > 1
+                and (opacity.shape[0] == 1 or bool((opacity[1:] == opacity[:1]).all()))
+                and bool((texels[1:] == texels[:1]).all())
+            )
+            if collapsed:
+                texels = texels[:1]
+                opacity = opacity[:1]
+            # Observed constancy, read by the batch sizer for the NEXT batch
+            # (the same read-off-the-previous-build pattern as
+            # ``_texture_is_wrap_padded``): a collapsed window's premultiply /
+            # pad / decode / merge copies are per batch, not per frame, so the
+            # texture prices at roughly the materialized window alone.
+            self._texture_window_collapsed = collapsed or texels.shape[0] == 1
             texture_map = (
                 wrap_pad_texture(
                     texels.view(

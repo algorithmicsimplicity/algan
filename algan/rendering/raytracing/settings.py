@@ -490,6 +490,89 @@ def set_bvh_defer(enabled):
 MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 
 
+# Extend the merge-time collapse to the per-frame GEOMETRY the list above
+# deliberately skipped: ``tri_pos`` / ``tri_obj`` / ``tri_closed`` and the
+# per-frame bounds/opacity tables that feed the BVH builds and the raster
+# host tables. "Rigid motion lives in tri_pos" is a rationale about the
+# moving case that forfeited the static case, where the equality probe is
+# one pass and the saving is (T-1)/T of the array
+# (DESIGN_renderer_structural_candidates.md item 1). Collapsed bounds also
+# reach the BVH builders at ``Tc == 1``, waking their static branches (one
+# instance spanning all frames -- ``build_stbvh``/``build_refit_bvh`` both
+# accept it) instead of building per-frame structure over byte-identical
+# boxes. Requires MERGE_DEDUP_TIME; ALGAN_MERGE_DEDUP_GEOMETRY=0 restores
+# the dense tables (byte-level A/B).
+MERGE_DEDUP_GEOMETRY = env_flag("ALGAN_MERGE_DEDUP_GEOMETRY", True)
+
+
+def set_merge_dedup_geometry(enabled):
+    """Toggle the merge-time collapse of temporally-constant geometry tables
+    (see ``MERGE_DEDUP_GEOMETRY``). Takes effect at the next batch's merge.
+    """
+    global MERGE_DEDUP_GEOMETRY
+    MERGE_DEDUP_GEOMETRY = bool(enabled)
+
+
+# Texture banks with a real per-map time length. The shared flat texel buffer
+# used to carry one leading time axis for ALL maps, unified to the batch
+# maximum at assembly -- so one animated map re-expanded every static map (and
+# the environment map) to T copies, and a static image was still stored once
+# per materialized frame. With this on, each map's frames are flattened along
+# the texel axis (frame f of a map at (offset, w, h) starts at
+# ``offset + (f % t) * w * h``) and the map's time length ``t`` rides in the
+# texture meta (cols 10-12), so the assembled buffer's leading axis is always
+# 1 and every map keeps its own length. Byte-identical: the sampler reads the
+# same texel values through ``(f % t)`` that it read through the buffer's
+# ``f % shape[0]``. ALGAN_TEXTURE_TIME_FLAT=0 restores the shared time axis.
+TEXTURE_TIME_FLAT = env_flag("ALGAN_TEXTURE_TIME_FLAT", True)
+
+
+def set_texture_time_flat(enabled):
+    """Toggle per-map texture time lengths (see ``TEXTURE_TIME_FLAT``).
+    Takes effect at the next batch's scene merge.
+    """
+    global TEXTURE_TIME_FLAT
+    TEXTURE_TIME_FLAT = bool(enabled)
+
+
+# Content-deduplicate the shared texel buffer: a map whose processed texels
+# (post decode/pad/flatten) equal an already-appended map's reuses that map's
+# placement instead of appending a second copy. Every textured primitive is a
+# singleton collection, so N mobs sharing one image used to store the image N
+# times (DESIGN_renderer_structural_candidates.md item 5). Byte-identical by
+# construction: equality is exact (``torch.equal`` after a shape prefilter),
+# and two prims reading one placement read the same texels they read from two.
+# ALGAN_TEXTURE_CONTENT_DEDUP=0 restores per-map appends.
+TEXTURE_CONTENT_DEDUP = env_flag("ALGAN_TEXTURE_CONTENT_DEDUP", True)
+
+
+def set_texture_content_dedup(enabled):
+    """Toggle texture-bank content dedup (see ``TEXTURE_CONTENT_DEDUP``).
+    Takes effect at the next batch's scene merge.
+    """
+    global TEXTURE_CONTENT_DEDUP
+    TEXTURE_CONTENT_DEDUP = bool(enabled)
+
+
+# Collapse a temporally-constant colour-texture window before the premultiply
+# / wrap-pad / decode / merge chain runs over it (Surface.get_render_primitives).
+# The timeline materializes a wide attribute's window dense -- one image per
+# frame whether or not anything edited it -- and every downstream copy used to
+# be made per frame. When the window's frames and the surface's opacity are
+# byte-identical across the batch, one frame carries the batch (every consumer
+# reads texture time as ``f % shape[0]``). ALGAN_TEXTURE_WINDOW_COLLAPSE=0
+# restores the dense chain (byte-level A/B).
+TEXTURE_WINDOW_COLLAPSE = env_flag("ALGAN_TEXTURE_WINDOW_COLLAPSE", True)
+
+
+def set_texture_window_collapse(enabled):
+    """Toggle the static colour-texture window collapse (see
+    ``TEXTURE_WINDOW_COLLAPSE``). Takes effect at the next primitive build.
+    """
+    global TEXTURE_WINDOW_COLLAPSE
+    TEXTURE_WINDOW_COLLAPSE = bool(enabled)
+
+
 # Per-triangle SURFACE identity at the granularity the mob declares, rather than
 # one id per merged COLLECTION MEMBER. The member count is right only when one
 # member is one surface, and it is wrong at both ends: ``Polyhedron`` hands the

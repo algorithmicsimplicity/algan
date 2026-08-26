@@ -1518,6 +1518,12 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     offset = tri_tex_meta[prim_uv_index, 0]
     width = tri_tex_meta[prim_uv_index, 1]
     height = tri_tex_meta[prim_uv_index, 2]
+    # Per-map time length (meta col 10): under TEXTURE_TIME_FLAT a map's
+    # frames sit consecutively along the texel axis, so frame f of the map
+    # starts at ``offset + (f % t) * w * h`` while the buffer's own time axis
+    # stays at length 1. With the legacy shared axis t == 1 and this is the
+    # old addressing exactly.
+    tmap = ti.max(tri_tex_meta[prim_uv_index, 10], 1)
 
     px = u * (width - 1.0)
     py = v * (height - 1.0)
@@ -1536,6 +1542,9 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
 
     tc = f % textures.shape[0]
     num_points = textures.shape[1]
+    wi = ti.cast(width, ti.i32)
+    hi = ti.cast(height, ti.i32)
+    frame_base = (f % tmap) * (wi * hi)
 
     for corner in ti.static(range(4)):
         cx = ti.cast(x_floor + (corner % 2), ti.i32)
@@ -1546,8 +1555,8 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
         cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
         cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
 
-        local_idx = cx * ti.cast(height, ti.i32) + cy
-        abs_idx = offset + local_idx
+        local_idx = cx * hi + cy
+        abs_idx = offset + frame_base + local_idx
         abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
 
         color += w * ti.math.vec4(textures[tc, abs_idx, 0],
