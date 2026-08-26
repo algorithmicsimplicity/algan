@@ -31,6 +31,72 @@ from algan.utils.tensor_utils import (
 )
 
 
+def _broadcast_channel(values, rows):
+    """A contiguous 1-D buffer plus the row stride that reads ``values`` from it.
+
+    ``glow`` and ``opacity`` arrive as ``broadcast_all`` results -- ``expand``ed
+    stride-0 views over the colour rows -- and Taichi takes only contiguous
+    ndarrays. Rather than materialize the expansion (which is most of the traffic
+    the kernel exists to avoid), hand the kernel the underlying element(s) and
+    let a stride of 0 do the broadcasting. Returns None for anything else, which
+    makes the caller fall back to torch.
+    """
+    if values.shape[-1] != 1 or values.dtype != torch.float32 or values.numel() == 0:
+        return None
+    if all(stride == 0 for stride in values.stride()[:-1]):
+        # Broadcast from a single element: take that one element, not N copies.
+        return values[(0,) * (values.dim() - 1)].contiguous().view(-1), 0
+    if values.numel() != rows:
+        return None
+    return values.contiguous().view(-1), 1
+
+
+def _bake_glow_and_opacity(colors, opacity, glow):
+    """``colors`` with glow added to channel ``-2`` and opacity scaled into ``-1``.
+
+    The torch form is a full-size clone plus two in-place passes over strided
+    one-channel views of it -- three passes for one add and one multiply per row,
+    and P10b measures it at 13.5% of ``get_render_primitives_batched``. On a CPU
+    Taichi arch a single kernel pass replaces all three, byte-identically; every
+    other case keeps the torch path.
+    """
+    from algan.rendering.taichi_runtime import cpu_prep_kernel_enabled
+
+    channels = colors.shape[-1]
+    if (
+        channels >= 2
+        and colors.numel() > 0
+        and colors.dtype == torch.float32
+        and colors.device.type == "cpu"
+        and colors.is_contiguous()
+        and cpu_prep_kernel_enabled("cpucolors")
+    ):
+        rows = colors.numel() // channels
+        packed_glow = _broadcast_channel(glow, rows)
+        packed_opacity = _broadcast_channel(opacity, rows)
+        if packed_glow is not None and packed_opacity is not None:
+            from algan.rendering.primitives.triangle_primitive_kernels_taichi import (
+                apply_glow_and_opacity,
+            )
+
+            out = torch.empty_like(colors)
+            apply_glow_and_opacity(
+                colors.view(-1),
+                packed_glow[0],
+                packed_opacity[0],
+                out.view(-1),
+                packed_glow[1],
+                packed_opacity[1],
+                channels,
+            )
+            return out
+
+    out = colors.clone()
+    out[..., -2:-1] += glow
+    out[..., -1:] *= opacity
+    return out
+
+
 class TrianglePrimitive(RenderPrimitive):
     #: Parameter values of ``SETTINGS.style.default_material``, carried by a
     #: primitive built through the no-material fallback so the process-wide
@@ -176,9 +242,7 @@ class TrianglePrimitive(RenderPrimitive):
         colors, opacity, glow = broadcast_all(
             [colors, opacity, glow], ignored_dims=[-1]
         )
-        self.colors = colors.clone()
-        self.colors[..., -2:-1] += glow
-        self.colors[..., -1:] *= opacity
+        self.colors = _bake_glow_and_opacity(colors, opacity, glow)
         self.glow = glow
         self.normals = normals
         self.shader_param_names = list(shader_kwargs.keys())

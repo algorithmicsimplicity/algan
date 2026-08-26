@@ -42,6 +42,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P9** widening the batched bezier build | **shipped**, byte-identical (a lossless two-arm render: 0 differing pixels), gated by `ALGAN_BEZIER_GROUP_RUNS`. A clashing group is split into **maximal runs of consecutive batchable actors** instead of reverted wholesale -- the layout constraint is positional, not group-wide. On a clashing scene, 97.6% of circuits move from the per-actor build to the batched one and `get_batch_of_primitives` runs at **0.43-0.48x**. It also turned up a real defect in the builder it widens: it flattened curves to twice the per-actor path's chord tolerance, masked by the analytic-AA route's clamp. See P9 |
 | **P13** batching an updater across its mobs | **shipped for the idle-updater family**, bit-identical at the buffer level (all attribute timelines plus non-timeline `direction`s, two frame windows, three layer sizes) and 0-differing-pixels on the nn scene; gated by `ALGAN_BATCHED_IDLE_UPDATER` (default on). The four per-mob loops of `_update_neural_net_idle` became three timeline writes: warm-batch prep **0.78x** (medians 2380 -> 1860 ms per 17-frame window on a loaded CPU box), timeline `modify` calls 258 -> 6 and `get` calls 2841 -> 1436 per batch. Reads-before-writes makes any unsupported structure fall back cleanly. See P13 |
 | **T5** sparse-coverage host chain | **the host loops are done; T5's own item is the one that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame), and the conflict-rank scan followed on 2026-08-21 (`SHEET_RANK_KERNEL`, default on, bit-identical, 33 -> 6 ms of a 1080p frame on CPU). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Three measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
+| **P13** the sides-and-crosses block as a CPU Taichi kernel | **shipped, default on** -- **2.3-5.0x on `compute_grid_vertex_normals`** (the block itself is 8-11x; the rest of the function is unchanged, so Amdahl caps it there). Dispatched only when Taichi's arch is the CPU, because on CUDA Taichi would stage every argument through VRAM on the prep worker. **Not bit-identical** -- 1-2 ulp on ~4% of elements, and the cause is `torch.cross`'s rounding on the cross product's cancelling third component, not Taichi (`fast_math=False` changes nothing). Two-arm full renders: 4 of 6 scenes byte-identical, `solids_and_camera` 13 pixels at 1 channel value, `materials_and_lighting` 0.006% of pixels past tolerance -- the documented epsilon/tie machinery. Watertightness holds structurally and is asserted. **Two sibling kernels do not pay and ship off**: the `grid_to_triangle_vertices` gather (0.84-1.20x) and `TrianglePrimitive`'s colour bake (0.89-0.92x), both byte-identical. Both were *slower* at first for a reason worth knowing -- `ti.ndrange` over several dimensions runs a copy at 1.7-4.3 GB/s against a flat 1-D loop's 14-22, same bytes (`_taichi_loop_shapes_taichi.py`). See P13 |
 | **T3**, **T6** | untouched; both shrank in share |
 
 **Read this before picking anything up.** The 2026-08-16 round moved the
@@ -1842,6 +1843,125 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 >   copy to pay for -- the clone already exists.
 > * **Fusing the two whole-stack gathers (~2%).** Cheap, byte-identical (a
 >   gather is a permutation), and small. Do it when touching that code anyway.
+
+### P13 -- the sides-and-crosses block as a CPU Taichi kernel (shipped, default on)
+
+> **Shipped and default on**, gated by `ALGAN_OPT_DISABLE=cpunormals` (or
+> `cpukernels` for all three). `benchmarks/_cpu_prep_kernels_ab.py` is the A/B;
+> `tests/unit_tests/test_surface_prep_kernels.py` is the correctness net.
+>
+> P10b left "sides + crosses" as ~35% of the stage and named only one large win
+> for the torch form -- collapsing the four cross products with
+> `cross(xm,ym) + ... = cross(xm - xp, ym - yp)` -- which is not bit-identical
+> and breaks at the boundaries. A kernel gets a bigger reduction on better
+> terms. The torch form is arithmetically cheap and structurally expensive:
+> four `_wrapped_difference` buffers, four cross buffers and one accumulator,
+> **nine full-size tensors written to produce one** at ~57 flops per grid point,
+> every intermediate read exactly once. One stencil pass reads the grid and
+> writes the normals.
+>
+> | | measured |
+> | --- | --- |
+> | the block alone, `[120, 50, 24, 12, 3]` | **8.4-11.3x** |
+> | whole `compute_grid_vertex_normals`, `[19, 50, 24, 12, 3]` | **2.3x** |
+> | whole `compute_grid_vertex_normals`, `[19, 50, 40, 20, 3]` | **5.0x** |
+> | whole `compute_grid_vertex_normals`, `[120, 50, 24, 12, 3]` | **4.6x** |
+>
+> The function-level numbers are lower than the block's because the seam merges,
+> pole fans and normalize are untouched -- P10b measures them at ~4% each, and
+> the block at 76.8%, which is the Amdahl ceiling this lands against.
+>
+> **CPU arch only.** Every Algan kernel takes torch tensors, and Taichi stages
+> any argument not already on its arch's device. Launching this with the CPU
+> batch tensors while the arch is CUDA would copy the grid *and* the result
+> through VRAM on the prep worker thread that is deliberately kept off the GPU
+> -- the trap that made the timeline's own kernels a liability. So this is a
+> CPU-render optimization today; the CUDA case needs the arch-coexistence work
+> (AOT + the C API), which is a separate subsystem.
+>
+> **Not bit-identical, and not for the reason expected.** 1-2 ulp on ~4% of
+> elements. Rebuilding with `fast_math=False` changes nothing, so Taichi's
+> codegen is not responsible. On the cross product's third component
+> -- `a0 * b1 - a1 * b0`, the one that catastrophically cancels for a sphere's
+> tangential sides -- `torch.cross` matches neither that expression in float32
+> nor its products taken exactly in double and rounded once; the other two
+> components match both. Taichi 1.7.4 exposes no FMA intrinsic, so no
+> formulation of the kernel reproduces it.
+>
+> **Rendered output moves, slightly.** Two-arm full renders (kernels on vs off,
+> CPU): `complex_hierarchy_become`, `manim_compat_and_plots`,
+> `shapes_and_timeline` and `text_and_media` byte-identical;
+> `solids_and_camera` 13 pixels of 66.6M at 1 channel value (inside tolerance);
+> `materials_and_lighting` 0.014% of pixels differ, 0.006% by more than 2, peak
+> 14. That is sparse speckle through the epsilon/tie machinery the batchwide
+> audit documents (depth-tie bins, shadow seam de-dup, f16 box rounding), not a
+> shading change. Baselines were **not** regenerated here -- the committed CPU
+> set is already stale on this box (all 6 scenes and `tests/fast` fail
+> identically on the base branch), so that is a separate job on a machine that
+> owns them.
+>
+> **Watertightness holds structurally**, which is what let this ship without
+> bit-identity. The kernel produces the same `unnormalized_normals` buffer the
+> seam-merge and pole-fan code consumes, and that code assigns one shared value
+> to both sides of a closed seam and one to a whole pole row -- so grid points
+> that must agree still read the same element afterwards. This matters beyond
+> shading: logical PN patches build curvature from corner normals, so a seam
+> whose sides disagreed would crack the geometry. Asserted bitwise on both
+> closed axes and both poles, sphere and cylinder.
+>
+> **Two sibling kernels were implemented and do not pay.** Both byte-identical,
+> both shipped **off** (`ALGAN_OPT_ENABLE=cpugather,cpucolors`):
+>
+> | kernel | row | measured |
+> | --- | --- | --- |
+> | `gather_grid_to_triangles` | `grid_to_triangle_vertices`, ~20% of the stage | **0.84-1.20x** |
+> | `apply_glow_and_opacity` | `TrianglePrimitive` colour bake, 13.5% | **0.89-0.92x** |
+>
+> Both first measured **worse** than that -- 0.69-1.03x and 0.79-0.81x -- and
+> chasing why produced the more useful finding, recorded in
+> `benchmarks/_taichi_loop_shapes_taichi.py`. "Memory-bound" explains why a
+> kernel is not *faster*; it does not explain why one is *slower*. Copying the
+> same 35 MB four ways:
+>
+> | form | GB/s |
+> | --- | --- |
+> | `torch.Tensor.copy_` | 30-59 |
+> | ti flat 1-D loop | 14-22 |
+> | ti nested plain loops, 3-D indexing | ~7.3 |
+> | ti `ndrange(B, L)` + static channel | ~4.3 |
+> | ti `ndrange(B, L, C)` | **1.7-1.9** |
+>
+> **`ti.ndrange` over several dimensions is expensive**: Taichi flattens it into
+> one parallel loop and recovers each index per iteration, and that arithmetic
+> dominates a copy whose useful work is one load and one store. Multi-dimensional
+> ndarray addressing costs again on top, ~2-3x. Rewriting the gather to a flat
+> loop with flat offsets took it from 0.68x to parity; the same rewrite took the
+> colour bake from 0.79x to 0.90x. **Neither kernel was slow because gathers or
+> copies are slow -- they were slow because of how the loops were written.**
+>
+> What is left is structural: even Taichi's best form streams below torch's
+> vectorized `copy_`, and a bake that is one add and one multiply over a
+> full-width copy cannot make that back. The colour bake's "three passes to one"
+> premise also overcounted -- the two in-place passes touch one channel each, so
+> torch moves ~`14N` floats against the kernel's `10N`, a 1.4x traffic saving
+> rather than 3x. Launch overhead is ~80 us per call, which only matters for
+> small work. `advanced_optimization` is **not** the explanation, which is worth
+> recording because it is the obvious suspect: `ALGAN_ADV_OPT=1` changes nothing
+> outside noise.
+>
+> **The flattening does not help the normals kernel** (0.87-1.12x, so it keeps
+> its `ndrange(B, W, H)`), and that is the rule rather than an exception: index
+> overhead matters in proportion to how little work each element does. ~57 flops
+> per grid point swamps it; one load and one store does not.
+>
+> **The lesson generalizes: in this pipeline a kernel wins where there are
+> intermediates to fuse, and loses where there are not -- but before concluding
+> a kernel cannot win, check the loop shape.**
+>
+> **Concurrency note.** Batch prep runs on a `ThreadPoolExecutor` worker while
+> the main thread renders, so on a CPU arch both threads now launch Taichi
+> kernels into the one `Program`. Twelve minutes of full renders across six
+> scenes completed clean, twice, which is the evidence; no lock was needed.
 
 ### P11b -- the sides written without a materialized roll (shipped)
 

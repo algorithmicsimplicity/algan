@@ -458,7 +458,94 @@ def grid_to_triangle_vertices(grid, weld=(False, False, False)):
     W, H = grid.shape[-3], grid.shape[-2]
     flat_grid = grid.reshape(*grid.shape[:-3], W * H, grid.shape[-1])
     indices = get_grid_to_triangle_indices(W, H, grid.device, weld)
+    fused = _gather_triangles_on_cpu(flat_grid, indices)
+    if fused is not None:
+        return fused
     return flat_grid[..., indices, :]
+
+
+def _cpu_prep_kernel(name):
+    """Whether to dispatch the CPU batch-prep kernel called ``name``.
+
+    Imported lazily: this module is on the animation side and must not pull
+    Taichi in at import, the same reason ``timeline`` defers its own kernel
+    import.
+    """
+    from algan.rendering.taichi_runtime import cpu_prep_kernel_enabled
+
+    return cpu_prep_kernel_enabled(name)
+
+
+def _gather_triangles_on_cpu(flat_grid, indices):
+    """``flat_grid[..., indices, :]`` through the kernel, or None to decline.
+
+    Declines on anything the kernel does not cover -- a non-CPU arch, a
+    non-float32 or non-contiguous grid, an index table that is not the flat
+    ``[triangles * 3]`` one ``get_grid_to_triangle_indices`` builds -- so the
+    caller falls back to the advanced index. Byte-identical when it does run,
+    since both paths copy the same elements.
+    """
+    if not _cpu_prep_kernel("cpugather"):
+        return None
+    if (
+        flat_grid.dtype != torch.float32
+        or flat_grid.device.type != "cpu"
+        or flat_grid.dim() < 2
+        or flat_grid.numel() == 0
+        or not flat_grid.is_contiguous()
+        or indices.dim() != 1
+        or indices.numel() == 0
+        or indices.dtype != torch.int64
+        or not indices.is_contiguous()
+    ):
+        # Empty declines rather than being handled: Taichi has no use for a
+        # zero-extent ndarray and torch's advanced index already does the right
+        # thing with one.
+        return None
+
+    from algan.mobs.surfaces.surface_kernels_taichi import gather_grid_to_triangles
+
+    points, channels = flat_grid.shape[-2], flat_grid.shape[-1]
+    leading = flat_grid.shape[:-2]
+    gathered = indices.shape[0]
+    batches = flat_grid.numel() // (points * channels)
+    out = torch.empty(
+        (batches, gathered, channels), dtype=flat_grid.dtype, device=flat_grid.device
+    )
+    # Flattened views on both sides: the kernel indexes with flat offsets, which
+    # measured 1.7x faster than the multi-dimensional form (see its comment).
+    gather_grid_to_triangles(
+        flat_grid.reshape(-1), indices, out.view(-1), points, channels
+    )
+    return out.reshape(*leading, gathered, channels)
+
+
+def _sides_and_crosses_on_cpu(grid):
+    """The fused sides + crosses + accumulate pass, or None to decline.
+
+    Not bit-identical to the torch block it replaces (``surface_kernels_taichi``
+    records why, and why the difference cannot open a seam); every other reason
+    to decline is a shape or dtype the kernel does not cover.
+    """
+    if not _cpu_prep_kernel("cpunormals"):
+        return None
+    if (
+        grid.dtype != torch.float32
+        or grid.device.type != "cpu"
+        or grid.dim() < 3
+        or grid.shape[-1] != 3
+        or grid.numel() == 0
+        or not grid.is_contiguous()
+    ):
+        return None
+
+    from algan.mobs.surfaces.surface_kernels_taichi import grid_normals_sides_crosses
+
+    W, H = grid.shape[-3], grid.shape[-2]
+    batched = grid.reshape(-1, W, H, 3)
+    out = torch.empty_like(batched)
+    grid_normals_sides_crosses(batched, out)
+    return out.reshape(grid.shape)
 
 
 def _grid_normals_paired():
@@ -528,7 +615,14 @@ def compute_grid_vertex_normals(grid):
     leading dims (time, or a stack of same-shaped surfaces), which lets
     :func:`get_render_primitives_batched` run this once for many surfaces.
     """
-    if _grid_normals_paired():
+    fused = _sides_and_crosses_on_cpu(grid)
+    if fused is not None:
+        # One stencil pass instead of the nine full-size intermediates the torch
+        # block below materializes. Everything after this point -- the seam
+        # merges, the pole fans, the normalize -- is shared, which is what keeps
+        # closed seams and poles watertight regardless of which arm ran.
+        unnormalized_normals = fused
+    elif _grid_normals_paired():
         # The four triangles around a vertex use each neighbour twice, as the
         # second side of one and the first side of the next. The stacked form
         # below made that literal: eight copies of the grid in one
