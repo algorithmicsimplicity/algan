@@ -1810,17 +1810,20 @@ DIRECT_SPECULAR_LOBE = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 # at PREVIEW, lossless libx264rgb encode, benchmarks/_video_diff.py): worst
 # channel diff exactly 1 -- 4424 byte-differing pixel-instances over 50
 # frames (worst frame 107 of 278784), nothing over the suites' tol-2 gate.
-# Any movement is enough to move committed render baselines, so the default
-# is OFF: the default path stays byte-identical to the pre-change tree
-# (verified against it directly), and ALGAN_WEIGHT_FLOOR_EXIT=1 /
-# SETTINGS.raytracing.experimental.weight_floor_exit opts in.
+# The default is ON: the project owner reviewed that measurement and accepted
+# a 1-LSB maximum variation without visual inspection (2026-08-26), the same
+# deliberate posture as the pn_criterion fast_math exception. The committed
+# render baselines stay valid because every suite tolerates channel
+# deviations up to 2. ALGAN_WEIGHT_FLOOR_EXIT=0 /
+# SETTINGS.raytracing.experimental.weight_floor_exit opts out and restores
+# the pre-change tree byte-identically (verified against it directly).
 #
 # Gate: a ``ti.template()`` argument of ``wavefront_shade`` (the kernel is at
 # Taichi's runtime-argument ceiling; see the packed-ndarray comments there),
 # read live per batch at the call sites -- so flipping it mid-process
 # compiles the other variant rather than baking (CLAUDE.md's ti.static
 # hazard). OFF compiles today's kernel body exactly.
-WEIGHT_FLOOR_EXIT = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", False)
+WEIGHT_FLOOR_EXIT = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 
 
 # Per-mob shadow flags (``Mob.casts_shadows`` / ``Mob.receives_shadows``).

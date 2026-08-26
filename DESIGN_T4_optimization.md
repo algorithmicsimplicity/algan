@@ -342,15 +342,22 @@ because the payload transport was still being solved. Do this first.
    render still completes.
 4. **Shadow ray cost by another route** — see §3 for why the obvious cull is
    closed.
-5. ~~**The 21 immortal rays**~~ **Diagnosed 2026-08-26**
-   (`scratch_perf/r3/ox/REPORT_immortal_rays.md`): not immortal, not a
-   rendering bug — a missing weight-floor exit for rays whose last hit
-   bounced in place (see §2's corrected entry). What remains is the fix:
-   the report's §7 one-liner (the floor check in `wavefront_shade`'s
-   post-loop block, retiring as completion, not truncation), behind a
-   toggle, with an A/B parity render — the report bounds the dropped
-   transport at under half a u8 LSB but that is an envelope argument, not
-   a measurement.
+5. ~~**The 21 immortal rays**~~ **Diagnosed and FIXED 2026-08-26**
+   (`scratch_perf/r3/ox/REPORT_immortal_rays.md`,
+   `REPORT_weight_floor_impl.md`): not immortal, not a rendering bug — a
+   missing weight-floor exit for rays whose last hit bounced in place (see
+   §2's corrected entry). The fix is in: the floor check in
+   `wavefront_shade`'s post-loop block (completion, not truncation), gated
+   as a `ti.template()` argument read live per batch
+   (`ALGAN_WEIGHT_FLOOR_EXIT` /
+   `SETTINGS.raytracing.experimental.weight_floor_exit`). Measured at
+   PREVIEW: worst channel diff **exactly 1** (4,424 pixel-instances over
+   50 frames, inside every suite's tol-2 gate); gate-off is byte-identical
+   to the pre-change tree, proven directly. It also culls ~91k mid-chain
+   sub-floor bouncers the diagnosis had not enumerated: drain launches
+   132 -> 72 (−45%) at PREVIEW. **Default ON by the project owner's
+   decision** (1-LSB variation accepted without visual inspection). T4
+   timing and the CUDA compile of the new variant: next Kaggle round.
 6. **Cold start** — 85.85 s at UHD against 29.90 s warm, almost all Taichi JIT.
    Amortized for a long video, so it ranks below everything above, but it is the
    whole story for a short one.
