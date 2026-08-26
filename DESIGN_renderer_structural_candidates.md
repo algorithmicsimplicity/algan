@@ -97,33 +97,49 @@ change (see `CLAUDE.md`'s merged-field warning).
 
 Two structural facts about the deterministic shadow query
 (`_shadow_occluded`, `raytrace_kernels_taichi.py:2743`; mode selection
-`tracer.py:1358-1381`):
+`tracer.py:1358-1381`; the Ox accel audit,
+`scratch_perf/ox/REPORT_struct_accel.md`, traced the exact loop nests):
 
 * **Default behaviour is the most expensive mode.** With `SHADOW_ANYHIT` off
-  (the default), every shadow ray runs an *ordered closest-hit march that
-  restarts a full traversal of every geometry type's tree once per peeled
-  surface* — on batches that are provably all-opaque, where a single unordered
-  any-hit walk answers the same question. The cheap modes exist and are wired:
-  mode 3 (any-hit only, march compiled out) engages when the batch provably
-  contains no translucent geometry, mode 2 (any-hit pre-pass, march fallback)
-  for mixed batches, mode 4 ("gather", KBUF-batched peel — `ceil((k+1)/KBUF)`
-  traversals instead of `k+1`) for any batch. They ship **default off**,
-  "experimental while the pixel suites qualify it" (`settings.py:599-624`),
-  and are byte-identical except two enumerated corner cases where the any-hit
-  answer is the physically correct one. The candidate is qualification, not
-  engineering: run the suites under each mode (the harness exists,
-  `benchmarks/_shadow_anyhit_check.py`), then default `SHADOW_ANYHIT=1`.
-* **The fan multiplies serial tree walks.** `raster_shadow_trace`
-  (`raster_taichi.py:2744`) launches one thread per (event, light); inside it
-  the soft-shadow fan runs `SOFT_SHADOW_SAMPLES` serially, and each sample's
-  `_shadow_occluded` walks the triangle tree and the bezier tree one after the
-  other. So a soft-shadowed scene with both geometry types pays
-  `events x lights x samples x trees` sequential traversals, and an area light
-  multiplies further (`K` emitter rows x fan). The single mixed-type any-hit
-  tree `DESIGN_hybrid_raster.md` §13.3 proposes — leaves carrying a type bit +
-  typed primitive index — removes the `x trees` factor and lets one walk
-  terminate on the first opaque hit of either type. Shadow rays need any-hit
-  only, so this tree can also drop the classic tree's ordering obligations.
+  (the default), every shadow ray runs the ordered transmittance march —
+  *realized as repeated nearest-hit restarts*: a peel loop up to
+  `MAX_SURFACES_PER_RAY` where every iteration begins a complete fresh
+  two-tree nearest-hit traversal (`raytrace_kernels_taichi.py:2915, 2925`).
+  A k-surface translucent stack pays k+1 full traversal pairs; an all-opaque
+  batch pays the ordered machinery where a single unordered any-hit walk
+  answers the same question. The cheap modes exist and are wired: mode 3
+  (any-hit only, march compiled out, first-hit early exit) when the batch
+  provably has no translucent geometry, mode 2 (march + one deferred any-hit
+  walk) for mixed batches, mode 4 ("gather", KBUF-batched peel —
+  `ceil((k+1)/KBUF)` traversals instead of `k+1`) for any batch. They ship
+  **default off**, "experimental while the pixel suites qualify it"
+  (`settings.py:599-624`), byte-identical except two enumerated corner cases
+  where the any-hit answer is the physically correct one. The candidate is
+  qualification, not engineering: run the suites under each mode (the harness
+  exists, `benchmarks/_shadow_anyhit_check.py`), then default
+  `SHADOW_ANYHIT=1`.
+* **The fan multiplies serial tree walks.** The audit's loop-nest reading of
+  `raster_shadow_trace` (`raster_taichi.py:2744`): one thread per
+  (event, light); inside it the fan runs serially — `ns = 8`
+  (`SOFT_SHADOW_SAMPLES`) for soft lights, and the analytic-AA secondary
+  sampling forces `ns >= 4` even for *hard* lights — and each sample's
+  `_shadow_occluded` walks the triangle tree then the bezier tree. Total:
+  **events x lights x fan samples x (peels+1) x trees-present**, with area
+  lights multiplying further (K emitter rows). The single mixed-type any-hit
+  tree `DESIGN_hybrid_raster.md` §13.3 proposes removes the trees factor and
+  lets one walk terminate on the first opaque hit of either type. The audit
+  scoped it concretely: the leaf needs a type discriminator (the refit link
+  word's primitive field is already narrowed to 29 bits, so the bit must be
+  stolen or ride an aux array), its consumers are `_shadow_anyhit_opaque` and
+  `_shadow_occluded`'s callers (the sheet route's shadow trace and both
+  wavefront shadow paths), the Monte Carlo megakernels keep per-type trees
+  (they need ordered hits) — and `_collect_hits` already interleaves both
+  types into one KBUF gather with a packed hit type, so the mixed tree
+  "promotes that gather-level merge into the structure". Note also two counts
+  the design docs still get wrong (PN deletion predates them): there are two
+  geometry types and at most **four** trees per batch, and by default
+  `OPAQUE_BVH_SKIP_DEAD` already aliases the opaque-prepass trees to the main
+  ones (~40% of the per-batch BVH build already saved).
 
 **Impact.** Breadth: shadows are opt-in (`SHADOWS` defaults off), so this is
 the shadowed population only — but every lit-3D production scene turns them
@@ -163,7 +179,11 @@ already implement the static case** (`build_stbvh`: `Tc == 1` → one instance
 spanning all frames, `stbvh.py:692-735`; `build_refit_bvh` accepts `Tc == 1`
 and "dedupes to one time slice", `refit_bvh.py:284-298`) — and both branches
 are **dead code**, because `_pack_frame_visibility` unifies bounds against
-the corners' frame count so `frame_lo/hi` always arrive with T rows. The
+the corners' frame count so `frame_lo/hi` always arrive with T rows. (The
+two audits disagreed here — the accel audit read the refit docstring's
+"static geometry dedupes to T = 1" as shipped, the merge audit called the
+branch starved; the probe settles it: the all-static arm's merged `tri_pos`
+is `[20, ...]` dense, so the collapse never receives a collapsed input.) The
 others: `geometry_static` (dies at the dice's dense `allocate()`),
 `_frame_broadcast_base`'s stride-0 detection (feeds only the level-search
 kernels — but it is the proven precedent: one real frame plus a stride the
@@ -386,6 +406,16 @@ Two enablers rather than wins:
   it, correctly, because it re-uses the emission's stored hit. The worst
   case degenerates on adversarial glyphs, but that is data, not structure
   (Ox launches audit, claim 3 — REFUTED as asked).
+
+## Doc drift the audits surfaced
+
+For `RENDERER_WORK_QUEUE.md` item 15's list, found while auditing rather than
+hunted: `DESIGN_hybrid_raster.md` §9/§13 still say "three trees"/"six trees
+(3 full + 3 opaque-prepass)" — there are two geometry types and at most four
+trees since the PN deletion, and by default the opaque trees are aliases; its
+§11 default table predates `BVH_REFIT`/`HYBRID_RASTER`/`ANALYTIC_AA` turning
+on; and the gather-march docstring in `raytrace_kernels_taichi.py:3066-3068`
+also still says "three-tree".
 
 ## The boundary this document does not cross
 
