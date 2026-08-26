@@ -162,7 +162,6 @@ third_party/*
 /tests/output_errors/
 /scratch/
 /tests/full_renders/output_errors/
-/.claude/
 
 # Session scratch (briefs for subagents, interim measurements)
 /scratch_*

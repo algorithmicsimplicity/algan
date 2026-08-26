@@ -1,0 +1,76 @@
+# Mobs and geometry
+
+The Mob model, packing, and how geometry reaches the renderer. Read this before touching
+`algan/mobs/`, `algan/animatable_base/`, or surface tessellation.
+
+## Where the implementations live
+
+- `../algan/animatable_base/animatable.py` — `Animatable`: Scene ownership, ids, timeline-backed attribute get/set,
+  spawn/despawn, clone, animated functions, updaters.
+- `../algan/animatable_base/mob.py` plus the `mob_*.py` mixins — `Mob`: 3D location/basis/color, spatial transforms,
+  screen-relative layout, `become` morphing, and the shader/material API.
+- `../algan/mobs/shapes_2d.py` and `../algan/mobs/text.py` (`Text`/`Tex`) — cubic bezier circuits, built on
+  `../algan/mobs/bezier_circuit.py`.
+- `../algan/mobs/shapes_3d.py` — triangle meshes via `Surface` (`../algan/mobs/surfaces/surface.py`).
+- `../algan/mobs/three_d_models/` — `ThreeDModelMob`, which imports .glb/.fbx.
+- `ManimMob` wraps Manim mobjects.
+
+## Animatable and Mob model
+
+`Animatable` handles Scene ownership, ids, timeline-backed attributes, lifespans, spawn/despawn, cloning, animated functions, and updaters.
+
+`Mob` adds geometry-independent 3D state and behavior, including location, basis, scale, color, opacity, glow, hierarchy propagation, movement/layout, morphing, and shader/material configuration.
+
+Parent changes normally propagate to descendants through batched timeline row operations. The canonical hierarchy is `children`/`components`; `Group.mobs` is an alias of `children`. Keep hierarchy operations Scene-homogeneous and cycle-safe.
+
+### Packed mobs
+
+One Mob can stand for many logical objects. Its animatable attributes carry one row per member, its components carry a block of rows per member, and `parent_batch_sizes` maps between the two. `Mob.__getitem__` slices that map to produce a **view** sharing the pack's id, rows and lifespan; `BatchedMobViewSequence` presents those views as a sequence.
+
+Two ways in, differing only in when the packing happens. `from_batches` on a class that can build its geometry for many objects at once (`BezierCircuitCubic`, `Surface`) never constructs the per-member Mobs; `batch_mobs` packs Mobs that already exist. Both are built on `pack_animatable_rows` (the pack itself, one row per member) and `pack_member_rows` (a component, a block of rows per member) in `../algan/utils/mob_utils.py`, and both write through `_setattr_and_rebatch_without_record`, so they are valid only on fresh history.
+
+Two invariants are easy to break and hard to see:
+
+- A recursive write covers the whole subtree, so a value expressed per member must be distributed over each descendant's rows first (`Mob._distribute_over_packed_subtree`). Without it a packed Mob cannot be moved at all.
+- The subtree is addressed in **buffer** order, not descendant order — `RowRanges.from_runs` sorts and coalesces the runs. A distribution built in descendant order still matches on row count and silently gives every member a neighbour's value.
+
+Members share one lifespan, because they share one id. Staggered entrances go through opacity, which is what `Tex.write()` does.
+
+Renderable mobs implement `get_render_primitives()`. The primary geometry families consumed by the renderer are:
+
+- flat triangle primitives;
+- cubic Bezier circuit primitives.
+
+Important mob implementations include:
+
+- 2D shapes and text, represented primarily as cubic Bezier circuits;
+- `Surface` and 3D shapes, represented as flat triangle meshes (curved surfaces are diced from logical PN patches per frame);
+- `TriangleMesh` and `ThreeDModelMob` for imported 3D assets;
+- `PointCloud`/point-cloud mobs;
+- Manim compatibility wrappers and conversion helpers.
+
+A Bezier circuit is resolved against its own plane, so its control points are projected onto that plane when the geometry is built — the identity for a shape that is genuinely planar, a different shape for one that is not. `../algan/mobs/nonplanar_circuit.py` classifies every circuit once, in `BezierCircuitCubic.__init__`, per sub-path (so a packed circuit is judged on its members, not on their non-planar union): planar circuits are untouched and keep the analytic path; a non-planar **filled** one renders each closed sub-path as logical PN patches, the same primitive `Surface` produces; a non-planar **unfilled** one is split into near-straight runs, each its own circuit whose plane is turned to face the camera about the run's axis (which is what stops a 3-D path's stroke vanishing wherever its osculating plane goes edge-on). The plan is topology only — geometry is rebuilt from the live control points every batch, so animation and transforms follow — but the *decision* is fixed at construction, exactly as the circuit's plane is. `batch_mobs` clones its first member before packing the rest, so anything derived from geometry at construction must be redone in `_after_repack()`; `from_batches` needs no hook because the constructor already sees every member. `ALGAN_NONPLANAR_CIRCUITS=0` restores the flattening.
+
+Shader/material setup that changes primitive layout or registers shader parameters must occur before spawning unless the implementation explicitly supports timeline-safe mutation. Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, and related classes) rather than restoring removed ad-hoc reflectivity/roughness APIs.
+
+
+`tests/unit_tests/test_nonplanar_circuits.py` is the guard for the circuit-planarity rules above.
+
+## Logical PN patches and dicing
+
+Curved surfaces reach the renderer as *logical PN* patches diced to flat triangles per frame (`algan/rendering/logical_pn.py`); no curved-patch primitive exists in the renderer.
+
+A patch's dice is **per direction** — `2 ** level` rows fanning from one corner, each cut into at most `2 ** across` columns — so a direction the surface is flat along (a cylinder's length) costs one cell however finely the curved direction is cut. Equal levels are the uniform grid exactly.
+
+Both the construction grid (`geometry_tolerance`, per axis) and the render dice (per patch per frame) are chosen by measurement, and the render criteria stop at the logical surface's own accuracy rather than resolving the PN patch's error. The dice budget is the finer of two tolerances at the frame's resolution: `render_tolerance` (a fraction of frame height) and `render_tolerance_pixels` (an absolute pixel count, default 1.0, which is what binds from roughly 1080p up).
+
+## A flat cap's rim is sized at construction, because nothing downstream can refine it
+
+A `Cylinder`'s end discs and a `Cone`'s base are `_CapDisc`s whose vertex normals are one constant, so the PN patch and its PN edge curves *are* the flat triangle and its straight chords. Every render-time criterion measures a diced triangle against the patch's **own** cubic, so all of them return zero at level 0 and whatever polygon the rim was built as is the polygon that ships.
+
+A body's ring count is only adequate because the body's PN patches curve back onto the true surface; a cap inherited that count without inheriting the credit that justified it, which is how a `Cylinder(radius=0.45)` cap rendered as a 14-gon 22.6x outside `geometry_tolerance` while the tube beside it stayed round. The disc now grows its rim in whole multiples of the body's ring until the chord polygon meets that tolerance — whole multiples so every one of the body's ring vertices stays a rim vertex.
+
+`tests/unit_tests/test_cap_disc_rim.py` is the guard, `benchmarks/_cap_rim_probe.py` renders it.
+
+Index a pack (`pack[3]`) for a view sharing the pack's rows and lifespan; members therefore cannot spawn or despawn
+independently. `Text` packs its glyphs this way and a point cloud packs its dots.
