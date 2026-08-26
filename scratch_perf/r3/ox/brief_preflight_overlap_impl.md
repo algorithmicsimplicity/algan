@@ -9,15 +9,32 @@ below before designing your test plan. `ALGAN_USE_DAEMON=0` in every run.
 
 ## Why (measured on a Kaggle T4, warm)
 
-At PREVIEW the nn scene is preparation-bound: render 3.25 s,
-`Scene.get_batch_of_primitives` 2.32 s (hidden by the prefetch worker),
-**arena preflight 1.52 s (24%) serial on the render thread by design**. Round
-2 measured the two ratios that decide this design
-(`DESIGN_T4_optimization.md` §5.3): the un-overlappable floor (batch 1) is
-0–6% of the preflight sum, and **the first window probe succeeds 100% of the
-time** — the window chosen before the exact preflight was final in every
-batch measured. A 467-line WIP patch existed but is lost; you are building
-this fresh.
+At PREVIEW the nn scene is preparation-bound: render 3.11 s,
+`Scene.get_batch_of_primitives` 1.77 s (hidden by the prefetch worker),
+**arena preflight 1.48 s (25%) serial on the render thread by design**
+(T4, 2026-08-26, integrated round-2 tree). Round 2 measured the two ratios
+that decide this design (`DESIGN_T4_optimization.md` §5.3): the
+un-overlappable floor (batch 1) is 0–6% of the preflight sum, and **the
+first window probe succeeds 100% of the time** — the window chosen before
+the exact preflight was final in every batch measured.
+
+**The round-2 WIP patch has been RECOVERED**:
+`scratch_perf/r2/patches/ox_preflight_overlap_WIP.patch` — it applies
+cleanly to HEAD, and its companion harness is at
+`scratch_perf/r2/ox/ab_preflight_overlap.py` (A/B arm; flips
+`ALGAN_PREFETCH_GPU_PREP` between processes) and
+`scratch_perf/r2/ox/probe_preflight_save.py` (Part-1 probe). You are NOT
+building this fresh: apply the patch, review it as a reviewer (it was
+stopped mid-implementation and NEVER RUN — its author's own status), fix
+what review and verification find, and complete the verification program
+below. Its dependencies check out (`PeakRatioModel.is_calibrated()` exists,
+`memory_model.py:460`). The patch already implements: the
+`prefetch_gpu_prep` setting (default OFF) + live `ALGAN_PREFETCH_GPU_PREP`,
+the `overlap_pool_headroom_fraction` derate (0.6) + env override,
+`_prepare_batch_on_worker`, the `_rt_prep_overlapped` stamp, the preflight's
+skip of overlapped observations, `PeakRatioModel` locking, and a profiler
+hook. Treat its design as the design in "What to build" below — the four
+points to get right become your review checklist.
 
 ## The design constraint — read these before anything
 
