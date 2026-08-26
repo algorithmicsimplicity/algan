@@ -68,7 +68,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 
 import taichi as ti
 import torch
@@ -141,6 +141,11 @@ class StageTimers:
         self.counts = defaultdict(int)
         self.cuda_sync_times = defaultdict(float)
         self.launch_times = defaultdict(float)
+        # Work units processed per timed block, keyed by stage name like
+        # ``times``. The wavefront bounce loop reports the active-ray count
+        # entering each iteration here, which is what turns the per-iteration
+        # stage rows into a throughput table.
+        self.item_totals = defaultdict(int)
         # Stage nesting (stack level / re-entrancy) is tracked per thread:
         # with scene batch prefetch, prep stages run on a worker thread
         # concurrently with render stages on the main thread.
@@ -157,7 +162,7 @@ class StageTimers:
         return tls
 
     @contextmanager
-    def stage(self, name):
+    def stage(self, name, items=None):
         tls = self._thread_state()
         if name in tls.active:
             yield
@@ -182,9 +187,23 @@ class StageTimers:
             self.exclusive_times[name] += t - tls.level_times[tls.stack_level + 1]
             tls.level_times[tls.stack_level + 1] = 0
             self.counts[name] += 1
+            if items is not None:
+                self.item_totals[name] += int(items)
             # self.launch_times[name] += t1 - t0
             # self.cuda_sync_times[name] += t2 - t0
             tls.active.discard(name)
+
+    def charge_kernel_to_parent(self, dt):
+        """Account ``dt`` to the enclosing stage as child (not own) time.
+
+        The kernel hooks do not open a :meth:`stage` -- they time the launch
+        themselves, because they also want the launch/sync split -- so they call
+        this to take the one bookkeeping step a nested stage performs on exit.
+        A kernel launched outside any stage lands in ``level_times[0]``, which
+        nothing ever reads.
+        """
+        tls = self._thread_state()
+        tls.level_times[tls.stack_level] += dt
 
     def wrap_function(self, obj, attr, name):
         """Wrap ``obj.attr`` in a stage timer (idempotent)."""
@@ -207,6 +226,39 @@ SCENE_STATS = {}
 DISCOVERED_KERNELS = []
 # (module, attr, original) triples for uninstall.
 _KERNEL_HOOKS = []
+
+# Inline-stage support for hot loops the pipeline hooks cannot reach (the
+# sheet route's bounce loop in tracer.py, whose phases all live inside one
+# function). Off while the profiler is not installed, so a render pays only a
+# module-global truthiness check per site: TIMERS.stage syncs the devices on
+# BOTH boundaries, so an unconditional stage inside a per-bounce loop would
+# both slow the render and change what it measures.
+_HOOKS_INSTALLED = False
+# One shared instance: handing it out per call would defeat the point.
+_NULL_STAGE = nullcontext()
+
+
+def stage(name, items=None):
+    """Time an inline block, but only while the profiler's hooks are installed.
+
+    While instrumentation is up this is :meth:`StageTimers.stage` -- a
+    device-synced wall-time context manager that nests under the pipeline
+    stages. Otherwise it returns the shared ``nullcontext``, which enters,
+    exits and allocates nothing.
+
+    ``items`` optionally records how many work units the block processed
+    (e.g. the rays entering one wavefront bounce iteration); it is summed per
+    stage name and printed in the report. Pass a value already on the host --
+    reading one just for this would add a device sync to the profiled render.
+
+    Use::
+
+        from algan.utils.profiling_utils import stage
+
+        with stage("wavefront:   - my phase"):
+            ...
+    """
+    return TIMERS.stage(name, items) if _HOOKS_INSTALLED else _NULL_STAGE
 
 
 def _tensor_mb(t):
@@ -335,6 +387,15 @@ def _make_kernel_wrapper(orig, name):
         TIMERS.counts[label] += 1
         TIMERS.launch_times[label] += t1 - t0
         TIMERS.cuda_sync_times[label] += t2 - t1
+        # Charge the launch to the enclosing stage's child accumulator, exactly
+        # as a nested ``TIMERS.stage`` would on exit, so the stage that issued
+        # this kernel does not count it as its OWN work. Without this a stage's
+        # "excl" column silently included every kernel it launched: on a 4K nn
+        # render ``wavefront_loop`` read 13.2 s exclusive of which 12.5 s was
+        # the wavefront_shade / traverse_events kernels already listed
+        # separately in the same table -- which reads as "13 s of unattributed
+        # host work" and is a plan-sized wrong conclusion.
+        TIMERS.charge_kernel_to_parent(dt)
         if extractor is not None:
             try:
                 got = extractor(args, kwargs)
@@ -375,6 +436,7 @@ def install_kernel_hooks():
 
 def uninstall_kernel_hooks():
     """Restore original kernel references (best-effort)."""
+    global _HOOKS_INSTALLED
     for mod, attr, orig in _KERNEL_HOOKS:
         try:
             if getattr(getattr(mod, attr, None), "_profiling_kernel_wrapper", False):
@@ -382,6 +444,9 @@ def uninstall_kernel_hooks():
         except Exception:
             pass
     _KERNEL_HOOKS.clear()
+    # The one uninstall the profiler has: take the inline stages down with it,
+    # so ``stage()`` call sites revert to the shared nullcontext.
+    _HOOKS_INSTALLED = False
 
 
 # ---------------------------------------------------------------------------
@@ -606,10 +671,14 @@ def install_pipeline_hooks():
     )
     if getattr(scb._merge_scene, "_profiling_original", None) is None:
 
-        def merge_wrapper(primitives):
+        def merge_wrapper(primitives, *args, **kwargs):
+            # Forward everything: ``_merge_scene`` grew a ``track_peak``
+            # keyword with the preflight overlap, and a fixed signature here
+            # crashed every profiled render on the T4 while unprofiled runs
+            # passed -- the shim must never constrain the wrapped signature.
             had_cache = getattr(primitives[0], "_rt_merged_scene", None) is not None
             with TIMERS.stage("merge collections + build BVHs"):
-                scene = orig_merge(primitives)
+                scene = orig_merge(primitives, *args, **kwargs)
             if not had_cache:
                 try:
                     _capture_scene_stats(scene)
@@ -679,11 +748,17 @@ def install_pipeline_hooks():
     _try_wrap(
         RenderLoopMixin, "_prepared_batch_fits_render_arena", "arena preflight (batch)"
     )
+    _try_wrap(RenderLoopMixin, "_prepare_batch_on_worker", "overlap GPU prep (worker)")
     _try_wrap(
         RenderLoopMixin, "_prewarm_render_batch", "  - project_to_screen (prewarm)"
     )
     _try_wrap(scb, "copy_merged_scene_to_arena", "scene upload to arena")
     _try_wrap(rl, "get_num_available_bytes", "free-VRAM probe (empty_cache)")
+
+    # From here on, the inline ``stage()`` call sites (tracer.py's sheet-route
+    # loop) time for real. Idempotent like the rest of the installer.
+    global _HOOKS_INSTALLED
+    _HOOKS_INSTALLED = True
 
 
 def install_instrumentation():
@@ -1129,6 +1204,7 @@ def run_once(
         "times": dict(TIMERS.times),
         "counts": dict(TIMERS.counts),
         "exclusive_times": dict(TIMERS.exclusive_times),
+        "item_totals": dict(TIMERS.item_totals),
         "launches": list(TIMERS.kernel_launches),
         "scene_stats": [dict(b) for b in SCENE_STATS.get("batches", [])],
         "kernel_gpu": _collect_taichi_kernel_gpu(),
@@ -1144,6 +1220,98 @@ def run_once(
 # ---------------------------------------------------------------------------
 def _fmt_clock_stat(s, unit="MHz"):
     return f"{s[0]:.0f}/{s[1]:.0f}/{s[2]:.0f} {unit}" if s else "n/a"
+
+
+# The wavefront bounce loop's per-iteration stage labels
+# (``wavefront:   - bounce <i> <phase>``; iterations past the cap share the
+# ``<i>`` token ``8+``).
+_BOUNCE_LABEL = re.compile(r"^wavefront:\s+- bounce (\d+\+?) (shade|traverse)$")
+
+
+def _bounce_rows(res):
+    """Collect one row per bounce-iteration index from a run's stage rows.
+
+    Returns ``{index: {"shade", "traverse", "shade_calls", "traverse_calls",
+    "rays"}}`` with the capped bucket sorted last. Both phases of an iteration
+    record the same rays-in via ``items``, so ``rays`` takes the larger of the
+    two readings rather than their sum.
+    """
+    rows = {}
+    for name, secs in res["times"].items():
+        m = _BOUNCE_LABEL.match(name)
+        if m is None:
+            continue
+        idx_s, phase = m.groups()
+        idx = float("inf") if idx_s.endswith("+") else int(idx_s)
+        row = rows.setdefault(
+            idx,
+            {
+                "shade": 0.0,
+                "traverse": 0.0,
+                "shade_calls": 0,
+                "traverse_calls": 0,
+                "shade_rays": 0,
+                "traverse_rays": 0,
+            },
+        )
+        row[phase] += secs
+        row[f"{phase}_calls"] += res["counts"].get(name, 0)
+        row[f"{phase}_rays"] += res.get("item_totals", {}).get(name, 0)
+    for row in rows.values():
+        row["rays"] = max(row["shade_rays"], row["traverse_rays"])
+    return dict(sorted(rows.items(), key=lambda kv: kv[0]))
+
+
+def _format_bounce_table(res):
+    """The sheet route's per-bounce-iteration cost table, or "" when the run
+    launched no per-iteration stages (route off, or instrumentation partial).
+
+    Each iteration's input is the previous iteration's continuation rays as
+    the compactor reported them (its host-side count readback), so the
+    "continuations" column is the NEXT row's rays-in and needs no sync of its
+    own; the last row's spawn count is never observed (the loop ended).
+    """
+    rows = _bounce_rows(res)
+    if not rows:
+        return ""
+    out = [
+        "",
+        "Wavefront bounce iterations (sheet route; wall time incl. launch + sync):",
+        f"  {'bounce':>7}{'calls':>7}{'rays in':>12}{'traverse s':>12}"
+        f"{'shade s':>10}{'continuations':>14}",
+    ]
+    indices = list(rows)
+    for pos, idx in enumerate(indices):
+        r = rows[idx]
+        label = "8+" if idx == float("inf") else str(int(idx))
+        cont = (
+            str(rows[indices[pos + 1]]["rays"])
+            if pos + 1 < len(indices)
+            else "-"  # loop ended; nothing observed beyond this iteration
+        )
+        calls = r["traverse_calls"] + r["shade_calls"]
+        out.append(
+            f"  {label:>7}{calls // 2:>7}{r['rays']:>12}{r['traverse']:>12.3f}"
+            f"{r['shade']:>10.3f}{cont:>14}"
+        )
+    total = sum(r["shade"] + r["traverse"] for r in rows.values())
+    first = rows[indices[0]]
+    first_share = (
+        f"{100 * first['shade'] / sum(r['shade'] for r in rows.values()):.1f}%"
+        if total
+        else "n/a"
+    )
+    out.append(
+        f"  {'total':>7}{'':>7}{'':>12}"
+        f"{sum(r['traverse'] for r in rows.values()):>12.3f}"
+        f"{sum(r['shade'] for r in rows.values()):>10.3f}"
+        f"{'':>14}"
+    )
+    out.append(
+        f"  first iteration holds {first_share} of all wavefront_shade time;"
+        f" bounce-loop kernels total {total:.3f}s"
+    )
+    return "\n".join(out)
 
 
 def format_report(results, static_specs=None, tools=None, nvprof=None):
@@ -1222,6 +1390,9 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
             f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
             f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%"
         )
+        bounce = _format_bounce_table(res)
+        if bounce:
+            w(bounce)
 
         # Precise per-kernel GPU time from the Taichi profiler. ``% run`` is the
         # kernel's GPU time as a fraction of the end-to-end run wall time (not of

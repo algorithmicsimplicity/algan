@@ -40,6 +40,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
 | **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
 | **P9** widening the batched bezier build | **shipped**, byte-identical (a lossless two-arm render: 0 differing pixels), gated by `ALGAN_BEZIER_GROUP_RUNS`. A clashing group is split into **maximal runs of consecutive batchable actors** instead of reverted wholesale -- the layout constraint is positional, not group-wide. On a clashing scene, 97.6% of circuits move from the per-actor build to the batched one and `get_batch_of_primitives` runs at **0.43-0.48x**. It also turned up a real defect in the builder it widens: it flattened curves to twice the per-actor path's chord tolerance, masked by the analytic-AA route's clamp. See P9 |
+| **P13** batching an updater across its mobs | **shipped for the idle-updater family**, bit-identical at the buffer level (all attribute timelines plus non-timeline `direction`s, two frame windows, three layer sizes) and 0-differing-pixels on the nn scene; gated by `ALGAN_BATCHED_IDLE_UPDATER` (default on). The four per-mob loops of `_update_neural_net_idle` became three timeline writes: warm-batch prep **0.78x** (medians 2380 -> 1860 ms per 17-frame window on a loaded CPU box), timeline `modify` calls 258 -> 6 and `get` calls 2841 -> 1436 per batch. Reads-before-writes makes any unsupported structure fall back cleanly. See P13 |
 | **T5** sparse-coverage host chain | **the host loops are done; T5's own item is the one that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame), and the conflict-rank scan followed on 2026-08-21 (`SHEET_RANK_KERNEL`, default on, bit-identical, 33 -> 6 ms of a 1080p frame on CPU). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Three measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
 | **T3**, **T6** | untouched; both shrank in share |
 
@@ -2121,6 +2122,78 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > into **maximal runs of consecutive batchable actors** in actor order, merge each
 > run, and teach that final loop to walk a heterogeneous list. Byte-identity is
 > the standard here, and the merged collection layout is exactly what decides it.
+
+### P13 -- batching an updater across its mobs (shipped for the idle updater)
+
+> **Shipped**, bit-identical, gated by `ALGAN_BATCHED_IDLE_UPDATER` (default on;
+> `=0` restores the per-mob loops in one process). The nn benchmark scene
+> (`NeuralNetMLPV3([5,5,5,5])`, the `benchmarks/performance` scene) is
+> preparation-bound at `PREVIEW`, and ~32% of one batch's preparation under
+> cProfile was `_update_neural_net_idle`: 15 neurons and 80 synapses walked in
+> Python, each `move_to`/`set_end_point`/`move_between_points`/`set_start_point`
+> several tiny timeline reads and writes on `[T, 1, 3]` tensors -- dispatch and
+> Python, not arithmetic.
+>
+> **What was built.** Option 2 of the two the round considered: the mobs stay
+> unpacked, and the updater computes what all four loops would write and lands
+> it in **three** timeline writes (one recursive-subtree location write for the
+> neurons, one fused location write over every synapse row and tube-grid row,
+> one basis write). Option 1 (packing the synapses at construction) was
+> rejected: packed members share one lifespan, and while nothing in
+> `neural_net.py` spawns or despawns an individual synapse today, packing
+> heterogeneous `Cylinder`-in-`Mob`-in-neuron trees through `from_batches` is a
+> structural change far past this round's size, and the timeline-level fix
+> generalises to any updater that touches many sibling mobs.
+>
+> **Bit-identity is by replication, not by tolerance.** The batched path
+> re-evaluates the *same expressions* the loops do, batched: the setter dance
+> (`old + (target - old)`, never `target`) on every shifted row including the
+> intermediate loop-1 shift the loops perform before overwriting grids; the two
+> offset formulas (raw basis row vs normalized-direction-times-scale); the
+> interpolation pass-through at `interpolation = 1.0`; `coord_function` verbatim
+> against the new basis. Every read happens before any write, so an unsupported
+> structure (capped cylinders, ragged grids, differing `v_range`s) raises
+> before state moves and falls back to the loops. Output-layer neurons are not
+> idle neurons and never move; their synapses take a padded zero change.
+> Dependency tracing is preserved per mob (`trace_updater_mob_access`), so
+> future windows keep materializing the same working set.
+>
+> **Measured** (17-frame window, warm medians of 6, arms in separate processes,
+> loaded CPU box shared with another tenant -- read the deltas, not the
+> absolutes): prep **2380 -> 1860 ms (0.78x)**; earlier pairs 2792 -> 2128 and
+> 2295 -> 1870. Per batch: `AttributeTimeline.get` **2841 -> 1436 calls**,
+> `.modify` **258 -> 6**, tensor `.clone()` **2814 -> 1312**; the four wrapped
+> loops disappear from the profile entirely (the updater's remaining cost is
+> its irreducible waypoint head).
+>
+> **Verification.** `scratch_perf/r2/parity_idle_updater.py` materializes one
+> window per arm on freshly built nets and compares **every attribute buffer
+> plus the non-timeline `direction`s bitwise** -- identical across two frame
+> windows (0-16, 20-32) and three layer sizes ([5,5,5,5], [3,4,2], [2,3,2]),
+> before and after the read-path changes below.
+> The nn scene rendered lossless (`libx264rgb qp 0`,
+> `available_memory_override` pinned) differs by **0 pixels over the suites'
+> tolerance** pre/post change (worst single channel value 1, which an
+> identical-code rerun also shows -- that is the documented cross-run noise,
+> not the change). `tests/unit_tests/test_neural_net_idle.py::test_batched_
+> idle_updater_writes_what_the_loops_write` is the standing guard (marked
+> fast).
+>
+> **Alongside it, the read-path clones the loops were paying went away where
+> they were provably dead**: `AttributeTimeline.get(copy=False)` at the
+> Cylinder stretch sites (`set_start_point`, `set_end_point`,
+> `move_between_points`, `coord_function`, `_cap_ring_offsets`),
+> `Surface.set_location_by_function`'s location add, the batched surface build's
+> grid stack, `compute_grid_color`'s double clone, and
+> `_build_deferred_surfaces`' group key, which cloned every surface's whole
+> grid once per batch to read its `.shape`. All feed out-of-place arithmetic
+> only; the solids_and_camera full render decodes **byte-identically** against
+> a clean checkout of the branch (239/239 frames, worst channel diff 0), which
+> is the proof those flips cannot move values. Caching `_get_attr_ranges` /
+> `_compact_span` was looked at and **not done**: post-change they are ~1400
+> calls of mostly dict lookups and two numpy scalar reads, single-digit ms of a
+> ~1.9 s window on this box -- below the noise floor of the machine that would
+> have to measure the win.
 
 ## Part 3 -- Authoring (90-110 s, outside `save_video`)
 

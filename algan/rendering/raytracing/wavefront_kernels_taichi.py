@@ -2440,6 +2440,15 @@ def wavefront_shade(
         # ndarray shape it probed before, a template is actually a compile-time
         # constant (``ti.static`` rejects an ndarray ``.shape`` expression).
         compact: ti.template(),
+        # Post-loop significance-floor exit (rt_settings.WEIGHT_FLOOR_EXIT,
+        # read live per batch like the other template gates): a ray whose
+        # throughput fell under MIN_WEIGHT retires even if its last act was an
+        # in-place bounce -- every reflect branch ``break``s past the in-loop
+        # floor test above and the peel-complete tests exclude bounced rays,
+        # so such a ray otherwise rides to the bounce cap. Completion, not
+        # truncation: the commit block below deposits its accumulated colour
+        # + leftover throughput exactly as for any other retirement.
+        weight_floor_exit: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
@@ -3598,6 +3607,15 @@ def wavefront_shade(
                     done = True
             else:
                 if (not done) and (not bounced) and (num_hits < KBUF):
+                    done = True
+            if ti.static(weight_floor_exit):
+                # The same significance floor the in-loop test applies to
+                # pass-through hits, reached by rays the bounce branches'
+                # ``break`` skipped it for. Completion: do NOT touch
+                # ALLOC_TRUNC_SURFACES -- what this drops is sub-floor
+                # transport, not image the ceiling cuts short.
+                if ti.max(weight[0], ti.max(weight[1], weight[2])) \
+                        < MIN_WEIGHT:
                     done = True
             if processed >= MAX_SURFACES_PER_RAY:
                 # Truncation, not completion: the blocks above have already set

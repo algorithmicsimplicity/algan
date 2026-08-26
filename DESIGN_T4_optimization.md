@@ -55,6 +55,31 @@ Round 1 (branch `perf/t4-nn-scene-throughput`, merged at `fc100cd8`) took these
 from 50.0 s and 36.5 s on a Colab T4; peak VRAM 8.4 -> 6.5 GB (UHD) and 6.2 GB
 (PREVIEW).
 
+Round 2 integrated tree (branch `claude/algan-t4-optimization-b5a10b` @
+`8773ae93`, 2026-08-26, log at `scratch_perf/r3/t4_r2t4verify_run.log`):
+
+| scene | warm | vs master | cold |
+|---|---|---|---|
+| `nn_scene_UHD.py` | **27.81 s** | **-7.0%** | 84.25 s |
+| `nn_scene_PREVIEW.py` | **5.86 s** | **-6.2%** | 32.46 s |
+
+As predicted, the dev box's 1.26x did not transfer — the change is prep-side
+and the T4 runs 2-3 batches where the 4 GB card runs 10. At PREVIEW the warm
+split is now render 3.11 s / prep 1.77 s / preflight 1.48 s (prep down from
+2.32 s — P13 at work), still nearly serial.
+
+Round 3 running total (same branch, warm RUN 2, each step's log under
+`scratch_perf/r3/`):
+
+| tree | UHD | PREVIEW |
+|---|---|---|
+| master @ `95271dac` | 29.90 s | 6.25 s |
+| + round 2 (prep-side) | 27.81 s | 5.86 s |
+| + sheet-chain kernels (`r3sheet`) | 26.79 s | 5.72 s |
+| + weight-floor exit (`r3wf`) | **24.68 s** | **5.60 s** |
+
+Cumulative: **−17.5% at UHD, −10.4% at PREVIEW** vs master.
+
 ---
 
 ## 2. Where the time goes
@@ -132,8 +157,19 @@ nn scene, HD, warm
   ceiling.
 * 1.58 M rays for a 2.07 M-pixel frame, and the count is **invariant** to
   `ALGAN_ANALYTIC_AA_SECONDARY` — these are not sharp-reflection taps.
-* **21 rays never terminate**, riding to `max_iters` and forcing 3 extra
-  launch pairs per frame-part. Undiagnosed; possibly a bug.
+* ~~**21 rays never terminate**, riding to `max_iters`~~ — **that claim was
+  wrong, and the cohort is diagnosed** (2026-08-26,
+  `scratch_perf/r3/ox/REPORT_immortal_rays.md`). They ride to the **bounce
+  cap**, never `max_iters` — the bounce table's last-row `-` cannot show
+  continuations and was misread as "still alive". The cohort (30 rays at
+  PREVIEW with identical counts on the T4 and on CPU; ~2,855 entering
+  bounce 7 at UHD) is sub-`MIN_WEIGHT` transport kept alive by a
+  control-flow gap: every in-place reflection branch `break`s past the
+  weight-floor exit, and the post-loop exits deliberately exclude bounced
+  rays — so a sub-floor ray that reflects gets its full 8 bounces while one
+  that pass-throughs retires immediately. Image correct; bounces 5-7 exist
+  almost solely for these rays (~1.7% of the UHD render). One-line fix
+  proposed in the report §7, not yet implemented.
 
 ---
 
@@ -227,10 +263,27 @@ share on a 4 GB card, which uses 10 batches where the T4 uses 3).
 
 Two things this round did not finish, and the next session should:
 
-* **The integrated tree has never run on the T4.** Everything above about round
-  2's speedup is from the 4 GB dev box. The change is prep-side, and the dev box
-  uses 10 batches where the T4 uses 3, so the T4 share will be *smaller*; do not
-  quote 1.26x as a T4 number.
+* ~~**The integrated tree has never run on the T4.**~~ **Closed 2026-08-26.**
+  Measured via the `--branch` mechanism (now actually implemented in
+  `make_notebook.py` — it had accepted the flag and ignored it): UHD
+  29.90 -> **27.81 s** warm (-7.0%), PREVIEW 6.25 -> **5.86 s** warm (-6.2%).
+  See §1. The dev box's 1.26x was indeed a batch-count artifact.
+* ~~`tests/unit_tests` has not passed cleanly on the integrated tree.~~
+  **Closed.** It now passes: **2077 passed, 132 skipped, 0 failed**, the same
+  count master reports. The earlier single failure in `test_glossy_prefilter.py`
+  was contention, exactly as suspected — that file contains a cross-process
+  determinism test, and free VRAM at job start decides the arena size and hence
+  tile sizes. Run on a quiet box it passes.
+
+  **How to run it here without OOMing the machine:**
+  `scratch_perf/r2/run_suite_chunked.sh`. A single
+  `pytest -q tests/unit_tests` grows its own interpreter to ~2.2 GB (torch +
+  taichi + accumulated fixtures) and then forks a ~1.4 GB render child — 3.6 GB
+  on a 16 GB box with ~4 GB free once a browser and an agent are running, which
+  took this machine to the edge of OOM twice. Running 8 files per interpreter
+  keeps free RAM flat (measured 3.0 -> 6.1 GB across the 14 chunks, no downward
+  drift) and costs only the repeated import. Total wall time 45 min, 28 of which
+  is the one render-heavy chunk.
 
 **Not yet measured on the T4** — the integrated tree never reached Kaggle
 because the payload transport was still being solved. Do this first.
@@ -247,11 +300,33 @@ because the payload transport was still being solved. Do this first.
    byte-identically; anything less is opt-in with a measured max channel diff.
 2. **The sheet route's host-torch passes** — ~5.2 s (17%) at UHD. A previous
    round kernelised three of them (`scratch_perf/ox/REPORT_sheet_chain.md`) and
-   left the solid-shell ceiling block as the largest remaining. `window pairs`
-   (1.14 s) has never been looked at. The sorts are cuB-backed and should stay;
-   what is fair game is the segment construction and gathers around them, and
-   the `cat`/`stack`/`copy_` family, which is the biggest non-sort op group in
-   the torch profile.
+   left the solid-shell ceiling block as the largest remaining. The sorts are
+   cuB-backed and should stay.
+   **Progress 2026-08-26:** `_window_pairs` audited
+   (`scratch_perf/r3/ox/REPORT_window_pairs.md`: 119 aten dispatches + 2
+   syncs per call, twice per chunk, launch-bound; its `RASTER_PAIR_FLAGS`
+   fast path is structurally dead at chunk granularity). Then the
+   **recovered** round-2 patch `ox_sheet_host_chain.patch` was applied and
+   verified (`REPORT_sheet_chain_verify.md`): three more kernels —
+   `RASTER_PAIR_EXPAND_KERNEL` (the `_class_pairs_flat` body, census
+   119 -> 73 ops/call), `SHEET_BAND_STATS_KERNEL`, and
+   `SHEET_SHELL_CEILING_KERNEL` (the solid-shell ceiling block itself) —
+   all default ON, all bit-identical on the CPU backend (harness, 9 unit
+   tests, and per-toggle lossless A/B renders at 0 differing pixels with
+   kernel-launch proof). Four defects in the recovered patch were found and
+   fixed in verification, one load-bearing: a `mask.is_cuda` gate that made
+   every CPU check of the pair-expand toggle vacuous.
+   **T4 A/B measured** (tag `r3sheet`, log
+   `scratch_perf/r3/t4_r3sheet_run.log`): UHD warm **28.04 -> 26.79 s**
+   (-4.5%), PREVIEW warm 5.88 -> 5.72 s (-2.7%). Stage evidence matches the
+   wall delta: `window pairs` 1.141 -> 0.244 s, `compact_sheets` excl
+   2.222 -> 1.858 s, every untouched stage flat to the millisecond.
+   Cumulative vs master's 29.90 s baseline: **-10.4% at UHD**. T4
+   pixel-identity was not directly measured (lossy arm encodes); the CPU
+   lossless A/Bs at 0 differing pixels plus the kernels' order-independent
+   math (integer rows; float amax) are the identity evidence. Remaining
+   after this: `compact_sheets`' other blocks and the audit's option A
+   prologue hoist (−6% of dispatches, not done).
 3. **The arena preflight — the best remaining host-side prize, and now
    quantified.** It is 24% of PREVIEW on the T4 and runs serial on the render
    thread by design, so its CUDA peak can be measured uncontended. Round 2
@@ -271,16 +346,53 @@ because the payload transport was still being solved. Do this first.
 
    Inside it, `merge collections + build BVHs` is the bulk (295 s of 422 s at
    HD), of which `refit-BVH build` is 199 s; `project_to_screen (prewarm)` is
-   125 s. Work in progress at `scratch_perf/r2/patches/ox_preflight_overlap_WIP.patch`
-   (467 lines: an `_rt_prep_overlapped` flag, a predictor-calibration gate so
-   the first batches still measure their peak on the render thread, and a
-   headroom derate for the concurrent render). Unverified — it was stopped
-   mid-implementation. The OOM retry must keep working; force it and show the
-   render still completes.
+   125 s.
+   **Built and measured 2026-08-26** — the WIP patch was recovered, completed
+   and verified (`scratch_perf/r3/ox/REPORT_preflight_overlap_impl.md`):
+   `ALGAN_PREFETCH_GPU_PREP` / `SETTINGS.computing.prefetch_gpu_prep`,
+   worker-side builds skip peak observation (`track_peak=False` — the patch
+   as recovered would have reset the CUDA peak counter under a live render),
+   headroom derated by `overlap_pool_headroom_fraction` (0.6). T4 acceptance
+   (tag `r3pfo`, log `scratch_perf/r3/t4_r3pfo_run.log`): worker-prepared
+   batches **byte-identical** at two memory pins, forced-OOM shrink retry
+   works under overlap, Taichi tolerates worker-thread kernel launches.
+   Performance (within-session A/B): **UHD 25.40 -> 24.51 s (-3.5%)** — 1 of
+   2 preflights overlapped, render-thread preflight 1.33 -> 0.86 s.
+   **PREVIEW is flat (5.72 -> 5.78 s)**: 2 of 3 preflights overlapped and the
+   serial preflight dropped 1.52 -> 0.60 s, but at 3 batches the *worker* is
+   the critical path (prep 1.74 s + overlapped builds 2.26 s exceeds what the
+   3.1 s render can hide) — the wait relocates rather than disappears, and
+   the r2 ratios (measured at 25-150 batches) do not transfer to T4 batch
+   counts. Worker-side build walls are contention-inflated by design
+   (that is why their peaks are never observed). **Default currently OFF**;
+   the ON default is a judgment call: real -3.5% at UHD, neutral at PREVIEW.
+   The round also caught a profiler defect the CPU verification could not:
+   the hand-written merge shim did not forward kwargs, crashing every
+   profiled render (`b60514b` fixed it).
 4. **Shadow ray cost by another route** — see §3 for why the obvious cull is
    closed.
-5. **The 21 immortal rays** — diagnose before optimising; it may be a
-   correctness bug rather than a performance one.
+5. ~~**The 21 immortal rays**~~ **Diagnosed and FIXED 2026-08-26**
+   (`scratch_perf/r3/ox/REPORT_immortal_rays.md`,
+   `REPORT_weight_floor_impl.md`): not immortal, not a rendering bug — a
+   missing weight-floor exit for rays whose last hit bounced in place (see
+   §2's corrected entry). The fix is in: the floor check in
+   `wavefront_shade`'s post-loop block (completion, not truncation), gated
+   as a `ti.template()` argument read live per batch
+   (`ALGAN_WEIGHT_FLOOR_EXIT` /
+   `SETTINGS.raytracing.experimental.weight_floor_exit`). Measured at
+   PREVIEW: worst channel diff **exactly 1** (4,424 pixel-instances over
+   50 frames, inside every suite's tol-2 gate); gate-off is byte-identical
+   to the pre-change tree, proven directly. It also culls ~91k mid-chain
+   sub-floor bouncers the diagnosis had not enumerated: drain launches
+   132 -> 72 (−45%) at PREVIEW. **Default ON by the project owner's
+   decision** (1-LSB variation accepted without visual inspection).
+   **T4 A/B measured** (tag `r3wf`, log `scratch_perf/r3/t4_r3wf_run.log`):
+   UHD warm **26.86 -> 24.68 s (−8.1%)**, PREVIEW 5.76 -> 5.60 s (−2.8%),
+   and the new variant compiles and runs on CUDA. The win dwarfs the
+   bounce-5-7 tail because the mid-chain is where the sub-floor population
+   lives at UHD: with the floor on, the drain ends at bounce 4 (6 rays)
+   instead of 7, bounce 2 carries 1.25M rays instead of 2.57M and bounce 3
+   74K instead of 306K; bounce-loop kernel time 11.58 -> 9.48 s.
 6. **Cold start** — 85.85 s at UHD against 29.90 s warm, almost all Taichi JIT.
    Amortized for a long video, so it ranks below everything above, but it is the
    whole story for a short one.

@@ -1,6 +1,8 @@
-"""A/B parity for the compaction kernels
+"""A/B parity for the compaction/emission kernels
 (RASTER_FUSED_GATHER, SHEET_MASK_KERNEL, SHEET_RANK_KERNEL,
-RASTER_OPAQUE_TRUNC_KERNEL, SHEET_ONE_MESH_KERNEL, SHEET_SAMPLE_DEPTH_KERNEL).
+RASTER_OPAQUE_TRUNC_KERNEL, SHEET_ONE_MESH_KERNEL, SHEET_SAMPLE_DEPTH_KERNEL,
+SHEET_SHELL_CEILING_KERNEL, SHEET_BAND_STATS_KERNEL,
+RASTER_PAIR_EXPAND_KERNEL).
 
 The kernels replace multi-pass torch loops with one pass, and all are meant to
 be BIT-IDENTICAL to the arm they replace: the gather copies bits, the mask
@@ -20,8 +22,8 @@ mistakes:
   is clear -- compact_sheets never emits one, but the helper must agree with
   its torch arm on any input), plus a repeat-run check on each float sum;
 * **end to end** -- four rendered frames of a scene carrying PN surfaces, flat
-  polyhedra, transparency, bezier circuits and text, hashed with all six
-  toggles ON and all six OFF.
+  polyhedra, transparency, bezier circuits and text, hashed with all nine
+  toggles ON and all nine OFF.
 
     <venv-python> benchmarks/_sheet_kernel_check.py
 """
@@ -562,8 +564,440 @@ lane_case(
 donor_msk = torch.full((lane_n,), _AA_SLIVER_BIT, dtype=torch.int32, device=DEV)
 lane_case("donors only (no lane owned)", dense_band, donor_msk, lane_t, 1, lane_n)
 
+# --------------------------------------------- unit: solid-shell ceiling
+print("\nsolid_shell_ceiling vs the torch post-sort segment clamp it replaced")
+
+
+def shell_case(label, key, o2, back, cov_in):
+    """Both arms consume ONE cub-scan exclusive prefix, built exactly as
+    ``compact_sheets`` builds it -- the prefix stays in torch under the
+    toggle, so sharing it is not a shortcut, it is the production shape.
+    (Two separately-built prefixes can legitimately differ: cuB's
+    reassociation follows the workspace the allocator hands it, so comparing
+    arms that each rebuilt the prefix would test allocator noise.)
+    """
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        solid_shell_ceiling,
+    )
+
+    device = key.device
+    nn_ = int(key.numel())
+    cov64 = cov_in.to(torch.float64)
+    c2 = cov64.index_select(0, o2)
+    del cov64
+    excl = torch.cumsum(c2, 0).sub_(c2)
+
+    def torch_apply(cov_src):
+        k2 = key.index_select(0, o2)
+        seg_start = torch.ones(nn_, dtype=torch.bool, device=device)
+        if nn_ > 1:
+            seg_start[1:] = k2[1:] != k2[:-1]
+        del k2
+        seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
+        nseg = int(seg[-1].item()) + 1
+        first = torch.zeros(nseg, dtype=torch.int64, device=device)
+        first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
+        spent = excl - excl.index_select(0, first).index_select(0, seg)
+        del first, seg_start
+        backf2 = back.index_select(0, o2)
+        z64 = torch.zeros((), dtype=torch.float64, device=device)
+        front = torch.zeros(nseg, dtype=torch.float64, device=device)
+        back_t = torch.zeros(nseg, dtype=torch.float64, device=device)
+        front.scatter_add_(0, seg, torch.where(backf2, z64, c2))
+        back_t.scatter_add_(0, seg, torch.where(backf2, c2, z64))
+        del backf2, z64
+        cap = torch.maximum(front, back_t).to(torch.float32).to(torch.float64)
+        del front, back_t
+        scale = (
+            cap.index_select(0, seg)
+            .sub_(spent)
+            .clamp_min_(0.0)
+            .div_(c2.clamp_min_(1e-12))
+            .clamp_max_(1.0)
+        )
+        del spent, cap, seg
+        out_cov = cov_src.clone()
+        out_cov.index_copy_(0, o2, (c2 * scale).to(torch.float32))
+        return out_cov
+
+    want = torch_apply(cov_in)
+    got = cov_in.clone()
+    cov64k = cov_in.to(torch.float64)  # the kernel's barrier scratch
+    solid_shell_ceiling(
+        key.contiguous(),
+        o2.contiguous(),
+        back.contiguous().view(torch.uint8),
+        excl,
+        cov64k,
+        nn_,
+        got,
+    )
+    ok = bits_equal(want, got)
+    if not ok:
+        dd = want.view(torch.int32) != got.view(torch.int32)
+        print(
+            f"    [diag] diffs {int(dd.sum())}/{nn_}; "
+            f"first {[int(i) for i in dd.nonzero(as_tuple=True)[0][:5]]}"
+        )
+    # The facing-split sums are the float contract: the kernel must also
+    # reproduce ITSELF bitwise across runs (serial walks, so this should be
+    # exact); the shared ``excl`` makes the repeats read the same spend.
+    repeats = []
+    for _ in range(4):
+        c = cov_in.clone()
+        solid_shell_ceiling(
+            key.contiguous(),
+            o2.contiguous(),
+            back.contiguous().view(torch.uint8),
+            excl,
+            cov64k,
+            nn_,
+            c,
+        )
+        repeats.append(c)
+    ok = ok and all(bits_equal(r, got) for r in repeats)
+    nseg = int(torch.unique(key[o2]).numel())
+    del cov64k
+    check(f"{label} ({nseg:,} segments)", ok)
+
+
+shell_n = 3_128_845
+# Keys look like the real thing: mostly closed-surface (pixel, surface)
+# segments of a few fragments each over 700k pixels, plus a pass-through tail.
+shell_pix = torch.randint(0, 700_000, (shell_n,), generator=g, device=DEV)
+shell_sid = torch.randint(0, 4, (shell_n,), generator=g, device=DEV)
+closed = torch.rand(shell_n, generator=g, device=DEV) < 0.75
+neg = -(torch.arange(shell_n, dtype=torch.int64, device=DEV) + 1)
+shell_key = torch.where(closed, shell_pix * 6 + shell_sid, neg)
+del shell_pix, shell_sid, closed, neg
+# A real o2 sorts by (key, depth): the same LSD composition _lexsort uses --
+# stable argsort of the LEAST significant key first, then a stable argsort by
+# key over that order. Sorting depth first and key second leaves equal keys
+# contiguous runs along o2, which is what makes segments multi-fragment.
+depth = torch.rand(shell_n, generator=g, device=DEV)
+order1 = torch.argsort(depth, stable=True)
+o2_sorted = order1[torch.argsort(shell_key.index_select(0, order1), stable=True)]
+del order1, depth
+shell_back = torch.rand(shell_n, generator=g, device=DEV) < 0.5
+shell_cov = torch.rand(shell_n, generator=g, device=DEV)
+shell_case(
+    "4K shapes, mixed segments/facings", shell_key, o2_sorted, shell_back, shell_cov
+)
+
+# No closed fragment at all: every key unique-negative, every segment its own
+# pass-through (cap == own area -> scale exactly 1).
+all_open_key = -(torch.arange(shell_n, dtype=torch.int64, device=DEV) + 1)
+open_o2 = torch.arange(shell_n, dtype=torch.int64, device=DEV)
+shell_case(
+    "nothing closed (pass-through segments)",
+    all_open_key,
+    open_o2,
+    shell_back,
+    shell_cov,
+)
+
+# One segment holding the whole stream: every fragment shares one key.
+one_seg_key = torch.zeros(shell_n, dtype=torch.int64, device=DEV)
+shell_case("one segment, whole stream", one_seg_key, open_o2, shell_back, shell_cov)
+
+# Zero areas and sub-floor areas: exercises the 1e-12 denominator branch and
+# the clamp_max(1) on a scale that would otherwise exceed 1.
+tiny = torch.full((shell_n,), 1e-13, dtype=torch.float32, device=DEV)
+tiny[::997] = 0.0
+shell_case("zero and 1e-13 areas", one_seg_key, open_o2, shell_back, tiny)
+
+# Single fragment: the minimal walk (n == 0 is unreachable -- the block only
+# runs when some triangle is declared closed).
+solo_key = torch.zeros(1, dtype=torch.int64, device=DEV)
+solo_o2 = torch.zeros(1, dtype=torch.int64, device=DEV)
+solo_back = torch.ones(1, dtype=torch.bool, device=DEV)
+solo_cov = torch.full((1,), 0.42, dtype=torch.float32, device=DEV)
+shell_case("n == 1", solo_key, solo_o2, solo_back, solo_cov)
+
+# -------------------------------------------------- unit: band stats fusion
+print("\nband_stats_reduce/rep_orig vs the five scatters they replaced")
+
+
+def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        band_stats_reduce,
+        band_stats_rep_orig,
+    )
+
+    n = int(band.numel())
+    dev = band.device
+
+    def torch_arm():
+        fs = torch.full((nb,), n, dtype=torch.int64, device=dev)
+        fs.scatter_reduce_(
+            0,
+            band,
+            torch.arange(n, dtype=torch.int64, device=dev),
+            reduce="amin",
+            include_self=True,
+        )
+        mp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+        mp.scatter_reduce_(0, band, pos_o, reduce="amin", include_self=True)
+        fsp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+        mpp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+        if positioned:
+            big = torch.full((), n, dtype=torch.int64, device=dev)
+            posn = (msk & _AA_MASK_ALL) != 0
+            masked = torch.where(
+                posn, torch.arange(n, dtype=torch.int64, device=dev), big
+            )
+            fsp.scatter_reduce_(0, band, masked, reduce="amin", include_self=True)
+            masked = torch.where(posn, pos_o, big)
+            mpp.scatter_reduce_(0, band, masked, reduce="amin", include_self=True)
+        cm = torch.zeros(nb, dtype=torch.float32, device=dev)
+        cm.scatter_reduce_(0, band, cov, reduce="amax", include_self=True)
+        nf = torch.zeros(nb, dtype=torch.int64, device=dev)
+        nf.scatter_add_(0, band, torch.ones_like(band))
+        is_max = cov >= cm.index_select(0, band)
+        cand = torch.where(
+            is_max, pos_o, torch.full((n,), n, dtype=torch.int64, device=dev)
+        )
+        rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+        rp.scatter_reduce_(0, band, cand, reduce="amin", include_self=True)
+        return fs, mp, fsp, mpp, cm, nf, rp
+
+    w_fs, w_mp, w_fsp, w_mpp, w_cm, w_nf, w_rp = torch_arm()
+
+    fs = torch.full((nb,), n, dtype=torch.int64, device=dev)
+    mp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+    fsp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+    mpp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+    cm = torch.zeros(nb, dtype=torch.float32, device=dev)
+    nf = torch.zeros(nb, dtype=torch.int64, device=dev)
+    band_stats_reduce(
+        band.contiguous(),
+        msk.contiguous(),
+        pos_o.contiguous(),
+        cov.contiguous(),
+        n,
+        int(_AA_MASK_ALL),
+        fs,
+        mp,
+        fsp,
+        mpp,
+        cm,
+        nf,
+        bool(positioned),
+    )
+    rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
+    band_stats_rep_orig(
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+    )
+    ok = (
+        bits_equal(w_fs, fs)
+        and bits_equal(w_mp, mp)
+        and bits_equal(w_fsp, fsp)
+        and bits_equal(w_mpp, mpp)
+        and bits_equal(w_cm, cm)
+        and bits_equal(w_nf, nf)
+        and bits_equal(w_rp, rp)
+    )
+    check(
+        f"{label} positioned={positioned} (bands {int((w_nf > 0).sum()):,}/{nb:,})",
+        ok,
+    )
+
+
+bs_n = 3_128_845
+bs_nb = 1_441_601
+bs_band = torch.randint(0, bs_nb, (bs_n,), generator=g, device=DEV)
+bs_pos = torch.randperm(bs_n, generator=g, device=DEV)
+bs_msk = torch.randint(
+    0, 1 << (_AA_NUM_SAMPLES + 4), (bs_n,), generator=g, device=DEV, dtype=torch.int32
+)
+bs_cov = torch.rand(bs_n, generator=g, device=DEV)
+band_stats_case("4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, True)
+band_stats_case(
+    "4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, False
+)
+
+# Empty band table region: ids allocated past the highest used one stay at the
+# sentinel n in both arms.
+band_stats_case(
+    "half the band table unused",
+    torch.randint(0, bs_nb // 2, (bs_n,), generator=g, device=DEV),
+    bs_msk,
+    bs_pos,
+    bs_cov,
+    bs_nb,
+    True,
+)
+
+# One band holding everything; every fragment its own band; single fragment.
+ones_band = torch.zeros(bs_n, dtype=torch.int64, device=DEV)
+band_stats_case("one band, whole stream", ones_band, bs_msk, bs_pos, bs_cov, 1, True)
+own_band = torch.arange(bs_n, dtype=torch.int64, device=DEV)
+band_stats_case(
+    "every fragment its own band", own_band, bs_msk, bs_pos, bs_cov, bs_n, True
+)
+band_stats_case(
+    "n == 1",
+    torch.zeros(1, dtype=torch.int64, device=DEV),
+    torch.full((1,), _AA_MASK_ALL, dtype=torch.int32, device=DEV),
+    torch.zeros(1, dtype=torch.int64, device=DEV),
+    torch.full((1,), 0.5, dtype=torch.float32, device=DEV),
+    1,
+    True,
+)
+
+# ------------------------------------------------ unit: pair-row expansion
+print("\npair_expand_count/write vs _class_pairs_flat's torch expression")
+
+
+def torch_pair_rows(mask, x0, x1, y0, y1, f_abs):
+    """The verbatim torch body of ``_class_pairs_flat``."""
+    ncirc = mask.shape[1]
+    idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
+    if idx.numel() == 0:
+        return None
+    bx0 = x0.reshape(-1)[idx]
+    by0 = y0.reshape(-1)[idx]
+    bw = x1.reshape(-1)[idx] - bx0 + 1
+    bh = y1.reshape(-1)[idx] - by0 + 1
+    area = bw * bh
+    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
+    rep = torch.repeat_interleave(torch.arange(idx.numel(), device=DEV), nch)
+    if rep.numel() == 0:
+        return None
+    base = torch.cumsum(nch, 0) - nch
+    off = (torch.arange(rep.shape[0], device=DEV) - base[rep]) * RASTER_CHUNK
+    rows = torch.stack(
+        [
+            (idx % ncirc)[rep],
+            f_abs.index_select(0, idx // ncirc)[rep],
+            bx0[rep],
+            by0[rep],
+            bw[rep],
+            bh[rep],
+            off,
+            torch.zeros_like(rep),
+        ],
+        -1,
+    )
+    return rows.to(torch.int32).contiguous()
+
+
+from algan.rendering.raytracing.raster_pipeline import (  # noqa: E402
+    RASTER_CHUNK,
+    _class_pairs_flat,
+)
+
+
+def pairs_case(label, mask, x0, x1, y0, y1, f_abs):
+    import algan.rendering.raytracing.sheet_compact_taichi as sct
+
+    ref = torch_pair_rows(mask, x0, x1, y0, y1, f_abs)
+    EXPERIMENTAL.set(raster_pair_expand_kernel=False)
+    want = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, DEV)
+    # The comparison is only evidence if the kernel arm actually took the
+    # kernels -- a gate that silently routes back to torch (a device check,
+    # a shape guard) would make `got` == `want` vacuously. Count launches.
+    launches = {"count": 0, "write": 0}
+    real_count, real_write = sct.pair_expand_count, sct.pair_expand_write
+
+    def counted_count(*a, **k):
+        launches["count"] += 1
+        return real_count(*a, **k)
+
+    def counted_write(*a, **k):
+        launches["write"] += 1
+        return real_write(*a, **k)
+
+    sct.pair_expand_count, sct.pair_expand_write = counted_count, counted_write
+    try:
+        EXPERIMENTAL.set(raster_pair_expand_kernel=True)
+        got = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, DEV)
+    finally:
+        sct.pair_expand_count, sct.pair_expand_write = real_count, real_write
+        EXPERIMENTAL.set(raster_pair_expand_kernel=False)
+    ok = (
+        launches["count"] >= 1
+        and (launches["write"] >= 1) == (ref is not None)
+        and (
+            (ref is None and want is None and got is None)
+            or (
+                ref is not None
+                and want is not None
+                and got is not None
+                and bits_equal(ref, want)
+                and bits_equal(ref, got)
+                and got.is_contiguous()
+                and got.dtype == torch.int32
+            )
+        )
+    )
+    nrows = 0 if ref is None else int(ref.shape[0])
+    check(
+        f"{label} (rows out: {nrows:,}; kernel launches {launches['count']}/"
+        f"{launches['write']})",
+        ok,
+    )
+
+
+C = 49_307
+Ft = 1
+pmask = torch.rand(Ft, C, generator=g, device=DEV) < 0.45
+# Realistic bbox sizes: the real nn-scene window's 21,877 candidates expanded
+# to 6.34 M rows (mean ~290 chunks each), so keep the synthetic areas in that
+# range rather than whole-screen boxes, whose expansion cannot fit in 4 GB.
+px0 = torch.randint(0, 3840, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
+px1 = px0 + torch.randint(1, 200, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
+py0 = torch.randint(0, 2160, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
+py1 = py0 + torch.randint(1, 150, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
+pf = torch.arange(Ft, dtype=torch.int64, device=DEV) + 7
+pairs_case(f"UHD-ish window [{Ft}x{C}], ~45% candidates", pmask, px0, px1, py0, py1, pf)
+
+pairs_case(
+    "empty window (no candidates)",
+    torch.zeros(2, 500, dtype=torch.bool, device=DEV),
+    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
+    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
+    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
+    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
+    torch.arange(2, dtype=torch.int64, device=DEV),
+)
+
+single_mask = torch.zeros(1, 1, dtype=torch.bool, device=DEV)
+single_mask[0, 0] = True
+pairs_case(
+    "one candidate, one chunk (area <= RASTER_CHUNK)",
+    single_mask,
+    torch.tensor([[10]], dtype=torch.int64, device=DEV),
+    torch.tensor([[37]], dtype=torch.int64, device=DEV),
+    torch.tensor([[5]], dtype=torch.int64, device=DEV),
+    torch.tensor([[30]], dtype=torch.int64, device=DEV),
+    torch.tensor([3], dtype=torch.int64, device=DEV),
+)
+
+pairs_case(
+    "every element a candidate",
+    torch.ones(3, 2000, dtype=torch.bool, device=DEV),
+    torch.zeros(3, 2000, dtype=torch.int64, device=DEV),
+    torch.full((3, 2000), 31, dtype=torch.int64, device=DEV),
+    torch.zeros(3, 2000, dtype=torch.int64, device=DEV),
+    torch.full((3, 2000), 63, dtype=torch.int64, device=DEV),
+    torch.arange(3, dtype=torch.int64, device=DEV) + 11,
+)
+
+tiny_mask = torch.zeros(1, 8, dtype=torch.bool, device=DEV)
+tiny_mask[0, ::3] = True
+pairs_case(
+    "sparse interleaved candidates",
+    tiny_mask,
+    torch.zeros(1, 8, dtype=torch.int64, device=DEV),
+    torch.full((1, 8), 31, dtype=torch.int64, device=DEV),
+    torch.zeros(1, 8, dtype=torch.int64, device=DEV),
+    torch.full((1, 8), 63, dtype=torch.int64, device=DEV),
+    torch.tensor([0], dtype=torch.int64, device=DEV),
+)
+
 # ------------------------------------------------------------- end to end
-print("\nrendered frames, all six toggles ON vs all six OFF")
+print("\nrendered frames, all nine toggles ON vs all nine OFF")
 SETTINGS.computing.set(available_memory_override=2 * GIGABYTES)
 sphere = Sphere().scale(1.4).move(LEFT * 3).set_color(GREEN).spawn()
 cube = Cube().scale(1.1).move(RIGHT * 3).set_color(BLUE).spawn()
@@ -595,6 +1029,9 @@ _ALL_OFF = {
     "raster_opaque_trunc_kernel": False,
     "sheet_one_mesh_kernel": False,
     "sheet_sample_depth_kernel": False,
+    "sheet_shell_ceiling_kernel": False,
+    "sheet_band_stats_kernel": False,
+    "raster_pair_expand_kernel": False,
 }
 _ALL_ON = dict.fromkeys(_ALL_OFF, True)
 EXPERIMENTAL.set(**_ALL_OFF)

@@ -482,6 +482,13 @@ def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_ra
 # in per-pixel demand that a coverage partition produces.
 _POOL_RETRY_SAFETY = 0.85
 
+# Bounce iterations that get their own profile label
+# (``wavefront:   - bounce <i> <phase>``); iterations past this share the one
+# ``bounce 8+`` label, so a pathological scene cannot grow the report's table
+# without bound. Purely an instrumentation constant: it names stages, it never
+# gates work.
+_BOUNCE_STAGE_CAP = 8
+
 
 def _read_tile_alloc(rs_alloc):
     """Copy one tile's ``rs_alloc`` words to the host, in a single transfer.
@@ -2203,6 +2210,12 @@ def raytrace_render_wavefront(
     reference only. The vertex-shaded path below is unaffected either way.
     """
     rt_settings = SETTINGS.raytracing
+    # Opt-in inline stages for this function's loops (the profiler's pipeline
+    # hooks cannot reach inside one function). A shared nullcontext unless the
+    # profiler is installed; imported here rather than at module level because
+    # profiling_utils imports this module to hook it.
+    from algan.utils.profiling_utils import stage as _stage
+
     # rs_sca's row width for this batch. A local, not a call at each use site:
     # ``sca_width`` is also the name of the module-level helper imported from
     # wavefront_kernels_taichi, so a bare ``sca_width`` inside this function is
@@ -2560,133 +2573,151 @@ def raytrace_render_wavefront(
         ) = state
         it = 1
         while active.numel() > 0 and it < max_iters:
-            na = int(active.numel())
+            with _stage("wavefront:   - drain active count"):
+                na = int(active.numel())
+            # Per-iteration attribution: the label carries the bounce index
+            # (iteration 1 of the loop is bounce 0 -- the primary visible-
+            # surface pass is the sheet resolve, not an iteration here) and
+            # ``items`` carries the rays entering the iteration, which the
+            # report's bounce table prints. ``na`` is host-side already --
+            # numel() is shape metadata; the count itself was read back by the
+            # compactor (``select`` -> ``count.item()``) or came from
+            # ``compactor.initial`` -- so no device sync is added. Iterations
+            # past the cap share one label so the table stays small.
+            bounce = f"bounce {it - 1}" if it <= _BOUNCE_STAGE_CAP else "bounce 8+"
             with memory.temp():
-                hit_f = memory.get_tensor((na, KBUF, 4), f32)
-                hit_i = memory.get_tensor((na, KBUF, 2), i32)
-                wavefront_traverse_events(
-                    active,
-                    na,
-                    t_bvh.blocks,
-                    t_bvh.node_miss,
-                    t_bvh.leaf_prim,
-                    t_bvh.leaf_tspan,
-                    int(t_bvh.first_leaf),
-                    a_pos,
-                    bez_bvh.blocks,
-                    bez_bvh.node_miss,
-                    bez_bvh.leaf_prim,
-                    bez_bvh.leaf_tspan,
-                    int(bez_bvh.first_leaf),
-                    merged["circuit_meta"],
-                    merged["edges_2d"],
-                    merged["edge_accel"],
-                    merged["tri_opaque_bvh"].blocks,
-                    merged["tri_opaque_bvh"].node_miss,
-                    merged["tri_opaque_bvh"].leaf_prim,
-                    merged["tri_opaque_bvh"].leaf_tspan,
-                    int(merged["tri_opaque_bvh"].first_leaf),
-                    merged["bez_opaque_bvh"].blocks,
-                    merged["bez_opaque_bvh"].node_miss,
-                    merged["bez_opaque_bvh"].leaf_prim,
-                    merged["bez_opaque_bvh"].leaf_tspan,
-                    int(merged["bez_opaque_bvh"].first_leaf),
-                    pixel_world_scale,
-                    float(layer_offset_triangles),
-                    bvh_refit,
-                    int(has_tri),
-                    int(has_bez),
-                    opaque_closest,
-                    opaque_prepass,
-                    int(time_start),
-                    int(width),
-                    int(height),
-                    0,
-                    rs_ro,
-                    rs_rd,
-                    rs_sca,
-                    rs_int,
-                    hit_f,
-                    hit_i,
-                    rs_pix,
-                    0,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    gen_meta,
-                )
-                wavefront_shade(
-                    active,
-                    na,
-                    t_bvh.blocks,
-                    t_bvh.node_miss,
-                    t_bvh.leaf_prim,
-                    t_bvh.leaf_tspan,
-                    int(t_bvh.first_leaf),
-                    a_pos,
-                    a_norm,
-                    merged["tri_extra"],
-                    merged["tri_colors"],
-                    a_uvs,
-                    a_meta,
-                    merged["textures"],
-                    int(merged["num_colored_triangles"]),
-                    col_row_arr,
-                    bez_bvh.blocks,
-                    bez_bvh.node_miss,
-                    bez_bvh.leaf_prim,
-                    bez_bvh.leaf_tspan,
-                    int(bez_bvh.first_leaf),
-                    merged["circuit_meta"],
-                    merged["circuit_colors"],
-                    merged["circuit_border_colors"],
-                    merged["edges_2d"],
-                    merged["edge_accel"],
-                    pixel_world_scale,
-                    layer_offsets_t,
-                    int(frag_flag),
-                    frag_pipelines,
-                    frag_scatters,
-                    int(tri_pids),
-                    int(shadow_flag),
-                    int(refraction_flag),
-                    int(ior_stack_flag),
-                    bvh_refit,
-                    int(has_tri),
-                    int(has_bez),
-                    0,
-                    # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
-                    # read live per batch like the other shadow toggles.
-                    int(rt_settings.shadow_terminator_mode()),
-                    int(rt_settings.WF_SKIP_UNLIT_NORMAL),
-                    int(rt_settings.DIRECT_SPECULAR_LOBE),
-                    int(mem_trim),
-                    opaque_closest,
-                    0,
-                    1,  # compact: rs_int[:, 4] holds the accumulator row
-                    a_matid,
-                    a_mat,
-                    light_pos,
-                    light_col,
-                    int(num_lights),
-                    int(time_start),
-                    int(width),
-                    int(height),
-                    0,
-                    rs_ro,
-                    rs_rd,
-                    rs_acc,
-                    rs_sca,
-                    rs_int,
-                    hit_f,
-                    hit_i,
-                    rs_pix,
-                    pix_accum,
-                    rs_alloc,
-                    rs_vis,
-                    cam_origin,
-                )
+                with _stage("wavefront:   - drain scratch"):
+                    hit_f = memory.get_tensor((na, KBUF, 4), f32)
+                    hit_i = memory.get_tensor((na, KBUF, 2), i32)
+                with _stage(f"wavefront:   - {bounce} traverse", items=na):
+                    wavefront_traverse_events(
+                        active,
+                        na,
+                        t_bvh.blocks,
+                        t_bvh.node_miss,
+                        t_bvh.leaf_prim,
+                        t_bvh.leaf_tspan,
+                        int(t_bvh.first_leaf),
+                        a_pos,
+                        bez_bvh.blocks,
+                        bez_bvh.node_miss,
+                        bez_bvh.leaf_prim,
+                        bez_bvh.leaf_tspan,
+                        int(bez_bvh.first_leaf),
+                        merged["circuit_meta"],
+                        merged["edges_2d"],
+                        merged["edge_accel"],
+                        merged["tri_opaque_bvh"].blocks,
+                        merged["tri_opaque_bvh"].node_miss,
+                        merged["tri_opaque_bvh"].leaf_prim,
+                        merged["tri_opaque_bvh"].leaf_tspan,
+                        int(merged["tri_opaque_bvh"].first_leaf),
+                        merged["bez_opaque_bvh"].blocks,
+                        merged["bez_opaque_bvh"].node_miss,
+                        merged["bez_opaque_bvh"].leaf_prim,
+                        merged["bez_opaque_bvh"].leaf_tspan,
+                        int(merged["bez_opaque_bvh"].first_leaf),
+                        pixel_world_scale,
+                        float(layer_offset_triangles),
+                        bvh_refit,
+                        int(has_tri),
+                        int(has_bez),
+                        opaque_closest,
+                        opaque_prepass,
+                        int(time_start),
+                        int(width),
+                        int(height),
+                        0,
+                        rs_ro,
+                        rs_rd,
+                        rs_sca,
+                        rs_int,
+                        hit_f,
+                        hit_i,
+                        rs_pix,
+                        0,
+                        cam_origin,
+                        screen_point,
+                        pixel_basis_x,
+                        pixel_basis_y,
+                        gen_meta,
+                    )
+                with _stage(f"wavefront:   - {bounce} shade", items=na):
+                    wavefront_shade(
+                        active,
+                        na,
+                        t_bvh.blocks,
+                        t_bvh.node_miss,
+                        t_bvh.leaf_prim,
+                        t_bvh.leaf_tspan,
+                        int(t_bvh.first_leaf),
+                        a_pos,
+                        a_norm,
+                        merged["tri_extra"],
+                        merged["tri_colors"],
+                        a_uvs,
+                        a_meta,
+                        merged["textures"],
+                        int(merged["num_colored_triangles"]),
+                        col_row_arr,
+                        bez_bvh.blocks,
+                        bez_bvh.node_miss,
+                        bez_bvh.leaf_prim,
+                        bez_bvh.leaf_tspan,
+                        int(bez_bvh.first_leaf),
+                        merged["circuit_meta"],
+                        merged["circuit_colors"],
+                        merged["circuit_border_colors"],
+                        merged["edges_2d"],
+                        merged["edge_accel"],
+                        pixel_world_scale,
+                        layer_offsets_t,
+                        int(frag_flag),
+                        frag_pipelines,
+                        frag_scatters,
+                        int(tri_pids),
+                        int(shadow_flag),
+                        int(refraction_flag),
+                        int(ior_stack_flag),
+                        bvh_refit,
+                        int(has_tri),
+                        int(has_bez),
+                        0,
+                        # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
+                        # read live per batch like the other shadow toggles.
+                        int(rt_settings.shadow_terminator_mode()),
+                        int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                        int(rt_settings.DIRECT_SPECULAR_LOBE),
+                        int(mem_trim),
+                        opaque_closest,
+                        0,
+                        1,  # compact: rs_int[:, 4] holds the accumulator row
+                        # Post-loop weight-floor exit, read live per batch
+                        # (a ti.template() gate: flipping it mid-process
+                        # compiles the other variant rather than reusing one).
+                        int(rt_settings.WEIGHT_FLOOR_EXIT),
+                        a_matid,
+                        a_mat,
+                        light_pos,
+                        light_col,
+                        int(num_lights),
+                        int(time_start),
+                        int(width),
+                        int(height),
+                        0,
+                        rs_ro,
+                        rs_rd,
+                        rs_acc,
+                        rs_sca,
+                        rs_int,
+                        hit_f,
+                        hit_i,
+                        rs_pix,
+                        pix_accum,
+                        rs_alloc,
+                        rs_vis,
+                        cam_origin,
+                    )
             active = compactor.select(
                 rs_int,
                 0,
@@ -2727,105 +2758,108 @@ def raytrace_render_wavefront(
                 env_in_composite=env_active,
             )
             t_val_sparse = _get_tonemap_t_val()
-            if t_val_sparse != 3:
-                # In-kernel tonemap on the sparse route (sheet unification,
-                # DESIGN_sheet_resolve.md §4.8): every pixel the covered
-                # composite will not touch owes finalize(bg) — including the
-                # whole frame when nothing is covered at all. The covered
-                # composite reads its pixels' RAW prefilled background before
-                # writing, so ordering between the two is free.
-                with memory.temp():
-                    total_px = (
-                        (int(time_end) - int(time_start)) * int(width) * int(height)
+            with _stage("wavefront:   - sparse setup"):
+                if t_val_sparse != 3:
+                    # In-kernel tonemap on the sparse route (sheet unification,
+                    # DESIGN_sheet_resolve.md §4.8): every pixel the covered
+                    # composite will not touch owes finalize(bg) -- including the
+                    # whole frame when nothing is covered at all. The covered
+                    # composite reads its pixels' RAW prefilled background before
+                    # writing, so ordering between the two is free.
+                    with memory.temp():
+                        total_px = (
+                            (int(time_end) - int(time_start)) * int(width) * int(height)
+                        )
+                        covered_mask = memory.get_tensor((total_px,), torch.uint8)
+                        covered_mask.zero_()
+                        if coverage is not None:
+                            covered_mask[coverage["covered_idx"].to(torch.int64)] = 1
+                        wf_finalize_uncovered(
+                            total_px,
+                            int(width),
+                            int(height),
+                            covered_mask,
+                            t_val_sparse,
+                            float(rt_settings.TONEMAP_EXPOSURE),
+                            out,
+                        )
+                if coverage is None:
+                    return
+
+                num_covered_total = int(coverage["num_covered"])
+
+                # SPLIT-SUM GLOSSY (DESIGN_glossy_prefilter.md). Two buffers per
+                # FRAME -- never per batch, which is many frames and would make
+                # these the render's dominant allocation. Covered ordinals are
+                # ordered by global pixel index, so a frame's covered pixels are a
+                # contiguous ordinal range and the tile loop can be clamped to one
+                # frame at a time and flushed at the boundary. Both come from the
+                # arena, so the runtime memory model measures them like everything
+                # else and the batch size adapts on its own.
+                #
+                # ALLOCATED BEFORE THE TILE IS SIZED, exactly as the classic route
+                # allocates ``aa_accum`` first: ``_auto_primary_per_tile`` spends
+                # every free arena byte (WAVEFRONT_TILE_SAFETY is 1.0), so a buffer
+                # taken AFTER it is taken out of the tile's own state. At PREVIEW
+                # these are only 16 MB, but the tile is sized against a nearly
+                # exhausted arena by the last chunk of a batch, and 16 MB there is
+                # the whole margin -- solids_and_camera and materials_and_lighting
+                # both failed to fit their first attempt and then rode the halving
+                # retry down to one covered pixel, which cannot help: a splitting
+                # batch holds the pool fixed across retries, so nothing but
+                # ``pix_accum`` shrinks.
+                gl_active = int(rt_settings.glossy_reflection_mode()) == 3
+                gl_main = gl_pyr = gl_levels = None
+                gl_sigma_max = 0.0
+                gl_bounds = None
+                if gl_active:
+                    levels, pyr_texels = _gloss_pyramid_levels(
+                        width, height, int(rt_settings.GLOSSY_PREFILTER_MAX_LEVELS)
                     )
-                    covered_mask = memory.get_tensor((total_px,), torch.uint8)
-                    covered_mask.zero_()
-                    if coverage is not None:
-                        covered_mask[coverage["covered_idx"].to(torch.int64)] = 1
-                    wf_finalize_uncovered(
-                        total_px,
-                        int(width),
-                        int(height),
-                        covered_mask,
-                        t_val_sparse,
-                        float(rt_settings.TONEMAP_EXPOSURE),
-                        out,
+                    gl_main = memory.get_tensor(
+                        (int(width) * int(height), GL_MAIN_WIDTH), f32
                     )
-            if coverage is None:
-                return
+                    gl_pyr = memory.get_tensor((pyr_texels, GL_PYR_WIDTH), f32)
+                    gl_levels = _arena_values(
+                        memory, [c for row in levels for c in row], torch.int32
+                    ).view(len(levels), 3)
+                    gl_sigma_max = _BOX_SIGMA * float(1 << (len(levels) - 1))
+                    gl_bounds = _gloss_frame_bounds(
+                        coverage["covered_idx"],
+                        int(width) * int(height),
+                        int(time_end) - int(time_start),
+                    )
+                    _gloss_clear(gl_main, gl_pyr)
+                gl_frame = 0
 
-            num_covered_total = int(coverage["num_covered"])
-
-            # SPLIT-SUM GLOSSY (DESIGN_glossy_prefilter.md). Two buffers per
-            # FRAME -- never per batch, which is many frames and would make
-            # these the render's dominant allocation. Covered ordinals are
-            # ordered by global pixel index, so a frame's covered pixels are a
-            # contiguous ordinal range and the tile loop can be clamped to one
-            # frame at a time and flushed at the boundary. Both come from the
-            # arena, so the runtime memory model measures them like everything
-            # else and the batch size adapts on its own.
-            #
-            # ALLOCATED BEFORE THE TILE IS SIZED, exactly as the classic route
-            # allocates ``aa_accum`` first: ``_auto_primary_per_tile`` spends
-            # every free arena byte (WAVEFRONT_TILE_SAFETY is 1.0), so a buffer
-            # taken AFTER it is taken out of the tile's own state. At PREVIEW
-            # these are only 16 MB, but the tile is sized against a nearly
-            # exhausted arena by the last chunk of a batch, and 16 MB there is
-            # the whole margin -- solids_and_camera and materials_and_lighting
-            # both failed to fit their first attempt and then rode the halving
-            # retry down to one covered pixel, which cannot help: a splitting
-            # batch holds the pool fixed across retries, so nothing but
-            # ``pix_accum`` shrinks.
-            gl_active = int(rt_settings.glossy_reflection_mode()) == 3
-            gl_main = gl_pyr = gl_levels = None
-            gl_sigma_max = 0.0
-            gl_bounds = None
-            if gl_active:
-                levels, pyr_texels = _gloss_pyramid_levels(
-                    width, height, int(rt_settings.GLOSSY_PREFILTER_MAX_LEVELS)
+                # One 7-column accumulator row per primary on the plain route; the
+                # glossy route adds a second row for the reflection alone and
+                # widens both (DESIGN_glossy_prefilter.md). The tile is CHARGED and
+                # the buffer ALLOCATED from these same two numbers, so the sizing
+                # cannot be fitted to a narrower row than the tile goes on to take
+                # -- the measured per-primary coefficient describes the plain row,
+                # and a tile that spends every free byte on it has nothing left for
+                # the wide one.
+                pix_accum_rows, pix_accum_cols = (
+                    (2, GL_ROW_WIDTH) if gl_active else (1, 7)
                 )
-                gl_main = memory.get_tensor(
-                    (int(width) * int(height), GL_MAIN_WIDTH), f32
+                sparse_primary = _auto_primary_per_tile(
+                    memory,
+                    pool_ratio,
+                    primary_per_tile,
+                    extra_bytes_per_primary=(
+                        (pix_accum_rows * pix_accum_cols - 7) * torch.float32.itemsize
+                    ),
+                    fixed_bytes=ALLOC_WIDTH * torch.int32.itemsize,
+                    # The width this route's own _alloc_wavefront_state uses below.
+                    state_sca_width=state_sca_width,
                 )
-                gl_pyr = memory.get_tensor((pyr_texels, GL_PYR_WIDTH), f32)
-                gl_levels = _arena_values(
-                    memory, [c for row in levels for c in row], torch.int32
-                ).view(len(levels), 3)
-                gl_sigma_max = _BOX_SIGMA * float(1 << (len(levels) - 1))
-                gl_bounds = _gloss_frame_bounds(
-                    coverage["covered_idx"],
-                    int(width) * int(height),
-                    int(time_end) - int(time_start),
+                primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
+                shared_pool_capacity = _shared_pool_slots(
+                    primary_capacity, sparse_primary, pool_ratio, analytic_raster
                 )
-                _gloss_clear(gl_main, gl_pyr)
-            gl_frame = 0
-
-            # One 7-column accumulator row per primary on the plain route; the
-            # glossy route adds a second row for the reflection alone and
-            # widens both (DESIGN_glossy_prefilter.md). The tile is CHARGED and
-            # the buffer ALLOCATED from these same two numbers, so the sizing
-            # cannot be fitted to a narrower row than the tile goes on to take
-            # -- the measured per-primary coefficient describes the plain row,
-            # and a tile that spends every free byte on it has nothing left for
-            # the wide one.
-            pix_accum_rows, pix_accum_cols = (2, GL_ROW_WIDTH) if gl_active else (1, 7)
-            sparse_primary = _auto_primary_per_tile(
-                memory,
-                pool_ratio,
-                primary_per_tile,
-                extra_bytes_per_primary=(
-                    (pix_accum_rows * pix_accum_cols - 7) * torch.float32.itemsize
-                ),
-                fixed_bytes=ALLOC_WIDTH * torch.int32.itemsize,
-                # The width this route's own _alloc_wavefront_state uses below.
-                state_sca_width=state_sca_width,
-            )
-            primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
-            shared_pool_capacity = _shared_pool_slots(
-                primary_capacity, sparse_primary, pool_ratio, analytic_raster
-            )
-            learned_primary_cap = primary_capacity
-            covered_start = 0
+                learned_primary_cap = primary_capacity
+                covered_start = 0
 
             while covered_start < num_covered_total:
                 remaining = num_covered_total - covered_start
@@ -2846,53 +2880,57 @@ def raytrace_render_wavefront(
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
-                    state_ptrs = memory.get_pointers()
                     try:
-                        # Same unit-coefficient treatment as the dense tile
-                        # above; this route additionally holds the visibility
-                        # word and both compaction index buffers.
-                        with memory.scope(
-                            "wavefront_state",
-                            pool=pool,
-                            primary=attempt_primary,
-                            global_hits=0,
-                            sparse=1,
-                        ):
-                            state = _alloc_wavefront_state(
-                                memory, pool, state_sca_width, global_hits=False
-                            )
-                            rs_pix = memory.get_tensor((pool,), i32)
-                            # The glossy route doubles the rows (a second
-                            # accumulator per pixel for the reflection alone)
-                            # and widens them (the reflection's energy, blur
-                            # scale and distances) rather than spending a
-                            # kernel argument on any of it -- both kernels
-                            # involved are at 72 parameters against Taichi's
-                            # 64 runtime ones. See DESIGN_glossy_prefilter.md.
-                            pix_accum = memory.get_tensor(
-                                (attempt_primary * pix_accum_rows, pix_accum_cols),
-                                f32,
-                            )
-                            rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
-                            rs_vis = memory.get_tensor((1,), i32)
-                            compactor = _ArenaRayCompactor(memory, pool, i32)
-                        rs_int = state[4]
-                        if state_sca_width != SCA_WIDTH_PLAIN:
-                            # Same per-tile stack zeroing as the dense tile
-                            # above (DESIGN_mesh_identity_open.md §H).
-                            state[3][:, _SCA_IOR_DEPTH:].zero_()
-                        pix_accum.zero_()
-                        if gl_active:
-                            # A glossy ray that never hits anything writes no
-                            # distance at all, and that has to read as "the
-                            # reflection is infinitely far", i.e. fully
-                            # blurred -- not as the zero a cleared buffer
-                            # would give, which is a contact reflection.
-                            pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
-                            layer_offsets_t[7] = float(attempt_primary)
-                        rs_int[:, 2].fill_(1)
-                        rs_alloc.zero_()
-                        rs_alloc[0] = attempt_primary
+                        with _stage("wavefront:   - tile state alloc"):
+                            state_ptrs = memory.get_pointers()
+                            # Same unit-coefficient treatment as the dense tile
+                            # above; this route additionally holds the visibility
+                            # word and both compaction index buffers.
+                            with memory.scope(
+                                "wavefront_state",
+                                pool=pool,
+                                primary=attempt_primary,
+                                global_hits=0,
+                                sparse=1,
+                            ):
+                                state = _alloc_wavefront_state(
+                                    memory, pool, state_sca_width, global_hits=False
+                                )
+                                rs_pix = memory.get_tensor((pool,), i32)
+                                # The glossy route doubles the rows (a second
+                                # accumulator per pixel for the reflection alone)
+                                # and widens them (the reflection's energy, blur
+                                # scale and distances) rather than spending a
+                                # kernel argument on any of it -- both kernels
+                                # involved are at 72 parameters against Taichi's
+                                # 64 runtime ones. See DESIGN_glossy_prefilter.md.
+                                pix_accum = memory.get_tensor(
+                                    (
+                                        attempt_primary * pix_accum_rows,
+                                        pix_accum_cols,
+                                    ),
+                                    f32,
+                                )
+                                rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
+                                rs_vis = memory.get_tensor((1,), i32)
+                                compactor = _ArenaRayCompactor(memory, pool, i32)
+                            rs_int = state[4]
+                            if state_sca_width != SCA_WIDTH_PLAIN:
+                                # Same per-tile stack zeroing as the dense tile
+                                # above (DESIGN_mesh_identity_open.md §H).
+                                state[3][:, _SCA_IOR_DEPTH:].zero_()
+                            pix_accum.zero_()
+                            if gl_active:
+                                # A glossy ray that never hits anything writes no
+                                # distance at all, and that has to read as "the
+                                # reflection is infinitely far", i.e. fully
+                                # blurred -- not as the zero a cleared buffer
+                                # would give, which is a contact reflection.
+                                pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
+                                layer_offsets_t[7] = float(attempt_primary)
+                            rs_int[:, 2].fill_(1)
+                            rs_alloc.zero_()
+                            rs_alloc[0] = attempt_primary
 
                         with memory.temp():
                             covered_idx = shade_sparse_raster_coverage(
@@ -2979,9 +3017,10 @@ def raytrace_render_wavefront(
                     # drain adds to the same counters. Truncations are folded
                     # in at the ACCEPT point below, once, so this stage keeps
                     # the split-free short-circuit it always had.
-                    overflow = (
-                        pool_ratio > 1 and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
-                    )
+                    with _stage("wavefront:   - pool overflow poll"):
+                        overflow = (
+                            pool_ratio > 1 and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
+                        )
                     if overflow:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:
@@ -2999,20 +3038,21 @@ def raytrace_render_wavefront(
                         continue
 
                     try:
-                        active = compactor.select(
-                            rs_int, 0, source=compactor.current, scan_pool=True
-                        )
-                        if active.numel() > 0 and merged.get("bvh_deferred"):
-                            _ensure_bvhs()
-                        _drain_sparse_secondary(
-                            active,
-                            state,
-                            rs_pix,
-                            pix_accum,
-                            rs_alloc,
-                            compactor,
-                            rs_vis,
-                        )
+                        with _stage("wavefront:   - bounce drain"):
+                            active = compactor.select(
+                                rs_int, 0, source=compactor.current, scan_pool=True
+                            )
+                            if active.numel() > 0 and merged.get("bvh_deferred"):
+                                _ensure_bvhs()
+                            _drain_sparse_secondary(
+                                active,
+                                state,
+                                rs_pix,
+                                pix_accum,
+                                rs_alloc,
+                                compactor,
+                                rs_vis,
+                            )
                     except (InsufficientMemoryException, RuntimeError) as exc:
                         # Taichi launches OOM as a bare RuntimeError from their
                         # own allocator; treat those as OOM, re-raise real ones.
@@ -3041,7 +3081,8 @@ def raytrace_render_wavefront(
                     # This is the slice's accept point, so it is also where the
                     # resolve's and the drain's truncation counters are folded
                     # into the render's totals.
-                    alloc = _read_tile_alloc(rs_alloc)
+                    with _stage("wavefront:   - alloc readback"):
+                        alloc = _read_tile_alloc(rs_alloc)
                     if pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0:
                         memory.set_pointers(state_ptrs)
                         if attempt_primary <= 1:
@@ -3059,92 +3100,93 @@ def raytrace_render_wavefront(
                         continue
                     _record_tile_truncations(alloc, pool)
 
-                    if gl_active:
-                        # The reflection buffers hold ONE frame, so a tile that
-                        # spans several is scattered, composited and finished
-                        # one frame-part at a time, in frame order: the
-                        # scatter reads the raw prefilled background and must
-                        # precede the composite of the same pixels, and the
-                        # finish overwrites the composite's values for the
-                        # glossy pixels, so a frame's part is composited before
-                        # it is finished and the buffers are cleared only once
-                        # a frame's last pixel is in -- a frame whose pixels
-                        # straddle two tiles keeps its buffer across them.
-                        tile_start = covered_start
-                        tile_end = covered_start + attempt_primary
-                        ppf = int(width) * int(height)
-                        while covered_start < tile_end:
-                            frame_end = gl_bounds[gl_frame + 1]
-                            if frame_end <= covered_start:
-                                # A frame with no covered pixel: nothing to
-                                # scatter or finish, exactly as the skip at
-                                # the top of the tile treats it.
-                                gl_frame += 1
-                                continue
-                            part_end = min(tile_end, frame_end)
-                            a = covered_start - tile_start
-                            b = part_end - tile_start
-                            gloss_scatter(
-                                int(b - a),
-                                int(attempt_primary),
-                                gl_frame * ppf,
-                                gl_frame,
-                                int(width),
-                                float(gl_sigma_max),
-                                covered_idx[a:b],
-                                pix_accum,
-                                gl_main,
-                                gl_pyr,
-                                out,
-                                int(a),
-                            )
-                            wf_composite_accum_sparse(
-                                int(time_start),
-                                int(width),
-                                int(height),
-                                1 if transparent else 0,
-                                0,
-                                covered_idx[a:b],
-                                pix_accum[a:b],
-                                t_val_sparse,
-                                float(rt_settings.TONEMAP_EXPOSURE),
-                                out,
-                            )
-                            covered_start = part_end
-                            if covered_start >= frame_end:
-                                # Frame complete: prefilter its reflection
-                                # buffer and composite the glossy pixels over
-                                # the values just written for them.
-                                _gloss_finish_frame(
+                    with _stage("wavefront:   - tile composite"):
+                        if gl_active:
+                            # The reflection buffers hold ONE frame, so a tile that
+                            # spans several is scattered, composited and finished
+                            # one frame-part at a time, in frame order: the
+                            # scatter reads the raw prefilled background and must
+                            # precede the composite of the same pixels, and the
+                            # finish overwrites the composite's values for the
+                            # glossy pixels, so a frame's part is composited before
+                            # it is finished and the buffers are cleared only once
+                            # a frame's last pixel is in -- a frame whose pixels
+                            # straddle two tiles keeps its buffer across them.
+                            tile_start = covered_start
+                            tile_end = covered_start + attempt_primary
+                            ppf = int(width) * int(height)
+                            while covered_start < tile_end:
+                                frame_end = gl_bounds[gl_frame + 1]
+                                if frame_end <= covered_start:
+                                    # A frame with no covered pixel: nothing to
+                                    # scatter or finish, exactly as the skip at
+                                    # the top of the tile treats it.
+                                    gl_frame += 1
+                                    continue
+                                part_end = min(tile_end, frame_end)
+                                a = covered_start - tile_start
+                                b = part_end - tile_start
+                                gloss_scatter(
+                                    int(b - a),
+                                    int(attempt_primary),
+                                    gl_frame * ppf,
                                     gl_frame,
-                                    gl_levels,
+                                    int(width),
+                                    float(gl_sigma_max),
+                                    covered_idx[a:b],
+                                    pix_accum,
                                     gl_main,
                                     gl_pyr,
+                                    out,
+                                    int(a),
+                                )
+                                wf_composite_accum_sparse(
+                                    int(time_start),
                                     int(width),
                                     int(height),
+                                    1 if transparent else 0,
+                                    0,
+                                    covered_idx[a:b],
+                                    pix_accum[a:b],
                                     t_val_sparse,
+                                    float(rt_settings.TONEMAP_EXPOSURE),
                                     out,
                                 )
-                                _gloss_clear(gl_main, gl_pyr)
-                                gl_frame += 1
-                        memory.set_pointers(state_ptrs)
-                        break
+                                covered_start = part_end
+                                if covered_start >= frame_end:
+                                    # Frame complete: prefilter its reflection
+                                    # buffer and composite the glossy pixels over
+                                    # the values just written for them.
+                                    _gloss_finish_frame(
+                                        gl_frame,
+                                        gl_levels,
+                                        gl_main,
+                                        gl_pyr,
+                                        int(width),
+                                        int(height),
+                                        t_val_sparse,
+                                        out,
+                                    )
+                                    _gloss_clear(gl_main, gl_pyr)
+                                    gl_frame += 1
+                            memory.set_pointers(state_ptrs)
+                            break
 
-                    wf_composite_accum_sparse(
-                        int(time_start),
-                        int(width),
-                        int(height),
-                        1 if transparent else 0,
-                        0,
-                        covered_idx,
-                        pix_accum,
-                        t_val_sparse,
-                        float(rt_settings.TONEMAP_EXPOSURE),
-                        out,
-                    )
-                    memory.set_pointers(state_ptrs)
-                    covered_start += attempt_primary
-                    break
+                        wf_composite_accum_sparse(
+                            int(time_start),
+                            int(width),
+                            int(height),
+                            1 if transparent else 0,
+                            0,
+                            covered_idx,
+                            pix_accum,
+                            t_val_sparse,
+                            float(rt_settings.TONEMAP_EXPOSURE),
+                            out,
+                        )
+                        memory.set_pointers(state_ptrs)
+                        covered_start += attempt_primary
+                        break
         return
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):
@@ -3285,6 +3327,9 @@ def raytrace_render_wavefront(
                     opaque_closest,
                     first,
                     0,  # compact: dense tiles accumulate at the ray's pixel
+                    # Post-loop weight-floor exit, read live per batch (see
+                    # the sparse drain call site).
+                    int(rt_settings.WEIGHT_FLOOR_EXIT),
                     a_matid,
                     a_mat,
                     light_pos,

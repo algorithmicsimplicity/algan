@@ -85,8 +85,9 @@ torch arm is again by measurement, at 4K shapes, bitwise after the round.
 ``benchmarks/_sheet_kernel_check.py`` is the parity harness; every kernel is
 gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``,
 ``RASTER_OPAQUE_TRUNC_KERNEL``, ``SHEET_ONE_MESH_KERNEL``,
-``SHEET_SAMPLE_DEPTH_KERNEL``) so the torch passes stay runnable as the A/B
-arm.
+``SHEET_SAMPLE_DEPTH_KERNEL``, ``SHEET_SHELL_CEILING_KERNEL``,
+``SHEET_BAND_STATS_KERNEL``, ``RASTER_PAIR_EXPAND_KERNEL``) so the torch
+passes stay runnable as the A/B arm.
 """
 
 import taichi as ti
@@ -395,3 +396,246 @@ def sheet_lane_first_owner(
         for lane in ti.static(range(_AA_NUM_SAMPLES)):
             if ((bits >> lane) & 1) != 0:
                 ti.atomic_min(first_lane[base + lane], i)
+
+
+@ti.kernel
+def solid_shell_ceiling(
+    key: ti.types.ndarray(),  # [n] i64 -- (pixel, surface) segment keys, sorted order
+    o2: ti.types.ndarray(),  # [n] i64 -- permutation key order -> depth order
+    back: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
+    excl: ti.types.ndarray(),  # [n] f64 -- GLOBAL exclusive prefix of the f64 areas
+    scratch: ti.types.ndarray(),  # [n] f64 -- caller's spare [n] f64 buffer
+    n: ti.i32,
+    cov: ti.types.ndarray(),  # [n] f32 INOUT -- clamped in place
+):
+    """One pass: the solid-shell opacity ceiling, applied to the fragments.
+
+    The torch block this replaced walked its depth-ordered segments three
+    more times after the sort that orders them and the f64 ``cumsum`` that
+    prefixes them: a ``nonzero`` + ``scatter_`` for the segment starts, two
+    facing-split f64 ``scatter_add_``s routed through a whole-stream segment
+    map, and a clone + ``index_copy_`` to write the clamped areas back. Here
+    one thread per segment -- detected in-kernel as a change of ``key`` along
+    ``o2``, so neither the segment map nor the start indices exist -- walks
+    its run twice with everything else in registers: once to accumulate the
+    two shells' full-coverage sums (the cap), once to spend the allowance in
+    depth order and write each fragment's scaled coverage back through
+    ``cov[o2[j]]``.
+
+    Exactness, in three parts. The facing-split sums are plain f64 adds of a
+    segment's own values: the torch arm's atomic ``scatter_add_`` had no
+    summation order at all and the kernel adds serially in stream order, so
+    agreement with the torch arm is the same measure-not-assume contract as
+    ``one_mesh_pixel_reduce``'s (verified bitwise at 4K shapes AND on a real
+    captured stream). The SPEND -- what each fragment's predecessors have
+    already consumed -- is different twice over: torch computes it as a
+    difference of two rows of ONE GLOBAL cub scan, whose reassociation a
+    serial register walk cannot reproduce bitwise (measured: 61 of 3.13 M
+    spent values move, flipping 10 visible f32 outputs), so the prefix stays
+    in torch and the kernel only differences it at its own segment boundary.
+    And that difference must survive AS ITS OWN ROUNDING STEP: this kernel
+    compiles under Taichi's fast_math, whose reassociation pass folds
+    ``cap - (excl[j] - base)`` into ``(cap + base) - excl[j]`` -- harmless
+    while the prefix is small, and wrong by whole f32 ulps once it exceeds
+    the areas' own scale (measured: 1044 of 3.13 M PASS-THROUGH fragments --
+    where the answer is the input bit for bit -- came out one ulp low on the
+    real nn-scene frame). Storing ``spent`` to ``scratch`` and reading it
+    back is the barrier: the reload is opaque to the pass, so the subtraction
+    rounds alone, exactly as the torch arm's separate tensor op did.
+    ``scratch`` is the caller's now-dead f64 copy of the coverage stream,
+    which the torch arm needed only to build ``excl`` -- the barrier is free.
+    Every remaining step is the same arithmetic on the same values in the
+    same order: clamp/div/clamp chain, the f64 -> f32 -> f64 rounding of the
+    cap, and the ``1e-12`` denominator floor -- which the torch side clamps
+    INTO ITS OWN COPY, so the closing multiply writes the floored value, not
+    the raw area. Each output slot is written by exactly one walk because
+    ``o2`` is a permutation, which is what made the torch side's clone +
+    ``index_copy_`` equivalent to in-place.
+
+    A fragment count never approaches 2**31, so rows narrow to i32 for
+    indexing.
+    """
+    for i in range(n):
+        ii = ti.cast(o2[i], ti.i32)
+        ki = key[ii]
+        if i == 0 or ki != key[ti.cast(o2[i - 1], ti.i32)]:
+            front = ti.f64(0.0)
+            bk = ti.f64(0.0)
+            j = i
+            while j < n:
+                jj = ti.cast(o2[j], ti.i32)
+                if j > i and key[jj] != key[ti.cast(o2[j - 1], ti.i32)]:
+                    break
+                c = ti.cast(cov[jj], ti.f64)
+                if back[jj] != 0:
+                    bk += c
+                else:
+                    front += c
+                j += 1
+            # The cap rounds through f32 (ss6.6.4): a ceiling that wobbles in
+            # its low bits flips borderline fragments in and out of being
+            # clipped. The f64 value came from an f32 array, but the SUM did
+            # not -- only the round makes it well-defined.
+            cap = ti.cast(ti.cast(ti.max(front, bk), ti.f32), ti.f64)
+            # ``excl`` is indexed by position along ``o2`` -- the space the
+            # cumsum ran in -- not by the main-order rows the other arrays
+            # use.
+            base = excl[i]
+            j = i
+            while j < n:
+                jj = ti.cast(o2[j], ti.i32)
+                if j > i and key[jj] != key[ti.cast(o2[j - 1], ti.i32)]:
+                    break
+                # ``denom`` is written back, not ``c``: the torch arm's
+                # ``div_(c2.clamp_min_(1e-12))`` clamps ITS OWN COPY in place,
+                # so the closing multiply reads the floored value. Identical
+                # wherever an area exceeds the floor, which is everywhere the
+                # emission produces; below it both sides write ~zero ink, and
+                # byte identity still demands they write the SAME zero.
+                c = ti.cast(cov[jj], ti.f64)
+                denom = ti.max(c, ti.f64(1e-12))
+                # Store-and-reload: the barrier documented above. Do not
+                # "simplify" it back into register arithmetic.
+                scratch[j] = excl[j] - base
+                scale = ti.max(cap - scratch[j], ti.f64(0.0))
+                scale = scale / denom
+                scale = ti.min(scale, ti.f64(1.0))
+                cov[jj] = ti.cast(denom * scale, ti.f32)
+                j += 1
+
+
+@ti.kernel
+def band_stats_reduce(
+    band: ti.types.ndarray(),  # [n] i64 -- sheet/band index of each sorted fragment
+    msk: ti.types.ndarray(),  # [n] i32 -- mask words
+    pos_o: ti.types.ndarray(),  # [n] i64 -- original stream position (the order)
+    cov: ti.types.ndarray(),  # [n] f32 -- exact areas
+    n: ti.i32,
+    mask_all: ti.i32,  # _AA_MASK_ALL
+    first_sorted: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+    min_pos: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+    first_sorted_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+    min_pos_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+    cmax: ti.types.ndarray(),  # [nb] f32 OUT, PRE-ZEROED
+    nfrag: ti.types.ndarray(),  # [nb] i64 OUT, PRE-ZEROED
+    positioned: ti.template(),  # compile-time: SHEET_POSITIONED_DEPTH
+):
+    """One pass: the compaction's five per-band scatters, fused.
+
+    The torch arms ran one ``scatter_reduce_``/``scatter_add_`` per output --
+    five passes over the stream plus, for the positioned-depth restriction,
+    two full-length ``where`` copies to mask it -- for values a single visit
+    per fragment can all update: nearest sorted/original positions (amin),
+    the same restricted to POSITIONED fragments (owning a sample bit), the
+    band's largest exact area (amax), and its fragment count. Integer mins
+    and maxes are exact under any atomics order; the f32 amax is exact too
+    (max has no association). The caller gathers ``nearest_orig``/``sheet_pix``
+    off ``first_sorted_p``/``first_sorted`` afterwards, unchanged.
+
+    ``band_stats_rep_orig`` runs AFTER this one: it compares each fragment
+    against its band's completed maximum.
+    """
+    for i in range(n):
+        b = ti.cast(band[i], ti.i32)
+        p = pos_o[i]
+        ti.atomic_min(first_sorted[b], ti.cast(i, ti.i64))
+        ti.atomic_min(min_pos[b], p)
+        if ti.static(positioned):
+            if (msk[i] & mask_all) != 0:
+                ti.atomic_min(first_sorted_p[b], ti.cast(i, ti.i64))
+                ti.atomic_min(min_pos_p[b], p)
+        ti.atomic_max(cmax[b], cov[i])
+        ti.atomic_add(nfrag[b], ti.cast(1, ti.i64))
+
+
+@ti.kernel
+def band_stats_rep_orig(
+    band: ti.types.ndarray(),  # [n] i64
+    pos_o: ti.types.ndarray(),  # [n] i64
+    cov: ti.types.ndarray(),  # [n] f32
+    cmax: ti.types.ndarray(),  # [nb] f32 -- completed by band_stats_reduce
+    n: ti.i32,
+    rep_orig: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+):
+    """One pass: the dominant fragment's original position, per band.
+
+    Largest exact area wins; the earliest original position breaks ties
+    (``cand_pos``/amin in the torch arm). Comparing against the completed
+    ``cmax`` needs the previous kernel's finish, which is the only reason
+    this is a second launch. Integer min over identical candidates, so the
+    result is the torch arm's whatever order the atomics land in.
+    """
+    for i in range(n):
+        b = ti.cast(band[i], ti.i32)
+        if cov[i] >= cmax[b]:
+            ti.atomic_min(rep_orig[b], pos_o[i])
+
+
+@ti.kernel
+def pair_expand_count(
+    mask: ti.types.ndarray(),  # [N] u8 (a bool tensor viewed as bytes), flat
+    x0f: ti.types.ndarray(),  # [N] i64 -- flat x0 column
+    x1f: ti.types.ndarray(),  # [N] i64
+    y0f: ti.types.ndarray(),  # [N] i64
+    y1f: ti.types.ndarray(),  # [N] i64
+    n: ti.i32,  # N = frames * primitives
+    chunk: ti.i32,  # RASTER_CHUNK
+    counts: ti.types.ndarray(),  # [N] i64 OUT -- chunks per candidate, 0 elsewhere
+):
+    """One pass: how many ``RASTER_CHUNK`` rows each candidate expands to."""
+    for e in range(n):
+        if mask[e] != 0:
+            bx0 = x0f[e]
+            by0 = y0f[e]
+            bw = x1f[e] - bx0 + 1
+            bh = y1f[e] - by0 + 1
+            counts[e] = (bw * bh + chunk - 1) // chunk
+        else:
+            counts[e] = 0
+
+
+@ti.kernel
+def pair_expand_write(
+    x0f: ti.types.ndarray(),  # [N] i64
+    x1f: ti.types.ndarray(),  # [N] i64
+    y0f: ti.types.ndarray(),  # [N] i64
+    y1f: ti.types.ndarray(),  # [N] i64
+    f_abs: ti.types.ndarray(),  # [Ft] i64 -- absolute frame per window row
+    offs: ti.types.ndarray(),  # [N] i64 -- EXCLUSIVE prefix of the counts
+    n: ti.i32,  # N
+    ncirc: ti.i32,
+    chunk: ti.i32,
+    total: ti.i64,  # number of expanded rows
+    rows: ti.types.ndarray(),  # [total, 8] i32 OUT
+):
+    """One pass: the expanded ``(circuit, frame, bbox, offset)`` pair rows.
+
+    Row ``j`` belongs to the candidate whose half-open offset range contains
+    it -- one binary search over the prefix -- and enumerates candidates in
+    ascending flat order, chunks ascending within each, which is exactly the
+    order ``torch.nonzero`` + ``repeat_interleave`` produced. All eight
+    columns carry the same values as the stack it replaces (i64 narrowed to
+    i32 at the end there, in the store here); every value fits an i32 or the
+    old rows already wrapped.
+    """
+    for j in range(ti.cast(total, ti.i32)):
+        lo = 0
+        hi = n - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if offs[mid] <= j:
+                lo = mid
+            else:
+                hi = mid - 1
+        e = lo
+        bx0 = x0f[e]
+        by0 = y0f[e]
+        local = j - offs[e]
+        rows[j, 0] = ti.cast(e % ncirc, ti.i32)
+        rows[j, 1] = ti.cast(f_abs[e // ncirc], ti.i32)
+        rows[j, 2] = ti.cast(bx0, ti.i32)
+        rows[j, 3] = ti.cast(by0, ti.i32)
+        rows[j, 4] = ti.cast(x1f[e] - bx0 + 1, ti.i32)
+        rows[j, 5] = ti.cast(y1f[e] - by0 + 1, ti.i32)
+        rows[j, 6] = ti.cast(local * chunk, ti.i32)
+        rows[j, 7] = 0

@@ -1,0 +1,285 @@
+diff --git a/algan/environment.py b/algan/environment.py
+index e890f89d..9bddb39e 100644
+--- a/algan/environment.py
++++ b/algan/environment.py
+@@ -136,6 +136,7 @@ _IMPORT_TIME_VARIABLES = (
+     "ALGAN_SHADOW_EPS_RELATIVE",
+     "ALGAN_SHADOW_IDENTITY_REJECT",
+     "ALGAN_SHADOW_NEAR_FRACTION",
++    "ALGAN_SHADOW_RECEIVER_CULL",
+     "ALGAN_SHADOW_TERMINATOR",
+     "ALGAN_SHEET_MASK_KERNEL",
+     "ALGAN_SHEET_ONE_MESH_KERNEL",
+diff --git a/algan/rendering/raytracing/raster_pipeline.py b/algan/rendering/raytracing/raster_pipeline.py
+index 53f8afb5..361aef61 100644
+--- a/algan/rendering/raytracing/raster_pipeline.py
++++ b/algan/rendering/raytracing/raster_pipeline.py
+@@ -2294,6 +2294,12 @@ def shade_sparse_raster_coverage(
+                 eps_near,
+                 1 if identity_on else 0,
+                 term_mode,
++                # Receiver-facing whole-fan cull, read live per batch like
++                # the other shadow gates; the diagnostic counters stay off in
++                # shipping launches.
++                int(rt_settings.shadow_receiver_cull_gate()),
++                0,
++                dummy_i,
+             )
+         sheet_resolve_shade(
+             *pre_args,
+diff --git a/algan/rendering/raytracing/raster_taichi.py b/algan/rendering/raytracing/raster_taichi.py
+index 491fbdc9..e79326c1 100644
+--- a/algan/rendering/raytracing/raster_taichi.py
++++ b/algan/rendering/raytracing/raster_taichi.py
+@@ -62,6 +62,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
+     _tri_hit,
+ )
+ from algan.rendering.raytracing.shading_taichi import (
++    _MID_MANIM,
+     _USER_PIPELINE_BASE,
+     _orient_hit_normals,
+ )
+@@ -2775,7 +2776,20 @@ def raster_shadow_trace(
+         # stored Hanika displacement (``event_toff``, written by the mode-1
+         # sheet_resolve_shade build) AND relax the cull where it moved;
+         # 2 = relax the cull WITHOUT moving anything (diagnostic arm).
+-        shadow_term: ti.template()):
++        shadow_term: ti.template(),
++        # Receiver-facing whole-fan cull
++        # (rt_settings.shadow_receiver_cull_gate()):
++        # skip the fan of an event whose shading AND face normal both face
++        # away from the light's centre. Built-in stages only and never manim
++        # -- the soundness argument lives on the setting (see
++        # SHADOW_RECEIVER_CULL in rt_settings).
++        recv_cull: ti.template(),
++        # Diagnostic ray counters (count_dbg == 1): dbg_counters[0] fans that
++        # entered the trace branch, [1] rays actually marched, [2] fans
++        # skipped by recv_cull, [3] fan samples evaluated. A counting build
++        # is a DIFFERENT kernel variant from the shipping one; its wall time
++        # is not a shipping number.
++        count_dbg: ti.template(), dbg_counters: ti.types.ndarray()):
+     """Trace the dedicated sparse any-hit shadow queue exactly.
+ 
+     A zero-radius point/spot/directional light emits one hard-shadow ray.
+@@ -2926,10 +2940,29 @@ def raster_shadow_trace(
+             if _light_zero_radiance(light_col, tl, li, ltype, to_light,
+                                     ldist) == 1:
+                 valid = 0
++        # Receiver-facing whole-fan cull. Same gate family as the
++        # zero-radiance skip above (built-in stages; manim excluded by id --
++        # its offset keeps a deliberate half-weight PAST the horizon, so its
++        # lit terms are not multiplied by zero and the fan stays exact), and
++        # like it the culled fan leaves the event's all-lit default. The test
++        # is on wi, the direction to the light row's CENTRE -- the same vector
++        # every qualifying stage puts inside max(n . ld, 0), so whatever the
++        # stage multiplies by this fan's visibility is exactly zero either
++        # way; an extended emitter's extent shapes only the visibility, which
++        # is what multiplies away. BOTH normals must face away: the flat-
++        # shading blend lies between them, so this is the conservative side.
++        if (valid == 1) and (fan_geom == 1) and (pid_e != _MID_MANIM) \
++                and ti.static(recv_cull != 0):
++            if (snrm.dot(wi) <= 0.0) and (fnrm.dot(wi) <= 0.0):
++                valid = 0
++                if ti.static(count_dbg != 0):
++                    ti.atomic_add(dbg_counters[2], 1)
+         if (valid == 1) and ((fan_exact == 1)
+                              or (light_col[tl, li, 0] != 0.0)
+                              or (light_col[tl, li, 1] != 0.0)
+                              or (light_col[tl, li, 2] != 0.0)):
++            if ti.static(count_dbg != 0):
++                ti.atomic_add(dbg_counters[0], 1)
+             ns = 1
+             b1 = ti.math.vec3(0.0, 0.0, 0.0)
+             b2 = ti.math.vec3(0.0, 0.0, 0.0)
+@@ -3016,7 +3049,12 @@ def raster_shadow_trace(
+                 if ti.static(shadow_term != 0):
+                     if lifted == 1:
+                         horizon_ok = snrm.dot(wis) > 1e-4
++                if ok == 1:
++                    if ti.static(count_dbg != 0):
++                        ti.atomic_add(dbg_counters[3], 1)
+                 if (ok == 1) and horizon_ok:
++                    if ti.static(count_dbg != 0):
++                        ti.atomic_add(dbg_counters[1], 1)
+                     n_valid += 1.0
+                     occ_sum += _shadow_occluded(
+                         refit, shadow_anyhit, sorg, wis, f, ff,
+diff --git a/algan/rendering/raytracing/settings.py b/algan/rendering/raytracing/settings.py
+index 26f6ba25..59d1fbb5 100644
+--- a/algan/rendering/raytracing/settings.py
++++ b/algan/rendering/raytracing/settings.py
+@@ -783,6 +783,66 @@ def shadow_terminator_mode():
+     return 2 if SHADOW_TERMINATOR == 2 else 1
+ 
+ 
++# Receiver-facing whole-fan shadow cull: skip a (shadow event, light) fan
++# entirely when the receiver's shading normal AND its face normal both face
++# away from the light's centre. The per-sample horizon guard in
++# ``raster_shadow_trace`` / ``wavefront_shade`` already declines to MARCH such
++# samples; this cull additionally skips the fan setup and sample loop, and --
++# unlike the horizon guard -- it also covers SOFT fans (a light with a
++# ``shadow_radius``, an area light's cell rows), where some samples of the fan
++# can face the emitter and get traced even though the stage multiplies their
++# result by zero.
++#
++# Soundness is per STAGE, not per kernel. Every consumer of the shadow-visibility
++# payload is a built-in fragment stage or ``direct_specular_lobe``, and in every
++# one of them each vis-multiplied term carries ``max(n . ld, 0)`` as an exact
++# factor, with ``ld`` the direction to the light row's centre -- the SAME vector
++# the cull tests (lambert/phong: diffuse; phong/standard/physical: diffuse and
++# every specular lobe explicitly re-multiplied by ``n_dot_l``; toon:
++# ``ceil(clamp(n.l, 0, 1) * bands) / bands``, exactly zero at ``n.l <= 0``).
++# Forcing the visibility to its all-lit default therefore changes no pixel for
++# those stages whatever the fan would have returned. It does NOT hold for
++#
++# * ``ManimMaterial`` (pipeline id 0), whose offset is ``0.5 * d**3`` HALVED
++#   when negative -- deliberately nonzero past the horizon, so its lit terms
++#   are NOT multiplied by zero and its fans stay exact (the kernels exclude it
++#   by id), and
++# * user fragment pipelines (>= _USER_PIPELINE_BASE), which may read visibility
++#   arbitrarily and already keep exact fans under the ``fan_exact`` gate.
++#
++# The cull tests the ORIENTED normals (the ones ``event_snrm``/``event_fnrm``
++# carry, flipped toward the viewer by ``_orient_hit_normals``). For two-sided
++# geometry that is the side the stages light from; on one-sided geometry shaded
++# from behind (reachable only through transparency) the stage lights with the
++# UNFLIPPED normal while this cull sees the flipped one -- the same documented
++# divergence the shipped horizon cull lives with (see
++# ``shading_taichi._sided_shading_normal``'s KNOWN LIMIT), so such a point was
++# already rendered unshadowed whenever its whole fan failed the horizon test.
++# Requiring BOTH normals keeps a flat-shading blend (which lies between them)
++# on the safe side of zero.
++SHADOW_RECEIVER_CULL = env_flag("ALGAN_SHADOW_RECEIVER_CULL", True)
++
++
++def set_shadow_receiver_cull(enabled):
++    """Toggle the receiver-facing whole-fan shadow cull (see
++    ``SHADOW_RECEIVER_CULL``). Takes effect at the next render batch.
++    """
++    global SHADOW_RECEIVER_CULL
++    SHADOW_RECEIVER_CULL = bool(enabled)
++
++
++def shadow_receiver_cull_gate():
++    """Live receiver-facing cull gate as an int (0/1).
++
++    Read at call time and returned as an int because it reaches the two shadow
++    kernels as a TEMPLATE value: each gate value compiles its own variant (see
++    ``shadow_terminator_mode``). Named ``..._gate`` because the SETTINGS
++    object's attribute resolution maps the field name
++    (``SETTINGS.raytracing.shadow_receiver_cull``) to the bool itself.
++    """
++    return 1 if SHADOW_RECEIVER_CULL else 0
++
++
+ # The acceptance floor a shadow ray keeps against its OWN primitive, as a
+ # fraction of the batch's scene scale (the diagonal of the merged triangle
+ # bounding box over every frame of the batch). This is what retires the last
+diff --git a/algan/rendering/raytracing/tracer.py b/algan/rendering/raytracing/tracer.py
+index 232ac147..35d8ea41 100644
+--- a/algan/rendering/raytracing/tracer.py
++++ b/algan/rendering/raytracing/tracer.py
+@@ -2659,6 +2659,7 @@ def raytrace_render_wavefront(
+                     # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
+                     # read live per batch like the other shadow toggles.
+                     int(rt_settings.shadow_terminator_mode()),
++                    int(rt_settings.shadow_receiver_cull_gate()),
+                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                     int(rt_settings.DIRECT_SPECULAR_LOBE),
+                     int(mem_trim),
+@@ -3279,6 +3280,7 @@ def raytrace_render_wavefront(
+                     # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
+                     # read live per batch like the other shadow toggles.
+                     int(rt_settings.shadow_terminator_mode()),
++                    int(rt_settings.shadow_receiver_cull_gate()),
+                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                     int(rt_settings.DIRECT_SPECULAR_LOBE),
+                     int(mem_trim),
+diff --git a/algan/rendering/raytracing/wavefront_kernels_taichi.py b/algan/rendering/raytracing/wavefront_kernels_taichi.py
+index 18d85141..998c2774 100644
+--- a/algan/rendering/raytracing/wavefront_kernels_taichi.py
++++ b/algan/rendering/raytracing/wavefront_kernels_taichi.py
+@@ -64,6 +64,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
+ from algan.rendering.raytracing.shading_taichi import (
+     _MAT_ATTENUATION_SIGMA,
+     _MAT_NO_SHADOW_RECEIVE,
++    _MID_MANIM,
+     _MID_UNLIT,
+     _USER_PIPELINE_BASE,
+     _orient_hit_normals,
+@@ -2413,6 +2414,12 @@ def wavefront_shade(
+         # == 1 additionally applies the Hanika offset inline; 0 keeps
+         # today's origin and guard exactly (see raster_shadow_trace).
+         shadow_term: ti.template(),
++        # Receiver-facing whole-fan cull
++        # (rt_settings.shadow_receiver_cull_gate()):
++        # same gate the sheet route's raster_shadow_trace takes -- built-in
++        # stages only, manim excluded by id; soundness argument on the
++        # setting.
++        recv_cull: ti.template(),
+         skip_unlit_normal: ti.template(),
+         # Deliver the direct lights' share of the reflected specular lobe,
+         # which the continuation this hit spawns cannot: a ray only finds
+@@ -2711,6 +2718,7 @@ def wavefront_shade(
+                         do_fan = 0
+                         fan_exact = 1
+                         fan_geom = 0
++                        fan_cull = 0
+                         if htype == 1:
+                             pid_s = tri_mat_id[f % tri_mat_id.shape[0], prim]
+                             # ...and a hit whose mob declared
+@@ -2739,6 +2747,14 @@ def wavefront_shade(
+                                     # multiplies zero either way (see
+                                     # _light_zero_radiance).
+                                     fan_geom = 1
++                                    # ...but the receiver-facing cull is NOT
++                                    # valid for every one of them: manim's
++                                    # offset keeps a deliberate half-weight
++                                    # past the horizon, so its lit terms are
++                                    # not multiplied by zero. It keeps the
++                                    # exact fan.
++                                    if pid_s != _MID_MANIM:
++                                        fan_cull = 1
+                         if do_fan == 1:
+                             # Smooth shading normal and the *geometric* face
+                             # normal of the hit facet/patch.
+@@ -2848,6 +2864,19 @@ def wavefront_shade(
+                                                 light_col, tl, li, ltype,
+                                                 to_light, ldist) == 1:
+                                             valid = 0
++                                    # Receiver-facing whole-fan cull, exactly
++                                    # as raster_shadow_trace's: built-in
++                                    # stages bar manim, tested on the CENTRE
++                                    # direction every qualifying stage puts
++                                    # inside max(n . ld, 0), both normals
++                                    # required so a flat-shading blend stays
++                                    # on the safe side; the culled fan leaves
++                                    # vis[li] at its all-lit default.
++                                    if (valid == 1) and (fan_cull == 1) \
++                                            and ti.static(recv_cull != 0):
++                                        if (snrm.dot(wi) <= 0.0) \
++                                                and (fnrm.dot(wi) <= 0.0):
++                                            valid = 0
+                                     if valid == 1:
+                                         # Soft shadows: a fixed golden-angle fan
+                                         # of samples across the emitter disk
+diff --git a/algan/settings/raytracing_settings.py b/algan/settings/raytracing_settings.py
+index 7350bebe..20e25fc7 100644
+--- a/algan/settings/raytracing_settings.py
++++ b/algan/settings/raytracing_settings.py
+@@ -117,6 +117,7 @@ _FIELD_TO_LEGACY = {
+         "SHADOW_EPS_RELATIVE",
+         "SHADOW_IDENTITY_REJECT",
+         "SHADOW_NEAR_FRACTION",
++        "SHADOW_RECEIVER_CULL",
+         "SHADOW_TERMINATOR",
+         "RGB_SHADOW_TINT",
+         "WF_TEXTURED_FEATURES",
+@@ -210,6 +211,7 @@ _SETTER_OVERRIDES = {
+     "wf_textured_features": "set_textured_features",
+     "wavefront_sort_materials": "set_material_sorting",
+     "shadow_terminator": "set_shadow_terminator",
++    "shadow_receiver_cull": "set_shadow_receiver_cull",
+     "fragment_shading": "set_fragment_shading",
+     "shadows": "set_ray_traced_shadows",
+     "light_intensity": "set_light_intensity",

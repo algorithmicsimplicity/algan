@@ -937,6 +937,52 @@ def _class_any_flags(pre_m):
     )
 
 
+def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
+    """The kernel arm of ``_class_pairs_flat`` (``RASTER_PAIR_EXPAND_KERNEL``).
+
+    One pass counts each candidate's chunks, the host keeps only the prefix
+    sum it kept anyway, and one pass writes each row -- binary-searching the
+    prefix for its candidate. Row content and order match the torch
+    expression exactly (candidates ascending row-major, chunks ascending
+    within a candidate); every column is integer arithmetic on the same
+    inputs, so the arms agree by construction.
+    """
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        pair_expand_count,
+        pair_expand_write,
+    )
+
+    numel = int(mask.numel())
+    mflat = mask.reshape(-1).contiguous()
+    x0f = x0.reshape(-1).contiguous()
+    x1f = x1.reshape(-1).contiguous()
+    y0f = y0.reshape(-1).contiguous()
+    y1f = y1.reshape(-1).contiguous()
+    counts = torch.empty(numel, dtype=torch.int64, device=device)
+    pair_expand_count(
+        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, RASTER_CHUNK, counts
+    )
+    offs = torch.cumsum(counts, 0) - counts
+    total = int(counts.sum().item())
+    if total == 0:
+        return None
+    rows = torch.empty((total, 8), dtype=torch.int32, device=device)
+    pair_expand_write(
+        x0f,
+        x1f,
+        y0f,
+        y1f,
+        f_abs.contiguous(),
+        offs,
+        numel,
+        ncirc,
+        RASTER_CHUNK,
+        total,
+        rows,
+    )
+    return rows
+
+
 def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     """Chunk expansion over a ``[frames, C]`` window in one pass.
 
@@ -945,6 +991,12 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     the (frame, circuit) lexicographic order the per-frame loop produced.
     """
     ncirc = mask.shape[1]
+    if (
+        rt_settings.RASTER_PAIR_EXPAND_KERNEL
+        and mask.numel()
+        and f_abs.numel() * ncirc == mask.numel()
+    ):
+        return _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device)
     idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
     if idx.numel() == 0:
         return None

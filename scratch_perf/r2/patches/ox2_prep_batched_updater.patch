@@ -1,0 +1,772 @@
+diff --git a/DESIGN_optimization_targets.md b/DESIGN_optimization_targets.md
+index 5cd28634..43126d0b 100644
+--- a/DESIGN_optimization_targets.md
++++ b/DESIGN_optimization_targets.md
+@@ -40,6 +40,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
+ | **P12** packed surfaces (`Surface.from_batches`) | **shipped** -- a collection of like surfaces can now be built as **one** Mob instead of N. Construction stops scaling with the member count (2048 spheres: 2.26 s -> 0.006 s), the per-frame primitive build is **54x** the per-actor path and **13x** the cross-actor batcher it makes unnecessary, and the Scene loses 2(N-1) actors. Byte-identical -- all 6 full-render scenes and `tests/fast` match their committed CPU baselines. See P12 |
+ | **T7** per-dimension dicing + the surface's own accuracy | **shipped, counts measured, downstream wall-clock not** -- the dice was isotropic and measured against a reference it had no right to trust that far. Both fixed: **2.2x fewer microtriangles on a sphere/torus and 8.5-38.9x on developable shapes** (cylinder, cone), same tolerance, silhouette unchanged to a fraction of a pixel. The across search costs **988 ms of a 4151 ms torus dice** on a CPU session and should be cheaper in one round. **Moves rendered output**, so every full-render baseline needs regenerating on the machine that owns it. See T7 |
+ | **P9** widening the batched bezier build | **shipped**, byte-identical (a lossless two-arm render: 0 differing pixels), gated by `ALGAN_BEZIER_GROUP_RUNS`. A clashing group is split into **maximal runs of consecutive batchable actors** instead of reverted wholesale -- the layout constraint is positional, not group-wide. On a clashing scene, 97.6% of circuits move from the per-actor build to the batched one and `get_batch_of_primitives` runs at **0.43-0.48x**. It also turned up a real defect in the builder it widens: it flattened curves to twice the per-actor path's chord tolerance, masked by the analytic-AA route's clamp. See P9 |
++| **P13** batching an updater across its mobs | **shipped for the idle-updater family**, bit-identical at the buffer level (all attribute timelines plus non-timeline `direction`s, two frame windows, three layer sizes) and 0-differing-pixels on the nn scene; gated by `ALGAN_BATCHED_IDLE_UPDATER` (default on). The four per-mob loops of `_update_neural_net_idle` became three timeline writes: warm-batch prep **0.78x** (medians 2380 -> 1860 ms per 17-frame window on a loaded CPU box), timeline `modify` calls 258 -> 6 and `get` calls 2841 -> 1436 per batch. Reads-before-writes makes any unsupported structure fall back cleanly. See P13 |
+ | **T5** sparse-coverage host chain | **the host loops are done; T5's own item is the one that did NOT pay.** The compaction's per-sample-lane reductions -- which post-date this document -- are kernels now, default on, bit-identical, **1.25-1.33x on `compact_sheets`** (4K: 471 -> 354 ms, 6.5% of the frame), and the conflict-rank scan followed on 2026-08-21 (`SHEET_RANK_KERNEL`, default on, bit-identical, 33 -> 6 ms of a 1080p frame on CPU). The six-array gather T5 proposed is built and bit-identical too, but worth only ~4 ms of a 1.3 s 4K frame while costing 50-160 MB of peak, so it ships **default OFF**. Three measurement traps recorded below. The sorts are untouched and should stay that way. See T5 |
+ | **T3**, **T6** | untouched; both shrank in share |
+ 
+@@ -2117,6 +2118,78 @@ the row *map* that is grown in place, and nothing hands out views into that.)
+ > run, and teach that final loop to walk a heterogeneous list. Byte-identity is
+ > the standard here, and the merged collection layout is exactly what decides it.
+ 
++### P13 -- batching an updater across its mobs (shipped for the idle updater)
++
++> **Shipped**, bit-identical, gated by `ALGAN_BATCHED_IDLE_UPDATER` (default on;
++> `=0` restores the per-mob loops in one process). The nn benchmark scene
++> (`NeuralNetMLPV3([5,5,5,5])`, the `benchmarks/performance` scene) is
++> preparation-bound at `PREVIEW`, and ~32% of one batch's preparation under
++> cProfile was `_update_neural_net_idle`: 15 neurons and 80 synapses walked in
++> Python, each `move_to`/`set_end_point`/`move_between_points`/`set_start_point`
++> several tiny timeline reads and writes on `[T, 1, 3]` tensors -- dispatch and
++> Python, not arithmetic.
++>
++> **What was built.** Option 2 of the two the round considered: the mobs stay
++> unpacked, and the updater computes what all four loops would write and lands
++> it in **three** timeline writes (one recursive-subtree location write for the
++> neurons, one fused location write over every synapse row and tube-grid row,
++> one basis write). Option 1 (packing the synapses at construction) was
++> rejected: packed members share one lifespan, and while nothing in
++> `neural_net.py` spawns or despawns an individual synapse today, packing
++> heterogeneous `Cylinder`-in-`Mob`-in-neuron trees through `from_batches` is a
++> structural change far past this round's size, and the timeline-level fix
++> generalises to any updater that touches many sibling mobs.
++>
++> **Bit-identity is by replication, not by tolerance.** The batched path
++> re-evaluates the *same expressions* the loops do, batched: the setter dance
++> (`old + (target - old)`, never `target`) on every shifted row including the
++> intermediate loop-1 shift the loops perform before overwriting grids; the two
++> offset formulas (raw basis row vs normalized-direction-times-scale); the
++> interpolation pass-through at `interpolation = 1.0`; `coord_function` verbatim
++> against the new basis. Every read happens before any write, so an unsupported
++> structure (capped cylinders, ragged grids, differing `v_range`s) raises
++> before state moves and falls back to the loops. Output-layer neurons are not
++> idle neurons and never move; their synapses take a padded zero change.
++> Dependency tracing is preserved per mob (`trace_updater_mob_access`), so
++> future windows keep materializing the same working set.
++>
++> **Measured** (17-frame window, warm medians of 6, arms in separate processes,
++> loaded CPU box shared with another tenant -- read the deltas, not the
++> absolutes): prep **2380 -> 1860 ms (0.78x)**; earlier pairs 2792 -> 2128 and
++> 2295 -> 1870. Per batch: `AttributeTimeline.get` **2841 -> 1436 calls**,
++> `.modify` **258 -> 6**, tensor `.clone()` **2814 -> 1312**; the four wrapped
++> loops disappear from the profile entirely (the updater's remaining cost is
++> its irreducible waypoint head).
++>
++> **Verification.** `scratch_perf/r2/parity_idle_updater.py` materializes one
++> window per arm on freshly built nets and compares **every attribute buffer
++> plus the non-timeline `direction`s bitwise** -- identical across two frame
++> windows (0-16, 20-32) and three layer sizes ([5,5,5,5], [3,4,2], [2,3,2]),
++> before and after the read-path changes below.
++> The nn scene rendered lossless (`libx264rgb qp 0`,
++> `available_memory_override` pinned) differs by **0 pixels over the suites'
++> tolerance** pre/post change (worst single channel value 1, which an
++> identical-code rerun also shows -- that is the documented cross-run noise,
++> not the change). `tests/unit_tests/test_neural_net_idle.py::test_batched_
++> idle_updater_writes_what_the_loops_write` is the standing guard (marked
++> fast).
++>
++> **Alongside it, the read-path clones the loops were paying went away where
++> they were provably dead**: `AttributeTimeline.get(copy=False)` at the
++> Cylinder stretch sites (`set_start_point`, `set_end_point`,
++> `move_between_points`, `coord_function`, `_cap_ring_offsets`),
++> `Surface.set_location_by_function`'s location add, the batched surface build's
++> grid stack, `compute_grid_color`'s double clone, and
++> `_build_deferred_surfaces`' group key, which cloned every surface's whole
++> grid once per batch to read its `.shape`. All feed out-of-place arithmetic
++> only; the solids_and_camera full render decodes **byte-identically** against
++> a clean checkout of the branch (239/239 frames, worst channel diff 0), which
++> is the proof those flips cannot move values. Caching `_get_attr_ranges` /
++> `_compact_span` was looked at and **not done**: post-change they are ~1400
++> calls of mostly dict lookups and two numpy scalar reads, single-digit ms of a
++> ~1.9 s window on this box -- below the noise floor of the machine that would
++> have to measure the win.
++
+ ## Part 3 -- Authoring (90-110 s, outside `save_video`)
+ 
+ Diffuse: no single site above ~4%. The top costs are `AttributeTimeline.get`
+diff --git a/algan/environment.py b/algan/environment.py
+index e890f89d..7d0d0d41 100644
+--- a/algan/environment.py
++++ b/algan/environment.py
+@@ -182,6 +182,7 @@ _LIVE_VARIABLES = (
+     "ALGAN_ADV_OPT",
+     "ALGAN_ARENA_POISON",
+     "ALGAN_AUTO_DAEMON",
++    "ALGAN_BATCHED_IDLE_UPDATER",
+     "ALGAN_BATCH_BEZIER_PREP",
+     "ALGAN_BATCH_SURFACE_PREP",
+     "ALGAN_BEZIER_GROUP_RUNS",
+diff --git a/algan/mobs/neural_nets/neural_net.py b/algan/mobs/neural_nets/neural_net.py
+index d0f506e1..40c856f4 100644
+--- a/algan/mobs/neural_nets/neural_net.py
++++ b/algan/mobs/neural_nets/neural_net.py
+@@ -1,12 +1,16 @@
+ from __future__ import annotations
+ 
+ import torch
++import torch.nn.functional as F
+ 
++from algan.animatable_base.animatable import STRUCTURE_VERSION, attr_ranges_for_mob
+ from algan.animatable_base.mob import Mob
+ from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
+ from algan.constants.rate_funcs import delay_fade, identity, pulse_fade
+ from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
++from algan.environment import env_flag
+ from algan.geometry.geometry import (
++    get_orthonormal_vector,
+     map_global_to_local_coords,
+     map_local_to_global_coords,
+ )
+@@ -17,7 +21,7 @@ from algan.rendering.shaders.materials import (
+     MeshStandardMaterial,
+ )
+ from algan.settings._startup import _ANIMATION_DEVICE
+-from algan.utils.tensor_utils import dot_product
++from algan.utils.tensor_utils import dot_product, squish, unsquish
+ 
+ # Synapses jitter their colour for visual variety. Draw that jitter from a
+ # dedicated, fixed-seed generator (reseeded per net in NeuralNetMLP.__init__)
+@@ -145,6 +149,331 @@ def _interpolate_idle_waypoints(time_elapsed, waypoints):
+     return torch.lerp(current, following, alpha)
+ 
+ 
++class _IdleBatchUnsupported(Exception):
++    """The net's structure is not one the batched idle path can replicate."""
++
++
++class _IdleBatchPlan:
++    """Static row map and geometry constants of one net's idle updater.
++
++    Everything the batched path needs that does not change between frames:
++    which buffer rows each idle neuron, synapse, tube grid and cap owns, the
++    per-synapse endpoint wiring of the four loops, and the shared (u, v)
++    grids. Rebuilt whenever the global structure version moves.
++    """
++
++    __slots__ = (
++        "neurons",
++        "neuron_own",
++        "subtree_rows",
++        "subtree_seg",
++        "syn_loc",
++        "syn_basis",
++        "grid_rows",
++        "syn_owner",
++        "start_src",
++        "end_src",
++        "variant",
++        "synapses",
++        "tube_uv",
++        "radius",
++        "height",
++        "v_range0",
++        "v_range1",
++        "trace_mobs",
++    )
++
++
++def _idle_batch_plan(net, neurons):
++    """Build (or return the cached) :class:`_IdleBatchPlan` for ``net``."""
++    version = STRUCTURE_VERSION[0]
++    cache = getattr(net, "_idle_batch_plan_cache", None)
++    if cache is not None and cache[0] == version and cache[1].neurons == neurons:
++        return cache[1]
++    plan = _build_idle_batch_plan(net, neurons)
++    object.__setattr__(net, "_idle_batch_plan_cache", (version, plan))
++    return plan
++
++
++def _rows_of(attr_timeline, mob):
++    return attr_ranges_for_mob(attr_timeline, mob).tensor()
++
++
++def _same(a, b):
++    a_t = torch.as_tensor(a)
++    b_t = torch.as_tensor(b)
++    return a_t.shape == b_t.shape and torch.equal(a_t, b_t)
++
++
++def _build_idle_batch_plan(net, neurons):
++    tl = net.scene.timeline_manager
++    loc_tl = tl.attr_to_timeline.get("location")
++    bas_tl = tl.attr_to_timeline.get("basis")
++    if loc_tl is None or bas_tl is None:
++        raise _IdleBatchUnsupported
++
++    neuron_index = {}
++    for index, neuron in enumerate(neurons):
++        neuron_index[id(neuron)] = index
++
++    def global_index(mob):
++        got = neuron_index.get(id(mob))
++        if got is None:
++            raise _IdleBatchUnsupported
++        return got
++
++    # The four loops' endpoint wiring, in loop order: (synapse, start source,
++    # end source), where a source is a global neuron index or -1 for "the
++    # synapse's own current end". Loop 2 replaces only ends; loop 4 only
++    # starts; loop 3 replaces both; loop 2/4 use the basis-row offset, loop 3
++    # the normalized-direction-times-scale one.
++    wiring = []
++    for i, n in enumerate(net.layers[0]):
++        for synapse in n.synapses:
++            wiring.append((synapse, -1, i, 0))
++    for previous_layer, layer in zip(net.layers[:-1], net.layers[1:-1]):
++        for neuron in layer:
++            j = global_index(neuron)
++            for source, synapse in zip(previous_layer, neuron.synapses):
++                wiring.append((synapse, global_index(source), j, 1))
++    for neuron in net.layers[-1]:
++        for source, synapse in zip(net.layers[-2], neuron.synapses):
++            wiring.append((synapse, global_index(source), -1, 0))
++    if not wiring:
++        raise _IdleBatchUnsupported
++
++    plan = _IdleBatchPlan()
++    plan.neurons = neurons
++    plan.neuron_own = torch.cat([_rows_of(loc_tl, n) for n in neurons])
++
++    rows_parts = []
++    seg_parts = []
++    trace_mobs = []
++    for index, neuron in enumerate(neurons):
++        trace_mobs.append(neuron)
++        count = 0
++        for mob in neuron.get_descendants(include_self=True):
++            if mob is not neuron and "location" in getattr(
++                mob, "_excluded_from_parent_attrs", ()
++            ):
++                continue
++            rows_parts.append(_rows_of(loc_tl, mob))
++            count += int(rows_parts[-1].numel())
++        seg_parts.append(torch.full((count,), index, dtype=torch.long))
++    plan.subtree_rows = torch.cat(rows_parts)
++    plan.subtree_seg = torch.cat(seg_parts)
++    plan.trace_mobs = trace_mobs
++
++    synapses = [w[0] for w in wiring]
++    plan.synapses = synapses
++    plan.start_src = torch.tensor([w[1] for w in wiring], dtype=torch.long)
++    plan.end_src = torch.tensor([w[2] for w in wiring], dtype=torch.long)
++    plan.variant = torch.tensor([w[3] for w in wiring], dtype=torch.bool)
++    # A synapse hangs under the neuron that owns it, whose subtree loop 1's
++    # recursive move shifts. Every owner outside the idle set is an
++    # output-layer neuron (loop 4), and nothing ever moves those: they get a
++    # zero change, handled through the padded column below.
++    owner_by_syn = {}
++    for layer in net.layers:
++        for n2 in layer:
++            for s in n2.synapses:
++                owner_by_syn[id(s)] = neuron_index.get(id(n2), -1)
++    if any(id(w[0]) not in owner_by_syn for w in wiring):
++        raise _IdleBatchUnsupported
++    owners = [owner_by_syn[id(w[0])] for w in wiring]
++    plan.syn_owner = torch.tensor(owners, dtype=torch.long)
++
++    plan.syn_loc = torch.cat([_rows_of(loc_tl, s) for s in synapses])
++    plan.syn_basis = torch.cat([_rows_of(bas_tl, s) for s in synapses])
++    plan.grid_rows = torch.cat([_rows_of(loc_tl, s.grid) for s in synapses])
++
++    # These synapses are open tubes (no end discs); a capped cylinder would
++    # also rewrite its caps in ``_move_between_points`` via ``_place_bases``.
++    if any(getattr(s, "bottom_cap", None) is not None for s in synapses):
++        raise _IdleBatchUnsupported
++
++    first = synapses[0]
++    tube_uv = squish(first.get_base_grid(), -3, -2).unsqueeze(0)
++    for s in synapses:
++        uv = squish(s.get_base_grid(), -3, -2).unsqueeze(0)
++        if uv.shape != tube_uv.shape or not torch.equal(uv, tube_uv):
++            raise _IdleBatchUnsupported
++    plan.tube_uv = tube_uv
++
++    radius = first.radius
++    height = first.height
++    v_range0 = first.v_range[0]
++    v_range1 = first.v_range[1]
++    for s in synapses:
++        if (
++            type(s.radius) is not type(radius)
++            or s.radius != radius
++            or s.height != height
++            or not _same(s.v_range[0], v_range0)
++            or not _same(s.v_range[1], v_range1)
++        ):
++            raise _IdleBatchUnsupported
++    plan.radius = radius
++    plan.height = height
++    plan.v_range0 = v_range0
++    plan.v_range1 = v_range1
++    return plan
++
++
++def _cylinder_coord_offsets(uv, radius, height, v_range0, v_range1, right, up, fwd):
++    """``Cylinder.coord_function`` verbatim, batched over stacked tubes.
++
++    ``right``/``up``/``fwd`` are the tube's (scaled) basis rows with shape
++    ``[B, S, 1, 3]``; the result is offsets from each tube's centre.
++    """
++    uv = uv.clone()
++    uv[..., 1:] /= uv[..., 1:].amax()
++    u = -(v_range0 + uv[..., :1] * (v_range1 - v_range0))
++    v = uv[..., 1:]
++    return u.sin() * radius * right + (v - 0.5) * height * up + u.cos() * radius * fwd
++
++
++def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
++    """The four per-mob loops of :func:`_update_neural_net_idle`, batched.
++
++    Writes exactly what the per-mob loops write -- same expressions evaluated
++    over all synapses at once, same per-row arithmetic in the same order --
++    into three timeline writes instead of hundreds of per-mob reads and
++    writes. Every read and every computation happens before any write, so an
++    unsupported structure can fall back to the loops without having touched
++    state.
++
++    Per-loop semantics replicated bit for bit:
++
++    * neuron ``move_to``: a recursive add of ``(target - own location)`` to
++      every location row of the neuron's subtree;
++    * ``set_end_point`` / ``set_start_point``: offset from the raw basis row;
++      the interpolated endpoint passes through unchanged at interpolation 1;
++    * ``move_between_points``: offset from the normalized direction times the
++      scale coefficient;
++    * the common tail writes location (midpoint, via the setter's
++      change-then-add on every shifted row), basis directly, then re-evaluates
++      each tube's coordinate function against its new basis and midpoint,
++      landing through the same setter arithmetic.
++
++    These synapses are open tubes: ``_move_between_points``'s
++    ``_place_bases`` step only runs on a capped cylinder, so there is nothing
++    else to replicate (and a capped synapse raises
++    :class:`_IdleBatchUnsupported` at plan time).
++    """
++    plan = _idle_batch_plan(net, neurons)
++    tl = net.scene.timeline_manager
++    loc_tl = tl.attr_to_timeline["location"]
++    bas_tl = tl.attr_to_timeline["basis"]
++
++    targets = world_positions.unsqueeze(0) if scalar_time else world_positions
++
++    for mob in plan.trace_mobs:
++        tl.trace_updater_mob_access(mob, True)
++
++    # ---- reads (all before any write) ------------------------------------
++    own_cur = loc_tl.get(plan.neuron_own, copy=False)  # [B, N, 3]
++    sub_cur = loc_tl.get(plan.subtree_rows, copy=False)  # [B, R, 3]
++    syn_loc_pre = loc_tl.get(plan.syn_loc, copy=False)  # [B, S, 3]
++    syn_bas = bas_tl.get(plan.syn_basis, copy=False)  # [B, S, 9]
++    grid_pre = loc_tl.get(plan.grid_rows, copy=False)  # [B, S*Gv, 3]
++
++    batch = own_cur.shape[0]
++    n_neurons = len(neurons)
++    n_syn = len(plan.synapses)
++
++    # ---- loop 1: recursive neuron moves ----------------------------------
++    changes = targets.to(own_cur.device) - own_cur  # [B, N, 3]
++    neu_loc = own_cur + changes  # the value write 1 lands on the own row
++    new_sub = sub_cur + changes.index_select(1, plan.subtree_seg)
++    # Synapses under a moved neuron inherit its change; synapses under an
++    # output-layer neuron (never moved) take the padded zero column.
++    padded_changes = torch.cat((changes, changes.new_zeros((batch, 1, 3))), dim=1)
++    owner_gather = torch.where(
++        plan.syn_owner >= 0,
++        plan.syn_owner,
++        torch.full_like(plan.syn_owner, n_neurons),
++    )
++    syn_change = padded_changes.index_select(1, owner_gather)  # [B, S, 3]
++    syn_loc = syn_loc_pre + syn_change
++    g_view_shape = (batch, n_syn, -1, 3)
++    grid_loc = grid_pre.view(*g_view_shape) + syn_change.unsqueeze(2)
++
++    # ---- loops 2-4: per-synapse endpoints ---------------------------------
++    unsq = unsquish(syn_bas, -1, 3)
++    up_row = unsq[..., 1, :]
++    scale = unsq.norm(p=2, dim=-1, keepdim=False)
++    off_a = up_row * 0.5
++    off_b = (F.normalize(up_row, p=2, dim=-1) * scale[..., 1].unsqueeze(-1)) * 0.5
++    variant = plan.variant.view(1, n_syn, 1).to(off_a.device)
++    offset = torch.where(variant, off_b, off_a)
++    current_end = syn_loc + offset
++    current_start = syn_loc - offset
++
++    start_arg = neu_loc.index_select(1, plan.start_src.clamp(min=0))
++    end_arg = neu_loc.index_select(1, plan.end_src.clamp(min=0))
++    has_start = (plan.start_src >= 0).view(1, n_syn, 1).to(start_arg.device)
++    has_end = (plan.end_src >= 0).view(1, n_syn, 1).to(end_arg.device)
++    interpolation = 1.0
++    interp_start = current_start * (1 - interpolation) + interpolation * start_arg
++    interp_end = current_end * (1 - interpolation) + interpolation * end_arg
++    start_ = torch.where(has_start, interp_start, current_start)
++    end_ = torch.where(has_end, interp_end, current_end)
++
++    # ---- common tail of Cylinder._move_between_points ---------------------
++    sep = end_ - start_
++    up_b = F.normalize(sep, p=2, dim=-1)
++    right_b = get_orthonormal_vector(up_b)
++    forward_b = torch.cross(right_b, up_b, dim=-1)
++    mid = (start_ + end_) * 0.5
++    d_mid = mid - syn_loc
++    new_syn_loc = syn_loc + d_mid
++    new_basis = torch.cat(
++        (right_b * scale[..., :1], sep, forward_b * scale[..., 2:]), -1
++    )
++
++    d_mid_g = d_mid.unsqueeze(2)  # [B, S, 1, 3]
++    nb = unsquish(new_basis, -1, 3)
++    rb = nb[..., 0, :].unsqueeze(2)
++    ub = nb[..., 1, :].unsqueeze(2)
++    fb = nb[..., 2, :].unsqueeze(2)
++
++    tube_offs = _cylinder_coord_offsets(
++        plan.tube_uv,
++        plan.radius,
++        plan.height,
++        plan.v_range0,
++        plan.v_range1,
++        rb,
++        ub,
++        fb,
++    )
++    grid_target = tube_offs + new_syn_loc.unsqueeze(2)
++    grid_shifted = grid_loc + d_mid_g
++    grid_new = grid_shifted + (grid_target - grid_shifted)
++
++    # ---- plain (non-timeline) attributes ----------------------------------
++    for j, synapse in enumerate(plan.synapses):
++        synapse.direction = up_b[:, j : j + 1]
++        synapse.coord_function_active = synapse.coord_function
++
++    # ---- writes (all after every read and every computation) --------------
++    fused_rows = torch.cat((plan.syn_loc, plan.grid_rows))
++    fused_vals = torch.cat(
++        (
++            new_syn_loc,
++            grid_new.reshape(batch, -1, 3),
++        ),
++        dim=1,
++    )
++    tl.capture_updater_write("location", plan.subtree_rows, new_sub)
++    loc_tl.modify(plan.subtree_rows, new_sub)
++    tl.capture_updater_write("location", fused_rows, fused_vals)
++    loc_tl.modify(fused_rows, fused_vals)
++    tl.capture_updater_write("basis", plan.syn_basis, new_basis)
++    bas_tl.modify(plan.syn_basis, new_basis)
++
++
+ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
+     """Updater for bounded neuron drift and synapses that follow their ends."""
+     scalar_time = time_elapsed.ndim == 0
+@@ -168,6 +497,22 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
+         world_positions = world_positions.reshape(-1, len(neurons), 3)[0]
+     else:
+         world_positions = world_positions.reshape(frame_count, len(neurons), 3)
++
++    if env_flag("ALGAN_BATCHED_IDLE_UPDATER", True):
++        # Default on: proved bit-identical to the loops below on this scene's
++        # attribute buffers (all timelines plus the non-timeline directions)
++        # across frame windows and layer sizes -- see
++        # scratch_perf/r2/parity_idle_updater.py. Set 0 to restore the
++        # per-mob loops.
++        try:
++            _update_idle_loops_batched(net, scalar_time, neurons, world_positions)
++            return net
++        except _IdleBatchUnsupported:
++            # Unsupported structure: nothing has been written (every write
++            # happens after all reads and arithmetic), so fall through to the
++            # per-mob loops.
++            pass
++
+     for index, neuron in enumerate(neurons):
+         target = (
+             world_positions[index]
+diff --git a/algan/mobs/shapes_3d.py b/algan/mobs/shapes_3d.py
+index 3be005f3..5464ea1a 100644
+--- a/algan/mobs/shapes_3d.py
++++ b/algan/mobs/shapes_3d.py
+@@ -37,7 +37,7 @@ from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
+ from algan.mobs.group import Group
+ from algan.mobs.surfaces.surface import Surface
+ from algan.settings.shape_style_profiles import _manim_shape_style_for
+-from algan.utils.tensor_utils import cast_to_tensor
++from algan.utils.tensor_utils import cast_to_tensor, unsquish
+ 
+ 
+ def orient_faces_outward(vertex_coords, faces_list):
+@@ -928,15 +928,21 @@ class Cylinder(Surface):
+         The same expression ``coord_function`` samples the tube's rings at --
+         negation included -- swept over the whole circle whatever ``v_range``
+         is, since the discs are whole circles even on a half-pipe (matching
+-        Manim). Read off the live basis, so it follows the tube.
++        Manim). Read off the live basis, so it follows the tube. The basis is
++        read uncopied: every consumer feeds it into out-of-place arithmetic.
+         """
++        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
+         u = -(azimuth * 2 * PI)
+         return (
+-            u.sin() * self.radius * self.get_right_basis()
+-            + u.cos() * self.radius * self.get_forward_basis()
++            u.sin() * self.radius * basis_rows[..., 0, :]
++            + u.cos() * self.radius * basis_rows[..., 2, :]
+         )
+ 
+     def coord_function(self, uv):
++        # Same uncopied-basis read as _cap_ring_offsets: this runs per grid
++        # per stretch (set_location_by_function), where the clone would be a
++        # dead copy -- every result feeds out-of-place arithmetic.
++        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
+         uv[..., 1:] /= uv[..., 1:].amax()
+         # ``v_range`` is Manim's azimuthal domain, but Algan's grid carries the
+         # azimuth on the *first* uv component and the axial parameter on the
+@@ -946,9 +952,9 @@ class Cylinder(Surface):
+         u = -(self.v_range[0] + uv[..., :1] * (self.v_range[1] - self.v_range[0]))
+         v = uv[..., 1:]
+         return (
+-            u.sin() * self.radius * self.get_right_basis()
+-            + (v - 0.5) * self.height * self.get_upwards_basis()
+-            + u.cos() * self.radius * self.get_forward_basis()
++            u.sin() * self.radius * basis_rows[..., 0, :]
++            + (v - 0.5) * self.height * basis_rows[..., 1, :]
++            + u.cos() * self.radius * basis_rows[..., 2, :]
+         )
+ 
+     def normal_function(self, uv):
+@@ -980,9 +986,15 @@ class Cylinder(Surface):
+ 
+     @animated_function(animated_args={"interpolation": 0})
+     def set_start_point(self, point, interpolation=1):
+-        offset = self.get_upwards_basis() * 0.5
+-        current_end = self.location + offset
+-        current_start = self.location - offset
++        # Read uncopied: every result below feeds out-of-place arithmetic
++        # before any write happens (the writes land in _move_between_points),
++        # so the property getters' defensive clones would be dead copies on
++        # the per-synapse stretch path updaters hammer.
++        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
++        location = self.get_animated_attribute("location", copy=False)
++        offset = basis_rows[..., 1, :] * 0.5
++        current_end = location + offset
++        current_start = location - offset
+         point = current_start * (1 - interpolation) + interpolation * cast_to_tensor(
+             point
+         )
+@@ -991,9 +1003,11 @@ class Cylinder(Surface):
+ 
+     @animated_function(animated_args={"interpolation": 0})
+     def set_end_point(self, point, interpolation=1):
+-        offset = self.get_upwards_basis() * 0.5
+-        current_end = self.location + offset
+-        current_start = self.location - offset
++        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
++        location = self.get_animated_attribute("location", copy=False)
++        offset = basis_rows[..., 1, :] * 0.5
++        current_end = location + offset
++        current_start = location - offset
+         point = current_end * (1 - interpolation) + interpolation * cast_to_tensor(
+             point
+         )
+@@ -1004,13 +1018,15 @@ class Cylinder(Surface):
+     def move_between_points(self, start, end, interpolation=1):
+         start = cast_to_tensor(start)
+         end = cast_to_tensor(end)
++        basis_rows = unsquish(self.get_animated_attribute("basis", copy=False), -1, 3)
++        location = self.get_animated_attribute("location", copy=False)
+         offset = (
+-            self.get_upwards_direction()
+-            * self.scale_coefficient[..., 1].unsqueeze(-1)
++            F.normalize(basis_rows[..., 1, :], p=2, dim=-1)
++            * basis_rows.norm(p=2, dim=-1)[..., 1].unsqueeze(-1)
+             * 0.5
+         )
+-        current_end = self.location + offset
+-        current_start = self.location - offset
++        current_end = location + offset
++        current_start = location - offset
+         start = current_start * (1 - interpolation) + interpolation * start
+         end = current_end * (1 - interpolation) + interpolation * end
+         self._move_between_points(start, end)
+diff --git a/algan/mobs/surfaces/surface.py b/algan/mobs/surfaces/surface.py
+index 53d123f6..46a165c1 100644
+--- a/algan/mobs/surfaces/surface.py
++++ b/algan/mobs/surfaces/surface.py
+@@ -713,7 +713,17 @@ def get_render_primitives_batched(surfaces):
+     ``ignore_normals`` False, and has identical grid dimensions and
+     ``grid.location`` shape.
+     """
+-    grids = torch.stack([s._reshape_grid_for_render(s.grid.location) for s in surfaces])
++    # Read uncopied: the result only feeds ``reshape`` and ``torch.stack``,
++    # both out-of-place, so the property getter's defensive copy would be a
++    # second full-grid copy per surface per batch for nothing.
++    grids = torch.stack(
++        [
++            s._reshape_grid_for_render(
++                s.grid.get_animated_attribute("location", copy=False)
++            )
++            for s in surfaces
++        ]
++    )
+     weld = surface_weld_flags(grids)
+     vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids), weld)
+     corners = grid_to_triangle_vertices(grids, weld)
+@@ -3075,7 +3085,12 @@ class Surface(Mob):
+         :class:`~algan.rendering.primitives.triangle_primitive.TrianglePrimitive`
+             The surface's triangles for every frame of the batch.
+         """
+-        grid = self._reshape_grid_for_render(self.grid.location)
++        # Read uncopied: the grid only feeds reshapes and out-of-place
++        # gathers below (see get_render_primitives_batched for the same
++        # read on the batched path).
++        grid = self._reshape_grid_for_render(
++            self.grid.get_animated_attribute("location", copy=False)
++        )
+         weld = surface_weld_flags(grid)
+         if not self.ignore_normals:
+             vertex_normals = grid_to_triangle_vertices(
+@@ -3127,7 +3142,10 @@ class Surface(Mob):
+             # geometry building only does arithmetic on these numbers, and a
+             # subclass sends every operation through __torch_function__ (see
+             # the matching note in BezierCircuitCubic.get_render_primitives).
+-            grid_color = self.grid.get_animated_attribute("color").clone()
++            # Read uncopied and take the one defensive copy here: the values
++            # are mutated in place just below, and the public read's own clone
++            # would make it two.
++            grid_color = self.grid.get_animated_attribute("color", copy=False).clone()
+             grid_color[..., -1:] *= self.grid.opacity
+             grid_color[..., -2:-1] += self.grid.glow
+             return grid_color
+@@ -3310,7 +3328,7 @@ class Surface(Mob):
+             The ``(u, v)`` coordinates, shape ``[W, H, 2]``.
+         """
+         device = (
+-            self.grid.location.device
++            self.grid.get_animated_attribute("location", copy=False).device
+             if hasattr(self, "grid") and hasattr(self.grid, "location")
+             else None
+         )
+@@ -3584,7 +3602,11 @@ class Surface(Mob):
+         """
+ 
+         def target_function(uv):
+-            return function(uv.clone()) + self.location
++            # The location read is uncopied: it only feeds this out-of-place
++            # add, and this runs per grid per shape rebuild.
++            return function(uv.clone()) + self.get_animated_attribute(
++                "location", copy=False
++            )
+ 
+         self.coord_function_active = function
+         new_loc = target_function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
+diff --git a/algan/render_loop.py b/algan/render_loop.py
+index b06c1d2e..1b6849c2 100644
+--- a/algan/render_loop.py
++++ b/algan/render_loop.py
+@@ -1860,7 +1860,9 @@ class RenderLoopMixin:
+             key = (
+                 actor.grid_width,
+                 actor.grid_height,
+-                tuple(actor.grid.location.shape),
++                # Shape only: read the location uncopied rather than clone
++                # every grid once per surface per batch just for ``.shape``.
++                tuple(actor.grid.get_animated_attribute("location", copy=False).shape),
+             )
+             groups[key].append(entry)
+ 
+diff --git a/tests/README.md b/tests/README.md
+index d4cf52e4..56b1b1bf 100644
+--- a/tests/README.md
++++ b/tests/README.md
+@@ -60,6 +60,7 @@ render:
+ | `test_mesh_identity.py` (per test) | Per-triangle surface identity (`tri_obj`), which the analytic-AA resolve groups fragments by and the scene merge offsets per primitive. It is a contract between the mob side (what declares a surface), the merge and two kernel walks, so a change to batching, to a composite mob's `get_render_primitives`, or to the merge's offsetting breaks it from elsewhere. Pure tensor assertions — no render, no Taichi. |
+ | `test_batched_surface_mobs.py` (per test) | Indexing into a packed Mob -- `Mob.__getitem__`, `_set_data_sub_inds` and `__len__` resolving one member's rows out of a shared batch. Every packed Mob (all `Text`, every point cloud) depends on it, and it breaks from the Mob base or the timeline rather than from the surface code. Only the two indexing tests are marked; the equivalence tests beside them fail only when `surface.py` changes. |
+ | `test_bezier_group_runs.py` (per test) | That the vectorized bezier build is still *reached*, and that splitting a clashing group into runs leaves the merged collection unchanged. The batchability gate reads timeline internals (`mob_id_to_inds`, `ranges_for`, `parent_batch_sizes`), so a timeline or packing change can silently send every circuit back to the per-actor build -- output stays correct and nothing else notices. Two tensor-only tests are marked; the frame comparison beside them renders and is not. |
++| `test_neural_net_idle.py` | The batched idle-updater fast path (`ALGAN_BATCHED_IDLE_UPDATER`) must write exactly what the per-mob loops it replaced write. It reads rows through the same timeline machinery as any updater (`trace_updater_mob_access`, `_compact_index`, `modify`), so a change to replay or materialization can silently desync the two arms; the marked test materializes one window under each arm on a freshly built net and requires bit-equal buffers. Tensor-only, no render; the file's other two tests stay unmarked. |
+ | `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
+ 
+ ### What is not in it, and where that is covered instead
+diff --git a/tests/unit_tests/test_neural_net_idle.py b/tests/unit_tests/test_neural_net_idle.py
+index f6a64c5e..765b3642 100644
+--- a/tests/unit_tests/test_neural_net_idle.py
++++ b/tests/unit_tests/test_neural_net_idle.py
+@@ -1,6 +1,11 @@
++import os
++
++import pytest
+ import torch
+ 
+ from algan.animation_timeline.animation_contexts import Off
++from algan.constants.spatial import LEFT, UP
++from algan.environment import env_flag
+ from algan.geometry.geometry import map_global_to_local_coords
+ from algan.mobs.neural_nets.neural_net import (
+     _IDLE_PARALLEL_RADIUS_FRACTION,
+@@ -67,3 +72,64 @@ def test_activated_idle_synapse_follows_its_moving_neurons():
+     assert (shown[1:] - shown[:-1]).norm(dim=-1).min() > 1e-4
+     timeline.clear_buffers()
+     SceneManager.reset()
++
++
++def _materialize_idle_buffers(dims, batched):
++    """Build a net and materialize a window, returning every attr buffer."""
++    previous = os.environ.get("ALGAN_BATCHED_IDLE_UPDATER")
++    os.environ["ALGAN_BATCHED_IDLE_UPDATER"] = "1" if batched else "0"
++    try:
++        scene = SceneManager.reset()
++        network = NeuralNetMLPV3(dims).move(LEFT).spawn()
++        with Off():
++            network.move(UP * 0.5)
++        times = torch.arange(6) / scene.frames_per_second
++        timeline = scene.timeline_manager
++        with Off(record_attr_modifications=False, record_funcs=False):
++            timeline.set_state_to_times(times, active_mobs=[network])
++        buffers = {
++            attr: tl.active_state.detach().clone()
++            for attr, tl in timeline.attr_to_timeline.items()
++        }
++        directions = {}
++        stack = [(network, "")]
++        while stack:
++            mob, path = stack.pop()
++            d = getattr(mob, "direction", None)
++            if torch.is_tensor(d):
++                directions[f"{path}{type(mob).__name__}#{mob.id}"] = d.detach().clone()
++            for i, child in enumerate(getattr(mob, "children", ())):
++                stack.append((child, f"{path}{i}/"))
++        timeline.clear_buffers()
++        return buffers, directions
++    finally:
++        SceneManager.reset()
++        if previous is None:
++            os.environ.pop("ALGAN_BATCHED_IDLE_UPDATER", None)
++        else:
++            os.environ["ALGAN_BATCHED_IDLE_UPDATER"] = previous
++
++
++@pytest.mark.fast
++def test_batched_idle_updater_writes_what_the_loops_write():
++    """The batched idle path must be bit-identical to the per-mob loops.
++
++    Both arms materialize the same window on freshly built (deterministically
++    seeded) nets and every attribute buffer -- plus the non-timeline
++    ``direction`` attributes the updater assigns -- must compare equal under
++    ``torch.equal``. This is the guard for ALGAN_BATCHED_IDLE_UPDATER.
++    """
++    assert env_flag("ALGAN_BATCHED_IDLE_UPDATER", True), (
++        "the batched idle updater is expected to default on"
++    )
++    sequential, sequential_dirs = _materialize_idle_buffers([2, 3, 2], False)
++    try:
++        batched, batched_dirs = _materialize_idle_buffers([2, 3, 2], True)
++    finally:
++        pass
++    assert set(sequential) == set(batched)
++    for attr, value in sequential.items():
++        assert torch.equal(value, batched[attr]), f"attribute {attr} diverged"
++    assert set(sequential_dirs) == set(batched_dirs)
++    for name, value in sequential_dirs.items():
++        assert torch.equal(value, batched_dirs[name]), f"direction {name} diverged"

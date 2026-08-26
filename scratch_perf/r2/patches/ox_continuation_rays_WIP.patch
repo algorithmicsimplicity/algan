@@ -1,0 +1,525 @@
+diff --git a/algan/environment.py b/algan/environment.py
+index 7d0d0d41..8ef41840 100644
+--- a/algan/environment.py
++++ b/algan/environment.py
+@@ -147,6 +147,7 @@ _IMPORT_TIME_VARIABLES = (
+     "ALGAN_SHEET_SHADE_SPLIT",
+     "ALGAN_SOLID_SHELL_ALPHA",
+     "ALGAN_SPARSE_DISCOVERY_SAFETY",
++    "ALGAN_SPECULAR_SPAWN_FLOOR",
+     "ALGAN_SPLIT_TIME_WEIGHT",
+     "ALGAN_STBVH_LEAF_SIZE",
+     "ALGAN_STBVH_TIGHTNESS",
+diff --git a/algan/rendering/raytracing/raster_pipeline.py b/algan/rendering/raytracing/raster_pipeline.py
+index 53f8afb5..58066a94 100644
+--- a/algan/rendering/raytracing/raster_pipeline.py
++++ b/algan/rendering/raytracing/raster_pipeline.py
+@@ -25,6 +25,7 @@ from algan.environment import env_str
+ from algan.rendering.raytracing.raytrace_kernels_taichi import (
+     MIN_HIT_DISTANCE,
+ )
++from algan.rendering.raytracing.spawn_counts import counting_arg as spawn_counting_arg
+ from algan.settings import SETTINGS
+ 
+ rt_settings = SETTINGS.raytracing
+@@ -2157,6 +2158,10 @@ def shade_sparse_raster_coverage(
+         rs_alloc,
+         1 if dump_req else 0,
+         sdump,
++        # Diagnostics-only spawn-counting gate (spawn_counts): 0 on every
++        # production launch, so the counting kernel variant is never compiled
++        # -- let alone run -- by a normal render.
++        spawn_counting_arg(),
+     )
+     dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
+     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
+diff --git a/algan/rendering/raytracing/settings.py b/algan/rendering/raytracing/settings.py
+index 26f6ba25..c0c36812 100644
+--- a/algan/rendering/raytracing/settings.py
++++ b/algan/rendering/raytracing/settings.py
+@@ -1859,6 +1859,21 @@ ANALYTIC_AA_SECONDARY_MIN_ENERGY = env_float(
+     "ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", 0.12
+ )
+ 
++# Minimum share of a pixel's energy a bounce-0 continuation must carry before
++# the sheet resolve spends a traced ray on it at all: the same reasoning as
++# ``ANALYTIC_AA_SECONDARY_MIN_ENERGY`` above, applied one decision earlier.
++# Below the floor, a PRIMARY hit's reflected branch (the split-sum glossy row,
++# the mirror bounce, the partial-coverage reflection split) and its refracted
++# branch spawn nothing -- the lobe's local share still shades; only the traced
++# sample of what the lobe would see is dropped. 0.0, the default, disables
++# every test the floor feeds and renders byte-identically; anything else moves
++# output by construction (that is what dropping transport means), so this is
++# opt-in and stays off unless a caller asks for it. Read live per batch;
++# reaches the resolve through ``layer_offsets`` because that kernel is at the
++# runtime-argument ceiling. Deeper bounces keep their own thresholds -- this
++# deliberately governs the sheet resolve's spawn sites only.
++SPECULAR_SPAWN_FLOOR = env_float("ALGAN_SPECULAR_SPAWN_FLOOR", 0.0)
++
+ GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", True)
+ 
+ # Rotate each pixel's lobe fan by a 4x4 Bayer index (interleaved sampling), so
+diff --git a/algan/rendering/raytracing/sheet_resolve_taichi.py b/algan/rendering/raytracing/sheet_resolve_taichi.py
+index 006856f7..fddf87fb 100644
+--- a/algan/rendering/raytracing/sheet_resolve_taichi.py
++++ b/algan/rendering/raytracing/sheet_resolve_taichi.py
+@@ -93,7 +93,16 @@ from algan.rendering.raytracing.shading_taichi import (
+ )
+ from algan.rendering.raytracing.wavefront_kernels_taichi import (
+     _ACTIVE,
++    ALLOC_SC0,
+     ALLOC_TRUNC_SURFACES,
++    SC_M_GLOSS_CLAIMS,
++    SC_M_PIXELS,
++    SC_M_RETIRE_FARCLIP,
++    SC_M_RETIRE_WALK,
++    SC_M_RETIRE_WEIGHT,
++    SC_N_KINDS,
++    SC_S_BUCKETS,
++    SC_W_BUCKETS,
+     _material_env_brdf,
+     _material_reflectance,
+     _mirror_share,
+@@ -106,6 +115,55 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
+     _tri_normal_g,
+ )
+ 
++# Spawn-counting build (see ``rendering.raytracing.spawn_counts`` for the host
++# half and the ``rs_alloc`` layout). ``_sc_*`` helpers are called exclusively
++# behind ``ti.static(counting != 0)``, so a shipping launch never executes --
++# or compiles -- any of their bodies; the counting gate being a template means
++# a counting launch is literally a different kernel variant from the shipping
++# one, and none of its timings are shipping numbers.
++
++# Weight-bucket edges, doubling from MIN_WEIGHT; the last bucket is unbounded.
++_SC_W_EDGES = tuple(
++    1e-3 * (2.0**k) for k in range(SC_W_BUCKETS - 1)
++) + (float("inf"),)
++# At-birth visibility bucket edges.
++_SC_S_EDGES = (0.05, 0.5, 0.95)
++
++
++@ti.func
++def _sc_weight_bucket(wmax):
++    b = 0
++    for i in ti.static(range(SC_W_BUCKETS - 1)):
++        if wmax >= _SC_W_EDGES[i]:
++            b = i + 1
++    return b
++
++
++@ti.func
++def _sc_vis_bucket(vis_sum):
++    b = 0
++    for i in ti.static(range(len(_SC_S_EDGES))):
++        if vis_sum >= _SC_S_EDGES[i]:
++            b = i + 1
++    return b
++
++
++@ti.func
++def _sc_record(counting: ti.template(), rs_alloc: ti.template(),
++               kind: ti.template(), wmax, svis):
++    """Count one continuation birth: kind x weight x at-birth visibility."""
++    if ti.static(counting != 0):
++        vis_sum = 0.0
++        for s in ti.static(range(_AA_NUM_SAMPLES)):
++            vis_sum += svis[s]
++        ti.atomic_add(
++            rs_alloc[ALLOC_SC0 + kind * SC_W_BUCKETS + _sc_weight_bucket(wmax)],
++            1)
++        ti.atomic_add(
++            rs_alloc[ALLOC_SC0 + SC_N_KINDS * SC_W_BUCKETS
++                     + kind * SC_S_BUCKETS + _sc_vis_bucket(vis_sum)],
++            1)
++
+ 
+ @ti.kernel
+ def sheet_resolve_shade(
+@@ -181,7 +239,12 @@ def sheet_resolve_shade(
+         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
+         rs_int: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
+         pix_accum: ti.types.ndarray(), rs_alloc: ti.types.ndarray(),
+-        dump: ti.template(), dump_out: ti.types.ndarray()):
++        dump: ti.template(), dump_out: ti.types.ndarray(),
++        # Diagnostics-only spawn-counting gate (``spawn_counts``): 1 compiles
++        # the per-birth atomic adds into this launch, which therefore is a
++        # different kernel variant from the shipping one. Every production
++        # launch passes 0 and compiles none of it.
++        counting: ti.template()):
+     """Composite + shade each covered pixel's depth-sorted sheet list.
+ 
+     Everything is indexed by covered ordinal ``t`` (the walk's ``compact``
+@@ -197,6 +260,20 @@ def sheet_resolve_shade(
+     env_intensity = layer_offsets[4]
+     far_clip = layer_offsets[5]
+     max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
++    # Opt-in continuation floor (rt_settings.SPECULAR_SPAWN_FLOOR, read live
++    # at batch build; rides in ``layer_offsets`` because this kernel is at the
++    # runtime-argument ceiling). A REFLECTED / TRANSMITTED / prefilter-glossy
++    # branch of the PRIMARY hit whose energy share of the pixel falls under
++    # the floor spawns no continuation -- the same reasoning the
++    # sub-sampling threshold documents (a plain dielectric's ~4% Fresnel
++    # sheen), applied one decision earlier: do not spend a traced ray on a
++    # lobe that small at all. 0.0, the default, disables every added test:
++    # each is written ``(spawn_floor <= 0.0) or (...)`` so the shipping
++    # predicate is unchanged bit for bit. Deeper bounces are untouched --
++    # this is deliberately a resolve-side (bounce-0 spawn) knob only.
++    spawn_floor = 0.0
++    if layer_offsets.shape[0] > 8:
++        spawn_floor = layer_offsets[8]
+     for t in range(num_covered):
+         r = t
+         pixel = covered_idx[t]
+@@ -267,6 +344,11 @@ def sheet_resolve_shade(
+         processed = 0
+         bounced = False
+         done = False
++        if ti.static((counting != 0) and (mode != 1)):
++            # Every misc counter sits behind the mode gate too: a shadowed
++            # batch runs this body twice over the same sheets and would
++            # otherwise report each pixel twice.
++            ti.atomic_add(rs_alloc[SC_M_PIXELS], 1)
+ 
+         q = 0
+         while q < total and processed < MAX_SURFACES_PER_RAY:
+@@ -287,6 +369,8 @@ def sheet_resolve_shade(
+                         _aa_dump_frag(dump_out, q - 1, 0, 4, prim_raw, 0, 0,
+                                       msk, cov, _popcount_samples(msk), 1.0,
+                                       0.0, 0.0, 0.0, 0.0, 0.0, t_hit, svis)
++                if ti.static((counting != 0) and (mode != 1)):
++                    ti.atomic_add(rs_alloc[SC_M_RETIRE_FARCLIP], 1)
+                 done = True
+                 break
+             processed += 1
+@@ -595,9 +679,24 @@ def sheet_resolve_shade(
+                 if (not gl_taken) and (reflectivity >= 0.0) \
+                         and (T <= 1e-4) and (rough > _GLOSSY_MIN_ROUGHNESS) \
+                         and (bounces_left > 0):
+-                    R = _material_env_brdf(surf_rd, normal, reflectivity,
+-                                           ior, albedo3, rough)
+-                    prefilter_take = True
++                    r_env = _material_env_brdf(surf_rd, normal, reflectivity,
++                                               ior, albedo3, rough)
++                    # The spawn floor decides the TAKE, not just the ray: a
++                    # lobe too small to deserve a continuation also keeps the
++                    # throttle (and does not claim the pixel's one glossy
++                    # event), so a stronger reflective sheet behind it can
++                    # still take. With the floor off this test is skipped and
++                    # the take happens exactly as before.
++                    take_floor = True
++                    if spawn_floor > 0.0:
++                        r_env_max = ti.max(r_env[0],
++                                           ti.max(r_env[1], r_env[2]))
++                        take_floor = alpha * r_env_max > spawn_floor
++                    if take_floor:
++                        R = r_env
++                        prefilter_take = True
++                    else:
++                        R *= _mirror_share(rough)
+                 else:
+                     R *= _mirror_share(rough)
+             if ti.static(glossy == 0):
+@@ -675,7 +774,8 @@ def sheet_resolve_shade(
+             if is_glass:
+                 wt = weight * trans_energy * tint
+                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+-                if wt_max > MIN_WEIGHT:
++                if (wt_max > MIN_WEIGHT) and ((spawn_floor <= 0.0)
++                                              or (wt_max > spawn_floor)):
+                     hp = surf_pos
+                     tp = f % tri_pos.shape[0]
+                     v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+@@ -723,6 +823,10 @@ def sheet_resolve_shade(
+                                         rdt, wsub, base_dist + t_hit,
+                                         bounces_left - 1, processed, pixel, r, r, 1,
+                                         ior_stack, 1, ior, rdj.dot(face_normal) < 0.0)
++                                    _sc_record(counting, rs_alloc, 2,
++                                               ti.max(wsub[0], ti.max(wsub[1],
++                                                                      wsub[2])),
++                                               svis)
+                     else:
+                         rdt = _refract_ray(surf_rd, normal, ior)
+                         if ti.static(mode != 1):
+@@ -737,7 +841,10 @@ def sheet_resolve_shade(
+                                 bounces_left - 1, processed, pixel, r, r, 1,
+                                 ior_stack, 1, ior,
+                                 surf_rd.dot(face_normal) < 0.0)
+-                if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
++                            _sc_record(counting, rs_alloc, 2, wt_max, svis)
++                if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass) \
++                        and ((spawn_floor <= 0.0)
++                             or (refl_max > spawn_floor)):
+                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
+                     hit_point = surf_pos
+                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
+@@ -774,6 +881,11 @@ def sheet_resolve_shade(
+                                             base_dist + t_hit, bounces_left - 1,
+                                             processed, pixel, r, r, 1,
+                                             ior_stack, 0, 0.0, 0)
++                                        _sc_record(counting, rs_alloc, 1,
++                                                   ti.max(weight[0],
++                                                          ti.max(weight[1],
++                                                                 weight[2])),
++                                                   svis)
+                                 else:
+                                     rd = rdr
+                                     ro = org
+@@ -797,7 +909,8 @@ def sheet_resolve_shade(
+                 else:
+                     rwt = weight * refl_energy
+                     rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
+-                    if rwt_max > MIN_WEIGHT:
++                    if (rwt_max > MIN_WEIGHT) and ((spawn_floor <= 0.0)
++                                                   or (rwt_max > spawn_floor)):
+                         refl_rd, nref = _reflect_frame(surf_rd, normal,
+                                                        geo_normal)
+                         rhp = surf_pos
+@@ -836,6 +949,8 @@ def sheet_resolve_shade(
+                                             rdr, rwsub, base_dist + t_hit,
+                                             bounces_left - 1, processed, pixel, r, r,
+                                             1, ior_stack, 0, 0.0, 0)
++                                        _sc_record(counting, rs_alloc, 1,
++                                                   rwt_max, svis)
+                         else:
+                             if ti.static(mode != 1):
+                                 _spawn_pool_ray(
+@@ -845,6 +960,8 @@ def sheet_resolve_shade(
+                                     refl_rd, rwt, base_dist + t_hit,
+                                     bounces_left - 1, processed, pixel, r, r, 1,
+                                     ior_stack, 0, 0.0, 0)
++                                _sc_record(counting, rs_alloc, 1, rwt_max,
++                                           svis)
+                     if not defer:
+                         rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
+                         _run_redistribute(svis, own_msk, rr)
+@@ -879,6 +996,8 @@ def sheet_resolve_shade(
+                     # other would build shadow events for a different image
+                     # than the one being shaded.
+                     gl_taken = True
++                    if ti.static((counting != 0) and (mode != 1)):
++                        ti.atomic_add(rs_alloc[SC_M_GLOSS_CLAIMS], 1)
+                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
+                     if ti.static(mode != 1):
+                         gl_row = r + num_covered
+@@ -894,6 +1013,7 @@ def sheet_resolve_shade(
+                             pix_accum[gl_row, GL_ROW_SIGMA_SCALE] = (
+                                 2.0 * rough * rough * gl_px_per_rad)
+                             pix_accum[gl_row, GL_ROW_DP] = base_dist + t_hit
++                            _sc_record(counting, rs_alloc, 0, wt_max, svis)
+                 if not defer:
+                     rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
+                     _run_redistribute(svis, own_msk, rr)
+@@ -901,7 +1021,8 @@ def sheet_resolve_shade(
+             elif is_pane or split_refl:
+                 wt = weight * refl_energy
+                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+-                if wt_max > MIN_WEIGHT:
++                if (wt_max > MIN_WEIGHT) and ((spawn_floor <= 0.0)
++                                              or (wt_max > spawn_floor)):
+                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
+                     hp = surf_pos
+                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
+@@ -937,6 +1058,10 @@ def sheet_resolve_shade(
+                                         wsub, base_dist + t_hit, bounces_left - 1,
+                                         processed, pixel, r, r, 1,
+                                         ior_stack, 0, 0.0, 0)
++                                    _sc_record(counting, rs_alloc, 1,
++                                               ti.max(wsub[0], ti.max(wsub[1],
++                                                                      wsub[2])),
++                                               svis)
+                     else:
+                         if ti.static(mode != 1):
+                             _spawn_pool_ray(
+@@ -947,6 +1072,7 @@ def sheet_resolve_shade(
+                                 wt, base_dist + t_hit, bounces_left - 1,
+                                 processed, pixel, r, r, 1,
+                                 ior_stack, 0, 0.0, 0)
++                            _sc_record(counting, rs_alloc, 1, wt_max, svis)
+                 ts_s = w_a_s * trans_share
+                 pm = (1.0 - w_a_s) + ts_s
+                 if not defer:
+@@ -959,7 +1085,8 @@ def sheet_resolve_shade(
+                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
+                                + ts_s * tint)
+                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
+-            elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
++            elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass) \
++                    and ((spawn_floor <= 0.0) or (refl_max > spawn_floor)):
+                 refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
+                 hit_point = surf_pos
+                 if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
+@@ -994,6 +1121,11 @@ def sheet_resolve_shade(
+                                         base_dist + t_hit, bounces_left - 1,
+                                         processed, pixel, r, r, 1,
+                                         ior_stack, 0, 0.0, 0)
++                                    _sc_record(counting, rs_alloc, 1,
++                                               ti.max(weight[0],
++                                                      ti.max(weight[1],
++                                                             weight[2])),
++                                               svis)
+                             else:
+                                 rd = rdr
+                                 ro = org
+@@ -1039,6 +1171,8 @@ def sheet_resolve_shade(
+                 vis_all += svis[s]
+             cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
+             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < MIN_WEIGHT:
++                if ti.static((counting != 0) and (mode != 1)):
++                    ti.atomic_add(rs_alloc[SC_M_RETIRE_WEIGHT], 1)
+                 done = True
+                 break
+ 
+@@ -1097,7 +1231,11 @@ def sheet_resolve_shade(
+             rs_int[r, 3] = 0
+             rs_pix[r] = pixel
+             rs_int[r, 4] = r
++            _sc_record(counting, rs_alloc, 3,
++                       ti.max(weight[0], ti.max(weight[1], weight[2])), svis)
+         else:
++            if ti.static(counting != 0):
++                ti.atomic_add(rs_alloc[SC_M_RETIRE_WALK], 1)
+             # Background-as-final-sheet (§4.5): on the sparse route the frame
+             # buffer is prefilled with the background — env map included, via
+             # env_background_prefill — and the composite multiplies the
+diff --git a/algan/rendering/raytracing/tracer.py b/algan/rendering/raytracing/tracer.py
+index 68498a2e..c28d45b0 100644
+--- a/algan/rendering/raytracing/tracer.py
++++ b/algan/rendering/raytracing/tracer.py
+@@ -2494,6 +2494,12 @@ def raytrace_render_wavefront(
+             # for the same reason the env placement does -- see the comment
+             # above and DESIGN_glossy_prefilter.md §4.3.
+             0.0,
++            # [8] the opt-in continuation spawn floor for the sheet resolve's
++            # bounce-0 births (rt_settings.SPECULAR_SPAWN_FLOOR, read live).
++            # 0.0 -- the default -- disables every test it feeds; like [7] it
++            # rides here because the resolve kernel is at the runtime-argument
++            # ceiling.
++            float(rt_settings.SPECULAR_SPAWN_FLOOR),
+         ]
+         with memory.scope(
+             "batch_metadata",
+@@ -2572,6 +2578,19 @@ def raytrace_render_wavefront(
+             _rs_kf,
+         ) = state
+         it = 1
++        # Diagnostics-only hooks, active solely when a profiling script called
++        # spawn_counts.enable(): the drain accumulates the resolve's birth
++        # counters per accepted tile and records the surviving rays' state
++        # once the tail gets small, which is how a ray that rides every
++        # iteration to the loop cap gets diagnosed offline. Both sync the
++        # device; a normal render never reaches them.
++        _sc_tail = None
++        if _spawn_counts.enabled():
++            from algan.rendering.raytracing.spawn_counts import (
++                record_tail_state as _sc_tail_fn,
++            )
++
++            _sc_tail = _sc_tail_fn
+         while active.numel() > 0 and it < max_iters:
+             with _stage("wavefront:   - drain active count"):
+                 na = int(active.numel())
+@@ -2720,6 +2739,8 @@ def raytrace_render_wavefront(
+                 source=active,
+                 scan_pool=(pool_ratio != 1 or not rt_settings.WF_COMPACT_ACTIVE_ONLY),
+             )
++            if _sc_tail is not None:
++                _sc_tail(active, state, rs_pix, it)
+             it += 1
+ 
+     if sparse_coverage:
+@@ -2727,6 +2748,14 @@ def raytrace_render_wavefront(
+             prepare_sparse_raster_coverage,
+             shade_sparse_raster_coverage,
+         )
++        from algan.rendering.raytracing import spawn_counts as _spawn_counts
++
++        # Bound once per batch: the diagnostics hooks below are live only
++        # when a profiling script enabled the counting build before this
++        # render started.
++        _count_spawn_totals = (
++            _spawn_counts.accumulate_after_resolve if _spawn_counts.enabled() else None
++        )
+ 
+         # Sparse hit records live at the arena's reverse end for the duration
+         # of the window.  Coverage-sized ray pools are allocated/reset from the
+@@ -3033,6 +3062,15 @@ def raytrace_render_wavefront(
+                         attempt_primary = next_primary
+                         continue
+ 
++                    # Counting build only (spawn_counts): this tile attempt is
++                    # accepted, so its resolve-birth counters join the totals.
++                    # A retried tile never reaches here; its counters are
++                    # wiped by the retry's rs_alloc zeroing instead of
++                    # double-counted. This syncs the device -- which is why it
++                    # exists solely behind the diagnostics gate.
++                    if _count_spawn_totals is not None:
++                        _count_spawn_totals(rs_alloc)
++
+                     try:
+                         with _stage("wavefront:   - bounce drain"):
+                             active = compactor.select(
+diff --git a/algan/rendering/raytracing/wavefront_kernels_taichi.py b/algan/rendering/raytracing/wavefront_kernels_taichi.py
+index 18d85141..299faad2 100644
+--- a/algan/rendering/raytracing/wavefront_kernels_taichi.py
++++ b/algan/rendering/raytracing/wavefront_kernels_taichi.py
+@@ -895,8 +895,46 @@ ALLOC_OVERFLOW = 1
+ #: Rays retired by the ``MAX_SURFACES_PER_RAY`` compositing ceiling with
+ #: transport still to carry (``rendering.raytracing.truncation``).
+ ALLOC_TRUNC_SURFACES = 2
++# ---------------------------------------------------------------------------
++# Diagnostics-only spawn counters (scratch profiling of the sheet resolve's
++# continuation births; the host-side reader/formatter is
++# ``rendering.raytracing.spawn_counts``). Every atomic add into these slots is
++# behind a ``ti.static`` counting gate in the one kernel that writes them, so
++# a shipping launch never touches this block -- it only pays the extra words,
++# which is why they ride ``rs_alloc`` instead of being kernel arguments (the
++# shade kernels are at Taichi's argument ceiling).
++# ---------------------------------------------------------------------------
++#: First counter word. Layout: per-kind x weight-bucket histogram, then
++#: per-kind x at-birth-visibility bucket, then the misc words below.
++ALLOC_SC0 = 3
++#: Continuation kinds, in histogram order: prefilter glossy row, reflection,
++#: refraction/transmission, primary that became its own bounce.
++SC_N_KINDS = 4
++#: Weight buckets are log2-spaced from ``MIN_WEIGHT`` up, edges at
++#: 1e-3 * 2**k for k in 0..10, plus an overflow bucket.
++SC_W_BUCKETS = 12
++#: At-birth visibility buckets: [<0.05, <0.5, <0.95, >=0.95].
++SC_S_BUCKETS = 4
++#: Misc words after the histograms: pixels walked, primaries retired without
++#: bouncing, retired on exhausted weight, retired at the far clip, and
++#: prefilter-glossy claims.
++SC_N_MISC = 5
++#: Number of ``rs_alloc`` words the diagnostics block occupies.
++ALLOC_SC_N = SC_N_KINDS * SC_W_BUCKETS + SC_N_KINDS * SC_S_BUCKETS + SC_N_MISC
++#: Misc word: covered pixels the resolve walked.
++SC_M_PIXELS = ALLOC_SC0 + SC_N_KINDS * (SC_W_BUCKETS + SC_S_BUCKETS)
++#: Misc word: primaries that retired instead of continuing as a bounce
++#: (mostly walks that ran out of sheets or weight; a bounce the compositing
++#: ceiling truncates lands here too).
++SC_M_RETIRE_WALK = SC_M_PIXELS + 1
++#: Misc word: walks cut by the running weight falling under ``MIN_WEIGHT``.
++SC_M_RETIRE_WEIGHT = SC_M_PIXELS + 2
++#: Misc word: walks cut by the camera's far clip.
++SC_M_RETIRE_FARCLIP = SC_M_PIXELS + 3
++#: Misc word: pixels that claimed their one split-sum glossy event.
++SC_M_GLOSS_CLAIMS = SC_M_PIXELS + 4
+ #: Number of ``rs_alloc`` words the host must allocate and zero.
+-ALLOC_WIDTH = 3
++ALLOC_WIDTH = 3 + ALLOC_SC_N
+ 
+ 
+ @ti.func
+diff --git a/algan/settings/raytracing_settings.py b/algan/settings/raytracing_settings.py
+index 7350bebe..b326e732 100644
+--- a/algan/settings/raytracing_settings.py
++++ b/algan/settings/raytracing_settings.py
+@@ -96,6 +96,7 @@ _FIELD_TO_LEGACY = {
+         "ANALYTIC_AA_SLIVER",
+         "ANALYTIC_AA_SECONDARY_SAMPLES",
+         "ANALYTIC_AA_SECONDARY_MIN_ENERGY",
++        "SPECULAR_SPAWN_FLOOR",
+         "ANALYTIC_AA_BEZ_MIN_HALF_WIDTH",
+         "ANALYTIC_AA_CHORD_TOLERANCE",
+         "GLOSSY_REFLECTION",

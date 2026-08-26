@@ -32,6 +32,7 @@ rare.
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 
 logger = logging.getLogger("algan.memory_model")
@@ -350,25 +351,36 @@ class PeakRatioModel:
     measurement rather than on worst-case extrapolation. The out-of-memory
     handler stays the backstop either way: torch's counters cannot see Taichi's
     separate pool, so no measurement here is a hard bound.
+
+    Reads and writes may come from different threads: with prefetch-gpu-prep
+    the batch-prep worker predicts a build's peak while the render thread
+    observes an un-overlapped build's. A full ``maxlen`` deque evicts from the
+    front on append, which invalidates concurrent iterators, so observations
+    take a lock readers also hold while reducing the samples. The lock is
+    contention-free at this call rate (a few builds per batch).
     """
 
-    __slots__ = ("_samples", "seed", "safety")
+    __slots__ = ("_samples", "seed", "safety", "_lock")
 
     def __init__(self, seed, safety=1.25):
         self.seed = float(seed)
         self.safety = float(safety)
         self._samples = deque(maxlen=HISTORY)
+        self._lock = threading.Lock()
 
     def observe(self, input_bytes, peak_bytes):
         input_bytes = int(input_bytes)
         peak_bytes = int(peak_bytes)
         if input_bytes > 0 and peak_bytes >= 0:
-            self._samples.append((input_bytes, peak_bytes))
+            with self._lock:
+                self._samples.append((input_bytes, peak_bytes))
 
     def _points(self):
         """Input bytes -> worst peak seen at them, over the recent window."""
         points = {}
-        for input_bytes, peak in self._samples:
+        with self._lock:
+            samples = list(self._samples)
+        for input_bytes, peak in samples:
             if peak > points.get(input_bytes, -1):
                 points[input_bytes] = peak
         return points

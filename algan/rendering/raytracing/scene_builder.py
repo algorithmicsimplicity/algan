@@ -1242,10 +1242,16 @@ def _densify_frag_pipeline_ids(scene):
     scene["tri_material_ids"] = present
 
 
-def _merge_scene(primitives):
+def _merge_scene(primitives, *, track_peak=None):
     """Merge the batch's collections into one set per geometry type --
     triangles and bezier circuits, each with a single STBVH
     over all frames -- cached for the batch.
+
+    ``track_peak`` overrides the ``MERGE_TRACK_PEAK`` setting for this one
+    build: ``False`` skips the measurement entirely. The overlapped batch
+    prep passes that, because a peak measured beside a live render counts
+    the render's own allocations -- and the counter reset it would need
+    fires under that render (see ``RenderLoopMixin._prepare_batch_on_worker``).
     """
     first = primitives[0]
     cached = getattr(first, "_rt_merged_scene", None)
@@ -1264,7 +1270,10 @@ def _merge_scene(primitives):
     # calibrate that factor (it resets the process peak counter, so it stays
     # opt-in and off during profiling runs).
     gpu_merge = _rts.merge_on_gpu_active()
-    track_peak = gpu_merge and _rts.MERGE_TRACK_PEAK
+    if track_peak is None:
+        track_peak = gpu_merge and _rts.MERGE_TRACK_PEAK
+    else:
+        track_peak = bool(track_peak) and gpu_merge
     peak_token = None
     if gpu_merge:
         device = _RENDER_DEVICE

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
+from algan.animatable_base.animatable import STRUCTURE_VERSION, attr_ranges_for_mob
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.rate_funcs import delay_fade, identity, pulse_fade
 from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
+from algan.environment import env_flag
 from algan.geometry.geometry import (
+    get_orthonormal_vector,
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
@@ -17,7 +21,7 @@ from algan.rendering.shaders.materials import (
     MeshStandardMaterial,
 )
 from algan.settings._startup import _ANIMATION_DEVICE
-from algan.utils.tensor_utils import dot_product
+from algan.utils.tensor_utils import dot_product, squish, unsquish
 
 # Synapses jitter their colour for visual variety. Draw that jitter from a
 # dedicated, fixed-seed generator (reseeded per net in NeuralNetMLP.__init__)
@@ -145,6 +149,331 @@ def _interpolate_idle_waypoints(time_elapsed, waypoints):
     return torch.lerp(current, following, alpha)
 
 
+class _IdleBatchUnsupported(Exception):
+    """The net's structure is not one the batched idle path can replicate."""
+
+
+class _IdleBatchPlan:
+    """Static row map and geometry constants of one net's idle updater.
+
+    Everything the batched path needs that does not change between frames:
+    which buffer rows each idle neuron, synapse, tube grid and cap owns, the
+    per-synapse endpoint wiring of the four loops, and the shared (u, v)
+    grids. Rebuilt whenever the global structure version moves.
+    """
+
+    __slots__ = (
+        "neurons",
+        "neuron_own",
+        "subtree_rows",
+        "subtree_seg",
+        "syn_loc",
+        "syn_basis",
+        "grid_rows",
+        "syn_owner",
+        "start_src",
+        "end_src",
+        "variant",
+        "synapses",
+        "tube_uv",
+        "radius",
+        "height",
+        "v_range0",
+        "v_range1",
+        "trace_mobs",
+    )
+
+
+def _idle_batch_plan(net, neurons):
+    """Build (or return the cached) :class:`_IdleBatchPlan` for ``net``."""
+    version = STRUCTURE_VERSION[0]
+    cache = getattr(net, "_idle_batch_plan_cache", None)
+    if cache is not None and cache[0] == version and cache[1].neurons == neurons:
+        return cache[1]
+    plan = _build_idle_batch_plan(net, neurons)
+    object.__setattr__(net, "_idle_batch_plan_cache", (version, plan))
+    return plan
+
+
+def _rows_of(attr_timeline, mob):
+    return attr_ranges_for_mob(attr_timeline, mob).tensor()
+
+
+def _same(a, b):
+    a_t = torch.as_tensor(a)
+    b_t = torch.as_tensor(b)
+    return a_t.shape == b_t.shape and torch.equal(a_t, b_t)
+
+
+def _build_idle_batch_plan(net, neurons):
+    tl = net.scene.timeline_manager
+    loc_tl = tl.attr_to_timeline.get("location")
+    bas_tl = tl.attr_to_timeline.get("basis")
+    if loc_tl is None or bas_tl is None:
+        raise _IdleBatchUnsupported
+
+    neuron_index = {}
+    for index, neuron in enumerate(neurons):
+        neuron_index[id(neuron)] = index
+
+    def global_index(mob):
+        got = neuron_index.get(id(mob))
+        if got is None:
+            raise _IdleBatchUnsupported
+        return got
+
+    # The four loops' endpoint wiring, in loop order: (synapse, start source,
+    # end source), where a source is a global neuron index or -1 for "the
+    # synapse's own current end". Loop 2 replaces only ends; loop 4 only
+    # starts; loop 3 replaces both; loop 2/4 use the basis-row offset, loop 3
+    # the normalized-direction-times-scale one.
+    wiring = []
+    for i, n in enumerate(net.layers[0]):
+        for synapse in n.synapses:
+            wiring.append((synapse, -1, i, 0))
+    for previous_layer, layer in zip(net.layers[:-1], net.layers[1:-1]):
+        for neuron in layer:
+            j = global_index(neuron)
+            for source, synapse in zip(previous_layer, neuron.synapses):
+                wiring.append((synapse, global_index(source), j, 1))
+    for neuron in net.layers[-1]:
+        for source, synapse in zip(net.layers[-2], neuron.synapses):
+            wiring.append((synapse, global_index(source), -1, 0))
+    if not wiring:
+        raise _IdleBatchUnsupported
+
+    plan = _IdleBatchPlan()
+    plan.neurons = neurons
+    plan.neuron_own = torch.cat([_rows_of(loc_tl, n) for n in neurons])
+
+    rows_parts = []
+    seg_parts = []
+    trace_mobs = []
+    for index, neuron in enumerate(neurons):
+        trace_mobs.append(neuron)
+        count = 0
+        for mob in neuron.get_descendants(include_self=True):
+            if mob is not neuron and "location" in getattr(
+                mob, "_excluded_from_parent_attrs", ()
+            ):
+                continue
+            rows_parts.append(_rows_of(loc_tl, mob))
+            count += int(rows_parts[-1].numel())
+        seg_parts.append(torch.full((count,), index, dtype=torch.long))
+    plan.subtree_rows = torch.cat(rows_parts)
+    plan.subtree_seg = torch.cat(seg_parts)
+    plan.trace_mobs = trace_mobs
+
+    synapses = [w[0] for w in wiring]
+    plan.synapses = synapses
+    plan.start_src = torch.tensor([w[1] for w in wiring], dtype=torch.long)
+    plan.end_src = torch.tensor([w[2] for w in wiring], dtype=torch.long)
+    plan.variant = torch.tensor([w[3] for w in wiring], dtype=torch.bool)
+    # A synapse hangs under the neuron that owns it, whose subtree loop 1's
+    # recursive move shifts. Every owner outside the idle set is an
+    # output-layer neuron (loop 4), and nothing ever moves those: they get a
+    # zero change, handled through the padded column below.
+    owner_by_syn = {}
+    for layer in net.layers:
+        for n2 in layer:
+            for s in n2.synapses:
+                owner_by_syn[id(s)] = neuron_index.get(id(n2), -1)
+    if any(id(w[0]) not in owner_by_syn for w in wiring):
+        raise _IdleBatchUnsupported
+    owners = [owner_by_syn[id(w[0])] for w in wiring]
+    plan.syn_owner = torch.tensor(owners, dtype=torch.long)
+
+    plan.syn_loc = torch.cat([_rows_of(loc_tl, s) for s in synapses])
+    plan.syn_basis = torch.cat([_rows_of(bas_tl, s) for s in synapses])
+    plan.grid_rows = torch.cat([_rows_of(loc_tl, s.grid) for s in synapses])
+
+    # These synapses are open tubes (no end discs); a capped cylinder would
+    # also rewrite its caps in ``_move_between_points`` via ``_place_bases``.
+    if any(getattr(s, "bottom_cap", None) is not None for s in synapses):
+        raise _IdleBatchUnsupported
+
+    first = synapses[0]
+    tube_uv = squish(first.get_base_grid(), -3, -2).unsqueeze(0)
+    for s in synapses:
+        uv = squish(s.get_base_grid(), -3, -2).unsqueeze(0)
+        if uv.shape != tube_uv.shape or not torch.equal(uv, tube_uv):
+            raise _IdleBatchUnsupported
+    plan.tube_uv = tube_uv
+
+    radius = first.radius
+    height = first.height
+    v_range0 = first.v_range[0]
+    v_range1 = first.v_range[1]
+    for s in synapses:
+        if (
+            type(s.radius) is not type(radius)
+            or s.radius != radius
+            or s.height != height
+            or not _same(s.v_range[0], v_range0)
+            or not _same(s.v_range[1], v_range1)
+        ):
+            raise _IdleBatchUnsupported
+    plan.radius = radius
+    plan.height = height
+    plan.v_range0 = v_range0
+    plan.v_range1 = v_range1
+    return plan
+
+
+def _cylinder_coord_offsets(uv, radius, height, v_range0, v_range1, right, up, fwd):
+    """``Cylinder.coord_function`` verbatim, batched over stacked tubes.
+
+    ``right``/``up``/``fwd`` are the tube's (scaled) basis rows with shape
+    ``[B, S, 1, 3]``; the result is offsets from each tube's centre.
+    """
+    uv = uv.clone()
+    uv[..., 1:] /= uv[..., 1:].amax()
+    u = -(v_range0 + uv[..., :1] * (v_range1 - v_range0))
+    v = uv[..., 1:]
+    return u.sin() * radius * right + (v - 0.5) * height * up + u.cos() * radius * fwd
+
+
+def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
+    """The four per-mob loops of :func:`_update_neural_net_idle`, batched.
+
+    Writes exactly what the per-mob loops write -- same expressions evaluated
+    over all synapses at once, same per-row arithmetic in the same order --
+    into three timeline writes instead of hundreds of per-mob reads and
+    writes. Every read and every computation happens before any write, so an
+    unsupported structure can fall back to the loops without having touched
+    state.
+
+    Per-loop semantics replicated bit for bit:
+
+    * neuron ``move_to``: a recursive add of ``(target - own location)`` to
+      every location row of the neuron's subtree;
+    * ``set_end_point`` / ``set_start_point``: offset from the raw basis row;
+      the interpolated endpoint passes through unchanged at interpolation 1;
+    * ``move_between_points``: offset from the normalized direction times the
+      scale coefficient;
+    * the common tail writes location (midpoint, via the setter's
+      change-then-add on every shifted row), basis directly, then re-evaluates
+      each tube's coordinate function against its new basis and midpoint,
+      landing through the same setter arithmetic.
+
+    These synapses are open tubes: ``_move_between_points``'s
+    ``_place_bases`` step only runs on a capped cylinder, so there is nothing
+    else to replicate (and a capped synapse raises
+    :class:`_IdleBatchUnsupported` at plan time).
+    """
+    plan = _idle_batch_plan(net, neurons)
+    tl = net.scene.timeline_manager
+    loc_tl = tl.attr_to_timeline["location"]
+    bas_tl = tl.attr_to_timeline["basis"]
+
+    targets = world_positions.unsqueeze(0) if scalar_time else world_positions
+
+    for mob in plan.trace_mobs:
+        tl.trace_updater_mob_access(mob, True)
+
+    # ---- reads (all before any write) ------------------------------------
+    own_cur = loc_tl.get(plan.neuron_own, copy=False)  # [B, N, 3]
+    sub_cur = loc_tl.get(plan.subtree_rows, copy=False)  # [B, R, 3]
+    syn_loc_pre = loc_tl.get(plan.syn_loc, copy=False)  # [B, S, 3]
+    syn_bas = bas_tl.get(plan.syn_basis, copy=False)  # [B, S, 9]
+    grid_pre = loc_tl.get(plan.grid_rows, copy=False)  # [B, S*Gv, 3]
+
+    batch = own_cur.shape[0]
+    n_neurons = len(neurons)
+    n_syn = len(plan.synapses)
+
+    # ---- loop 1: recursive neuron moves ----------------------------------
+    changes = targets.to(own_cur.device) - own_cur  # [B, N, 3]
+    neu_loc = own_cur + changes  # the value write 1 lands on the own row
+    new_sub = sub_cur + changes.index_select(1, plan.subtree_seg)
+    # Synapses under a moved neuron inherit its change; synapses under an
+    # output-layer neuron (never moved) take the padded zero column.
+    padded_changes = torch.cat((changes, changes.new_zeros((batch, 1, 3))), dim=1)
+    owner_gather = torch.where(
+        plan.syn_owner >= 0,
+        plan.syn_owner,
+        torch.full_like(plan.syn_owner, n_neurons),
+    )
+    syn_change = padded_changes.index_select(1, owner_gather)  # [B, S, 3]
+    syn_loc = syn_loc_pre + syn_change
+    g_view_shape = (batch, n_syn, -1, 3)
+    grid_loc = grid_pre.view(*g_view_shape) + syn_change.unsqueeze(2)
+
+    # ---- loops 2-4: per-synapse endpoints ---------------------------------
+    unsq = unsquish(syn_bas, -1, 3)
+    up_row = unsq[..., 1, :]
+    scale = unsq.norm(p=2, dim=-1, keepdim=False)
+    off_a = up_row * 0.5
+    off_b = (F.normalize(up_row, p=2, dim=-1) * scale[..., 1].unsqueeze(-1)) * 0.5
+    variant = plan.variant.view(1, n_syn, 1).to(off_a.device)
+    offset = torch.where(variant, off_b, off_a)
+    current_end = syn_loc + offset
+    current_start = syn_loc - offset
+
+    start_arg = neu_loc.index_select(1, plan.start_src.clamp(min=0))
+    end_arg = neu_loc.index_select(1, plan.end_src.clamp(min=0))
+    has_start = (plan.start_src >= 0).view(1, n_syn, 1).to(start_arg.device)
+    has_end = (plan.end_src >= 0).view(1, n_syn, 1).to(end_arg.device)
+    interpolation = 1.0
+    interp_start = current_start * (1 - interpolation) + interpolation * start_arg
+    interp_end = current_end * (1 - interpolation) + interpolation * end_arg
+    start_ = torch.where(has_start, interp_start, current_start)
+    end_ = torch.where(has_end, interp_end, current_end)
+
+    # ---- common tail of Cylinder._move_between_points ---------------------
+    sep = end_ - start_
+    up_b = F.normalize(sep, p=2, dim=-1)
+    right_b = get_orthonormal_vector(up_b)
+    forward_b = torch.cross(right_b, up_b, dim=-1)
+    mid = (start_ + end_) * 0.5
+    d_mid = mid - syn_loc
+    new_syn_loc = syn_loc + d_mid
+    new_basis = torch.cat(
+        (right_b * scale[..., :1], sep, forward_b * scale[..., 2:]), -1
+    )
+
+    d_mid_g = d_mid.unsqueeze(2)  # [B, S, 1, 3]
+    nb = unsquish(new_basis, -1, 3)
+    rb = nb[..., 0, :].unsqueeze(2)
+    ub = nb[..., 1, :].unsqueeze(2)
+    fb = nb[..., 2, :].unsqueeze(2)
+
+    tube_offs = _cylinder_coord_offsets(
+        plan.tube_uv,
+        plan.radius,
+        plan.height,
+        plan.v_range0,
+        plan.v_range1,
+        rb,
+        ub,
+        fb,
+    )
+    grid_target = tube_offs + new_syn_loc.unsqueeze(2)
+    grid_shifted = grid_loc + d_mid_g
+    grid_new = grid_shifted + (grid_target - grid_shifted)
+
+    # ---- plain (non-timeline) attributes ----------------------------------
+    for j, synapse in enumerate(plan.synapses):
+        synapse.direction = up_b[:, j : j + 1]
+        synapse.coord_function_active = synapse.coord_function
+
+    # ---- writes (all after every read and every computation) --------------
+    fused_rows = torch.cat((plan.syn_loc, plan.grid_rows))
+    fused_vals = torch.cat(
+        (
+            new_syn_loc,
+            grid_new.reshape(batch, -1, 3),
+        ),
+        dim=1,
+    )
+    tl.capture_updater_write("location", plan.subtree_rows, new_sub)
+    loc_tl.modify(plan.subtree_rows, new_sub)
+    tl.capture_updater_write("location", fused_rows, fused_vals)
+    loc_tl.modify(fused_rows, fused_vals)
+    tl.capture_updater_write("basis", plan.syn_basis, new_basis)
+    bas_tl.modify(plan.syn_basis, new_basis)
+
+
 def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
     """Updater for bounded neuron drift and synapses that follow their ends."""
     scalar_time = time_elapsed.ndim == 0
@@ -168,6 +497,22 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
         world_positions = world_positions.reshape(-1, len(neurons), 3)[0]
     else:
         world_positions = world_positions.reshape(frame_count, len(neurons), 3)
+
+    if env_flag("ALGAN_BATCHED_IDLE_UPDATER", True):
+        # Default on: proved bit-identical to the loops below on this scene's
+        # attribute buffers (all timelines plus the non-timeline directions)
+        # across frame windows and layer sizes -- see
+        # scratch_perf/r2/parity_idle_updater.py. Set 0 to restore the
+        # per-mob loops.
+        try:
+            _update_idle_loops_batched(net, scalar_time, neurons, world_positions)
+            return net
+        except _IdleBatchUnsupported:
+            # Unsupported structure: nothing has been written (every write
+            # happens after all reads and arithmetic), so fall through to the
+            # per-mob loops.
+            pass
+
     for index, neuron in enumerate(neurons):
         target = (
             world_positions[index]

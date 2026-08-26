@@ -1,0 +1,1264 @@
+diff --git a/algan/environment.py b/algan/environment.py
+index 7d0d0d41..1918c17f 100644
+--- a/algan/environment.py
++++ b/algan/environment.py
+@@ -126,6 +126,7 @@ _IMPORT_TIME_VARIABLES = (
+     "ALGAN_RASTER_EMPTY_SKIP",
+     "ALGAN_RASTER_FUSED_GATHER",
+     "ALGAN_RASTER_OPAQUE_TRUNC_KERNEL",
++    "ALGAN_RASTER_PAIR_EXPAND_KERNEL",
+     "ALGAN_RASTER_PAIR_FLAGS",
+     "ALGAN_RASTER_SPARSE_COVERAGE",
+     "ALGAN_RASTER_SS",
+@@ -137,6 +138,7 @@ _IMPORT_TIME_VARIABLES = (
+     "ALGAN_SHADOW_IDENTITY_REJECT",
+     "ALGAN_SHADOW_NEAR_FRACTION",
+     "ALGAN_SHADOW_TERMINATOR",
++    "ALGAN_SHEET_BAND_STATS_KERNEL",
+     "ALGAN_SHEET_MASK_KERNEL",
+     "ALGAN_SHEET_ONE_MESH_KERNEL",
+     "ALGAN_SHEET_POSITIONED_DEPTH",
+@@ -145,6 +147,7 @@ _IMPORT_TIME_VARIABLES = (
+     "ALGAN_SHEET_SAMPLE_DEPTH",
+     "ALGAN_SHEET_SAMPLE_DEPTH_KERNEL",
+     "ALGAN_SHEET_SHADE_SPLIT",
++    "ALGAN_SHEET_SHELL_CEILING_KERNEL",
+     "ALGAN_SOLID_SHELL_ALPHA",
+     "ALGAN_SPARSE_DISCOVERY_SAFETY",
+     "ALGAN_SPLIT_TIME_WEIGHT",
+diff --git a/algan/rendering/raytracing/raster_pipeline.py b/algan/rendering/raytracing/raster_pipeline.py
+index 53f8afb5..a835ea68 100644
+--- a/algan/rendering/raytracing/raster_pipeline.py
++++ b/algan/rendering/raytracing/raster_pipeline.py
+@@ -937,6 +937,52 @@ def _class_any_flags(pre_m):
+     )
+ 
+ 
++def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
++    """The kernel arm of ``_class_pairs_flat`` (``RASTER_PAIR_EXPAND_KERNEL``).
++
++    One pass counts each candidate's chunks, the host keeps only the prefix
++    sum it kept anyway, and one pass writes each row -- binary-searching the
++    prefix for its candidate. Row content and order match the torch
++    expression exactly (candidates ascending row-major, chunks ascending
++    within a candidate); every column is integer arithmetic on the same
++    inputs, so the arms agree by construction.
++    """
++    from algan.rendering.raytracing.sheet_compact_taichi import (
++        pair_expand_count,
++        pair_expand_write,
++    )
++
++    numel = int(mask.numel())
++    mflat = mask.reshape(-1).contiguous()
++    x0f = x0.reshape(-1).contiguous()
++    x1f = x1.reshape(-1).contiguous()
++    y0f = y0.reshape(-1).contiguous()
++    y1f = y1.reshape(-1).contiguous()
++    counts = torch.empty(numel, dtype=torch.int64, device=device)
++    pair_expand_count(
++        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, RASTER_CHUNK, counts
++    )
++    offs = torch.cumsum(counts, 0) - counts
++    total = int(counts.sum().item())
++    if total == 0:
++        return None
++    rows = torch.empty((total, 8), dtype=torch.int32, device=device)
++    pair_expand_write(
++        x0f,
++        x1f,
++        y0f,
++        y1f,
++        f_abs.contiguous(),
++        offs,
++        numel,
++        ncirc,
++        RASTER_CHUNK,
++        total,
++        rows,
++    )
++    return rows
++
++
+ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
+     """Chunk expansion over a ``[frames, C]`` window in one pass.
+ 
+@@ -945,6 +991,13 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
+     the (frame, circuit) lexicographic order the per-frame loop produced.
+     """
+     ncirc = mask.shape[1]
++    if (
++        rt_settings.RASTER_PAIR_EXPAND_KERNEL
++        and mask.is_cuda
++        and mask.numel()
++        and f_abs.numel() * ncirc == mask.numel()
++    ):
++        return _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device)
+     idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
+     if idx.numel() == 0:
+         return None
+diff --git a/algan/rendering/raytracing/settings.py b/algan/rendering/raytracing/settings.py
+index 26f6ba25..0836e9a1 100644
+--- a/algan/rendering/raytracing/settings.py
++++ b/algan/rendering/raytracing/settings.py
+@@ -1047,6 +1047,35 @@ def set_raster_opaque_trunc_kernel(enabled):
+     RASTER_OPAQUE_TRUNC_KERNEL = bool(enabled)
+ 
+ 
++# Kernel pair expansion behind ``raster_pipeline._class_pairs_flat``
++# (sheet_compact_taichi.pair_expand_count / pair_expand_write). The window
++# pairs' chunk expansion built its ``(primitive, frame, bbox, offset)`` rows
++# with a ``nonzero``, six gathers, a ``repeat_interleave`` whose OUTPUT is the
++# whole row count, an arange/cumsum/subtract chain for the chunk offsets, and
++# an eight-column ``stack`` in int64 narrowed to int32 -- measured on the real
++# nn-scene 3840x2160 frame (49,307 triangle candidates expanding to 6.34 M
++# pair rows), 50 ms of the 57 ms call, almost all of it traffic through
++# ~800 MB of int64 intermediates for a 200 MB result. Two kernels replace it:
++# one counts chunks per candidate, the host keeps only the cuB prefix sum it
++# kept anyway, and one writes each row directly (binary search over the prefix
++# for its candidate).
++#
++# Bit-identical by construction: every column is an integer computed from the
++# same inputs, and the row order -- candidates ascending in flattened
++# row-major order, chunks ascending within a candidate -- is the order
++# ``nonzero`` + ``repeat_interleave`` produced, which downstream fragment
++# offsets (and through them the stable sort ties) inherit.
++RASTER_PAIR_EXPAND_KERNEL = env_flag("ALGAN_RASTER_PAIR_EXPAND_KERNEL", True)
++
++
++def set_raster_pair_expand_kernel(enabled):
++    """Toggle the kernel pair-row expansion (see ``RASTER_PAIR_EXPAND_KERNEL``).
++    Takes effect at the next batch's emission.
++    """
++    global RASTER_PAIR_EXPAND_KERNEL
++    RASTER_PAIR_EXPAND_KERNEL = bool(enabled)
++
++
+ # Covered-pixel-compacted resolve: the emission already knows exactly which
+ # pixels hold fragments, so the resolve launches one thread per COVERED pixel
+ # instead of one per screen pixel that early-outs, turning the resolve from
+@@ -1343,6 +1372,61 @@ def set_sheet_rank_kernel(enabled):
+     SHEET_RANK_KERNEL = bool(enabled)
+ 
+ 
++# Kernel per-band order stats + dominant fragment behind ``compact_sheets``
++# (sheet_compact_taichi.band_stats_reduce / band_stats_rep_orig). The five
++# per-band scatters -- nearest sorted/original position (amin), the same
++# restricted to POSITIONED fragments, the largest exact area (amax), and the
++# fragment count -- each walked the whole stream once through their own
++# scatter_reduce_/scatter_add_, and the positioned restriction masked two of
++# them with full-length ``where`` copies; one kernel updates all six tables in
++# a single visit per fragment. The dominant fragment's position needs its
++# band's completed maximum first, so it stays a second launch.
++#
++# Bit-identical: integer amin/amax/add are exact under any atomics order, an
++# f32 amax has no association at all, and the tie-break (earliest original
++# position among fragments AT the max) is the same amin over the same
++# candidates both arms compare. The caller's gathers off the filled tables are
++# unchanged.
++SHEET_BAND_STATS_KERNEL = env_flag("ALGAN_SHEET_BAND_STATS_KERNEL", True)
++
++
++def set_sheet_band_stats_kernel(enabled):
++    """Toggle the fused per-band order stats / dominant fragment scan (see
++    ``SHEET_BAND_STATS_KERNEL``). Takes effect at the next batch's compaction.
++    """
++    global SHEET_BAND_STATS_KERNEL
++    SHEET_BAND_STATS_KERNEL = bool(enabled)
++
++
++# Kernel application of the solid-shell opacity ceiling behind
++# ``compact_sheets`` (sheet_compact_taichi.solid_shell_ceiling). After the
++# block's own depth sort orders each (pixel, surface) segment -- and after the
++# f64 cumsum that prefixes it, which STAYS IN TORCH because a serial register
++# walk cannot reproduce a cub scan's reassociation bitwise (measured: 61 of
++# 3.13 M spend values move, flipping 10 visible f32 outputs on the real
++# nn-scene frame) -- torch walked the stream three more times to spend the
++# allowance: nonzero + scatter_ for segment starts, two facing-split f64
++# scatter_add_s through a whole-stream segment map, and clone + index_copy_
++# for the write-back. One thread per segment (detected in-kernel along the
++# permutation) walks its run twice with the cap in registers and the caller's
++# prefix as data.
++#
++# The float contract follows ss6.6.4 as before: front/back sums accumulate in
++# f64 registers serially in stream order (the atomic scatter_add_ had no
++# order), verified bitwise against the torch arm at 4K shapes and on the real
++# captured stream in benchmarks/_sheet_kernel_check.py rather than assumed.
++SHEET_SHELL_CEILING_KERNEL = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
++
++
++def set_sheet_shell_ceiling_kernel(enabled):
++    """Toggle the kernel solid-shell ceiling application (see
++    ``SHEET_SHELL_CEILING_KERNEL``). Takes effect at the next batch's
++    compaction.
++    """
++    global SHEET_SHELL_CEILING_KERNEL
++    SHEET_SHELL_CEILING_KERNEL = bool(enabled)
++
++
+ # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
+ # ``anti_alias_level`` times the output resolution and box-filtering back down
+ # (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE
+diff --git a/algan/rendering/raytracing/sheet_compact_taichi.py b/algan/rendering/raytracing/sheet_compact_taichi.py
+index 297d346c..367ef250 100644
+--- a/algan/rendering/raytracing/sheet_compact_taichi.py
++++ b/algan/rendering/raytracing/sheet_compact_taichi.py
+@@ -85,8 +85,9 @@ torch arm is again by measurement, at 4K shapes, bitwise after the round.
+ ``benchmarks/_sheet_kernel_check.py`` is the parity harness; every kernel is
+ gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``,
+ ``RASTER_OPAQUE_TRUNC_KERNEL``, ``SHEET_ONE_MESH_KERNEL``,
+-``SHEET_SAMPLE_DEPTH_KERNEL``) so the torch passes stay runnable as the A/B
+-arm.
++``SHEET_SAMPLE_DEPTH_KERNEL``, ``SHEET_SHELL_CEILING_KERNEL``,
++``SHEET_BAND_STATS_KERNEL``, ``RASTER_PAIR_EXPAND_KERNEL``) so the torch
++passes stay runnable as the A/B arm.
+ """
+ 
+ import taichi as ti
+@@ -395,3 +396,246 @@ def sheet_lane_first_owner(
+         for lane in ti.static(range(_AA_NUM_SAMPLES)):
+             if ((bits >> lane) & 1) != 0:
+                 ti.atomic_min(first_lane[base + lane], i)
++
++
++@ti.kernel
++def solid_shell_ceiling(
++    key: ti.types.ndarray(),  # [n] i64 -- (pixel, surface) segment keys, sorted order
++    o2: ti.types.ndarray(),  # [n] i64 -- permutation key order -> depth order
++    back: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
++    excl: ti.types.ndarray(),  # [n] f64 -- GLOBAL exclusive prefix of the f64 areas
++    scratch: ti.types.ndarray(),  # [n] f64 -- caller's spare [n] f64 buffer
++    n: ti.i32,
++    cov: ti.types.ndarray(),  # [n] f32 INOUT -- clamped in place
++):
++    """One pass: the solid-shell opacity ceiling, applied to the fragments.
++
++    The torch block this replaced walked its depth-ordered segments three
++    more times after the sort that orders them and the f64 ``cumsum`` that
++    prefixes them: a ``nonzero`` + ``scatter_`` for the segment starts, two
++    facing-split f64 ``scatter_add_``s routed through a whole-stream segment
++    map, and a clone + ``index_copy_`` to write the clamped areas back. Here
++    one thread per segment -- detected in-kernel as a change of ``key`` along
++    ``o2``, so neither the segment map nor the start indices exist -- walks
++    its run twice with everything else in registers: once to accumulate the
++    two shells' full-coverage sums (the cap), once to spend the allowance in
++    depth order and write each fragment's scaled coverage back through
++    ``cov[o2[j]]``.
++
++    Exactness, in three parts. The facing-split sums are plain f64 adds of a
++    segment's own values: the torch arm's atomic ``scatter_add_`` had no
++    summation order at all and the kernel adds serially in stream order, so
++    agreement with the torch arm is the same measure-not-assume contract as
++    ``one_mesh_pixel_reduce``'s (verified bitwise at 4K shapes AND on a real
++    captured stream). The SPEND -- what each fragment's predecessors have
++    already consumed -- is different twice over: torch computes it as a
++    difference of two rows of ONE GLOBAL cub scan, whose reassociation a
++    serial register walk cannot reproduce bitwise (measured: 61 of 3.13 M
++    spent values move, flipping 10 visible f32 outputs), so the prefix stays
++    in torch and the kernel only differences it at its own segment boundary.
++    And that difference must survive AS ITS OWN ROUNDING STEP: this kernel
++    compiles under Taichi's fast_math, whose reassociation pass folds
++    ``cap - (excl[j] - base)`` into ``(cap + base) - excl[j]`` -- harmless
++    while the prefix is small, and wrong by whole f32 ulps once it exceeds
++    the areas' own scale (measured: 1044 of 3.13 M PASS-THROUGH fragments --
++    where the answer is the input bit for bit -- came out one ulp low on the
++    real nn-scene frame). Storing ``spent`` to ``scratch`` and reading it
++    back is the barrier: the reload is opaque to the pass, so the subtraction
++    rounds alone, exactly as the torch arm's separate tensor op did.
++    ``scratch`` is the caller's now-dead f64 copy of the coverage stream,
++    which the torch arm needed only to build ``excl`` -- the barrier is free.
++    Every remaining step is the same arithmetic on the same values in the
++    same order: clamp/div/clamp chain, the f64 -> f32 -> f64 rounding of the
++    cap, and the ``1e-12`` denominator floor -- which the torch side clamps
++    INTO ITS OWN COPY, so the closing multiply writes the floored value, not
++    the raw area. Each output slot is written by exactly one walk because
++    ``o2`` is a permutation, which is what made the torch side's clone +
++    ``index_copy_`` equivalent to in-place.
++
++    A fragment count never approaches 2**31, so rows narrow to i32 for
++    indexing.
++    """
++    for i in range(n):
++        ii = ti.cast(o2[i], ti.i32)
++        ki = key[ii]
++        if i == 0 or ki != key[ti.cast(o2[i - 1], ti.i32)]:
++            front = ti.f64(0.0)
++            bk = ti.f64(0.0)
++            j = i
++            while j < n:
++                jj = ti.cast(o2[j], ti.i32)
++                if j > i and key[jj] != key[ti.cast(o2[j - 1], ti.i32)]:
++                    break
++                c = ti.cast(cov[jj], ti.f64)
++                if back[jj] != 0:
++                    bk += c
++                else:
++                    front += c
++                j += 1
++            # The cap rounds through f32 (ss6.6.4): a ceiling that wobbles in
++            # its low bits flips borderline fragments in and out of being
++            # clipped. The f64 value came from an f32 array, but the SUM did
++            # not -- only the round makes it well-defined.
++            cap = ti.cast(ti.cast(ti.max(front, bk), ti.f32), ti.f64)
++            # ``excl`` is indexed by position along ``o2`` -- the space the
++            # cumsum ran in -- not by the main-order rows the other arrays
++            # use.
++            base = excl[i]
++            j = i
++            while j < n:
++                jj = ti.cast(o2[j], ti.i32)
++                if j > i and key[jj] != key[ti.cast(o2[j - 1], ti.i32)]:
++                    break
++                # ``denom`` is written back, not ``c``: the torch arm's
++                # ``div_(c2.clamp_min_(1e-12))`` clamps ITS OWN COPY in place,
++                # so the closing multiply reads the floored value. Identical
++                # wherever an area exceeds the floor, which is everywhere the
++                # emission produces; below it both sides write ~zero ink, and
++                # byte identity still demands they write the SAME zero.
++                c = ti.cast(cov[jj], ti.f64)
++                denom = ti.max(c, ti.f64(1e-12))
++                # Store-and-reload: the barrier documented above. Do not
++                # "simplify" it back into register arithmetic.
++                scratch[j] = excl[j] - base
++                scale = ti.max(cap - scratch[j], ti.f64(0.0))
++                scale = scale / denom
++                scale = ti.min(scale, ti.f64(1.0))
++                cov[jj] = ti.cast(denom * scale, ti.f32)
++                j += 1
++
++
++@ti.kernel
++def band_stats_reduce(
++    band: ti.types.ndarray(),  # [n] i64 -- sheet/band index of each sorted fragment
++    msk: ti.types.ndarray(),  # [n] i32 -- mask words
++    pos_o: ti.types.ndarray(),  # [n] i64 -- original stream position (the order)
++    cov: ti.types.ndarray(),  # [n] f32 -- exact areas
++    n: ti.i32,
++    mask_all: ti.i32,  # _AA_MASK_ALL
++    first_sorted: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
++    min_pos: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
++    first_sorted_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
++    min_pos_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
++    cmax: ti.types.ndarray(),  # [nb] f32 OUT, PRE-ZEROED
++    nfrag: ti.types.ndarray(),  # [nb] i64 OUT, PRE-ZEROED
++    positioned: ti.template(),  # compile-time: SHEET_POSITIONED_DEPTH
++):
++    """One pass: the compaction's five per-band scatters, fused.
++
++    The torch arms ran one ``scatter_reduce_``/``scatter_add_`` per output --
++    five passes over the stream plus, for the positioned-depth restriction,
++    two full-length ``where`` copies to mask it -- for values a single visit
++   per fragment can all update: nearest sorted/original positions (amin),
++    the same restricted to POSITIONED fragments (owning a sample bit), the
++    band's largest exact area (amax), and its fragment count. Integer mins
++    and maxes are exact under any atomics order; the f32 amax is exact too
++    (max has no association). The caller gathers ``nearest_orig``/``sheet_pix``
++    off ``first_sorted_p``/``first_sorted`` afterwards, unchanged.
++
++    ``band_stats_rep_orig`` runs AFTER this one: it compares each fragment
++    against its band's completed maximum.
++    """
++    for i in range(n):
++        b = ti.cast(band[i], ti.i32)
++        p = pos_o[i]
++        ti.atomic_min(first_sorted[b], ti.cast(i, ti.i64))
++        ti.atomic_min(min_pos[b], p)
++        if ti.static(positioned):
++            if (msk[i] & mask_all) != 0:
++                ti.atomic_min(first_sorted_p[b], ti.cast(i, ti.i64))
++                ti.atomic_min(min_pos_p[b], p)
++        ti.atomic_max(cmax[b], cov[i])
++        ti.atomic_add(nfrag[b], ti.cast(1, ti.i64))
++
++
++@ti.kernel
++def band_stats_rep_orig(
++    band: ti.types.ndarray(),  # [n] i64
++    pos_o: ti.types.ndarray(),  # [n] i64
++    cov: ti.types.ndarray(),  # [n] f32
++    cmax: ti.types.ndarray(),  # [nb] f32 -- completed by band_stats_reduce
++    n: ti.i32,
++    rep_orig: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
++):
++    """One pass: the dominant fragment's original position, per band.
++
++    Largest exact area wins; the earliest original position breaks ties
++    (``cand_pos``/amin in the torch arm). Comparing against the completed
++    ``cmax`` needs the previous kernel's finish, which is the only reason
++    this is a second launch. Integer min over identical candidates, so the
++    result is the torch arm's whatever order the atomics land in.
++    """
++    for i in range(n):
++        b = ti.cast(band[i], ti.i32)
++        if cov[i] >= cmax[b]:
++            ti.atomic_min(rep_orig[b], pos_o[i])
++
++
++@ti.kernel
++def pair_expand_count(
++    mask: ti.types.ndarray(),  # [N] u8 (a bool tensor viewed as bytes), flat
++    x0f: ti.types.ndarray(),  # [N] i64 -- flat x0 column
++    x1f: ti.types.ndarray(),  # [N] i64
++    y0f: ti.types.ndarray(),  # [N] i64
++    y1f: ti.types.ndarray(),  # [N] i64
++    n: ti.i32,  # N = frames * primitives
++    chunk: ti.i32,  # RASTER_CHUNK
++    counts: ti.types.ndarray(),  # [N] i64 OUT -- chunks per candidate, 0 elsewhere
++):
++    """One pass: how many ``RASTER_CHUNK`` rows each candidate expands to."""
++    for e in range(n):
++        if mask[e] != 0:
++            bx0 = x0f[e]
++            by0 = y0f[e]
++            bw = x1f[e] - bx0 + 1
++            bh = y1f[e] - by0 + 1
++            counts[e] = (bw * bh + chunk - 1) // chunk
++        else:
++            counts[e] = 0
++
++
++@ti.kernel
++def pair_expand_write(
++    x0f: ti.types.ndarray(),  # [N] i64
++    x1f: ti.types.ndarray(),  # [N] i64
++    y0f: ti.types.ndarray(),  # [N] i64
++    y1f: ti.types.ndarray(),  # [N] i64
++    f_abs: ti.types.ndarray(),  # [Ft] i64 -- absolute frame per window row
++    offs: ti.types.ndarray(),  # [N] i64 -- EXCLUSIVE prefix of the counts
++    n: ti.i32,  # N
++    ncirc: ti.i32,
++    chunk: ti.i32,
++    total: ti.i64,  # number of expanded rows
++    rows: ti.types.ndarray(),  # [total, 8] i32 OUT
++):
++    """One pass: the expanded ``(circuit, frame, bbox, offset)`` pair rows.
++
++    Row ``j`` belongs to the candidate whose half-open offset range contains
++    it -- one binary search over the prefix -- and enumerates candidates in
++    ascending flat order, chunks ascending within each, which is exactly the
++    order ``torch.nonzero`` + ``repeat_interleave`` produced. All eight
++    columns carry the same values as the stack it replaces (i64 narrowed to
++    i32 at the end there, in the store here); every value fits an i32 or the
++    old rows already wrapped.
++    """
++    for j in range(ti.cast(total, ti.i32)):
++        lo = 0
++        hi = n - 1
++        while lo < hi:
++            mid = (lo + hi + 1) // 2
++            if offs[mid] <= j:
++                lo = mid
++            else:
++                hi = mid - 1
++        e = lo
++        bx0 = x0f[e]
++        by0 = y0f[e]
++        local = j - offs[e]
++        rows[j, 0] = ti.cast(e % ncirc, ti.i32)
++        rows[j, 1] = ti.cast(f_abs[e // ncirc], ti.i32)
++        rows[j, 2] = ti.cast(bx0, ti.i32)
++        rows[j, 3] = ti.cast(by0, ti.i32)
++        rows[j, 4] = ti.cast(x1f[e] - bx0 + 1, ti.i32)
++        rows[j, 5] = ti.cast(y1f[e] - by0 + 1, ti.i32)
++        rows[j, 6] = ti.cast(local * chunk, ti.i32)
++        rows[j, 7] = 0
+diff --git a/algan/rendering/raytracing/sheets.py b/algan/rendering/raytracing/sheets.py
+index 98600ff9..156e28a4 100644
+--- a/algan/rendering/raytracing/sheets.py
++++ b/algan/rendering/raytracing/sheets.py
+@@ -1114,7 +1114,6 @@ def compact_sheets(
+     # unique negative keys, so each is its own pass-through segment and
+     # neither spends nor consumes allowance.
+     if closed_s is not None:
+-        cov64 = cov_o.to(torch.float64)
+         # Strictly greater than any surface id, so ``pix * K + sid`` cannot
+         # collide across pixels (one amax sync, in the branch that needs it).
+         K = int(shell_sid.amax().item()) + 2
+@@ -1136,53 +1135,80 @@ def compact_sheets(
+         t_all = t_all.index_select(0, order)
+         o2 = _lexsort(key, t_all)
+         del t_all
+-        k2 = key.index_select(0, o2)
+-        del key
++        # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
++        # prefix comes out of a cub scan, and a serial register walk cannot
++        # reproduce its reassociation bitwise (measured on the real nn-scene
++        # 3840x2160 frame: a serial spend moved 61 of 3.13 M values and flipped
++        # 10 visible f32 outputs, all sliver areas below 1e-4 -- against the
++        # byte-identity contract). The kernel takes the prefix as input and
++        # does everything else per segment in registers; the torch arm below
++        # stays as the A/B arm.
++        cov64 = cov_o.to(torch.float64)
+         c2 = cov64.index_select(0, o2)
+-        del cov64
+-        seg_start = torch.ones(n, dtype=torch.bool, device=device)
+-        if n > 1:
+-            seg_start[1:] = k2[1:] != k2[:-1]
+-        del k2
+-        seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
+-        nseg = int(seg[-1].item()) + 1
+-        # The running total each fragment's in-segment predecessors have
+-        # already spent: the global exclusive prefix minus its value at the
+-        # segment's first row (the same construction ``_conflict_rank``'s
+-        # torch arm uses, and deterministic for the same reason).
+         csum = torch.cumsum(c2, 0)
+         excl_global = csum.sub_(c2)
+-        first = torch.zeros(nseg, dtype=torch.int64, device=device)
+-        first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
+-        spent = excl_global - excl_global.index_select(0, first).index_select(0, seg)
+-        del excl_global, first, seg_start
+-        # The segment's cap: its surface's two shells' own footprint areas,
+-        # accumulated float64 and rounded through float32 -- §6.6.4, because a
+-        # ceiling that wobbles in its low bits flips borderline fragments in
+-        # and out of being clipped.
+-        backf2 = shell_back.index_select(0, o2)
+-        del shell_back
+-        z64 = torch.zeros((), dtype=torch.float64, device=device)
+-        front = torch.zeros(nseg, dtype=torch.float64, device=device)
+-        back = torch.zeros(nseg, dtype=torch.float64, device=device)
+-        front.scatter_add_(0, seg, torch.where(backf2, z64, c2))
+-        back.scatter_add_(0, seg, torch.where(backf2, c2, z64))
+-        del backf2, z64
+-        cap = torch.maximum(front, back).to(torch.float32).to(torch.float64)
+-        del front, back
+-        scale = (
+-            cap.index_select(0, seg)
+-            .sub_(spent)
+-            .clamp_min_(0.0)
+-            .div_(c2.clamp_min_(1e-12))
+-            .clamp_max_(1.0)
+-        )
+-        del spent, cap, seg
+-        # A fragment clamped to zero carries no area into any band aggregate:
+-        # its sheet falls out at the resolve's ``eff <= MIN_ALPHA`` branch,
+-        # claiming nothing and occluding nothing.
+-        cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
+-        del scale, c2, o2
++        if rt_settings.SHEET_SHELL_CEILING_KERNEL and n:
++            from algan.rendering.raytracing.sheet_compact_taichi import (
++                solid_shell_ceiling,
++            )
++
++            # ``cov64`` doubles as the kernel's reassociation-barrier scratch
++            # (see the kernel docstring); the torch arm needed it only to
++            # build ``excl`` either way.
++            solid_shell_ceiling(
++                key.contiguous(),
++                o2.contiguous(),
++                shell_back.contiguous().view(torch.uint8),
++                excl_global,
++                cov64,
++                n,
++                cov_o,
++            )
++            del key, o2, shell_back, excl_global, c2, cov64
++        else:
++            k2 = key.index_select(0, o2)
++            del key
++            seg_start = torch.ones(n, dtype=torch.bool, device=device)
++            if n > 1:
++                seg_start[1:] = k2[1:] != k2[:-1]
++            del k2
++            seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
++            nseg = int(seg[-1].item()) + 1
++            # The running total each fragment's in-segment predecessors have
++            # already spent: the global exclusive prefix minus its value at the
++            # segment's first row (the same construction ``_conflict_rank``'s
++            # torch arm uses, and deterministic for the same reason).
++            first = torch.zeros(nseg, dtype=torch.int64, device=device)
++            first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
++            spent = excl_global - excl_global.index_select(0, first).index_select(0, seg)
++            del excl_global, first, seg_start
++            # The segment's cap: its surface's two shells' own footprint areas,
++            # accumulated float64 and rounded through float32 -- §6.6.4, because a
++            # ceiling that wobbles in its low bits flips borderline fragments in
++            # and out of being clipped.
++            backf2 = shell_back.index_select(0, o2)
++            del shell_back
++            z64 = torch.zeros((), dtype=torch.float64, device=device)
++            front = torch.zeros(nseg, dtype=torch.float64, device=device)
++            back = torch.zeros(nseg, dtype=torch.float64, device=device)
++            front.scatter_add_(0, seg, torch.where(backf2, z64, c2))
++            back.scatter_add_(0, seg, torch.where(backf2, c2, z64))
++            del backf2, z64
++            cap = torch.maximum(front, back).to(torch.float32).to(torch.float64)
++            del front, back
++            scale = (
++                cap.index_select(0, seg)
++                .sub_(spent)
++                .clamp_min_(0.0)
++                .div_(c2.clamp_min_(1e-12))
++                .clamp_max_(1.0)
++            )
++            del spent, cap, seg
++            # A fragment clamped to zero carries no area into any band aggregate:
++            # its sheet falls out at the resolve's ``eff <= MIN_ALPHA`` branch,
++            # claiming nothing and occluding nothing.
++            cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
++            del scale, c2, o2
+         closed_s = None
+     # ``band_id`` is now the BAND -- the sheet this compaction would build
+     # with the split off. Under ``shade_split`` each band subdivides by
+@@ -1222,50 +1248,99 @@ def compact_sheets(
+     # consecutive) and the sheet's position in the classic order: the
+     # MINIMUM original stream position (the emission is (pixel, depth-bin,
+     # descending-layer) sorted, so min-position inherits that relation).
+-    first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
+-    first_sorted.scatter_reduce_(
+-        0, band_id, positions, reduce="amin", include_self=True
+-    )
+-    nearest_orig = pos_o.index_select(0, first_sorted)
+-    sheet_pix = pix_o.index_select(0, first_sorted)
+-    min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
+-    min_pos.scatter_reduce_(0, band_id, pos_o, reduce="amin", include_self=True)
+-
+-    # Under ``positioned_depth`` the same two quantities, restricted to the
+-    # POSITIONED fragments -- the ones that own at least one sub-pixel sample.
+-    # An area donor owns none: it is a real piece of the surface with a real
+-    # area, but it has no position among the N sample points at which the
+-    # resolve compares one sheet against another, so it must not be what
+-    # decides that comparison. Falls back to the unrestricted values for a
+-    # sheet with no positioned fragment at all -- an areal, position-less
+-    # sheet, where there is nothing better to order by. See
+-    # ``rt_settings.SHEET_POSITIONED_DEPTH`` for the defect this repairs.
+-    # ``big`` is 0-d so masking a lane costs a broadcast rather than a second
+-    # [n] array, and each masked copy is freed before the next is built: this
+-    # is the function's memory peak and a per-fragment array is 28 MB at 4K.
+-    if positioned_depth:
+-        big = torch.full((), n, dtype=torch.int64, device=device)
+-        posn = (msk_o & AA_MASK_ALL) != 0
+-        masked = torch.where(posn, positions, big)
++    #
++    # Under ``SHEET_BAND_STATS_KERNEL`` one kernel visit per fragment fills all
++    # six tables these scatters produce -- including the dominant fragment's
++    # area maximum and the count, which torch computed further down -- and a
++    # second resolves the dominant position against each band's completed
++    # maximum. Integer mins/maxes/adds are exact under any atomics order and
++    # an f32 amax has no association, so the arms agree by construction; the
++    # caller-side gathers and the positioned-depth fallback ``where`` below
++    # are unchanged. The torch statements stay as the A/B arm.
++    if rt_settings.SHEET_BAND_STATS_KERNEL and nb:
++        from algan.rendering.raytracing.sheet_compact_taichi import (
++            band_stats_reduce,
++        )
++
++        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
++        min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
+         first_sorted_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+-        first_sorted_p.scatter_reduce_(
+-            0, band_id, masked, reduce="amin", include_self=True
++        min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
++        cmax = torch.zeros(nb, dtype=torch.float32, device=device)
++        nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
++        band_stats_reduce(
++            band_id.contiguous(),
++            msk_o.contiguous(),
++            pos_o.contiguous(),
++            cov_o.contiguous(),
++            n,
++            int(AA_MASK_ALL),
++            first_sorted,
++            min_pos,
++            first_sorted_p,
++            min_pos_p,
++            cmax,
++            nfrag,
++            bool(positioned_depth),
+         )
+-        del masked
+-        has_pos = first_sorted_p < n
+-        nearest_orig = torch.where(
+-            has_pos,
+-            pos_o.index_select(0, first_sorted_p.clamp_max(max(n - 1, 0))),
+-            nearest_orig,
++        nearest_orig = pos_o.index_select(0, first_sorted)
++        sheet_pix = pix_o.index_select(0, first_sorted)
++        if positioned_depth:
++            has_pos = first_sorted_p < n
++            nearest_orig = torch.where(
++                has_pos,
++                pos_o.index_select(0, first_sorted_p.clamp_max(max(n - 1, 0))),
++                nearest_orig,
++            )
++            min_pos = torch.where(has_pos, min_pos_p, min_pos)
++            del first_sorted_p, min_pos_p, has_pos
++        else:
++            del first_sorted_p, min_pos_p
++    else:
++        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
++        first_sorted.scatter_reduce_(
++            0, band_id, positions, reduce="amin", include_self=True
+         )
+-        del first_sorted_p
+-        masked = torch.where(posn, pos_o, big)
+-        del posn, big
+-        min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+-        min_pos_p.scatter_reduce_(0, band_id, masked, reduce="amin", include_self=True)
+-        del masked
+-        min_pos = torch.where(has_pos, min_pos_p, min_pos)
+-        del min_pos_p, has_pos
++        nearest_orig = pos_o.index_select(0, first_sorted)
++        sheet_pix = pix_o.index_select(0, first_sorted)
++        min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
++        min_pos.scatter_reduce_(0, band_id, pos_o, reduce="amin", include_self=True)
++
++        # Under ``positioned_depth`` the same two quantities, restricted to the
++        # POSITIONED fragments -- the ones that own at least one sub-pixel sample.
++        # An area donor owns none: it is a real piece of the surface with a real
++        # area, but it has no position among the N sample points at which the
++        # resolve compares one sheet against another, so it must not be what
++        # decides that comparison. Falls back to the unrestricted values for a
++        # sheet with no positioned fragment at all -- an areal, position-less
++        # sheet, where there is nothing better to order by. See
++        # ``rt_settings.SHEET_POSITIONED_DEPTH`` for the defect this repairs.
++        # ``big`` is 0-d so masking a lane costs a broadcast rather than a second
++        # [n] array, and each masked copy is freed before the next is built: this
++        # is the function's memory peak and a per-fragment array is 28 MB at 4K.
++        if positioned_depth:
++            big = torch.full((), n, dtype=torch.int64, device=device)
++            posn = (msk_o & AA_MASK_ALL) != 0
++            masked = torch.where(posn, positions, big)
++            first_sorted_p = torch.full((nb,), n, dtype=torch.int64, device=device)
++            first_sorted_p.scatter_reduce_(
++                0, band_id, masked, reduce="amin", include_self=True
++            )
++            del masked
++            has_pos = first_sorted_p < n
++            nearest_orig = torch.where(
++                has_pos,
++                pos_o.index_select(0, first_sorted_p.clamp_max(max(n - 1, 0))),
++                nearest_orig,
++            )
++            del first_sorted_p
++            masked = torch.where(posn, pos_o, big)
++            del posn, big
++            min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
++            min_pos_p.scatter_reduce_(0, band_id, masked, reduce="amin", include_self=True)
++            del masked
++            min_pos = torch.where(has_pos, min_pos_p, min_pos)
++            del min_pos_p, has_pos
+ 
+     # ---- SHEET_SAMPLE_DEPTH: per-sample nearest-owner depths ---------------
+     # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
+@@ -1279,20 +1354,30 @@ def compact_sheets(
+     del positions, msk_o
+ 
+     # Dominant fragment: largest exact area, earliest original position on
+-    # ties (deterministic argmax).
+-    cmax = torch.zeros(nb, dtype=torch.float32, device=device)
+-    cmax.scatter_reduce_(0, band_id, cov_o, reduce="amax", include_self=True)
+-    is_max = cov_o >= cmax.index_select(0, band_id)
+-    del cmax, cov_o
+-    big = torch.full((n,), n, dtype=torch.int64, device=device)
+-    cand_pos = torch.where(is_max, pos_o, big)
+-    del is_max, big
+-    rep_orig = torch.full((nb,), n, dtype=torch.int64, device=device)
+-    rep_orig.scatter_reduce_(0, band_id, cand_pos, reduce="amin", include_self=True)
+-    del cand_pos
+-
+-    nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
+-    nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
++    # ties (deterministic argmax). The fused path already built ``cmax`` and
++    # ``nfrag``; only this resolution stays.
++    if rt_settings.SHEET_BAND_STATS_KERNEL and nb:
++        from algan.rendering.raytracing.sheet_compact_taichi import (
++            band_stats_rep_orig,
++        )
++
++        rep_orig = torch.full((nb,), n, dtype=torch.int64, device=device)
++        band_stats_rep_orig(band_id.contiguous(), pos_o, cov_o, cmax, n, rep_orig)
++        del cmax, cov_o
++    else:
++        cmax = torch.zeros(nb, dtype=torch.float32, device=device)
++        cmax.scatter_reduce_(0, band_id, cov_o, reduce="amax", include_self=True)
++        is_max = cov_o >= cmax.index_select(0, band_id)
++        del cmax, cov_o
++        big = torch.full((n,), n, dtype=torch.int64, device=device)
++        cand_pos = torch.where(is_max, pos_o, big)
++        del is_max, big
++        rep_orig = torch.full((nb,), n, dtype=torch.int64, device=device)
++        rep_orig.scatter_reduce_(0, band_id, cand_pos, reduce="amin", include_self=True)
++        del cand_pos
++
++        nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
++        nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
+     del band_id
+ 
+     # Split-group accounting (diagnostic): groups are triangle-only.
+diff --git a/algan/settings/raytracing_settings.py b/algan/settings/raytracing_settings.py
+index 7350bebe..b1355ba0 100644
+--- a/algan/settings/raytracing_settings.py
++++ b/algan/settings/raytracing_settings.py
+@@ -71,9 +71,11 @@ _FIELD_TO_LEGACY = {
+         "RASTER_EMPTY_SKIP",
+         "RASTER_FUSED_GATHER",
+         "RASTER_OPAQUE_TRUNC_KERNEL",
++        "RASTER_PAIR_EXPAND_KERNEL",
+         "RASTER_PAIR_FLAGS",
+         "RASTER_COVERED_SHADE",
+         "RASTER_SPARSE_COVERAGE",
++        "SHEET_BAND_STATS_KERNEL",
+         "SHEET_MASK_KERNEL",
+         "SHEET_ONE_MESH_KERNEL",
+         "SHEET_POSITIONED_DEPTH",
+@@ -82,6 +84,7 @@ _FIELD_TO_LEGACY = {
+         "SHEET_SAMPLE_DEPTH",
+         "SHEET_SAMPLE_DEPTH_KERNEL",
+         "SHEET_SHADE_SPLIT",
++        "SHEET_SHELL_CEILING_KERNEL",
+         "ANALYTIC_AA",
+         "ANALYTIC_AA_BEZ",
+         "ANALYTIC_AA_TRI",
+@@ -189,9 +192,11 @@ _SETTER_OVERRIDES = {
+     "raster_empty_skip": "set_raster_empty_skip",
+     "raster_fused_gather": "set_raster_fused_gather",
+     "raster_opaque_trunc_kernel": "set_raster_opaque_trunc_kernel",
++    "raster_pair_expand_kernel": "set_raster_pair_expand_kernel",
+     "raster_pair_flags": "set_raster_pair_flags",
+     "raster_covered_shade": "set_raster_covered_shade",
+     "raster_sparse_coverage": "set_raster_sparse_coverage",
++    "sheet_band_stats_kernel": "set_sheet_band_stats_kernel",
+     "sheet_mask_kernel": "set_sheet_mask_kernel",
+     "sheet_one_mesh_kernel": "set_sheet_one_mesh_kernel",
+     "sheet_positioned_depth": "set_sheet_positioned_depth",
+@@ -200,6 +205,7 @@ _SETTER_OVERRIDES = {
+     "sheet_sample_depth": "set_sheet_sample_depth",
+     "sheet_sample_depth_kernel": "set_sheet_sample_depth_kernel",
+     "sheet_shade_split": "set_sheet_shade_split",
++    "sheet_shell_ceiling_kernel": "set_sheet_shell_ceiling_kernel",
+     "analytic_aa": "set_analytic_aa",
+     "glossy_reflection": "set_glossy_reflection",
+     "wf_textured": "set_textured_wavefront",
+diff --git a/benchmarks/_sheet_kernel_check.py b/benchmarks/_sheet_kernel_check.py
+index 5b938311..d4272e36 100644
+--- a/benchmarks/_sheet_kernel_check.py
++++ b/benchmarks/_sheet_kernel_check.py
+@@ -1,6 +1,8 @@
+-"""A/B parity for the compaction kernels
++"""A/B parity for the compaction/emission kernels
+ (RASTER_FUSED_GATHER, SHEET_MASK_KERNEL, SHEET_RANK_KERNEL,
+-RASTER_OPAQUE_TRUNC_KERNEL, SHEET_ONE_MESH_KERNEL, SHEET_SAMPLE_DEPTH_KERNEL).
++RASTER_OPAQUE_TRUNC_KERNEL, SHEET_ONE_MESH_KERNEL, SHEET_SAMPLE_DEPTH_KERNEL,
++SHEET_SHELL_CEILING_KERNEL, SHEET_BAND_STATS_KERNEL,
++RASTER_PAIR_EXPAND_KERNEL).
+ 
+ The kernels replace multi-pass torch loops with one pass, and all are meant to
+ be BIT-IDENTICAL to the arm they replace: the gather copies bits, the mask
+@@ -20,8 +22,8 @@ mistakes:
+   is clear -- compact_sheets never emits one, but the helper must agree with
+   its torch arm on any input), plus a repeat-run check on each float sum;
+ * **end to end** -- four rendered frames of a scene carrying PN surfaces, flat
+-  polyhedra, transparency, bezier circuits and text, hashed with all six
+-  toggles ON and all six OFF.
++  polyhedra, transparency, bezier circuits and text, hashed with all nine
++  toggles ON and all nine OFF.
+ 
+     <venv-python> benchmarks/_sheet_kernel_check.py
+ """
+@@ -527,7 +529,6 @@ def lane_case(label, band, msk, t_o, nb, n):
+     inf_want = int(torch.isinf(want).sum())
+     check(f"{label} (inf entries: {inf_want})", ok)
+ 
+-
+ lane_n = 3_128_845
+ lane_nb = 1_441_601
+ lane_band = torch.randint(0, lane_nb, (lane_n,), generator=g, device=DEV)
+@@ -562,8 +563,357 @@ lane_case(
+ donor_msk = torch.full((lane_n,), _AA_SLIVER_BIT, dtype=torch.int32, device=DEV)
+ lane_case("donors only (no lane owned)", dense_band, donor_msk, lane_t, 1, lane_n)
+ 
++# --------------------------------------------- unit: solid-shell ceiling
++print("\nsolid_shell_ceiling vs the torch post-sort segment clamp it replaced")
++
++
++def shell_case(label, key, o2, back, cov_in):
++    """Both arms consume ONE cub-scan exclusive prefix, built exactly as
++    ``compact_sheets`` builds it -- the prefix stays in torch under the
++    toggle, so sharing it is not a shortcut, it is the production shape.
++    (Two separately-built prefixes can legitimately differ: cuB's
++    reassociation follows the workspace the allocator hands it, so comparing
++    arms that each rebuilt the prefix would test allocator noise.)
++    """
++    from algan.rendering.raytracing.sheet_compact_taichi import (
++        solid_shell_ceiling,
++    )
++
++    device = key.device
++    nn_ = int(key.numel())
++    cov64 = cov_in.to(torch.float64)
++    c2 = cov64.index_select(0, o2)
++    del cov64
++    excl = torch.cumsum(c2, 0).sub_(c2)
++    def torch_apply(cov_src):
++        k2 = key.index_select(0, o2)
++        seg_start = torch.ones(nn_, dtype=torch.bool, device=device)
++        if nn_ > 1:
++            seg_start[1:] = k2[1:] != k2[:-1]
++        del k2
++        seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
++        nseg = int(seg[-1].item()) + 1
++        first = torch.zeros(nseg, dtype=torch.int64, device=device)
++        first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
++        spent = excl - excl.index_select(0, first).index_select(0, seg)
++        del first, seg_start
++        backf2 = back.index_select(0, o2)
++        z64 = torch.zeros((), dtype=torch.float64, device=device)
++        front = torch.zeros(nseg, dtype=torch.float64, device=device)
++        back_t = torch.zeros(nseg, dtype=torch.float64, device=device)
++        front.scatter_add_(0, seg, torch.where(backf2, z64, c2))
++        back_t.scatter_add_(0, seg, torch.where(backf2, c2, z64))
++        del backf2, z64
++        cap = torch.maximum(front, back_t).to(torch.float32).to(torch.float64)
++        del front, back_t
++        scale = (
++            cap.index_select(0, seg)
++            .sub_(spent)
++            .clamp_min_(0.0)
++            .div_(c2.clamp_min_(1e-12))
++            .clamp_max_(1.0)
++        )
++        del spent, cap, seg
++        out_cov = cov_src.clone()
++        out_cov.index_copy_(0, o2, (c2 * scale).to(torch.float32))
++        return out_cov
++
++    want = torch_apply(cov_in)
++    got = cov_in.clone()
++    cov64k = cov_in.to(torch.float64)  # the kernel's barrier scratch
++    solid_shell_ceiling(
++        key.contiguous(), o2.contiguous(), back.contiguous().view(torch.uint8),
++        excl, cov64k, nn_, got,
++    )
++    ok = bits_equal(want, got)
++    if not ok:
++        dd = want.view(torch.int32) != got.view(torch.int32)
++        print(
++            f"    [diag] diffs {int(dd.sum())}/{nn_}; "
++            f"first {[int(i) for i in dd.nonzero(as_tuple=True)[0][:5]]}"
++        )
++    # The facing-split sums are the float contract: the kernel must also
++    # reproduce ITSELF bitwise across runs (serial walks, so this should be
++    # exact); the shared ``excl`` makes the repeats read the same spend.
++    repeats = []
++    for _ in range(4):
++        c = cov_in.clone()
++        solid_shell_ceiling(
++            key.contiguous(), o2.contiguous(),
++            back.contiguous().view(torch.uint8), excl, cov64k, nn_, c,
++        )
++        repeats.append(c)
++    ok = ok and all(bits_equal(r, got) for r in repeats)
++    nseg = int(torch.unique(key[o2]).numel())
++    del cov64k
++    check(f"{label} ({nseg:,} segments)", ok)
++
++
++shell_n = 3_128_845
++# Keys look like the real thing: mostly closed-surface (pixel, surface)
++# segments of a few fragments each over 700k pixels, plus a pass-through tail.
++shell_pix = torch.randint(0, 700_000, (shell_n,), generator=g, device=DEV)
++shell_sid = torch.randint(0, 4, (shell_n,), generator=g, device=DEV)
++closed = torch.rand(shell_n, generator=g, device=DEV) < 0.75
++neg = -(torch.arange(shell_n, dtype=torch.int64, device=DEV) + 1)
++shell_key = torch.where(closed, shell_pix * 6 + shell_sid, neg)
++del shell_pix, shell_sid, closed, neg
++# A real o2 sorts by (key, depth): stable argsort by key, then a stable
++# argsort of random depths within it -- the same LSD composition _lexsort uses.
++depth = torch.rand(shell_n, generator=g, device=DEV)
++order1 = torch.argsort(shell_key, stable=True)
++o2_sorted = order1[torch.argsort(depth.index_select(0, order1), stable=True)]
++del order1, depth
++shell_back = torch.rand(shell_n, generator=g, device=DEV) < 0.5
++shell_cov = torch.rand(shell_n, generator=g, device=DEV)
++shell_case("4K shapes, mixed segments/facings", shell_key, o2_sorted, shell_back, shell_cov)
++
++# No closed fragment at all: every key unique-negative, every segment its own
++# pass-through (cap == own area -> scale exactly 1).
++all_open_key = -(torch.arange(shell_n, dtype=torch.int64, device=DEV) + 1)
++open_o2 = torch.arange(shell_n, dtype=torch.int64, device=DEV)
++shell_case("nothing closed (pass-through segments)", all_open_key, open_o2, shell_back, shell_cov)
++
++# One segment holding the whole stream: every fragment shares one key.
++one_seg_key = torch.zeros(shell_n, dtype=torch.int64, device=DEV)
++shell_case("one segment, whole stream", one_seg_key, open_o2, shell_back, shell_cov)
++
++# Zero areas and sub-floor areas: exercises the 1e-12 denominator branch and
++# the clamp_max(1) on a scale that would otherwise exceed 1.
++tiny = torch.full((shell_n,), 1e-13, dtype=torch.float32, device=DEV)
++tiny[::997] = 0.0
++shell_case("zero and 1e-13 areas", one_seg_key, open_o2, shell_back, tiny)
++
++# Single fragment: the minimal walk (n == 0 is unreachable -- the block only
++# runs when some triangle is declared closed).
++solo_key = torch.zeros(1, dtype=torch.int64, device=DEV)
++solo_o2 = torch.zeros(1, dtype=torch.int64, device=DEV)
++solo_back = torch.ones(1, dtype=torch.bool, device=DEV)
++solo_cov = torch.full((1,), 0.42, dtype=torch.float32, device=DEV)
++shell_case("n == 1", solo_key, solo_o2, solo_back, solo_cov)
++
++# -------------------------------------------------- unit: band stats fusion
++print("\nband_stats_reduce/rep_orig vs the five scatters they replaced")
++
++
++def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
++    from algan.rendering.raytracing.sheet_compact_taichi import (
++        band_stats_reduce,
++        band_stats_rep_orig,
++    )
++
++    n = int(band.numel())
++    dev = band.device
++
++    def torch_arm():
++        fs = torch.full((nb,), n, dtype=torch.int64, device=dev)
++        fs.scatter_reduce_(0, band, torch.arange(n, dtype=torch.int64, device=dev),
++                           reduce="amin", include_self=True)
++        mp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++        mp.scatter_reduce_(0, band, pos_o, reduce="amin", include_self=True)
++        fsp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++        mpp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++        if positioned:
++            big = torch.full((), n, dtype=torch.int64, device=dev)
++            posn = (msk & _AA_MASK_ALL) != 0
++            masked = torch.where(posn, torch.arange(n, dtype=torch.int64, device=dev), big)
++            fsp.scatter_reduce_(0, band, masked, reduce="amin", include_self=True)
++            masked = torch.where(posn, pos_o, big)
++            mpp.scatter_reduce_(0, band, masked, reduce="amin", include_self=True)
++        cm = torch.zeros(nb, dtype=torch.float32, device=dev)
++        cm.scatter_reduce_(0, band, cov, reduce="amax", include_self=True)
++        nf = torch.zeros(nb, dtype=torch.int64, device=dev)
++        nf.scatter_add_(0, band, torch.ones_like(band))
++        is_max = cov >= cm.index_select(0, band)
++        cand = torch.where(is_max, pos_o, torch.full((n,), n, dtype=torch.int64, device=dev))
++        rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++        rp.scatter_reduce_(0, band, cand, reduce="amin", include_self=True)
++        return fs, mp, fsp, mpp, cm, nf, rp
++
++    w_fs, w_mp, w_fsp, w_mpp, w_cm, w_nf, w_rp = torch_arm()
++
++    fs = torch.full((nb,), n, dtype=torch.int64, device=dev)
++    mp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++    fsp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++    mpp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++    cm = torch.zeros(nb, dtype=torch.float32, device=dev)
++    nf = torch.zeros(nb, dtype=torch.int64, device=dev)
++    band_stats_reduce(
++        band.contiguous(), msk.contiguous(), pos_o.contiguous(), cov.contiguous(),
++        n, int(_AA_MASK_ALL), fs, mp, fsp, mpp, cm, nf, bool(positioned),
++    )
++    rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
++    band_stats_rep_orig(band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp)
++    ok = (
++        bits_equal(w_fs, fs)
++        and bits_equal(w_mp, mp)
++        and bits_equal(w_fsp, fsp)
++        and bits_equal(w_mpp, mpp)
++        and bits_equal(w_cm, cm)
++        and bits_equal(w_nf, nf)
++        and bits_equal(w_rp, rp)
++    )
++    check(
++        f"{label} positioned={positioned} (bands {int((w_nf > 0).sum()):,}/{nb:,})",
++        ok,
++    )
++
++
++bs_n = 3_128_845
++bs_nb = 1_441_601
++bs_band = torch.randint(0, bs_nb, (bs_n,), generator=g, device=DEV)
++bs_pos = torch.randperm(bs_n, generator=g, device=DEV)
++bs_msk = torch.randint(0, 1 << (_AA_NUM_SAMPLES + 4), (bs_n,), generator=g, device=DEV,
++                       dtype=torch.int32)
++bs_cov = torch.rand(bs_n, generator=g, device=DEV)
++band_stats_case("4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, True)
++band_stats_case("4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, False)
++
++# Empty band table region: ids allocated past the highest used one stay at the
++# sentinel n in both arms.
++band_stats_case(
++    "half the band table unused",
++    torch.randint(0, bs_nb // 2, (bs_n,), generator=g, device=DEV),
++    bs_msk, bs_pos, bs_cov, bs_nb, True,
++)
++
++# One band holding everything; every fragment its own band; single fragment.
++ones_band = torch.zeros(bs_n, dtype=torch.int64, device=DEV)
++band_stats_case("one band, whole stream", ones_band, bs_msk, bs_pos, bs_cov, 1, True)
++own_band = torch.arange(bs_n, dtype=torch.int64, device=DEV)
++band_stats_case("every fragment its own band", own_band, bs_msk, bs_pos, bs_cov, bs_n, True)
++band_stats_case(
++    "n == 1",
++    torch.zeros(1, dtype=torch.int64, device=DEV),
++    torch.full((1,), _AA_MASK_ALL, dtype=torch.int32, device=DEV),
++    torch.zeros(1, dtype=torch.int64, device=DEV),
++    torch.full((1,), 0.5, dtype=torch.float32, device=DEV),
++    1,
++    True,
++)
++
++# ------------------------------------------------ unit: pair-row expansion
++print("\npair_expand_count/write vs _class_pairs_flat's torch expression")
++
++
++def torch_pair_rows(mask, x0, x1, y0, y1, f_abs):
++    """The verbatim torch body of ``_class_pairs_flat``."""
++    ncirc = mask.shape[1]
++    idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
++    if idx.numel() == 0:
++        return None
++    bx0 = x0.reshape(-1)[idx]
++    by0 = y0.reshape(-1)[idx]
++    bw = x1.reshape(-1)[idx] - bx0 + 1
++    bh = y1.reshape(-1)[idx] - by0 + 1
++    area = bw * bh
++    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
++    rep = torch.repeat_interleave(torch.arange(idx.numel(), device=DEV), nch)
++    if rep.numel() == 0:
++        return None
++    base = torch.cumsum(nch, 0) - nch
++    off = (torch.arange(rep.shape[0], device=DEV) - base[rep]) * RASTER_CHUNK
++    rows = torch.stack(
++        [
++            (idx % ncirc)[rep],
++            f_abs.index_select(0, idx // ncirc)[rep],
++            bx0[rep],
++            by0[rep],
++            bw[rep],
++            bh[rep],
++            off,
++            torch.zeros_like(rep),
++        ],
++        -1,
++    )
++    return rows.to(torch.int32).contiguous()
++
++
++from algan.rendering.raytracing.raster_pipeline import (  # noqa: E402
++    RASTER_CHUNK,
++    _class_pairs_flat,
++)
++
++
++def pairs_case(label, mask, x0, x1, y0, y1, f_abs):
++    ref = torch_pair_rows(mask, x0, x1, y0, y1, f_abs)
++    EXPERIMENTAL.set(raster_pair_expand_kernel=False)
++    want = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, DEV)
++    EXPERIMENTAL.set(raster_pair_expand_kernel=True)
++    got = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, DEV)
++    EXPERIMENTAL.set(raster_pair_expand_kernel=False)
++    ok = (ref is None and want is None and got is None) or (
++        ref is not None
++        and want is not None
++        and got is not None
++        and bits_equal(ref, want)
++        and bits_equal(ref, got)
++        and got.is_contiguous()
++        and got.dtype == torch.int32
++    )
++    nrows = 0 if ref is None else int(ref.shape[0])
++    check(f"{label} (rows out: {nrows:,})", ok)
++
++
++C = 49_307
++Ft = 1
++pmask = torch.rand(Ft, C, generator=g, device=DEV) < 0.45
++# Realistic bbox sizes: the real nn-scene window's 21,877 candidates expanded
++# to 6.34 M rows (mean ~290 chunks each), so keep the synthetic areas in that
++# range rather than whole-screen boxes, whose expansion cannot fit in 4 GB.
++px0 = torch.randint(0, 3840, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
++px1 = px0 + torch.randint(1, 200, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
++py0 = torch.randint(0, 2160, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
++py1 = py0 + torch.randint(1, 150, (Ft, C), generator=g, device=DEV, dtype=torch.int64)
++pf = torch.arange(Ft, dtype=torch.int64, device=DEV) + 7
++pairs_case(f"UHD-ish window [{Ft}x{C}], ~45% candidates", pmask, px0, px1, py0, py1, pf)
++
++pairs_case(
++    "empty window (no candidates)",
++    torch.zeros(2, 500, dtype=torch.bool, device=DEV),
++    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
++    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
++    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
++    torch.zeros(2, 500, dtype=torch.int64, device=DEV),
++    torch.arange(2, dtype=torch.int64, device=DEV),
++)
++
++single_mask = torch.zeros(1, 1, dtype=torch.bool, device=DEV)
++single_mask[0, 0] = True
++pairs_case(
++    "one candidate, one chunk (area <= RASTER_CHUNK)",
++    single_mask,
++    torch.tensor([[10]], dtype=torch.int64, device=DEV),
++    torch.tensor([[37]], dtype=torch.int64, device=DEV),
++    torch.tensor([[5]], dtype=torch.int64, device=DEV),
++    torch.tensor([[30]], dtype=torch.int64, device=DEV),
++    torch.tensor([3], dtype=torch.int64, device=DEV),
++)
++
++pairs_case(
++    "every element a candidate",
++    torch.ones(3, 2000, dtype=torch.bool, device=DEV),
++    torch.zeros(3, 2000, dtype=torch.int64, device=DEV),
++    torch.full((3, 2000), 31, dtype=torch.int64, device=DEV),
++    torch.zeros(3, 2000, dtype=torch.int64, device=DEV),
++    torch.full((3, 2000), 63, dtype=torch.int64, device=DEV),
++    torch.arange(3, dtype=torch.int64, device=DEV) + 11,
++)
++
++tiny_mask = torch.zeros(1, 8, dtype=torch.bool, device=DEV)
++tiny_mask[0, ::3] = True
++pairs_case(
++    "sparse interleaved candidates",
++    tiny_mask,
++    torch.zeros(1, 8, dtype=torch.int64, device=DEV),
++    torch.full((1, 8), 31, dtype=torch.int64, device=DEV),
++    torch.zeros(1, 8, dtype=torch.int64, device=DEV),
++    torch.full((1, 8), 63, dtype=torch.int64, device=DEV),
++    torch.tensor([0], dtype=torch.int64, device=DEV),
++)
++
+ # ------------------------------------------------------------- end to end
+-print("\nrendered frames, all six toggles ON vs all six OFF")
++print("\nrendered frames, all nine toggles ON vs all nine OFF")
+ SETTINGS.computing.set(available_memory_override=2 * GIGABYTES)
+ sphere = Sphere().scale(1.4).move(LEFT * 3).set_color(GREEN).spawn()
+ cube = Cube().scale(1.1).move(RIGHT * 3).set_color(BLUE).spawn()
+@@ -595,6 +945,9 @@ _ALL_OFF = {
+     "raster_opaque_trunc_kernel": False,
+     "sheet_one_mesh_kernel": False,
+     "sheet_sample_depth_kernel": False,
++    "sheet_shell_ceiling_kernel": False,
++    "sheet_band_stats_kernel": False,
++    "raster_pair_expand_kernel": False,
+ }
+ _ALL_ON = dict.fromkeys(_ALL_OFF, True)
+ EXPERIMENTAL.set(**_ALL_OFF)
+diff --git a/scratch_perf/r2/ox/brief_sheet_host_chain.md b/scratch_perf/r2/ox/brief_sheet_host_chain.md
+index 135163dc..c22da48b 100644
+--- a/scratch_perf/r2/ox/brief_sheet_host_chain.md
++++ b/scratch_perf/r2/ox/brief_sheet_host_chain.md
+@@ -159,3 +159,25 @@ stream's `n` / covered / band counts; what you changed and what each change
+ bought (say whether the numbers are wall-clock — and how you controlled for the
+ other agent on this GPU — or byte/launch counts); which candidates you rejected
+ and why; and — explicitly — everything you did **not** verify.
++
++## STOP — directive added mid-run (read this before your next command)
++
++**Do not run `pytest tests/unit_tests` again.** It has been started twice and
++killed twice, and it will be killed again automatically: the suite spawns two
++~2 GB render subprocesses concurrently for its cross-process determinism test,
++and on this 4 GB box that drives the machine to the edge of OOM. This is not a
++judgement about your work — the operator is taking that verification over on a
++quiet box.
++
++Do this instead, then stop:
++
++1. `uv run -m pytest -q --fast` (cheap, and it is the real gate).
++2. `uv run ruff check --no-fix` and `uv run ruff format --check` on the files
++   you touched.
++3. **Write `scratch_perf/r2/ox/REPORT_sheet_host_chain.md` and finish.**
++
++In the report, list the full unit suite under "what I did NOT verify" and say
++why. Everything else you have already done — the Part 1 block table, the
++bit-identity checks, the lossless HD render A/B, and your finding that the
++single-pixel delta at (296, 820) is pre-existing cross-process nondeterminism —
++is what the report needs to carry.
