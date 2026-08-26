@@ -159,3 +159,118 @@ arms). A queued or wedged run holds one of the two batch GPU slots for its whole
 timeout, and at the 9-hour default that is a day of measurement box gone.
 Nothing notifies you when a run ends, either — arm a timer and poll
 `get_notebook_session_status`.
+
+## Round 1 of agents: what shipped and what did not
+
+Integrated at `9f3fdb90` on `perf/r2-lab`, verified byte-identical against HEAD
+(nn PREVIEW, lossless `libx264rgb -qp 0`, 50/50 frames, worst channel diff 0)
+and `--fast` 277 passed. Locally the same render went 105.4 s -> 83.7 s.
+
+| agent | outcome |
+|---|---|
+| bounce-loop instrumentation | **shipped** — per-iteration table; verified my `charge_kernel_to_parent` fix; no optimization found worth its price |
+| prep / idle updater | **shipped** — batch preparation -21.8%, timeline reads 2841 -> 1436 per batch |
+| receiver-facing shadow cull | **not shipped** — see below |
+
+### The shadow cull is a measured no-op — do not re-derive it
+
+The premise (surfaces facing away from a light still pay a full shadow fan) is
+false on this branch: commit `f142f72d` put a **per-sample horizon guard** into
+both trace sites (`raster_taichi.py:3047`, `wavefront_kernels_taichi.py:2984`),
+so those BVH marches are already skipped. Implementing the whole-fan cull on top
+removed 9% of *entered fans* but **0% of marched rays** — one ray over a whole
+video — and kernel self-time was flat. The patch and the full stage-by-stage
+soundness audit are kept at `scratch_perf/r2/patches/` and
+`scratch_perf/r2/ox/REPORT_shadow_facing_cull.md`; the audit itself is worth
+keeping (it establishes which stages carry `max(N·L, 0)` on every
+vis-multiplied term, and that `event_snrm` holds the already-oriented normal).
+
+The corollary matters for planning: **shadows being 42% of the UHD render is not
+waste.** Those rays are marched because they contribute. Cutting them needs a
+different idea, not a better cull.
+
+## Round 2 of agents (in flight)
+
+| tree | branch | target | share |
+|---|---|---|---|
+| `algan_wt_prep` | `perf/r2-preflight` | overlap the arena preflight with the render | PREVIEW 24% |
+| `algan_wt_sheet` | `perf/r2-sheetchain` | the sheet route's remaining host-torch passes | UHD ~17% |
+| `algan_wt_shade` | `perf/r2-shade` | classify and cut the 1.6 M continuation rays/frame | UHD 41% is the bounce loop |
+
+All three start from `9f3fdb90` so their diffs compose.
+
+## Getting code to Kaggle: the notebook body is the only channel, and it has a size limit
+
+This box cannot push to GitHub (no credential helper, `gh` absent, the SSH key
+is not accepted), so the Kaggle notebook seeds from the public tip and the local
+changes ride inline as a gzip+base64 `git diff`. That works — up to a point.
+
+**An 18 kB base64 payload arrived as 11 kB.** The notebook's
+`assert len(PATCH_B64) == ...` caught it immediately (cost: one minute of GPU),
+which is why every payload carries a length *and* a sha256 assert before it
+touches anything. Put those asserts in first, always.
+
+Two mechanisms handle it:
+
+* `scratch_perf/kaggle/make_chunks.py` splits a payload into ~6 kB chunk
+  notebooks. Each writes one `part.NNN` into the persisted payload store and
+  verifies its own sha; the render notebook assembles `part.*` when it finds no
+  `overlay.patch`. Chunk notebooks need no GPU.
+* `--snapshot NAME` makes the render notebook **commit and tag** the overlaid
+  tree inside the Kaggle clone, and `--from-tag NAME` starts a later run from
+  it. So a payload is uploaded in full once, and everything after it is a small
+  delta against that snapshot — which fits inline in one piece.
+
+## Review of the integrated diff
+
+The tracer change is 758 diff lines, almost all of it reindentation. Checked by
+splitting the diff into lines that appear on both sides (pure reindentation) and
+lines that appear on only one: the only genuine additions are the
+`with _stage(...)` wrappers, `_BOUNCE_STAGE_CAP`, the bounce label, a deferred
+import of `stage`, comments, and one line-wrap of the `pix_accum` allocation.
+No control flow moved.
+
+The `copy=False` changes are the ones that could corrupt silently, so each was
+checked against its getter: `mob.location` / `mob.basis` are literally
+`get_animated_attribute(...)` with the copy default, and `location.setter`
+already reads `copy=False` internally — so the new call sites read the same
+values, just uncopied, and every one of them feeds out-of-place arithmetic
+before any write. `get_upwards_direction()` is
+`F.normalize(unsquish(basis, -1, 3)[..., 1, :], p=2, dim=-1)`, which is exactly
+what replaced it.
+
+**Caveat on the test evidence**: `tests/unit_tests` under four concurrent
+GPU-using agents is not a clean signal. A run of the integrated tree showed one
+failure in `test_glossy_prefilter.py`, whose suite includes
+`test_prefiltered_route_is_deterministic_across_processes` — and free VRAM at
+job start decides the arena size, hence tile sizes, which is a documented
+cross-process mover unless `available_memory_override` is pinned. Re-run it on a
+quiet box before treating it as a regression.
+
+## Verification debt carried into the next session
+
+The full `tests/unit_tests` suite has **not** been run to completion on either
+the round-2 integration (`9f3fdb90`) or the sheet-chain branch. Two attempts were
+stopped for memory pressure: the suite spawns two ~2 GB render subprocesses at
+once (its cross-process determinism test runs both arms concurrently), which on
+this 4 GB / shared box took free RAM under 1.5 GB while agents were also
+rendering.
+
+What *is* established: `--fast` (277 tests, including the pixel-compared render)
+passes on the integration, and the one failure the full suite produced —
+`test_glossy_prefilter.py` — was independently confirmed by the sheet-chain
+agent as **pre-existing cross-process nondeterminism** ("identical single pixel
+(296, 820), identical delta"), not a regression.
+
+Run the full suite on a quiet box before merging anything from this round.
+
+## Full unit suite: PASSES on the integration (2026-08-26)
+
+`scratch_perf/r2/run_suite_chunked.sh` on `9f3fdb90`, box otherwise idle:
+**2077 passed, 132 skipped, 0 failed**, 14/14 chunks exit 0, 45 min wall.
+Same pass count master reports.
+
+The earlier `test_glossy_prefilter.py` failure is now positively explained
+rather than merely suspected: it is chunk 5's first file, it took 28 minutes on
+its own (its cross-process determinism renders), and it **passes** on a quiet
+box. Contention, not the integration.

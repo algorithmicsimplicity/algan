@@ -39,6 +39,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # patch must be cut from whichever one is quiescent.
 # github/master, the tip a fresh `git clone` of the public repo lands on.
 DEFAULT_BASE = "df07859d4db1b32a3bbe6bf25f67c81ec53e518a"
+PATCH_PATHS = ("algan", "benchmarks", "pyproject.toml")
 
 
 def _git(*args: str) -> str:
@@ -47,7 +48,7 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def build_overlay(base: str, extra: list[str]) -> tuple[str, str, list[str]]:
+def build_overlay(base: str, extra: list[str], paths=None) -> tuple[str, str, list[str]]:
     """Return (b64 patch, b64 tar of --extra files, list of changed paths).
 
     The patch is ``git diff --binary <base>`` -- base commit against this working
@@ -56,7 +57,13 @@ def build_overlay(base: str, extra: list[str]) -> tuple[str, str, list[str]]:
     because the notebook body travels inline through the MCP call.  Untracked
     files are excluded by construction; name one with ``--extra`` to tar it in.
     """
-    patch = _git("diff", "--binary", base)
+    # Limited to what the notebook actually runs: the round keeps its briefs,
+    # reports, captured logs and archived patches under scratch_perf/, and none
+    # of that belongs in a payload that travels inline through a tool call.
+    # -U1: the tracer instrumentation is mostly reindentation, so context lines are
+    # a third of the payload. The base is an exact sha, so one line is enough for
+    # `git apply` to land every hunk.
+    patch = _git("diff", "--binary", "--unified=1", base, "--", *(paths or PATCH_PATHS))
     names = [
         line.split(" b/", 1)[-1] for line in patch.splitlines() if line.startswith("diff --git ")
     ]
@@ -99,6 +106,9 @@ ARMS      = {arms!r}
 PATCH_B64 = "{patch}"
 EXTRA_B64 = "{extra}"
 PAYLOAD   = {key!r}
+FROM_TAG  = {from_tag!r}
+SNAPSHOT  = {snapshot!r}
+BRANCH    = {branch!r}
 
 WORK  = pathlib.Path("/kaggle/working")
 REPO  = WORK / "algan_repo"
@@ -159,6 +169,15 @@ if EXTRA_B64:
         tar.extractall(REPO)
         say(f"extra files: {{tar.getnames()}}")
 sh("git status --porcelain", cwd=REPO, check=False)
+if SNAPSHOT:
+    # Commit the overlaid tree inside the clone and tag it, so the next run can
+    # start here instead of at the public tip.
+    sh("git -c user.name=algan-perf -c user.email=perf@local add -A algan benchmarks tests",
+       cwd=REPO, check=False)
+    sh(f"git -c user.name=algan-perf -c user.email=perf@local commit -q -m {{SNAPSHOT}} "
+       f"--allow-empty", cwd=REPO, check=False)
+    sh(f"git tag -f {{SNAPSHOT}}", cwd=REPO, check=False)
+    say(f"snapshotted the overlaid tree as tag {{SNAPSHOT}}")
 
 # ---------------------------------------------------------------- 3. install
 sh(f"pip install -q -e {{REPO}}")
@@ -223,6 +242,14 @@ def main() -> int:
         help="<name>:<script>[:<K=V,K=V>]  script relative to benchmarks/performance/",
     )
     ap.add_argument("--extra", action="append", default=[], help="extra file to ship")
+    ap.add_argument("--paths", action="append", default=[],
+                    help="restrict the patch to these paths (repeatable)")
+    ap.add_argument("--branch", default=None,
+                    help="fetch and check out this pushed branch instead of patching")
+    ap.add_argument("--from-tag", default=None,
+                    help="snapshot tag a previous run committed in the Kaggle clone")
+    ap.add_argument("--snapshot", default=None,
+                    help="tag to commit the overlaid tree as, for later --from-tag")
     ap.add_argument(
         "--reuse-payload",
         default=None,
@@ -244,12 +271,14 @@ def main() -> int:
                 env[k] = v
         arms.append((name, script, env))
 
-    patch, extra_tar, names = build_overlay(args.base, args.extra)
+    patch, extra_tar, names = build_overlay(args.base, args.extra, args.paths or None)
     key = payload_key(patch, extra_tar)
     if args.reuse_payload:
         key, patch, extra_tar = args.reuse_payload, "", ""
     body = NOTEBOOK.format(
-        tag=args.tag, base=args.base, arms=arms, patch=patch, extra=extra_tar, key=key
+        tag=args.tag, base=args.base, arms=arms, patch=patch, extra=extra_tar, key=key,
+        from_tag=args.from_tag or "", snapshot=args.snapshot or "",
+        branch=args.branch or "",
     )
     out = os.path.join(os.path.dirname(__file__), f"nb_{args.tag}.py")
     with open(out, "w", encoding="utf-8", newline="\n") as fh:

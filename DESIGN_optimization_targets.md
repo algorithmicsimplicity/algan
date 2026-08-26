@@ -315,6 +315,11 @@ already been wrapping correctly all along (it just predated the helper), and
 
 ## The T4 round (2026-08-25): the nn performance scenes
 
+> The T4 line of work has its own plan of record now:
+> **`DESIGN_T4_optimization.md`**. It supersedes this section, whose
+> rankings were read off profiles whose `excl` columns silently included
+> the Taichi kernels each stage launched (fixed at `9f3fdb90`).
+
 A second reference workload, measured on a Google Colab box -- **Tesla T4, 2
 vCPUs, 12 GB RAM** -- which is a different machine from everything above (GTX
 1050, Windows): `benchmarks/performance/nn_scene_PREVIEW.py` (704x396, 10 fps,

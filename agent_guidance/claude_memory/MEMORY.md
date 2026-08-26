@@ -1,2 +1,6 @@
-- [T4 perf branch](t4-perf-branch.md) — perf/t4-nn-scene-throughput: texture-on-GPU timeline shipped, PREVIEW 36.5→17 s; NVENC via Ox pending
-- [T4 perf next steps](t4-perf-next-steps.md) — ranked leftovers and measurement traps after the T4 round
+- [T4 optimization: plan of record](../../DESIGN_T4_optimization.md) — **start here** for T4 render throughput: how to measure, where the time goes, what is closed, what is left
+- [T4 round 2 findings](t4-round2-findings.md) — the profiler bug that invalidated round 1's plan, the corrected UHD budget, the ablation table, what shipped at `9f3fdb90`
+- [Kaggle T4 measurement](kaggle-t4-measurement.md) — operating manual for the Kaggle MCP as a benchmark box: the harness, the two-session limit, the payload-size ceiling, the traps
+- [Ox agents in parallel worktrees](ox-agents-in-parallel-worktrees.md) — isolation, venvs, brief structure, and the failure modes that actually happened
+- [T4 perf branch](t4-perf-branch.md) — round 1 (`perf/t4-nn-scene-throughput`, merged at `fc100cd8`): what was found and what shipped
+- [T4 perf next steps](t4-perf-next-steps.md) — **superseded**; kept for the measurement traps, but its ranking was built on a profiler bug
