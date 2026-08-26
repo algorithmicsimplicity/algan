@@ -744,6 +744,7 @@ def install_pipeline_hooks():
     _try_wrap(
         RenderLoopMixin, "_prepared_batch_fits_render_arena", "arena preflight (batch)"
     )
+    _try_wrap(RenderLoopMixin, "_prepare_batch_on_worker", "overlap GPU prep (worker)")
     _try_wrap(
         RenderLoopMixin, "_prewarm_render_batch", "  - project_to_screen (prewarm)"
     )

@@ -32,8 +32,8 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
-from algan.environment import env_flag
-from algan.errors import UnsupportedFeatureWarning, _user_stacklevel
+from algan.environment import env_flag, env_float
+from algan.errors import AlganWarning, UnsupportedFeatureWarning, _user_stacklevel
 from algan.logging.logger import PERF, get_logger, resolve_progress_style
 from algan.rendering.memory_model import (
     AffineFrameCost,
@@ -454,7 +454,7 @@ class RenderLoopMixin:
         candidates = order[lo:hi]
         return candidates[despawns[candidates] >= start_time].sort().values
 
-    def _prepare_merged_host_scene(self, primitive_batch):
+    def _prepare_merged_host_scene(self, primitive_batch, *, track_peak=None):
         """Return the cached source-device scene used for upload/preflight."""
         first = primitive_batch[0]
         cached = getattr(first, "_rt_prepared_host_scene", None)
@@ -464,7 +464,7 @@ class RenderLoopMixin:
         rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import _merge_scene
 
-        merged_host = _merge_scene(primitive_batch)
+        merged_host = _merge_scene(primitive_batch, track_peak=track_peak)
         env_map = getattr(self, "environment_map", None)
         if env_map is not None and int(rt_settings.SAMPLES_PER_PIXEL) > 1:
             env_map = None
@@ -892,6 +892,21 @@ class RenderLoopMixin:
         if not getattr(self.memory, "managed", False):
             return True
 
+        # A batch the prefetch worker prepared under prefetch-gpu-prep arrives
+        # already projected and merged. Its builds ran beside a live render,
+        # so: their transient peaks are unmeasurable (any reading includes the
+        # render's allocations) and are deliberately not observed -- the
+        # predictors keep what they learned from the un-overlapped batches --
+        # and their proactive estimates are moot, since the builds already
+        # ran (bounded there against derated headroom; see
+        # _prepare_batch_on_worker). Everything below them -- the exact arena
+        # bytes, the frame-cost model, the verdict -- is unchanged.
+        overlapped = bool(
+            getattr(primitive_batch[0], "_rt_prep_overlapped", False)
+        ) and all(
+            getattr(primitive, "_rt_projected", False) for primitive in primitive_batch
+        )
+
         rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import (
             get_merged_scene_arena_nbytes,
@@ -915,7 +930,7 @@ class RenderLoopMixin:
         # attempting it, with the OOM handler as the exact fallback.
         project_inputs = 0
         project_token = None
-        if rt_settings.project_on_gpu_active():
+        if not overlapped and rt_settings.project_on_gpu_active():
             # Read now: projecting releases the source geometry this sums.
             project_inputs = gpu_project_input_bytes(primitive_batch)
             estimated_project_peak = self._project_peak_ratio.predict(project_inputs)
@@ -939,29 +954,31 @@ class RenderLoopMixin:
                 )
                 return False
             project_token = begin_cuda_peak(self.memory.data.device)
-        try:
-            self._prewarm_render_batch(primitive_batch, render_state)
-            if project_token is not None:
-                # Projection ran on this thread (project-on-gpu defers it here
-                # precisely so no concurrent render pollutes the counter), so
-                # the peak it just reached bounds the next batch's estimate.
-                self._project_peak_ratio.observe(
-                    project_inputs, end_cuda_peak(project_token)
-                )
-                project_token = None
-        except (InsufficientMemoryException, RuntimeError) as exc:
-            # Device projection overran the pool headroom. Drop partial state
-            # and report not-fitting so the caller shrinks the frame window.
-            # (Also treat a Taichi-allocator OOM as such; re-raise real errors.)
-            if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
-                exc
-            ):
-                raise
-            primitive_batch[0]._rt_merged_scene = None
-            primitive_batch[0]._rt_prepared_host_scene = None
-            empty_cache(force_gc=False)
-            logger.debug("Arena preflight: projection ran out of memory (%r).", exc)
-            return False
+        if not overlapped:
+            try:
+                self._prewarm_render_batch(primitive_batch, render_state)
+                if project_token is not None:
+                    # Projection ran on this thread (project-on-gpu defers it
+                    # here precisely so no concurrent render pollutes the
+                    # counter), so the peak it just reached bounds the next
+                    # batch's estimate.
+                    self._project_peak_ratio.observe(
+                        project_inputs, end_cuda_peak(project_token)
+                    )
+                    project_token = None
+            except (InsufficientMemoryException, RuntimeError) as exc:
+                # Device projection overran the pool headroom. Drop partial state
+                # and report not-fitting so the caller shrinks the frame window.
+                # (Also treat a Taichi-allocator OOM as such; re-raise real errors.)
+                if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
+                    exc
+                ):
+                    raise
+                primitive_batch[0]._rt_merged_scene = None
+                primitive_batch[0]._rt_prepared_host_scene = None
+                empty_cache(force_gc=False)
+                logger.debug("Arena preflight: projection ran out of memory (%r).", exc)
+                return False
         if not all(
             getattr(primitive, "_rt_projected", False) for primitive in primitive_batch
         ):
@@ -978,7 +995,7 @@ class RenderLoopMixin:
         # which routes to the outer window-shrink retry.
         gpu_merge = rt_settings.merge_on_gpu_active()
         merge_inputs = 0
-        if gpu_merge:
+        if gpu_merge and not overlapped:
             # Read now: merging nulls the packed _rt_* arrays this sums.
             merge_inputs = gpu_merge_input_bytes(primitive_batch)
             estimated_merge_peak = self._merge_peak_ratio.predict(merge_inputs)
@@ -1018,7 +1035,7 @@ class RenderLoopMixin:
         scene_bytes = get_merged_scene_arena_nbytes(
             merged_host, self.memory, persist=True
         )
-        if gpu_merge:
+        if gpu_merge and not overlapped:
             # The build just ran and reported its own peak, so the multiplier
             # that bounds the *next* one is measured rather than guessed.
             measured = int(merged_host.get("_gpu_merge_peak_bytes", -1))
@@ -1034,6 +1051,13 @@ class RenderLoopMixin:
                     self._gpu_merge_headroom_bytes() / 1e6,
                     scene_bytes / 1e6,
                 )
+        elif gpu_merge and overlapped and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Overlapped batch: merge prepared on the worker, arena scene "
+                "%.1f MB, headroom %.1f MB (peak not observed).",
+                scene_bytes / 1e6,
+                self._gpu_merge_headroom_bytes() / 1e6,
+            )
         bytes_remaining = self.memory.get_num_bytes_remaining()
         margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
         self._note_batch_cost(
@@ -2444,9 +2468,168 @@ class RenderLoopMixin:
         # on the CPU. When they run on the render device (the default; see
         # settings.MERGE_ON_GPU) they are deferred to the render thread so
         # their transient device peak is measured/bounded without a concurrent
-        # render polluting the pool.
+        # render polluting the pool -- unless overlap is enabled and its own
+        # conditions hold, in which case _prepare_batch_on_worker below has
+        # already run them here.
         if not rt_settings.merge_on_gpu_active():
             prewarm_merge_cache(primitives)
+
+    def _overlap_headroom_fraction(self):
+        """Share of the pool headroom an overlapped build must fit inside.
+
+        The render thread's preflight bounds a projection or merge against the
+        whole of ``_gpu_merge_headroom_bytes`` because nothing else is running.
+        A build launched on the prefetch worker runs beside a live render that
+        draws on the same headroom, so it may only claim this share of it; the
+        rest belongs to the render. Setting, with an env override read live so
+        an A/B script can retune between renders. An out-of-range override
+        warns and falls back to the setting, like every env read: a mistyped
+        knob must not silently drop the derate.
+        """
+        fraction = env_float(
+            "ALGAN_OVERLAP_HEADROOM_FRACTION",
+            SETTINGS.computing.overlap_pool_headroom_fraction,
+        )
+        if not 0.0 < fraction <= 1.0:
+            warnings.warn(
+                f"ALGAN_OVERLAP_HEADROOM_FRACTION={fraction!r} is outside "
+                "(0, 1]; using the setting's "
+                f"{SETTINGS.computing.overlap_pool_headroom_fraction!r} instead.",
+                AlganWarning,
+                stacklevel=_user_stacklevel(),
+            )
+            return SETTINGS.computing.overlap_pool_headroom_fraction
+        return fraction
+
+    def _overlap_gpu_prep_active(self):
+        """Whether this fetch may prepare its batch on the prefetch worker.
+
+        Requires the setting (default off; env override
+        ``ALGAN_PREFETCH_GPU_PREP`` read live), both GPU builds active, and
+        the calling thread to be the prefetch worker: a synchronous fetch has
+        no render to hide behind, and letting it "overlap" would swap the
+        render thread's full-headroom estimates for derated ones and so move
+        window decisions between arms without any concurrency to show for it.
+        """
+        if not env_flag(
+            "ALGAN_PREFETCH_GPU_PREP", SETTINGS.computing.prefetch_gpu_prep
+        ):
+            return False
+        rt_settings = SETTINGS.raytracing
+        if not (
+            rt_settings.project_on_gpu_active() and rt_settings.merge_on_gpu_active()
+        ):
+            return False
+        return threading.current_thread().name.startswith("algan-batch-prep")
+
+    def _prepare_batch_on_worker(self, primitive_batch, render_state):
+        """Run this batch's GPU projection + merge here on the prefetch worker,
+        while the previous batch renders.
+
+        This is the overlap half of what the arena preflight otherwise does on
+        the render thread: the same builds, on the same device, against the
+        same inputs, so the packed arrays are byte-identical to preparation on
+        the render thread. What is deliberately *not* kept is the peak
+        bookkeeping -- a build timed beside a live render reports a peak that
+        includes the render's allocations, so the batch arrives stamped
+        ``_rt_prep_overlapped`` and the preflight skips both the observations
+        and the now-moot estimates (the predictors keep the estimates they
+        learned from the un-overlapped batches).
+
+        Each build is bounded proactively, as on the render thread, but
+        against the headroom derated by :meth:`_overlap_headroom_fraction`.
+        A declined estimate leaves the batch untouched for the render thread,
+        which then runs today's path unchanged -- including its right to
+        shrink the frame window before paying for a build. An out-of-memory
+        from a build that was attempted clears its partial state and likewise
+        defers. Either way the work is not wasted, only re-placed; the one
+        genuinely speculative cost is that a batch prepared whole here can
+        still fail its exact arena check on the render thread, which falls
+        back to the ordinary refetch-at-a-shorter-window retry.
+
+        Runs strictly after :meth:`get_batch_of_primitives` on the same worker
+        (so the timeline materialization it reads is complete) and strictly
+        before the render thread's ``pending.result()`` handover, so none of
+        the state written here is ever touched concurrently.
+        """
+        from algan.rendering.raytracing.primitives import (
+            RayTracedBezierCircuitPrimitive,
+            RayTracedTrianglePrimitive,
+        )
+        from algan.rendering.raytracing.scene_builder import (
+            gpu_merge_input_bytes,
+            gpu_project_input_bytes,
+        )
+
+        if not isinstance(
+            primitive_batch[0],
+            (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive),
+        ):
+            return
+        # The first batch(es) of a job have no calibrated predictor to bound
+        # the builds with and no render to hide behind anyway: leave them on
+        # the render thread exactly as today.
+        if not (
+            self._project_peak_ratio.is_calibrated()
+            and self._merge_peak_ratio.is_calibrated()
+        ):
+            return
+
+        headroom = int(
+            self._gpu_merge_headroom_bytes() * self._overlap_headroom_fraction()
+        )
+        project_inputs = gpu_project_input_bytes(primitive_batch)
+        estimated_project_peak = self._project_peak_ratio.predict(project_inputs)
+        if estimated_project_peak > headroom:
+            logger.debug(
+                "Overlapped projection estimate %.1f MB exceeds derated pool "
+                "headroom %.1f MB [%s]; leaving the batch to the render "
+                "thread.",
+                estimated_project_peak / 1e6,
+                headroom / 1e6,
+                self._project_peak_ratio.describe(),
+            )
+            return
+        self._prewarm_render_batch(primitive_batch, render_state)
+        if not all(
+            getattr(primitive, "_rt_projected", False) for primitive in primitive_batch
+        ):
+            return
+        merge_inputs = gpu_merge_input_bytes(primitive_batch)
+        estimated_merge_peak = self._merge_peak_ratio.predict(merge_inputs)
+        if estimated_merge_peak > headroom:
+            logger.debug(
+                "Overlapped merge estimate %.1f MB exceeds derated pool "
+                "headroom %.1f MB [%s]; leaving the merge to the render "
+                "thread.",
+                estimated_merge_peak / 1e6,
+                headroom / 1e6,
+                self._merge_peak_ratio.describe(),
+            )
+            return
+        try:
+            # track_peak=False: a peak measured beside the live render counts
+            # the render's own allocations, and measuring it would reset the
+            # process peak counter under that render. The value would be
+            # discarded anyway (the preflight skips it for overlapped
+            # batches), so the build simply does not measure.
+            self._prepare_merged_host_scene(primitive_batch, track_peak=False)
+        except (InsufficientMemoryException, RuntimeError) as exc:
+            # The overlapped build overran even the derated headroom. Drop
+            # any partial merge state; whatever projected cleanly stays
+            # projected (the render thread skips it), and the merge itself
+            # reruns there under the full-headroom estimates.
+            if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
+                exc
+            ):
+                raise
+            primitive_batch[0]._rt_merged_scene = None
+            primitive_batch[0]._rt_prepared_host_scene = None
+            empty_cache(force_gc=False)
+            logger.debug("Overlapped scene merge ran out of memory (%r).", exc)
+            return
+        primitive_batch[0]._rt_prep_overlapped = True
+        logger.debug("Batch prepared on the prefetch worker (overlap).")
 
     def _materialize_render_state(self, start_ind, end_ind):
         """Materialize camera/screen/light state over ``[start_ind, end_ind)``
@@ -2715,21 +2898,33 @@ class RenderLoopMixin:
                     # deferred to the render thread entirely -- GPU work on this
                     # worker would contend with the in-flight render and pollute
                     # the transient-peak stats -- so only the CPU-projection
-                    # path prewarms here.
+                    # path prewarms here, unless prefetch-gpu-prep is on, in
+                    # which case _prepare_batch_on_worker takes the GPU builds
+                    # anyway (skipping their peak observations; see its
+                    # docstring).
                     from algan.rendering.raytracing import settings as rt_settings
 
-                    if (
-                        batch[0]
-                        and env_flag("ALGAN_PREFETCH_MERGE", True)
-                        and not rt_settings.project_on_gpu_active()
-                    ):
-                        try:
-                            self._prewarm_render_batch(batch[0], batch[2])
-                        except Exception as e:
-                            logger.warning(
-                                f"render-batch prewarm failed (deferring to "
-                                f"the render thread): {e}"
-                            )
+                    if batch[0] and env_flag("ALGAN_PREFETCH_MERGE", True):
+                        # The gated overlap is consulted first: it requires the
+                        # GPU builds itself (see _overlap_gpu_prep_active), so
+                        # on a CPU-projection render this falls through to the
+                        # legacy worker prewarm exactly as before.
+                        if self._overlap_gpu_prep_active():
+                            try:
+                                self._prepare_batch_on_worker(batch[0], batch[2])
+                            except Exception as e:
+                                logger.warning(
+                                    f"overlapped batch prep failed (deferring "
+                                    f"to the render thread): {e}"
+                                )
+                        elif not rt_settings.project_on_gpu_active():
+                            try:
+                                self._prewarm_render_batch(batch[0], batch[2])
+                            except Exception as e:
+                                logger.warning(
+                                    f"render-batch prewarm failed (deferring to "
+                                    f"the render thread): {e}"
+                                )
                     return batch
 
             def fetch_end_for(time_ind):

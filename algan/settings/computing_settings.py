@@ -73,6 +73,22 @@ class ComputingSettings(Settings):
     max_cpu_memory_used: int = 2 * GIGABYTES
     available_memory_override: int | None = None
     use_torch_scatter: bool = True
+    #: Let the batch-prep worker run the render-device projection and scene
+    #: merge of batch b+1 while batch b renders, instead of deferring both to
+    #: the render thread's arena preflight. The transient-peak predictors must
+    #: already be calibrated (the first batch always prepares on the render
+    #: thread), overlapped builds skip their peak observations, and the pool
+    #: headroom the worker checks against is derated by
+    #: ``overlap_pool_headroom_fraction`` to leave room for the concurrent
+    #: render. Env override ``ALGAN_PREFETCH_GPU_PREP``. Default off.
+    prefetch_gpu_prep: bool = False
+    #: Share of :meth:`RenderLoopMixin._gpu_merge_headroom_bytes` an
+    #: overlapped (worker-side) projection or merge must fit its predicted
+    #: peak in -- the rest of that headroom belongs to the render running
+    #: beside it. Only consulted when ``prefetch_gpu_prep`` is active; the
+    #: render thread's own preflight keeps the full headroom. Env override
+    #: ``ALGAN_OVERLAP_HEADROOM_FRACTION``.
+    overlap_pool_headroom_fraction: float = 0.6
 
     def __post_init__(self):
         for name in ("animation_memory_fraction", "rendering_memory_fraction"):
@@ -106,3 +122,11 @@ class ComputingSettings(Settings):
             )
         if not isinstance(self.use_torch_scatter, bool):
             raise AlganConfigurationError("use_torch_scatter must be a boolean")
+        if not isinstance(self.prefetch_gpu_prep, bool):
+            raise AlganConfigurationError("prefetch_gpu_prep must be a boolean")
+        fraction = float(self.overlap_pool_headroom_fraction)
+        if not math.isfinite(fraction) or not 0 < fraction <= 1:
+            raise AlganConfigurationError(
+                "overlap_pool_headroom_fraction must be in the interval (0, 1]"
+            )
+        object.__setattr__(self, "overlap_pool_headroom_fraction", fraction)
