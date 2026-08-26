@@ -154,6 +154,7 @@ Taichi kernel work has several repository-specific hazards:
 - `../algan/sound` — Scene-owned audio manager and audio effects.
 - `../algan/utils` — memory arena, profiling, file/audio helpers, Taichi warm-start/fast-launch patches, and development utilities.
 - `../algan/daemon.py` — warm-process scene-script rerender daemon with Scene/settings reset between runs.
+- `../algan/cli.py` — the `algan` command. `render`/`preview` have two paths: with no settings flag the script is launched as its own process (so the daemon serves it warm), and with `-q`/`-o` it runs inside the CLI process, which is the only place those settings can reach a script that calls `Scene.save_video()` itself. A flag here must do something — `-q`, `-o` and `--no-daemon` once wrote undeclared `ALGAN_*` variables that nothing read, and an `argparse.REMAINDER` positional swallowed them before they were even parsed; `tests/unit_tests/test_cli.py` pins each one to its effect.
 - `../algan/external_libraries` — vendored dependencies; normally do not modify.
 - `../tests` — render regression and behavior tests when included in the checkout.
 - `../benchmarks` — targeted profiling, A/B, and output-parity scripts when included.

@@ -126,8 +126,11 @@ Stopping it
      - When to use it
    * - ``q`` then Enter, or Ctrl+C
      - A daemon you launched in a terminal.
+   * - ``algan daemon --stop``
+     - Anything, including a background daemon: it reads the state file and
+       sends ``quit`` for you, and clears the registration if nothing answers.
    * - ``quit`` on the trigger socket
-     - Anything, including a background daemon. Same one-liner as above with
+     - The same thing without importing Algan. Same one-liner as above with
        ``b'quit\n'`` in place of ``b'render\n'``.
    * - Kill the process
      - The ``pid`` is in ``~/.algan/daemon.json``.
@@ -291,6 +294,14 @@ Turning it off
    * - ``ALGAN_USE_DAEMON=1``
      - Hand off even from a process under a debugger, which is otherwise
        declined. For a daemon that is itself being debugged.
+   * - ``algan render --no-daemon``
+     - ``ALGAN_USE_DAEMON=0`` for that one run of the CLI.
+
+``algan render -q`` and ``-o`` also skip the daemon, and for a related reason:
+they are settings, and the script itself is what calls ``Scene.save_video()``,
+so the only way to choose its quality or its destination from the command line
+is to be the process it runs in. A plain ``algan render scene.py`` is launched
+as its own process, exactly as ``python scene.py`` is, and is served warm.
 
 Benchmarks in this repository set ``ALGAN_USE_DAEMON=0``, because a warm process
 also carries the previous run's adaptive renderer state -- which is exactly what
