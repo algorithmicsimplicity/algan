@@ -131,12 +131,26 @@ algan daemon --stop         # Stop the running daemon
 `render` takes `-q {preview,ld,md,hd,production,uhd}` for the video preset and
 `-o` for the directory or file to write to. Both fill in what the script leaves
 open: a `Scene.save_video("intro")` still decides the name, and a path with a
-directory in it still decides everything. Arguments after `--` go to the script.
+directory in it still decides everything.
 
 ```bash
 algan render my_scene.py -q hd -o renders/          # renders/intro.mp4, at HD
 algan render my_scene.py --no-daemon -- --seed 7    # fresh process, args forwarded
 ```
+
+A scene script may have a command line of its own — a
+[`Project`](https://algorithmicsimplicity.github.io/algan/reference/algan.project.Project.html)
+calling `run_cli()` does — so any argument this CLI does not recognise is
+forwarded to it, as is everything after `--`:
+
+```bash
+algan render project.py -q hd --render-video intro   # -q ours, --render-video the project's
+algan render project.py -- --help                    # the project's help, not ours
+```
+
+Where both name the same thing, the script wins: `-q` sets the default preset,
+and a `Project`'s own `--video-settings` (or its `video_settings=` argument)
+overrides it.
 
 Because those two are settings, and a warm process shared with other runs cannot
 be handed one run's settings, `-q` and `-o` run the script in the CLI's own

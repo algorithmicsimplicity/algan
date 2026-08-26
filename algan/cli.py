@@ -262,9 +262,13 @@ def _split_forwarded(argv: list[str]) -> tuple[list[str], list[str]]:
     Done here rather than with an ``argparse.REMAINDER`` positional, which
     swallows every option after the script name -- ``algan render scene.py -q
     ld`` parsed as a script called ``scene.py`` with two arguments to forward,
-    so ``-q``, ``-o`` and ``--no-daemon`` all silently did nothing. Splitting
-    first means an unknown flag of ours is still an error rather than being
-    quietly handed to the script.
+    so ``-q``, ``-o`` and ``--no-daemon`` all silently did nothing.
+
+    Arguments this CLI does not recognise are forwarded as well, so a script
+    with a command line of its own (``Project.run_cli()`` reads one) still
+    works without a separator. ``--`` is what settles the collisions that
+    leaves: a script flag spelled like one of ours, and ``--help``, which
+    otherwise prints this CLI's.
     """
     if "--" not in argv:
         return argv, []
@@ -294,7 +298,13 @@ def main(argv: list[str] | None = None) -> int:
     render_parser = subparsers.add_parser(
         "render",
         help="Render a scene script to video",
-        epilog="Arguments after -- are forwarded to the script.",
+        epilog="Arguments this CLI does not recognise, and anything after --, "
+        "are forwarded to the script (which may have a command line of its "
+        "own: see Project.run_cli). Use -- for a script flag spelled like one "
+        "of ours, and for the script's own --help.",
+        # Off so that a script's own --out is forwarded rather than being read
+        # here as an abbreviation of --output.
+        allow_abbrev=False,
     )
     render_parser.add_argument("script", help="Path to Python script containing Scene")
     render_parser.add_argument(
@@ -321,7 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     preview_parser = subparsers.add_parser(
         "preview",
         help="Render at the low-resolution preview preset",
-        epilog="Arguments after -- are forwarded to the script.",
+        epilog="Arguments this CLI does not recognise, and anything after --, "
+        "are forwarded to the script.",
+        allow_abbrev=False,
     )
     preview_parser.add_argument("script", help="Path to Python script containing Scene")
     preview_parser.add_argument(
@@ -357,8 +369,16 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0].endswith(".py") and not argv[0].startswith("-"):
         argv = ["render"] + argv
 
-    args = parser.parse_args(argv)
-    args.extra_args = forwarded
+    args, unrecognized = parser.parse_known_args(argv)
+    if getattr(args, "command", None) in ("render", "preview"):
+        # A scene script has a command line of its own -- ``Project.run_cli()``
+        # reads one -- so an argument this CLI does not recognise is the
+        # script's, not a mistake. Anything after ``--`` is the script's too,
+        # and is how a script flag spelled like one of ours gets through.
+        args.extra_args = [*unrecognized, *forwarded]
+    elif unrecognized:
+        # Nothing else here runs a script, so an unknown argument is a typo.
+        parser.error(f"unrecognized arguments: {' '.join(unrecognized)}")
 
     if args.command == "check":
         return _cmd_check(args)

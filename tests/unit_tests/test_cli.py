@@ -223,6 +223,49 @@ def test_a_bare_script_argument_still_takes_flags(reporting_script, spawned):
 
 
 # --------------------------------------------------------------------------
+# The script's own command line -- Project.run_cli() reads one
+# --------------------------------------------------------------------------
+
+
+def test_unrecognized_arguments_go_to_the_script(reporting_script, spawned):
+    """``algan render project.py --render-video intro`` has to keep working."""
+    assert cli.main(["render", str(reporting_script), "--render-video", "0"]) == 0
+    assert spawned[0]["cmd"][-2:] == ["--render-video", "0"]
+
+
+def test_they_go_to_the_script_alongside_our_own_flags(reporting_script):
+    """One command line, split between the two parsers that read it."""
+    argv = ["render", str(reporting_script), "-q", "hd", "--render-video", "0"]
+    assert cli.main(argv) == 0
+    reported = _reported(reporting_script)
+    assert reported["argv"][1:] == ["--render-video", "0"]
+    assert reported["resolution"] == list(algan.HD.resolution), "ours applied too"
+
+
+def test_a_flag_spelled_like_ours_gets_through_after_a_separator(
+    reporting_script, spawned
+):
+    """``--`` is what a script whose own flag is ``-o`` needs."""
+    assert cli.main(["render", str(reporting_script), "--", "-o", "mine"]) == 0
+    assert spawned[0]["cmd"][-2:] == ["-o", "mine"], "the script's, not ours"
+
+
+def test_an_abbreviation_of_our_flag_is_not_stolen_from_the_script(
+    reporting_script, spawned
+):
+    """argparse would read --out as --output; a script may want its own."""
+    assert cli.main(["render", str(reporting_script), "--out", "mine"]) == 0
+    assert spawned[0]["cmd"][-2:] == ["--out", "mine"]
+
+
+def test_a_typo_is_still_an_error_where_no_script_runs(tmp_path):
+    """Only render and preview forward; everywhere else it is a mistake."""
+    with pytest.raises(SystemExit) as exiting:
+        cli.main(["new", str(tmp_path / "x.py"), "--frce"])
+    assert exiting.value.code == 2
+
+
+# --------------------------------------------------------------------------
 # daemon --stop
 # --------------------------------------------------------------------------
 
