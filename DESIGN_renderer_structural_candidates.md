@@ -56,15 +56,18 @@ mechanical.
 
 **What to build, in cost order:**
 
-1. Add `textures` to the `MERGE_DEDUP_TIME` collapse. Byte-identical by
-   construction (same mechanism, same consumers as the ten arrays already in
-   the list). Note the bank is assembled by `_cat_collections(_texture_tensors,
-   1, ...)` (`scene_builder.py:1722`), whose `_unify_time` expands *every*
-   bank to T when *any* one is per-frame — so an animated texture still defeats
-   the whole-array collapse for every static texture beside it. Per-texture
-   collapse (each bank keeps its own time length; the sampler's per-texture
-   meta gains a time stride) is the complete fix and is where this item meets
-   item 3.
+1. Time-collapse the texel bank. The cheap seam is per map, not per scene:
+   run `_dedup_time` on each map inside `_append_texture`
+   (`scene_builder.py:1327`) — my probe's bank was dense-T with a *single*
+   textured collection, so the density arrives from the materialized window,
+   upstream of the assembly. Byte-identical by construction (same mechanism,
+   same `f % shape[0]` consumers as the ten arrays already collapsed). One
+   step remains after that: the assembly `_cat_collections(_texture_tensors,
+   1, ...)` (`scene_builder.py:1722`) re-expands every bank to a common T
+   when banks disagree — so a scene mixing an animated texture with static
+   ones needs a per-texture time length in the texture meta (alongside the
+   existing `(offset, w, h)`) for the collapse to survive. That is the
+   complete fix and is where this item meets item 3.
 2. Reconsider `tri_pos` (and the other per-frame geometry the collapse skips):
    the equality probe is cheap, and a static batch currently pays T copies of
    its diced geometry. T4's closing note ("emitting a `[1, ...]` diced array is
@@ -217,29 +220,46 @@ enabler that keeps three kernels' argument lists sane.
 
 The shared texel bank stores **five f32 channels per texel** for every map
 (colour, material, normal — `scene_builder.py:1318`, item 1's probe: 20 B/texel
-x T). Three independent structural upgrades, smallest first:
+x T). The Ox textures audit (`scratch_perf/ox/REPORT_struct_textures.md`)
+walked the full transport and put numbers on the multipliers; four structural
+upgrades, smallest first:
 
-* **Content dedup.** `_split_promotable` already groups *promoted 1x1* maps by
-  value so identical mobs share texels (`scene_builder.py:584-635`); real
-  image maps get no such key — N mobs built from one image carry N banks.
-  A content hash at `_append_texture` is the obvious key. Breadth: repeated-
-  texture scenes (tiled decals, duplicated ImageMobs); cheap.
-* **u8 storage for u8 sources.** Image textures arrive as 8-bit; the bank
-  quadruples them (and the fifth channel pads even RGB sources). Storing
-  u8/f16 with in-kernel decode is 4-5x less VRAM and bandwidth on the largest
-  array in any textured merge (item 1: 99%). If the decode reproduces the
-  exact f32 the current upload produces, it is byte-identical; the linear-
-  colour decode already runs in-kernel, so the hook exists. Interacts with
-  item 1: dedup first (bigger factor), then narrow.
+* **Content dedup.** A texture used by N mobs is stored **N times**: every
+  textured primitive is deliberately a singleton collection
+  (`render_loop.py:2329-2338`), the merge appends one bank per collection
+  with no key of any kind (`scene_builder.py:1593-1597`), and `get_image`
+  re-reads and re-decodes the *file* on every call with no cache
+  (`utils/file_utils.py:44-54`) — even the source tensors are distinct.
+  `_split_promotable` already groups promoted 1x1 maps by value
+  (`scene_builder.py:584-635`); image maps need the same idea with a content
+  hash at `_append_texture`, plus a cache in `get_image`. Cheap.
+* **u8 storage for u8 sources.** Sources arrive 8-bit and are stored f32 with
+  a padded fifth channel: **x5 bytes** vs u8-RGBA (x4 dtype, x1.25 channels)
+  on the largest array in any textured merge. The sampler consumes plain
+  lerps of stored values, so nothing requires f32 storage; in-kernel decode
+  (the sRGB->linear decode already has an in-kernel twin) can reproduce the
+  current f32 values exactly for a byte-identical flip. Do item 1's dedup
+  first (bigger factor), then narrow.
+* **Shorten the copy chain.** The audit counts ~4 full-size copies of every
+  texel per batch beyond the buffer the kernel reads — the materialize write,
+  a per-batch opacity-premultiply `clone`, the sRGB decode, the arena upload
+  — plus up to two device moves, with 3-4 near-full representations coexisting
+  at peak. Fusable pairwise (premultiply-on-upload, decode-in-place) without
+  representation changes.
 * **A mip chain.** `RENDERER_WORK_QUEUE.md` item 4's quality gap is also a
   bandwidth gap: minified sampling strides the full-resolution bank. The sheet
-  record already carries the exact covered area — a footprint an LOD can be
-  derived from without derivatives (that item says so). Quality-first item;
-  the perf side rides along.
+  record already carries the exact covered area (`sheet_cov`, unclamped f64
+  sum — `sheets.py:881-885`) from which an LOD can be derived without
+  derivatives — with the audit's caveat that screen area alone needs the
+  per-primitive UV scale (`tri_uvs` + meta w/h) to become a texture-space
+  footprint. Quality-first item; the perf side rides along.
 
-**Impact.** Breadth: textured scenes. Depth: large there (the bank dominates
-their merges); nil elsewhere. Confidence: high for dedup/narrowing mechanics;
-the mip chain is a design. Cost: small / moderate / moderate respectively.
+**Impact.** Breadth: textured scenes. Depth: large there — for the audit's
+animated 1774x887 case, ~944 MB per 30-frame batch reaches the GPU at f32-5ch
+where the genuine data is ~1/5 of that; for static textures items 1+5 compose
+(xB frames, xN mobs, x5 width, all removable). Confidence: high for
+dedup/narrowing mechanics (source-verified); the mip chain is a design. Cost:
+small / moderate / small / moderate respectively.
 
 ## 6. Batch amnesia: nothing frame-invariant survives a batch boundary
 
