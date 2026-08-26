@@ -38,9 +38,10 @@ import os
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _REPO_ROOT)
 
-OUT_DIR = os.path.join("algan_outputs", "shadow_anyhit")
+OUT_DIR = os.path.join(_REPO_ROOT, "algan_outputs", "shadow_anyhit")
 MODES = ("0", "1", "gather")
 
 #: ss4.6 case 1 needs an opaque edge and a translucent edge within this of each
@@ -207,7 +208,10 @@ def _render(scene_key, mode, quality_name, arg=None, tag="", shadows=True):
         f"getattr(c, {SCENES[scene_key]!r})({'' if arg is None else arg});"
         f"Scene.save_video({path!r}, q, overwrite=True)"
     )
-    subprocess.run([sys.executable, "-c", code], env=env, check=True, cwd=os.getcwd())
+    # The repo root, not the caller's cwd: the ``-c`` code imports
+    # ``benchmarks._shadow_anyhit_check``, which only resolves from the root
+    # (the Kaggle harness launches arms from ``benchmarks/performance``).
+    subprocess.run([sys.executable, "-c", code], env=env, check=True, cwd=_REPO_ROOT)
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest(), path
 
