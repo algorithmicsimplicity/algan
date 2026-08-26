@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__Kaggle"
+    ]
+  },
   "skillOverrides": {
     "docx": "off",
     "pptx": "off",
