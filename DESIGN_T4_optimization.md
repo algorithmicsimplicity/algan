@@ -55,6 +55,19 @@ Round 1 (branch `perf/t4-nn-scene-throughput`, merged at `fc100cd8`) took these
 from 50.0 s and 36.5 s on a Colab T4; peak VRAM 8.4 -> 6.5 GB (UHD) and 6.2 GB
 (PREVIEW).
 
+Round 2 integrated tree (branch `claude/algan-t4-optimization-b5a10b` @
+`8773ae93`, 2026-08-26, log at `scratch_perf/r3/t4_r2t4verify_run.log`):
+
+| scene | warm | vs master | cold |
+|---|---|---|---|
+| `nn_scene_UHD.py` | **27.81 s** | **-7.0%** | 84.25 s |
+| `nn_scene_PREVIEW.py` | **5.86 s** | **-6.2%** | 32.46 s |
+
+As predicted, the dev box's 1.26x did not transfer — the change is prep-side
+and the T4 runs 2-3 batches where the 4 GB card runs 10. At PREVIEW the warm
+split is now render 3.11 s / prep 1.77 s / preflight 1.48 s (prep down from
+2.32 s — P13 at work), still nearly serial.
+
 ---
 
 ## 2. Where the time goes
@@ -134,6 +147,12 @@ nn scene, HD, warm
   `ALGAN_ANALYTIC_AA_SECONDARY` — these are not sharp-reflection taps.
 * **21 rays never terminate**, riding to `max_iters` and forcing 3 extra
   launch pairs per frame-part. Undiagnosed; possibly a bug.
+  **Update 2026-08-26:** the cohort is machine-independent and bigger than it
+  looked. At PREVIEW it is exactly **30 rays with 100% survival** (30 in ->
+  30 continuations at bounces 5, 6, 7), byte-for-byte the same counts on the
+  Kaggle T4 and on a CPU-only box — so it is diagnosable locally. At UHD on
+  the T4 it is **~2,855 rays entering bounce 7** with ~90% per-bounce
+  survival past bounce 5, ~1,000x the HD figure.
 
 ---
 
@@ -227,10 +246,11 @@ share on a 4 GB card, which uses 10 batches where the T4 uses 3).
 
 Two things this round did not finish, and the next session should:
 
-* **The integrated tree has never run on the T4.** Everything above about round
-  2's speedup is from the 4 GB dev box. The change is prep-side, and the dev box
-  uses 10 batches where the T4 uses 3, so the T4 share will be *smaller*; do not
-  quote 1.26x as a T4 number.
+* ~~**The integrated tree has never run on the T4.**~~ **Closed 2026-08-26.**
+  Measured via the `--branch` mechanism (now actually implemented in
+  `make_notebook.py` — it had accepted the flag and ignored it): UHD
+  29.90 -> **27.81 s** warm (-7.0%), PREVIEW 6.25 -> **5.86 s** warm (-6.2%).
+  See §1. The dev box's 1.26x was indeed a batch-count artifact.
 * ~~`tests/unit_tests` has not passed cleanly on the integrated tree.~~
   **Closed.** It now passes: **2077 passed, 132 skipped, 0 failed**, the same
   count master reports. The earlier single failure in `test_glossy_prefilter.py`
