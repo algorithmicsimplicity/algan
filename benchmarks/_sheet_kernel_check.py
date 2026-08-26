@@ -529,6 +529,7 @@ def lane_case(label, band, msk, t_o, nb, n):
     inf_want = int(torch.isinf(want).sum())
     check(f"{label} (inf entries: {inf_want})", ok)
 
+
 lane_n = 3_128_845
 lane_nb = 1_441_601
 lane_band = torch.randint(0, lane_nb, (lane_n,), generator=g, device=DEV)
@@ -585,6 +586,7 @@ def shell_case(label, key, o2, back, cov_in):
     c2 = cov64.index_select(0, o2)
     del cov64
     excl = torch.cumsum(c2, 0).sub_(c2)
+
     def torch_apply(cov_src):
         k2 = key.index_select(0, o2)
         seg_start = torch.ones(nn_, dtype=torch.bool, device=device)
@@ -622,8 +624,13 @@ def shell_case(label, key, o2, back, cov_in):
     got = cov_in.clone()
     cov64k = cov_in.to(torch.float64)  # the kernel's barrier scratch
     solid_shell_ceiling(
-        key.contiguous(), o2.contiguous(), back.contiguous().view(torch.uint8),
-        excl, cov64k, nn_, got,
+        key.contiguous(),
+        o2.contiguous(),
+        back.contiguous().view(torch.uint8),
+        excl,
+        cov64k,
+        nn_,
+        got,
     )
     ok = bits_equal(want, got)
     if not ok:
@@ -639,8 +646,13 @@ def shell_case(label, key, o2, back, cov_in):
     for _ in range(4):
         c = cov_in.clone()
         solid_shell_ceiling(
-            key.contiguous(), o2.contiguous(),
-            back.contiguous().view(torch.uint8), excl, cov64k, nn_, c,
+            key.contiguous(),
+            o2.contiguous(),
+            back.contiguous().view(torch.uint8),
+            excl,
+            cov64k,
+            nn_,
+            c,
         )
         repeats.append(c)
     ok = ok and all(bits_equal(r, got) for r in repeats)
@@ -668,13 +680,21 @@ o2_sorted = order1[torch.argsort(shell_key.index_select(0, order1), stable=True)
 del order1, depth
 shell_back = torch.rand(shell_n, generator=g, device=DEV) < 0.5
 shell_cov = torch.rand(shell_n, generator=g, device=DEV)
-shell_case("4K shapes, mixed segments/facings", shell_key, o2_sorted, shell_back, shell_cov)
+shell_case(
+    "4K shapes, mixed segments/facings", shell_key, o2_sorted, shell_back, shell_cov
+)
 
 # No closed fragment at all: every key unique-negative, every segment its own
 # pass-through (cap == own area -> scale exactly 1).
 all_open_key = -(torch.arange(shell_n, dtype=torch.int64, device=DEV) + 1)
 open_o2 = torch.arange(shell_n, dtype=torch.int64, device=DEV)
-shell_case("nothing closed (pass-through segments)", all_open_key, open_o2, shell_back, shell_cov)
+shell_case(
+    "nothing closed (pass-through segments)",
+    all_open_key,
+    open_o2,
+    shell_back,
+    shell_cov,
+)
 
 # One segment holding the whole stream: every fragment shares one key.
 one_seg_key = torch.zeros(shell_n, dtype=torch.int64, device=DEV)
@@ -709,8 +729,13 @@ def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
 
     def torch_arm():
         fs = torch.full((nb,), n, dtype=torch.int64, device=dev)
-        fs.scatter_reduce_(0, band, torch.arange(n, dtype=torch.int64, device=dev),
-                           reduce="amin", include_self=True)
+        fs.scatter_reduce_(
+            0,
+            band,
+            torch.arange(n, dtype=torch.int64, device=dev),
+            reduce="amin",
+            include_self=True,
+        )
         mp = torch.full((nb,), n, dtype=torch.int64, device=dev)
         mp.scatter_reduce_(0, band, pos_o, reduce="amin", include_self=True)
         fsp = torch.full((nb,), n, dtype=torch.int64, device=dev)
@@ -718,7 +743,9 @@ def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
         if positioned:
             big = torch.full((), n, dtype=torch.int64, device=dev)
             posn = (msk & _AA_MASK_ALL) != 0
-            masked = torch.where(posn, torch.arange(n, dtype=torch.int64, device=dev), big)
+            masked = torch.where(
+                posn, torch.arange(n, dtype=torch.int64, device=dev), big
+            )
             fsp.scatter_reduce_(0, band, masked, reduce="amin", include_self=True)
             masked = torch.where(posn, pos_o, big)
             mpp.scatter_reduce_(0, band, masked, reduce="amin", include_self=True)
@@ -727,7 +754,9 @@ def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
         nf = torch.zeros(nb, dtype=torch.int64, device=dev)
         nf.scatter_add_(0, band, torch.ones_like(band))
         is_max = cov >= cm.index_select(0, band)
-        cand = torch.where(is_max, pos_o, torch.full((n,), n, dtype=torch.int64, device=dev))
+        cand = torch.where(
+            is_max, pos_o, torch.full((n,), n, dtype=torch.int64, device=dev)
+        )
         rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
         rp.scatter_reduce_(0, band, cand, reduce="amin", include_self=True)
         return fs, mp, fsp, mpp, cm, nf, rp
@@ -741,11 +770,24 @@ def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
     cm = torch.zeros(nb, dtype=torch.float32, device=dev)
     nf = torch.zeros(nb, dtype=torch.int64, device=dev)
     band_stats_reduce(
-        band.contiguous(), msk.contiguous(), pos_o.contiguous(), cov.contiguous(),
-        n, int(_AA_MASK_ALL), fs, mp, fsp, mpp, cm, nf, bool(positioned),
+        band.contiguous(),
+        msk.contiguous(),
+        pos_o.contiguous(),
+        cov.contiguous(),
+        n,
+        int(_AA_MASK_ALL),
+        fs,
+        mp,
+        fsp,
+        mpp,
+        cm,
+        nf,
+        bool(positioned),
     )
     rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
-    band_stats_rep_orig(band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp)
+    band_stats_rep_orig(
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+    )
     ok = (
         bits_equal(w_fs, fs)
         and bits_equal(w_mp, mp)
@@ -765,25 +807,34 @@ bs_n = 3_128_845
 bs_nb = 1_441_601
 bs_band = torch.randint(0, bs_nb, (bs_n,), generator=g, device=DEV)
 bs_pos = torch.randperm(bs_n, generator=g, device=DEV)
-bs_msk = torch.randint(0, 1 << (_AA_NUM_SAMPLES + 4), (bs_n,), generator=g, device=DEV,
-                       dtype=torch.int32)
+bs_msk = torch.randint(
+    0, 1 << (_AA_NUM_SAMPLES + 4), (bs_n,), generator=g, device=DEV, dtype=torch.int32
+)
 bs_cov = torch.rand(bs_n, generator=g, device=DEV)
 band_stats_case("4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, True)
-band_stats_case("4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, False)
+band_stats_case(
+    "4K shapes, random bands", bs_band, bs_msk, bs_pos, bs_cov, bs_nb, False
+)
 
 # Empty band table region: ids allocated past the highest used one stay at the
 # sentinel n in both arms.
 band_stats_case(
     "half the band table unused",
     torch.randint(0, bs_nb // 2, (bs_n,), generator=g, device=DEV),
-    bs_msk, bs_pos, bs_cov, bs_nb, True,
+    bs_msk,
+    bs_pos,
+    bs_cov,
+    bs_nb,
+    True,
 )
 
 # One band holding everything; every fragment its own band; single fragment.
 ones_band = torch.zeros(bs_n, dtype=torch.int64, device=DEV)
 band_stats_case("one band, whole stream", ones_band, bs_msk, bs_pos, bs_cov, 1, True)
 own_band = torch.arange(bs_n, dtype=torch.int64, device=DEV)
-band_stats_case("every fragment its own band", own_band, bs_msk, bs_pos, bs_cov, bs_n, True)
+band_stats_case(
+    "every fragment its own band", own_band, bs_msk, bs_pos, bs_cov, bs_n, True
+)
 band_stats_case(
     "n == 1",
     torch.zeros(1, dtype=torch.int64, device=DEV),

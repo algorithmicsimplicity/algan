@@ -288,11 +288,25 @@ because the payload transport was still being solved. Do this first.
    byte-identically; anything less is opt-in with a measured max channel diff.
 2. **The sheet route's host-torch passes** — ~5.2 s (17%) at UHD. A previous
    round kernelised three of them (`scratch_perf/ox/REPORT_sheet_chain.md`) and
-   left the solid-shell ceiling block as the largest remaining. `window pairs`
-   (1.14 s) has never been looked at. The sorts are cuB-backed and should stay;
-   what is fair game is the segment construction and gathers around them, and
-   the `cat`/`stack`/`copy_` family, which is the biggest non-sort op group in
-   the torch profile.
+   left the solid-shell ceiling block as the largest remaining. The sorts are
+   cuB-backed and should stay.
+   **Progress 2026-08-26:** `_window_pairs` audited
+   (`scratch_perf/r3/ox/REPORT_window_pairs.md`: 119 aten dispatches + 2
+   syncs per call, twice per chunk, launch-bound; its `RASTER_PAIR_FLAGS`
+   fast path is structurally dead at chunk granularity). Then the
+   **recovered** round-2 patch `ox_sheet_host_chain.patch` was applied and
+   verified (`REPORT_sheet_chain_verify.md`): three more kernels —
+   `RASTER_PAIR_EXPAND_KERNEL` (the `_class_pairs_flat` body, census
+   119 -> 73 ops/call), `SHEET_BAND_STATS_KERNEL`, and
+   `SHEET_SHELL_CEILING_KERNEL` (the solid-shell ceiling block itself) —
+   all default ON, all bit-identical on the CPU backend (harness, 9 unit
+   tests, and per-toggle lossless A/B renders at 0 differing pixels with
+   kernel-launch proof). Four defects in the recovered patch were found and
+   fixed in verification, one load-bearing: a `mask.is_cuda` gate that made
+   every CPU check of the pair-expand toggle vacuous. **T4 timing not yet
+   measured** — that A/B is the next Kaggle run. Remaining after this:
+   `compact_sheets`' other blocks and the audit's option A prologue hoist
+   (−6%, not done).
 3. **The arena preflight — the best remaining host-side prize, and now
    quantified.** It is 24% of PREVIEW on the T4 and runs serial on the render
    thread by design, so its CUDA peak can be measured uncontended. Round 2

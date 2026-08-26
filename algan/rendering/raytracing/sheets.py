@@ -1183,7 +1183,9 @@ def compact_sheets(
             # torch arm uses, and deterministic for the same reason).
             first = torch.zeros(nseg, dtype=torch.int64, device=device)
             first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-            spent = excl_global - excl_global.index_select(0, first).index_select(0, seg)
+            spent = excl_global - excl_global.index_select(0, first).index_select(
+                0, seg
+            )
             del excl_global, first, seg_start
             # The segment's cap: its surface's two shells' own footprint areas,
             # accumulated float64 and rounded through float32 -- §6.6.4, because a
@@ -1340,7 +1342,9 @@ def compact_sheets(
             masked = torch.where(posn, pos_o, big)
             del posn, big
             min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
-            min_pos_p.scatter_reduce_(0, band_id, masked, reduce="amin", include_self=True)
+            min_pos_p.scatter_reduce_(
+                0, band_id, masked, reduce="amin", include_self=True
+            )
             del masked
             min_pos = torch.where(has_pos, min_pos_p, min_pos)
             del min_pos_p, has_pos

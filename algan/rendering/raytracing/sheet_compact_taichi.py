@@ -525,7 +525,7 @@ def band_stats_reduce(
     The torch arms ran one ``scatter_reduce_``/``scatter_add_`` per output --
     five passes over the stream plus, for the positioned-depth restriction,
     two full-length ``where`` copies to mask it -- for values a single visit
-   per fragment can all update: nearest sorted/original positions (amin),
+    per fragment can all update: nearest sorted/original positions (amin),
     the same restricted to POSITIONED fragments (owning a sample bit), the
     band's largest exact area (amax), and its fragment count. Integer mins
     and maxes are exact under any atomics order; the f32 amax is exact too

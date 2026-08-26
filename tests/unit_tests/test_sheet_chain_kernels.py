@@ -140,8 +140,13 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments():
         want = _torch_shell_ceiling(key, o2, back, excl, c2.clone(), cov)
         got = cov.clone()
         solid_shell_ceiling(
-            key, o2, back.contiguous().view(torch.uint8), excl, cov.to(torch.float64),
-            n, got,
+            key,
+            o2,
+            back.contiguous().view(torch.uint8),
+            excl,
+            cov.to(torch.float64),
+            n,
+            got,
         )
         assert _bits_equal(want, got), f"n={n}"
 
@@ -154,8 +159,13 @@ def _band_torch_arms(band, msk, pos_o, cov, nb, positioned):
     n = int(band.numel())
     dev = band.device
     fs = torch.full((nb,), n, dtype=torch.int64, device=dev)
-    fs.scatter_reduce_(0, band, torch.arange(n, dtype=torch.int64, device=dev),
-                       reduce="amin", include_self=True)
+    fs.scatter_reduce_(
+        0,
+        band,
+        torch.arange(n, dtype=torch.int64, device=dev),
+        reduce="amin",
+        include_self=True,
+    )
     mp = torch.full((nb,), n, dtype=torch.int64, device=dev)
     mp.scatter_reduce_(0, band, pos_o, reduce="amin", include_self=True)
     fsp = torch.full((nb,), n, dtype=torch.int64, device=dev)
@@ -172,7 +182,9 @@ def _band_torch_arms(band, msk, pos_o, cov, nb, positioned):
     nf = torch.zeros(nb, dtype=torch.int64, device=dev)
     nf.scatter_add_(0, band, torch.ones_like(band))
     is_max = cov >= cm.index_select(0, band)
-    cand = torch.where(is_max, pos_o, torch.full((n,), n, dtype=torch.int64, device=dev))
+    cand = torch.where(
+        is_max, pos_o, torch.full((n,), n, dtype=torch.int64, device=dev)
+    )
     rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
     rp.scatter_reduce_(0, band, cand, reduce="amin", include_self=True)
     return fs, mp, fsp, mpp, cm, nf, rp
@@ -199,11 +211,24 @@ def test_band_stats_kernels_match_the_five_scatters(positioned):
     cm = torch.zeros(nb, dtype=torch.float32)
     nf = torch.zeros(nb, dtype=torch.int64)
     band_stats_reduce(
-        band.contiguous(), msk.contiguous(), pos_o.contiguous(), cov.contiguous(),
-        n, int(MASK_ALL), fs, mp, fsp, mpp, cm, nf, bool(positioned),
+        band.contiguous(),
+        msk.contiguous(),
+        pos_o.contiguous(),
+        cov.contiguous(),
+        n,
+        int(MASK_ALL),
+        fs,
+        mp,
+        fsp,
+        mpp,
+        cm,
+        nf,
+        bool(positioned),
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
-    band_stats_rep_orig(band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp)
+    band_stats_rep_orig(
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+    )
 
     assert _bits_equal(w_fs, fs), "first_sorted"
     assert _bits_equal(w_mp, mp), "min_pos"
@@ -232,13 +257,28 @@ def test_band_stats_leaves_unused_band_rows_at_sentinel():
     cm = torch.zeros(nb, dtype=torch.float32)
     nf = torch.zeros(nb, dtype=torch.int64)
     band_stats_reduce(
-        band.contiguous(), msk.contiguous(), pos_o.contiguous(), cov.contiguous(),
-        n, int(MASK_ALL), fs, mp, fsp, mpp, cm, nf, True,
+        band.contiguous(),
+        msk.contiguous(),
+        pos_o.contiguous(),
+        cov.contiguous(),
+        n,
+        int(MASK_ALL),
+        fs,
+        mp,
+        fsp,
+        mpp,
+        cm,
+        nf,
+        True,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
-    band_stats_rep_orig(band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp)
-    assert _bits_equal(w_fs, fs) and _bits_equal(w_mp, mp)
-    assert _bits_equal(w_fsp, fsp) and _bits_equal(w_mpp, mpp)
+    band_stats_rep_orig(
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+    )
+    assert _bits_equal(w_fs, fs), "first_sorted"
+    assert _bits_equal(w_mp, mp), "min_pos"
+    assert _bits_equal(w_fsp, fsp), "first_sorted_p"
+    assert _bits_equal(w_mpp, mpp), "min_pos_p"
     assert _bits_equal(w_rp, rp)
 
 
@@ -257,9 +297,7 @@ def _torch_pair_rows(mask, x0, x1, y0, y1, f_abs):
     bh = y1.reshape(-1)[idx] - by0 + 1
     area = bw * bh
     nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
-    rep = torch.repeat_interleave(
-        torch.arange(idx.numel()), nch
-    )
+    rep = torch.repeat_interleave(torch.arange(idx.numel()), nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
@@ -290,15 +328,27 @@ def _kernel_pair_rows(mask, x0, x1, y0, y1, f_abs):
     y0f = y0.reshape(-1).contiguous()
     y1f = y1.reshape(-1).contiguous()
     counts = torch.empty(numel, dtype=torch.int64)
-    pair_expand_count(mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel,
-                      RASTER_CHUNK, counts)
+    pair_expand_count(
+        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, RASTER_CHUNK, counts
+    )
     offs = torch.cumsum(counts, 0) - counts
     total = int(counts.sum().item())
     if total == 0:
         return None
     rows = torch.empty((total, 8), dtype=torch.int32)
-    pair_expand_write(x0f, x1f, y0f, y1f, f_abs.contiguous(), offs, numel,
-                      ncirc, RASTER_CHUNK, total, rows)
+    pair_expand_write(
+        x0f,
+        x1f,
+        y0f,
+        y1f,
+        f_abs.contiguous(),
+        offs,
+        numel,
+        ncirc,
+        RASTER_CHUNK,
+        total,
+        rows,
+    )
     return rows
 
 
@@ -324,8 +374,10 @@ def test_pair_expand_kernels_match_class_pairs_flat_body():
 
     want = _torch_pair_rows(mask, x0, x1, y0, y1, f_abs)
     got = _kernel_pair_rows(mask, x0, x1, y0, y1, f_abs)
-    assert want is not None and got is not None
-    assert got.dtype == torch.int32 and got.is_contiguous()
+    assert want is not None
+    assert got is not None
+    assert got.dtype == torch.int32
+    assert got.is_contiguous()
     assert _bits_equal(want, got), (
         f"row mismatch at "
         f"{int((want.view(torch.int32) != got.view(torch.int32)).any(-1).sum())}"
@@ -336,8 +388,7 @@ def test_pair_expand_kernels_match_class_pairs_flat_body():
 def test_pair_expand_empty_window_returns_none():
     mask = torch.zeros(2, 33, dtype=torch.bool)
     zeros = torch.zeros(2, 33, dtype=torch.int64)
-    assert _kernel_pair_rows(mask, zeros, zeros, zeros, zeros,
-                             torch.arange(2)) is None
+    assert _kernel_pair_rows(mask, zeros, zeros, zeros, zeros, torch.arange(2)) is None
 
 
 def test_class_pairs_flat_routes_by_toggle_and_agrees():
@@ -372,13 +423,18 @@ def test_class_pairs_flat_routes_by_toggle_and_agrees():
 
         EXPERIMENTAL.set(raster_pair_expand_kernel=True)
         got = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, torch.device("cpu"))
-        assert launches["count"] >= 1 and launches["write"] >= 1, (
+        assert launches["count"] >= 1, (
+            "toggle ON did not route to the pair-expand kernels"
+        )
+        assert launches["write"] >= 1, (
             "toggle ON did not route to the pair-expand kernels"
         )
     finally:
         sct.pair_expand_count, sct.pair_expand_write = real_count, real_write
         EXPERIMENTAL.set(raster_pair_expand_kernel=True)
 
-    assert want is not None and got is not None
-    assert got.dtype == torch.int32 and got.is_contiguous()
+    assert want is not None
+    assert got is not None
+    assert got.dtype == torch.int32
+    assert got.is_contiguous()
     assert _bits_equal(want, got)
