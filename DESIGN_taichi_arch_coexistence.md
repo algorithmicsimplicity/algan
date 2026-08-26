@@ -1,10 +1,28 @@
 # Algan — Taichi Arch Coexistence: Design Document
 
-Status: DESIGN ONLY. Nothing here is implemented. §8 is a set of go/no-go
-experiments that must run before any of the rest is worth building, and **one of
-them can invalidate the whole design while another can triple its value**. Read
-§10 before starting: on today's kernel inventory this subsystem buys about 5% of
-a CUDA render, which is not obviously worth its maintenance surface.
+Status: **DESIGN ONLY, Phase 0 partly run — currently NO-GO.** Nothing in §5 is
+implemented and on today's evidence none of it should be. §8's experiments were
+run on 2026-08-26 as far as a GPU-less box allows; §12 records what they
+returned and what is still open. The short version:
+
+* **§8.2 came back negative**, and more decisively than the design expected —
+  it is readable from source after all. The three criterion kernels cannot
+  receive host tensors, so there is no staging tax there to recover. That is
+  §10's second kill criterion.
+* **§8.1, the blocking experiment, is still unanswered** — it needs a CUDA
+  machine. It is now one command:
+  `ALGAN_RENDER_DEVICE=cuda uv run python benchmarks/_taichi_arch_coexistence_probe.py`.
+* Everything in §4 that does not need CUDA **re-verified** (14/14 checks),
+  except its launch-overhead claim, which **did not reproduce**.
+* §8.3 came back cheap: a cold build is 4 seconds, of which Taichi compilation
+  is 0.19 s.
+
+Read §12 and then §10 before doing anything else here.
+
+§8 is a set of go/no-go experiments that must run before any of the rest is
+worth building, and **one of them can invalidate the whole design while another
+can triple its value**. On today's kernel inventory this subsystem buys about 5%
+of a CUDA render, which is not obviously worth its maintenance surface.
 
 Goal: let Algan run Taichi kernels on the **CPU** inside a process whose Taichi
 arch is **CUDA**, so that CPU batch-prep work can be written as kernels without
@@ -159,10 +177,14 @@ Two properties fall out that are better than expected:
   a torch tensor, which is exactly the case `ti_import_cpu_memory` handles. The
   marshalling story that is usually the hard part of AOT is a pointer and a
   size.
-* **Lower launch overhead than the Python path.** 77–89 µs per C-API launch
+* ~~**Lower launch overhead than the Python path.** 77–89 µs per C-API launch
   (including a fresh `ti_import_cpu_memory` and a blocking `ti_wait`) against
   **173 µs** for an ordinary `@ti.kernel` call, which spends most of its time in
-  Python argument validation.
+  Python argument validation.~~ **REFUTED — see §12.5.** Re-measured with
+  interleaved arms and medians, the two paths are at parity: `ti_launch_kernel`
+  alone is 72 µs of the C-API path's 95 µs, so the cost is the C API's own
+  dispatch and there is nothing on the Python side left to remove. Do not count
+  launch overhead as a benefit of this design.
 
 One environment requirement: `ti_create_runtime` fails with a `runtime_lib_dir`
 error unless `TI_LIB_DIR` points at `taichi/_lib/runtime`. The shim must set it.
@@ -181,7 +203,9 @@ A kernel may go through this path only if it is:
   is not available; each distinct value would need its own AOT entry. Today's
   prep kernels already fit — they take plain `ti.types.ndarray()` and scalars.
 * **Fixed in dtype and rank.** `ndim` and `dtype` must be declared, not
-  inferred. Again already true of the prep kernels.
+  inferred. Already true of `grid_normals_sides_crosses`; **not** true of the
+  three criterion kernels §8.2 asks about, whose ndarray arguments are all bare
+  `ti.types.ndarray()` (§12.5).
 * **Worth it.** Per P13, a kernel wins where there are intermediates to fuse and
   loses where there are not. A kernel that does not clear the bar on a CPU-arch
   A/B must not be promoted here; the AOT path makes it faster to run, not
@@ -321,6 +345,11 @@ None of §5 is worth writing until these run. §8.1 can invalidate the design;
 
 ### 8.1 Does a CUDA Python `Program` coexist with a C-API x64 runtime? (blocking)
 
+> **STILL UNANSWERED — needs a CUDA machine.** Written up as
+> `benchmarks/_taichi_arch_coexistence_probe.py`; run
+> `ALGAN_RENDER_DEVICE=cuda uv run python benchmarks/_taichi_arch_coexistence_probe.py`
+> and read its last three lines. Everything CUDA-independent re-verified (§12.1).
+
 Everything verified in §4 was x64 against x64. The mechanism says arch is a
 per-runtime argument and the two shared objects hold separate state, but the
 CUDA program initializes a CUDA context and a device memory pool that the x64
@@ -336,6 +365,11 @@ point.
 If this fails, the design is dead and the fallback is §9.1.
 
 ### 8.2 Are the existing PN and bezier criterion kernels already staging? (value)
+
+> **ANSWERED: no.** They cannot be — a second gate independent of
+> `pn_criterion_kernel_active()` refuses any non-CUDA tensor. §12.2 has the
+> trace; the paragraph below is left as written because its reasoning about
+> *why* it looked unanswerable is what turned out to be wrong.
 
 `pn_edge_chord_error`, `pn_patch_flatness_error` and `bezier_chord_hull_error`
 run during batch prep and take whatever device their inputs are on
@@ -360,6 +394,10 @@ This is the experiment most likely to change the decision, and it costs an
 afternoon.
 
 ### 8.3 What does the build step actually cost, cold and warm?
+
+> **ANSWERED: 4.0 s cold, of which Taichi compilation is 0.19 s.** The policy
+> stands, but the cost is the subprocess, not the compile — so batch every
+> eligible kernel into one build (§12.3).
 
 Time the subprocess build of the currently-eligible kernels from an empty
 cache, and the `ti_load_aot_module` from a warm one. If a cold build is minutes
@@ -432,5 +470,229 @@ The probes behind this document, in the order they answer the questions above:
 * §3 and §4 were one-off probes rather than committed scripts; the exact
   sequences are transcribed above (the singleton error, the `Kernel.reset` body,
   the SIGSEGV, the AOT arch assertion, and the C-API round trip) so they can be
-  re-run from the text. Promote them into `benchmarks/` if Phase 0 goes ahead —
-  §8.1 is §4's sequence with `arch=ti.cuda`.
+  re-run from the text. §4 is now
+  `benchmarks/_taichi_arch_coexistence_probe.py`, which is also §8.1 (see §12).
+
+---
+
+## 12. Phase 0 results
+
+Run 2026-08-26. **Machine: a 4-vCPU / 16 GB cloud container with no GPU**,
+taichi 1.7.4, torch 2.7.1+cu126 running on CPU. That is the single most
+important caveat on everything below: §8.1 and half of §8.2 are CUDA questions
+and this box cannot answer them. Where a result is CUDA-independent it is
+stated as measured; where it is not, it is stated as unanswered, not inferred.
+
+The scripts:
+
+| script | answers |
+| --- | --- |
+| `benchmarks/_taichi_c_api_shim.py` | the ctypes shim §5.5 describes |
+| `benchmarks/_taichi_c_api_layout_check.py` | §5.5's version lock / §10's third kill criterion |
+| `benchmarks/_taichi_aot_build.py` | §5.3's build step |
+| `benchmarks/_taichi_arch_coexistence_probe.py` | §4 and §8.1 |
+| `benchmarks/_taichi_aot_build_cost.py` | §8.3 |
+
+### 12.1 §8.1 — UNANSWERED, and it is still blocking
+
+No CUDA device here, so the cuda-against-x64 pairing remains untested and the
+design's central mechanism remains argued rather than measured. Everything in
+§4's sequence that does not require CUDA re-verified x64-against-x64 — 14 of 14
+blocking checks:
+
+* `ti_create_runtime(TI_ARCH_X64, 0)` succeeds beside a live Python `Program`,
+  and so does a second one: there is no singleton guard in
+  `libtaichi_c_api.so`, as §4 says.
+* An AOT module built in a separate x64 process loads with
+  `ti_load_aot_module`, and `ti_get_aot_module_kernel` resolves by name.
+* `ti_import_cpu_memory` does not copy: `data_ptr()` is unchanged across the
+  launch, for both the input and the output tensor.
+* Results are correct against an independently-written torch oracle.
+* C-API and Python-side launches interleave in both orders, repeatedly.
+* A missing kernel name and a non-CPU tensor both raise rather than corrupting
+  anything; `ti_destroy_runtime` is safe, and safe twice.
+
+**To answer §8.1, run this on a CUDA box and read the last three lines:**
+
+```
+ALGAN_RENDER_DEVICE=cuda uv run python benchmarks/_taichi_arch_coexistence_probe.py
+```
+
+It detects the live arch itself and switches to §8.1's assertions. Two things
+it does that §8.1 does not ask for, and that the experiment needs:
+
+* **A positive control.** §8.1 asks for "no allocation growth across the CPU
+  launches", which is also what a measurement that cannot see allocations
+  reports. So the probe first stages a launch deliberately — the live CUDA
+  program against host tensors, exactly the tax §1 describes — records the VRAM
+  it moves, and *requires* that to exceed the C-API launch's movement by a
+  margin. A run whose control shows nothing has proved nothing, and the probe
+  says so rather than passing.
+* **Driver-level accounting.** It reads `torch.cuda.mem_get_info`, not
+  `torch.cuda.memory_allocated`: Taichi stages through its own allocator, which
+  torch's accounting cannot see.
+
+### 12.2 §8.2 — NEGATIVE, and readable from source after all
+
+§8.2 says "the answer is **not** readable from the source". It is. There are
+two independent gates, and the second is a plain device check:
+
+1. `pn_criterion_kernel_active()` is `PN_CRITERION_KERNEL and
+   project_on_gpu_active()`, and `project_on_gpu_active()` requires
+   `_RENDER_DEVICE.type == "cuda"`.
+2. Independently, `_pn_criterion_inputs` and `_bezier_criterion_inputs`
+   (`algan/rendering/raytracing/primitives.py`) return `None` — the torch
+   fallback — unless **every** tensor argument has `device.type == "cuda"` and
+   dtype float32.
+
+So `pn_edge_chord_error`, `pn_patch_flatness_error` and
+`bezier_chord_hull_error` **cannot receive a host tensor**, on any render, under
+any budget or retry arm. They are not staging today, and the design would
+recover nothing from them. The full trace — every argument of all three kernels
+to its allocation site, plus the OOM retry, the window shrink, the prefetch
+worker split, `_slice_fetched_batch` and the unmanaged-memory early return — is
+in `OX_STAGING_AUDIT.md`.
+
+**This fires §10's second kill criterion.** §8.2 was the experiment most likely
+to change the decision, and it changed it toward no.
+
+Three things fell out of that audit that matter more than the answer:
+
+* **The inventory in §5.1 is incomplete.** Outside the render kernels there are
+  not one but three groups: the `cpu_prep_kernel_enabled` kernels (which
+  `taichi_arch_is_cpu()` prevents from ever launching on a CUDA arch, so they
+  cannot stage), the **timeline query kernels**
+  (`_query_state_from_edits` / `_query_selected_state_from_edits`, behind
+  `ALGAN_OPT_DISABLE=torchquery`), and the post-processing kernels (bloom and
+  tonemap, gated on the tensor's device matching the arch).
+* **The timeline query kernels are the design's real candidate.** They are the
+  case §1 cites as the motivating example, they *would* stage every argument
+  and the whole `[T, N, D]` result, and they were replaced by torch for exactly
+  that reason. Whether they are worth recovering is a speed question that a
+  CPU-arch A/B can answer without a GPU, because on a CPU arch there is no
+  staging — see `OX_TIMELINE_QUERY_AB.md`.
+* **`slack` is the one unchecked tensor argument** of `_pn_criterion_inputs`:
+  it is on the render device by derivation from `source_corners`, not because
+  anything checks it. No current path puts it elsewhere. Adding it to the
+  checked tuple is a one-line hardening and is not part of this design.
+
+### 12.3 §8.3 — cheap, and §5.3's lazy policy stands
+
+`uv run python benchmarks/_taichi_aot_build_cost.py`:
+
+| arm | subprocess wall | Taichi compile | `import algan` etc. |
+| --- | --- | --- | --- |
+| cold (empty offline cache) | 3.96 s | 0.19 s | 3.77 s |
+| warm (populated cache) | 3.94 s | 0.12 s | 3.82 s |
+| warm again | 3.60 s | 0.11 s | 3.48 s |
+
+Artifact: 41.5 KiB for one kernel. Loading it back:
+`ti_load_aot_module` + resolve is **21 ms**, and `ti_create_runtime(x64)` is
+**147 ms** once per process.
+
+Seconds, not minutes — so §5.3's lazy-on-first-need policy survives, but not
+for the reason §8.3 anticipated. **The cost is not compilation, it is the
+subprocess.** Taichi compiles this kernel in 0.19 s cold; the other 3.8 s is a
+Python interpreter starting and importing algan, and that is a fixed toll paid
+per build regardless of how many kernels the build contains. The marginal cost
+of the *second* eligible kernel is ~0.1 s. If this is ever built, batch every
+eligible kernel into one build; never build them one at a time.
+
+### 12.4 §10's third kill criterion — the layout guard HOLDS
+
+`uv run python benchmarks/_taichi_c_api_layout_check.py` passes: 11 structs and
+13 enum values, every `sizeof`, `alignof` and `offsetof` agreeing.
+
+It is built the strong way and that is the point. Rather than asserting
+hand-copied constants — which agree with a wrong transcription just as happily
+as with a right one — it compiles a C program against the **installed**
+`taichi_core.h` and compares the compiler's own answers against what ctypes
+computes for the shim's classes. `TiArgument` is 160 bytes with its union at
+offset 8; a taichi upgrade that moves any of it fails this check instead of
+corrupting memory at a launch. So §10's third criterion is not what kills this
+design.
+
+### 12.5 Two claims in §4 and §5.1 that did not survive
+
+**§4's launch-overhead advantage does not reproduce.** §4 reports 77–89 µs per
+C-API launch against 173 µs for an ordinary `@ti.kernel` call and lists "lower
+launch overhead than the Python path" as one of two properties better than
+expected. Measured here with interleaved arms and medians over nine rounds of
+500 launches each:
+
+| path | median | range |
+| --- | --- | --- |
+| C-API, whole shim `launch()` | 95 µs | 79–131 |
+| of which building two `TiArgument`s | 10 µs | |
+| `ti_launch_kernel` + `ti_wait` alone | 72 µs | 68–83 |
+| Python `@ti.kernel` on x64 | 87–90 µs | 64–108 |
+
+That is **parity, not a 2x advantage** — the ranges overlap heavily, and across
+runs the ratio wandered from 0.75x to 1.27x. The breakdown says why it cannot
+be much better: `ti_launch_kernel` alone is 72 of the 95 µs, so the cost is the
+C API's own dispatch, not the shim's Python, and there is nothing on the Python
+side left to remove. A single timed block per arm is what produces §4's kind of
+number on a shared vCPU; the probe now interleaves and takes medians for
+exactly this reason, and reports the claim as REFUTED without failing the run.
+
+**§5.1's eligibility claim is wrong about the criterion kernels.** It says
+kernels must be "fixed in dtype and rank — `ndim` and `dtype` must be declared,
+not inferred. Again already true of the prep kernels." True of
+`grid_normals_sides_crosses`, which declares
+`ti.types.ndarray(dtype=ti.f32, ndim=4)`. **Not true** of
+`pn_edge_chord_error`, `pn_patch_flatness_error` or `bezier_chord_hull_error`,
+every one of whose ndarray arguments is a bare `ti.types.ndarray()` with
+neither declared. Making them AOT-eligible would mean annotating nine to
+fourteen arguments per kernel first. Moot while §8.2 is negative, but it is a
+cost the design does not currently carry.
+
+### 12.6 One thing that came back positive: AOT keeps the win
+
+Not in §8, and it should have been — a build that is cheap and a kernel that
+lost its speedup would be worthless. `grid_normals_sides_crosses` through the
+AOT/C-API path against the same kernel launched the ordinary way, both against
+torch, on the shapes the batched surface build passes:
+
+| shape | torch | Python `@ti.kernel` | C-API AOT |
+| --- | --- | --- | --- |
+| `(4, 64, 64, 3)` | 2.35 ms | 0.43 ms (5.40x) | 0.45 ms (5.17x) |
+| `(4, 256, 256, 3)` | 26.69 ms | 4.27 ms (6.25x) | 4.13 ms (6.46x) |
+| `(4, 512, 1024, 3)` | 266.81 ms | 27.99 ms (9.53x) | 21.43 ms (12.45x) |
+
+The two kernel columns track each other. The absolute multipliers move run to
+run on this box — the same three shapes read 3.2x/13.1x/10.6x on an earlier
+pass — so read the *comparison*, not the numbers: the AOT path does not cost
+part of what it exists to deliver. If §8.1 passes, the payoff is §2's number
+rather than some fraction of it.
+
+### 12.7 Where the decision stands
+
+Against §10's kill criteria:
+
+| criterion | status |
+| --- | --- |
+| §8.1 fails | **unknown** — needs a CUDA box; one command, ~1 minute |
+| §8.2 negative **and** inventory still one kernel | **first half fired.** The second half is open: the timeline query kernels are a real second candidate |
+| layout guard cannot hold | **does not fire** — it holds, mechanically |
+
+So the design is not dead, but its stated reason for existing is weaker than
+when it was written: the payoff §8.2 hoped to find is not there. What is left
+is §2's ~5%, against a subsystem with a memory-corruption failure mode, plus
+whatever the timeline query kernels turn out to be worth. §10 already says what
+to do with 5% and one kernel: prefer §9.2's numba, or prefer doing nothing.
+
+**Recommended order for whoever picks this up:**
+
+1. Read `OX_TIMELINE_QUERY_AB.md`. If the timeline query kernel loses to torch
+   on a CPU arch, where nothing stages, then the design's own motivating
+   example is not worth recovering and the inventory really is one kernel —
+   take §10 at its word and stop.
+2. Only if that comes back positive, run §8.1 on a CUDA box.
+3. Do not start §5 before both.
+
+And one thing worth doing whatever happens to this design, because it needs
+none of it: the criterion kernels **run correctly on an x64 arch** (verified —
+0.26 s cold compile, 0.36 ms warm launch), and they are excluded from CPU
+renders by a gate whose stated reason is staging, which cannot occur when the
+arch is the CPU. Whether that leaves a real win on the table on CPU renders is
+a measurement nobody has taken.
