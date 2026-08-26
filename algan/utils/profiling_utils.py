@@ -671,10 +671,14 @@ def install_pipeline_hooks():
     )
     if getattr(scb._merge_scene, "_profiling_original", None) is None:
 
-        def merge_wrapper(primitives):
+        def merge_wrapper(primitives, *args, **kwargs):
+            # Forward everything: ``_merge_scene`` grew a ``track_peak``
+            # keyword with the preflight overlap, and a fixed signature here
+            # crashed every profiled render on the T4 while unprofiled runs
+            # passed -- the shim must never constrain the wrapped signature.
             had_cache = getattr(primitives[0], "_rt_merged_scene", None) is not None
             with TIMERS.stage("merge collections + build BVHs"):
-                scene = orig_merge(primitives)
+                scene = orig_merge(primitives, *args, **kwargs)
             if not had_cache:
                 try:
                     _capture_scene_stats(scene)
