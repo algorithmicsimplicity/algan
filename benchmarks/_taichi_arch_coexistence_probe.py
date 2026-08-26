@@ -444,6 +444,23 @@ def main() -> int:
         blocking=False,
     )
 
+    # The rounds above are ~20k launches, which is enough to expose the leak
+    # that §5.5's front door has as specified: an imported CPU memory handle
+    # cannot be released on an x64 runtime (ti_free_memory refuses with
+    # "(not supported) taichi::arch_is_cpu"), so importing per launch grows the
+    # process at ~90-108 bytes a launch forever. The shim memoizes on
+    # (data_ptr, nbytes) instead; this is the check that it still does.
+    note(
+        f"{runtime.imports} imports served by {len(runtime._imported)} handles "
+        f"({runtime.import_hits / max(1, runtime.imports):.1%} reused)"
+    )
+    check(
+        "imported memory handles are reused, not re-imported per launch",
+        len(runtime._imported) <= 8 and runtime.imports > 1000,
+        "ti_free_memory cannot release them on an x64 runtime, so an import "
+        "per launch is an unbounded leak",
+    )
+
     # --- 7. Errors are return codes (§5.5) ----------------------------------
     print("\n[7] the error contract")
     try:

@@ -378,6 +378,12 @@ class CApiRuntime:
         self.handle = ctypes.c_void_p(handle)
         self._modules = {}
         self._kernels = {}
+        # (data_ptr, nbytes) -> TiMemory. See _import_memory: an imported CPU
+        # handle CANNOT be released on an x64 runtime, so re-importing the same
+        # buffer every launch grows the process without bound.
+        self._imported = {}
+        self.imports = 0
+        self.import_hits = 0
 
     # -- modules --
 
@@ -409,6 +415,43 @@ class CApiRuntime:
 
     # -- arguments --
 
+    def _import_memory(self, data_ptr: int, nbytes: int):
+        """``ti_import_cpu_memory``, memoized on ``(data_ptr, nbytes)``.
+
+        **The memoization is not an optimization, it is the leak fix.** A
+        ``TiMemory`` from ``ti_import_cpu_memory`` cannot be released on an x64
+        runtime: ``ti_free_memory`` refuses outright with ``(not supported)
+        taichi::arch_is_cpu(config.arch)``, so every import is permanent for the
+        life of the runtime. Measured at 90-108 bytes per import, growing
+        linearly (1.75 / 4.12 / 5.12 MB at 20k / 40k / 60k launches). §5.5's
+        front door as specified -- import each tensor's pointer, launch, wait --
+        therefore grows the process on every launch, in a process §5.7 requires
+        to outlive a render and which the daemon keeps alive across renders.
+
+        Keying on ``(data_ptr, nbytes)`` is safe rather than merely convenient:
+        the handle wraps exactly that pointer and that length, so a later tensor
+        landing on the same address with the same size is described correctly by
+        the same handle, and a different size takes a different key. What it
+        does not do is *bound* the growth -- it only moves it from per-launch to
+        per-distinct-buffer. Torch's caching allocator reuses addresses heavily,
+        so in practice that is a small fixed set, but a production version of
+        this shim owes that claim a measurement on a real render.
+        """
+        key = (data_ptr, nbytes)
+        self.imports += 1
+        memory = self._imported.get(key)
+        if memory is not None:
+            self.import_hits += 1
+            return memory
+        memory = self._lib.dll.ti_import_cpu_memory(
+            self.handle, ctypes.c_void_p(data_ptr), ctypes.c_size_t(nbytes)
+        )
+        self._lib.check("ti_import_cpu_memory")
+        if not memory:
+            raise TaichiCApiError("ti_import_cpu_memory returned null")
+        self._imported[key] = memory
+        return memory
+
     def ndarray_argument(self, tensor) -> TiArgument:
         """Wrap a **CPU** torch tensor as an ndarray argument, without copying.
 
@@ -425,12 +468,7 @@ class CApiRuntime:
         if tensor.dim() > TI_MAX_DIM_COUNT:
             raise ValueError(f"ndarray rank {tensor.dim()} exceeds TI_MAX_DIM_COUNT")
         nbytes = tensor.numel() * tensor.element_size()
-        memory = self._lib.dll.ti_import_cpu_memory(
-            self.handle, ctypes.c_void_p(tensor.data_ptr()), ctypes.c_size_t(nbytes)
-        )
-        self._lib.check("ti_import_cpu_memory")
-        if not memory:
-            raise TaichiCApiError("ti_import_cpu_memory returned null")
+        memory = self._import_memory(tensor.data_ptr(), nbytes)
 
         argument = TiArgument()
         argument.type = TI_ARGUMENT_TYPE_NDARRAY
@@ -509,6 +547,9 @@ class CApiRuntime:
             self._lib.dll.ti_destroy_aot_module(module)
         self._modules.clear()
         self._kernels.clear()
+        # Nothing to release here: ti_free_memory refuses on an x64 runtime
+        # (see _import_memory). Destroying the runtime is what reclaims them.
+        self._imported.clear()
         self._lib.dll.ti_destroy_runtime(self.handle)
         self.handle = None
 

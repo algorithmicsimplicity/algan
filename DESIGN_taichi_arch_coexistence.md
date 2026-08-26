@@ -646,7 +646,39 @@ neither declared. Making them AOT-eligible would mean annotating nine to
 fourteen arguments per kernel first. Moot while §8.2 is negative, but it is a
 cost the design does not currently carry.
 
-### 12.6 One thing that came back positive: AOT keeps the win
+### 12.6 §5.5's front door leaks, as specified
+
+§5.5 describes `launch(name, *tensors, **scalars)` as a call that "builds the
+argument array, imports each tensor's pointer, launches, and waits". Written
+that way it grows the process on every launch and never stops, because **an
+imported CPU memory handle cannot be released on an x64 runtime**:
+
+```
+ti_free_memory(runtime, imported) ->
+    (not supported) taichi::arch_is_cpu(config.arch)
+```
+
+The refusal is harmless in itself — the borrowed torch buffer is untouched and
+later launches still work — but it means every `ti_import_cpu_memory` is
+permanent for the life of the runtime. Measured at **90–108 bytes per import,
+linear**: +1.75 MB at 20k launches, +4.12 MB at 40k, +5.12 MB at 60k. §5.7
+requires the runtime to survive a render and the daemon keeps processes alive
+across renders, so nothing reclaims it in a session.
+
+The shim memoizes on `(data_ptr, nbytes)`, which takes the same 60k launches to
+**0.00 MB over 4 handles**. That key is safe rather than merely convenient: the
+handle wraps exactly that pointer and length, so a later tensor at the same
+address with the same size is described correctly by the same handle, and a
+different size takes a different key. Note what it does *not* do — it moves the
+growth from per-launch to per-distinct-buffer rather than bounding it. Torch's
+caching allocator reuses addresses heavily so in practice that is a small fixed
+set (4 here, 2 in a tighter loop), but a production version owes that claim a
+measurement on a real render rather than a benchmark's two buffers.
+
+If §5 is ever built, this belongs in it: the front door must cache, and the
+`sizeof` guard in §5.5 should be joined by a handle-count assertion.
+
+### 12.7 One thing that came back positive: AOT keeps the win
 
 Not in §8, and it should have been — a build that is cheap and a kernel that
 lost its speedup would be worthless. `grid_normals_sides_crosses` through the
@@ -665,7 +697,7 @@ pass — so read the *comparison*, not the numbers: the AOT path does not cost
 part of what it exists to deliver. If §8.1 passes, the payoff is §2's number
 rather than some fraction of it.
 
-### 12.7 Where the decision stands
+### 12.8 Where the decision stands
 
 Against §10's kill criteria:
 
