@@ -2468,11 +2468,24 @@ def project_on_gpu_active():
 # level, and the cross-thread reduction is order-independent ``max`` -- and is
 # regression-tested by benchmarks/_logical_pn_crack_check.py.
 #
-# ALGAN_PN_CRITERION_KERNEL=0 restores the torch path (for A/B). Only used when
-# projection runs on a CUDA render device: elsewhere the criterion's tensors
-# live on the CPU, where launching Taichi against them stages every argument
-# through VRAM (see generate_array_states' docstring), and projection may run
-# on the prefetch worker rather than the render thread.
+# ALGAN_PN_CRITERION_KERNEL=0 restores the torch path (for A/B). Used wherever
+# the criterion's tensors already sit on Taichi's arch device, which is two
+# arrangements: a CUDA render device that projection has uploaded to, and a CPU
+# render device, where the arch is x64 and the host tensors never had to move.
+#
+# Only the first qualified until 2026-08-26. The exclusion was written as
+# "requires CUDA" but its reason was staging -- launching Taichi against a
+# tensor that is not on its arch's device copies every argument through VRAM
+# (see generate_array_states' docstring) -- and that cannot happen when the arch
+# IS the CPU. So the rule turned the kernels off in the one case where they cost
+# nothing to run. benchmarks/_pn_criterion_cpu_ab.py measures what that was
+# worth on a CPU render.
+#
+# The second reason given for the exclusion -- that projection may run on the
+# prefetch worker rather than the render thread -- is not a hazard here: P13
+# established that Python-side Taichi launches from that worker are safe
+# alongside main-thread launches, and the cpu_prep_kernel_enabled kernels
+# already launch from it on every CPU render.
 PN_CRITERION_KERNEL = env_flag("ALGAN_PN_CRITERION_KERNEL", True)
 
 
@@ -2485,8 +2498,29 @@ def set_pn_criterion_kernel(enabled):
 
 
 def pn_criterion_kernel_active():
-    """True when the level searches should use their fused Taichi kernels."""
-    return PN_CRITERION_KERNEL and project_on_gpu_active()
+    """True when the level searches should use their fused Taichi kernels.
+
+    Two arrangements put the criterion's tensors on Taichi's arch device, which
+    is the whole requirement (see ``taichi_runtime.taichi_launch_is_local``):
+
+    * projection ran on a CUDA render device, so the geometry is already there;
+    * the arch **is** the CPU, so the host tensors never had to go anywhere.
+
+    The second was excluded until 2026-08-26 for a reason that only covered the
+    first: launching against CPU tensors stages every argument through VRAM.
+    That is true when the arch is CUDA and false when it is x64, so the rule as
+    written turned the kernels off in the one case where they are free. The
+    remaining tensor-by-tensor device check lives in the input builders.
+    """
+    if not PN_CRITERION_KERNEL:
+        return False
+    if project_on_gpu_active():
+        return True
+    # Deferred: taichi_runtime imports taichi, and this module is read during
+    # settings construction. Asking does not force initialization.
+    from algan.rendering.taichi_runtime import taichi_arch_is_cpu
+
+    return taichi_arch_is_cpu()
 
 
 # --- what the level searches are allowed to stop resolving ------------------

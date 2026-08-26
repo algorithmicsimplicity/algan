@@ -397,6 +397,25 @@ def taichi_arch_is_cpu():
     return _taichi_arch() == ti.cpu
 
 
+def taichi_launch_is_local(device):
+    """Whether a kernel launched against a tensor on ``device`` avoids staging.
+
+    The inverse of the hazard :func:`taichi_arch_is_cpu` describes. Taichi
+    stages any argument that is not already on its arch's device, so a launch is
+    free of that copy exactly when the tensor's device *is* the arch's: host
+    tensors on a CPU arch, render-device tensors otherwise.
+
+    Phrased as a property of the pairing rather than as ``device.type ==
+    "cuda"``, because those are not the same question and the difference is
+    load-bearing. A host tensor on a CUDA arch stages, and must take the torch
+    path; a host tensor on a **CPU** arch does not stage, and a call site that
+    tests for CUDA turns the kernel off in exactly the case where it is free.
+    The arch is chosen from ``_RENDER_DEVICE`` (see :func:`_taichi_arch`), so
+    the arch's device is that device.
+    """
+    return device.type == ("cpu" if taichi_arch_is_cpu() else _RENDER_DEVICE.type)
+
+
 #: CPU batch-prep kernels that are dispatched by default.
 #:
 #: Only ``cpunormals`` pays. ``benchmarks/_cpu_prep_kernels_ab.py`` measures the
