@@ -145,14 +145,19 @@ nn scene, HD, warm
   ceiling.
 * 1.58 M rays for a 2.07 M-pixel frame, and the count is **invariant** to
   `ALGAN_ANALYTIC_AA_SECONDARY` — these are not sharp-reflection taps.
-* **21 rays never terminate**, riding to `max_iters` and forcing 3 extra
-  launch pairs per frame-part. Undiagnosed; possibly a bug.
-  **Update 2026-08-26:** the cohort is machine-independent and bigger than it
-  looked. At PREVIEW it is exactly **30 rays with 100% survival** (30 in ->
-  30 continuations at bounces 5, 6, 7), byte-for-byte the same counts on the
-  Kaggle T4 and on a CPU-only box — so it is diagnosable locally. At UHD on
-  the T4 it is **~2,855 rays entering bounce 7** with ~90% per-bounce
-  survival past bounce 5, ~1,000x the HD figure.
+* ~~**21 rays never terminate**, riding to `max_iters`~~ — **that claim was
+  wrong, and the cohort is diagnosed** (2026-08-26,
+  `scratch_perf/r3/ox/REPORT_immortal_rays.md`). They ride to the **bounce
+  cap**, never `max_iters` — the bounce table's last-row `-` cannot show
+  continuations and was misread as "still alive". The cohort (30 rays at
+  PREVIEW with identical counts on the T4 and on CPU; ~2,855 entering
+  bounce 7 at UHD) is sub-`MIN_WEIGHT` transport kept alive by a
+  control-flow gap: every in-place reflection branch `break`s past the
+  weight-floor exit, and the post-loop exits deliberately exclude bounced
+  rays — so a sub-floor ray that reflects gets its full 8 bounces while one
+  that pass-throughs retires immediately. Image correct; bounces 5-7 exist
+  almost solely for these rays (~1.7% of the UHD render). One-line fix
+  proposed in the report §7, not yet implemented.
 
 ---
 
@@ -315,8 +320,15 @@ because the payload transport was still being solved. Do this first.
    render still completes.
 4. **Shadow ray cost by another route** — see §3 for why the obvious cull is
    closed.
-5. **The 21 immortal rays** — diagnose before optimising; it may be a
-   correctness bug rather than a performance one.
+5. ~~**The 21 immortal rays**~~ **Diagnosed 2026-08-26**
+   (`scratch_perf/r3/ox/REPORT_immortal_rays.md`): not immortal, not a
+   rendering bug — a missing weight-floor exit for rays whose last hit
+   bounced in place (see §2's corrected entry). What remains is the fix:
+   the report's §7 one-liner (the floor check in `wavefront_shade`'s
+   post-loop block, retiring as completion, not truncation), behind a
+   toggle, with an A/B parity render — the report bounds the dropped
+   transport at under half a u8 LSB but that is an envelope argument, not
+   a measurement.
 6. **Cold start** — 85.85 s at UHD against 29.90 s warm, almost all Taichi JIT.
    Amortized for a long video, so it ranks below everything above, but it is the
    whole story for a short one.
