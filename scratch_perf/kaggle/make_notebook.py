@@ -158,6 +158,17 @@ if head != BASE_SHA:
 
 # pristine base, then overlay
 sh("git checkout -- . && git clean -qfd algan benchmarks scratch_perf tests", cwd=REPO, check=False)
+if BRANCH:
+    # The branch is pushed to the public repo, so no payload machinery is
+    # needed: fetch its tip and detach onto it.
+    sh(f"git fetch --depth 1 origin {{BRANCH}}", cwd=REPO)
+    sh("git checkout -f FETCH_HEAD", cwd=REPO)
+    head = subprocess.run("git rev-parse HEAD", shell=True, cwd=REPO,
+                          capture_output=True, text=True).stdout.strip()
+    say(f"checked out branch {{BRANCH}} @ {{head}}")
+if FROM_TAG:
+    # Start from the snapshot a previous run committed in this clone.
+    sh(f"git checkout -f {{FROM_TAG}}", cwd=REPO)
 if PATCH_B64:
     patch = gzip.decompress(base64.b64decode(PATCH_B64)).decode("utf-8")
     (WORK / "overlay.patch").write_text(patch, encoding="utf-8", newline="\\n")
@@ -272,6 +283,9 @@ def main() -> int:
         arms.append((name, script, env))
 
     patch, extra_tar, names = build_overlay(args.base, args.extra, args.paths or None)
+    if args.branch:
+        # the pushed branch carries the tree; only --extra files ride inline
+        patch, names = "", [f"(branch {args.branch})", *args.extra]
     key = payload_key(patch, extra_tar)
     if args.reuse_payload:
         key, patch, extra_tar = args.reuse_payload, "", ""
