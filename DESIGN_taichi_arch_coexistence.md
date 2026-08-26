@@ -697,34 +697,75 @@ pass — so read the *comparison*, not the numbers: the AOT path does not cost
 part of what it exists to deliver. If §8.1 passes, the payoff is §2's number
 rather than some fraction of it.
 
-### 12.8 Where the decision stands
+### 12.8 The second candidate lost too
+
+`OX_TIMELINE_QUERY_AB.md` settles the open half of §10's second criterion. The
+timeline query kernels — the case §1 cites as motivating, and the one kernel
+group in the tree that genuinely *would* stage on a CUDA arch — are **slower
+than the torch path they were replaced by**, measured where nothing stages:
+
+* torch beats or ties them on **12 of 14** real captured query shapes: 1.7–6.7x
+  faster on full width, up to 1.8x on selected rows. The kernels' only edge is
+  ~1.1–1.2x at the single largest shape, and that did not survive repeat-run
+  noise as more than parity. Byte-identical on all 14, in two independent runs.
+* the query stage is **0.01% of a whole `save_video`** (23 ms of 223.7 s), so
+  even a decisive win would have bought ~0.002% of a render.
+
+The result is exactly what `taichi_runtime._CPU_PREP_KERNELS_ON_BY_DEFAULT`
+predicts, which is the part worth carrying forward: a kernel wins where there
+are intermediates to fuse and loses where it is a bandwidth-bound copy. The
+timeline query is the second kind and worse than a copy — a serial binary
+search per `(frame, row)` with nothing to fuse, against a torch path that
+dedups by timestamp rank, skips rows constant across the window, and vectorizes
+the rest into `searchsorted`.
+
+Worth recording separately: **speed was never the reason those kernels were
+replaced.** Every in-tree record cites staging and the OOM crash. So this is
+new information, not a re-confirmation — and it means the staging tax was
+hiding a kernel that should not have been run anyway.
+
+### 12.9 Where the decision stands
 
 Against §10's kill criteria:
 
 | criterion | status |
 | --- | --- |
 | §8.1 fails | **unknown** — needs a CUDA box; one command, ~1 minute |
-| §8.2 negative **and** inventory still one kernel | **first half fired.** The second half is open: the timeline query kernels are a real second candidate |
+| §8.2 negative **and** inventory still one kernel | **FIRED, both halves** (§12.2, §12.8) |
 | layout guard cannot hold | **does not fire** — it holds, mechanically |
 
-So the design is not dead, but its stated reason for existing is weaker than
-when it was written: the payoff §8.2 hoped to find is not there. What is left
-is §2's ~5%, against a subsystem with a memory-corruption failure mode, plus
-whatever the timeline query kernels turn out to be worth. §10 already says what
-to do with 5% and one kernel: prefer §9.2's numba, or prefer doing nothing.
+**Verdict: do not build §5.** §10 states what to do with ~5% and a single
+eligible kernel, and that is now the measured situation rather than the
+pessimistic one: prefer §9.2's numba, or prefer doing nothing. §8.1 stays
+unanswered, but answering it no longer decides anything — there is no second
+candidate waiting on it, and a positive result would buy the one grid-normals
+block on CUDA renders in exchange for a build subprocess, a fingerprinted
+cache, and ~200 lines of ctypes whose failure mode is memory corruption.
 
-**Recommended order for whoever picks this up:**
+What would revive it is not a better mechanism but a **larger inventory**: two
+or three more prep kernels that each clear a CPU-arch A/B against torch. §5.1's
+eligibility rules are the filter, and §12.5's correction to them is the first
+thing to fix if that day comes.
 
-1. Read `OX_TIMELINE_QUERY_AB.md`. If the timeline query kernel loses to torch
-   on a CPU arch, where nothing stages, then the design's own motivating
-   example is not worth recovering and the inventory really is one kernel —
-   take §10 at its word and stop.
-2. Only if that comes back positive, run §8.1 on a CUDA box.
-3. Do not start §5 before both.
+**If you pick this up anyway, in this order:** run §8.1 on a CUDA box (one
+command, and it is the only unanswered question); batch every eligible kernel
+into one build (§12.3); cache imported memory handles (§12.6); and do not trust
+§4's launch-overhead figure (§12.5).
 
-And one thing worth doing whatever happens to this design, because it needs
-none of it: the criterion kernels **run correctly on an x64 arch** (verified —
-0.26 s cold compile, 0.36 ms warm launch), and they are excluded from CPU
-renders by a gate whose stated reason is staging, which cannot occur when the
-arch is the CPU. Whether that leaves a real win on the table on CPU renders is
-a measurement nobody has taken.
+### 12.10 The one thing Phase 0 found that was worth shipping
+
+Needing none of this design: the criterion kernels **run correctly on an x64
+arch**, and they were excluded from CPU renders by a gate whose stated reason
+was staging — which cannot occur when the arch is the CPU. The rule was written
+as "requires CUDA" but its reason was about the *pairing*, so it turned the
+kernels off in the one case where they are free.
+
+Fixed on 2026-08-26: `pn_criterion_kernel_active()` now also accepts a CPU arch,
+and the input builders ask `taichi_runtime.taichi_launch_is_local` per tensor
+instead of testing for CUDA. Measured on a CPU render (Sphere, 546 patches x 3
+frames): **3.80x** on the level search, with the two arms choosing *identical*
+levels and the crack check clean.
+
+That is a bigger number than this whole subsystem was going to deliver, and it
+came from asking what the gate's reason actually was rather than what the gate
+said.

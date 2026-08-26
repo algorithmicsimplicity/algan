@@ -51,7 +51,6 @@ SCENE = '''
 import json, time, sys, os
 import torch
 from algan import *
-from algan.settings.render_settings import PREVIEW
 
 _TIMES = {"edge": 0.0, "flatness": 0.0, "bezier": 0.0, "calls": 0}
 
@@ -84,10 +83,10 @@ def _instrument():
 
 def build():
     """A PN-heavy scene: every mob here dices through the level searches."""
-    Sphere(radius=1).move(LEFT * 2).spawn()
+    sphere = Sphere(radius=1).move(LEFT * 2).spawn()
     Torus().spawn()
     Cylinder().move(RIGHT * 2).spawn()
-    Scene.get_camera().move(OUT * 2)
+    return sphere
 
 
 def main():
@@ -96,11 +95,10 @@ def main():
     warmup = sys.argv[3] == "warmup"
 
     _instrument()
-    settings = PREVIEW.set(frames_per_second=8)
+    settings = PREVIEW
 
-    build()
-    with Sync():
-        Scene.get_actors()[0].rotate(90, UP)
+    sphere = build()
+    sphere.rotate(90, UP)
 
     if warmup:
         # Pays the cold kernel compile (and the Tex/geometry caches) outside
@@ -177,7 +175,13 @@ def frame_deviation(a: Path, b: Path):
 def main() -> int:
     scene_path = _HERE / "_pn_criterion_cpu_ab_scene.py"
     scene_path.write_text(SCENE)
-    outputs = Path("algan_outputs")
+    # save_video resolves its output root relative to the *scene* script, which
+    # this harness writes into benchmarks/ -- so the videos land there, not in
+    # the repo-root algan_outputs. Look in both rather than assuming.
+    outputs = next(
+        (d for d in (_HERE / "algan_outputs", _REPO / "algan_outputs") if d.is_dir()),
+        _REPO / "algan_outputs",
+    )
     try:
         print("=" * 76)
         print("PN/bezier level-search criterion: torch vs fused Taichi, CPU arch")
