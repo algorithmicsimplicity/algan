@@ -8,6 +8,18 @@ metadata:
   modified: 2026-08-25T07:16:50.441Z
 ---
 
+> **SUPERSEDED (2026-08-26).** The ranking below was built on a profiler bug:
+> a stage's `excl` column included every Taichi kernel that stage launched, so
+> item 1's "render thread is GPU-bound, `wavefront_shade` 32%, torch passes of
+> the sheet chain ~35%" mixed real kernel time with a phantom. In particular
+> `wavefront_loop`'s 13.2 s of "unattributed host work" was 12.5 s of two
+> kernels already named in the same table. Fixed at `9f3fdb90`
+> (`TIMERS.charge_kernel_to_parent`).
+>
+> Use `DESIGN_T4_optimization.md` and `[[t4-round2-findings]]` instead. What is
+> still worth reading here is the **"How to apply / traps"** section at the
+> bottom, which is unaffected.
+
 State on 2026-08-25 (branch `perf/t4-nn-scene-throughput`, see [[t4-perf-branch]]):
 warm PREVIEW 36.5 s -> 7.7 s, UHD 50.0 s -> 30.9 s; peak VRAM PREVIEW 6.2 GB, UHD
 8.4 -> 6.5 GB. The plan of record's "The T4 round" section in
