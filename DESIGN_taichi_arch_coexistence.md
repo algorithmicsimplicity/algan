@@ -762,9 +762,34 @@ kernels off in the one case where they are free.
 
 Fixed on 2026-08-26: `pn_criterion_kernel_active()` now also accepts a CPU arch,
 and the input builders ask `taichi_runtime.taichi_launch_is_local` per tensor
-instead of testing for CUDA. Measured on a CPU render (Sphere, 546 patches x 3
-frames): **3.80x** on the level search, with the two arms choosing *identical*
-levels and the crack check clean.
+instead of testing for CUDA.
+
+Verified, on this box:
+
+| | |
+| --- | --- |
+| level search (`_pn_criterion_kernel_ab.py`, 7 configs) | **4.17x** (3.50–5.26x per scene) |
+| bezier chord search (`_bez_chord_kernel_ab.py`, 4 scenes) | **4.11x** |
+| criterion stage, end to end | 8.3% of a render → **1.7%** (5.31x) |
+| whole render | **1.06x — 6.0% of wall time saved** |
+| kernel dispatch rate in a real render | **100%**, 0 falling back |
+| subdivision levels vs torch | **identical** on all 7 configs; identical diced-triangle counts |
+| bezier chord counts vs torch | **identical**, 0 of 12160 differing |
+| end-to-end video, arm vs arm | **byte-identical**, 40 frames, max deviation 0 |
+| crack-freeness | identical to pre-change; 0 disagreeing shared curves |
+| `tests/fast` | its one failure is pre-existing, reproduced exactly by pre-change `algan/` |
+| `tests/full_renders`, all 6 scenes | deviations **identical before and after** (231/14, 180/123, 245/156, 231/179, 231/19, 231/107) — pre-existing per-machine baseline drift, unmoved by this change |
+
+The dispatch rate is there deliberately: a conservative guard and a disabled
+feature are the same artifact from the inside, and every level-agreement row
+above would read the same either way.
+
+**The zero-movement result is not what the docs predict**, and that is worth
+keeping rather than rounding off. These kernels are not bit-identical to torch
+by construction — `fast_math` means a borderline patch *can* round to a
+neighbouring level, and the settings comment says a render baseline changes.
+None moved, on any scene in the repo's suites. The hazard is real; it simply did
+not fire here, and a scene elsewhere could still trip it.
 
 That is a bigger number than this whole subsystem was going to deliver, and it
 came from asking what the gate's reason actually was rather than what the gate
