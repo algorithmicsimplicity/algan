@@ -314,6 +314,99 @@ already been wrapping correctly all along (it just predated the helper), and
 * Re-baseline, only after looking at the frames:
   `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q`
 
+## The structural round (2026-08-26): texture/geometry time dedup, shadow any-hit, sync fixes
+
+The build-out of `DESIGN_renderer_structural_candidates.md` items 1, 3.1, 5
+(content dedup + copy chain) and 8 (avoidable syncs), plus item 2's
+qualification, on `claude/structural-redesigns-perf-pmpkv3`. Everything
+shipped is **byte-identical** on unchanged batch windows and each piece has
+its own kill switch; that file carries per-item status stamps, this section
+is the measurement record.
+
+**What shipped.**
+
+* **`TEXTURE_TIME_FLAT`** (default on): every texture map's frames are
+  flattened along the texel axis with the map's own time length riding in
+  `tri_tex_meta` cols 10-12 (the meta widened 10 → 13; placement quadruples
+  `(offset, w, h, t)`), so the assembled `scene["textures"]` always has time
+  length 1. The per-map length travels as *data* through the samplers
+  (`_sample_texture` / `_sample_tex_vec5`: `texel = offset + (f % t)*w*h +
+  local`), so one compiled kernel serves both layouts and the toggle flips
+  in-process — no `ti.static` arm to fall into. A static map stores one
+  frame whatever else animates; the environment map (which was expanded to
+  the bank's T on every append) stores one copy too.
+* **`TEXTURE_CONTENT_DEDUP`** (default on): `_append_texture` reuses the
+  placement of an already-appended map with byte-identical processed texels
+  (shape-bucketed prefilter, exact `torch.equal` match) — every textured
+  primitive is a singleton collection, so N mobs sharing one image used to
+  store it N times.
+* **`TEXTURE_WINDOW_COLLAPSE`** (default on): `Surface.get_render_primitives`
+  collapses a colour-texture window whose frames AND opacity are
+  byte-identical across the batch to one frame *before* the wrap-pad /
+  premultiply / decode / merge copies are made, and records the outcome on
+  the mob (`_texture_window_collapsed`); the batch sizers price a collapsed
+  texture at the materialized window alone (animation copies 2-3 → 1,
+  render-device factor 6 → 2) off that observation — the same
+  read-off-the-previous-build contract as `_texture_is_wrap_padded`, with
+  the out-of-render-memory retry as the backstop for a texture that starts
+  animating.
+* **`MERGE_DEDUP_GEOMETRY`** (default on, rides `MERGE_DEDUP_TIME`): the
+  merge-time collapse now also covers `tri_pos` / `tri_obj` / `tri_closed`
+  and both geometry types' per-frame bounds/opacity/caster tables. Collapsed
+  bounds reach `build_stbvh` / `build_refit_bvh` at `Tc == 1`, waking their
+  (previously starved) static branches — one instance spanning all frames
+  instead of per-frame structure over identical boxes — on the eager and the
+  deferred build path both. The raster host tables already read every input
+  `f % shape[0]` and the projection table spans the *longest* input, so a
+  fully-parked batch's tables shrink too — except that the CAMERA tensors
+  are indexed dense by the kernels (`cam_origin[f]`, no modulo), so a parked
+  camera still pins the projection tables at T. That is the next slice of
+  item 3 and is deliberately not taken here.
+* **Sync fixes (item 8)**: `_shadow_identity_epsilons`' scene diagonal — a
+  whole-batch `tri_pos` reduction ending in `.item()`, previously run once
+  per TILE ATTEMPT — is cached on the merged scene per batch;
+  the sheet compaction's two split-group diagnostics stay 0-d device
+  tensors (and their group tables over-allocate to `nb`, removing the
+  `ngroups` sync as well): three device syncs per compaction gone.
+
+**Parity.** `benchmarks/_texture_dedup_ab.py` renders a scene exercising
+every changed path — two ImageMobs of one file, a third whose texture
+animates (per-map `t > 1` asserted), a static half-scene and a moving cube
+(collapsed AND dense merges asserted), shadows on — under all-toggles-off
+(the legacy layout byte for byte) and all-toggles-on with pinned batch
+windows: **every frame byte-identical**, non-vacuity asserted per path. The
+fast suite (277 tests incl. the pixel-compared render) and the sheet
+compaction / texture memory / environment / settings-API unit tests pass.
+
+**Measured, CPU box (4-vCPU cloud container; shares, not wall-clock gospel):**
+
+* The probe scene (`scratch_perf/probe_time_expansion.py`, four static mobs
+  incl. an ImageMob, 20 PREVIEW frames): merged upload **127.2 MB → 32.3 MB**
+  (textures `[4, 1.57M, 5] → [1, 1.57M, 5]`, `tri_pos` and every bounds/flag
+  table at `[1, ...]`); with the moving-cube arm only `tri_pos`/bounds stay
+  dense at the window length — the item-3 all-or-nothing rule is broken for
+  every other table.
+* The parity scene renders **11.9 s → 3.9 s** (3.0x) across the toggle flip
+  on this CPU (merge/upload-bound at PREVIEW; treat as an upper bound for
+  GPU boxes, per the two-pole caveat).
+* **Item 9's first number** (`benchmarks/_resolve_mode_ratio.py`, the
+  measurement item 4 is staged behind): mode 1 / mode 2 = **0.78** on CPU —
+  the event-building walk costs nearly as much as the shading walk, so the
+  shadowed double-resolve is worth attacking. T4: see below.
+
+**Shadow any-hit qualification (item 2).** On this machine,
+`benchmarks/_shadow_anyhit_check.py PREVIEW`: both corner-case scenes prove
+their case reached (tie separation MATTERS; peel limit REACHED, 130 rays past
+`MAX_SURFACES_PER_RAY`) and modes 0 / 1 / gather produce **byte-identical
+videos on both** — and on `materials_and_lighting` (the pixel suite's only
+shadowed scene), rendered under all three modes in one process. T4
+qualification and the flip's measured effect: see below.
+
+**T4 (Kaggle, Tesla T4), A/B on identical code with toggles flipped per arm:**
+
+*(this subsection is filled from the `struct1` notebook round — see
+`scratch_perf/kaggle/nb_struct1.py`)*
+
 ## The T4 round (2026-08-25): the nn performance scenes
 
 > The T4 line of work has its own plan of record now:

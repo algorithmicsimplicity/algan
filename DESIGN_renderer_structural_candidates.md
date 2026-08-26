@@ -28,7 +28,30 @@ upper bounds.
 
 ---
 
+> **STATUS 2026-08-26 (`claude/structural-redesigns-perf-pmpkv3`): items 1,
+> 3.1, 5 (content dedup + copy chain), and 8's avoidable syncs are BUILT,
+> byte-identical, each behind its own kill switch; item 2's flip is
+> qualified and measured. Measurements and the full record live in
+> `DESIGN_optimization_targets.md`, "The structural round (2026-08-26)" —
+> this file keeps only per-item status stamps below.**
+
 ## 1. The merged scene stores byte-identical frames — dedup the texture bank, then the geometry
+
+> **BUILT, byte-identical** (`benchmarks/_texture_dedup_ab.py` — both arms,
+> pinned windows, non-vacuity asserted per path). (1) is `TEXTURE_TIME_FLAT`:
+> each map's frames flatten along the texel axis with a real per-map time
+> length in `tri_tex_meta` cols 10-12, so the assembled bank keeps time
+> length 1 — the length travels as *data*, which is what lets one compiled
+> sampler serve both layouts (and the fix also stops the env map's T-fold
+> re-expansion). (2) is `MERGE_DEDUP_GEOMETRY`: `tri_pos`/`tri_obj`/
+> `tri_closed` and both geometry types' bounds/opacity/caster tables join
+> the collapse list. (3) is shipped as observed-constancy pricing: the
+> primitive build records whether the window collapsed
+> (`Surface._texture_window_collapsed`, the `_texture_is_wrap_padded`
+> pattern) and the two estimators price a collapsed texture at the
+> materialized window alone. The probe scene's merged upload: 127.2 MB →
+> 32.3 MB. The full timeline-level window stride (materializing `[1, ...]`
+> in the first place) remains item 3's larger build.
 
 **The measured fact.** On a 20-frame PREVIEW scene of four static mobs (an
 `ImageMob`, a `Sphere`, a `Text`, a `Cube`; nothing animating, camera parked),
@@ -95,6 +118,15 @@ change (see `CLAUDE.md`'s merged-field warning).
 
 ## 2. Shadow rays: the early-out is already built and nobody turned it on; then stop walking one tree per geometry type
 
+> **QUALIFIED; see the structural round in `DESIGN_optimization_targets.md`
+> for the default decision and numbers.** `benchmarks/_shadow_anyhit_check.py`
+> on this machine: both corner-case scenes prove their case reached (peel
+> limit hit, tie separation sensitive) and modes 0/1/gather are
+> byte-identical on both — and on `materials_and_lighting` (the pixel
+> suite's shadowed scene, three modes in one process). The mixed-type
+> any-hit tree is NOT built (unchanged: a real build on the `refit_bvh.py`
+> pattern, stealing a leaf type bit).
+
 Two structural facts about the deterministic shadow query
 (`_shadow_occluded`, `raytrace_kernels_taichi.py:2743`; mode selection
 `tracer.py:1358-1381`; the Ox accel audit,
@@ -153,6 +185,17 @@ the mixed tree (unbuilt, touches every shadow call site). Cost: qualification
 pattern.
 
 ## 3. One moving mob re-expands every static collection: give the merged contract a real time stride
+
+> **Step (1) BUILT** as part of item 1's `MERGE_DEDUP_GEOMETRY` (the collapse
+> happens at the merge rather than at `_pack_frame_visibility`, which covers
+> the same consumers in one place): collapsed bounds now reach both BVH
+> builders at `Tc == 1`, waking their static branches, and the raster host
+> tables already read `f % shape[0]`. The projection tables still key their
+> length off the CAMERA tensors, which the kernels index dense (`cam_origin[f]`,
+> no modulo) — so a parked camera still builds per-frame projection tables;
+> collapsing the camera is the next cheapest slice of this item and needs
+> the kernels' camera reads made modulo first. Steps (2)/(3) (block split /
+> per-row stride) remain unbuilt.
 
 `_cat_collections` (`raytracing/utils.py:51`) broadcasts every collection's
 time axis to the batch maximum and then **materializes** it with
@@ -216,6 +259,12 @@ for the estimator work both need.
 
 ## 4. Split the resolve monolith: the sheet stream was designed for material-sorted shading and never got it
 
+> **NOT BUILT (staged behind the item-9 measurement, exactly as this item
+> prescribes) — and that measurement now exists**:
+> `benchmarks/_resolve_mode_ratio.py` brackets every `sheet_resolve_shade`
+> launch with a device sync and attributes it to its mode. See the
+> structural round in `DESIGN_optimization_targets.md` for the numbers.
+
 `sheet_resolve_shade` (`sheet_resolve_taichi.py:111`) is one kernel per covered
 pixel that walks the depth-sorted sheets and does *everything* inline:
 transport (per-sample transmittance, bands, caps, cedes), all texture/material
@@ -266,6 +315,18 @@ enabler that keeps three kernels' argument lists sane.
 
 ## 5. Texture storage: 20 bytes per texel, one bank, no content dedup, no mip chain
 
+> **Content dedup BUILT** (`TEXTURE_CONTENT_DEDUP`: exact-match reuse at
+> `_append_texture`, so N mobs sharing an image store it once — `get_image`
+> still re-decodes the file per call; the merge-level dedup makes that a
+> per-authoring cost rather than a per-batch one, so the file cache was not
+> taken). **Copy chain shortened for the static case** by item 1's window
+> collapse (`TEXTURE_WINDOW_COLLAPSE`: premultiply/pad/decode/concat run on
+> one frame instead of T). **u8 storage NOT taken**: colour maps are stored
+> premultiplied by the (animated) opacity, so exact u8 round-tripping needs
+> the premultiply moved in-kernel with a per-(prim, frame) opacity input —
+> a real contract change; a 256-entry decode LUT solves the sRGB half but
+> not this. **Mip chain NOT taken** (quality-first design, unchanged).
+
 The shared texel bank stores **five f32 channels per texel** for every map
 (colour, material, normal — `scene_builder.py:1318`, item 1's probe: 20 B/texel
 x T). The Ox textures audit (`scratch_perf/ox/REPORT_struct_textures.md`)
@@ -311,6 +372,12 @@ small / moderate / small / moderate respectively.
 
 ## 6. Batch amnesia: nothing frame-invariant survives a batch boundary
 
+> **NOT BUILT, by this item's own staging** ("lengthen batches first, then
+> measure what per-batch cost remains"). Item 1's collapse + pricing are the
+> lengthening half; the static-gallery profile in the structural round
+> (`DESIGN_optimization_targets.md`) is the re-measurement baseline for any
+> future cross-batch cache.
+
 Every batch rebuilds from scratch — the Ox merge audit confirmed there is no
 cross-batch persistence of geometry *values* anywhere (what does persist is
 pure topology: dice patterns, subdivision indices, sample-weight tensors):
@@ -341,6 +408,13 @@ the render-state snapshot boundary; not cheap. Rank it after 1 re-measures it.
 
 ## 7. The chunk-wide fragment stream sets the memory shape
 
+> **NOT BUILT.** The prescribed first measurement (sort-size sensitivity)
+> already exists: `torch.sort` was linear 1M→16M keys with no cliff
+> (`DESIGN_hybrid_raster.md` §2.1), which says the smaller sorts cost
+> little — the open half is the peak-memory trade of a per-frame emission,
+> still unmeasured. Rank it after item 1's longer batches re-shape chunk
+> lengths.
+
 `prepare_sparse_raster_coverage` (`raster_pipeline.py:1402`) emits and holds
 the **whole chunk's** fragment stream at once — ~57 B per fragment
 (`RENDERER_WORK_QUEUE.md` appendix item 1), ~3.7 M fragments per 4K frame —
@@ -360,6 +434,17 @@ dependent; confidence low until the trade is measured. Cost: moderate — the
 emission is already per-frame inside; the lifetime change is the work.
 
 ## 8. Launch mechanics: the 64-argument ceiling and the sync inventory
+
+> **The avoidable syncs are FIXED**: `_shadow_identity_epsilons` caches the
+> batch's scene diagonal on the merged scene (was a whole-batch `tri_pos`
+> reduction + `.item()` per TILE ATTEMPT), and the two sheet-compaction
+> split-group diagnostics stay 0-d device tensors (with the group tables
+> over-allocated to `nb` so the `ngroups` sync went too). The
+> `gen_meta`/`layer_offsets_t` re-materialization was looked at and left:
+> they are <64-byte H2D copies, and `layer_offsets_t[7]` is rewritten per
+> tile by the glossy route, so caching them across chunks buys microseconds
+> and risks the arena lifetime. The scene-descriptor ndarray stays open
+> with item 4.
 
 Two enablers rather than wins:
 
