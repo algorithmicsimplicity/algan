@@ -527,10 +527,34 @@ def _dedup_time(x):
     length 1, so a temporally-constant map/colour is stored once instead of T
     times. The kernels index the time axis as ``f % shape[0]``, so a length-1
     axis is read by every frame.
+
+    The ``bool()`` is a device sync, and the merge runs on the prefetch
+    worker while the previous batch renders -- every sync here waits out the
+    whole queued render. Prefer :func:`_dedup_time_group` for anything called
+    per merge; this stays for one-off probes outside the merge's hot path.
     """
     if x.shape[0] > 1 and bool((x == x[:1]).all()):
         return x[:1].contiguous()
     return x
+
+
+def _dedup_time_group(scene, keys):
+    """Collapse every temporally-constant ``scene[key]`` to one frame with a
+    SINGLE device sync for the whole group.
+
+    Each probe's reduction stays on the device; one stacked host transfer
+    answers all of them. Measured on the nn UHD benchmark: per-table syncs
+    inside the merge cost +5.3 s of a 24 s render (the merge overlaps the
+    render, so each sync drains the full queued chunk), while the collapse
+    itself is milliseconds.
+    """
+    probes = [k for k in keys if scene[k].shape[0] > 1]
+    if not probes:
+        return
+    flags = torch.stack([(scene[k] == scene[k][:1]).all() for k in probes]).cpu()
+    for k, flag in zip(probes, flags.tolist()):
+        if flag:
+            scene[k] = scene[k][:1].contiguous()
 
 
 #: Texture-meta row width: cols 0-2 color map (offset, w, h), 3-5 material
@@ -545,6 +569,12 @@ def _tex_meta_placeholder(device):
     meta = torch.full((1, _TEX_META_W), -1, dtype=torch.int32, device=device)
     meta[:, 10:] = 1
     return meta
+
+
+#: Texel count below which texture content dedup is not attempted (see
+#: ``_append_texture``): each candidate match is a synchronizing
+#: ``torch.equal``, worth it for a shared image, not for a promoted 1x1 map.
+_CONTENT_DEDUP_MIN_TEXELS = 4096
 
 
 def _split_promotable(p, _append_texture, device, scene):
@@ -1406,12 +1436,13 @@ def _merge_scene(primitives, *, track_peak=None):
         if c < 5:
             tex = torch.cat((tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
         if SETTINGS.raytracing.TEXTURE_TIME_FLAT:
-            # A map whose frames are byte-identical stores one of them;
-            # consumers read its time as ``f % t``. Gated with the layout
-            # flag so TEXTURE_TIME_FLAT=0 is the legacy bank construction
-            # byte for byte.
-            if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-                tex = _dedup_time(tex)
+            # No equality probe here: a static colour window arrives already
+            # collapsed to one frame (TEXTURE_WINDOW_COLLAPSE, upstream of
+            # the merge) and material/normal maps are single-frame tensors,
+            # so a map still carrying T frames here is genuinely animated
+            # and a probe would only cost a device sync -- which, on the
+            # prefetch worker mid-render, waits out the whole queued chunk
+            # (measured +5.3 s of a 24 s nn UHD render).
             t = tex.shape[0]
             flat = tex.reshape(1, -1, 5)
         else:
@@ -1419,7 +1450,15 @@ def _merge_scene(primitives, *, track_peak=None):
             # frames (unified at assembly), so the per-map length is 1.
             t = 1
             flat = tex.reshape(tex.shape[0], -1, 5)
-        if SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP:
+        # Content dedup pays only on real images (the N-mobs-one-file case):
+        # tiny maps -- the promoted 1x1s -- are already grouped by value per
+        # primitive, and each ``torch.equal`` is a device sync with the same
+        # queue-drain cost as above, so small maps skip the index entirely.
+        dedup = (
+            SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP
+            and flat.shape[1] >= _CONTENT_DEDUP_MIN_TEXELS
+        )
+        if dedup:
             key = (tuple(flat.shape), w, h, t)
             for prior_flat, prior_meta in _texture_index.get(key, ()):
                 if torch.equal(prior_flat, flat):
@@ -1428,7 +1467,7 @@ def _merge_scene(primitives, *, track_peak=None):
         o = _texel_offset[0]
         _texel_offset[0] += flat.shape[1]
         meta = (o, w, h, t)
-        if SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP:
+        if dedup:
             _texture_index.setdefault(key, []).append((flat, meta))
         return meta
 
@@ -1723,20 +1762,23 @@ def _merge_scene(primitives, *, track_peak=None):
             ]
             if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
                 keys += ["tri_pos", "tri_obj", "tri_closed"]
-            for _k in keys:
-                scene[_k] = _dedup_time(scene[_k])
-            if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
                 # The per-frame bounds feed the BVH builds (both builders
                 # accept ``Tc == 1`` -- one instance spanning all frames --
                 # and their per-frame opacity masks accept ``To in {1, Tc}``)
                 # and the raster host tables (all ``f % shape[0]``). lo/hi
                 # collapse together or not at all: the builders require one
-                # frame count across the pair.
-                lo2, hi2 = _dedup_time(lo), _dedup_time(hi)
+                # frame count across the pair. Probed through the scene dict
+                # so the whole block shares _dedup_time_group's single sync.
+                scene["_probe_lo"], scene["_probe_hi"] = lo, hi
+                scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
+                keys += ["_probe_lo", "_probe_hi", "_probe_opaque", "_probe_casts"]
+            _dedup_time_group(scene, keys)
+            if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
+                lo2, hi2 = scene.pop("_probe_lo"), scene.pop("_probe_hi")
                 if lo2.shape[0] == hi2.shape[0]:
                     lo, hi = lo2, hi2
-                opaque = _dedup_time(opaque)
-                casts = _dedup_time(casts)
+                opaque = scene.pop("_probe_opaque")
+                casts = scene.pop("_probe_casts")
 
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
         # front-end (settings.HYBRID_RASTER): candidate emission skips
@@ -1916,13 +1958,15 @@ def _merge_scene(primitives, *, track_peak=None):
         # ``f % edges_2d.shape[0]``, so the two stay consistent by
         # construction).
         if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in (
-                "circuit_meta",
-                "circuit_colors",
-                "circuit_border_colors",
-                "edges_2d",
-            ):
-                scene[_k] = _dedup_time(scene[_k])
+            _dedup_time_group(
+                scene,
+                [
+                    "circuit_meta",
+                    "circuit_colors",
+                    "circuit_border_colors",
+                    "edges_2d",
+                ],
+            )
         # Degenerate sampled edges use the exact sentinel row installed by
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
         # no other edge cannot pass the circuit intersection/winding test even
@@ -1949,16 +1993,22 @@ def _merge_scene(primitives, *, track_peak=None):
         _record_visibility("bez", lo, hi, opaque)
         # Same static collapse as the triangle bounds above: the builders
         # accept ``Tc == 1`` and every host/kernel consumer reads
-        # ``f % shape[0]``; lo/hi must collapse together.
+        # ``f % shape[0]``; lo/hi must collapse together. One grouped sync,
+        # like the circuit tables above.
         if (
             SETTINGS.raytracing.MERGE_DEDUP_TIME
             and SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY
         ):
-            lo2, hi2 = _dedup_time(lo), _dedup_time(hi)
+            scene["_probe_lo"], scene["_probe_hi"] = lo, hi
+            scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
+            _dedup_time_group(
+                scene, ["_probe_lo", "_probe_hi", "_probe_opaque", "_probe_casts"]
+            )
+            lo2, hi2 = scene.pop("_probe_lo"), scene.pop("_probe_hi")
             if lo2.shape[0] == hi2.shape[0]:
                 lo, hi = lo2, hi2
-            opaque = _dedup_time(opaque)
-            casts = _dedup_time(casts)
+            opaque = scene.pop("_probe_opaque")
+            casts = scene.pop("_probe_casts")
         # Per-(frame, circuit) visibility, opacity, and AABBs for the hybrid
         # raster frontend.  Proven-opaque circuits now participate in the typed
         # visibility buffer and cull geometry behind large filled 2D shapes;

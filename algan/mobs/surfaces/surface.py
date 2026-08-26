@@ -3332,8 +3332,12 @@ class Surface(Mob):
             # (the same read-off-the-previous-build pattern as
             # ``_texture_is_wrap_padded``): a collapsed window's premultiply /
             # pad / decode / merge copies are per batch, not per frame, so the
-            # texture prices at roughly the materialized window alone.
-            self._texture_window_collapsed = collapsed or texels.shape[0] == 1
+            # texture prices at roughly the materialized window alone. Gated
+            # on the toggle so TEXTURE_WINDOW_COLLAPSE=0 restores the legacy
+            # per-frame pricing along with the legacy copies.
+            self._texture_window_collapsed = bool(
+                _rts.TEXTURE_WINDOW_COLLAPSE
+            ) and (collapsed or texels.shape[0] == 1)
             texture_map = (
                 wrap_pad_texture(
                     texels.view(

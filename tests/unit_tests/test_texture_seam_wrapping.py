@@ -199,7 +199,15 @@ def test_material_and_normal_maps_wrap_with_the_colour_map():
 def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
     """A colour texture dominates a textured surface's render memory, and the
     wrap pad is one more live copy of it while the premultiply clones off it.
+
+    With the static window collapse (``TEXTURE_WINDOW_COLLAPSE``, default on)
+    those copies are made once per batch rather than once per frame the
+    moment a build proves the window constant, so the per-frame estimate
+    drops to the materialized window alone; the legacy per-frame pricing --
+    wrap-pad copy included -- is asserted with the collapse off.
     """
+    from algan.rendering.raytracing import settings as rt_settings
+
     SceneManager.reset()
     sphere = Sphere(radius=1.5, color_texture=_checker(32, 32)).spawn()
 
@@ -207,4 +215,13 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
         "before a primitive build nothing knows the surface closes"
     )
     sphere.get_render_primitives()
-    assert sphere._color_texture_bytes_per_timestep() == 32 * 32 * 5 * 4 * 3
+    assert sphere._color_texture_bytes_per_timestep() == 32 * 32 * 5 * 4 * 1, (
+        "the build observed a constant window, so the premultiply/pad copies "
+        "are per batch and only the window itself scales with the frame count"
+    )
+    rt_settings.set_texture_window_collapse(False)
+    try:
+        sphere.get_render_primitives()
+        assert sphere._color_texture_bytes_per_timestep() == 32 * 32 * 5 * 4 * 3
+    finally:
+        rt_settings.set_texture_window_collapse(True)
