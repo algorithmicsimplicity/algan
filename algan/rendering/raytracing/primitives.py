@@ -178,6 +178,27 @@ def _scatter_diced_rows(output, values, targets):
     output.view(-1, *trailing).index_copy_(0, targets, values.reshape(-1, *trailing))
 
 
+def _criterion_tensors_are_local(tensors, device_only=()):
+    """Whether every tensor can be launched at without Taichi staging a copy.
+
+    ``taichi_launch_is_local`` is asked per tensor rather than once for the
+    batch: these are gathered from the primitive, the camera snapshot and
+    device-keyed caches, and one straggler on the wrong device would stage its
+    own argument even though the rest were local.
+
+    ``device_only`` names tensors whose device must match but whose dtype is
+    cast at the call site rather than required -- ``slack`` is the one such
+    argument, and demanding float32 of it would send a legitimately f16 slack to
+    torch for no reason.
+    """
+    from algan.rendering.taichi_runtime import taichi_launch_is_local
+
+    return all(
+        taichi_launch_is_local(value.device) and value.dtype == torch.float32
+        for value in tensors
+    ) and all(taichi_launch_is_local(value.device) for value in device_only)
+
+
 def _bezier_criterion_inputs(corners, cam_o, sp, sb):
     """Kernel inputs for the bezier chord-count search, or ``None`` for torch.
 
@@ -186,10 +207,7 @@ def _bezier_criterion_inputs(corners, cam_o, sp, sb):
     """
     if not rt_settings.pn_criterion_kernel_active():
         return None
-    tensors = (corners, cam_o, sp, sb)
-    if any(
-        value.device.type != "cuda" or value.dtype != torch.float32 for value in tensors
-    ):
+    if not _criterion_tensors_are_local((corners, cam_o, sp, sb)):
         return None
     base, stride = _frame_broadcast_base(corners)
     return (base, stride, cam_o.contiguous(), sp.contiguous(), sb.contiguous())
@@ -200,25 +218,27 @@ def _pn_criterion_inputs(
 ):
     """Kernel inputs for the level searches, or ``None`` to stay on torch.
 
-    The kernels only run where projection already runs on the render thread
-    against CUDA tensors (see ``settings.pn_criterion_kernel_active``); against
-    CPU tensors Taichi would stage every argument through VRAM, which is a
-    regression, not an optimization.
+    The kernels run only where every argument already sits on Taichi's arch
+    device (see ``settings.pn_criterion_kernel_active`` and
+    ``taichi_runtime.taichi_launch_is_local``) -- against a tensor that does not,
+    Taichi stages every argument through VRAM, which is a regression, not an
+    optimization.
     """
     if not rt_settings.pn_criterion_kernel_active():
         return None
+    # The kernels take the slack unconditionally; zeros are the "measure against
+    # the PN patch exactly" case, which keeps one kernel signature instead of a
+    # second compiled variant per template gate. Defaulted *before* the device
+    # check so it is covered by it: slack is otherwise the one tensor argument
+    # reaching the kernel without one, on its device only by derivation from
+    # ``source_corners``.
+    if slack is None:
+        slack = torch.zeros_like(front_sign)
     tensors = (control_points, edge_controls, cam_o, sp, sb, front_sign)
-    if any(
-        value.device.type != "cuda" or value.dtype != torch.float32 for value in tensors
-    ):
+    if not _criterion_tensors_are_local(tensors, device_only=(slack,)):
         return None
     control_base, control_stride = _frame_broadcast_base(control_points)
     edge_base, edge_stride = _frame_broadcast_base(edge_controls)
-    # The kernels take the slack unconditionally; zeros are the "measure against
-    # the PN patch exactly" case, which keeps one kernel signature instead of a
-    # second compiled variant per template gate.
-    if slack is None:
-        slack = torch.zeros_like(front_sign)
     return _PNCriterionInputs(
         control_base,
         control_stride,

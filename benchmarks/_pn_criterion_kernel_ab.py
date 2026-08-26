@@ -28,6 +28,8 @@ from algan.rendering.logical_pn import (
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.primitives import LogicalPNTrianglePrimitive
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
+from algan.rendering.taichi_runtime import sync_devices
+from algan.settings._startup import _RENDER_DEVICE
 
 
 def make_camera(z_positions, *, screen_height=1080, device=None):
@@ -116,18 +118,26 @@ def _timed_search(primitive, inputs, *, use_kernel, repeats):
     levels = edge_levels = None
     best = float("inf")
     for _ in range(repeats):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # sync_devices, not torch.cuda.synchronize: on a CPU arch the kernel
+        # is a Taichi launch that torch knows nothing about, and timing it
+        # without ti.sync() would measure the dispatch rather than the work.
+        sync_devices()
         start = time.perf_counter()
-        levels, edge_levels = primitive._required_subdivision_levels(*inputs)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # Four values since per-dimension dicing landed: the trailing
+        # (apex, across) pair is the row direction and the across level. This
+        # script unpacked two until 2026-08-26 and had been broken by that
+        # change for as long as it took to notice -- it refused to run without
+        # CUDA, so nothing ever executed the line.
+        levels, edge_levels, _apex, _across = primitive._required_subdivision_levels(
+            *inputs
+        )
+        sync_devices()
         best = min(best, time.perf_counter() - start)
     return levels, edge_levels, best
 
 
 def report(name, mob, z_positions, *, repeats=3, moving=False):
-    device = torch.device("cuda")
+    device = torch.device(_RENDER_DEVICE)
     primitive = LogicalPNTrianglePrimitive(
         triangle_collection=[mob.get_render_primitives()]
     )
@@ -190,14 +200,14 @@ def shared_edge_check(mob, z_positions):
     ``logical_pn_edge_control_points`` is for), so grouping every (frame, patch,
     edge) by those twelve floats recovers the adjacency without any topology.
     """
-    device = torch.device("cuda")
+    device = torch.device(_RENDER_DEVICE)
     primitive = LogicalPNTrianglePrimitive(
         triangle_collection=[mob.get_render_primitives()]
     )
     camera = make_camera(z_positions, device=device)
     inputs = _search_inputs(primitive, camera, device)
     rt_settings.set_pn_criterion_kernel(True)
-    _, edge_levels = primitive._required_subdivision_levels(*inputs)
+    _, edge_levels, _apex, _across = primitive._required_subdivision_levels(*inputs)
 
     edge_controls = inputs[1]
     frames = edge_levels.shape[0]
@@ -226,8 +236,12 @@ def shared_edge_check(mob, z_positions):
 
 
 if __name__ == "__main__":
-    if not torch.cuda.is_available():
-        raise SystemExit("needs a CUDA render device (the kernel path is CUDA-only)")
+    # Runs on whatever device Algan selected. The kernels used to be reachable
+    # only on CUDA, so this script refused anything else; since the criterion
+    # gate became "the tensors are already on Taichi's arch device" it is also
+    # reachable on a CPU render, and the same A/B answers the same questions
+    # there. _assert_kernel_reachable is what catches an unreachable kernel now,
+    # and it fails loudly rather than measuring torch against itself.
 
     totals = [0.0, 0.0]
     coarse = {"geometry_tolerance": 0.2, "max_grid_resolution": 12}

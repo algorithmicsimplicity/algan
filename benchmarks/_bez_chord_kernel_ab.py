@@ -22,6 +22,8 @@ from algan.rendering.raytracing.primitives import (
     _bezier_criterion_inputs,
 )
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
+from algan.rendering.taichi_runtime import sync_devices
+from algan.settings._startup import _RENDER_DEVICE
 
 
 def make_camera(z_positions, *, screen_height=1080, device=None):
@@ -48,10 +50,10 @@ def _timed(primitive, args, *, use_kernel, repeats):
     counts = None
     best = float("inf")
     for _ in range(repeats):
-        torch.cuda.synchronize()
+        sync_devices()
         start = time.perf_counter()
         counts = primitive._compute_samples_per_segment(*args)
-        torch.cuda.synchronize()
+        sync_devices()
         best = min(best, time.perf_counter() - start)
     return counts, best
 
@@ -79,7 +81,7 @@ def _circuit_primitives(mob):
 
 
 def report(name, mob, z_positions, *, repeats=3):
-    device = torch.device("cuda")
+    device = torch.device(_RENDER_DEVICE)
     primitive = RayTracedBezierCircuitPrimitive(
         triangle_collection=_circuit_primitives(mob)
     )
@@ -122,8 +124,8 @@ def report(name, mob, z_positions, *, repeats=3):
 
 
 if __name__ == "__main__":
-    if not torch.cuda.is_available():
-        raise SystemExit("needs a CUDA render device (the kernel path is CUDA-only)")
+    # See _pn_criterion_kernel_ab.py: the criterion gate is no longer CUDA-only,
+    # so this A/B runs wherever Algan's render device is.
 
     totals = [0.0, 0.0]
     frames = [-3.0, -4.5, -6.0, -9.0, -14.0, -25.0, -40.0, -60.0]
