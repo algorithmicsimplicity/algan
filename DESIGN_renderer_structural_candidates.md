@@ -118,12 +118,18 @@ change (see `CLAUDE.md`'s merged-field warning).
 
 ## 2. Shadow rays: the early-out is already built and nobody turned it on; then stop walking one tree per geometry type
 
-> **QUALIFIED; see the structural round in `DESIGN_optimization_targets.md`
-> for the default decision and numbers.** `benchmarks/_shadow_anyhit_check.py`
-> on this machine: both corner-case scenes prove their case reached (peel
-> limit hit, tie separation sensitive) and modes 0/1/gather are
-> byte-identical on both — and on `materials_and_lighting` (the pixel
-> suite's shadowed scene, three modes in one process). The mixed-type
+> **QUALIFIED — and the flip is deliberately NOT taken, on measurement.**
+> Correctness: `benchmarks/_shadow_anyhit_check.py` on this CPU box AND on a
+> Tesla T4: both corner-case scenes prove their case reached (peel limit
+> hit, tie separation sensitive) and modes 0/1/gather are byte-identical on
+> both — and on `materials_and_lighting` (three modes in one process). But
+> the measured perf refutes this item's premise for the mixed batch: on nn
+> UHD (translucent present → mode 2) the flip cost **29.5 → 34.2 s** — the
+> deferred any-hit pre-pass pays a second full traversal on miss-dominated
+> rays and the wider mode-2 shade variant loses occupancy — and the shadowed
+> static gallery measured neutral. The all-opaque mode-3 case this item's
+> depth claim rests on was not reached by either benchmark scene. Default
+> stays off; numbers in `DESIGN_optimization_targets.md`. The mixed-type
 > any-hit tree is NOT built (unchanged: a real build on the `refit_bvh.py`
 > pattern, stealing a leaf type bit).
 

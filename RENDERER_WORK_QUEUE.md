@@ -444,11 +444,11 @@ separated out.
 
 > **Measured 2026-08-26** (`benchmarks/_resolve_mode_ratio.py`, sync-bracketed
 > per-launch wall time attributed by mode): on a shadowed spheres-over-ground
-> scene, **mode 1 / mode 2 = 0.78 on this CPU box** — the event-building walk
-> costs nearly as much as the shading walk, so the double resolve close to
-> doubles a shadowed batch's resolve cost and the ~15-floats-per-sheet
-> memoization has real headroom. The T4 figure from the same script is in
-> `DESIGN_optimization_targets.md`'s structural round. The memoization itself
+> scene, **mode 1 / mode 2 = 0.78 on a CPU box and 0.685 on a Tesla T4** (at
+> MD: 10.5 s of mode 1 against 15.3 s of mode 2 over 7 launches) — the
+> event-building walk costs nearly as much as the shading walk, so the double
+> resolve close to doubles a shadowed batch's resolve cost and the
+> ~15-floats-per-sheet memoization has real headroom. The memoization itself
 > remains unbuilt.
 
 ---

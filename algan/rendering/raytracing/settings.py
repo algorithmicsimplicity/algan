@@ -691,8 +691,21 @@ def set_merge_dedup_time(enabled):
 # cases the march itself gets wrong (an opaque edge hit seam-merged into a
 # coincident translucent edge within DEPTH_TIE_EPSILON, and an opaque
 # blocker past MAX_SURFACES_PER_RAY peels); the any-hit's answer is the
-# physically correct one in both. Experimental while the pixel suites
-# qualify it; ALGAN_SHADOW_ANYHIT=1 opts in.
+# physically correct one in both.
+#
+# QUALIFIED 2026-08-26, and deliberately NOT the default. Correctness: all
+# three modes are byte-identical on both purpose-built corner scenes (each
+# proven to reach its case) and on materials_and_lighting, on a CPU box and
+# on a Tesla T4 (benchmarks/_shadow_anyhit_check.py; the structural round in
+# DESIGN_optimization_targets.md). Performance is why the default stays off:
+# on the nn UHD benchmark (a batch with translucent geometry, so mode 2)
+# the flip measured 29.5 s -> 34.2 s end to end -- raster_shadow_trace
+# 3.8 -> 6.6 s because the deferred any-hit pre-pass pays a second full
+# traversal on the miss-dominated rays, and wavefront_shade 6.3 -> 8.2 s
+# from the wider mode-2 kernel variant -- while the shadowed static-gallery
+# scene measured neutral. Flip it per render for translucent-stack or
+# proven-all-opaque (mode 3) scenes; a smarter default would engage the
+# any-hit only where mode 3 applies. ALGAN_SHADOW_ANYHIT=1 opts in.
 #
 # ALGAN_SHADOW_ANYHIT=gather selects the gather-march instead: the same
 # ordered shadow peel rebuilt on the KBUF gather (_collect_hits), so a

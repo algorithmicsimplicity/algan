@@ -402,10 +402,57 @@ videos on both** — and on `materials_and_lighting` (the pixel suite's only
 shadowed scene), rendered under all three modes in one process. T4
 qualification and the flip's measured effect: see below.
 
-**T4 (Kaggle, Tesla T4), A/B on identical code with toggles flipped per arm:**
+**T4 (Kaggle, Tesla T4), A/B on identical code with the four toggles flipped
+per arm** (`scratch_perf/kaggle/nb_struct1.py` / `nb_struct2.py`; warm RUN 2
+of `profile_scene`, read per the usual rules):
 
-*(this subsection is filled from the `struct1` notebook round — see
-`scratch_perf/kaggle/nb_struct1.py`)*
+| scene | toggles ON | toggles OFF | ratio |
+| --- | --- | --- | --- |
+| `static_gallery_PREVIEW` (the item-1 population) | **4.61 s** | 12.53 s | **2.7x** |
+| `nn_scene_PREVIEW` (everything animates) | 5.56 s | 5.60 s | 1.0x |
+| `nn_scene_UHD` | 24.78 s | 24.67 s | 1.0x |
+
+The gallery's mechanism is exactly the item-1 prediction — the estimator
+repricing lengthened the batch windows and every per-batch cost amortized:
+**25 batches → 8**, arena preflight 7.79 → 2.29 s, merge 3.69 → 0.91 s,
+`_dice_logical_pn` 3.26 → 1.11 s, refit-BVH builds 2.02 → 0.62 s,
+projection prewarm 4.00 → 1.35 s, `get_batch_of_primitives` 3.47 → 1.41 s.
+This is also item 6's re-measurement baseline: the per-batch families it
+lists shrank by lengthening alone, before any cross-batch cache.
+
+The nn scenes — where every texture texel and every triangle moves per
+frame, so nothing is collapsible — are the no-regression check, and the
+FIRST cut failed it: **+22% end to end on both** (nn UHD merge own time
+0.50 → 5.82 s), because the new constancy probes each ended in a device
+sync, the merge runs on the prefetch worker while the previous chunk
+renders, and every sync waits out the whole queued chunk. Fixed
+(`679a232`) by not probing texture maps at the merge at all (a static
+window arrives already collapsed from `TEXTURE_WINDOW_COLLAPSE`, whose own
+sync sits where the queue is shallow and measured free), gating content
+dedup to maps of at least 4096 texels, and folding all per-table collapse
+probes into ONE stacked sync per geometry block (`_dedup_time_group`).
+Post-fix the nn arms read the table above — neutral — with merge own time
+back at 0.51 s. **The lesson to carry: on the prefetch worker, a device
+sync costs whatever the render thread has queued, not what the probe
+computes.**
+
+**Shadow any-hit (item 2), the flip NOT taken.** Qualification passed
+everywhere it was run — all three modes byte-identical on both corner
+scenes (cases proven reached) and on `materials_and_lighting`, on this CPU
+box and on the T4 — so the modes are safe to select per render. But the
+measured default flip is a REGRESSION on the translucent-carrying nn UHD
+batch (mode 2): **29.5 → 34.2 s**, `raster_shadow_trace` 3.8 → 6.6 s (the
+deferred any-hit pre-pass pays a second full traversal on miss-dominated
+rays) and `wavefront_shade` 6.3 → 8.2 s (the wider mode-2 variant), while
+the shadowed gallery was neutral (4.59 vs 4.66 s). `SHADOW_ANYHIT` stays
+default off; the candidate that survives this measurement is engaging the
+any-hit only where mode 3 applies (batch provably translucent-free).
+
+**Item 9's number on the T4** (`benchmarks/_resolve_mode_ratio.py`, MD):
+mode 1 / mode 2 = **0.685** (10.5 s vs 15.3 s over 7 launches; 0.78 on the
+CPU box) — the shadowed double-resolve nearly doubles resolve cost, which
+ranks the ~15-floats-per-sheet memoization (and behind it item 4's
+transport/shade split) as a real candidate.
 
 ## The T4 round (2026-08-25): the nn performance scenes
 
