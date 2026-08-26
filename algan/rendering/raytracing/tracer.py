@@ -2692,6 +2692,10 @@ def raytrace_render_wavefront(
                         opaque_closest,
                         0,
                         1,  # compact: rs_int[:, 4] holds the accumulator row
+                        # Post-loop weight-floor exit, read live per batch
+                        # (a ti.template() gate: flipping it mid-process
+                        # compiles the other variant rather than reusing one).
+                        int(rt_settings.WEIGHT_FLOOR_EXIT),
                         a_matid,
                         a_mat,
                         light_pos,
@@ -3323,6 +3327,9 @@ def raytrace_render_wavefront(
                     opaque_closest,
                     first,
                     0,  # compact: dense tiles accumulate at the ray's pixel
+                    # Post-loop weight-floor exit, read live per batch (see
+                    # the sparse drain call site).
+                    int(rt_settings.WEIGHT_FLOOR_EXIT),
                     a_matid,
                     a_mat,
                     light_pos,

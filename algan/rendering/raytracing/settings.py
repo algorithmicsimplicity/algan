@@ -1785,6 +1785,43 @@ SOLID_SHELL_ALPHA = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 # a GGX highlight to restore. OFF restores the previous weighting exactly.
 DIRECT_SPECULAR_LOBE = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 
+# Retire a bounce-loop ray whose throughput fell under MIN_WEIGHT even when
+# its last processed hit took an in-place reflection branch.
+#
+# The drain loop already retires any ray whose post-hit weight crosses the
+# significance floor (``wavefront_shade``'s in-loop test), but every reflect-
+# here branch ends in a ``break`` that jumps past that test, and the
+# post-loop peel-complete tests deliberately exclude bounced rays -- so a
+# reflecting sub-floor ray rides to ``MAX_BOUNCES``, several further
+# generations of pure waste (diagnosed in scratch_perf/r3/ox/
+# REPORT_immortal_rays.md: on the nn PREVIEW scene exactly 30 rays bounce at
+# 100% survival through bounces 5-7, all below the floor since their first
+# tail iteration). The fix adds the same floor test to the post-loop block,
+# between the peel-complete tests and the surface-ceiling test, where the
+# bounced rays now arrive. Completion, not truncation: the existing commit
+# block deposits accumulated colour + leftover throughput (env map included)
+# exactly as for any other retirement, and ALLOC_TRUNC_SURFACES is untouched.
+#
+# Not provably byte-identical: it retires transport the renderer currently
+# traces, bounded by the envelope the existing floor already accepts --
+# dropped contribution <= w * radiance with w < 1e-3 at cull time and decay
+# <= ~0.105/generation afterwards, under half a u8 LSB for scene radiance
+# <= ~2. Measured (scratch_perf/r3/ox/REPORT_weight_floor_impl.md, nn scene
+# at PREVIEW, lossless libx264rgb encode, benchmarks/_video_diff.py): worst
+# channel diff exactly 1 -- 4424 byte-differing pixel-instances over 50
+# frames (worst frame 107 of 278784), nothing over the suites' tol-2 gate.
+# Any movement is enough to move committed render baselines, so the default
+# is OFF: the default path stays byte-identical to the pre-change tree
+# (verified against it directly), and ALGAN_WEIGHT_FLOOR_EXIT=1 /
+# SETTINGS.raytracing.experimental.weight_floor_exit opts in.
+#
+# Gate: a ``ti.template()`` argument of ``wavefront_shade`` (the kernel is at
+# Taichi's runtime-argument ceiling; see the packed-ndarray comments there),
+# read live per batch at the call sites -- so flipping it mid-process
+# compiles the other variant rather than baking (CLAUDE.md's ti.static
+# hazard). OFF compiles today's kernel body exactly.
+WEIGHT_FLOOR_EXIT = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", False)
+
 
 # Per-mob shadow flags (``Mob.casts_shadows`` / ``Mob.receives_shadows``).
 #
