@@ -1,0 +1,2258 @@
+[    0.0s] $ nvidia-smi
+Wed Aug 26 13:23:52 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.159.04             Driver Version: 580.159.04     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla T4                       Off |   00000000:00:04.0 Off |                    0 |
+| N/A   55C    P8             11W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  Tesla T4                       Off |   00000000:00:05.0 Off |                    0 |
+| N/A   51C    P8             10W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+[    0.4s]   -> exit 0 in 0.4s
+[    0.4s] $ apt-get install -y -qq libpango1.0-dev libcairo2-dev pkg-config
+(Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 125186 files and directories currently installed.)
+Removing r-base-dev (4.6.0-3.2204.0) ...
+dpkg: pkgconf: dependency problems, but removing anyway as you requested:
+ libsndfile1-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmkl-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmagickwand-6.q16-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmagickcore-6.q16-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libglib2.0-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libfontconfig-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+
+Removing pkgconf (1.8.0-1) ...
+Removing 'diversion of /usr/bin/pkg-config to /usr/bin/pkg-config.real by pkgconf'
+Removing 'diversion of /usr/share/aclocal/pkg.m4 to /usr/share/aclocal/pkg.real.m4 by pkgconf'
+Removing 'diversion of /usr/share/man/man1/pkg-config.1.gz to /usr/share/man/man1/pkg-config.real.1.gz by pkgco
+... [2904 chars elided] ...
+e2-3:amd64 (1.3.14-1ubuntu0.1) ...
+Setting up libharfbuzz-icu0:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libfribidi-dev:amd64 (1.0.8-2ubuntu3.1) ...
+Setting up pango1.0-tools (1.50.6+ds-2ubuntu1) ...
+Setting up libharfbuzz-gobject0:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libgraphite2-dev:amd64 (1.3.14-1ubuntu0.1) ...
+Setting up r-base-core (4.6.1-1.2204.1) ...
+Installing new version of config file /etc/R/Makeconf ...
+Setting up pkg-config (0.29.2-1ubuntu3) ...
+Setting up libdatrie-dev:amd64 (0.2.13-2) ...
+Setting up libharfbuzz-dev:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libthai-dev:amd64 (0.1.29-1build1) ...
+Setting up libpango1.0-dev:amd64 (1.50.6+ds-2ubuntu1) ...
+Processing triggers for hicolor-icon-theme (0.17-2) ...
+Processing triggers for libc-bin (2.35-0ubuntu3.8) ...
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind_2_5.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_level_zero.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_level_zero_v2.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind_2_0.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_loader.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbb.so.12 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libumf.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtcm_debug.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_opencl.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbmalloc_proxy.so.2 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtcm.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbmalloc.so.2 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libhwloc.so.15 is not a symbolic link
+
+Processing triggers for man-db (2.10.2-1) ...
+Processing triggers for mailcap (3.70+nmu1ubuntu1) ...
+
+[   20.1s]   -> exit 0 in 19.6s
+[   20.1s] $ git clone --depth 1 https://github.com/algorithmicsimplicity/algan.git /kaggle/working/algan_repo
+Cloning into '/kaggle/working/algan_repo'...
+
+[   24.0s]   -> exit 0 in 4.0s
+[   24.0s] clone HEAD = e61fb8b5e067a89f69c1f9dc753b5b0a8f623602  (expected base df07859d4db1b32a3bbe6bf25f67c81ec53e518a)
+[   24.0s] WARNING: clone tip is not the base this overlay was cut against
+[   24.0s] $ git checkout -- . && git clean -qfd algan benchmarks scratch_perf tests
+
+[   24.4s]   -> exit 0 in 0.4s
+[   24.4s] $ git fetch --depth 1 origin claude/algan-t4-optimization-b5a10b
+From https://github.com/algorithmicsimplicity/algan
+ * branch            claude/algan-t4-optimization-b5a10b -> FETCH_HEAD
+
+[   25.0s]   -> exit 0 in 0.6s
+[   25.0s] $ git checkout -f FETCH_HEAD
+Note: switching to 'FETCH_HEAD'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+HEAD is now at b60514b T4 round 3: profiler merge shim forwards kwargs — fixes profiled renders
+
+[   25.1s]   -> exit 0 in 0.0s
+[   25.1s] checked out branch claude/algan-t4-optimization-b5a10b @ b60514bea471e81eb94f092cecbf04ebd4c3268f
+[   25.1s] $ git status --porcelain
+
+[   25.1s]   -> exit 0 in 0.0s
+[   25.1s] $ pip install -q -e /kaggle/working/algan_repo
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.9/44.9 kB 2.2 MB/s eta 0:00:00
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.1/4.1 MB 92.5 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 55.0/55.0 kB 3.6 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 679.4/679.4 kB 38.0 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.2/59.2 kB 4.4 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 129.9/129.9 kB 10.2 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.7/16.7 MB 98.9 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 93.8 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 137.9/137.9 kB 11.6 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 56.3/56.3 MB 35.6 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 745.5/745.5 kB 37.1 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35.8/35.8 MB 55.5 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 296.4/296.4 kB 19.9 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 382.4/382.4 kB 24.7 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 51.4/51.4 kB 3.3 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.0/1.0 MB 56.4 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.7/11.7 MB 92.6 MB/s eta 0:00:00
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+bigframes 2.39.0 requires google-cloud-bigquery-storage<3.0.0,>=2.30.0, which is not installed.
+ydata-profiling 4.18.4 requires numpy<2.4,>=1.22, but you have numpy 2.5.2 which is incompatible.
+google-colab 1.0.0 requires jupyter-server==2.14.0, but you have jupyter-server 2.12.5 which is incompatible.
+google-colab 1.0.0 requires pandas==2.2.2, but you have pandas 2.3.3 which is incompatible.
+dopamine-rl 4.1.2 requires gym<=0.25.2, but you have gym 0.26.2 which is incompatible.
+numba 0.60.0 requires numpy<2.1,>=1.22, but you have numpy 2.5.2 which is incompatible.
+
+[   71.5s]   -> exit 0 in 46.4s
+[   71.5s] === ARM uhd_on: nn_scene_UHD.py  env={'ALGAN_PREFETCH_GPU_PREP': '1'}
+[   71.5s] $ python nn_scene_UHD.py
+/usr/local/lib/python3.12/dist-packages/pydub/utils.py:300: SyntaxWarning: invalid escape sequence '\('
+  m = re.match('([su]([0-9]{1,2})p?) \(([0-9]{1,2}) bit\)$', token)
+/usr/local/lib/python3.12/dist-packages/pydub/utils.py:301: SyntaxWarning: invalid escape sequence '\('
+  m2 = re.match('([su]([0-9]{1,2})p?)( \(default\))?$', token)
+/usr/local/lib/python3.12/dist-packages/pydub/utils.py:310: SyntaxWarning: invalid escape sequence '\('
+  elif re.match('(flt)p?( \(default\))?$', token):
+/usr/local/lib/python3.12/dist-packages/pydub/utils.py:314: SyntaxWarning: invalid escape sequence '\('
+  elif re.match('(dbl)p?( \(default\))?$', token):
+Rendering device set to cuda
+Encoding video with libx264
+Began rendering profilingnn_UHD_run1.mp4
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+[W 08/26/26 13:25:36.595 412] TaichiWarning
+While compiling `opaque_prefix_keep_c144_0`, File "/kaggle/working/algan_repo/algan/rendering/raytracing/sheet_compact_taichi.py", line 269, in opaque_prefix_keep:
+            keep[jj] = 1 if jj <= ke else 0
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Assign may lose precision: u8 <- i32
+Finished rendering profilingnn_UHD_run1.mp4 in 84.5 s
+Encoding video with libx264
+Began rendering profilingnn_UHD_run2.mp4
+Finished rendering profilingnn_UHD_run2.mp4 in 24.2 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[profiling] hooked 43 Taichi kernels (170 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+
+===== profiling run 2/2 (warm) =====
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: off (wall-time only)
+  hooked kernels (43): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, path_trace_physical_stbvh, path_trace_scene_stbvh, pn_edge_chord_error, pn_patch_flatness_error, raster_bez_count, raster_bez_write, raster_shadow_trace, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade, wavefront_shadow, wavefront_traverse, wavefront_traverse_events, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 84.66s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                 30    79.449    93.8%     0.122     0.1%     0.000     0.000
+wavefront_loop                                          30    77.622    91.7%     0.040     0.0%     0.000     0.000
+overlap GPU prep (worker)                                1    42.309    50.0%     0.022     0.0%     0.000     0.000
+raster: sparse resolve                                  30    40.522    47.9%     0.097     0.1%     0.000     0.000
+  - project_to_screen (prewarm)                          2    38.838    45.9%     0.552     0.7%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      6    37.720    44.6%     0.099     0.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                         6    37.620    44.4%     4.129     4.9%     0.000     0.000
+kernel: sheet_resolve_shade                             60    34.226    40.4%    34.226    40.4%    33.986     0.236
+Scene.get_batch_of_primitives                            2    23.290    27.5%    14.337    16.9%     0.000     0.000
+wavefront:   - bounce drain                             30    21.119    24.9%     0.024     0.0%     0.000     0.000
+logical PN:     - evaluate patch                        15    19.156    22.6%    19.156    22.6%     0.000     0.000
+kernel: wavefront_shade                                124    16.395    19.4%    16.395    19.4%    10.056     6.330
+raster: sparse discovery                                30    14.452    17.1%     0.414     0.5%     0.000     0.000
+wavefront:   - bounce 0 shade                           30    13.303    15.7%     0.004     0.0%     0.000     0.000
+logical PN:     - snap boundary                         30    10.031    11.8%    10.031    11.8%     0.000     0.000
+merge collections + build BVHs                           2     6.578     7.8%     4.372     5.2%     0.000     0.000
+kernel: raster_shadow_trace                             30     6.199     7.3%     6.199     7.3%     2.305     3.882
+raster:   - compact_sheets                              30     4.735     5.6%     1.917     2.3%     0.000     0.000
+surfaces: get_render_primitives_batched                  4     4.602     5.4%     4.372     5.2%     0.000     0.000
+kernel: wavefront_traverse_events                      124     4.443     5.2%     4.443     5.2%     1.549     2.883
+AnimationTimeline.set_state_to_times                     2     4.207     5.0%     3.710     4.4%     0.000     0.000
+wavefront:   - bounce 0 traverse                        30     3.378     4.0%     0.003     0.0%     0.000     0.000
+kernel: raster_tri_count                                60     3.366     4.0%     3.366     4.0%     2.693     0.664
+arena preflight (batch)                                  2     3.134     3.7%     0.005     0.0%     0.000     0.000
+logical PN:     - subdivision levels                     6     3.022     3.6%     0.720     0.9%     0.000     0.000
+kernel: raster_tri_write                                60     2.904     3.4%     2.904     3.4%     2.385     0.512
+wavefront:   - bounce 1 shade                           30     1.873     2.2%     0.004     0.0%     0.000     0.000
+  - refit-BVH build (in merge)                           4     1.872     2.2%     1.872     2.2%     0.000     0.000
+post-process (downsample/FXAA/glow)                     30     1.642     1.9%     0.412     0.5%     0.000     0.000
+logical PN:       - patch level search                   6     1.244     1.5%     0.734     0.9%     0.000     0.000
+wavefront:   - tile composite                           30     1.100     1.3%     0.170     0.2%     0.000     0.000
+logical PN:       - edge level search                    6     0.974     1.2%     0.431     0.5%     0.000     0.000
+kernel: raster_bez_count                                30     0.965     1.1%     0.965     1.1%     0.947     0.018
+raster:     - sheets lexsort                            90     0.910     1.1%     0.910     1.1%     0.000     0.000
+wavefront:   - bounce 2 shade                           30     0.868     1.0%     0.003     0.0%     0.000     0.000
+logical PN:     - interpolate attrs                    324     0.861     1.0%     0.861     1.0%     0.000     0.000
+AttributeTimeline.get                                15528     0.845     1.0%     0.845     1.0%     0.000     0.000
+kernel: raster_bez_write                                30     0.717     0.8%     0.717     0.8%     0.703     0.012
+wavefront:   - bounce 1 traverse                        30     0.662     0.8%     0.002     0.0%     0.000     0.000
+logical PN:         - patch flatness error              14     0.593     0.7%     0.144     0.2%     0.000     0.000
+beziers: sample + pack (project_to_screen)               2     0.566     0.7%     0.001     0.0%     0.000     0.000
+logical PN:         - edge chord error                   8     0.543     0.6%     0.027     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              8     0.516     0.6%     0.516     0.6%     0.498     0.018
+raster:     - sheets shade class                        30     0.508     0.6%     0.508     0.6%     0.000     0.000
+raster:   - window pairs                                60     0.506     0.6%     0.165     0.2%     0.000     0.000
+post:   - bloom fft conv                               120     0.479     0.6%     0.479     0.6%     0.000     0.000
+kernel: pn_patch_flatness_error                         14     0.449     0.5%     0.449     0.5%     0.413     0.036
+kernel: gloss_composite                                 30     0.424     0.5%     0.424     0.5%     0.390     0.033
+logical PN:     - evaluate normals                      15     0.422     0.5%     0.422     0.5%     0.000     0.000
+raster:   - fragment sort                               30     0.420     0.5%     0.420     0.5%     0.000     0.000
+wavefront:   - bounce 3 shade                           30     0.360     0.4%     0.003     0.0%     0.000     0.000
+raster:     - sheets prim split                         30     0.339     0.4%     0.339     0.4%     0.000     0.000
+  - bezier edge accel (in merge)                         2     0.334     0.4%     0.334     0.4%     0.000     0.000
+post:   - bloom downsample                              30     0.314     0.4%     0.314     0.4%     0.000     0.000
+wavefront:   - bounce 2 traverse                        30     0.307     0.4%     0.002     0.0%     0.000     0.000
+beziers:   - _compute_samples_per_segment                2     0.301     0.4%     0.009     0.0%     0.000     0.000
+kernel: bezier_chord_hull_error                         10     0.292     0.3%     0.292     0.3%     0.289     0.002
+beziers:   - _build_circuit_geometry                     2     0.256     0.3%     0.256     0.3%     0.000     0.000
+post:   - device->host copy                             30     0.250     0.3%     0.250     0.3%     0.000     0.000
+kernel: solid_shell_ceiling                             30     0.248     0.3%     0.248     0.3%     0.149     0.098
+AttributeTimeline.rematerialize_state_at_times          52     0.248     0.3%     0.248     0.3%     0.000     0.000
+raster:     - sheets band composite                     30     0.227     0.3%     0.030     0.0%     0.000     0.000
+wavefront:   - compact active                          154     0.219     0.3%     0.035     0.0%     0.000     0.000
+raster:     - sheets band reduce                        60     0.215     0.3%     0.024     0.0%     0.000     0.000
+kernel: pair_expand_write                               90     0.204     0.2%     0.204     0.2%     0.133     0.067
+kernel: gloss_pyramid_level                            270     0.202     0.2%     0.202     0.2%     0.150     0.047
+AttributeTimeline.modify                              3564     0.191     0.2%     0.191     0.2%     0.000     0.000
+kernel: sheet_band_reduce                               60     0.191     0.2%     0.191     0.2%     0.169     0.021
+post:   - tonemap/finalize                              30     0.187     0.2%     0.187     0.2%     0.000     0.000
+kernel: compact_ray_slots                              154     0.183     0.2%     0.183     0.2%     0.102     0.079
+kernel: gloss_scatter                                   30     0.176     0.2%     0.176     0.2%     0.155     0.020
+AttributeTimeline.add                                 2770     0.173     0.2%     0.173     0.2%     0.000     0.000
+wavefront:   - tile state alloc                         30     0.172     0.2%     0.172     0.2%     0.000     0.000
+wavefront:   - sparse setup                             30     0.169     0.2%     0.169     0.2%     0.000     0.000
+kernel: one_mesh_pixel_reduce                           30     0.154     0.2%     0.154     0.2%     0.127     0.026
+kernel: pair_expand_count                               90     0.138     0.2%     0.138     0.2%     0.132     0.004
+raster:     - sheets conflict rank                      30     0.137     0.2%     0.004     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                        36     0.133     0.2%     0.133     0.2%     0.000     0.000
+kernel: sheet_conflict_rank                             30     0.133     0.2%     0.133     0.2%     0.121     0.011
+kernel: wf_composite_accum_sparse                       30     0.128     0.2%     0.128     0.2%     0.119     0.009
+kernel: band_stats_reduce                               30     0.126     0.1%     0.126     0.1%     0.091     0.034
+kernel: sheet_lane_first_owner                          30     0.113     0.1%     0.113     0.1%     0.091     0.021
+video encode tail (ffmpeg drain)                         1     0.108     0.1%     0.108     0.1%     0.000     0.000
+kernel: opaque_prefix_keep                              30     0.104     0.1%     0.104     0.1%     0.101     0.003
+kernel: one_mesh_pixel_apply                            30     0.103     0.1%     0.103     0.1%     0.095     0.007
+wavefront:   - bounce 3 traverse                        30     0.102     0.1%     0.002     0.0%     0.000     0.000
+kernel: band_stats_rep_orig                             30     0.088     0.1%     0.088     0.1%     0.076     0.012
+kernel: mask_popcount                                   30     0.085     0.1%     0.085     0.1%     0.080     0.005
+Surface.get_render_primitives                            2     0.080     0.1%     0.079     0.1%     0.000     0.000
+background prefill                                      30     0.062     0.1%     0.062     0.1%     0.000     0.000
+raster:   - fragment gather                             30     0.062     0.1%     0.062     0.1%     0.000     0.000
+wavefront:   - raster tables (batch)                     2     0.044     0.1%     0.001     0.0%     0.000     0.000
+scene upload to arena                                    2     0.036     0.0%     0.036     0.0%     0.000     0.000
+raster:     - sheets sibling weights                    30     0.020     0.0%     0.020     0.0%     0.000     0.000
+raster:   - precompute tri projection                    2     0.019     0.0%     0.019     0.0%     0.000     0.000
+raster:   - precompute bez bounds                        2     0.013     0.0%     0.013     0.0%     0.000     0.000
+wavefront:   - drain scratch                           124     0.013     0.0%     0.013     0.0%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                 2     0.012     0.0%     0.010     0.0%     0.000     0.000
+raster:   - precompute tri bounds                        2     0.011     0.0%     0.011     0.0%     0.000     0.000
+beziers:   - _build_frame_bounds                         2     0.007     0.0%     0.007     0.0%     0.000     0.000
+wavefront:   - bounce 4 shade                            4     0.004     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - bounce 4 traverse                         4     0.003     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - pool overflow poll                       30     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - alloc readback                           30     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - drain active count                      124     0.003     0.0%     0.003     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                 -64.471   -76.1%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0     30    12582456       3.378    13.303       3666309
+        1     30     3666309       0.662     1.873       1247782
+        2     30     1247782       0.307     0.868         74052
+        3     30       74052       0.102     0.360             6
+        4      4           6       0.003     0.004             -
+    total                          4.452    16.409              
+  first iteration holds 81.1% of all wavefront_shade time; bounce-loop kernels total 20.861s
+
+GPU telemetry over render (1030 samples @ ~10 Hz, min/avg/max):
+  utilization  0/13/100 %   mem-util 0/4/87 %
+  SM clock     300/591/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  45/53/68 C   power 10/26/76 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8723 MB, peak reserved 9966 MB
+  batch 0: merged tensors 768.8 MB, BVHs 57.4 MB (cuda after merge 7520 MB)
+    counts: num_colored_triangles=0, num_triangles=49515, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    tri_opaque_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    bez_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1574228, 5) = 570.5 MB
+    tri_mat: (19, 49515, 34) = 122.0 MB
+    tri_pos: (19, 49515, 9) = 32.3 MB
+    tri_norm: (19, 49515, 9) = 32.3 MB
+    tri_obj: (19, 49515) = 3.6 MB
+    tri_tex_meta: (49515, 10) = 1.9 MB
+  batch 1: merged tensors 447.0 MB, BVHs 33.4 MB (cuda after merge 7035 MB)
+    counts: num_colored_triangles=0, num_triangles=49736, num_circuits=41, num_frames=11
+    tri_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    tri_opaque_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (11, 1573846, 5) = 330.2 MB
+    tri_mat: (11, 49736, 34) = 71.0 MB
+    tri_pos: (11, 49736, 9) = 18.8 MB
+    tri_norm: (11, 49736, 9) = 18.8 MB
+    tri_obj: (11, 49736) = 2.1 MB
+    tri_tex_meta: (49736, 10) = 1.9 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 24.51s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                 30    22.027    89.9%     0.130     0.5%     0.000     0.000
+wavefront_loop                                          30    21.103    86.1%     0.030     0.1%     0.000     0.000
+wavefront:   - bounce drain                             30     9.526    38.9%     0.026     0.1%     0.000     0.000
+overlap GPU prep (worker)                                1     7.130    29.1%     0.004     0.0%     0.000     0.000
+raster: sparse discovery                                30     6.544    26.7%     0.414     1.7%     0.000     0.000
+merge collections + build BVHs                           2     6.474    26.4%     4.116    16.8%     0.000     0.000
+kernel: wavefront_shade                                124     6.373    26.0%     6.373    26.0%     0.097     6.272
+raster: sparse resolve                                  30     4.280    17.5%     0.097     0.4%     0.000     0.000
+raster:   - compact_sheets                              30     4.011    16.4%     1.924     7.8%     0.000     0.000
+kernel: raster_shadow_trace                             30     3.893    15.9%     3.893    15.9%     0.022     3.868
+wavefront:   - bounce 0 shade                           30     3.218    13.1%     0.004     0.0%     0.000     0.000
+kernel: wavefront_traverse_events                      124     2.940    12.0%     2.940    12.0%     0.070     2.865
+  - refit-BVH build (in merge)                           4     2.291     9.3%     2.291     9.3%     0.000     0.000
+wavefront:   - bounce 1 shade                           30     1.919     7.8%     0.004     0.0%     0.000     0.000
+wavefront:   - bounce 0 traverse                        30     1.866     7.6%     0.003     0.0%     0.000     0.000
+  - project_to_screen (prewarm)                          2     1.504     6.1%     0.362     1.5%     0.000     0.000
+Scene.get_batch_of_primitives                            2     1.280     5.2%     0.337     1.4%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      6     1.012     4.1%     0.093     0.4%     0.000     0.000
+logical PN:   - _dice_logical_pn                         6     0.919     3.7%     0.330     1.3%     0.000     0.000
+raster:     - sheets lexsort                            90     0.904     3.7%     0.904     3.7%     0.000     0.000
+wavefront:   - bounce 2 shade                           30     0.879     3.6%     0.003     0.0%     0.000     0.000
+arena preflight (batch)                                  2     0.855     3.5%     0.003     0.0%     0.000     0.000
+post-process (downsample/FXAA/glow)                     30     0.742     3.0%     0.315     1.3%     0.000     0.000
+kernel: raster_tri_count                                60     0.681     2.8%     0.681     2.8%     0.032     0.643
+wavefront:   - bounce 1 traverse                        30     0.665     2.7%     0.002     0.0%     0.000     0.000
+surfaces: get_render_primitives_batched                  4     0.568     2.3%     0.476     1.9%     0.000     0.000
+AttributeTimeline.get                                15330     0.551     2.2%     0.551     2.2%     0.000     0.000
+kernel: raster_tri_write                                60     0.551     2.2%     0.551     2.2%     0.033     0.495
+raster:     - sheets shade class                        30     0.511     2.1%     0.511     2.1%     0.000     0.000
+raster:   - fragment sort                               30     0.414     1.7%     0.414     1.7%     0.000     0.000
+logical PN:     - subdivision levels                     6     0.372     1.5%     0.028     0.1%     0.000     0.000
+wavefront:   - bounce 3 shade                           30     0.368     1.5%     0.003     0.0%     0.000     0.000
+raster:     - sheets prim split                         30     0.346     1.4%     0.346     1.4%     0.000     0.000
+wavefront:   - tile composite                           30     0.340     1.4%     0.177     0.7%     0.000     0.000
+wavefront:   - bounce 2 traverse                        30     0.312     1.3%     0.002     0.0%     0.000     0.000
+AnimationTimeline.set_state_to_times                     2     0.293     1.2%     0.079     0.3%     0.000     0.000
+kernel: sheet_resolve_shade                             60     0.290     1.2%     0.290     1.2%     0.055     0.234
+raster:   - window pairs                                60     0.280     1.1%     0.147     0.6%     0.000     0.000
+logical PN:       - edge level search                    6     0.192     0.8%     0.011     0.0%     0.000     0.000
+logical PN:         - edge chord error                   8     0.181     0.7%     0.001     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              8     0.180     0.7%     0.180     0.7%     0.002     0.067
+post:   - device->host copy                             30     0.171     0.7%     0.171     0.7%     0.000     0.000
+wavefront:   - sparse setup                             30     0.167     0.7%     0.167     0.7%     0.000     0.000
+AttributeTimeline.add                                 2770     0.164     0.7%     0.164     0.7%     0.000     0.000
+wavefront:   - tile state alloc                         30     0.164     0.7%     0.164     0.7%     0.000     0.000
+post:   - bloom downsample                              30     0.153     0.6%     0.153     0.6%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          52     0.148     0.6%     0.148     0.6%     0.000     0.000
+logical PN:       - patch level search                   6     0.148     0.6%     0.140     0.6%     0.000     0.000
+wavefront:   - compact active                          154     0.145     0.6%     0.030     0.1%     0.000     0.000
+AttributeTimeline.modify                              3564     0.145     0.6%     0.145     0.6%     0.000     0.000
+beziers: sample + pack (project_to_screen)               2     0.130     0.5%     0.001     0.0%     0.000     0.000
+kernel: compact_ray_slots                              154     0.115     0.5%     0.115     0.5%     0.031     0.079
+logical PN:     - snap boundary                         30     0.110     0.4%     0.110     0.4%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.109     0.4%     0.109     0.4%     0.000     0.000
+kernel: solid_shell_ceiling                             30     0.106     0.4%     0.106     0.4%     0.006     0.099
+wavefront:   - bounce 3 traverse                        30     0.105     0.4%     0.002     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                        36     0.104     0.4%     0.104     0.4%     0.000     0.000
+kernel: pair_expand_write                               90     0.098     0.4%     0.098     0.4%     0.025     0.066
+kernel: gloss_pyramid_level                            270     0.079     0.3%     0.079     0.3%     0.029     0.047
+beziers:   - _build_circuit_geometry                     2     0.078     0.3%     0.078     0.3%     0.000     0.000
+logical PN:     - interpolate attrs                    324     0.074     0.3%     0.074     0.3%     0.000     0.000
+post:   - bloom fft conv                               120     0.070     0.3%     0.070     0.3%     0.000     0.000
+  - bezier edge accel (in merge)                         2     0.067     0.3%     0.067     0.3%     0.000     0.000
+raster:     - sheets band composite                     30     0.066     0.3%     0.027     0.1%     0.000     0.000
+raster:   - fragment gather                             30     0.064     0.3%     0.064     0.3%     0.000     0.000
+raster:     - sheets band reduce                        60     0.061     0.2%     0.025     0.1%     0.000     0.000
+background prefill                                      30     0.052     0.2%     0.052     0.2%     0.000     0.000
+wavefront:   - raster tables (batch)                     2     0.046     0.2%     0.001     0.0%     0.000     0.000
+kernel: band_stats_reduce                               30     0.041     0.2%     0.041     0.2%     0.006     0.034
+kernel: gloss_composite                                 30     0.040     0.2%     0.040     0.2%     0.006     0.033
+kernel: raster_bez_count                                30     0.037     0.2%     0.037     0.2%     0.021     0.016
+kernel: one_mesh_pixel_reduce                           30     0.037     0.2%     0.037     0.2%     0.010     0.026
+kernel: sheet_band_reduce                               60     0.036     0.1%     0.036     0.1%     0.013     0.022
+kernel: pair_expand_count                               90     0.034     0.1%     0.034     0.1%     0.023     0.010
+post:   - tonemap/finalize                              30     0.033     0.1%     0.033     0.1%     0.000     0.000
+kernel: raster_bez_write                                30     0.031     0.1%     0.031     0.1%     0.018     0.013
+kernel: gloss_scatter                                   30     0.031     0.1%     0.031     0.1%     0.008     0.021
+Surface.get_render_primitives                            2     0.029     0.1%     0.028     0.1%     0.000     0.000
+beziers:   - _build_frame_bounds                         2     0.029     0.1%     0.029     0.1%     0.000     0.000
+kernel: sheet_lane_first_owner                          30     0.026     0.1%     0.026     0.1%     0.004     0.021
+scene upload to arena                                    2     0.024     0.1%     0.024     0.1%     0.000     0.000
+beziers:   - _compute_samples_per_segment                2     0.023     0.1%     0.015     0.1%     0.000     0.000
+raster:     - sheets conflict rank                      30     0.022     0.1%     0.004     0.0%     0.000     0.000
+logical PN:     - evaluate patch                        15     0.021     0.1%     0.021     0.1%     0.000     0.000
+raster:   - precompute tri projection                    2     0.019     0.1%     0.019     0.1%     0.000     0.000
+raster:     - sheets sibling weights                    30     0.019     0.1%     0.019     0.1%     0.000     0.000
+kernel: sheet_conflict_rank                             30     0.018     0.1%     0.018     0.1%     0.006     0.012
+kernel: band_stats_rep_orig                             30     0.017     0.1%     0.017     0.1%     0.005     0.012
+raster:   - precompute bez bounds                        2     0.017     0.1%     0.017     0.1%     0.000     0.000
+kernel: one_mesh_pixel_apply                            30     0.014     0.1%     0.014     0.1%     0.006     0.008
+kernel: wf_composite_accum_sparse                       30     0.014     0.1%     0.014     0.1%     0.005     0.009
+wavefront:   - drain scratch                           124     0.014     0.1%     0.014     0.1%     0.000     0.000
+logical PN:         - patch flatness error              14     0.012     0.0%     0.004     0.0%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                 2     0.012     0.0%     0.011     0.0%     0.000     0.000
+logical PN:     - evaluate normals                      15     0.011     0.0%     0.011     0.0%     0.000     0.000
+kernel: opaque_prefix_keep                              30     0.009     0.0%     0.009     0.0%     0.006     0.003
+raster:   - precompute tri bounds                        2     0.009     0.0%     0.009     0.0%     0.000     0.000
+kernel: bezier_chord_hull_error                         10     0.008     0.0%     0.008     0.0%     0.008     0.000
+kernel: pn_patch_flatness_error                         14     0.008     0.0%     0.008     0.0%     0.005     0.003
+kernel: mask_popcount                                   30     0.006     0.0%     0.006     0.0%     0.004     0.002
+wavefront:   - bounce 4 shade                            4     0.004     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - alloc readback                           30     0.004     0.0%     0.004     0.0%     0.000     0.000
+wavefront:   - drain active count                      124     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - bounce 4 traverse                         4     0.003     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - pool overflow poll                       30     0.003     0.0%     0.003     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                  -7.675   -31.3%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0     30    12582456       1.866     3.218       3666309
+        1     30     3666309       0.665     1.919       1247782
+        2     30     1247782       0.312     0.879         74052
+        3     30       74052       0.105     0.368             6
+        4      4           6       0.003     0.004             -
+    total                          2.950     6.388              
+  first iteration holds 50.4% of all wavefront_shade time; bounce-loop kernels total 9.338s
+
+GPU telemetry over render (314 samples @ ~10 Hz, min/avg/max):
+  utilization  0/43/99 %   mem-util 0/15/82 %
+  SM clock     300/870/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  44/57/73 C   power 10/37/77 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8395 MB, peak reserved 9248 MB
+  batch 0: merged tensors 768.8 MB, BVHs 57.4 MB (cuda after merge 7179 MB)
+    counts: num_colored_triangles=0, num_triangles=49515, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    tri_opaque_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    bez_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1574228, 5) = 570.5 MB
+    tri_mat: (19, 49515, 34) = 122.0 MB
+    tri_pos: (19, 49515, 9) = 32.3 MB
+    tri_norm: (19, 49515, 9) = 32.3 MB
+    tri_obj: (19, 49515) = 3.6 MB
+    tri_tex_meta: (49515, 10) = 1.9 MB
+  batch 1: merged tensors 447.0 MB, BVHs 33.4 MB (cuda after merge 6316 MB)
+    counts: num_colored_triangles=0, num_triangles=49736, num_circuits=41, num_frames=11
+    tri_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    tri_opaque_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (11, 1573846, 5) = 330.2 MB
+    tri_mat: (11, 49736, 34) = 71.0 MB
+    tri_pos: (11, 49736, 9) = 18.8 MB
+    tri_norm: (11, 49736, 9) = 18.8 MB
+    tri_obj: (11, 49736) = 2.1 MB
+    tri_tex_meta: (49736, 10) = 1.9 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 nn_scene_UHD.py
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 nn_scene_UHD.py
+report written to algan_profile_report_nn_UHD.txt
+
+[  209.6s]   -> exit 0 in 138.1s
+[  209.6s] === ARM uhd_off: nn_scene_UHD.py  env={}
+[  209.6s] $ python nn_scene_UHD.py
+Rendering device set to cuda
+Encoding video with libx264
+Began rendering profilingnn_UHD_run1.mp4
+Finished rendering profilingnn_UHD_run1.mp4 in 52.3 s
+Encoding video with libx264
+Began rendering profilingnn_UHD_run2.mp4
+Finished rendering profilingnn_UHD_run2.mp4 in 25.2 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[profiling] hooked 43 Taichi kernels (170 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+
+===== profiling run 2/2 (warm) =====
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: off (wall-time only)
+  hooked kernels (43): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, path_trace_physical_stbvh, path_trace_scene_stbvh, pn_edge_chord_error, pn_patch_flatness_error, raster_bez_count, raster_bez_write, raster_shadow_trace, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade, wavefront_shadow, wavefront_traverse, wavefront_traverse_events, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 52.53s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                 30    48.057    91.5%     0.071     0.1%     0.000     0.000
+wavefront_loop                                          30    46.911    89.3%     0.026     0.0%     0.000     0.000
+raster: sparse resolve                                  30    20.401    38.8%     0.090     0.2%     0.000     0.000
+wavefront:   - bounce drain                             30    15.195    28.9%     0.022     0.0%     0.000     0.000
+kernel: sheet_resolve_shade                             60    14.970    28.5%    14.970    28.5%    14.727     0.242
+Scene.get_batch_of_primitives                            2    11.687    22.3%     6.965    13.3%     0.000     0.000
+kernel: wavefront_shade                                124    11.156    21.2%    11.156    21.2%     4.642     6.511
+raster: sparse discovery                                30    10.185    19.4%     0.371     0.7%     0.000     0.000
+wavefront:   - bounce 0 shade                           30     7.974    15.2%     0.004     0.0%     0.000     0.000
+kernel: raster_shadow_trace                             30     5.341    10.2%     5.341    10.2%     1.274     4.066
+raster:   - compact_sheets                              30     4.276     8.1%     1.880     3.6%     0.000     0.000
+kernel: wavefront_traverse_events                      124     3.823     7.3%     3.823     7.3%     0.835     2.986
+wavefront:   - bounce 0 traverse                        30     2.751     5.2%     0.003     0.0%     0.000     0.000
+arena preflight (batch)                                  2     2.736     5.2%     0.005     0.0%     0.000     0.000
+surfaces: get_render_primitives_batched                  4     2.396     4.6%     2.186     4.2%     0.000     0.000
+wavefront:   - bounce 1 shade                           30     1.941     3.7%     0.004     0.0%     0.000     0.000
+kernel: raster_tri_count                                60     1.886     3.6%     1.886     3.6%     1.201     0.677
+  - project_to_screen (prewarm)                          2     1.746     3.3%     0.088     0.2%     0.000     0.000
+kernel: raster_tri_write                                60     1.578     3.0%     1.578     3.0%     1.048     0.528
+AnimationTimeline.set_state_to_times                     2     1.501     2.9%     1.008     1.9%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      6     1.342     2.6%     0.052     0.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                         6     1.290     2.5%     0.277     0.5%     0.000     0.000
+post-process (downsample/FXAA/glow)                     30     1.026     2.0%     0.349     0.7%     0.000     0.000
+merge collections + build BVHs                           2     0.985     1.9%     0.594     1.1%     0.000     0.000
+raster:     - sheets lexsort                            90     0.912     1.7%     0.912     1.7%     0.000     0.000
+wavefront:   - bounce 2 shade                           30     0.890     1.7%     0.003     0.0%     0.000     0.000
+logical PN:     - subdivision levels                     6     0.794     1.5%     0.067     0.1%     0.000     0.000
+Surface.get_render_primitives                            2     0.774     1.5%     0.773     1.5%     0.000     0.000
+AttributeTimeline.get                                15528     0.765     1.5%     0.765     1.5%     0.000     0.000
+wavefront:   - tile composite                           30     0.734     1.4%     0.167     0.3%     0.000     0.000
+wavefront:   - bounce 1 traverse                        30     0.664     1.3%     0.002     0.0%     0.000     0.000
+kernel: raster_bez_count                                30     0.628     1.2%     0.628     1.2%     0.614     0.013
+raster:     - sheets shade class                        30     0.510     1.0%     0.510     1.0%     0.000     0.000
+logical PN:       - edge level search                    6     0.469     0.9%     0.076     0.1%     0.000     0.000
+raster:   - fragment sort                               30     0.415     0.8%     0.415     0.8%     0.000     0.000
+kernel: raster_bez_write                                30     0.405     0.8%     0.405     0.8%     0.391     0.013
+logical PN:         - edge chord error                   8     0.394     0.7%     0.001     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              8     0.392     0.7%     0.392     0.7%     0.391     0.001
+raster:   - window pairs                                60     0.365     0.7%     0.144     0.3%     0.000     0.000
+  - refit-BVH build (in merge)                           4     0.363     0.7%     0.363     0.7%     0.000     0.000
+wavefront:   - bounce 3 shade                           30     0.361     0.7%     0.003     0.0%     0.000     0.000
+raster:     - sheets prim split                         30     0.347     0.7%     0.347     0.7%     0.000     0.000
+AttributeTimeline.modify                              3564     0.318     0.6%     0.318     0.6%     0.000     0.000
+beziers: sample + pack (project_to_screen)               2     0.316     0.6%     0.011     0.0%     0.000     0.000
+wavefront:   - bounce 2 traverse                        30     0.312     0.6%     0.002     0.0%     0.000     0.000
+kernel: gloss_composite                                 30     0.271     0.5%     0.271     0.5%     0.238     0.033
+logical PN:       - patch level search                   6     0.252     0.5%     0.023     0.0%     0.000     0.000
+post:   - device->host copy                             30     0.242     0.5%     0.242     0.5%     0.000     0.000
+post:   - bloom downsample                              30     0.237     0.5%     0.237     0.5%     0.000     0.000
+logical PN:         - patch flatness error              14     0.233     0.4%     0.032     0.1%     0.000     0.000
+kernel: pn_patch_flatness_error                         14     0.202     0.4%     0.202     0.4%     0.198     0.003
+kernel: solid_shell_ceiling                             30     0.180     0.3%     0.180     0.3%     0.071     0.109
+AttributeTimeline.rematerialize_state_at_times          52     0.174     0.3%     0.174     0.3%     0.000     0.000
+beziers:   - _compute_samples_per_segment                2     0.164     0.3%     0.004     0.0%     0.000     0.000
+wavefront:   - sparse setup                             30     0.164     0.3%     0.164     0.3%     0.000     0.000
+AttributeTimeline.add                                 2770     0.164     0.3%     0.164     0.3%     0.000     0.000
+kernel: bezier_chord_hull_error                         10     0.160     0.3%     0.160     0.3%     0.160     0.001
+wavefront:   - tile state alloc                         30     0.159     0.3%     0.159     0.3%     0.000     0.000
+wavefront:   - compact active                          154     0.157     0.3%     0.025     0.0%     0.000     0.000
+kernel: pair_expand_write                               90     0.144     0.3%     0.144     0.3%     0.073     0.068
+beziers:   - _build_circuit_geometry                     2     0.138     0.3%     0.138     0.3%     0.000     0.000
+logical PN:     - interpolate attrs                    324     0.133     0.3%     0.133     0.3%     0.000     0.000
+kernel: gloss_pyramid_level                            270     0.133     0.3%     0.133     0.3%     0.085     0.045
+kernel: compact_ray_slots                              154     0.132     0.3%     0.132     0.3%     0.052     0.079
+post:   - tonemap/finalize                              30     0.120     0.2%     0.120     0.2%     0.000     0.000
+raster:     - sheets band composite                     30     0.115     0.2%     0.025     0.0%     0.000     0.000
+raster:     - sheets band reduce                        60     0.109     0.2%     0.020     0.0%     0.000     0.000
+wavefront:   - bounce 3 traverse                        30     0.103     0.2%     0.002     0.0%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.099     0.2%     0.099     0.2%     0.000     0.000
+kernel: gloss_scatter                                   30     0.097     0.2%     0.097     0.2%     0.076     0.020
+kernel: one_mesh_pixel_reduce                           30     0.091     0.2%     0.091     0.2%     0.065     0.026
+kernel: sheet_band_reduce                               60     0.088     0.2%     0.088     0.2%     0.066     0.022
+raster:     - sheets conflict rank                      30     0.085     0.2%     0.003     0.0%     0.000     0.000
+kernel: sheet_conflict_rank                             30     0.082     0.2%     0.082     0.2%     0.069     0.012
+post:   - bloom fft conv                               120     0.079     0.1%     0.079     0.1%     0.000     0.000
+kernel: pair_expand_count                               90     0.077     0.1%     0.077     0.1%     0.072     0.004
+kernel: band_stats_reduce                               30     0.070     0.1%     0.070     0.1%     0.035     0.035
+kernel: sheet_lane_first_owner                          30     0.068     0.1%     0.068     0.1%     0.046     0.021
+kernel: wf_composite_accum_sparse                       30     0.067     0.1%     0.067     0.1%     0.058     0.009
+memory reclaim (gc + cuda cache)                        36     0.064     0.1%     0.064     0.1%     0.000     0.000
+logical PN:     - snap boundary                         30     0.062     0.1%     0.062     0.1%     0.000     0.000
+raster:   - fragment gather                             30     0.059     0.1%     0.059     0.1%     0.000     0.000
+kernel: one_mesh_pixel_apply                            30     0.057     0.1%     0.057     0.1%     0.049     0.008
+kernel: opaque_prefix_keep                              30     0.054     0.1%     0.054     0.1%     0.051     0.003
+background prefill                                      30     0.049     0.1%     0.049     0.1%     0.000     0.000
+wavefront:   - raster tables (batch)                     2     0.043     0.1%     0.001     0.0%     0.000     0.000
+kernel: band_stats_rep_orig                             30     0.040     0.1%     0.040     0.1%     0.028     0.011
+kernel: mask_popcount                                   30     0.031     0.1%     0.031     0.1%     0.029     0.002
+  - bezier edge accel (in merge)                         2     0.027     0.1%     0.027     0.1%     0.000     0.000
+scene upload to arena                                    2     0.022     0.0%     0.022     0.0%     0.000     0.000
+raster:   - precompute tri projection                    2     0.019     0.0%     0.019     0.0%     0.000     0.000
+raster:     - sheets sibling weights                    30     0.019     0.0%     0.019     0.0%     0.000     0.000
+raster:   - precompute bez bounds                        2     0.015     0.0%     0.015     0.0%     0.000     0.000
+logical PN:     - evaluate patch                        15     0.014     0.0%     0.014     0.0%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                 2     0.012     0.0%     0.010     0.0%     0.000     0.000
+wavefront:   - drain scratch                           124     0.011     0.0%     0.011     0.0%     0.000     0.000
+logical PN:     - evaluate normals                      15     0.009     0.0%     0.009     0.0%     0.000     0.000
+raster:   - precompute tri bounds                        2     0.008     0.0%     0.008     0.0%     0.000     0.000
+wavefront:   - bounce 4 shade                            4     0.004     0.0%     0.000     0.0%     0.000     0.000
+beziers:   - _build_frame_bounds                         2     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - pool overflow poll                       30     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - bounce 4 traverse                         4     0.003     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - alloc readback                           30     0.002     0.0%     0.002     0.0%     0.000     0.000
+wavefront:   - drain active count                      124     0.002     0.0%     0.002     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                 -10.818   -20.6%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0     30    12582456       2.751     7.974       3666309
+        1     30     3666309       0.664     1.941       1247782
+        2     30     1247782       0.312     0.890         74052
+        3     30       74052       0.103     0.361             6
+        4      4           6       0.003     0.004             -
+    total                          3.832    11.170              
+  first iteration holds 71.4% of all wavefront_shade time; bounce-loop kernels total 15.002s
+
+GPU telemetry over render (644 samples @ ~10 Hz, min/avg/max):
+  utilization  0/22/100 %   mem-util 0/7/81 %
+  SM clock     300/661/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  42/57/77 C   power 10/29/82 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8723 MB, peak reserved 9966 MB
+  batch 0: merged tensors 768.8 MB, BVHs 57.4 MB (cuda after merge 7520 MB)
+    counts: num_colored_triangles=0, num_triangles=49515, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    tri_opaque_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    bez_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1574228, 5) = 570.5 MB
+    tri_mat: (19, 49515, 34) = 122.0 MB
+    tri_pos: (19, 49515, 9) = 32.3 MB
+    tri_norm: (19, 49515, 9) = 32.3 MB
+    tri_obj: (19, 49515) = 3.6 MB
+    tri_tex_meta: (49515, 10) = 1.9 MB
+  batch 1: merged tensors 447.0 MB, BVHs 33.4 MB (cuda after merge 6831 MB)
+    counts: num_colored_triangles=0, num_triangles=49736, num_circuits=41, num_frames=11
+    tri_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    tri_opaque_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (11, 1573846, 5) = 330.2 MB
+    tri_mat: (11, 49736, 34) = 71.0 MB
+    tri_pos: (11, 49736, 9) = 18.8 MB
+    tri_norm: (11, 49736, 9) = 18.8 MB
+    tri_obj: (11, 49736) = 2.1 MB
+    tri_tex_meta: (49736, 10) = 1.9 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 25.40s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                 30    22.578    88.9%     0.075     0.3%     0.000     0.000
+wavefront_loop                                          30    21.749    85.6%     0.025     0.1%     0.000     0.000
+wavefront:   - bounce drain                             30     9.985    39.3%     0.022     0.1%     0.000     0.000
+kernel: wavefront_shade                                124     6.715    26.4%     6.715    26.4%     0.088     6.624
+raster: sparse discovery                                30     6.507    25.6%     0.399     1.6%     0.000     0.000
+raster: sparse resolve                                  30     4.555    17.9%     0.094     0.4%     0.000     0.000
+kernel: raster_shadow_trace                             30     4.165    16.4%     4.165    16.4%     0.020     4.143
+raster:   - compact_sheets                              30     3.989    15.7%     1.883     7.4%     0.000     0.000
+wavefront:   - bounce 0 shade                           30     3.411    13.4%     0.004     0.0%     0.000     0.000
+kernel: wavefront_traverse_events                      124     3.078    12.1%     3.078    12.1%     0.062     3.013
+wavefront:   - bounce 1 shade                           30     2.012     7.9%     0.003     0.0%     0.000     0.000
+wavefront:   - bounce 0 traverse                        30     1.979     7.8%     0.003     0.0%     0.000     0.000
+arena preflight (batch)                                  2     1.332     5.2%     0.005     0.0%     0.000     0.000
+Scene.get_batch_of_primitives                            2     1.177     4.6%     0.285     1.1%     0.000     0.000
+wavefront:   - bounce 2 shade                           30     0.917     3.6%     0.003     0.0%     0.000     0.000
+raster:     - sheets lexsort                            90     0.906     3.6%     0.906     3.6%     0.000     0.000
+merge collections + build BVHs                           2     0.847     3.3%     0.506     2.0%     0.000     0.000
+post-process (downsample/FXAA/glow)                     30     0.704     2.8%     0.302     1.2%     0.000     0.000
+kernel: raster_tri_count                                60     0.698     2.7%     0.698     2.7%     0.039     0.657
+wavefront:   - bounce 1 traverse                        30     0.680     2.7%     0.002     0.0%     0.000     0.000
+kernel: raster_tri_write                                60     0.561     2.2%     0.561     2.2%     0.040     0.519
+AttributeTimeline.get                                15330     0.529     2.1%     0.529     2.1%     0.000     0.000
+raster:     - sheets shade class                        30     0.513     2.0%     0.513     2.0%     0.000     0.000
+surfaces: get_render_primitives_batched                  4     0.491     1.9%     0.421     1.7%     0.000     0.000
+  - project_to_screen (prewarm)                          2     0.480     1.9%     0.087     0.3%     0.000     0.000
+raster:   - fragment sort                               30     0.412     1.6%     0.412     1.6%     0.000     0.000
+wavefront:   - bounce 3 shade                           30     0.384     1.5%     0.003     0.0%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      6     0.354     1.4%     0.049     0.2%     0.000     0.000
+raster:     - sheets prim split                         30     0.353     1.4%     0.353     1.4%     0.000     0.000
+  - refit-BVH build (in merge)                           4     0.328     1.3%     0.328     1.3%     0.000     0.000
+wavefront:   - bounce 2 traverse                        30     0.320     1.3%     0.002     0.0%     0.000     0.000
+wavefront:   - tile composite                           30     0.313     1.2%     0.166     0.7%     0.000     0.000
+AnimationTimeline.set_state_to_times                     2     0.305     1.2%     0.128     0.5%     0.000     0.000
+logical PN:   - _dice_logical_pn                         6     0.304     1.2%     0.136     0.5%     0.000     0.000
+kernel: sheet_resolve_shade                             60     0.297     1.2%     0.297     1.2%     0.054     0.242
+raster:   - window pairs                                60     0.253     1.0%     0.127     0.5%     0.000     0.000
+AttributeTimeline.add                                 2770     0.165     0.7%     0.165     0.7%     0.000     0.000
+post:   - device->host copy                             30     0.165     0.7%     0.165     0.7%     0.000     0.000
+wavefront:   - sparse setup                             30     0.163     0.6%     0.163     0.6%     0.000     0.000
+wavefront:   - tile state alloc                         30     0.159     0.6%     0.159     0.6%     0.000     0.000
+post:   - bloom downsample                              30     0.152     0.6%     0.152     0.6%     0.000     0.000
+AttributeTimeline.modify                              3564     0.144     0.6%     0.144     0.6%     0.000     0.000
+wavefront:   - compact active                          154     0.134     0.5%     0.025     0.1%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          52     0.130     0.5%     0.130     0.5%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.130     0.5%     0.130     0.5%     0.000     0.000
+kernel: solid_shell_ceiling                             30     0.122     0.5%     0.122     0.5%     0.006     0.116
+kernel: compact_ray_slots                              154     0.110     0.4%     0.110     0.4%     0.029     0.079
+wavefront:   - bounce 3 traverse                        30     0.105     0.4%     0.002     0.0%     0.000     0.000
+kernel: pair_expand_write                               90     0.096     0.4%     0.096     0.4%     0.026     0.069
+memory reclaim (gc + cuda cache)                        36     0.072     0.3%     0.072     0.3%     0.000     0.000
+kernel: gloss_pyramid_level                            270     0.069     0.3%     0.069     0.3%     0.021     0.045
+logical PN:     - interpolate attrs                    324     0.068     0.3%     0.068     0.3%     0.000     0.000
+raster:   - fragment gather                             30     0.068     0.3%     0.068     0.3%     0.000     0.000
+raster:     - sheets band composite                     30     0.059     0.2%     0.025     0.1%     0.000     0.000
+raster:     - sheets band reduce                        60     0.056     0.2%     0.021     0.1%     0.000     0.000
+post:   - bloom fft conv                               120     0.052     0.2%     0.052     0.2%     0.000     0.000
+background prefill                                      30     0.050     0.2%     0.050     0.2%     0.000     0.000
+kernel: band_stats_reduce                               30     0.042     0.2%     0.042     0.2%     0.006     0.036
+logical PN:     - evaluate normals                      15     0.039     0.2%     0.039     0.2%     0.000     0.000
+beziers: sample + pack (project_to_screen)               2     0.038     0.2%     0.001     0.0%     0.000     0.000
+kernel: gloss_composite                                 30     0.037     0.1%     0.037     0.1%     0.004     0.033
+wavefront:   - raster tables (batch)                     2     0.037     0.1%     0.000     0.0%     0.000     0.000
+kernel: one_mesh_pixel_reduce                           30     0.036     0.1%     0.036     0.1%     0.009     0.026
+kernel: sheet_band_reduce                               60     0.035     0.1%     0.035     0.1%     0.012     0.022
+kernel: raster_bez_write                                30     0.035     0.1%     0.035     0.1%     0.021     0.013
+kernel: raster_bez_count                                30     0.034     0.1%     0.034     0.1%     0.020     0.014
+scene upload to arena                                    2     0.034     0.1%     0.034     0.1%     0.000     0.000
+post:   - tonemap/finalize                              30     0.033     0.1%     0.033     0.1%     0.000     0.000
+logical PN:     - subdivision levels                     6     0.032     0.1%     0.007     0.0%     0.000     0.000
+beziers:   - _build_circuit_geometry                     2     0.029     0.1%     0.029     0.1%     0.000     0.000
+kernel: pair_expand_count                               90     0.029     0.1%     0.029     0.1%     0.024     0.004
+kernel: gloss_scatter                                   30     0.028     0.1%     0.028     0.1%     0.007     0.021
+kernel: sheet_lane_first_owner                          30     0.026     0.1%     0.026     0.1%     0.004     0.022
+Surface.get_render_primitives                            2     0.026     0.1%     0.026     0.1%     0.000     0.000
+raster:     - sheets conflict rank                      30     0.022     0.1%     0.003     0.0%     0.000     0.000
+kernel: sheet_conflict_rank                             30     0.019     0.1%     0.019     0.1%     0.005     0.013
+raster:     - sheets sibling weights                    30     0.019     0.1%     0.019     0.1%     0.000     0.000
+raster:   - precompute tri projection                    2     0.018     0.1%     0.018     0.1%     0.000     0.000
+kernel: band_stats_rep_orig                             30     0.017     0.1%     0.017     0.1%     0.004     0.012
+logical PN:     - snap boundary                         30     0.016     0.1%     0.016     0.1%     0.000     0.000
+kernel: wf_composite_accum_sparse                       30     0.013     0.1%     0.013     0.1%     0.004     0.009
+logical PN:     - evaluate patch                        15     0.013     0.1%     0.013     0.1%     0.000     0.000
+kernel: one_mesh_pixel_apply                            30     0.013     0.1%     0.013     0.1%     0.005     0.008
+BezierCircuitCubic.get_render_primitives                 2     0.013     0.1%     0.012     0.0%     0.000     0.000
+  - bezier edge accel (in merge)                         2     0.013     0.0%     0.013     0.0%     0.000     0.000
+logical PN:       - patch level search                   6     0.012     0.0%     0.007     0.0%     0.000     0.000
+wavefront:   - drain scratch                           124     0.011     0.0%     0.011     0.0%     0.000     0.000
+raster:   - precompute bez bounds                        2     0.010     0.0%     0.010     0.0%     0.000     0.000
+kernel: opaque_prefix_keep                              30     0.009     0.0%     0.009     0.0%     0.006     0.003
+logical PN:         - patch flatness error              14     0.009     0.0%     0.003     0.0%     0.000     0.000
+raster:   - precompute tri bounds                        2     0.009     0.0%     0.009     0.0%     0.000     0.000
+logical PN:       - edge level search                    6     0.008     0.0%     0.004     0.0%     0.000     0.000
+beziers:   - _compute_samples_per_segment                2     0.006     0.0%     0.004     0.0%     0.000     0.000
+kernel: pn_patch_flatness_error                         14     0.006     0.0%     0.006     0.0%     0.004     0.002
+kernel: mask_popcount                                   30     0.005     0.0%     0.005     0.0%     0.003     0.002
+logical PN:         - edge chord error                   8     0.004     0.0%     0.001     0.0%     0.000     0.000
+wavefront:   - bounce 4 shade                            4     0.004     0.0%     0.000     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              8     0.003     0.0%     0.003     0.0%     0.002     0.001
+wavefront:   - pool overflow poll                       30     0.003     0.0%     0.003     0.0%     0.000     0.000
+beziers:   - _build_frame_bounds                         2     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - bounce 4 traverse                         4     0.003     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - alloc readback                           30     0.003     0.0%     0.003     0.0%     0.000     0.000
+kernel: bezier_chord_hull_error                         10     0.002     0.0%     0.002     0.0%     0.002     0.000
+wavefront:   - drain active count                      124     0.002     0.0%     0.002     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                  -0.588    -2.3%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0     30    12582456       1.979     3.411       3666309
+        1     30     3666309       0.680     2.012       1247782
+        2     30     1247782       0.320     0.917         74052
+        3     30       74052       0.105     0.384             6
+        4      4           6       0.003     0.004             -
+    total                          3.087     6.729              
+  first iteration holds 50.7% of all wavefront_shade time; bounce-loop kernels total 9.816s
+
+GPU telemetry over render (324 samples @ ~10 Hz, min/avg/max):
+  utilization  0/44/99 %   mem-util 0/14/83 %
+  SM clock     300/830/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  41/60/81 C   power 10/37/79 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8390 MB, peak reserved 9232 MB
+  batch 0: merged tensors 768.8 MB, BVHs 57.4 MB (cuda after merge 7186 MB)
+    counts: num_colored_triangles=0, num_triangles=49515, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    tri_opaque_bvh: 0 instances, 24734 nodes, 0 leaves, 28.7 MB
+    bez_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 19 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1574228, 5) = 570.5 MB
+    tri_mat: (19, 49515, 34) = 122.0 MB
+    tri_pos: (19, 49515, 9) = 32.3 MB
+    tri_norm: (19, 49515, 9) = 32.3 MB
+    tri_obj: (19, 49515) = 3.6 MB
+    tri_tex_meta: (49515, 10) = 1.9 MB
+  batch 1: merged tensors 447.0 MB, BVHs 33.4 MB (cuda after merge 6568 MB)
+    counts: num_colored_triangles=0, num_triangles=49736, num_circuits=41, num_frames=11
+    tri_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    tri_opaque_bvh: 0 instances, 24880 nodes, 0 leaves, 16.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (11, 1573846, 5) = 330.2 MB
+    tri_mat: (11, 49736, 34) = 71.0 MB
+    tri_pos: (11, 49736, 9) = 18.8 MB
+    tri_norm: (11, 49736, 9) = 18.8 MB
+    tri_obj: (11, 49736) = 2.1 MB
+    tri_tex_meta: (49736, 10) = 1.9 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 nn_scene_UHD.py
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 nn_scene_UHD.py
+report written to algan_profile_report_nn_UHD.txt
+
+[  301.9s]   -> exit 0 in 92.4s
+[  301.9s] === ARM preview_on: nn_scene_PREVIEW.py  env={'ALGAN_PREFETCH_GPU_PREP': '1'}
+[  301.9s] $ python nn_scene_PREVIEW.py
+Rendering device set to cuda
+Encoding video with libx264
+Began rendering profilingnn_PREVIEW_run1.mp4
+Finished rendering profilingnn_PREVIEW_run1.mp4 in 33.5 s
+Encoding video with libx264
+Began rendering profilingnn_PREVIEW_run2.mp4
+Finished rendering profilingnn_PREVIEW_run2.mp4 in 5.5 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[profiling] hooked 43 Taichi kernels (170 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+
+===== profiling run 2/2 (warm) =====
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: off (wall-time only)
+  hooked kernels (43): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, path_trace_physical_stbvh, path_trace_scene_stbvh, pn_edge_chord_error, pn_patch_flatness_error, raster_bez_count, raster_bez_write, raster_shadow_trace, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade, wavefront_shadow, wavefront_traverse, wavefront_traverse_events, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 33.74s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5    29.712    88.1%     0.034     0.1%     0.000     0.000
+wavefront_loop                                           5    28.911    85.7%     0.008     0.0%     0.000     0.000
+Scene.get_batch_of_primitives                            3    27.695    82.1%     0.517     1.5%     0.000     0.000
+surfaces: get_render_primitives_batched                  6    23.240    68.9%    20.192    59.8%     0.000     0.000
+raster: sparse resolve                                   5    16.837    49.9%     0.027     0.1%     0.000     0.000
+kernel: sheet_resolve_shade                             10    15.006    44.5%    15.006    44.5%    14.977     0.028
+wavefront:   - bounce drain                              5     6.390    18.9%     0.006     0.0%     0.000     0.000
+kernel: wavefront_shade                                 20     5.280    15.6%     5.280    15.6%     4.762     0.517
+wavefront:   - bounce 0 shade                            5     5.026    14.9%     0.001     0.0%     0.000     0.000
+raster: sparse discovery                                 5     4.990    14.8%     0.127     0.4%     0.000     0.000
+AnimationTimeline.set_state_to_times                     3     3.760    11.1%     1.027     3.0%     0.000     0.000
+AttributeTimeline.get                                16964     3.608    10.7%     3.608    10.7%     0.000     0.000
+  - project_to_screen (prewarm)                          3     3.342     9.9%     0.623     1.8%     0.000     0.000
+overlap GPU prep (worker)                                2     2.914     8.6%     0.023     0.1%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          78     2.433     7.2%     2.433     7.2%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      9     2.338     6.9%     0.078     0.2%     0.000     0.000
+logical PN:   - _dice_logical_pn                         9     2.261     6.7%     0.706     2.1%     0.000     0.000
+arena preflight (batch)                                  3     1.900     5.6%     0.004     0.0%     0.000     0.000
+kernel: raster_shadow_trace                              5     1.804     5.3%     1.804     5.3%     1.235     0.569
+merge collections + build BVHs                           3     1.447     4.3%     1.014     3.0%     0.000     0.000
+kernel: raster_tri_count                                10     1.267     3.8%     1.267     3.8%     1.133     0.126
+kernel: raster_tri_write                                10     1.166     3.5%     1.166     3.5%     1.057     0.108
+logical PN:     - subdivision levels                     9     1.157     3.4%     0.169     0.5%     0.000     0.000
+raster:   - compact_sheets                               5     1.085     3.2%     0.312     0.9%     0.000     0.000
+kernel: wavefront_traverse_events                       20     1.045     3.1%     1.045     3.1%     0.815     0.217
+wavefront:   - bounce 0 traverse                         5     0.941     2.8%     0.001     0.0%     0.000     0.000
+post-process (downsample/FXAA/glow)                      5     0.761     2.3%     0.035     0.1%     0.000     0.000
+logical PN:       - edge level search                    9     0.628     1.9%     0.122     0.4%     0.000     0.000
+wavefront:   - tile composite                            5     0.609     1.8%     0.049     0.1%     0.000     0.000
+post:   - bloom fft conv                                20     0.599     1.8%     0.599     1.8%     0.000     0.000
+kernel: raster_bez_count                                 5     0.562     1.7%     0.562     1.7%     0.560     0.002
+logical PN:         - edge chord error                  12     0.505     1.5%     0.002     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                             12     0.504     1.5%     0.504     1.5%     0.380     0.100
+  - refit-BVH build (in merge)                           6     0.416     1.2%     0.416     1.2%     0.000     0.000
+beziers: sample + pack (project_to_screen)               3     0.380     1.1%     0.001     0.0%     0.000     0.000
+kernel: raster_bez_write                                 5     0.375     1.1%     0.375     1.1%     0.371     0.003
+logical PN:       - patch level search                   9     0.354     1.0%     0.098     0.3%     0.000     0.000
+AttributeTimeline.modify                              3570     0.297     0.9%     0.297     0.9%     0.000     0.000
+logical PN:         - patch flatness error              18     0.262     0.8%     0.010     0.0%     0.000     0.000
+kernel: gloss_composite                                 50     0.253     0.7%     0.253     0.7%     0.249     0.003
+kernel: pn_patch_flatness_error                         18     0.252     0.7%     0.252     0.7%     0.204     0.045
+logical PN:     - interpolate attrs                    343     0.183     0.5%     0.183     0.5%     0.000     0.000
+beziers:   - _compute_samples_per_segment                3     0.180     0.5%     0.012     0.0%     0.000     0.000
+beziers:   - _build_circuit_geometry                     3     0.179     0.5%     0.179     0.5%     0.000     0.000
+kernel: bezier_chord_hull_error                         12     0.168     0.5%     0.168     0.5%     0.164     0.002
+AttributeTimeline.add                                 2770     0.162     0.5%     0.162     0.5%     0.000     0.000
+raster:     - sheets lexsort                            15     0.162     0.5%     0.162     0.5%     0.000     0.000
+kernel: gloss_pyramid_level                            450     0.139     0.4%     0.139     0.4%     0.114     0.019
+logical PN:     - snap boundary                         34     0.131     0.4%     0.131     0.4%     0.000     0.000
+raster:   - window pairs                                10     0.129     0.4%     0.032     0.1%     0.000     0.000
+wavefront:   - bounce 1 shade                            5     0.123     0.4%     0.001     0.0%     0.000     0.000
+Surface.get_render_primitives                            3     0.116     0.3%     0.115     0.3%     0.000     0.000
+raster:     - sheets shade class                         5     0.116     0.3%     0.116     0.3%     0.000     0.000
+kernel: solid_shell_ceiling                              5     0.106     0.3%     0.106     0.3%     0.067     0.036
+kernel: gloss_scatter                                   50     0.102     0.3%     0.102     0.3%     0.099     0.002
+raster:     - sheets band composite                      5     0.096     0.3%     0.005     0.0%     0.000     0.000
+post:   - tonemap/finalize                               5     0.095     0.3%     0.095     0.3%     0.000     0.000
+raster:     - sheets band reduce                        10     0.086     0.3%     0.008     0.0%     0.000     0.000
+raster:   - fragment sort                                5     0.084     0.2%     0.084     0.2%     0.000     0.000
+kernel: one_mesh_pixel_reduce                            5     0.080     0.2%     0.080     0.2%     0.053     0.021
+wavefront:   - bounce 2 shade                            5     0.079     0.2%     0.000     0.0%     0.000     0.000
+kernel: sheet_band_reduce                               10     0.078     0.2%     0.078     0.2%     0.064     0.005
+raster:     - sheets prim split                          5     0.077     0.2%     0.077     0.2%     0.000     0.000
+raster:     - sheets conflict rank                       5     0.071     0.2%     0.001     0.0%     0.000     0.000
+kernel: sheet_conflict_rank                              5     0.070     0.2%     0.070     0.2%     0.064     0.006
+kernel: wf_composite_accum_sparse                       50     0.066     0.2%     0.066     0.2%     0.063     0.002
+logical PN:     - evaluate patch                        17     0.064     0.2%     0.064     0.2%     0.000     0.000
+kernel: pair_expand_write                               15     0.060     0.2%     0.060     0.2%     0.053     0.007
+wavefront:   - bounce 1 traverse                         5     0.056     0.2%     0.001     0.0%     0.000     0.000
+wavefront:   - bounce 3 shade                            5     0.055     0.2%     0.001     0.0%     0.000     0.000
+kernel: opaque_prefix_keep                               5     0.054     0.2%     0.054     0.2%     0.052     0.001
+wavefront:   - compact active                           25     0.049     0.1%     0.008     0.0%     0.000     0.000
+wavefront:   - raster tables (batch)                     3     0.049     0.1%     0.001     0.0%     0.000     0.000
+kernel: one_mesh_pixel_apply                             5     0.047     0.1%     0.047     0.1%     0.042     0.004
+kernel: sheet_lane_first_owner                           5     0.042     0.1%     0.042     0.1%     0.040     0.002
+kernel: band_stats_reduce                                5     0.041     0.1%     0.041     0.1%     0.032     0.008
+kernel: compact_ray_slots                               25     0.041     0.1%     0.041     0.1%     0.034     0.006
+kernel: pair_expand_count                               15     0.037     0.1%     0.037     0.1%     0.036     0.001
+kernel: mask_popcount                                    5     0.037     0.1%     0.037     0.1%     0.037     0.000
+scene upload to arena                                    3     0.035     0.1%     0.035     0.1%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.033     0.1%     0.033     0.1%     0.000     0.000
+wavefront:   - bounce 2 traverse                         5     0.031     0.1%     0.000     0.0%     0.000     0.000
+kernel: band_stats_rep_orig                              5     0.026     0.1%     0.026     0.1%     0.023     0.002
+post:   - device->host copy                              5     0.025     0.1%     0.025     0.1%     0.000     0.000
+raster:   - precompute tri projection                    3     0.021     0.1%     0.021     0.1%     0.000     0.000
+beziers:   - _build_frame_bounds                         3     0.020     0.1%     0.020     0.1%     0.000     0.000
+logical PN:     - evaluate normals                      17     0.020     0.1%     0.020     0.1%     0.000     0.000
+wavefront:   - bounce 3 traverse                         5     0.019     0.1%     0.000     0.0%     0.000     0.000
+raster:   - precompute bez bounds                        3     0.018     0.1%     0.018     0.1%     0.000     0.000
+  - bezier edge accel (in merge)                         3     0.017     0.1%     0.017     0.1%     0.000     0.000
+wavefront:   - tile state alloc                          5     0.016     0.0%     0.016     0.0%     0.000     0.000
+raster:   - fragment gather                              5     0.015     0.0%     0.015     0.0%     0.000     0.000
+wavefront:   - sparse setup                              5     0.011     0.0%     0.011     0.0%     0.000     0.000
+raster:   - precompute tri bounds                        3     0.009     0.0%     0.009     0.0%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                 3     0.008     0.0%     0.006     0.0%     0.000     0.000
+background prefill                                       5     0.006     0.0%     0.006     0.0%     0.000     0.000
+post:   - bloom downsample                               5     0.005     0.0%     0.005     0.0%     0.000     0.000
+wavefront:   - drain scratch                            20     0.005     0.0%     0.005     0.0%     0.000     0.000
+raster:     - sheets sibling weights                     5     0.003     0.0%     0.003     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                        14     0.002     0.0%     0.002     0.0%     0.000     0.000
+wavefront:   - pool overflow poll                        5     0.001     0.0%     0.001     0.0%     0.000     0.000
+wavefront:   - drain active count                       20     0.001     0.0%     0.001     0.0%     0.000     0.000
+wavefront:   - alloc readback                            5     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                 -29.213   -86.6%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0      5      758571       0.941     5.026        212139
+        1      5      212139       0.056     0.123         64581
+        2      5       64581       0.031     0.079          4239
+        3      5        4239       0.019     0.055             -
+    total                          1.047     5.282              
+  first iteration holds 95.1% of all wavefront_shade time; bounce-loop kernels total 6.330s
+
+GPU telemetry over render (402 samples @ ~10 Hz, min/avg/max):
+  utilization  0/5/98 %   mem-util 0/2/100 %
+  SM clock     300/499/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  40/55/73 C   power 10/23/83 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8609 MB, peak reserved 10188 MB
+  batch 0: merged tensors 677.9 MB, BVHs 31.0 MB (cuda after merge 7377 MB)
+    counts: num_colored_triangles=0, num_triangles=26812, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    tri_opaque_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573792, 5) = 570.3 MB
+    tri_mat: (19, 26812, 34) = 66.1 MB
+    tri_pos: (19, 26812, 9) = 17.5 MB
+    tri_norm: (19, 26812, 9) = 17.5 MB
+    tri_obj: (19, 26812) = 1.9 MB
+    tri_tex_meta: (26812, 10) = 1.0 MB
+  batch 1: merged tensors 678.4 MB, BVHs 31.4 MB (cuda after merge 6810 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    tri_opaque_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573918, 5) = 570.4 MB
+    tri_mat: (19, 26922, 34) = 66.3 MB
+    tri_pos: (19, 26922, 9) = 17.6 MB
+    tri_norm: (19, 26922, 9) = 17.6 MB
+    tri_obj: (19, 26922) = 2.0 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+  batch 2: merged tensors 429.2 MB, BVHs 19.8 MB (cuda after merge 6469 MB)
+    counts: num_colored_triangles=0, num_triangles=26946, num_circuits=41, num_frames=12
+    tri_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    tri_opaque_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (12, 1573726, 5) = 360.2 MB
+    tri_mat: (12, 26946, 34) = 41.9 MB
+    tri_pos: (12, 26946, 9) = 11.1 MB
+    tri_norm: (12, 26946, 9) = 11.1 MB
+    tri_obj: (12, 26946) = 1.2 MB
+    tri_tex_meta: (26946, 10) = 1.0 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 5.78s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     3.158    54.6%     0.027     0.5%     0.000     0.000
+wavefront_loop                                           5     2.977    51.5%     0.005     0.1%     0.000     0.000
+overlap GPU prep (worker)                                2     2.257    39.0%     0.007     0.1%     0.000     0.000
+  - project_to_screen (prewarm)                          3     1.820    31.5%     0.256     4.4%     0.000     0.000
+Scene.get_batch_of_primitives                            3     1.738    30.1%     0.381     6.6%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      9     1.462    25.3%     0.131     2.3%     0.000     0.000
+logical PN:   - _dice_logical_pn                         9     1.331    23.0%     0.607    10.5%     0.000     0.000
+raster: sparse discovery                                 5     1.296    22.4%     0.086     1.5%     0.000     0.000
+merge collections + build BVHs                           3     1.025    17.7%     0.507     8.8%     0.000     0.000
+surfaces: get_render_primitives_batched                  6     0.824    14.2%     0.716    12.4%     0.000     0.000
+wavefront:   - bounce drain                              5     0.810    14.0%     0.005     0.1%     0.000     0.000
+raster:   - compact_sheets                               5     0.781    13.5%     0.302     5.2%     0.000     0.000
+AttributeTimeline.get                                16766     0.618    10.7%     0.618    10.7%     0.000     0.000
+raster: sparse resolve                                   5     0.613    10.6%     0.017     0.3%     0.000     0.000
+arena preflight (batch)                                  3     0.599    10.4%     0.004     0.1%     0.000     0.000
+kernel: raster_shadow_trace                              5     0.557     9.6%     0.557     9.6%     0.004     0.552
+kernel: wavefront_shade                                 20     0.514     8.9%     0.514     8.9%     0.022     0.489
+logical PN:     - snap boundary                         34     0.428     7.4%     0.428     7.4%     0.000     0.000
+  - refit-BVH build (in merge)                           6     0.408     7.1%     0.408     7.1%     0.000     0.000
+AnimationTimeline.set_state_to_times                     3     0.406     7.0%     0.134     2.3%     0.000     0.000
+wavefront:   - bounce 0 shade                            5     0.279     4.8%     0.001     0.0%     0.000     0.000
+kernel: wavefront_traverse_events                       20     0.251     4.3%     0.251     4.3%     0.017     0.206
+raster:     - sheets lexsort                            15     0.192     3.3%     0.192     3.3%     0.000     0.000
+wavefront:   - tile composite                            5     0.176     3.0%     0.054     0.9%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          78     0.172     3.0%     0.172     3.0%     0.000     0.000
+logical PN:     - subdivision levels                     9     0.170     2.9%     0.048     0.8%     0.000     0.000
+AttributeTimeline.add                                 2770     0.167     2.9%     0.167     2.9%     0.000     0.000
+AttributeTimeline.modify                              3570     0.161     2.8%     0.161     2.8%     0.000     0.000
+wavefront:   - bounce 0 traverse                         5     0.148     2.6%     0.001     0.0%     0.000     0.000
+post-process (downsample/FXAA/glow)                      5     0.146     2.5%     0.038     0.7%     0.000     0.000
+wavefront:   - bounce 1 shade                            5     0.124     2.1%     0.001     0.0%     0.000     0.000
+raster:     - sheets shade class                         5     0.114     2.0%     0.114     2.0%     0.000     0.000
+kernel: raster_tri_count                                10     0.111     1.9%     0.111     1.9%     0.004     0.101
+  - bezier edge accel (in merge)                         3     0.110     1.9%     0.110     1.9%     0.000     0.000
+kernel: raster_tri_write                                10     0.102     1.8%     0.102     1.8%     0.007     0.084
+beziers: sample + pack (project_to_screen)               3     0.101     1.8%     0.004     0.1%     0.000     0.000
+post:   - bloom fft conv                                20     0.091     1.6%     0.091     1.6%     0.000     0.000
+kernel: gloss_pyramid_level                            450     0.083     1.4%     0.083     1.4%     0.059     0.018
+raster:   - fragment sort                                5     0.082     1.4%     0.082     1.4%     0.000     0.000
+raster:   - window pairs                                10     0.080     1.4%     0.061     1.0%     0.000     0.000
+beziers:   - _build_circuit_geometry                     3     0.077     1.3%     0.077     1.3%     0.000     0.000
+logical PN:     - interpolate attrs                    343     0.076     1.3%     0.076     1.3%     0.000     0.000
+raster:     - sheets prim split                          5     0.073     1.3%     0.073     1.3%     0.000     0.000
+wavefront:   - bounce 2 shade                            5     0.066     1.1%     0.001     0.0%     0.000     0.000
+Surface.get_render_primitives                            3     0.062     1.1%     0.061     1.1%     0.000     0.000
+logical PN:       - patch level search                   9     0.061     1.1%     0.040     0.7%     0.000     0.000
+wavefront:   - bounce 1 traverse                         5     0.057     1.0%     0.000     0.0%     0.000     0.000
+wavefront:   - raster tables (batch)                     3     0.055     0.9%     0.001     0.0%     0.000     0.000
+logical PN:       - edge level search                    9     0.050     0.9%     0.014     0.2%     0.000     0.000
+scene upload to arena                                    3     0.049     0.8%     0.049     0.8%     0.000     0.000
+wavefront:   - bounce 3 shade                            5     0.047     0.8%     0.001     0.0%     0.000     0.000
+kernel: sheet_resolve_shade                             10     0.039     0.7%     0.039     0.7%     0.011     0.028
+logical PN:         - edge chord error                  12     0.036     0.6%     0.001     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                             12     0.035     0.6%     0.035     0.6%     0.005     0.021
+kernel: solid_shell_ceiling                              5     0.033     0.6%     0.033     0.6%     0.001     0.031
+video encode tail (ffmpeg drain)                         1     0.032     0.6%     0.032     0.6%     0.000     0.000
+logical PN:         - patch flatness error              18     0.031     0.5%     0.007     0.1%     0.000     0.000
+logical PN:     - evaluate patch                        17     0.030     0.5%     0.030     0.5%     0.000     0.000
+wavefront:   - compact active                           25     0.028     0.5%     0.014     0.2%     0.000     0.000
+wavefront:   - bounce 2 traverse                         5     0.025     0.4%     0.001     0.0%     0.000     0.000
+kernel: pn_patch_flatness_error                         18     0.024     0.4%     0.024     0.4%     0.005     0.008
+kernel: one_mesh_pixel_reduce                            5     0.024     0.4%     0.024     0.4%     0.002     0.021
+raster:   - precompute bez bounds                        3     0.024     0.4%     0.024     0.4%     0.000     0.000
+raster:     - sheets band composite                      5     0.023     0.4%     0.014     0.2%     0.000     0.000
+wavefront:   - bounce 3 traverse                         5     0.022     0.4%     0.000     0.0%     0.000     0.000
+logical PN:     - evaluate normals                      17     0.021     0.4%     0.021     0.4%     0.000     0.000
+raster:   - precompute tri projection                    3     0.020     0.3%     0.020     0.3%     0.000     0.000
+kernel: gloss_scatter                                   50     0.017     0.3%     0.017     0.3%     0.014     0.002
+beziers:   - _compute_samples_per_segment                3     0.015     0.3%     0.012     0.2%     0.000     0.000
+raster:     - sheets band reduce                        10     0.015     0.3%     0.007     0.1%     0.000     0.000
+wavefront:   - tile state alloc                          5     0.015     0.3%     0.015     0.3%     0.000     0.000
+kernel: compact_ray_slots                               25     0.014     0.2%     0.014     0.2%     0.007     0.006
+kernel: pair_expand_write                               15     0.013     0.2%     0.013     0.2%     0.003     0.009
+kernel: wf_composite_accum_sparse                       50     0.012     0.2%     0.012     0.2%     0.010     0.002
+kernel: gloss_composite                                 50     0.011     0.2%     0.011     0.2%     0.008     0.003
+raster:   - fragment gather                              5     0.011     0.2%     0.011     0.2%     0.000     0.000
+post:   - device->host copy                              5     0.011     0.2%     0.011     0.2%     0.000     0.000
+kernel: band_stats_reduce                                5     0.011     0.2%     0.011     0.2%     0.002     0.008
+raster:   - precompute tri bounds                        3     0.010     0.2%     0.010     0.2%     0.000     0.000
+raster:     - sheets sibling weights                     5     0.008     0.1%     0.008     0.1%     0.000     0.000
+raster:     - sheets conflict rank                       5     0.008     0.1%     0.001     0.0%     0.000     0.000
+background prefill                                       5     0.008     0.1%     0.008     0.1%     0.000     0.000
+kernel: sheet_band_reduce                               10     0.008     0.1%     0.008     0.1%     0.003     0.005
+BezierCircuitCubic.get_render_primitives                 3     0.007     0.1%     0.006     0.1%     0.000     0.000
+kernel: sheet_conflict_rank                              5     0.007     0.1%     0.007     0.1%     0.001     0.005
+kernel: raster_bez_write                                 5     0.006     0.1%     0.006     0.1%     0.004     0.002
+kernel: pair_expand_count                               15     0.006     0.1%     0.006     0.1%     0.003     0.003
+wavefront:   - drain scratch                            20     0.006     0.1%     0.006     0.1%     0.000     0.000
+kernel: one_mesh_pixel_apply                             5     0.005     0.1%     0.005     0.1%     0.001     0.004
+beziers:   - _build_frame_bounds                         3     0.005     0.1%     0.005     0.1%     0.000     0.000
+kernel: raster_bez_count                                 5     0.005     0.1%     0.005     0.1%     0.002     0.002
+post:   - bloom downsample                               5     0.004     0.1%     0.004     0.1%     0.000     0.000
+wavefront:   - sparse setup                              5     0.004     0.1%     0.004     0.1%     0.000     0.000
+kernel: sheet_lane_first_owner                           5     0.004     0.1%     0.004     0.1%     0.001     0.002
+memory reclaim (gc + cuda cache)                        14     0.004     0.1%     0.004     0.1%     0.000     0.000
+kernel: band_stats_rep_orig                              5     0.004     0.1%     0.004     0.1%     0.002     0.002
+kernel: mask_popcount                                    5     0.003     0.1%     0.003     0.1%     0.003     0.000
+post:   - tonemap/finalize                               5     0.003     0.1%     0.003     0.1%     0.000     0.000
+kernel: bezier_chord_hull_error                         12     0.003     0.0%     0.003     0.0%     0.002     0.000
+kernel: opaque_prefix_keep                               5     0.002     0.0%     0.002     0.0%     0.001     0.001
+wavefront:   - alloc readback                            5     0.002     0.0%     0.002     0.0%     0.000     0.000
+wavefront:   - drain active count                       20     0.001     0.0%     0.001     0.0%     0.000     0.000
+wavefront:   - pool overflow poll                        5     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                  -2.732   -47.2%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0      5      758571       0.148     0.279        212139
+        1      5      212139       0.057     0.124         64581
+        2      5       64581       0.025     0.066          4239
+        3      5        4239       0.022     0.047             -
+    total                          0.253     0.517              
+  first iteration holds 54.0% of all wavefront_shade time; bounce-loop kernels total 0.770s
+
+GPU telemetry over render (74 samples @ ~10 Hz, min/avg/max):
+  utilization  0/29/98 %   mem-util 0/14/100 %
+  SM clock     300/843/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  39/56/74 C   power 10/33/76 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8682 MB, peak reserved 9658 MB
+  batch 0: merged tensors 677.9 MB, BVHs 31.0 MB (cuda after merge 6912 MB)
+    counts: num_colored_triangles=0, num_triangles=26812, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    tri_opaque_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573792, 5) = 570.3 MB
+    tri_mat: (19, 26812, 34) = 66.1 MB
+    tri_pos: (19, 26812, 9) = 17.5 MB
+    tri_norm: (19, 26812, 9) = 17.5 MB
+    tri_obj: (19, 26812) = 1.9 MB
+    tri_tex_meta: (26812, 10) = 1.0 MB
+  batch 1: merged tensors 678.4 MB, BVHs 31.4 MB (cuda after merge 6403 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    tri_opaque_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573918, 5) = 570.4 MB
+    tri_mat: (19, 26922, 34) = 66.3 MB
+    tri_pos: (19, 26922, 9) = 17.6 MB
+    tri_norm: (19, 26922, 9) = 17.6 MB
+    tri_obj: (19, 26922) = 2.0 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+  batch 2: merged tensors 429.2 MB, BVHs 19.8 MB (cuda after merge 6064 MB)
+    counts: num_colored_triangles=0, num_triangles=26946, num_circuits=41, num_frames=12
+    tri_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    tri_opaque_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (12, 1573726, 5) = 360.2 MB
+    tri_mat: (12, 26946, 34) = 41.9 MB
+    tri_pos: (12, 26946, 9) = 11.1 MB
+    tri_norm: (12, 26946, 9) = 11.1 MB
+    tri_obj: (12, 26946) = 1.2 MB
+    tri_tex_meta: (26946, 10) = 1.0 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 nn_scene_PREVIEW.py
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 nn_scene_PREVIEW.py
+report written to algan_profile_report_nn_PREVIEW.txt
+
+[  355.8s]   -> exit 0 in 53.9s
+[  355.8s] === ARM preview_off: nn_scene_PREVIEW.py  env={}
+[  355.8s] $ python nn_scene_PREVIEW.py
+Rendering device set to cuda
+Encoding video with libx264
+Began rendering profilingnn_PREVIEW_run1.mp4
+Finished rendering profilingnn_PREVIEW_run1.mp4 in 33.4 s
+Encoding video with libx264
+Began rendering profilingnn_PREVIEW_run2.mp4
+Finished rendering profilingnn_PREVIEW_run2.mp4 in 5.5 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[profiling] hooked 43 Taichi kernels (170 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+
+===== profiling run 2/2 (warm) =====
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: off (wall-time only)
+  hooked kernels (43): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, path_trace_physical_stbvh, path_trace_scene_stbvh, pn_edge_chord_error, pn_patch_flatness_error, raster_bez_count, raster_bez_write, raster_shadow_trace, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade, wavefront_shadow, wavefront_traverse, wavefront_traverse_events, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 33.57s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5    29.085    86.6%     0.026     0.1%     0.000     0.000
+wavefront_loop                                           5    28.804    85.8%     0.005     0.0%     0.000     0.000
+Scene.get_batch_of_primitives                            3    27.939    83.2%     1.086     3.2%     0.000     0.000
+surfaces: get_render_primitives_batched                  6    22.776    67.9%    13.627    40.6%     0.000     0.000
+raster: sparse resolve                                   5    16.883    50.3%     0.019     0.1%     0.000     0.000
+kernel: sheet_resolve_shade                             10    15.039    44.8%    15.039    44.8%    15.012     0.028
+AttributeTimeline.get                                16964     9.825    29.3%     9.825    29.3%     0.000     0.000
+wavefront:   - bounce drain                              5     6.248    18.6%     0.004     0.0%     0.000     0.000
+kernel: wavefront_shade                                 20     5.170    15.4%     5.170    15.4%     4.655     0.514
+raster: sparse discovery                                 5     5.060    15.1%     0.128     0.4%     0.000     0.000
+wavefront:   - bounce 0 shade                            5     4.919    14.7%     0.001     0.0%     0.000     0.000
+AnimationTimeline.set_state_to_times                     3     3.842    11.4%     2.174     6.5%     0.000     0.000
+arena preflight (batch)                                  3     2.959     8.8%     0.009     0.0%     0.000     0.000
+  - project_to_screen (prewarm)                          3     1.891     5.6%     0.145     0.4%     0.000     0.000
+kernel: raster_shadow_trace                              5     1.825     5.4%     1.825     5.4%     1.255     0.570
+logical PN: dice + shade + pack (project_to_screen)      9     1.424     4.2%     0.053     0.2%     0.000     0.000
+kernel: raster_tri_count                                10     1.386     4.1%     1.386     4.1%     1.261     0.120
+logical PN:   - _dice_logical_pn                         9     1.371     4.1%     0.310     0.9%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          78     1.351     4.0%     1.351     4.0%     0.000     0.000
+kernel: raster_tri_write                                10     1.127     3.4%     1.127     3.4%     1.023     0.104
+merge collections + build BVHs                           3     1.059     3.2%     0.557     1.7%     0.000     0.000
+raster:   - compact_sheets                               5     1.059     3.2%     0.271     0.8%     0.000     0.000
+kernel: wavefront_traverse_events                       20     1.028     3.1%     1.028     3.1%     0.811     0.217
+wavefront:   - bounce 0 traverse                         5     0.938     2.8%     0.000     0.0%     0.000     0.000
+logical PN:     - subdivision levels                     9     0.793     2.4%     0.075     0.2%     0.000     0.000
+kernel: raster_bez_count                                 5     0.553     1.6%     0.553     1.6%     0.550     0.003
+wavefront:   - tile composite                            5     0.539     1.6%     0.026     0.1%     0.000     0.000
+logical PN:       - edge level search                    9     0.473     1.4%     0.091     0.3%     0.000     0.000
+kernel: raster_bez_write                                 5     0.421     1.3%     0.421     1.3%     0.418     0.003
+  - refit-BVH build (in merge)                           6     0.418     1.2%     0.418     1.2%     0.000     0.000
+logical PN:         - edge chord error                  12     0.382     1.1%     0.002     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                             12     0.381     1.1%     0.381     1.1%     0.379     0.001
+beziers: sample + pack (project_to_screen)               3     0.322     1.0%     0.001     0.0%     0.000     0.000
+kernel: gloss_composite                                 50     0.255     0.8%     0.255     0.8%     0.252     0.002
+post-process (downsample/FXAA/glow)                      5     0.248     0.7%     0.027     0.1%     0.000     0.000
+logical PN:       - patch level search                   9     0.242     0.7%     0.028     0.1%     0.000     0.000
+AttributeTimeline.modify                              3570     0.235     0.7%     0.235     0.7%     0.000     0.000
+logical PN:         - patch flatness error              18     0.217     0.6%     0.004     0.0%     0.000     0.000
+kernel: pn_patch_flatness_error                         18     0.213     0.6%     0.213     0.6%     0.211     0.001
+beziers:   - _compute_samples_per_segment                3     0.184     0.5%     0.005     0.0%     0.000     0.000
+kernel: bezier_chord_hull_error                         12     0.178     0.5%     0.178     0.5%     0.178     0.000
+AttributeTimeline.add                                 2770     0.162     0.5%     0.162     0.5%     0.000     0.000
+raster:     - sheets lexsort                            15     0.159     0.5%     0.159     0.5%     0.000     0.000
+logical PN:     - interpolate attrs                    343     0.149     0.4%     0.149     0.4%     0.000     0.000
+Surface.get_render_primitives                            3     0.135     0.4%     0.134     0.4%     0.000     0.000
+beziers:   - _build_circuit_geometry                     3     0.133     0.4%     0.133     0.4%     0.000     0.000
+raster:   - window pairs                                10     0.132     0.4%     0.033     0.1%     0.000     0.000
+raster:     - sheets shade class                         5     0.125     0.4%     0.125     0.4%     0.000     0.000
+wavefront:   - bounce 1 shade                            5     0.125     0.4%     0.001     0.0%     0.000     0.000
+kernel: solid_shell_ceiling                              5     0.118     0.4%     0.118     0.4%     0.081     0.037
+kernel: gloss_pyramid_level                            450     0.111     0.3%     0.111     0.3%     0.098     0.010
+post:   - tonemap/finalize                               5     0.107     0.3%     0.107     0.3%     0.000     0.000
+post:   - bloom fft conv                                20     0.097     0.3%     0.097     0.3%     0.000     0.000
+logical PN:     - snap boundary                         34     0.086     0.3%     0.086     0.3%     0.000     0.000
+kernel: gloss_scatter                                   50     0.085     0.3%     0.085     0.3%     0.083     0.001
+  - bezier edge accel (in merge)                         3     0.084     0.2%     0.084     0.2%     0.000     0.000
+raster:   - fragment sort                                5     0.081     0.2%     0.081     0.2%     0.000     0.000
+raster:     - sheets prim split                          5     0.078     0.2%     0.078     0.2%     0.000     0.000
+kernel: one_mesh_pixel_reduce                            5     0.074     0.2%     0.074     0.2%     0.052     0.021
+wavefront:   - bounce 2 shade                            5     0.070     0.2%     0.001     0.0%     0.000     0.000
+raster:     - sheets band composite                      5     0.070     0.2%     0.003     0.0%     0.000     0.000
+raster:     - sheets band reduce                        10     0.068     0.2%     0.003     0.0%     0.000     0.000
+raster:     - sheets conflict rank                       5     0.068     0.2%     0.001     0.0%     0.000     0.000
+kernel: sheet_conflict_rank                              5     0.067     0.2%     0.067     0.2%     0.061     0.006
+kernel: sheet_lane_first_owner                           5     0.065     0.2%     0.065     0.2%     0.063     0.002
+kernel: sheet_band_reduce                               10     0.065     0.2%     0.065     0.2%     0.059     0.005
+kernel: wf_composite_accum_sparse                       50     0.063     0.2%     0.063     0.2%     0.062     0.001
+kernel: pair_expand_write                               15     0.063     0.2%     0.063     0.2%     0.054     0.008
+wavefront:   - bounce 3 shade                            5     0.057     0.2%     0.000     0.0%     0.000     0.000
+scene upload to arena                                    3     0.057     0.2%     0.057     0.2%     0.000     0.000
+wavefront:   - raster tables (batch)                     3     0.050     0.1%     0.001     0.0%     0.000     0.000
+wavefront:   - bounce 1 traverse                         5     0.048     0.1%     0.000     0.0%     0.000     0.000
+kernel: one_mesh_pixel_apply                             5     0.046     0.1%     0.046     0.1%     0.041     0.004
+kernel: band_stats_reduce                                5     0.046     0.1%     0.046     0.1%     0.037     0.009
+kernel: opaque_prefix_keep                               5     0.043     0.1%     0.043     0.1%     0.042     0.001
+wavefront:   - compact active                           25     0.039     0.1%     0.005     0.0%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.039     0.1%     0.039     0.1%     0.000     0.000
+kernel: pair_expand_count                               15     0.036     0.1%     0.036     0.1%     0.035     0.001
+kernel: compact_ray_slots                               25     0.034     0.1%     0.034     0.1%     0.028     0.006
+kernel: mask_popcount                                    5     0.027     0.1%     0.027     0.1%     0.027     0.000
+kernel: band_stats_rep_orig                              5     0.026     0.1%     0.026     0.1%     0.024     0.002
+wavefront:   - bounce 2 traverse                         5     0.026     0.1%     0.000     0.0%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                 3     0.024     0.1%     0.011     0.0%     0.000     0.000
+raster:   - precompute bez bounds                        3     0.023     0.1%     0.023     0.1%     0.000     0.000
+logical PN:     - evaluate patch                        17     0.020     0.1%     0.020     0.1%     0.000     0.000
+wavefront:   - bounce 3 traverse                         5     0.018     0.1%     0.000     0.0%     0.000     0.000
+raster:   - precompute tri projection                    3     0.017     0.1%     0.017     0.1%     0.000     0.000
+post:   - device->host copy                              5     0.013     0.0%     0.013     0.0%     0.000     0.000
+wavefront:   - tile state alloc                          5     0.013     0.0%     0.013     0.0%     0.000     0.000
+logical PN:     - evaluate normals                      17     0.013     0.0%     0.013     0.0%     0.000     0.000
+raster:   - fragment gather                              5     0.011     0.0%     0.011     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                        14     0.009     0.0%     0.009     0.0%     0.000     0.000
+raster:   - precompute tri bounds                        3     0.009     0.0%     0.009     0.0%     0.000     0.000
+background prefill                                       5     0.007     0.0%     0.007     0.0%     0.000     0.000
+wavefront:   - sparse setup                              5     0.004     0.0%     0.004     0.0%     0.000     0.000
+beziers:   - _build_frame_bounds                         3     0.004     0.0%     0.004     0.0%     0.000     0.000
+raster:     - sheets sibling weights                     5     0.004     0.0%     0.004     0.0%     0.000     0.000
+post:   - bloom downsample                               5     0.004     0.0%     0.004     0.0%     0.000     0.000
+wavefront:   - drain scratch                            20     0.003     0.0%     0.003     0.0%     0.000     0.000
+wavefront:   - pool overflow poll                        5     0.001     0.0%     0.001     0.0%     0.000     0.000
+wavefront:   - alloc readback                            5     0.000     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - drain active count                       20     0.000     0.0%     0.000     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                 -27.188   -81.0%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0      5      758571       0.938     4.919        212139
+        1      5      212139       0.048     0.125         64581
+        2      5       64581       0.026     0.070          4239
+        3      5        4239       0.018     0.057             -
+    total                          1.030     5.172              
+  first iteration holds 95.1% of all wavefront_shade time; bounce-loop kernels total 6.201s
+
+GPU telemetry over render (400 samples @ ~10 Hz, min/avg/max):
+  utilization  0/5/98 %   mem-util 0/3/90 %
+  SM clock     300/497/1575 MHz   mem clock 405/2702/5000 MHz
+  temperature  39/55/74 C   power 10/24/76 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8435 MB, peak reserved 10186 MB
+  batch 0: merged tensors 677.9 MB, BVHs 31.0 MB (cuda after merge 7377 MB)
+    counts: num_colored_triangles=0, num_triangles=26812, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    tri_opaque_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573792, 5) = 570.3 MB
+    tri_mat: (19, 26812, 34) = 66.1 MB
+    tri_pos: (19, 26812, 9) = 17.5 MB
+    tri_norm: (19, 26812, 9) = 17.5 MB
+    tri_obj: (19, 26812) = 1.9 MB
+    tri_tex_meta: (26812, 10) = 1.0 MB
+  batch 1: merged tensors 678.4 MB, BVHs 31.4 MB (cuda after merge 7311 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    tri_opaque_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573918, 5) = 570.4 MB
+    tri_mat: (19, 26922, 34) = 66.3 MB
+    tri_pos: (19, 26922, 9) = 17.6 MB
+    tri_norm: (19, 26922, 9) = 17.6 MB
+    tri_obj: (19, 26922) = 2.0 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+  batch 2: merged tensors 429.2 MB, BVHs 19.8 MB (cuda after merge 6819 MB)
+    counts: num_colored_triangles=0, num_triangles=26946, num_circuits=41, num_frames=12
+    tri_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    tri_opaque_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (12, 1573726, 5) = 360.2 MB
+    tri_mat: (12, 26946, 34) = 41.9 MB
+    tri_pos: (12, 26946, 9) = 11.1 MB
+    tri_norm: (12, 26946, 9) = 11.1 MB
+    tri_obj: (12, 26946) = 1.2 MB
+    tri_tex_meta: (26946, 10) = 1.0 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 5.72s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     2.888    50.5%     0.018     0.3%     0.000     0.000
+wavefront_loop                                           5     2.738    47.8%     0.008     0.1%     0.000     0.000
+Scene.get_batch_of_primitives                            3     1.929    33.7%     0.527     9.2%     0.000     0.000
+arena preflight (batch)                                  3     1.518    26.5%     0.009     0.2%     0.000     0.000
+raster: sparse discovery                                 5     1.187    20.7%     0.086     1.5%     0.000     0.000
+merge collections + build BVHs                           3     0.921    16.1%     0.509     8.9%     0.000     0.000
+surfaces: get_render_primitives_batched                  6     0.866    15.1%     0.759    13.3%     0.000     0.000
+wavefront:   - bounce drain                              5     0.754    13.2%     0.005     0.1%     0.000     0.000
+raster:   - compact_sheets                               5     0.702    12.3%     0.285     5.0%     0.000     0.000
+raster: sparse resolve                                   5     0.617    10.8%     0.015     0.3%     0.000     0.000
+AttributeTimeline.get                                16766     0.609    10.6%     0.609    10.6%     0.000     0.000
+  - project_to_screen (prewarm)                          3     0.588    10.3%     0.149     2.6%     0.000     0.000
+kernel: raster_shadow_trace                              5     0.563     9.8%     0.563     9.8%     0.003     0.559
+kernel: wavefront_shade                                 20     0.498     8.7%     0.498     8.7%     0.018     0.480
+AnimationTimeline.set_state_to_times                     3     0.422     7.4%     0.103     1.8%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      9     0.399     7.0%     0.054     0.9%     0.000     0.000
+  - refit-BVH build (in merge)                           6     0.396     6.9%     0.396     6.9%     0.000     0.000
+logical PN:   - _dice_logical_pn                         9     0.346     6.0%     0.170     3.0%     0.000     0.000
+wavefront:   - bounce 0 shade                            5     0.274     4.8%     0.001     0.0%     0.000     0.000
+kernel: wavefront_traverse_events                       20     0.217     3.8%     0.217     3.8%     0.012     0.205
+AttributeTimeline.modify                              3570     0.207     3.6%     0.207     3.6%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          78     0.186     3.2%     0.186     3.2%     0.000     0.000
+AttributeTimeline.add                                 2770     0.172     3.0%     0.172     3.0%     0.000     0.000
+raster:     - sheets lexsort                            15     0.154     2.7%     0.154     2.7%     0.000     0.000
+wavefront:   - bounce 0 traverse                         5     0.134     2.3%     0.000     0.0%     0.000     0.000
+post-process (downsample/FXAA/glow)                      5     0.126     2.2%     0.028     0.5%     0.000     0.000
+wavefront:   - bounce 1 shade                            5     0.114     2.0%     0.001     0.0%     0.000     0.000
+kernel: raster_tri_count                                10     0.109     1.9%     0.109     1.9%     0.005     0.095
+raster:     - sheets shade class                         5     0.108     1.9%     0.108     1.9%     0.000     0.000
+wavefront:   - tile composite                            5     0.106     1.8%     0.028     0.5%     0.000     0.000
+kernel: raster_tri_write                                10     0.099     1.7%     0.099     1.7%     0.006     0.089
+post:   - bloom fft conv                                20     0.080     1.4%     0.080     1.4%     0.000     0.000
+raster:   - fragment sort                                5     0.079     1.4%     0.079     1.4%     0.000     0.000
+logical PN:     - interpolate attrs                    343     0.077     1.3%     0.077     1.3%     0.000     0.000
+raster:     - sheets prim split                          5     0.074     1.3%     0.074     1.3%     0.000     0.000
+wavefront:   - bounce 2 shade                            5     0.065     1.1%     0.001     0.0%     0.000     0.000
+Surface.get_render_primitives                            3     0.062     1.1%     0.061     1.1%     0.000     0.000
+raster:   - window pairs                                10     0.061     1.1%     0.044     0.8%     0.000     0.000
+kernel: gloss_pyramid_level                            450     0.050     0.9%     0.050     0.9%     0.036     0.010
+wavefront:   - bounce 3 shade                            5     0.048     0.8%     0.001     0.0%     0.000     0.000
+wavefront:   - raster tables (batch)                     3     0.047     0.8%     0.001     0.0%     0.000     0.000
+wavefront:   - bounce 1 traverse                         5     0.045     0.8%     0.000     0.0%     0.000     0.000
+logical PN:     - subdivision levels                     9     0.040     0.7%     0.009     0.2%     0.000     0.000
+beziers: sample + pack (project_to_screen)               3     0.040     0.7%     0.001     0.0%     0.000     0.000
+kernel: sheet_resolve_shade                             10     0.039     0.7%     0.039     0.7%     0.009     0.028
+scene upload to arena                                    3     0.036     0.6%     0.036     0.6%     0.000     0.000
+kernel: solid_shell_ceiling                              5     0.033     0.6%     0.033     0.6%     0.001     0.032
+logical PN:     - snap boundary                         34     0.029     0.5%     0.029     0.5%     0.000     0.000
+beziers:   - _build_circuit_geometry                     3     0.027     0.5%     0.027     0.5%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.024     0.4%     0.024     0.4%     0.000     0.000
+wavefront:   - bounce 2 traverse                         5     0.024     0.4%     0.000     0.0%     0.000     0.000
+kernel: one_mesh_pixel_reduce                            5     0.023     0.4%     0.023     0.4%     0.002     0.021
+wavefront:   - compact active                           25     0.021     0.4%     0.010     0.2%     0.000     0.000
+raster:   - precompute bez bounds                        3     0.019     0.3%     0.019     0.3%     0.000     0.000
+raster:   - precompute tri projection                    3     0.018     0.3%     0.018     0.3%     0.000     0.000
+logical PN:     - evaluate patch                        17     0.018     0.3%     0.018     0.3%     0.000     0.000
+raster:     - sheets band composite                      5     0.017     0.3%     0.010     0.2%     0.000     0.000
+wavefront:   - bounce 3 traverse                         5     0.017     0.3%     0.000     0.0%     0.000     0.000
+logical PN:       - patch level search                   9     0.017     0.3%     0.010     0.2%     0.000     0.000
+  - bezier edge accel (in merge)                         3     0.016     0.3%     0.016     0.3%     0.000     0.000
+wavefront:   - tile state alloc                          5     0.013     0.2%     0.013     0.2%     0.000     0.000
+kernel: pair_expand_write                               15     0.013     0.2%     0.013     0.2%     0.004     0.008
+logical PN:     - evaluate normals                      17     0.012     0.2%     0.012     0.2%     0.000     0.000
+logical PN:       - edge level search                    9     0.012     0.2%     0.006     0.1%     0.000     0.000
+raster:     - sheets band reduce                        10     0.011     0.2%     0.004     0.1%     0.000     0.000
+kernel: compact_ray_slots                               25     0.011     0.2%     0.011     0.2%     0.005     0.005
+raster:   - fragment gather                              5     0.011     0.2%     0.011     0.2%     0.000     0.000
+post:   - device->host copy                              5     0.011     0.2%     0.011     0.2%     0.000     0.000
+kernel: gloss_scatter                                   50     0.010     0.2%     0.010     0.2%     0.008     0.001
+kernel: band_stats_reduce                                5     0.010     0.2%     0.010     0.2%     0.001     0.008
+kernel: gloss_composite                                 50     0.009     0.2%     0.009     0.2%     0.006     0.002
+raster:   - precompute tri bounds                        3     0.009     0.2%     0.009     0.2%     0.000     0.000
+logical PN:         - patch flatness error              18     0.009     0.2%     0.004     0.1%     0.000     0.000
+memory reclaim (gc + cuda cache)                        14     0.008     0.1%     0.008     0.1%     0.000     0.000
+wavefront:   - drain scratch                            20     0.008     0.1%     0.008     0.1%     0.000     0.000
+kernel: wf_composite_accum_sparse                       50     0.008     0.1%     0.008     0.1%     0.006     0.001
+beziers:   - _compute_samples_per_segment                3     0.008     0.1%     0.005     0.1%     0.000     0.000
+raster:     - sheets conflict rank                       5     0.007     0.1%     0.001     0.0%     0.000     0.000
+BezierCircuitCubic.get_render_primitives                 3     0.007     0.1%     0.005     0.1%     0.000     0.000
+kernel: sheet_band_reduce                               10     0.007     0.1%     0.007     0.1%     0.002     0.005
+background prefill                                       5     0.007     0.1%     0.007     0.1%     0.000     0.000
+logical PN:         - edge chord error                  12     0.006     0.1%     0.002     0.0%     0.000     0.000
+kernel: sheet_conflict_rank                              5     0.006     0.1%     0.006     0.1%     0.001     0.005
+kernel: raster_bez_write                                 5     0.006     0.1%     0.006     0.1%     0.003     0.002
+kernel: one_mesh_pixel_apply                             5     0.005     0.1%     0.005     0.1%     0.001     0.004
+kernel: pn_patch_flatness_error                         18     0.005     0.1%     0.005     0.1%     0.004     0.001
+kernel: raster_bez_count                                 5     0.005     0.1%     0.005     0.1%     0.003     0.002
+kernel: pair_expand_count                               15     0.005     0.1%     0.005     0.1%     0.004     0.001
+kernel: pn_edge_chord_error                             12     0.004     0.1%     0.004     0.1%     0.003     0.001
+beziers:   - _build_frame_bounds                         3     0.004     0.1%     0.004     0.1%     0.000     0.000
+post:   - bloom downsample                               5     0.004     0.1%     0.004     0.1%     0.000     0.000
+wavefront:   - sparse setup                              5     0.004     0.1%     0.004     0.1%     0.000     0.000
+kernel: sheet_lane_first_owner                           5     0.003     0.1%     0.003     0.1%     0.001     0.002
+kernel: band_stats_rep_orig                              5     0.003     0.1%     0.003     0.1%     0.001     0.002
+post:   - tonemap/finalize                               5     0.003     0.1%     0.003     0.1%     0.000     0.000
+raster:     - sheets sibling weights                     5     0.003     0.0%     0.003     0.0%     0.000     0.000
+kernel: bezier_chord_hull_error                         12     0.003     0.0%     0.003     0.0%     0.002     0.000
+kernel: opaque_prefix_keep                               5     0.002     0.0%     0.002     0.0%     0.001     0.001
+kernel: mask_popcount                                    5     0.001     0.0%     0.001     0.0%     0.001     0.000
+wavefront:   - pool overflow poll                        5     0.001     0.0%     0.001     0.0%     0.000     0.000
+wavefront:   - drain active count                       20     0.000     0.0%     0.000     0.0%     0.000     0.000
+wavefront:   - alloc readback                            5     0.000     0.0%     0.000     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                  -1.379   -24.1%
+
+Wavefront bounce iterations (sheet route; wall time incl. launch + sync):
+   bounce  calls     rays in  traverse s   shade s continuations
+        0      5      758571       0.134     0.274        212139
+        1      5      212139       0.045     0.114         64581
+        2      5       64581       0.024     0.065          4239
+        3      5        4239       0.017     0.048             -
+    total                          0.219     0.501              
+  first iteration holds 54.7% of all wavefront_shade time; bounce-loop kernels total 0.720s
+
+GPU telemetry over render (72 samples @ ~10 Hz, min/avg/max):
+  utilization  0/29/98 %   mem-util 0/14/94 %
+  SM clock     300/840/1590 MHz   mem clock 405/2702/5000 MHz
+  temperature  39/56/75 C   power 10/32/81 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 8103 MB, peak reserved 9448 MB
+  batch 0: merged tensors 677.9 MB, BVHs 31.0 MB (cuda after merge 7046 MB)
+    counts: num_colored_triangles=0, num_triangles=26812, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    tri_opaque_bvh: 0 instances, 13353 nodes, 0 leaves, 15.5 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573792, 5) = 570.3 MB
+    tri_mat: (19, 26812, 34) = 66.1 MB
+    tri_pos: (19, 26812, 9) = 17.5 MB
+    tri_norm: (19, 26812, 9) = 17.5 MB
+    tri_obj: (19, 26812) = 1.9 MB
+    tri_tex_meta: (26812, 10) = 1.0 MB
+  batch 1: merged tensors 678.4 MB, BVHs 31.4 MB (cuda after merge 7047 MB)
+    counts: num_colored_triangles=0, num_triangles=26922, num_circuits=41, num_frames=19
+    tri_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    tri_opaque_bvh: 0 instances, 13535 nodes, 0 leaves, 15.7 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (19, 1573918, 5) = 570.4 MB
+    tri_mat: (19, 26922, 34) = 66.3 MB
+    tri_pos: (19, 26922, 9) = 17.6 MB
+    tri_norm: (19, 26922, 9) = 17.6 MB
+    tri_obj: (19, 26922) = 2.0 MB
+    tri_tex_meta: (26922, 10) = 1.0 MB
+  batch 2: merged tensors 429.2 MB, BVHs 19.8 MB (cuda after merge 6555 MB)
+    counts: num_colored_triangles=0, num_triangles=26946, num_circuits=41, num_frames=12
+    tri_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    tri_opaque_bvh: 0 instances, 13528 nodes, 0 leaves, 9.9 MB
+    bez_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 20 nodes, 0 leaves, 0.0 MB
+    textures: (12, 1573726, 5) = 360.2 MB
+    tri_mat: (12, 26946, 34) = 41.9 MB
+    tri_pos: (12, 26946, 9) = 11.1 MB
+    tri_norm: (12, 26946, 9) = 11.1 MB
+    tri_obj: (12, 26946) = 1.2 MB
+    tri_tex_meta: (26946, 10) = 1.0 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 nn_scene_PREVIEW.py
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 nn_scene_PREVIEW.py
+report written to algan_profile_report_nn_PREVIEW.txt
+
+[  409.8s]   -> exit 0 in 54.0s
+[  409.8s] === ARM pfoab: ../../scratch_perf/r3/ox/t4_pfo_ab_driver.py  env={}
+[  409.8s] $ python ../../scratch_perf/r3/ox/t4_pfo_ab_driver.py
+=== main/off: override 4096 MB
+Rendering device set to cuda
+Encoding video with h264_nvenc
+Began rendering main_off_PREVIEW.mp4
+Finished rendering main_off_PREVIEW.mp4 in 34.0 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[summary] {"tag": "main_off", "preset": "PREVIEW", "cpu_seams": false, "overlap_env": "0", "wall_s": 35.216, "status": "rendered", "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/main_off_PREVIEW.mp4", "preflight_calls": 10, "preflight_sum_s": 4.415, "overlapped_preflights": 0, "overlapped_fraction": 0.0, "worker_prep_calls": 0, "worker_prep_sum_s": 0, "windows": [[0, 5], [5, 10], [10, 15], [15, 20], [20, 25], [25, 30], [30, 35], [35, 40], [40, 45], [45, 50]]}
+=== main/on: override 4096 MB
+Rendering device set to cuda
+Encoding video with h264_nvenc
+Began rendering main_on_PREVIEW.mp4
+Finished rendering main_on_PREVIEW.mp4 in 33.9 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[summary] {"tag": "main_on", "preset": "PREVIEW", "cpu_seams": false, "overlap_env": "1", "wall_s": 35.031, "status": "rendered", "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/main_on_PREVIEW.mp4", "preflight_calls": 10, "preflight_sum_s": 1.599, "overlapped_preflights": 9, "overlapped_fraction": 0.9, "worker_prep_calls": 9, "worker_prep_sum_s": 3.494, "windows": [[0, 5], [5, 10], [10, 15], [15, 20], [20, 25], [25, 30], [30, 35], [35, 40], [40, 45], [45, 50]]}
+frames compared: 50
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 278784 (0.000%, frame -1); mean 0.0/frame; 0 of 50 frames affected
+per-frame max-diff histogram (worst 8 buckets):
+  diff   0: 50 frames
+ 
+=== oomforce/off: override 1024 MB
+Rendering device set to cuda
+Encoding video with h264_nvenc
+Began rendering oomforce_off_PREVIEW.mp4
+Finished rendering oomforce_off_PREVIEW.mp4 in 51.7 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[summary] {"tag": "oomforce_off", "preset": "PREVIEW", "cpu_seams": false, "overlap_env": "0", "wall_s": 52.868, "status": "rendered", "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/oomforce_off_PREVIEW.mp4", "preflight_calls": 50, "preflight_sum_s": 13.612, "overlapped_preflights": 0, "overlapped_fraction": 0.0, "worker_prep_calls": 0, "worker_prep_sum_s": 0, "windows": [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10], [10, 11], [11, 12], [12, 13], [13, 14], [14, 15], [15, 16], [16, 17], [17, 18], [18, 19], [19, 20], [20, 21], [21, 22], [22, 23], [23, 24], [24, 25], [25, 26], [26, 27], [27, 28], [28, 29], [29, 30], [30, 31], [31, 32], [32, 33], [33, 34], [34, 35], [35, 36], [36, 37], [37, 38], [38, 39], [39, 40], [40, 41], [41, 42], [42, 43], [43, 44], [44, 45], [45, 46], [46, 47], [47, 48], [48, 49], [49, 50]]}
+=== oomforce/on: override 1024 MB
+Rendering device set to cuda
+Encoding video with h264_nvenc
+Began rendering oomforce_on_PREVIEW.mp4
+Finished rendering oomforce_on_PREVIEW.mp4 in 51.3 s
+[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.12.13
+[Taichi] Starting on arch=cuda
+[summary] {"tag": "oomforce_on", "preset": "PREVIEW", "cpu_seams": false, "overlap_env": "1", "wall_s": 52.404, "status": "rendered", "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/oomforce_on_PREVIEW.mp4", "preflight_calls": 50, "preflight_sum_s": 1.489, "overlapped_preflights": 49, "overlapped_fraction": 0.98, "worker_prep_calls": 49, "worker_prep_sum_s": 11.979, "windows": [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10], [10, 11], [11, 12], [12, 13], [13, 14], [14, 15], [15, 16], [16, 17], [17, 18], [18, 19], [19, 20], [20, 21], [21, 22], [22, 23], [23, 24], [24, 25], [25, 26], [26, 27], [27, 28], [28, 29], [29, 30], [30, 31], [31, 32], [32, 33], [33, 34], [34, 35], [35, 36], [36, 37], [37, 38], [38, 39], [39, 40], [40, 41], [41, 42], [42, 43], [43, 44], [44, 45], [45, 46], [46, 47], [47, 48], [48, 49], [49, 50]]}
+frames compared: 50
+worst channel diff: 0 (frame -1)
+pixels over tol 2: worst frame 0 of 278784 (0.000%, frame -1); mean 0.0/frame; 0 of 50 frames affected
+per-frame max-diff histogram (worst 8 buckets):
+  diff   0: 50 frames
+ 
+--- main_off_PREVIEW_summary.json: {
+ "tag": "main_off",
+ "preset": "PREVIEW",
+ "cpu_seams": false,
+ "overlap_env": "0",
+ "wall_s": 35.216,
+ "status": "rendered",
+ "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/main_off_PREVIEW.mp4",
+ "preflight_calls": 10,
+ "preflight_sum_s": 4.415,
+ "overlapped_preflights": 0,
+ "overlapped_fraction": 0.0,
+ "worker_prep_calls": 0,
+ "worker_prep_sum_s": 0,
+ "windows": [
+  [
+   0,
+   5
+  ],
+  [
+   5,
+   10
+  ],
+  [
+   10,
+   15
+  ],
+  [
+   15,
+   20
+  ],
+  [
+   20,
+   25
+  ],
+  [
+   25,
+   30
+  ],
+  [
+   30,
+   35
+  ],
+  [
+   35,
+   40
+  ],
+  [
+   40,
+   45
+  ],
+  [
+   45,
+   50
+  ]
+ ]
+}
+--- main_on_PREVIEW_summary.json: {
+ "tag": "main_on",
+ "preset": "PREVIEW",
+ "cpu_seams": false,
+ "overlap_env": "1",
+ "wall_s": 35.031,
+ "status": "rendered",
+ "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/main_on_PREVIEW.mp4",
+ "preflight_calls": 10,
+ "preflight_sum_s": 1.599,
+ "overlapped_preflights": 9,
+ "overlapped_fraction": 0.9,
+ "worker_prep_calls": 9,
+ "worker_prep_sum_s": 3.494,
+ "windows": [
+  [
+   0,
+   5
+  ],
+  [
+   5,
+   10
+  ],
+  [
+   10,
+   15
+  ],
+  [
+   15,
+   20
+  ],
+  [
+   20,
+   25
+  ],
+  [
+   25,
+   30
+  ],
+  [
+   30,
+   35
+  ],
+  [
+   35,
+   40
+  ],
+  [
+   40,
+   45
+  ],
+  [
+   45,
+   50
+  ]
+ ]
+}
+--- oomforce_off_PREVIEW_summary.json: {
+ "tag": "oomforce_off",
+ "preset": "PREVIEW",
+ "cpu_seams": false,
+ "overlap_env": "0",
+ "wall_s": 52.868,
+ "status": "rendered",
+ "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/oomforce_off_PREVIEW.mp4",
+ "preflight_calls": 50,
+ "preflight_sum_s": 13.612,
+ "overlapped_preflights": 0,
+ "overlapped_fraction": 0.0,
+ "worker_prep_calls": 0,
+ "worker_prep_sum_s": 0,
+ "windows": [
+  [
+   0,
+   1
+  ],
+  [
+   1,
+   2
+  ],
+  [
+   2,
+   3
+  ],
+  [
+   3,
+   4
+  ],
+  [
+   4,
+   5
+  ],
+  [
+   5,
+   6
+  ],
+  [
+   6,
+   7
+  ],
+  [
+   7,
+   8
+  ],
+  [
+   8,
+   9
+  ],
+  [
+   9,
+   10
+  ],
+  [
+   10,
+   11
+  ],
+  [
+   11,
+   12
+  ],
+  [
+   12,
+   13
+  ],
+  [
+   13,
+   14
+  ],
+  [
+   14,
+   15
+  ],
+  [
+   15,
+   16
+  ],
+  [
+   16,
+   17
+  ],
+  [
+   17,
+   18
+  ],
+  [
+   18,
+   19
+  ],
+  [
+   19,
+   20
+  ],
+  [
+   20,
+   21
+  ],
+  [
+   21,
+   22
+  ],
+  [
+   22,
+   23
+  ],
+  [
+   23,
+   24
+  ],
+  [
+   24,
+   25
+  ],
+  [
+   25,
+   26
+  ],
+  [
+   26,
+   27
+  ],
+  [
+   27,
+   28
+  ],
+  [
+   28,
+   29
+  ],
+  [
+   29,
+   30
+  ],
+  [
+   30,
+   31
+  ],
+  [
+   31,
+   32
+  ],
+  [
+   32,
+   33
+  ],
+  [
+   33,
+   34
+  ],
+  [
+   34,
+   35
+  ],
+  [
+   35,
+   36
+  ],
+  [
+   36,
+   37
+  ],
+  [
+   37,
+   38
+  ],
+  [
+   38,
+   39
+  ],
+  [
+   39,
+   40
+  ],
+  [
+   40,
+   41
+  ],
+  [
+   41,
+   42
+  ],
+  [
+   42,
+   43
+  ],
+  [
+   43,
+   44
+  ],
+  [
+   44,
+   45
+  ],
+  [
+   45,
+   46
+  ],
+  [
+   46,
+   47
+  ],
+  [
+   47,
+   48
+  ],
+  [
+   48,
+   49
+  ],
+  [
+   49,
+   50
+  ]
+ ]
+}
+--- oomforce_on_PREVIEW_summary.json: {
+ "tag": "oomforce_on",
+ "preset": "PREVIEW",
+ "cpu_seams": false,
+ "overlap_env": "1",
+ "wall_s": 52.404,
+ "status": "rendered",
+ "output": "/kaggle/working/algan_repo/scratch_perf/r3/ox/out/oomforce_on_PREVIEW.mp4",
+ "preflight_calls": 50,
+ "preflight_sum_s": 1.489,
+ "overlapped_preflights": 49,
+ "overlapped_fraction": 0.98,
+ "worker_prep_calls": 49,
+ "worker_prep_sum_s": 11.979,
+ "windows": [
+  [
+   0,
+   1
+  ],
+  [
+   1,
+   2
+  ],
+  [
+   2,
+   3
+  ],
+  [
+   3,
+   4
+  ],
+  [
+   4,
+   5
+  ],
+  [
+   5,
+   6
+  ],
+  [
+   6,
+   7
+  ],
+  [
+   7,
+   8
+  ],
+  [
+   8,
+   9
+  ],
+  [
+   9,
+   10
+  ],
+  [
+   10,
+   11
+  ],
+  [
+   11,
+   12
+  ],
+  [
+   12,
+   13
+  ],
+  [
+   13,
+   14
+  ],
+  [
+   14,
+   15
+  ],
+  [
+   15,
+   16
+  ],
+  [
+   16,
+   17
+  ],
+  [
+   17,
+   18
+  ],
+  [
+   18,
+   19
+  ],
+  [
+   19,
+   20
+  ],
+  [
+   20,
+   21
+  ],
+  [
+   21,
+   22
+  ],
+  [
+   22,
+   23
+  ],
+  [
+   23,
+   24
+  ],
+  [
+   24,
+   25
+  ],
+  [
+   25,
+   26
+  ],
+  [
+   26,
+   27
+  ],
+  [
+   27,
+   28
+  ],
+  [
+   28,
+   29
+  ],
+  [
+   29,
+   30
+  ],
+  [
+   30,
+   31
+  ],
+  [
+   31,
+   32
+  ],
+  [
+   32,
+   33
+  ],
+  [
+   33,
+   34
+  ],
+  [
+   34,
+   35
+  ],
+  [
+   35,
+   36
+  ],
+  [
+   36,
+   37
+  ],
+  [
+   37,
+   38
+  ],
+  [
+   38,
+   39
+  ],
+  [
+   39,
+   40
+  ],
+  [
+   40,
+   41
+  ],
+  [
+   41,
+   42
+  ],
+  [
+   42,
+   43
+  ],
+  [
+   43,
+   44
+  ],
+  [
+   44,
+   45
+  ],
+  [
+   45,
+   46
+  ],
+  [
+   46,
+   47
+  ],
+  [
+   47,
+   48
+  ],
+  [
+   48,
+   49
+  ],
+  [
+   49,
+   50
+  ]
+ ]
+}
+PFO T4 acceptance: all pairs byte-identical, all renders completed
+
+[  628.6s]   -> exit 0 in 218.8s
+[  628.6s] RESULTS {"uhd_on": {"seconds": 138.06, "exit": 0}, "uhd_off": {"seconds": 92.35, "exit": 0}, "preview_on": {"seconds": 53.94, "exit": 0}, "preview_off": {"seconds": 53.99, "exit": 0}, "pfoab": {"seconds": 218.75, "exit": 0}}
+[  628.6s] cache size: 75.7 MB
+{
+  "uhd_on": {
+    "seconds": 138.06,
+    "exit": 0
+  },
+  "uhd_off": {
+    "seconds": 92.35,
+    "exit": 0
+  },
+  "preview_on": {
+    "seconds": 53.94,
+    "exit": 0
+  },
+  "preview_off": {
+    "seconds": 53.99,
+    "exit": 0
+  },
+  "pfoab": {
+    "seconds": 218.75,
+    "exit": 0
+  }
+}
+/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+  cells[i][c] = re.sub('\\\\\|', '|', cell)
+/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+  text = re.sub(r'_', '\_', text) # Escape underscores in display text
+[NbConvertApp] Converting notebook __script__.ipynb to html
+[NbConvertApp] Writing 308306 bytes to __results__.html

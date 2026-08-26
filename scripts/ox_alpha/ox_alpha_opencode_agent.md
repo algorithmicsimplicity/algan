@@ -697,3 +697,47 @@ of the reference's mirror-disc energy was the mirror's own highlight, and
 integrating the GGX lobe to show the reference's apparent 7x was a clipping
 artifact — came from running experiments it was not asked to run. Ask it for
 the map. Measure the territory yourself.
+
+**UPDATE: REVIEW FROM ROUND 3 (five invocations, 2026-08-26, cloud session)**
+
+Five runs in one day — two read-only audits (window-pairs, immortal rays),
+two implementations (weight-floor exit, preflight-overlap completion) and one
+patch verification (sheet-chain) — all `--variant max`, all from file briefs.
+Every claim in every report re-ran exactly when checked. The verification
+splits held: it built and measured what the briefs specified; the decisions
+(a default flip, a landing order) stayed with the operator.
+
+New mechanics, worth acting on every session:
+
+- **The §4.1 hang can strike a SHORT prompt too.** A standard one-sentence
+  file-pointer launch hung at `init` with no step for 65 minutes. Arm a
+  liveness watcher right after every launch (poll the log's `message=loop`
+  count for ten minutes; kill and relaunch the identical command on
+  silence). The relaunch worked first try, as usual.
+- **Container restarts kill the process, not the session.** Resume with
+  `opencode run -s <session-id>` plus a short "you were killed mid-task,
+  re-check state and continue" message — both resumed runs picked up
+  cleanly, probes intact, and one had already survived a mid-run tree
+  checkpoint by another session.
+- **Checkpoint-committing its in-flight workspace is safe and it notices.**
+  Three WIP checkpoints landed mid-run this round; each report named them,
+  and one correctly read a user decision out of a checkpoint's commit
+  message and flagged that it superseded the brief's rule.
+
+The sharp lesson, a new class: **enumerate the execution contexts a change
+can run under, and verify in each.** The preflight-overlap work (its
+implementation AND my review AND its 16 unit tests AND the T4 acceptance
+driver) all passed while every `profile_scene` run on the tree crashed — the
+profiler's hand-written merge shim pins `_merge_scene`'s old signature, and
+nothing in the verification program ran under the profiler. The agent could
+not have seen it; the brief never asked for a profiled run. Briefs for
+changes to functions the profiler wraps by hand should require one profiled
+render. (Same shape as "a conservative guard and a disabled feature look
+identical from inside": a verification program that never enters a context
+proves nothing about it.)
+
+What to hire it for, confirmed again: handed a recovered 1,264-line patch to
+verify, it found four defects including a `mask.is_cuda` gate that made
+every CPU check of one toggle silently vacuous — precisely because the brief
+demanded launch-proof that each kernel executed in its A/B. Put the
+vacuousness question in every verification brief: "prove the path ran."

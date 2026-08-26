@@ -346,12 +346,29 @@ because the payload transport was still being solved. Do this first.
 
    Inside it, `merge collections + build BVHs` is the bulk (295 s of 422 s at
    HD), of which `refit-BVH build` is 199 s; `project_to_screen (prewarm)` is
-   125 s. Work in progress at `scratch_perf/r2/patches/ox_preflight_overlap_WIP.patch`
-   (467 lines: an `_rt_prep_overlapped` flag, a predictor-calibration gate so
-   the first batches still measure their peak on the render thread, and a
-   headroom derate for the concurrent render). Unverified — it was stopped
-   mid-implementation. The OOM retry must keep working; force it and show the
-   render still completes.
+   125 s.
+   **Built and measured 2026-08-26** — the WIP patch was recovered, completed
+   and verified (`scratch_perf/r3/ox/REPORT_preflight_overlap_impl.md`):
+   `ALGAN_PREFETCH_GPU_PREP` / `SETTINGS.computing.prefetch_gpu_prep`,
+   worker-side builds skip peak observation (`track_peak=False` — the patch
+   as recovered would have reset the CUDA peak counter under a live render),
+   headroom derated by `overlap_pool_headroom_fraction` (0.6). T4 acceptance
+   (tag `r3pfo`, log `scratch_perf/r3/t4_r3pfo_run.log`): worker-prepared
+   batches **byte-identical** at two memory pins, forced-OOM shrink retry
+   works under overlap, Taichi tolerates worker-thread kernel launches.
+   Performance (within-session A/B): **UHD 25.40 -> 24.51 s (-3.5%)** — 1 of
+   2 preflights overlapped, render-thread preflight 1.33 -> 0.86 s.
+   **PREVIEW is flat (5.72 -> 5.78 s)**: 2 of 3 preflights overlapped and the
+   serial preflight dropped 1.52 -> 0.60 s, but at 3 batches the *worker* is
+   the critical path (prep 1.74 s + overlapped builds 2.26 s exceeds what the
+   3.1 s render can hide) — the wait relocates rather than disappears, and
+   the r2 ratios (measured at 25-150 batches) do not transfer to T4 batch
+   counts. Worker-side build walls are contention-inflated by design
+   (that is why their peaks are never observed). **Default currently OFF**;
+   the ON default is a judgment call: real -3.5% at UHD, neutral at PREVIEW.
+   The round also caught a profiler defect the CPU verification could not:
+   the hand-written merge shim did not forward kwargs, crashing every
+   profiled render (`b60514b` fixed it).
 4. **Shadow ray cost by another route** — see §3 for why the obvious cull is
    closed.
 5. ~~**The 21 immortal rays**~~ **Diagnosed and FIXED 2026-08-26**
