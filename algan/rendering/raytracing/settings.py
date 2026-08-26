@@ -1047,6 +1047,35 @@ def set_raster_opaque_trunc_kernel(enabled):
     RASTER_OPAQUE_TRUNC_KERNEL = bool(enabled)
 
 
+# Kernel pair expansion behind ``raster_pipeline._class_pairs_flat``
+# (sheet_compact_taichi.pair_expand_count / pair_expand_write). The window
+# pairs' chunk expansion built its ``(primitive, frame, bbox, offset)`` rows
+# with a ``nonzero``, six gathers, a ``repeat_interleave`` whose OUTPUT is the
+# whole row count, an arange/cumsum/subtract chain for the chunk offsets, and
+# an eight-column ``stack`` in int64 narrowed to int32 -- measured on the real
+# nn-scene 3840x2160 frame (49,307 triangle candidates expanding to 6.34 M
+# pair rows), 50 ms of the 57 ms call, almost all of it traffic through
+# ~800 MB of int64 intermediates for a 200 MB result. Two kernels replace it:
+# one counts chunks per candidate, the host keeps only the cuB prefix sum it
+# kept anyway, and one writes each row directly (binary search over the prefix
+# for its candidate).
+#
+# Bit-identical by construction: every column is an integer computed from the
+# same inputs, and the row order -- candidates ascending in flattened
+# row-major order, chunks ascending within a candidate -- is the order
+# ``nonzero`` + ``repeat_interleave`` produced, which downstream fragment
+# offsets (and through them the stable sort ties) inherit.
+RASTER_PAIR_EXPAND_KERNEL = env_flag("ALGAN_RASTER_PAIR_EXPAND_KERNEL", True)
+
+
+def set_raster_pair_expand_kernel(enabled):
+    """Toggle the kernel pair-row expansion (see ``RASTER_PAIR_EXPAND_KERNEL``).
+    Takes effect at the next batch's emission.
+    """
+    global RASTER_PAIR_EXPAND_KERNEL
+    RASTER_PAIR_EXPAND_KERNEL = bool(enabled)
+
+
 # Covered-pixel-compacted resolve: the emission already knows exactly which
 # pixels hold fragments, so the resolve launches one thread per COVERED pixel
 # instead of one per screen pixel that early-outs, turning the resolve from
@@ -1341,6 +1370,61 @@ def set_sheet_rank_kernel(enabled):
     """
     global SHEET_RANK_KERNEL
     SHEET_RANK_KERNEL = bool(enabled)
+
+
+# Kernel per-band order stats + dominant fragment behind ``compact_sheets``
+# (sheet_compact_taichi.band_stats_reduce / band_stats_rep_orig). The five
+# per-band scatters -- nearest sorted/original position (amin), the same
+# restricted to POSITIONED fragments, the largest exact area (amax), and the
+# fragment count -- each walked the whole stream once through their own
+# scatter_reduce_/scatter_add_, and the positioned restriction masked two of
+# them with full-length ``where`` copies; one kernel updates all six tables in
+# a single visit per fragment. The dominant fragment's position needs its
+# band's completed maximum first, so it stays a second launch.
+#
+# Bit-identical: integer amin/amax/add are exact under any atomics order, an
+# f32 amax has no association at all, and the tie-break (earliest original
+# position among fragments AT the max) is the same amin over the same
+# candidates both arms compare. The caller's gathers off the filled tables are
+# unchanged.
+SHEET_BAND_STATS_KERNEL = env_flag("ALGAN_SHEET_BAND_STATS_KERNEL", True)
+
+
+def set_sheet_band_stats_kernel(enabled):
+    """Toggle the fused per-band order stats / dominant fragment scan (see
+    ``SHEET_BAND_STATS_KERNEL``). Takes effect at the next batch's compaction.
+    """
+    global SHEET_BAND_STATS_KERNEL
+    SHEET_BAND_STATS_KERNEL = bool(enabled)
+
+
+# Kernel application of the solid-shell opacity ceiling behind
+# ``compact_sheets`` (sheet_compact_taichi.solid_shell_ceiling). After the
+# block's own depth sort orders each (pixel, surface) segment -- and after the
+# f64 cumsum that prefixes it, which STAYS IN TORCH because a serial register
+# walk cannot reproduce a cub scan's reassociation bitwise (measured: 61 of
+# 3.13 M spend values move, flipping 10 visible f32 outputs on the real
+# nn-scene frame) -- torch walked the stream three more times to spend the
+# allowance: nonzero + scatter_ for segment starts, two facing-split f64
+# scatter_add_s through a whole-stream segment map, and clone + index_copy_
+# for the write-back. One thread per segment (detected in-kernel along the
+# permutation) walks its run twice with the cap in registers and the caller's
+# prefix as data.
+#
+# The float contract follows ss6.6.4 as before: front/back sums accumulate in
+# f64 registers serially in stream order (the atomic scatter_add_ had no
+# order), verified bitwise against the torch arm at 4K shapes and on the real
+# captured stream in benchmarks/_sheet_kernel_check.py rather than assumed.
+SHEET_SHELL_CEILING_KERNEL = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
+
+
+def set_sheet_shell_ceiling_kernel(enabled):
+    """Toggle the kernel solid-shell ceiling application (see
+    ``SHEET_SHELL_CEILING_KERNEL``). Takes effect at the next batch's
+    compaction.
+    """
+    global SHEET_SHELL_CEILING_KERNEL
+    SHEET_SHELL_CEILING_KERNEL = bool(enabled)
 
 
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at

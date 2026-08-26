@@ -159,3 +159,25 @@ stream's `n` / covered / band counts; what you changed and what each change
 bought (say whether the numbers are wall-clock — and how you controlled for the
 other agent on this GPU — or byte/launch counts); which candidates you rejected
 and why; and — explicitly — everything you did **not** verify.
+
+## STOP — directive added mid-run (read this before your next command)
+
+**Do not run `pytest tests/unit_tests` again.** It has been started twice and
+killed twice, and it will be killed again automatically: the suite spawns two
+~2 GB render subprocesses concurrently for its cross-process determinism test,
+and on this 4 GB box that drives the machine to the edge of OOM. This is not a
+judgement about your work — the operator is taking that verification over on a
+quiet box.
+
+Do this instead, then stop:
+
+1. `uv run -m pytest -q --fast` (cheap, and it is the real gate).
+2. `uv run ruff check --no-fix` and `uv run ruff format --check` on the files
+   you touched.
+3. **Write `scratch_perf/r2/ox/REPORT_sheet_host_chain.md` and finish.**
+
+In the report, list the full unit suite under "what I did NOT verify" and say
+why. Everything else you have already done — the Part 1 block table, the
+bit-identity checks, the lossless HD render A/B, and your finding that the
+single-pixel delta at (296, 820) is pre-existing cross-process nondeterminism —
+is what the report needs to carry.
