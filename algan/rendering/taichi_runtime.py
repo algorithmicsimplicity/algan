@@ -375,6 +375,43 @@ def _taichi_arch():
     return ti.gpu
 
 
+def taichi_arch_is_cpu():
+    """Whether Taichi runs kernels on the CPU.
+
+    Every Algan kernel takes its arguments as torch tensors, and Taichi stages
+    any argument that does not already live on its arch's device. Launching a
+    kernel with the CPU batch-prep tensors while the arch is CUDA therefore
+    copies every argument -- inputs *and* the whole result -- through VRAM, on
+    the worker thread that is deliberately kept off the GPU; that is what made
+    the timeline's own kernels a liability (see
+    ``timeline._generate_array_states_taichi``). So a prep-stage kernel is worth
+    dispatching only when the arch is the CPU, which is exactly when the render
+    device is.
+
+    Reads the live program's arch when Taichi is already up and Algan's selected
+    backend otherwise, so asking never forces initialization.
+    """
+    if _already_initialized():
+        with contextlib.suppress(Exception):
+            return ti.lang.impl.get_runtime().prog.config().arch == ti.cpu
+    return _taichi_arch() == ti.cpu
+
+
+def cpu_prep_kernel_enabled(name):
+    """Whether the CPU batch-prep kernel called ``name`` should be dispatched.
+
+    False on a GPU arch (see :func:`taichi_arch_is_cpu`), and false when either
+    ``ALGAN_OPT_DISABLE=cpukernels`` (all of them) or ``ALGAN_OPT_DISABLE=<name>``
+    is set, so each kernel keeps the bisect switch the other prep optimizations
+    use and an A/B can run the torch arm without a rebuild.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    if _opt_disabled("cpukernels") or _opt_disabled(name):
+        return False
+    return taichi_arch_is_cpu()
+
+
 def taichi_init_kwargs():
     """Algan's Taichi runtime config, as a kwargs dict.
 

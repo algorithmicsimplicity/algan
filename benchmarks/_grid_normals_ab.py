@@ -48,7 +48,13 @@ ROUNDS = int(os.environ.get("AB_ROUNDS", "5"))
 
 
 def _arm(paired):
-    tl._OPT_DISABLED = frozenset(() if paired else ("gridnormals",))
+    # ``cpukernels`` is always disabled here. This script compares the two
+    # *torch* forms of the block, and on a CPU arch the fused kernel would
+    # otherwise serve both arms -- reporting 1.00x and passing the bit-identity
+    # assertion vacuously. The kernel has its own A/B in
+    # ``benchmarks/_cpu_prep_kernels_ab.py``.
+    disabled = {"cpukernels"} if paired else {"cpukernels", "gridnormals"}
+    tl._OPT_DISABLED = frozenset(disabled)
 
 
 def _bits(t):
