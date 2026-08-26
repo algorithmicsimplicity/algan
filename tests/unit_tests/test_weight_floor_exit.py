@@ -31,6 +31,7 @@ import pytest
 
 from algan import (
     BLACK,
+    OUT,
     RIGHT,
     SMOKE_TEST,
     UP,
@@ -38,7 +39,6 @@ from algan import (
     MeshLambertMaterial,
     MeshPhysicalMaterial,
     Off,
-    OUT,
     PointLight,
     Prism,
     Scene,
@@ -142,9 +142,7 @@ def test_gated_kernel_compiles_and_gate_reaches_the_drain(
 
     monkeypatch.setattr(tracer, "wavefront_shade", _spy)
     try:
-        result = _render_one_reflective_frame(
-            tmp_path, f"weight_floor_{weight_floor}"
-        )
+        result = _render_one_reflective_frame(tmp_path, f"weight_floor_{weight_floor}")
     finally:
         SETTINGS.raytracing.experimental.weight_floor_exit = previous
 
