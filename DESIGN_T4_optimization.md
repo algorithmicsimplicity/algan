@@ -68,6 +68,18 @@ and the T4 runs 2-3 batches where the 4 GB card runs 10. At PREVIEW the warm
 split is now render 3.11 s / prep 1.77 s / preflight 1.48 s (prep down from
 2.32 s — P13 at work), still nearly serial.
 
+Round 3 running total (same branch, warm RUN 2, each step's log under
+`scratch_perf/r3/`):
+
+| tree | UHD | PREVIEW |
+|---|---|---|
+| master @ `95271dac` | 29.90 s | 6.25 s |
+| + round 2 (prep-side) | 27.81 s | 5.86 s |
+| + sheet-chain kernels (`r3sheet`) | 26.79 s | 5.72 s |
+| + weight-floor exit (`r3wf`) | **24.68 s** | **5.60 s** |
+
+Cumulative: **−17.5% at UHD, −10.4% at PREVIEW** vs master.
+
 ---
 
 ## 2. Where the time goes
@@ -356,8 +368,14 @@ because the payload transport was still being solved. Do this first.
    to the pre-change tree, proven directly. It also culls ~91k mid-chain
    sub-floor bouncers the diagnosis had not enumerated: drain launches
    132 -> 72 (−45%) at PREVIEW. **Default ON by the project owner's
-   decision** (1-LSB variation accepted without visual inspection). T4
-   timing and the CUDA compile of the new variant: next Kaggle round.
+   decision** (1-LSB variation accepted without visual inspection).
+   **T4 A/B measured** (tag `r3wf`, log `scratch_perf/r3/t4_r3wf_run.log`):
+   UHD warm **26.86 -> 24.68 s (−8.1%)**, PREVIEW 5.76 -> 5.60 s (−2.8%),
+   and the new variant compiles and runs on CUDA. The win dwarfs the
+   bounce-5-7 tail because the mid-chain is where the sub-floor population
+   lives at UHD: with the floor on, the drain ends at bounce 4 (6 rays)
+   instead of 7, bounce 2 carries 1.25M rays instead of 2.57M and bounce 3
+   74K instead of 306K; bounce-loop kernel time 11.58 -> 9.48 s.
 6. **Cold start** — 85.85 s at UHD against 29.90 s warm, almost all Taichi JIT.
    Amortized for a long video, so it ranks below everything above, but it is the
    whole story for a short one.
