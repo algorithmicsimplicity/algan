@@ -372,9 +372,11 @@ MeshLambertMaterial = DiffuseMaterial
 
 
 class ManimMaterial(Material):
-    """Manim's default 3-D shading: per light, an achromatic
-    ``0.5 * (n . to_light) ** 3`` offset (halved when back-facing) added to
-    the base colour -- no ambient, no specular, no falloff.
+    """Manim's default 3-D shading: one achromatic offset per light, nothing else.
+
+    Per light it adds an achromatic ``0.5 * (n . to_light) ** 3`` offset
+    (halved when back-facing) to the base colour -- no ambient, no specular,
+    no falloff.
 
     Reproduces Manim's ``get_shaded_rgb`` exactly under the rig
     :meth:`~.Scene.use_manim_defaults` installs (one white intensity-1 point

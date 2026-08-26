@@ -4,6 +4,7 @@ Backgrounds and Post-Processing
 
 Apart from the ray-traced render itself, there are two
 important steps which shape how your output will look:
+
 * **Backgrounds:** What fills empty pixels where no geometry is present.
 * **Post-processing:** Image filters and effects (like bloom, anti-aliasing, and
   tonemapping) that run over rendered frames before video encoding.
@@ -175,7 +176,7 @@ Algan supports three anti-aliasing techniques:
   renders at 2x resolution and downsamples.
 * **Analytic AA:** ``SETTINGS.raytracing.analytic_aa`` (on by default) resolves
   vector edges analytically inside the rasterizer with almost zero overhead.
-**FXAA** -- ``SETTINGS.video.fxaa`` (off by default) is a cheap post-pass that
+* **FXAA:** ``SETTINGS.video.fxaa`` (off by default) is a cheap post-pass that
   smooths remaining edges. Useful when you have had to drop the supersampling level
   for speed.
 
