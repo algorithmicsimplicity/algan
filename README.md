@@ -123,9 +123,40 @@ Algan includes a first-class CLI:
 algan check                 # Verify PyTorch, GPU acceleration, Taichi, FFmpeg & LaTeX
 algan new my_scene.py       # Scaffold a new scene script
 algan render my_scene.py    # Render scene to video
-algan preview my_scene.py   # Render still checkpoint frame
+algan preview my_scene.py   # Render it at the low-resolution preview preset
 algan daemon                # Launch background warm render daemon
+algan daemon --stop         # Stop the running daemon
 ```
+
+`render` takes `-q {preview,ld,md,hd,production,uhd}` for the video preset and
+`-o` for the directory or file to write to. Both fill in what the script leaves
+open: a `Scene.save_video("intro")` still decides the name, and a path with a
+directory in it still decides everything.
+
+```bash
+algan render my_scene.py -q hd -o renders/          # renders/intro.mp4, at HD
+algan render my_scene.py --no-daemon -- --seed 7    # fresh process, args forwarded
+```
+
+A scene script may have a command line of its own — a
+[`Project`](https://algorithmicsimplicity.github.io/algan/reference/algan.project.Project.html)
+calling `run_cli()` does — so any argument this CLI does not recognise is
+forwarded to it, as is everything after `--`:
+
+```bash
+algan render project.py -q hd --render-video intro   # -q ours, --render-video the project's
+algan render project.py -- --help                    # the project's help, not ours
+```
+
+Where both name the same thing, the script wins: `-q` sets the default preset,
+and a `Project`'s own `--video-settings` (or its `video_settings=` argument)
+overrides it.
+
+Because those two are settings, and a warm process shared with other runs cannot
+be handed one run's settings, `-q` and `-o` run the script in the CLI's own
+process and skip the [render daemon](https://algorithmicsimplicity.github.io/algan/advanced_user_tutorials/the_render_daemon.html).
+A plain `algan render my_scene.py` is launched as its own process, exactly as
+`python my_scene.py` is, and the daemon serves it warm.
 
 ---
 

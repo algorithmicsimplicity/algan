@@ -36,7 +36,7 @@ def script(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for name in ("ALGAN_DAEMON_CHILD", "ALGAN_USE_DAEMON"):
+    for name in ("ALGAN_DAEMON_CHILD", "ALGAN_USE_DAEMON", "ALGAN_AUTO_DAEMON"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -50,6 +50,10 @@ def _hide_test_runner(monkeypatch):
     """
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delitem(dc.sys.modules, "pytest", raising=False)
+    # CI runs this suite under coverage, whose trace function ``debugger_name``
+    # reports on purpose (see its docstring). Blank it so each test below
+    # measures the condition it names rather than how the suite was launched.
+    monkeypatch.setattr(dc, "debugger_name", lambda: None)
 
 
 def test_hands_off_for_a_plain_script_run(script, monkeypatch):
@@ -105,6 +109,110 @@ def test_declines_for_a_non_python_main(tmp_path, monkeypatch):
     other = tmp_path / "thing.txt"
     other.write_text("", encoding="utf-8")
     assert dc.should_try(_Main(str(other))) is False
+
+
+# --------------------------------------------------------------------------
+# Debuggers: the daemon's process is not the one with the breakpoints in it
+# --------------------------------------------------------------------------
+
+
+def _no_debugger_modules(monkeypatch):
+    for name, _label in dc._DEBUGGER_MODULES:
+        monkeypatch.delitem(dc.sys.modules, name, raising=False)
+
+
+@pytest.mark.parametrize(("module", "label"), dc._DEBUGGER_MODULES)
+def test_each_known_debugger_is_named(module, label, monkeypatch):
+    _no_debugger_modules(monkeypatch)
+    monkeypatch.setitem(dc.sys.modules, module, object())
+    assert dc.debugger_name() == label
+
+
+def test_any_trace_function_counts(monkeypatch):
+    """pdb, coverage, anything: it is watching *these* frames, not the daemon's."""
+    _no_debugger_modules(monkeypatch)
+    monkeypatch.setattr(dc.sys, "gettrace", lambda: object())
+    assert dc.debugger_name() == "a tracing tool (sys.gettrace)"
+
+
+def test_an_undebugged_process_has_no_debugger(monkeypatch):
+    _no_debugger_modules(monkeypatch)
+    monkeypatch.setattr(dc.sys, "gettrace", lambda: None)
+    assert dc.debugger_name() is None
+
+
+def test_detection_never_raises(monkeypatch):
+    """A broken probe must cost one cold start, not an ImportError at import."""
+
+    def boom():
+        raise RuntimeError("something replaced sys.gettrace")
+
+    _no_debugger_modules(monkeypatch)
+    monkeypatch.setattr(dc.sys, "gettrace", boom)
+    assert dc.debugger_name() is None
+
+
+def test_declines_under_a_debugger(script, monkeypatch, capsys):
+    """The handoff would run the script where the breakpoints are not."""
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setattr(dc, "debugger_name", lambda: "pydevd (PyCharm / PyDev)")
+    assert dc.should_try(script) is False
+    told = capsys.readouterr().err
+    assert "pydevd" in told, "a silent cold start is the thing to avoid"
+    assert "ALGAN_USE_DAEMON=1" in told, "the override has to be discoverable"
+
+
+def test_an_explicit_opt_in_overrides_the_debugger_check(script, monkeypatch, capsys):
+    """For the warm *and* debuggable arrangement: a debugged daemon.
+
+    An unset variable is not an opt-in -- the daemon is on by default, so only
+    a value that was actually written down can mean "yes, even here".
+    """
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setattr(dc, "debugger_name", lambda: "debugpy (VS Code)")
+    assert dc.should_try(script) is False
+    monkeypatch.setenv("ALGAN_USE_DAEMON", "1")
+    assert dc.should_try(script) is True
+    assert "breakpoints" in capsys.readouterr().err, "both paths must say so"
+
+
+def test_a_debugged_non_candidate_is_told_nothing(script, monkeypatch, capsys):
+    """Only a process that would otherwise hand off gets the explanation.
+
+    This one is a debugged pytest run: it was never going to reach the daemon,
+    so warning it about breakpoints would be noise.
+    """
+    monkeypatch.setattr(dc, "debugger_name", lambda: "pydevd (PyCharm / PyDev)")
+    assert dc.should_try(script) is False
+    assert capsys.readouterr().err == ""
+
+
+def test_nothing_is_said_when_there_was_no_handoff_to_lose(
+    script, tmp_path, monkeypatch, capsys
+):
+    """With auto-start off and no daemon running, the run was cold regardless."""
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setenv("ALGAN_HOME", str(tmp_path))
+    monkeypatch.setenv("ALGAN_AUTO_DAEMON", "0")
+    monkeypatch.setattr(dc, "debugger_name", lambda: "pydevd (PyCharm / PyDev)")
+    assert dc.should_try(script) is False
+    assert capsys.readouterr().err == ""
+
+
+def test_no_daemon_is_started_under_a_debugger(tmp_path, monkeypatch, capsys):
+    """Declining must also mean not spawning one in the background."""
+    monkeypatch.setenv("ALGAN_HOME", str(tmp_path))
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setattr(dc, "debugger_name", lambda: "pydevd (PyCharm / PyDev)")
+    monkeypatch.setattr(
+        dc, "_spawn_daemon", lambda: pytest.fail("must not start a daemon")
+    )
+    monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("must not exit"))
+    main = tmp_path / "scene.py"
+    main.write_text("import algan\n", encoding="utf-8")
+    monkeypatch.setitem(dc.sys.modules, "__main__", _Main(str(main)))
+    assert dc.maybe_handoff() is None
+    assert "pydevd" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
