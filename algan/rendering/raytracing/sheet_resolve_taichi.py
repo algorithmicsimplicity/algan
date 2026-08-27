@@ -162,6 +162,24 @@ def sheet_resolve_shade(
         # guard; 2 is the diagnostic relax-only arm and never reads
         # ``event_toff``).
         shadow_term: ti.template(),
+        # Cross-pass material memoization (rt_settings.SHEET_RESOLVE_MEMO,
+        # RENDERER_WORK_QUEUE.md item 9). != 0 makes the mode-1 event walk
+        # STORE each processed triangle sheet's fetched material into
+        # ``sheet_memo`` and the mode-2 shading walk READ it back instead of
+        # re-fetching -- twelve floats against three barycentric-interpolated
+        # (and possibly texture-sampled) fetches per sheet.
+        #
+        # Sound because the two walks process exactly the same sheets: every
+        # ``mode != 1`` gate in this body wraps a spawn, a shade, the
+        # truncation counter or a pixel commit, and none of them touches the
+        # loop-carried transport state (``weight``, ``svis``, ``band_p``,
+        # ``bounces_left``, ``processed``, ``done``) or any break/continue
+        # condition. The two skips that precede the fetch -- the far-clip
+        # break and the ``eff <= MIN_ALPHA`` continue -- are transport-only
+        # for the same reason. So a row read in mode 2 was written in mode 1.
+        # Values are copied verbatim through f32, hence byte-identical.
+        memo: ti.template(),
+        sheet_memo: ti.types.ndarray(),
         sheet_accept: ti.types.ndarray(),
         event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
         event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
@@ -420,16 +438,33 @@ def sheet_resolve_shade(
                     T = circuit_meta[cm, circuit, _M_TRANSMISSION]
             if not fetched_bez:
                 prim = prim_raw
-                surf_pos = _tri_surface_point(f, prim, w0, a, b, tri_pos)
+                # MEMO READ (mode 2). Column layout, shared with the mode-1
+                # write below: 0-3 colour, 4 alpha, 5 reflectivity,
+                # 6 roughness, 7 IOR, 8 transmission, 9-11 surface point.
+                # Read here, before ``partial``, because ``surf_rd`` is
+                # derived from ``surf_pos`` and the shading below needs both.
+                if ti.static(memo != 0 and mode == 2):
+                    surf_pos = ti.math.vec3(sheet_memo[idx, 9],
+                                            sheet_memo[idx, 10],
+                                            sheet_memo[idx, 11])
+                else:
+                    surf_pos = _tri_surface_point(f, prim, w0, a, b, tri_pos)
                 partial = msk_low != _AA_MASK_ALL
                 if partial:
                     surf_rd = (surf_pos - ro).normalized()
-                color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
-                                            col_row, tri_uvs, tri_tex_meta,
-                                            textures, num_colored_triangles)
-                reflectivity, rough = _tri_extra_g(
-                    0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
+                if ti.static(memo != 0 and mode == 2):
+                    color = ti.math.vec4(sheet_memo[idx, 0], sheet_memo[idx, 1],
+                                         sheet_memo[idx, 2], sheet_memo[idx, 3])
+                    alpha = sheet_memo[idx, 4]
+                    reflectivity = sheet_memo[idx, 5]
+                    rough = sheet_memo[idx, 6]
+                else:
+                    color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
+                                                col_row, tri_uvs, tri_tex_meta,
+                                                textures, num_colored_triangles)
+                    reflectivity, rough = _tri_extra_g(
+                        0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
+                        tri_tex_meta, textures, num_colored_triangles)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
                 if ti.static(frag_shading != 0 and mode != 1):
                     if ti.static(mode == 2):
@@ -462,9 +497,29 @@ def sheet_resolve_shade(
                                            num_lights, color,
                                            ti.static(1 if mode == 2 else 0),
                                            lvis, cam_origin)
-                ior, T = _tri_ior_transmission_g(
-                    0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
+                if ti.static(memo != 0 and mode == 2):
+                    ior = sheet_memo[idx, 7]
+                    T = sheet_memo[idx, 8]
+                else:
+                    ior, T = _tri_ior_transmission_g(
+                        0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
+                        tri_tex_meta, textures, num_colored_triangles)
+                # MEMO WRITE (mode 1). ``color`` is still the FETCHED colour
+                # here: _shade_tri_hit is inside the ``mode != 1`` branch
+                # above, so the event walk never overwrites it. Written for
+                # every processed triangle sheet, not only accepted events --
+                # an unlit or shadow-opted-out sheet builds no event but mode
+                # 2 still shades it.
+                if ti.static(memo != 0 and mode == 1):
+                    for k in ti.static(range(4)):
+                        sheet_memo[idx, k] = color[k]
+                    sheet_memo[idx, 4] = alpha
+                    sheet_memo[idx, 5] = reflectivity
+                    sheet_memo[idx, 6] = rough
+                    sheet_memo[idx, 7] = ior
+                    sheet_memo[idx, 8] = T
+                    for k in ti.static(range(3)):
+                        sheet_memo[idx, 9 + k] = surf_pos[k]
                 if ti.static(mode == 1):
                     # One candidate shadow event per accepted lit triangle
                     # sheet, at the sheet index — mirroring the fragment

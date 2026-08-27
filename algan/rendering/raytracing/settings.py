@@ -1260,6 +1260,40 @@ def set_sheet_resolve(enabled):
 SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 
 
+# Cross-pass material memoization in the shadowed sheet resolve
+# (RENDERER_WORK_QUEUE.md item 9). A shadowed batch launches
+# ``sheet_resolve_shade`` TWICE over the same sheets -- mode 1 walks the
+# transport and builds the shadow events, mode 2 shades reading the traced
+# visibility -- and mode 1 already fetches everything mode 2 re-fetches. The
+# obvious saving (skip the fetches in mode 1) is not available: the colour's
+# alpha, the transmission and the reflectivity all steer the walk itself, so
+# cutting them changes which sheets are reached and therefore the shadows.
+#
+# What IS available is carrying them across. With this on, mode 1 stores each
+# processed triangle sheet's colour (4), alpha, reflectivity, roughness, IOR,
+# transmission and surface point -- twelve floats -- and mode 2 reads them
+# back instead of calling _tri_color_g / _tri_extra_g /
+# _tri_ior_transmission_g / _tri_surface_point again. The values are copied
+# verbatim through f32, so the frame is BYTE-IDENTICAL
+# (benchmarks/_sheet_memo_parity.py).
+#
+# The trade is arena bytes for fetches: 48 B per sheet against three
+# barycentric-interpolated (and, on a textured mob, texture-sampling) fetches,
+# on a stage measured at mode1/mode2 = 0.685 on a T4, i.e. the double resolve
+# nearly doubles a shadowed batch's resolve cost. The runtime memory model
+# sees the extra allocation on its own, so batches reprice without anything
+# to annotate. ALGAN_SHEET_RESOLVE_MEMO=0 restores the re-fetch.
+SHEET_RESOLVE_MEMO = env_flag("ALGAN_SHEET_RESOLVE_MEMO", True)
+
+
+def set_sheet_resolve_memo(enabled):
+    """Toggle the shadowed resolve's cross-pass material memo (see
+    ``SHEET_RESOLVE_MEMO``). Takes effect at the next resolve launch.
+    """
+    global SHEET_RESOLVE_MEMO
+    SHEET_RESOLVE_MEMO = bool(enabled)
+
+
 def set_sheet_shade_split(enabled):
     """Toggle the crease shading-class split in sheet compaction (see
     ``SHEET_SHADE_SPLIT``). Takes effect at the next batch's emission.
