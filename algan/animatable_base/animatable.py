@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import wraps
@@ -52,12 +53,55 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     _opt_disabled,
 )
 from algan.constants.color import BLACK, Color
+from algan.errors import DespawnedMobWarning
 from algan.scene import Scene
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
 #: Bumped whenever an animatable property is attached to a class, so per-class
 #: views of "what can this be told to set" can be cached across Mobs.
 ANIMATABLE_PROPERTY_VERSION = [0]
+
+
+def _check_updater_signature(update_function, extra_positional):
+    """Reject an updater that cannot take ``(mob, t)`` before it is recorded.
+
+    Manim's updaters take the mobject alone, so ``add_updater(lambda m: ...)``
+    is the first thing a reader from there writes. It used to fail with
+    ``TypeError: <lambda>() takes 1 positional argument but 2 were given``,
+    raised from the immediate zero-time application and naming nothing about
+    updaters.
+    """
+    if not callable(update_function):
+        raise TypeError(
+            f"add_updater() expects a callable taking (mob, t), got "
+            f"{type(update_function).__name__}."
+        )
+    try:
+        parameters = list(inspect.signature(update_function).parameters.values())
+    except (TypeError, ValueError):
+        # A builtin or C callable has no introspectable signature; let the
+        # call itself decide.
+        return
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters):
+        return
+    accepted = sum(
+        1
+        for p in parameters
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    required = 2 + extra_positional
+    if accepted >= required:
+        return
+    name = getattr(update_function, "__name__", repr(update_function))
+    raise TypeError(
+        f"add_updater()'s function is called as (mob, t"
+        f"{', ...' if extra_positional else ''}), so it needs "
+        f"{required} positional parameters; {name} takes {accepted}. "
+        f"`t` is the seconds elapsed since the updater was added, as a torch "
+        f"tensor, and must appear even when unused:\n\n"
+        f"    mob.add_updater(lambda mob, t: mob.set_location(RIGHT * t))\n"
+    )
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
@@ -486,6 +530,7 @@ class Animatable:
 
             Scene.save_video()
         """
+        _check_updater_signature(update_function, len(args))
         timeline = self.scene.timeline_manager
         # The span must be recorded on an *entered* context: only contexts
         # that enter and exit get their rescaled timestamps synced, so events
@@ -1445,6 +1490,26 @@ class Animatable:
         :meth:`~.Animatable.despawn` : Remove the Mob from the video again.
         """
         if self.is_spawned() or self.animation_manager.context.spawn_at_end:
+            if self.is_despawned():
+                # Silently doing nothing here leaves a blank video and no clue
+                # which call failed: ``despawn`` closes a lifespan and a Mob
+                # has exactly one, so nothing can reopen it. The advice is the
+                # one ``despawn``'s own docstring gives, said at the call that
+                # cannot do what it looks like it does.
+                warnings.warn(
+                    f"{type(self).__name__}.spawn() did nothing: this Mob has "
+                    f"already been despawned, and a despawned Mob cannot be "
+                    f"brought back -- it keeps the lifespan it was given. To "
+                    f"show it again, clone it before despawning and spawn the "
+                    f"clone:\n\n"
+                    f"    with Off():\n"
+                    f"        spare = mob.clone(spawn=False)\n"
+                    f"    mob.despawn()\n"
+                    f"    ...\n"
+                    f"    spare.spawn()\n",
+                    DespawnedMobWarning,
+                    stacklevel=2,
+                )
             return self
         self._create_recursive(animate)
         self.animation_manager.context.on_create(self)

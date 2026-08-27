@@ -17,7 +17,7 @@ from algan.animation_timeline.animation_contexts import (
     active_scene_for_new_mob,
 )
 from algan.constants.color import *
-from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUT, RIGHT, UP
+from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUTWARD, RIGHT, UP
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Quad, Rectangle, TriangleTriangulated
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
@@ -49,7 +49,7 @@ class Arrow(TriangulatedBezierCircuit):
         Starting coordinate vector `[x, y, z]`.
     end : torch.Tensor | list[float]
         Ending coordinate vector `[x, y, z]` where the arrow head points.
-    facing_direction : torch.Tensor, default=OUT
+    facing_direction : torch.Tensor, default=OUTWARD
         Normal orientation vector perpendicular to the arrow plane.
     width : float, default=0.009
         Width of the arrow shaft.
@@ -65,7 +65,7 @@ class Arrow(TriangulatedBezierCircuit):
         self,
         start,
         end,
-        facing_direction=OUT,
+        facing_direction=OUTWARD,
         width=0.009,
         bidirectional=False,
         num_ticks=4,
@@ -171,13 +171,13 @@ class Bar(Quad):
         Top center point of the bar.
     width : float, default=0.05
         Half-width of the bar quad.
-    facing_direction : torch.Tensor, default=OUT
+    facing_direction : torch.Tensor, default=OUTWARD
         Normal vector for orientation.
     **kwargs
         Additional keyword arguments forwarded to :class:`Quad`.
     """
 
-    def __init__(self, start, end, width=0.05, facing_direction=OUT, **kwargs):
+    def __init__(self, start, end, width=0.05, facing_direction=OUTWARD, **kwargs):
         self.direction = F.normalize(end - start, p=2, dim=-1)
         self.height = (end - start).norm(p=2, dim=-1)
         self.width = width
@@ -223,7 +223,7 @@ class FunctionPlotMob(Mob):
     num_points : int, default=200
         Number of sample points evaluated along the domain.
     offset : float, default=1.0
-        Depth offset along OUT axis to prevent z-fighting with axes.
+        Depth offset along OUTWARD axis to prevent z-fighting with axes.
     scale : float, default=1.0
         Domain scaling factor.
     max_value : float, optional
@@ -279,7 +279,7 @@ class FunctionPlotMob(Mob):
                 broadcast_cross_product(
                     (points[i + 1] if i < len(points) - 1 else points[i])
                     - (points[i - 1] if i > 0 else points[i]),
-                    OUT,
+                    OUTWARD,
                 ),
                 p=2,
                 dim=-1,
@@ -300,7 +300,7 @@ class FunctionPlotMob(Mob):
             if not bar_plot:
                 self.func = TriangulatedBezierCircuit(
                     [convert_points_to_path(func_points)], **kwargs
-                ).move(OUT * 0.001 * offset)
+                ).move(OUTWARD * 0.001 * offset)
             else:
                 x = self.map_input_domain_to_scaled_domain(xs)
                 locs = (func_points + x) * 0.5

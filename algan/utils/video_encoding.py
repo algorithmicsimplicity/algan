@@ -24,7 +24,7 @@ import warnings
 from contextlib import contextmanager
 
 from algan.environment import env_str
-from algan.errors import AlganWarning
+from algan.errors import AlganConfigurationError, AlganWarning
 from algan.logging.logger import get_logger
 
 logger = get_logger()
@@ -356,6 +356,60 @@ def resolve_encode_binary(codec: str | None) -> str | None:
     # In auto mode this is the same cached probe the codec decision consulted;
     # in forced mode it runs once here to serve the demand the caller made.
     return _probe_cached()[1]
+
+
+def _listed_encoders(binary: str) -> set[str] | None:
+    """Encoder names ``binary`` reports, or ``None`` if it could not be asked."""
+    try:
+        listed = subprocess.run(
+            [binary, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listed.returncode != 0:
+        return None
+    names = set()
+    for line in listed.stdout.splitlines():
+        parts = line.split()
+        # Rows look like " V....D h264   H.264 ...": flags, name, description.
+        if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] in "VAS":
+            names.add(parts[1])
+    return names or None
+
+
+def check_codec_is_available(codec: str | None) -> None:
+    """Fail early, and by name, on a codec FFmpeg cannot encode with.
+
+    An unusable codec used to surface only after the whole render: FFmpeg
+    exited, the temporary file was never written, and the move to the final
+    path raised ``FileNotFoundError`` naming two paths and no codec. Asking
+    FFmpeg for its encoder list costs one subprocess and happens only when the
+    caller named a codec.
+
+    Silent when the list cannot be obtained -- an unaskable FFmpeg is not
+    evidence against the codec, and the encode is still free to try.
+    """
+    if codec is None:
+        return
+    try:
+        default_binary = _moviepy_ffmpeg_binary()
+    except Exception:  # noqa: BLE001 -- an unimportable moviepy is not our error
+        default_binary = "ffmpeg"
+    binary = resolve_encode_binary(codec) or default_binary or "ffmpeg"
+    available = _listed_encoders(binary)
+    if available is None or codec in available:
+        return
+    close = sorted(name for name in available if codec.lower() in name.lower())
+    suggestion = f" Did you mean: {', '.join(close[:5])}?" if close else ""
+    raise AlganConfigurationError(
+        f"{binary} cannot encode with codec {codec!r}.{suggestion} "
+        f"Leave codec unset to let Algan choose (libx264, or h264_nvenc where "
+        f"the hardware encoder is usable), or pass one this FFmpeg lists under "
+        f"`{binary} -encoders`."
+    )
 
 
 @contextmanager

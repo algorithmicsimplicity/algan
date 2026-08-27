@@ -23,8 +23,8 @@ import torch
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.animation_timeline.timeline import bump_hierarchy_version
-from algan.constants.color import Color
-from algan.constants.spatial import OUT
+from algan.constants.color import Color, to_color
+from algan.constants.spatial import OUTWARD
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
@@ -225,7 +225,17 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             if len(points) == len(manim_mob.points):
                 manim_mob.points = points.copy()
 
-        if hasattr(manim_mob, "set_fill"):
+        # Style is synchronized only onto nodes that draw something. A Manim
+        # node with no points of its own has no appearance -- its style is a
+        # template that ``init_colors`` and ``match_style`` broadcast over the
+        # family whenever Manim rebuilds it. The matching Algan node is a bare
+        # container whose colour and opacity rows are placeholders, so writing
+        # them here hands Manim a template that erases the real geometry:
+        # ``DecimalNumber.set_value`` rebuilds its glyphs and then calls
+        # ``init_colors()``, which is what made every ``set_value`` render an
+        # invisible number.
+        styles_own_geometry = len(manim_mob.points) > 0
+        if styles_own_geometry and hasattr(manim_mob, "set_fill"):
             fill_color, fill_opacity = _uniform_color_and_opacity(
                 algan_mob.color, algan_mob.opacity
             )
@@ -235,7 +245,7 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
                 family=False,
             )
 
-        if hasattr(manim_mob, "set_stroke"):
+        if styles_own_geometry and hasattr(manim_mob, "set_stroke"):
             border_color = algan_mob.border_color
             border_opacity_source = algan_mob.border_texture_points.opacity
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
@@ -331,7 +341,8 @@ def _scale_factor_to_manim(scale_factor):
     multiplier, not a coordinate: ``to_manim`` is the converter for values that
     *mean* something in Algan's coordinate system (points, directions, edges),
     and coupling a per-axis multiplier to that conversion would be wrong by
-    category -- Algan's ``OUT`` is ``-z`` where Manim's is ``+z`` (see
+    category -- Algan's ``OUTWARD`` is ``-z`` where Manim's ``OUT`` is ``+z``
+    (see
     "The z mirror" in CLAUDE.md), so any coordinate-style treatment of the
     forward component would negate the one stretch the user asked for.
 
@@ -426,6 +437,15 @@ class ManimCompatMob(ManimMob):
             if key in self._ALGAN_ONLY_KWARGS
         }
         batch = bool(algan_kwargs.pop("batch", False))
+        # Colour keywords are normalized before conversion because Manim's
+        # parser is narrower than Algan's: it reads a tuple of floats as a
+        # *list of colours* and rejects each element. Everything Algan accepts
+        # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
+        # Color here, and to_manim renders that as a value Manim does take.
+        kwargs = {
+            key: (to_color(value) if "color" in key else value)
+            for key, value in kwargs.items()
+        }
         manim_kwargs = {key: to_manim(value) for key, value in kwargs.items()}
         # Several Manim graph/vector-field classes append a default step to
         # ranges in-place even though their public API accepts generic
@@ -558,7 +578,7 @@ class ManimCompatMob(ManimMob):
     def rotate(
         self,
         num_degrees: float | torch.Tensor,
-        axis: torch.Tensor = OUT,
+        axis: torch.Tensor = OUTWARD,
         about_point: torch.Tensor | None = None,
     ) -> Mob:
         """Rotate the Mob, using Algan's rotation rather than Manim's.
@@ -566,7 +586,7 @@ class ManimCompatMob(ManimMob):
         ``rotate`` is one of the names this class shares with :class:`~.Mob`,
         and the two libraries mean different things by it: Algan measures
         ``num_degrees`` in degrees where Manim's angle is in radians, and an
-        explicit ``axis`` turns the opposite way in each (their default ``OUT``
+        explicit ``axis`` turns the opposite way in each (their default z axis
         are opposite vectors, which is exactly what makes the *default*
         rotation agree).  A compatibility Mob is animated as an Algan Mob, so
         this follows :meth:`~.MobOrientationMixin.rotate` exactly -- degrees,
@@ -614,14 +634,33 @@ class ManimCompatMob(ManimMob):
         # grafted into this Mob's hierarchy below and has to render, so it is
         # built as a registered subtree.  Only the target's own root is
         # discarded, and an unspawned actor never reaches the renderer.
-        target = ManimMob(self.manim_mobject, scene=self.scene, add_to_scene=True)
+        replaying = self.scene.timeline_manager.is_replaying()
+        target = ManimMob(
+            self.manim_mobject, scene=self.scene, add_to_scene=not replaying
+        )
         if before_source is not None:
             before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
             _preserve_algan_state_unchanged_by_manim(self, before, target)
-        if self.is_spawned():
+        if self.is_spawned() and not replaying:
+            # Spawning stamps a lifespan and re-lays the endpoint map, which
+            # during a render would rewrite the very bounds the batch in flight
+            # materialized from. The morph below is all this frame needs: the
+            # target only has to supply geometry, and an unspawned Mob is a
+            # perfectly good source for that.
             target = target.spawn(animate=False)
         with Off(animation_manager=self.animation_manager):
             self.become(target, detach_history=False)
+
+        if self.scene.timeline_manager.is_replaying():
+            # Called from an updater the render is re-executing (a counting
+            # DecimalNumber does this on every frame). The morph above has
+            # already put the new geometry on the rows the batch is drawing,
+            # which is the whole of what this frame can show: the batch's
+            # primitives were built from the hierarchy as authored, and
+            # restructuring it now would desynchronize the render from them
+            # and leave the Scene different afterwards from how it was written.
+            self._exposed_manim_baseline = None
+            return self
 
         # ``become`` morphs existing child slots, but a delegated Manim method
         # may add or remove submobjects (``add_tip``, ``add_coordinates``, ...).

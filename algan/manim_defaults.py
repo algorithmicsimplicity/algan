@@ -26,7 +26,8 @@ reproduces both: 2-D content exactly, 3-D content with Manim's own perspective.
 
 The z axis points the other way
 -------------------------------
-Manim's ``OUT`` is ``+z`` and Algan's is ``-z``, so the two screen bases are
+Manim's ``OUT`` is ``+z`` and Algan's ``OUTWARD`` is ``-z``, so the two screen
+bases are
 mirror images: with the same numbers a Manim scene's near objects become Algan's
 far ones. Reproducing Manim's picture therefore means mirroring *both* the
 geometry and the camera in z, which is what
@@ -43,7 +44,7 @@ import math
 import torch
 
 from algan.constants.color import BLACK, WHITE
-from algan.constants.spatial import ORIGIN, OUT
+from algan.constants.spatial import ORIGIN, OUTWARD
 from algan.settings import SETTINGS
 
 #: Height of Manim's frame in world units. Manim pins the vertical extent and
@@ -57,7 +58,7 @@ MANIM_FRAME_HEIGHT = 8.0
 MANIM_FOCAL_DISTANCE = 20.0
 
 #: Manim's ``ThreeDCamera.light_source_start_point``, in **Manim** coordinates
-#: (``9 * DOWN + 7 * LEFT + 10 * OUT``). Pass it through
+#: (``9 * DOWN + 7 * LEFT + 10 * OUTWARD``). Pass it through
 #: :func:`from_manim_coordinates` before handing it to an Algan light.
 MANIM_LIGHT_SOURCE = (-7.0, -9.0, 10.0)
 
@@ -114,7 +115,8 @@ def _mirror_z(points):
 def from_manim_coordinates(points):
     """Convert points from Manim's coordinate system into Algan's.
 
-    Manim's ``OUT`` is ``+z`` and Algan's is ``-z``, so the conversion is a mirror
+    Manim's ``OUT`` is ``+z`` and Algan's ``OUTWARD`` is ``-z``, so the conversion
+    is a mirror
     in z. x and y are untouched: both engines put ``+x`` to the right and ``+y``
     up.
 
@@ -196,9 +198,9 @@ def apply_manim_defaults(
         scene_camera = scene.get_camera()
         if scene_camera is not None:
             # Manim's eye sits focal_distance from the frame plane on its +z
-            # side; mirrored into Algan that is OUT * focal_distance, which is
+            # side; mirrored into Algan that is OUTWARD * focal_distance, which is
             # already where an Algan camera looks from.
-            scene_camera.move_to(ORIGIN + OUT * MANIM_FOCAL_DISTANCE)
+            scene_camera.move_to(ORIGIN + OUTWARD * MANIM_FOCAL_DISTANCE)
             scene_camera.look_at(ORIGIN)
             scene_camera.set_fov(manim_fov())
 

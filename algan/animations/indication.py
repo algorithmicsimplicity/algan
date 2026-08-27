@@ -31,7 +31,7 @@ from algan.animations.movement import Homotopy
 from algan.constants import rate_funcs
 from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
-from algan.constants.spatial import OUT, UP
+from algan.constants.spatial import OUTWARD, UP
 from algan.geometry.geometry import get_rotation_around_axis
 from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
 
@@ -186,7 +186,7 @@ def wiggle_step(
     s_val = 1.0 + (scale_value - 1.0) * there_and_back(t)
     rot_deg = wiggle(t, n_wiggles) * rotation_angle * RADIANS_TO_DEGREES
 
-    R = get_rotation_around_axis(rot_deg, OUT, dim=-1)
+    R = get_rotation_around_axis(rot_deg, OUTWARD, dim=-1)
     R_basis = R.view(-1, 1, 3, 3)
 
     new_basis = squish(

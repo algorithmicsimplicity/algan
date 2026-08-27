@@ -44,7 +44,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
-from algan.constants.spatial import OUT
+from algan.constants.spatial import OUTWARD
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -1226,7 +1226,13 @@ class Surface(Mob):
             self._geometry_tolerance / reference if reference > 0 else 0.0
         )
 
-        color = kwargs["color"] if "color" in kwargs else self.get_default_color()
+        # Parsed here because the vertex grid below indexes and assigns into a
+        # colour tensor, so a hex string or an RGB tuple has to be a colour
+        # before it reaches Mob.__init__.
+        color = to_color(
+            kwargs["color"] if "color" in kwargs else self.get_default_color()
+        )
+        checkered_color = to_color(checkered_color)
         if checkered_color is None:
             checkered_color = color
         else:
@@ -3340,6 +3346,15 @@ class Surface(Mob):
             if precomputed_corners is None
             else precomputed_corners
         )
+        if corners.shape[-2] == 0:
+            # A surface with no extent tessellates to no triangles at all --
+            # ``Sphere(radius=0)``, a radius that a calculation drove to zero,
+            # a degenerate ``u_range``. There is nothing to draw, and the
+            # callers already treat ``None`` as "this actor contributes no
+            # geometry". Built anyway, the empty primitive reached
+            # ``broadcast_all`` against one row of colour and failed the whole
+            # render with a tensor-shape error.
+            return None
 
         def expand_grid_to_verts(x):
             # Same weld as the corners: a pole weld drops triangles, so every
@@ -3653,7 +3668,8 @@ class Surface(Mob):
         Overridden by the 3-D shape classes alongside
         :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`, so each shape
         lights correctly. The base
-        implementation returns ``OUT``, the normal of a flat plane facing the viewer.
+        implementation returns ``OUTWARD``, the normal of a flat plane facing the
+        viewer.
 
         Parameters
         ----------
@@ -3666,7 +3682,7 @@ class Surface(Mob):
         torch.Tensor
             Unit normals, shape ``(*, 3)``, or a single vector broadcast over the grid.
         """
-        return OUT
+        return OUTWARD
 
     def get_base_grid(self) -> torch.Tensor:
         """Get the surface's parameter grid, the ``(u, v)`` domain it is built from.

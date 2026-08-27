@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,7 +27,7 @@ from algan.rendering.raytracing.tracer import (
 )
 from algan.rendering.taichi_runtime import _loaded_from_offline_cache
 from algan.scene_manager import SceneManager
-from algan.settings.video_settings import PREVIEW, VideoSettings
+from algan.settings.video_settings import PREVIEW, SMOKE_TEST, VideoSettings
 from algan.utils import algan_utils
 
 # Marked per test rather than for the module, unlike the other fast-suite
@@ -1302,3 +1303,387 @@ def test_arrow3d_endpoints_follow_the_arrow():
             torch.tensor((0.0, 1.1, 0.0)),
             atol=1e-4,
         )
+
+
+@pytest.mark.fast
+def test_an_animation_context_object_refuses_a_second_with_block():
+    """One context object, one ``with`` block -- and it says so.
+
+    Entering the same object twice used to be accepted, and it corrupted the
+    process: ``__enter__`` keeps its ``ContextVar`` reset token on the instance,
+    so the second entry overwrote the first's and nothing ever undid it. From
+    then on every ``Sync`` and ``Lag`` in the process -- in any Scene -- resolved
+    against a dead Scene's AnimationManager and silently played its animations
+    in sequence instead of together. Nesting the object in itself also made
+    ``prev_context`` point at itself, so the stack could never unwind.
+    """
+    from algan.animation_timeline import animation_contexts
+    from algan.errors import ContextReuseError
+
+    with algan.Scene():
+        square = Square().spawn()
+
+        nested = Sync()
+        # The nesting is the bug under test; ruff's "combine these" advice
+        # would remove exactly what is being reproduced.
+        with pytest.raises(ContextReuseError, match="already being used"):  # noqa: PT012, SIM117
+            with nested:
+                with nested:
+                    square.move(algan.RIGHT)
+
+        sequential = Sync()
+        with sequential:
+            square.move(algan.RIGHT)
+        with pytest.raises(ContextReuseError, match="already been used"):  # noqa: SIM117
+            with sequential:
+                square.move(algan.UP)
+
+        # Distinct objects nest as they always did, and nothing leaked.
+        with Sync():  # noqa: SIM117 -- nesting distinct contexts is the point
+            with Sync():
+                square.move(algan.UP)
+
+    assert animation_contexts._ANIMATION_MANAGER_OVERRIDE.get(None) is None
+
+
+@pytest.mark.fast
+def test_sync_still_overlaps_after_a_rejected_context_reuse():
+    """The rejection leaves timing intact -- the leak's symptom is gone.
+
+    This is the observable half of the bug above: the corruption showed up as
+    ``Sync`` behaving like ``Seq``, which nothing in the failing script pointed
+    at.
+    """
+    from algan.errors import ContextReuseError
+
+    def sync_end_time():
+        with algan.Scene() as scene:
+            square = Square().spawn(animate=False)
+            with Sync() as context:
+                square.move(algan.RIGHT * 0.1)
+                square.move(algan.RIGHT * 0.1)
+                square.move(algan.RIGHT * 0.1)
+            return float(context.timespan.end) - float(context.timespan.start)
+
+    before = sync_end_time()
+
+    with algan.Scene():
+        square = Square().spawn()
+        reused = Sync()
+        with pytest.raises(ContextReuseError):  # noqa: PT012, SIM117
+            with reused:
+                with reused:
+                    square.move(algan.RIGHT)
+
+    assert sync_end_time() == pytest.approx(before)
+
+
+@pytest.mark.fast
+def test_the_scenes_own_video_settings_reach_both_render_calls(tmp_path):
+    """``save_video`` used to ignore them while ``save_frame`` honoured them.
+
+    ``Scene(video_settings=...)`` and ``set_video_settings`` describe the
+    Scene, so a render that names no settings of its own should use them. The
+    video path resolved ``None`` straight to ``SETTINGS.video`` instead, so the
+    same Scene wrote a 32x32 still and an 864x486 video, and
+    ``set_video_settings`` -- whose whole job is to set the frame rate and
+    resolution -- changed nothing about the video.
+    """
+    import cv2
+
+    tiny = VideoSettings((32, 32), 2, anti_alias_level=1)
+
+    with algan.Scene(video_settings=tiny):
+        Square(color=algan.BLUE).spawn()
+        still = algan.Scene.save_frame(str(tmp_path / "still.png"))
+        clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
+
+    image = cv2.imread(str(still.output_path), cv2.IMREAD_UNCHANGED)
+    assert (image.shape[1], image.shape[0]) == (32, 32)
+
+    capture = cv2.VideoCapture(str(clip.output_path))
+    try:
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = capture.get(cv2.CAP_PROP_FPS)
+    finally:
+        capture.release()
+    assert (width, height) == (32, 32)
+    assert fps == pytest.approx(2)
+
+
+@pytest.mark.fast
+def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
+    tmp_path,
+):
+    """The half of the old behaviour that was right, kept.
+
+    A Scene that was never given settings holds a snapshot of
+    ``SETTINGS.video`` from when it was built -- which is before the first line
+    of most scripts, since the first Mob builds the default Scene. Preferring
+    that snapshot would quietly break ``SETTINGS.video.set(...)``.
+    """
+    import cv2
+
+    restore = algan.SETTINGS.video.as_preset()
+    try:
+        with algan.Scene():
+            Square(color=algan.BLUE).spawn()
+            algan.SETTINGS.video.set(VideoSettings((64, 48), 3, anti_alias_level=1))
+            clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
+    finally:
+        algan.SETTINGS.video.set(restore)
+
+    capture = cv2.VideoCapture(str(clip.output_path))
+    try:
+        size = (
+            int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        )
+    finally:
+        capture.release()
+    assert size == (64, 48)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "spelling",
+    ["#FF0000", "red", 0xFF0000, (1.0, 0.0, 0.0), [1.0, 0.0, 0.0]],
+    ids=["hex-string", "css-name", "hex-int", "rgb-tuple", "rgb-list"],
+)
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda color: algan.Square(color=color),
+        lambda color: algan.Sphere(color=color),
+        lambda color: algan.Line(algan.LEFT, algan.RIGHT, color=color),
+        lambda color: algan.Text("x", color=color),
+        lambda color: algan.Arc(color=color),
+    ],
+    ids=["Square", "Sphere", "Line", "Text", "Arc"],
+)
+def test_every_colour_spelling_reaches_every_mob(build, spelling):
+    """One parser for colour, wherever a colour is written.
+
+    ``Color("#ff0000")`` always worked and ``Square(color="#ff0000")`` did not:
+    it raised ``AttributeError: 'str' object has no attribute 'reshape'`` from
+    inside the timeline. Materials had accepted all of these spellings from the
+    start -- the shipped presets are written ``MeshStandardMaterial(color=
+    0x8B5A2B)`` -- so the same literal was a colour in one place and an
+    AttributeError in the other.
+    """
+    with algan.Scene():
+        mob = build(spelling)
+        red = mob.color.reshape(-1, mob.color.shape[-1])[0]
+
+    assert float(red[0]) == pytest.approx(1.0)
+    assert float(red[1]) == pytest.approx(0.0)
+    assert float(red[2]) == pytest.approx(0.0)
+
+
+@pytest.mark.fast
+def test_an_unparseable_colour_says_so():
+    from algan.errors import InvalidColorError
+
+    with algan.Scene():
+        with pytest.raises(InvalidColorError, match="Invalid color string"):
+            algan.Square(color="octarine")
+        with pytest.raises(InvalidColorError, match="Invalid color value"):
+            algan.Square(color=True)
+
+
+@pytest.mark.fast
+def test_spawning_a_despawned_mob_warns_instead_of_doing_nothing():
+    """It cannot work, and the silence left a blank video and no clue why.
+
+    ``spawn`` returned early because ``is_spawned()`` stays True after a
+    despawn, so the call looked like it had worked. The advice is the one
+    ``despawn``'s docstring already gave, said where it is needed.
+    """
+    from algan.errors import DespawnedMobWarning
+
+    with algan.Scene():
+        square = Square().spawn()
+        square.despawn()
+        with pytest.warns(DespawnedMobWarning, match="cannot be brought back"):
+            square.spawn()
+
+        # Spawning an already-spawned (not despawned) Mob is still a quiet
+        # no-op -- that one is documented and harmless.
+        other = Square().spawn()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DespawnedMobWarning)
+            other.spawn()
+
+
+@pytest.mark.fast
+def test_set_material_rejects_a_non_material():
+    """``set_material(GOLD)`` is a natural mistake: CHROME and COPPER are
+    materials while GOLD is a colour. It used to answer with an AttributeError
+    about ``shader``, which names nothing the caller wrote.
+    """
+    with algan.Scene():
+        for value in (algan.GOLD, None, "gold"):
+            with pytest.raises(AlganConfigurationError, match="expects a Material"):
+                algan.Sphere().set_material(value)
+
+        assert algan.Sphere().set_material(algan.GLASS) is not None
+
+
+def test_a_surface_with_no_extent_renders_nothing_rather_than_failing(tmp_path):
+    """A zero-triangle tessellation used to fail the whole render.
+
+    ``Sphere(radius=0)`` -- or a radius a calculation drove to 1e-9 -- built an
+    empty primitive that reached ``broadcast_all`` against one row of colour
+    and raised a tensor-shape error naming neither the Mob nor the radius.
+    There is nothing to draw, so the actor now contributes no geometry.
+    """
+    import cv2
+
+    def brightest(build):
+        with algan.Scene(video_settings=SMOKE_TEST):
+            build().spawn()
+            result = algan.Scene.save_frame(str(tmp_path / "degenerate.png"))
+        return cv2.imread(str(result.output_path), cv2.IMREAD_UNCHANGED).max()
+
+    assert brightest(lambda: algan.Sphere(radius=0, color=algan.BLUE)) == 0
+    assert brightest(lambda: algan.Sphere(radius=1e-9, color=algan.BLUE)) == 0
+    assert brightest(lambda: algan.Cylinder(radius=0, color=algan.BLUE)) == 0
+    # The same surface with extent still draws, so this is not a blanket skip.
+    assert brightest(lambda: algan.Sphere(radius=1, color=algan.BLUE)) > 0
+
+
+@pytest.mark.fast
+def test_seq_and_sync_explain_that_their_lag_ratio_is_fixed():
+    """Both pass their own ``lag_ratio`` positionally to ``Lag``, so a caller's
+    keyword collided with it and Python blamed ``Lag.__init__`` -- a class the
+    caller never mentioned.
+    """
+    from algan.animation_timeline.animation_contexts import Seq
+
+    with pytest.raises(TypeError, match=r"Seq is Lag with lag_ratio=1"):
+        Seq(lag_ratio=0.5)
+    with pytest.raises(TypeError, match=r"Sync is Lag with lag_ratio=0"):
+        Sync(lag_ratio=0.5)
+    assert algan.Lag(0.5) is not None
+
+
+@pytest.mark.fast
+def test_set_parent_to_rejects_cycles_like_group_does():
+    with algan.Scene():
+        square = Square()
+        with pytest.raises(HierarchyError, match="its own parent"):
+            square.set_parent_to(square)
+
+        first, second, third = Square(), algan.Circle(), algan.Triangle()
+        first.set_parent_to(second)
+        with pytest.raises(HierarchyError, match="create a cycle"):
+            second.set_parent_to(first)
+
+        second.set_parent_to(third)
+        with pytest.raises(HierarchyError, match="create a cycle"):
+            third.set_parent_to(first)
+
+        # A chain that is not a cycle is still fine.
+        assert Square().set_parent_to(second) is not None
+
+
+@pytest.mark.fast
+def test_manim_method_names_point_at_the_algan_one():
+    """Algan carries no aliases for its own API, so these names will never
+    exist -- but ``AttributeError: 'Square' object has no attribute 'shift'``
+    does not say that ``move`` is right there.
+    """
+    with algan.Scene():
+        square = Square().spawn()
+        with pytest.raises(AttributeError, match=r"in Algan use move\(\.\.\.\)"):
+            square.shift
+        with pytest.raises(AttributeError, match="Algan records animations"):
+            square.animate
+        # An ordinary typo keeps the ordinary message, and the default-valued
+        # getattr callers all over the engine keep working.
+        with pytest.raises(AttributeError, match="has no attribute 'wibble'"):
+            square.wibble
+        assert getattr(square, "wibble", "default") == "default"
+
+
+@pytest.mark.fast
+def test_an_updater_that_cannot_take_the_elapsed_time_says_so():
+    """Manim's updaters take the mobject alone, so this is the first thing a
+    reader from there writes. It failed with a bare arity TypeError from the
+    immediate zero-time application, naming nothing about updaters.
+    """
+    with algan.Scene():
+        square = Square().spawn()
+        with pytest.raises(TypeError, match="needs 2 positional parameters"):
+            square.add_updater(lambda mob: None)
+        with pytest.raises(TypeError, match="expects a callable"):
+            square.add_updater(42)
+        assert square.add_updater(lambda mob, t: None) is not None
+
+
+@pytest.mark.fast
+def test_a_non_callable_post_process_is_rejected_before_the_render(tmp_path):
+    with algan.Scene(video_settings=SMOKE_TEST):
+        Square(color=algan.BLUE).spawn()
+        with pytest.raises(AlganConfigurationError, match="post_processes"):
+            algan.Scene.save_frame(str(tmp_path / "still.png"), post_processes=(42,))
+
+
+@pytest.mark.fast
+def test_a_background_string_is_read_as_a_colour_first():
+    """Read as a path unconditionally, a colour name was reported as a missing
+    file -- and a mistyped path said the same thing as a word that was never a
+    colour.
+    """
+    with algan.Scene(video_settings=SMOKE_TEST) as scene:
+        scene.set_background_color("navy")
+        with pytest.raises(AlganConfigurationError, match="neither a colour"):
+            scene.set_background_color("not a color", overwrite=True)
+        with pytest.raises(AlganConfigurationError, match="neither a colour"):
+            scene.set_background_color("missing_background.png", overwrite=True)
+
+
+@pytest.mark.fast
+def test_empty_text_spawns_instead_of_failing_on_torch_cat():
+    """``Text("")`` has no glyphs, so its entrance wave has nothing to stagger.
+    It used to die in ``torch.cat`` on an empty list.
+    """
+    with algan.Scene(video_settings=SMOKE_TEST):
+        for text in ("", "   ", "\n"):
+            assert algan.Text(text).spawn() is not None
+        assert algan.Text("hi").spawn() is not None
+
+
+def test_an_unusable_codec_is_named(tmp_path):
+    """It used to cost a whole render and then surface as a missing temp file."""
+    from algan.utils.video_encoding import _listed_encoders
+
+    if _listed_encoders("ffmpeg") is None:
+        pytest.skip("this FFmpeg cannot be asked for its encoder list")
+
+    with algan.Scene(video_settings=SMOKE_TEST):
+        Square(color=algan.BLUE).spawn()
+        with pytest.raises(AlganConfigurationError, match="cannot encode with codec"):
+            algan.Scene.save_video(
+                str(tmp_path / "clip.mp4"), SMOKE_TEST, codec="notacodec"
+            )
+
+
+@pytest.mark.fast
+def test_image_pixels_may_arrive_as_a_numpy_array():
+    """It is what every imaging library returns and what Manim's ImageMobject
+    takes, and it used to reach ``torch.zeros_like`` and fail there.
+    """
+    import numpy as np
+
+    with algan.Scene(video_settings=SMOKE_TEST):
+        assert algan.ImageMob(np.zeros((8, 8, 4), np.uint8)) is not None
+        assert algan.ImageMob(np.zeros((8, 8, 3), np.float32)) is not None
+
+        with pytest.raises(AlganConfigurationError, match="needs a height"):
+            algan.ImageMob(torch.zeros(8, 8))
+        # The channel-count complaint reports the shape that was passed, not
+        # the one padding produced.
+        with pytest.raises(ValueError, match=r"got \(8, 8, 2\)"):
+            algan.ImageMob(torch.zeros(8, 8, 2))

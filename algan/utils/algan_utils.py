@@ -41,6 +41,7 @@ from algan.logging.logger import get_logger
 from algan.rendering.camera import Camera
 from algan.settings import SETTINGS
 from algan.utils.video_encoding import (
+    check_codec_is_available,
     override_moviepy_ffmpeg_binary,
     resolve_encode_binary,
     select_video_encoder,
@@ -242,10 +243,13 @@ def _render_scene_to_file(
     This is the implementation behind :meth:`algan.scene.Scene.save_video`,
     which carries the user-facing signature and documentation.
     """
-    if video_settings is None:
-        video_settings = SETTINGS.video
+    # The Scene's own settings outrank SETTINGS.video when it was given them:
+    # ``Scene(video_settings=...)`` and ``set_video_settings`` used to have no
+    # effect here at all, while ``save_frame`` on the same Scene honoured them.
+    video_settings = scene._resolve_video_settings(video_settings)
 
     previous_settings = scene.video_settings
+    previous_explicit = getattr(scene, "_video_settings_explicit", False)
     previous_background = (
         scene.background_frame,
         getattr(scene, "background_color", None),
@@ -347,6 +351,9 @@ def _render_scene_to_file(
         # A hardware pick can land on a binary other than moviepy's own
         # (moviepy is often configured with a static build that has no NVENC
         # encoders); None keeps moviepy's configuration untouched.
+        # Before the render, not after it: an unusable codec used to cost a
+        # whole render and then surface as a missing temporary file.
+        check_codec_is_available(codec)
         encode_binary = resolve_encode_binary(codec)
         if codec is None:
             codec = "png" if transparent else "libx264"
@@ -425,7 +432,7 @@ def _render_scene_to_file(
                     exc_info=True,
                 )
 
-        scene.set_video_settings(previous_settings)
+        scene.set_video_settings(previous_settings, _explicit=previous_explicit)
         if render_started and reset:
             # Cleanup is unconditional, including failures during audio setup,
             # writer construction, rendering, or final file replacement.

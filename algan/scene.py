@@ -45,9 +45,9 @@ from algan.animation_timeline.animation_contexts import (
     animation_manager_context,
 )
 from algan.animation_timeline.timeline import TimelineManager
+from algan.constants.color import InvalidColorError, to_color
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
-
 from algan.logging.logger import get_logger
 
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
@@ -147,11 +147,16 @@ class Scene(RenderLoopMixin):
         memory=None,
         scene_initializer=None,
     ):
+        chose_video_settings = video_settings is not None
         if video_settings is None:
             video_settings = SETTINGS.video
         if background_frame is None:
             background_frame = SETTINGS.style.frame
         self.set_video_settings(video_settings)
+        # Whether this Scene was *given* its settings, or merely started from
+        # the process-wide ones. Only the first kind outranks a later
+        # ``SETTINGS.video`` change at render time; see _resolve_video_settings.
+        self._video_settings_explicit = chose_video_settings
         self.current_time = 0
         self.min_time = 0
         self.max_time = 0
@@ -329,7 +334,7 @@ class Scene(RenderLoopMixin):
         perspective camera reproduces 2-D scenes exactly and 3-D scenes with
         Manim's own perspective.
 
-        Because Manim's ``OUT`` is ``+z`` where Algan's is ``-z``, this also
+        Because Manim's ``OUT`` is ``+z`` where Algan's ``OUTWARD`` is ``-z``, this also
         turns on :attr:`manim_coordinates`, which makes ``ManimMob`` mirror
         imported geometry in z. Without it a converted 3-D scene renders
         back-to-front. It has no effect on flat ``z = 0`` geometry.
@@ -684,7 +689,11 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             This Scene, so calls can be chained.
         """
-        if self.allow_new_actors:
+        # A Mob built while frames materialize came from an updater being
+        # re-executed, not from authoring. Registering it would grow the actor
+        # list on every frame of the render and leave the Scene different
+        # afterwards from how the script wrote it.
+        if self.allow_new_actors and not self.timeline_manager.is_replaying():
             self.actors.append(actor)
         return self
 
@@ -902,13 +911,52 @@ class Scene(RenderLoopMixin):
         self.reset_scene()
         return self
 
+    def _background_image_frame(self, path, not_a_colour):
+        """Load ``path`` as a full-frame background image.
+
+        Reached when a background string did not parse as a colour, so a
+        missing file has to say that the string was neither -- otherwise the
+        two mistakes are indistinguishable.
+        """
+        if not Path(path).exists():
+            raise AlganConfigurationError(
+                f"background_color {path!r} is neither a colour Algan "
+                f"recognises nor the path of an image file that exists. Pass a "
+                f"Color such as BLUE, a hex string ('#101820'), or the path of "
+                f"an image to use as the background."
+            ) from not_a_colour
+        a = self.video_settings.anti_alias_level
+        # get_image returns [height, width, channels]; interpolate wants
+        # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
+        # the image's rows and columns instead, rendering it transposed.)
+        image = get_image(path).permute(2, 0, 1).unsqueeze(0)
+        image = (
+            F.interpolate(
+                image,
+                [_ * a for _ in tuple(self.frame_size)],
+                mode="bilinear",
+                antialias="bilinear",
+            )
+            .squeeze(0)
+            .permute(1, 2, 0)
+        )
+        # Frame buffers are bottom-up (post_process_frames flips them on the
+        # way out, matching the tracer's py = height-1-row), so the background
+        # rows have to be stored bottom-up too -- as the procedural background
+        # path already produces them.
+        return image.flip(0).unsqueeze(0)
+
     @active_scene_method
-    def set_video_settings(self, video_settings):
+    def set_video_settings(self, video_settings, _explicit: bool = True):
         """Set this Scene's resolution, frame rate and anti-aliasing.
 
         ``video_settings`` is a :class:`~algan.settings.video_settings.VideoSettings`
         instance, usually one of the built-in presets (``PREVIEW``, ``LD``,
         ``MD``, ``HD``, ``PRODUCTION``, ``UHD``).
+
+        They apply to every render of this Scene that does not name settings of
+        its own -- :meth:`save_video` and :meth:`save_frame` alike -- and are
+        outranked only by a ``video_settings`` argument to one of those calls.
 
         Most scripts do not need this: pass ``video_settings`` to
         :meth:`save_video` / :meth:`save_frame` for a one-off render, or set
@@ -934,7 +982,30 @@ class Scene(RenderLoopMixin):
         self.frames_per_second = video_settings.frames_per_second
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
+        self._video_settings_explicit = _explicit
         return self
+
+    def _resolve_video_settings(self, override):
+        """The settings a render should use, most specific first.
+
+        A ``video_settings`` argument to :meth:`save_video` / :meth:`save_frame`
+        wins; then this Scene's own, if it was given them; then
+        ``SETTINGS.video``.
+
+        The last step matters because a Scene that was never given settings
+        holds a *snapshot* of ``SETTINGS.video`` taken when it was constructed
+        -- which is before the first line of most scripts, since the default
+        Scene is built by the first Mob. Preferring the snapshot there would
+        make ``SETTINGS.video.set(HD)`` stop working. Preferring
+        ``SETTINGS.video`` unconditionally is what made ``Scene(video_settings=
+        SMOKE_TEST)`` and ``set_video_settings`` have no effect on
+        ``save_video``, while ``save_frame`` in the same Scene honoured them.
+        """
+        if override is not None:
+            return override
+        if getattr(self, "_video_settings_explicit", False):
+            return self.video_settings
+        return SETTINGS.video
 
     def background_is_transparent(self) -> bool:
         """Whether the Scene's background has any transparency.
@@ -1156,10 +1227,12 @@ class Scene(RenderLoopMixin):
             self.background_color,
             self.background_is_set,
         )
+        previous_explicit = getattr(self, "_video_settings_explicit", False)
         results = []
         try:
-            if video_settings is not None:
-                self.set_video_settings(video_settings)
+            resolved_settings = self._resolve_video_settings(video_settings)
+            if resolved_settings is not self.video_settings:
+                self.set_video_settings(resolved_settings)
             if background_color is not None:
                 self.set_background_color(background_color)
             # Rendering resolves replay windows against the timings as they
@@ -1198,7 +1271,8 @@ class Scene(RenderLoopMixin):
             # set_video_settings restores every derived cache (dimensions,
             # fps, frame size, pixel count), not merely the settings reference.
             if self.video_settings is not previous_settings:
-                self.set_video_settings(previous_settings)
+                self.set_video_settings(previous_settings, _explicit=previous_explicit)
+            self._video_settings_explicit = previous_explicit
             (
                 self.background_frame,
                 self.background_color,
@@ -1265,26 +1339,17 @@ class Scene(RenderLoopMixin):
         if (background_color is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background_color, str):
-            a = self.video_settings.anti_alias_level
-            # get_image returns [height, width, channels]; interpolate wants
-            # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
-            # the image's rows and columns instead, rendering it transposed.)
-            image = get_image(background_color).permute(2, 0, 1).unsqueeze(0)
-            image = (
-                F.interpolate(
-                    image,
-                    [_ * a for _ in tuple(self.frame_size)],
-                    mode="bilinear",
-                    antialias="bilinear",
+            # A string is a colour first and an image path second. Read as a
+            # path unconditionally, ``set_background_color("blue")`` answered
+            # ``No such file or directory: 'blue'`` -- blaming the filesystem
+            # for a colour name -- and a mistyped path said the same thing
+            # whether the file was missing or the word was never a colour.
+            try:
+                background_color = to_color(background_color)
+            except InvalidColorError as not_a_colour:
+                background_color = self._background_image_frame(
+                    background_color, not_a_colour
                 )
-                .squeeze(0)
-                .permute(1, 2, 0)
-            )
-            # Frame buffers are bottom-up (post_process_frames flips them on
-            # the way out, matching the tracer's py = height-1-row), so the
-            # background rows have to be stored bottom-up too -- as the
-            # procedural background path already produces them.
-            background_color = image.flip(0).unsqueeze(0)
         self.background_frame = self.background_color = background_color
         self.background_is_set = True
         return self

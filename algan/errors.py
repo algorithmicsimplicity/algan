@@ -77,6 +77,12 @@ class InvalidColorError(AlganError, ValueError):
     code = "ALGAN_INVALID_COLOR"
 
 
+class ContextReuseError(AlganError, RuntimeError):
+    """Raised when an animation context object is entered more than once."""
+
+    code = "ALGAN_CONTEXT_REUSE"
+
+
 class AlganWarning(UserWarning):
     """Base class for user-facing Algan warnings."""
 
@@ -107,6 +113,12 @@ class NeverSpawnedMobWarning(AlganWarning):
     code = "ALGAN_NEVER_SPAWNED_MOB"
 
 
+class DespawnedMobWarning(AlganWarning):
+    """Warns that an operation on a despawned Mob cannot bring it back."""
+
+    code = "ALGAN_DESPAWNED_MOB"
+
+
 __all__ = [
     "AlganError",
     "AlganConfigurationError",
@@ -115,9 +127,11 @@ __all__ = [
     "ModifiedProtectedAttributeError",
     "TranscriptAudioMismatchError",
     "InvalidColorError",
+    "ContextReuseError",
     "AlganWarning",
     "UnsupportedFeatureWarning",
     "LegacySceneDiscoveryWarning",
     "ApproximationWarning",
     "NeverSpawnedMobWarning",
+    "DespawnedMobWarning",
 ]

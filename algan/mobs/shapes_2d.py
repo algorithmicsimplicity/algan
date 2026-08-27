@@ -32,7 +32,7 @@ from algan.animation_timeline.animation_contexts import (
     active_scene_for_new_mob,
 )
 from algan.constants.color import *
-from algan.constants.spatial import IN, LEFT, ORIGIN, RIGHT
+from algan.constants.spatial import INWARD, LEFT, ORIGIN, RIGHT
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.settings import SETTINGS
@@ -589,6 +589,14 @@ class Polygon(BezierCircuitCubic):
         kwargs = _translate_vector_style_kwargs(
             kwargs, default_color=RED, shape=type(self)
         )
+        if not vertex_locations:
+            # ``torch.stack([])`` below would answer "stack expects a
+            # non-empty TensorList", which says nothing about polygons.
+            raise ValueError(
+                f"{type(self).__name__} needs its vertices: pass them as "
+                f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
+                f"[N, 3] tensor."
+            )
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
             while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:
@@ -852,13 +860,13 @@ class SurroundingRectangle(Quad):
                 device=md.device,
                 dtype=md.dtype,
             )
-            control_points = control_points + md.reshape(-1, 3)[0] + IN * 0.01
+            control_points = control_points + md.reshape(-1, 3)[0] + INWARD * 0.01
             kwargs = _translate_vector_style_kwargs(
                 kwargs, default_color=RED, shape=type(self)
             )
             BezierCircuitCubic.__init__(self, control_points, **kwargs)
         else:
-            super().__init__(corners + IN * 0.01, **kwargs)
+            super().__init__(corners + INWARD * 0.01, **kwargs)
 
 
 class Square(Rectangle):
