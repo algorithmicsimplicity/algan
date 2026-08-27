@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
@@ -124,8 +125,12 @@ class Group(Mob):
             self.add_children(initial_mobs)
         else:
             # Group slices are non-owning views: operations still recurse over
-            # these children, but creating the view does not mutate parent links.
+            # these children, but creating the view does not mutate parent
+            # links. The bump is still owed -- ``super().__init__`` above writes
+            # this Mob's location and color, and a recursive write caches the
+            # descendant set it saw, which at that point was empty.
             self.children[:] = initial_mobs
+            bump_hierarchy_version()
         if (
             self._link_children
             and initial_mobs
@@ -300,9 +305,22 @@ class Group(Mob):
         if self._link_children:
             self.add_children(mobs)
         else:
-            new_children = [*self.children, *mobs]
-            self._validate_new_children(new_children)
-            self.children[:] = new_children
+            # A non-owning view takes no parent links, but everything else has
+            # to match ``add_children``: re-adding a member is a no-op rather
+            # than a duplicate-child error, and the structure version has to be
+            # bumped or ``get_descendants`` goes on serving the cache it filled
+            # before the member arrived -- leaving the new member behind when
+            # the view is moved, while ``len(view)`` says it is there.
+            candidates = [
+                mob
+                for mob in mobs
+                if not any(existing is mob for existing in self.children)
+            ]
+            if candidates:
+                new_children = [*self.children, *candidates]
+                self._validate_new_children(new_children)
+                self.children[:] = new_children
+                bump_hierarchy_version()
         with Off(animation_manager=self.animation_manager):
             self.set_non_recursive(location=self.get_mob_midpoint())
         return self

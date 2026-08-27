@@ -78,6 +78,54 @@ you can animate a child independently, as in the last block of the example above
     :doc:`updaters` -- for a relation the parent-child rule cannot express, such
     as one mob following another *without* also taking its orientation.
 
+Changing the hierarchy mid-scene
+================================
+
+The hierarchy is read when an animation is **recorded**, not when it plays. So
+attaching, detaching and re-parenting all take effect immediately, and only
+affect the animations you record after them:
+
+.. code-block:: python
+
+    first.add_children(square)
+    first.move(RIGHT * 3)       # square travels with first
+
+    first.remove_child(square)
+    second.add_children(square)
+    second.move(UP * 4)         # square travels with second
+    first.move(RIGHT * 10)      # square stays where it is
+
+Play that back and the square follows ``first`` over the first second and
+``second`` over the next -- re-parenting does not reach backwards and rewrite an
+animation that was already recorded.
+
+Re-parenting never moves the mob. Algan keeps positions in world space rather
+than relative to a parent, so a mob keeps exactly where it is when it changes
+hands, and simply starts taking the new parent's changes instead of the old
+one's.
+
+A mob can have **more than one parent**, in which case it accumulates every
+parent's changes. That is what lets overlapping ``Group``\ s each arrange the
+same member::
+
+    Group(a, b).arrange_in_line(RIGHT)
+    Group(b, c).arrange_in_line(UP)     # b takes both
+
+Bear in mind that :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`
+does not detach the mob from any parent it already has, so an intended *move*
+from one parent to another is two calls -- ``remove_child`` (or
+:meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_parent`,
+which is the same detachment from the other side) and then ``add_children``.
+Leave the first one out and the mob is driven by both.
+
+.. warning::
+
+    An :doc:`updater <updaters>` is the exception: it is re-run for every frame
+    it covers, against the hierarchy as it stands at the end of the script. Change
+    the hierarchy while an updater is live and the change applies to every frame
+    that updater covers, including frames before the change. Add and remove
+    updaters around a hierarchy edit rather than across one.
+
 Inspecting the hierarchy
 ========================
 
@@ -92,10 +140,14 @@ Inspecting the hierarchy
        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`.
    * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.get_descendants`
      - Children, grandchildren and so on, plus this Mob.
+   * - :ref:`parents <reference-mob-parents>`
+     - The Mobs whose changes this one follows -- there can be several.
+       **Read-only** -- always add through
+       :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_parent`.
    * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_child`, :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_parent`
-     - Detach a link.
-   * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.set_parent_to`, :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.replace_children`
-     - Re-parent, or swap the whole child list.
+     - Detach one link, from either side. Both drop it in both directions.
+   * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_parent`, :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.replace_children`
+     - Attach from the child's side, or swap the whole child list.
 
 Groups
 ======
