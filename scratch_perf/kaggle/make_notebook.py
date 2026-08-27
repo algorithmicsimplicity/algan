@@ -206,6 +206,12 @@ sh(f"pip install -q -e {{REPO}}")
 # probe passes and the guard sleeps through exactly the case it exists for
 # (that is what memo2 proved). The render device Algan actually resolved is
 # the only answer that means anything here.
+# The answer rides behind a SENTINEL, not at the start of stdout: importing
+# algan pulls in Taichi, which prints its own two-line banner to stdout
+# ("[Taichi] version ...", "[Taichi] Starting on arch=..."). A startswith
+# check therefore reads the banner and is False whatever the device is -- it
+# aborted a genuine 2x Tesla T4 session (tag memo3 v19), and the P100 aborts
+# before it were right by accident rather than by test.
 probe = subprocess.run(
     [sys.executable, "-c",
      "import torch;"
@@ -213,12 +219,12 @@ probe = subprocess.run(
      "cap = torch.cuda.get_device_capability(0) if ok else None;"
      "name = torch.cuda.get_device_name(0) if ok else 'none';"
      "from algan.settings._startup import _RENDER_DEVICE as D;"
-     "print(D.type);"
+     "print('ALGAN_RENDER_DEVICE=' + D.type);"
      "print(f'{{name}} cap={{cap}} torch_cuda_available={{ok}}')"],
     capture_output=True, text=True)
 say(f"algan render-device probe: {{probe.stdout.strip()!r}} "
     f"{{probe.stderr.strip()[-600:]}}")
-if not probe.stdout.startswith("cuda"):
+if "ALGAN_RENDER_DEVICE=cuda" not in probe.stdout:
     raise SystemExit(
         "ABORT: Algan resolved its render device to CPU, so every arm would "
         "measure the wrong machine (a P100 is the usual cause -- torch "
