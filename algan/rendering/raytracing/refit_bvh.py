@@ -286,7 +286,8 @@ def build_refit_bvh(
     (``lo = EMPTY_LO, hi = EMPTY_HI``); ``Tc`` may be 1 for static geometry
     (the refit dedupes to one time slice). ``opaque`` is an optional
     ``[To, N]`` bool mask (``To`` in {1, Tc}) feeding the per-frame leaf
-    opacity flag.
+    opacity flag; a static tree (``Tc == 1``) also accepts a full ``[T, N]``
+    mask and reduces it conservatively over frames, like ``build_stbvh``.
     """
     Tc, N, _ = frame_lo.shape
     device = frame_lo.device
@@ -424,8 +425,24 @@ def build_refit_bvh(
     Tb = Tc
     if opaque is None:
         opq = torch.zeros((1, N), dtype=torch.bool, device=device)
-    else:
+    elif opaque.shape[0] in (1, Tb):
         opq = opaque
+    elif Tb == 1:
+        # Static geometry: the bounds deduped to one time slice while the
+        # opacity mask still carries the batch's frames -- the merge collapses
+        # temporally-constant tables one at a time, so a batch whose geometry
+        # holds still while a mob fades arrives here as Tc == 1, To == T. One
+        # tree covers every frame, so the flag may only be set where it holds
+        # on ALL of them: the same conservative reduction build_stbvh applies
+        # to its Tc == 1 instances. Under-claiming is free -- the bit is
+        # efficiency-only (it prunes hits behind a proven-opaque one), while
+        # over-claiming would delete geometry behind a translucent frame.
+        opq = opaque.all(0, keepdim=True)
+    else:
+        raise ValueError(
+            f"refit BVH opacity mask has {opaque.shape[0]} frames; expected "
+            f"1 or {Tb} to match the frame bounds"
+        )
     # True where the primitive casts no shadow, [N]. Reduced with ``all`` over
     # frames like the STBVH's stamp: the flag is fixed for the render, so this
     # is exact. All-casting (the common case) leaves ``leaf_w`` bit-for-bit what

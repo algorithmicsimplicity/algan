@@ -1973,11 +1973,13 @@ def _merge_scene(primitives, *, track_peak=None):
                 keys += ["tri_pos", "tri_obj", "tri_closed"]
                 # The per-frame bounds feed the BVH builds (both builders
                 # accept ``Tc == 1`` -- one instance spanning all frames --
-                # and their per-frame opacity masks accept ``To in {1, Tc}``)
-                # and the raster host tables (all ``f % shape[0]``). lo/hi
-                # collapse together or not at all: the builders require one
-                # frame count across the pair. Probed through the scene dict
-                # so the whole block shares _dedup_time_group's single sync.
+                # and both reduce a still-per-frame opacity mask over the
+                # batch when they do, since each key here collapses on its
+                # own: static geometry under a fading mob lands as Tc == 1,
+                # To == T) and the raster host tables (all ``f % shape[0]``).
+                # lo/hi collapse together or not at all: the builders require
+                # one frame count across the pair. Probed through the scene
+                # dict so the block shares _dedup_time_group's single sync.
                 scene["_probe_lo"], scene["_probe_hi"] = lo, hi
                 scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
                 keys += ["_probe_lo", "_probe_hi", "_probe_opaque", "_probe_casts"]
