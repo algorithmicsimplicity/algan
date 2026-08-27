@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "mcp__Kaggle"
+      "mcp__Kaggle",
+      "mcp__Claude_Code_Remote__send_later"
     ]
   },
   "skillOverrides": {
