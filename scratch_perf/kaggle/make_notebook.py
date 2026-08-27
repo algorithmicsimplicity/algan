@@ -196,24 +196,35 @@ sh(f"pip install -q -e {{REPO}}")
 # ------------------------------------------------------------- 3b. GPU guard
 # Kaggle's generic "Gpu" machine shape can hand out a Tesla P100 (cuda
 # capability 6.0), which this torch build REFUSES -- its supported range is
-# (7.0)-(12.0). torch.cuda.is_available() then reads False, Algan's
-# _auto_render_device falls back to CPU, and every arm below renders on four
-# slow vCPUs while the log still says the session had a GPU. That happened
-# (tag memo1, 2026-08-27): seven arms of CPU numbers collected under a
-# notebook called "t4 perf". Fail loudly rather than measure the wrong
-# machine -- re-save with a T4 shape (machineShape="GpuT4x2").
+# (7.0)-(12.0). Algan's _auto_render_device then falls back to CPU and every
+# arm renders on a couple of slow vCPUs while the session log still shows a
+# GPU. That happened twice (tags memo1 and memo2, 2026-08-27): fourteen arms
+# of CPU numbers collected under a notebook called "t4 perf".
+#
+# ASK ALGAN, NOT TORCH. torch.cuda.is_available() returns TRUE on that P100 --
+# it reports the device and only refuses the arch later -- so the obvious
+# probe passes and the guard sleeps through exactly the case it exists for
+# (that is what memo2 proved). The render device Algan actually resolved is
+# the only answer that means anything here.
 probe = subprocess.run(
     [sys.executable, "-c",
-     "import torch;print(torch.cuda.is_available());"
-     "print(torch.cuda.get_device_name(0) if torch.cuda.is_available() "
-     "else 'NO USABLE GPU')"],
+     "import torch;"
+     "ok = torch.cuda.is_available();"
+     "cap = torch.cuda.get_device_capability(0) if ok else None;"
+     "name = torch.cuda.get_device_name(0) if ok else 'none';"
+     "from algan.settings._startup import _RENDER_DEVICE as D;"
+     "print(D.type);"
+     "print(f'{{name}} cap={{cap}} torch_cuda_available={{ok}}')"],
     capture_output=True, text=True)
-say(f"torch cuda probe: {{probe.stdout.strip()!r}} {{probe.stderr.strip()[:600]}}")
-if not probe.stdout.startswith("True"):
+say(f"algan render-device probe: {{probe.stdout.strip()!r}} "
+    f"{{probe.stderr.strip()[-600:]}}")
+if not probe.stdout.startswith("cuda"):
     raise SystemExit(
-        "ABORT: torch cannot use this session's GPU, so every arm would "
-        "render on CPU and the numbers would not be what this notebook "
-        "claims to measure. Re-save with machineShape='GpuT4x2'."
+        "ABORT: Algan resolved its render device to CPU, so every arm would "
+        "measure the wrong machine (a P100 is the usual cause -- torch "
+        "refuses sm_60). Re-save with a T4 shape: machineShape='GpuT4x2' "
+        "AND hasMachineShape=true, which the Kaggle API needs to read the "
+        "field at all."
     )
 
 # ---------------------------------------------------------------- 4. run arms

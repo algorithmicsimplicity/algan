@@ -30,6 +30,30 @@ Kernel config that works: `enableGpu: true`, `enableInternet: true`,
 arm that already exited 0 in a previous session of the same tag is skipped, so a
 cut-short run is continued by re-saving rather than redone.
 
+**`machineShape` must be exactly `"NvidiaTeslaT4"`, and a wrong value fails
+SILENTLY and expensively.** An unrecognised string (`"GpuT4x2"` was invented
+and tried, 2026-08-27) is dropped: the notebook is saved with the generic
+`machine_shape: "Gpu"`, which Kaggle satisfies with whatever it has — often a
+**Tesla P100**. Then the whole thing goes quiet rather than failing:
+
+* the P100 is cuda capability 6.0 and this torch build supports (7.0)-(12.0),
+  so torch refuses `sm_60` and Algan's `_auto_render_device` falls back to CPU;
+* every arm renders on two slow vCPUs, `nvidia-smi` at the top of the log still
+  shows a GPU, and the notebook is still called "t4 perf";
+* `nn_scene_UHD` then dies with `OutOfRenderMemory` (UHD on CPU), which reads
+  like a real regression and is not.
+
+Two runs (tags `memo1`, `memo2`) collected fourteen arms of CPU numbers this
+way before anyone noticed. **The check that catches it is `Rendering device set
+to <x>` in each arm's log, or the generator's guard** — and the guard has to ask
+ALGAN, not torch: `torch.cuda.is_available()` returns **True** on that P100 (it
+reports the device and only rejects the arch later), so the obvious probe
+sails straight through. `make_notebook.py` now aborts the run unless
+`algan.settings._startup._RENDER_DEVICE.type` is `cuda`.
+
+Confirm the shape took by reading `machine_shape` back from
+`get_notebook_info` — it echoes the whole source, so do it once, deliberately.
+
 Per-run fixed cost: apt ~25 s + `pip install -e` ~50 s. `/kaggle/working`
 persists between runs of the same notebook, which is what carries the git clone,
 the Taichi kernel cache (`ALGAN_CACHE_DIR=/kaggle/working/algan_cache`) and the
