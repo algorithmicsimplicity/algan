@@ -193,6 +193,29 @@ if SNAPSHOT:
 # ---------------------------------------------------------------- 3. install
 sh(f"pip install -q -e {{REPO}}")
 
+# ------------------------------------------------------------- 3b. GPU guard
+# Kaggle's generic "Gpu" machine shape can hand out a Tesla P100 (cuda
+# capability 6.0), which this torch build REFUSES -- its supported range is
+# (7.0)-(12.0). torch.cuda.is_available() then reads False, Algan's
+# _auto_render_device falls back to CPU, and every arm below renders on four
+# slow vCPUs while the log still says the session had a GPU. That happened
+# (tag memo1, 2026-08-27): seven arms of CPU numbers collected under a
+# notebook called "t4 perf". Fail loudly rather than measure the wrong
+# machine -- re-save with a T4 shape (machineShape="GpuT4x2").
+probe = subprocess.run(
+    [sys.executable, "-c",
+     "import torch;print(torch.cuda.is_available());"
+     "print(torch.cuda.get_device_name(0) if torch.cuda.is_available() "
+     "else 'NO USABLE GPU')"],
+    capture_output=True, text=True)
+say(f"torch cuda probe: {{probe.stdout.strip()!r}} {{probe.stderr.strip()[:600]}}")
+if not probe.stdout.startswith("True"):
+    raise SystemExit(
+        "ABORT: torch cannot use this session's GPU, so every arm would "
+        "render on CPU and the numbers would not be what this notebook "
+        "claims to measure. Re-save with machineShape='GpuT4x2'."
+    )
+
 # ---------------------------------------------------------------- 4. run arms
 CACHE.mkdir(exist_ok=True)
 # Resumable: an arm that already produced a result in a previous session of this
