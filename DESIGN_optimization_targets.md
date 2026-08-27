@@ -512,6 +512,83 @@ larger share of a CPU render, so `ALGAN_SHEET_RESOLVE_MEMO=1` may be worth it
 there. It should not be flipped on for a GPU render without a fresh unsynced
 profile of the target scene.
 
+## The texture time-lerp round (2026-08-27): the crossfade leaves the timeline
+
+Stage 4 of the texture line (the opacity/u8 round below is stages 1-3): an
+animated colour-texture REASSIGNMENT — the case the window collapse cannot
+touch, because its texels genuinely change per frame — no longer
+materializes, uploads, or replays one full image per frame.
+`TEXTURE_TIME_LERP` (default on; `ALGAN_TEXTURE_TIME_LERP=0` restores the
+dense pipeline) describes the window off the timeline instead:
+
+- **The timeline-side gate** (`AnimationTimeline._describe_segment_windows`,
+  run per batch before materialization, only for attributes opted in via
+  `enable_segment_windows` — the `color_texture` setter's job). It accepts a
+  (mob, attribute) window only when every event touching the rows is a plain
+  recorded assignment — `Mob._apply_change`, marked
+  `_algan_replay_is_plain_lerp` on its undecorated body, one recorded edit
+  covering exactly the rows, default 0→1 interpolation, no scope, no
+  recursion — with non-overlapping (unextended) replay windows, no active
+  updater depending on the mob, and a known actor working set. Anything else
+  — overlap, updaters, custom `animate_function` batches, endpoint counts
+  rivalling the frame count — falls back to the dense path byte-identically.
+- **The description**: K endpoint states read off the edit log (pre-values;
+  the authored target map, which the setter now stamps on the `EditRecord`
+  so u8 provenance survives — the STORED post state is `pre + change`, an
+  ulp off `k/255`; and the current-state tail), plus per-frame `(i0, i1, w)`
+  where the weights are **bit-identical** to the dense replay's
+  rate-function evaluation (same tensors, same shapes — torch CPU rounds
+  shape-dependently, so the gate re-evaluates the exact expression).
+  Endpoints are the ANIMATION's, not the batch's: consecutive batches of one
+  crossfade upload the same two maps with sub-range weights.
+- **Materialization exclusion**: described rows are dropped from the
+  attribute's working set (`rematerialize_state_at_times(exclude_rows=...)`)
+  and the claimed events' replay is skipped — the first path where the
+  timeline never builds a `[T, rows, W*H*5]` buffer at all (item 3's window
+  stride, texture-shaped). The safety net for the one reader the gate cannot
+  foresee (a time-dependent updater branch first touching the mob
+  mid-window) lives in `trace_updater_mob_access`: dense refill from
+  `SegmentWindow.evaluate()`, description dropped.
+- **Transport**: the primitive carries the endpoint stack as
+  `[1, K, H, W, 5]` (the leading singleton keeps `slice_time_window` off the
+  endpoint axis) plus `texture_lerp [T, 3]`; the merge appends the stack in
+  AUTHORED space (the linear-light decode is skipped — the sampler decodes
+  AFTER the time lerp, the dense path's own order) and the (i0, i1, w,
+  decode-flag) rows as a tiny bank region addressed by meta cols 16-17. A
+  u8-provenance stack (proved on the ACTUAL endpoints, memoized per stack)
+  packs as bytes with NO LUT (meta col 15 = -2): the bytes are the authored
+  `k/255`, recovered by an IEEE division. No new kernel arguments — the
+  resolve kernel sits at Taichi's runtime-argument ceiling.
+- **Estimators**: an observed lerp window (`_texture_window_lerp`) prices at
+  one image per frame on the host and ONE image of margin on the render
+  device (its rows never materialize there), so crossfade batches lengthen
+  the way stage 2 lengthened fades.
+- **A latent stage-3 admission bug found and fixed on the way**: the
+  per-assignment `_color_texture_u8_ok` stamp describes the LATEST map, but
+  a collapsed window can show any map ever assigned — assigning a u8 map
+  after a non-u8 one admitted the OLD map's window to u8 rounding. The dense
+  arm now reads `_color_texture_u8_ok_all` (the AND over assignments at the
+  resolution); described windows prove their own endpoints.
+
+**Parity** (`benchmarks/_texture_lerp_ab.py`: three arms, pinned windows,
+non-vacuity asserted per path — lerp regions present, u8 stack present, f32
+stack present, a lerp+opacity composition, dense contrast >2x):
+the u8-stack flip is **byte-identical**; the lerp flip vs dense is the
+qualified class the round was scoped as (weights bit-identical; the lerp
+re-associates `(post - pre) * w` against the replay's `change * w`, and the
+sRGB decode moves from torch to its kernel twin) — measured max channel
+diff **1** on 30 pixels of 15 frames (CPU). `_texture_dedup_ab.py` now pins
+TEXTURE_TIME_LERP off in both arms (its contract is byte-identity across
+the time-dedup family alone).
+
+**Measured, CPU box (4-vCPU container)** —
+`benchmarks/performance/texlerp_ab_PREVIEW.py` (world_map.png crossfading to
+its flip across the whole 3 s clip + static copy + moving cube): **4.37 s vs
+7.35 s dense (1.68x)** with equal batch windows, merged bank rows
+**944,394 vs 6,609,126 (7.0x)**; the parity scene's fade batches 8,185,432 →
+945,668 rows (8.7x). Fast suite unchanged (23 s settled). T4 numbers: see
+the measurement record below once run.
+
 ## The texture opacity/u8 round (2026-08-27): the premultiply leaves the host
 
 The contract change `DESIGN_renderer_structural_candidates.md` item 5's u8
@@ -632,10 +709,8 @@ texels plus per-(map, frame) scalars — the contract stage 4 of this line of
 work (in-kernel interpolation between two endpoint maps with per-frame
 weights read off the timeline, generalizing fades to texel crossfades)
 plugs into: endpoints are authored maps (u8-eligible), weights ride the
-same meta/bank pattern as the opacity region. The timeline-side "describe
-this window as segments" query is the open build, and it should be designed
-with item 3's full window stride in mind (this is its texture-shaped
-special case).
+same meta/bank pattern as the opacity region. **Stage 4 shipped the same
+day** — see "The texture time-lerp round" above.
 
 ## The T4 round (2026-08-25): the nn performance scenes
 

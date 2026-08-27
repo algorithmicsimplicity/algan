@@ -363,9 +363,27 @@ class EditRecord:
     edit that overlaps it in time on shared rows (see
     :meth:`AnimationTimeline._resolve_replay_windows`). It is resolved to a
     float at render time, once context rescaling is final.
+
+    ``authored_target`` is optional: the exact value the author assigned,
+    when the recording site can supply it (``Surface.color_texture``'s
+    setter does). The state the write STORES is ``pre + (target - pre)``,
+    which is an ulp off the authored value per element -- enough to void
+    the ``k / 255`` provenance u8 texture storage needs. A segment window
+    uses the authored value as its interpolation TARGET (only ever sampled
+    through a weight, so the substitution stays inside the description's
+    qualified tolerance); the states constant frames read remain the stored
+    ones, bit for bit.
     """
 
-    __slots__ = ("indexes", "values", "time", "seq", "event", "replay_end")
+    __slots__ = (
+        "indexes",
+        "values",
+        "time",
+        "seq",
+        "event",
+        "replay_end",
+        "authored_target",
+    )
 
     def __init__(self, indexes, values, time, seq=0, event=None):
         self.indexes = indexes
@@ -374,6 +392,7 @@ class EditRecord:
         self.seq = seq
         self.event = event
         self.replay_end = None
+        self.authored_target = None
 
 
 def _replay_window_end(f):
@@ -446,6 +465,54 @@ class _EndpointLayout:
         self.owners = owners
         self.blocks = blocks
         self.used = used
+
+
+class SegmentWindow:
+    """One mob's rows of one attribute over one frame window, described as
+    endpoint states plus per-frame interpolation instead of a materialized
+    ``[T, rows, C]`` buffer.
+
+    Produced by :meth:`AnimationTimeline._describe_segment_windows` for
+    attributes that opted in (:meth:`AnimationTimeline.enable_segment_windows`)
+    when the window's writers are all plain recorded assignments -- currently
+    ``Surface.color_texture``, whose per-frame materialization is a whole
+    image. Frame ``t``'s state is
+    ``endpoints[index0[t]] + (endpoints[index1[t]] - endpoints[index0[t]]) *
+    weights[t]``; the weights are the exact per-frame rate-function values the
+    dense replay would have computed (same tensors, same ops, same shapes), so
+    the only difference from the dense buffer is the lerp's re-association
+    (``(post - pre) * a`` against the replay's ``change * a``) -- at most an
+    ulp per texel, which is why the consumer's flip is a qualified exception
+    rather than byte-identical.
+
+    ``cache_key`` identifies the endpoint stack across batches (it is a tuple
+    over the edit records the endpoints came from), so consumers can reuse
+    per-stack work (u8 provenance, the stacked upload) while the same
+    animation spans several frame windows. It is ``None`` when an endpoint was
+    read from the mutable current state (the window runs past the last edit),
+    which must not be cached.
+    """
+
+    __slots__ = ("rows", "endpoints", "index0", "index1", "weights", "cache_key")
+
+    def __init__(self, rows, endpoints, index0, index1, weights, cache_key):
+        self.rows = rows
+        self.endpoints = endpoints
+        self.index0 = index0
+        self.index1 = index1
+        self.weights = weights
+        self.cache_key = cache_key
+
+    def evaluate(self):
+        """The window's dense ``[T, rows, C]`` state, for fallback fills.
+
+        Only the escape hatch reads this (an updater discovering the mob
+        mid-window, see :meth:`AnimationTimeline.trace_updater_mob_access`);
+        ordinary consumption samples the endpoints in the render kernel.
+        """
+        e0 = self.endpoints[self.index0]
+        e1 = self.endpoints[self.index1]
+        return (e0 + (e1 - e0) * self.weights.view(-1, 1)).unsqueeze(1)
 
 
 def _prepare_array_state_queries(times, N, edits):
@@ -1504,7 +1571,9 @@ class AttributeTimeline:
             self._query_cache[key] = prepared
         return prepared
 
-    def rematerialize_state_at_times(self, times, active_mob_ids=None, extra_rows=None):
+    def rematerialize_state_at_times(
+        self, times, active_mob_ids=None, extra_rows=None, exclude_rows=None
+    ):
         self.prepare_for_queries()
         if self.record_end_points:
             self._refresh_end_points()
@@ -1517,6 +1586,18 @@ class AttributeTimeline:
                 active_rows = torch.unique(
                     torch.cat((active_rows, extra_rows)), sorted=True
                 )
+        if exclude_rows is not None and active_rows is not None and active_rows.numel():
+            # Rows whose window is described as a SegmentWindow instead of
+            # materialized (see AnimationTimeline._describe_segment_windows).
+            # Dropping them from the working set is what saves the per-frame
+            # image copies; every reader already treats an absent row as
+            # zero and every writer drops writes to it, and the one
+            # legitimate late reader (an updater discovering the mob
+            # mid-window) goes through trace_updater_mob_access, which
+            # rematerializes these rows densely from the description.
+            active_rows = active_rows[
+                ~torch.isin(active_rows, exclude_rows.to(active_rows.device))
+            ]
         compact = active_rows is not None and not _opt_disabled("compactstate")
         if compact:
             # Materialize only the window's live rows. The full-width
@@ -2183,6 +2264,17 @@ class AnimationTimeline:
         # Bumped whenever register_updater_history_split actually adds an
         # entry; invalidates every UpdaterEvent's _known_clone_ids memo.
         self._updater_clone_version = 0
+        # Segment-window state (see _describe_segment_windows): the attributes
+        # that opted in, the current batch's descriptions
+        # ({attr: {mob_id: SegmentWindow}}), and two per-render caches -- the
+        # recomputed post-state of an edit (its pre-values plus its event's
+        # recorded change; one image add per animated edit, reused across
+        # every batch the animation spans) and the per-(attr, mob) list of
+        # that mob's edits, keyed by the log length it was built at.
+        self._segment_window_attrs = set()
+        self._segment_windows = {}
+        self._segment_post_cache = {}
+        self._segment_edit_cache = {}
 
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
@@ -2237,6 +2329,27 @@ class AnimationTimeline:
 
         if self._materialized_mob_ids is None or self._materialization_times is None:
             return
+        if self._segment_windows:
+            # A time-dependent updater branch touching a mob whose window was
+            # described as segments (nothing else reaches here for such a mob:
+            # a dependency known when the batch began declines the
+            # description). Rematerialize those rows densely from the
+            # description -- base state plus the claimed events' writes, which
+            # the description carries -- and drop it, so the primitive build
+            # consumes the buffer like any dense window.
+            for attr, per_mob in self._segment_windows.items():
+                for hit_id in [m for m in per_mob if m in mob_ids]:
+                    seg = per_mob.pop(hit_id)
+                    timeline = self.attr_to_timeline[attr]
+                    timeline.materialize_additional_rows(
+                        self._materialization_times, seg.rows
+                    )
+                    columns, live = timeline._compact_index(seg.rows)
+                    if live is not None:
+                        columns = columns[live]
+                    timeline.active_state[:, columns] = seg.evaluate().to(
+                        timeline.active_state.device
+                    )
         missing = mob_ids.difference(self._materialized_mob_ids)
         if not missing:
             return
@@ -2778,6 +2891,318 @@ class AnimationTimeline:
             mob_ids.update(event.dependency_mob_ids)
         return mob_ids
 
+    def enable_segment_windows(self, attr_name):
+        """Opt ``attr_name`` into segment-window description.
+
+        Called by the attribute's owner (``Surface.color_texture``'s setter)
+        because eligibility is a property of how the attribute is consumed:
+        the primitive build must know how to sample endpoint states, which
+        only the texture path does. Idempotent.
+        """
+        self._segment_window_attrs.add(attr_name)
+
+    def segment_window_for(self, attr_name, mob_id):
+        """The current batch's :class:`SegmentWindow` for one mob's rows of
+        ``attr_name``, or None when the window was materialized densely.
+        Valid between one :meth:`set_state_to_times` and the next.
+        """
+        per_mob = self._segment_windows.get(attr_name)
+        return None if per_mob is None else per_mob.get(mob_id)
+
+    def _describe_segment_windows(self, times, functions, updaters, active_mob_ids):
+        """Describe opted-in attributes' windows as segments where possible.
+
+        Populates ``self._segment_windows`` and returns ``(exclude_rows,
+        claimed_event_ids)``: the rows each attribute must NOT materialize,
+        and the ``id()`` of every function application whose replay the
+        descriptions fully account for (each writes exactly one described
+        row set, so skipping its re-execution is what removes the per-frame
+        lerp-and-write pass).
+
+        The gate is deliberately conservative -- any condition it cannot
+        prove falls back to the dense path, which is the behaviour every
+        other attribute keeps:
+
+        - ``active_mob_ids`` must be known (a custom animated function makes
+          the working set unknowable, and materialization goes full-width);
+        - the window's times must be ascending (render batches always are);
+        - every event active in the window that touches the rows must be a
+          plain recorded assignment: its undecorated function is marked
+          ``_algan_replay_is_plain_lerp`` (``Mob._apply_change``), it
+          recorded exactly one edit covering exactly these rows, its
+          interpolation runs the default 0 -> 1 with no scope and no
+          recursion, and its replay window was not extended by an
+          overlapping earlier edit;
+        - the rows' edits must not overlap in time (overlap replays a chain
+          of writes that is not a single lerp);
+        - no active updater depends on the mob (an updater may read or
+          overwrite the rows mid-window; the dense buffer is what makes
+          that well-defined).
+        """
+        self._segment_windows = {}
+        if not self._segment_window_attrs or active_mob_ids is None:
+            return {}, frozenset()
+        if times.numel() == 0 or bool((times[1:] < times[:-1]).any()):
+            return {}, frozenset()
+        from algan.rendering.raytracing import settings as rt_settings
+
+        if not rt_settings.texture_time_lerp_active():
+            return {}, frozenset()
+        exclude = {}
+        claimed = set()
+        for attr in self._segment_window_attrs:
+            tl = self.attr_to_timeline.get(attr)
+            if tl is None or tl.record_end_points:
+                continue
+            for mob_id in tl.mob_id_to_inds.keys() & active_mob_ids:
+                described = self._describe_one_segment_window(
+                    attr, tl, mob_id, times, functions, updaters
+                )
+                if described is None:
+                    continue
+                seg, events = described
+                self._segment_windows.setdefault(attr, {})[mob_id] = seg
+                claimed.update(id(e) for e in events)
+                exclude.setdefault(attr, []).append(seg.rows)
+        return (
+            {a: torch.unique(torch.cat(r)) for a, r in exclude.items()},
+            frozenset(claimed),
+        )
+
+    @staticmethod
+    def _plain_lerp_event(fev, attr, row):
+        """Whether one active function application is a plain assignment of
+        ``row`` of ``attr`` -- i.e. its replay writes exactly
+        ``pre + change * a`` there and nothing anywhere else. See
+        :meth:`_describe_segment_windows` for the conditions.
+        """
+        if not getattr(fev.function, "_algan_replay_is_plain_lerp", False):
+            return False
+        if len(fev.recorded_edits) != 1:
+            return False
+        edit_attr, _mid, _rec, e_inds = fev.recorded_edits[0]
+        flat = e_inds.view(-1)
+        if edit_attr != attr or flat.numel() != 1 or int(flat[0]) != row:
+            return False
+        kwargs = fev.kwargs or {}
+        if kwargs.get("scope") is not None:
+            return False
+        # recursive replay re-distributes the change over the subtree; only
+        # the non-recursive write is the recorded lerp verbatim.
+        if kwargs.get("recursive", True) is not False:
+            return False
+        if TIME_PARAMETER_NAME in kwargs:
+            return False
+        interp = kwargs.get("interpolation")
+        if not (
+            torch.is_tensor(interp) and interp.numel() == 1 and float(interp) == 1.0
+        ):
+            return False
+        initial = fev.animated_args or {}
+        if set(initial) != {"interpolation"} or float(initial["interpolation"]) != 0.0:
+            return False
+        if fev.rate_func is None or not torch.is_tensor(kwargs.get("change")):
+            return False
+        start, end = fev.time.start, fev.time.end
+        if not end > start:
+            return False
+        # An extended replay window means an earlier-executed edit overlaps
+        # this one on shared rows; the rebuilt chain of states is not a lerp.
+        return not _replay_window_end(fev) > end
+
+    def _segment_post_value(self, ed):
+        """The value ``ed``'s recorded assignment interpolates towards, flat.
+
+        The authored target when the recording site stamped it
+        (:attr:`EditRecord.authored_target` -- exact, so u8 provenance
+        survives); otherwise recomputed exactly as authoring computed the
+        stored state -- the edit's pre-modification snapshot plus the
+        event's recorded ``change`` (the recorded ``interpolation``
+        multiplier is exactly 1.0 by the gate, and ``x * 1.0`` is bitwise
+        ``x``). Either way this endpoint is only ever sampled through an
+        interpolation weight (constant frames read the STORED states), so
+        the two differ inside the description's qualified tolerance. Cached
+        per edit, since the same animation spans every batch of its
+        duration.
+        """
+        cached = self._segment_post_cache.get(id(ed))
+        if cached is None:
+            target = ed.authored_target
+            if target is not None:
+                cached = target.reshape(-1)
+            else:
+                cached = (ed.values + ed.event.kwargs["change"]).reshape(-1)
+            self._segment_post_cache[id(ed)] = cached
+        return cached
+
+    def _describe_one_segment_window(
+        self, attr, tl, mob_id, times, functions, updaters
+    ):
+        """One (attribute, mob) description; ``(SegmentWindow, claimed
+        events)`` or None. See :meth:`_describe_segment_windows`.
+        """
+        rows = tl.mob_id_to_inds.get(mob_id)
+        if rows is None:
+            return None
+        rows = rows.view(-1)
+        # One row is a whole image for the attributes that opt in; the
+        # endpoint-sampling consumer is built for exactly that shape.
+        if rows.numel() != 1:
+            return None
+        for updater in updaters:
+            if mob_id in updater.dependency_mob_ids:
+                return None
+        row = int(rows[0])
+
+        # The mob's edits, in execution order. The log only grows during a
+        # render (and any growth re-runs this), so the filtered list is
+        # cached against its length.
+        cache_key = (attr, mob_id)
+        cached = self._segment_edit_cache.get(cache_key)
+        if cached is not None and cached[0] == len(tl.edits):
+            mob_edits = cached[1]
+        else:
+            mob_edits = []
+            for ed in tl.edits:
+                flat = ed.indexes.view(-1)
+                if not bool((flat == row).any()):
+                    continue
+                if flat.numel() != 1:
+                    # A write covering this row among others has replay
+                    # semantics the per-row description cannot express.
+                    self._segment_edit_cache[cache_key] = (len(tl.edits), None)
+                    return None
+                mob_edits.append(ed)
+            self._segment_edit_cache[cache_key] = (len(tl.edits), mob_edits)
+        if mob_edits is None:
+            return None
+
+        relevant = []
+        for fev in functions:
+            touches = any(
+                edit_attr == attr and bool((e_inds.view(-1) == row).any())
+                for edit_attr, _mid, _rec, e_inds in fev.recorded_edits
+            )
+            if not touches:
+                continue
+            if not self._plain_lerp_event(fev, attr, row):
+                return None
+            relevant.append(fev)
+
+        # Per-edit spans, validated non-overlapping. An edit whose event is
+        # not active at any frame contributes only its completed step, which
+        # lands at the edit's end -- exactly an instant edit.
+        spans = []
+        prev_end = -math.inf
+        for ed in mob_edits:
+            own_end = float(ed.time.end)
+            resolved = ed.replay_end if ed.replay_end is not None else own_end
+            if resolved > own_end:
+                return None
+            ev = ed.event
+            if ev is not None and any(ev is r for r in relevant):
+                start = float(ev.time.start)
+            else:
+                ev = None
+                start = own_end
+            if start < prev_end:
+                return None
+            prev_end = max(prev_end, own_end)
+            spans.append((start, own_end, ed, ev))
+
+        # The dense base search compares frame times against float32 edit
+        # ends while replay activity compares against the python-float ends,
+        # so a frame landing exactly on a downward-rounded float32 end sits
+        # in different regimes for the two. Decline that (measure-zero)
+        # boundary rather than describe it.
+        ends32 = torch.tensor([s[1] for s in spans], dtype=times.dtype)
+        for (_, own_end, _, _), end32 in zip(spans, ends32.tolist()):
+            if end32 < own_end and bool((times == end32).any()):
+                return None
+
+        pos = torch.searchsorted(ends32, times, right=True)
+        T = times.numel()
+        index0 = torch.zeros(T, dtype=torch.int64)
+        index1 = torch.zeros(T, dtype=torch.int64)
+        weights = torch.zeros(T, dtype=times.dtype)
+        emitted = {}
+        tensors = []
+        key_parts = []
+
+        def emit(key, build):
+            slot = emitted.get(key)
+            if slot is None:
+                slot = len(tensors)
+                emitted[key] = slot
+                tensors.append(build())
+                key_parts.append(key)
+            return slot
+
+        claimed = []
+        for i, (start, own_end, ed, ev) in enumerate(spans):
+            sel = pos == i
+            if not bool(sel.any()):
+                continue
+            pre_slot = emit(("pre", id(ed)), lambda ed=ed: ed.values.reshape(-1))
+            outside = sel
+            if ev is not None:
+                in_span = sel & (start <= times) & (times < own_end)
+                if bool(in_span.any()):
+                    post_slot = emit(
+                        ("post", id(ed)), lambda ed=ed: self._segment_post_value(ed)
+                    )
+                    # The exact expression the dense replay evaluates for this
+                    # event (set_state_to_times), on the same tensors with the
+                    # same shapes -- torch CPU kernels round differently for
+                    # different shapes, so bit-parity of the weights requires
+                    # bit-parity of the computation.
+                    elapsed = times[in_span] - start
+                    a = ev.rate_func(
+                        (elapsed / (own_end - start + 1e-6)).view(-1, 1, 1)
+                    )
+                    index0[in_span] = pre_slot
+                    index1[in_span] = post_slot
+                    weights[in_span] = a.view(-1).to(weights.dtype)
+                    claimed.append(ev)
+                    outside = sel & ~in_span
+            if bool(outside.any()):
+                index0[outside] = pre_slot
+                index1[outside] = pre_slot
+        tail_sel = pos == len(spans)
+        cacheable = True
+        if bool(tail_sel.any()):
+            # Past the last edit the dense base is the final-state sentinel.
+            # Read from the mutable current state, so the stack must not be
+            # reused across renders (cache_key None says so).
+            cacheable = False
+            tail_slot = emit(
+                ("tail",), lambda: tl.current_state[0, row].reshape(-1).clone()
+            )
+            index0[tail_sel] = tail_slot
+            index1[tail_sel] = tail_slot
+
+        # An event active in the window whose frames all classified elsewhere
+        # cannot be skipped safely; with the span/pos consistency above this
+        # does not happen, but verify rather than assume.
+        if len(claimed) != len(relevant):
+            return None
+
+        if len(tensors) > max(2, T // 2) + 1:
+            # More endpoint images than half the window's frames: the dense
+            # path is no bigger, so keep its exactness.
+            return None
+
+        endpoints = torch.stack(tensors)
+        seg = SegmentWindow(
+            rows,
+            endpoints,
+            index0,
+            index1,
+            weights,
+            tuple(key_parts) if cacheable else None,
+        )
+        return seg, claimed
+
     def set_state_to_times(self, times, active_mobs=None):
         """Materialize animated state at ``times``.
 
@@ -2827,6 +3252,9 @@ class AnimationTimeline:
         self._materialized_mob_ids = (
             None if active_mob_ids is None else set(active_mob_ids)
         )
+        exclude_rows, claimed_events = self._describe_segment_windows(
+            times, functions, updaters, active_mob_ids
+        )
         replay_rows = {}
         if active_mob_ids is not None:
             for function in functions:
@@ -2836,10 +3264,18 @@ class AnimationTimeline:
             rows = replay_rows.get(attr_name)
             extra_rows = torch.cat(rows) if rows else None
             timeline.rematerialize_state_at_times(
-                times, active_mob_ids, extra_rows=extra_rows
+                times,
+                active_mob_ids,
+                extra_rows=extra_rows,
+                exclude_rows=exclude_rows.get(attr_name),
             )
 
         for f in functions:
+            if id(f) in claimed_events:
+                # Its whole effect -- one plain lerp over one described row
+                # set -- is carried by a SegmentWindow; re-executing it would
+                # only rebuild (dense) what the description already says.
+                continue
             s = f.time.start
             e = f.time.end
             replay_end = _replay_window_end(f)
@@ -2945,6 +3381,7 @@ class AnimationTimeline:
         return self
 
     def clear_buffers(self):
+        self._segment_windows = {}
         for t in self.attr_to_timeline.values():
             t.clear_buffers()
 

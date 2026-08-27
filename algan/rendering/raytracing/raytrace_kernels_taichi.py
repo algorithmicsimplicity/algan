@@ -73,6 +73,7 @@ from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_SPATIAL_GRID,
     BEZIER_SPATIAL_OFFSET_BASE,
 )
+from algan.rendering.raytracing.color_space_taichi import srgb_to_linear_f
 from algan.rendering.raytracing.shading_taichi import (
     # Re-exported: wavefront_kernels_taichi imports MAX_SHADOW_LIGHTS from
     # here rather than from shading_taichi, so this hop is load-bearing even
@@ -1557,6 +1558,44 @@ def _color_map_texel(tc, base_row, lut_base, texel_idx, num_points,
 
 
 @ti.func
+def _authored_texel(tc, offset, frame_texel_base, u8_packed, texel_idx,
+                    num_points, textures: ti.template()):
+    """One texel of an ENDPOINT stack, in authored space (TEXTURE_TIME_LERP).
+
+    Endpoint stacks are stored pre-decode so the time lerp runs on authored
+    values -- the order the dense path applies them (the timeline lerps
+    authored texels, then the merge decodes). ``u8_packed`` says the stack is
+    RGBA bytes bit-packed one texel per f32 lane (meta col 15 == -2): the
+    bytes ARE the authored ``k / 255`` values, recovered by an IEEE division
+    (bit-equal to the host's ``q / 255``), with glow 0 by the u8 admission
+    rule. Otherwise five plain f32 channels at ``offset + frame_texel_base +
+    texel_idx``, byte for byte as authored.
+    """
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    if u8_packed == 0:
+        abs_idx = ti.math.clamp(offset + frame_texel_base + texel_idx, 0,
+                                num_points - 1)
+        color = ti.math.vec4(textures[tc, abs_idx, 0],
+                             textures[tc, abs_idx, 1],
+                             textures[tc, abs_idx, 2],
+                             textures[tc, abs_idx, 3])
+        alpha = textures[tc, abs_idx, 4]
+    else:
+        lane = offset * 5 + frame_texel_base + texel_idx
+        row = ti.math.clamp(lane // 5, 0, num_points - 1)
+        ch = lane - 5 * (lane // 5)
+        bits = ti.bit_cast(textures[tc, row, ch], ti.u32)
+        rb = ti.cast(bits & ti.u32(0xFF), ti.f32)
+        gb = ti.cast((bits >> 8) & ti.u32(0xFF), ti.f32)
+        bb = ti.cast((bits >> 16) & ti.u32(0xFF), ti.f32)
+        ab = ti.cast((bits >> 24) & ti.u32(0xFF), ti.f32)
+        color = ti.math.vec4(rb / 255.0, gb / 255.0, bb / 255.0, 0.0)
+        alpha = ab / 255.0
+    return color, alpha
+
+
+@ti.func
 def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), textures: ti.template()):
     offset = tri_tex_meta[prim_uv_index, 0]
     width = tri_tex_meta[prim_uv_index, 1]
@@ -1570,6 +1609,16 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     # u8-packed storage marker (meta col 15, -1 = plain f32 rows); see
     # ``_color_map_texel``.
     lut_base = tri_tex_meta[prim_uv_index, 15]
+    # Endpoint-interpolation region (meta cols 16-17, TEXTURE_TIME_LERP):
+    # the map is a stack of authored endpoint images and frame f blends
+    # endpoints i0 and i1 by w, all read from one tiny bank row. Column 3 of
+    # the row says whether the blended rgb still needs the linear-light
+    # decode the merge skipped (LINEAR_COLOR_SPACE).
+    lerp_off = tri_tex_meta[prim_uv_index, 16]
+    lerp_i0 = 0
+    lerp_i1 = 0
+    lerp_w = 0.0
+    lerp_dec = 0.0
 
     px = u * (width - 1.0)
     py = v * (height - 1.0)
@@ -1591,6 +1640,17 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     wi = ti.cast(width, ti.i32)
     hi = ti.cast(height, ti.i32)
     frame_base = (f % tmap) * (wi * hi)
+    lerp_u8 = 0
+    if lerp_off >= 0:
+        lerp_len = ti.max(tri_tex_meta[prim_uv_index, 17], 1)
+        lrow = lerp_off + (f % lerp_len)
+        lerp_i0 = ti.cast(textures[tc, lrow, 0], ti.i32)
+        lerp_i1 = ti.cast(textures[tc, lrow, 1], ti.i32)
+        lerp_w = textures[tc, lrow, 2]
+        lerp_dec = textures[tc, lrow, 3]
+        if lut_base != -1:
+            # -2 = packed bytes with no LUT (see _authored_texel).
+            lerp_u8 = 1
 
     for corner in ti.static(range(4)):
         cx = ti.cast(x_floor + (corner % 2), ti.i32)
@@ -1602,8 +1662,27 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
         cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
 
         local_idx = cx * hi + cy
-        c, a = _color_map_texel(tc, offset + frame_base, lut_base, local_idx,
-                                num_points, textures)
+        c = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        a = 0.0
+        if lerp_off < 0:
+            c, a = _color_map_texel(tc, offset + frame_base, lut_base,
+                                    local_idx, num_points, textures)
+        else:
+            # Endpoint blend in AUTHORED space, then decode, then the
+            # bilinear accumulate below -- the dense path's own order
+            # (timeline lerp, merge decode, per-texel bilinear).
+            c0, a0 = _authored_texel(tc, offset, lerp_i0 * (wi * hi),
+                                     lerp_u8, local_idx, num_points,
+                                     textures)
+            c1, a1 = _authored_texel(tc, offset, lerp_i1 * (wi * hi),
+                                     lerp_u8, local_idx, num_points,
+                                     textures)
+            c = c0 + lerp_w * (c1 - c0)
+            a = a0 + lerp_w * (a1 - a0)
+            if lerp_dec > 0.5:
+                c[0] = srgb_to_linear_f(c[0])
+                c[1] = srgb_to_linear_f(c[1])
+                c[2] = srgb_to_linear_f(c[2])
 
         color += w * c
         alpha += w * a

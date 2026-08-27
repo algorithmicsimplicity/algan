@@ -82,6 +82,12 @@ def set_arm(on):
     rt_settings.set_texture_content_dedup(on)
     rt_settings.set_texture_window_collapse(on)
     rt_settings.set_merge_dedup_geometry(on)
+    # Held OFF in BOTH arms: this A/B's contract is byte-identity across the
+    # time-dedup family alone, and TEXTURE_TIME_LERP (its own harness:
+    # _texture_lerp_ab.py, a QUALIFIED flip) would otherwise turn the ON
+    # arm's animated map into an endpoint stack -- comparing two different
+    # features and voiding the dense-animated-map (t > 1) evidence.
+    rt_settings.set_texture_time_lerp(False)
 
 
 class MergeWatcher:
@@ -157,6 +163,7 @@ def render_arm(on, out_name):
         watcher.detach()
         SETTINGS.raytracing.shadows = False
         set_arm(True)
+        rt_settings.set_texture_time_lerp(True)
     print(
         f"arm on={on}: windows={watcher.windows} textures={watcher.tex_shapes} "
         f"meta_tmax={watcher.tex_meta_tmax} tri_pos_frames={watcher.tri_pos_frames}"

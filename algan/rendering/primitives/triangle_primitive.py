@@ -152,6 +152,14 @@ class TrianglePrimitive(RenderPrimitive):
         # than probing texels (a probe is a device sync on the prefetch
         # worker).
         self.texture_u8_ok = False
+        # Per-frame endpoint interpolation for the colour map
+        # (TEXTURE_TIME_LERP): a ``[T, 3]`` float tensor of (endpoint index,
+        # endpoint index, weight) rows. When set, ``texture_map`` is a
+        # ``[1, K, H, W, 5]`` stack of AUTHORED endpoint images (the leading
+        # singleton keeps frame slicing away from the endpoint axis) and the
+        # sampler lerps the two endpoint texels before decoding. None = the
+        # map's leading axis is batch time, as always.
+        self.texture_lerp = None
         self.material_texture_map = None
         self.material_texture_flags = 0
         self.normal_texture_map = None
@@ -230,6 +238,7 @@ class TrianglePrimitive(RenderPrimitive):
                     # one per collection).
                     self.texture_opacity = getattr(triangle, "texture_opacity", None)
                     self.texture_u8_ok = bool(getattr(triangle, "texture_u8_ok", False))
+                    self.texture_lerp = getattr(triangle, "texture_lerp", None)
                     break
 
             # Texture maps cannot be concatenated across primitives (each map

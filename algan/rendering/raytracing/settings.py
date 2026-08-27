@@ -652,6 +652,51 @@ def set_texture_u8_storage(enabled):
     TEXTURE_U8_STORAGE = bool(enabled)
 
 
+# Describe an animated colour texture's frame window as ENDPOINT maps plus
+# per-frame interpolation weights read off the timeline, instead of
+# materializing one full image per frame (stage 4 of the texture line;
+# DESIGN_optimization_targets.md). The timeline's conservative gate
+# (``AnimationTimeline._describe_segment_windows``) accepts a window only
+# when every event touching the map's rows is a plain recorded assignment
+# (``Mob._apply_change``, marked ``_algan_replay_is_plain_lerp``) with
+# non-overlapping replay windows and no active updater depends on the mob;
+# anything else falls back to the dense per-frame materialization
+# byte-identically. Accepted windows upload K endpoint images (authored
+# texels, so u8-eligible) plus a tiny per-frame (i0, i1, w) region of the
+# bank (meta cols 16-17), and the sampler lerps the two endpoint texels in
+# AUTHORED space before the linear-light decode -- the same order the dense
+# path applies them (timeline lerp, then the merge's decode). The lerp's
+# arithmetic is re-associated ((E1 - E0) * w against the dense change * w)
+# and the decode runs in-kernel, so the flip is a qualified exception like
+# ALGAN_WIDE_ATTR_RENDER_DEVICE: bounded by the render suites' tolerance,
+# not byte-identical (benchmarks/_texture_lerp_ab.py asserts the bound).
+# Requires the in-kernel opacity multiply (see ``texture_time_lerp_active``).
+# ALGAN_TEXTURE_TIME_LERP=0 restores dense windows.
+TEXTURE_TIME_LERP = env_flag("ALGAN_TEXTURE_TIME_LERP", True)
+
+
+def set_texture_time_lerp(enabled):
+    """Toggle in-kernel texture time interpolation (see
+    ``TEXTURE_TIME_LERP``). Takes effect at the next frame batch.
+    """
+    global TEXTURE_TIME_LERP
+    TEXTURE_TIME_LERP = bool(enabled)
+
+
+def texture_time_lerp_active():
+    """Whether frame batches may describe texture windows as segments.
+
+    One predicate for the timeline gate and the estimators. The primitive
+    build and the merge key off the DESCRIPTION instead (a stashed segment
+    window / ``texture_lerp`` on the primitive), so a setting change
+    mid-batch stays coherent: the batch finishes in whichever mode its
+    materialization ran. Requires the in-kernel opacity multiply -- the
+    legacy host premultiply folds the animated opacity into the texels,
+    which endpoint maps cannot represent.
+    """
+    return TEXTURE_TIME_LERP and texture_opacity_in_kernel_active()
+
+
 # Per-triangle SURFACE identity at the granularity the mob declares, rather than
 # one id per merged COLLECTION MEMBER. The member count is right only when one
 # member is one surface, and it is wrong at both ends: ``Polyhedron`` hands the

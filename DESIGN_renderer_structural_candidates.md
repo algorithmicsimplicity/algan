@@ -51,7 +51,11 @@ upper bounds.
 > pattern) and the two estimators price a collapsed texture at the
 > materialized window alone. The probe scene's merged upload: 127.2 MB →
 > 32.3 MB. The full timeline-level window stride (materializing `[1, ...]`
-> in the first place) remains item 3's larger build.
+> in the first place) remains item 3's larger build — its texture-shaped
+> special case shipped 2026-08-27 as `TEXTURE_TIME_LERP` (item 5's stamp):
+> a described window's rows are EXCLUDED from materialization entirely,
+> which is the first path where the timeline never builds the `[T, ...]`
+> buffer at all.
 
 **The measured fact.** On a 20-frame PREVIEW scene of four static mobs (an
 `ImageMob`, a `Sphere`, a `Text`, a `Cube`; nothing animating, camera parked),
@@ -354,8 +358,18 @@ enabler that keeps three kernels' argument lists sane.
 > identical (asserted); the opacity flip is a qualified <= 1-channel-value
 > change (the multiply moves across the bilinear filter).
 > `benchmarks/_texture_opacity_ab.py` is the harness; measurements in
-> `DESIGN_optimization_targets.md`. **Mip chain NOT taken** (quality-first
-> design, unchanged).
+> `DESIGN_optimization_targets.md`. **Endpoint interpolation BUILT
+> (2026-08-27)**: `TEXTURE_TIME_LERP` describes an animated reassignment's
+> whole frame window as K endpoint images plus per-frame (i0, i1, w) rows
+> read off the timeline (`AnimationTimeline._describe_segment_windows`, a
+> conservative gate that falls back to the dense window for anything it
+> cannot prove), so a crossfading map uploads its two authored endpoints —
+> u8-eligible — instead of one image per frame, and the sampler lerps in
+> authored space before the linear-light decode (meta cols 16-17; the
+> texture-shaped special case of item 3's full window stride). The u8
+> stack flip is frame-byte-identical; the lerp flip is a qualified <= 1
+> observed (`benchmarks/_texture_lerp_ab.py`). **Mip chain NOT taken**
+> (quality-first design, unchanged).
 
 The shared texel bank stores **five f32 channels per texel** for every map
 (colour, material, normal — `scene_builder.py:1318`, item 1's probe: 20 B/texel
