@@ -86,7 +86,8 @@ the alpha of whatever color the background resolves to.
     :class:`~algan.constants.color.Color` includes its
     opacity, so ``BLUE * 0.5`` halves the alpha as well as the brightness and will
     silently give you transparent output. Use
-    :ref:`Color.set_opacity <reference-color-set-opacity>` to say what you mean.
+    :meth:`Color.set_opacity <algan.constants.color.Color.set_opacity>` to say what
+    you mean.
 
 See Also
 ========

@@ -48,7 +48,7 @@ def image_to_texture_map(image):
     transpose ``[H, W] -> [W, H]`` (columns become the ``u`` axis) and flip the
     ``v`` axis. Channels are padded to the engine's 5-slot colour
     ``(r, g, b, glow, opacity)`` by
-    :ref:`Color.add_defaults <reference-color-add-defaults>`.
+    :meth:`Color.add_defaults <algan.constants.color.Color.add_defaults>`.
     """
     image = cast_to_tensor(image).float()
     if image.dim() != 3:
