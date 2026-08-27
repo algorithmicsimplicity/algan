@@ -730,7 +730,7 @@ def _build_accel(
 
 def _empty_scene_part(device, refit=None):
     """Placeholder BVH + arrays for an absent geometry type (same tree kind
-    as the batch's real trees, so one compile-time flag covers all six).
+    as the batch's real trees, so one compile-time flag covers all four).
     """
     lo = torch.full((1, 1, 3), EMPTY_LO, device=device)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=device)

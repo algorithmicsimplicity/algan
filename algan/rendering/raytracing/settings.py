@@ -680,8 +680,8 @@ def set_merge_dedup_time(enabled):
 
 
 # Opaque any-hit shadow early-out. The deterministic shadow query is an
-# ordered closest-hit march that restarts a full three-tree traversal per
-# peeled surface; but any interval-opaque blocker (main-tree leaf flag:
+# ordered closest-hit march that restarts a full two-tree (triangle + Bezier)
+# traversal per peeled surface; but any interval-opaque blocker (main-tree leaf flag:
 # classic ``leaf_tspan`` bit 31 / refit link bit 30) forces the final
 # occlusion to exactly 1.0 no matter what lies in front of it. When on, the
 # shadow query first runs a cheap unordered any-hit walk over just the

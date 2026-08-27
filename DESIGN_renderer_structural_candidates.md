@@ -500,6 +500,13 @@ Two enablers rather than wins:
 
 ## Doc drift the audits surfaced
 
+> **FIXED 2026-08-27.** All of the below, plus two sites the original list
+> missed (`settings.py`'s `SHADOW_ANYHIT` note and `scene_builder.py`'s
+> `_empty_scene_part` docstring, both saying "three-tree"/"all six"), and
+> §13's ranked future-work list, whose items 1 and 2 still asked for the
+> default flips that have since happened. §13 item 3 (the mixed-type tree)
+> keeps its rank but now carries the measured caveat from item 2 above.
+
 For `RENDERER_WORK_QUEUE.md` item 15's list, found while auditing rather than
 hunted: `DESIGN_hybrid_raster.md` §9/§13 still say "three trees"/"six trees
 (3 full + 3 opaque-prepass)" — there are two geometry types and at most four

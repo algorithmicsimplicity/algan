@@ -698,10 +698,16 @@ The kernels select the walk with ONE compile-time `refit` template threaded
 through `_test_children`/`_collect_hits`/`_shadow_occluded`/`_transmittance`/
 `_nearest_surface(_g)` and every kernel that launches them (wavefront
 traverse/shade, raster shadow trace, both Monte Carlo megakernels), so both
-modes coexist in one process (in-process A/B). All six trees of a batch
-(3 full + 3 opaque-prepass) are built the same kind by
+modes coexist in one process (in-process A/B). All four tree slots of a batch
+(2 full + 2 opaque-prepass, one pair per geometry type — triangles and Bezier
+circuits; PN was deleted) are built the same kind by
 `scene_builder._build_accel`; the tree object's *type* selects the template
-at launch, never the live toggle. The unsupported legacy textured/sorted
+at launch, never the live toggle. By default only the two full trees are
+really built: `OPAQUE_BVH_SKIP_DEAD` (default on) aliases each opaque-prepass
+slot to its main tree whenever the rollouts that read it
+(`WF_OPAQUE_CLOSEST` / `WF_OPAQUE_PREPASS`, both default off) are dead, and a
+type with no translucent primitives aliases regardless — ~40% of the
+per-batch BVH build. The unsupported legacy textured/sorted
 orchestrators stay classic (`refit_bvh_active` gates them out).
 
 Validated: `benchmarks/_rt2_refit_build_check.py` (structural + conservative-
@@ -712,7 +718,7 @@ translucent + mid-batch spawn), bez, hard shadows, soft shadows, glass
 refraction.
 
 Still planned: a single mixed-type any-hit tree for shadow rays (they
-currently walk three trees serially).
+currently walk the triangle tree then the Bezier tree serially).
 
 
 ================================================================================
@@ -782,11 +788,11 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
 11. SETTINGS / GATE
 ================================================================================
 
-  ALGAN_HYBRID_RASTER (default 0)   Enable the raster front-end.
+  ALGAN_HYBRID_RASTER (default 1)   Enable the raster front-end.
   ALGAN_RASTER_SS     (default 1)   Screen-space intersection from the
                                     projection table vs per-pixel ray-cast
                                     (both correct; SS wins on high overdraw).
-  ALGAN_BVH_REFIT     (default 0)   Build the shared-topology binned-SAH
+  ALGAN_BVH_REFIT     (default 1)   Build the shared-topology binned-SAH
                                     refit BVH instead of the classic STBVH
                                     (§9; all render paths honor it via the
                                     compile-time ``refit`` template).
@@ -832,22 +838,27 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
                                     is ~80% slower end-to-end than f32; a clear
                                     win only on Turing/Ampere+ (fast f16).
 
-  ALGAN_ANALYTIC_AA (default 0)     Analytic anti-aliasing: raster fragments
+  ALGAN_ANALYTIC_AA (default 1)     Analytic anti-aliasing: raster fragments
                                     carry the fraction of the pixel square they
                                     cover and the resolve folds it into alpha,
                                     replacing the `anti_alias_level` supersample
-                                    tax. Phase 1 (shipped) covers Bezier
-                                    circuits only; flat triangles keep coverage
-                                    1.0, so a triangle-only scene is unchanged.
+                                    tax. Covers BOTH geometry types now —
+                                    Bezier circuits (ANALYTIC_AA_BEZ) and
+                                    triangles (ANALYTIC_AA_TRI, exact
+                                    fixed-point rasterization on a
+                                    1/4096-pixel lattice), each with its own
+                                    default-on sub-toggle.
                                     See DESIGN_analytic_aa.md.
 
   set_hybrid_raster(bool), set_raster_screen_space(bool),
   set_refit_bvh(bool), set_analytic_aa(bool) — programmatic.
 
 Gate for engaging the front-end (`use_raster` in tracer.py): HYBRID_RASTER on,
-merged visibility masks present, (num_triangles > 0 or num_circuits > 0),
-num_pn == 0 (PN batches keep classic, §6.3), not textured/sorted-legacy, no
-mem-trim, no custom scatter, near_clip <= 0, aa_level <= 1.
+merged visibility masks present, (num_triangles > 0 or num_circuits > 0), not
+textured/sorted-legacy, no mem-trim, no custom scatter, near_clip <= 0,
+aa_level <= 1, and RASTER_SPARSE_COVERAGE / RASTER_EMPTY_SKIP /
+RASTER_COVERED_SHADE all on (the sheet route needs the compacted chain). The
+old `num_pn == 0` condition is gone with PN itself.
 
 SUPPORTED through the front-end: fragment shading, refraction and
 refl-transparent splits, environment maps, far clip, hard AND soft shadows
@@ -916,28 +927,35 @@ Ranked by expected wall-clock improvement on real (moving, mixed-content)
 scenes, with the evidence basis for each rank. Measured numbers where they
 exist; ranks without numbers are marked (est.).
 
-  1. Shared-topology binned-SAH refit BVH (§9). BUILT 2026-07-19, opt-in
-     `ALGAN_BVH_REFIT`, byte-identical on all parity configs (see §9).
-     Motivation (measured): secondary rays — shadows, reflections,
-     refractions — and every classic-fallback batch still pay traversal,
-     which is ~85% of classic GPU time; the classic STBVH is 1.37–2.33x
-     worse in SAH expected-visit cost than a refit topology; refit staleness
-     across a batch is <= 1.04. Benefits ALL paths, including the raster
-     front-end's shadow/bounce stages. Remaining work: measure the traversal
-     win on real scenes (`benchmarks/_rt2_refit_ab.py`), then flip the
-     default ON.
+  1. DONE — shared-topology binned-SAH refit BVH (§9). Built 2026-07-19,
+     byte-identical on all parity configs (see §9), and `ALGAN_BVH_REFIT`
+     now defaults ON. Motivation, for the record (measured): secondary rays
+     — shadows, reflections, refractions — and every classic-fallback batch
+     still pay traversal, which is ~85% of classic GPU time; the classic
+     STBVH is 1.37–2.33x worse in SAH expected-visit cost than a refit
+     topology; refit staleness across a batch is <= 1.04. Benefits ALL
+     paths, including the raster front-end's shadow/bounce stages.
 
-  2. Re-baseline and default-ON the raster front-end. Measured 2.26–3.27x on
-     qualifying scenes — but only scenes that opt in get it. Work: re-run the
-     render-test suite under HYBRID_RASTER=1, accept/re-baseline the §8
-     deltas, re-measure §10.1 on the shipped kernels, then flip the default.
-     No new engineering; highest value-per-effort after item 1.
+  2. DONE — the raster front-end is default ON (`ALGAN_HYBRID_RASTER`),
+     re-baselined, and the sheet resolve has since replaced the dense
+     fragment walk (DESIGN_sheet_resolve.md). Measured 2.26–3.27x on
+     qualifying scenes when it was opt-in.
 
   3. Single mixed-type any-hit tree for shadow rays (part of the §9 rebuild).
-     Shadow rays currently walk three trees serially and need only any-hit;
-     shadow-heavy scenes are traversal-bound (the deferred-shadow experiment
-     confirmed traversal dominates that stage). (est.: large on shadowed
-     scenes, nil elsewhere.)
+     Shadow rays currently walk the triangle tree then the Bezier tree
+     serially and need only any-hit; shadow-heavy scenes are traversal-bound
+     (the deferred-shadow experiment confirmed traversal dominates that
+     stage). (est.: large on shadowed scenes, nil elsewhere.)
+     **Caveat added 2026-08-26**: the cheaper half of this idea — the
+     already-built `SHADOW_ANYHIT` early-out — was qualified and MEASURED,
+     and the deferred any-hit pre-pass was a regression on a translucent
+     batch (nn UHD 29.5 → 34.2 s, `raster_shadow_trace` 3.8 → 6.6 s: a
+     second full traversal on miss-dominated rays). That does not refute the
+     mixed tree, which removes a traversal rather than adding one, but it
+     does mean "shadow rays are traversal-bound" no longer implies any
+     any-hit restructuring wins. See DESIGN_optimization_targets.md, "The
+     structural round (2026-08-26)", and item 2 of
+     DESIGN_renderer_structural_candidates.md.
 
   4. Material/geometry-type-grouped shading of raster survivors: partition
      the survivor list once, launch a handful of lean shade kernels instead

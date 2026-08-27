@@ -3072,8 +3072,9 @@ def _shadow_gather_occluded(refit: ti.template(),
                             ident: ti.template()):
     """The ordered shadow march rebuilt on the KBUF gather (shadow mode 4).
 
-    Where :func:`_shadow_march_occluded` restarts a full three-tree
-    traversal per peeled surface, each traversal here gathers the up-to-
+    Where :func:`_shadow_march_occluded` restarts a full two-tree
+    (triangle + Bezier) traversal per peeled surface, each traversal here
+    gathers the up-to-
     ``KBUF`` nearest hits with :func:`_collect_hits` and drains them in the
     same transitive :func:`_comes_after` order the march peels in, with the
     identical seam merge, alpha accumulation and early exits. A k-surface

@@ -658,6 +658,18 @@ the code actually does.
 | `raster_taichi.py:199-200` (`_AA_SAMPLES`) | "16 matches the sampling density of the anti_alias_level=4 reference" | The live pattern is `_AA_PATTERN_8`; `_AA_NUM_SAMPLES` is 8. The comment reads as though 16 were selected. |
 | `CLAUDE.md`, "Cloud sessions" | The full-render baselines are per machine because "`pn_criterion_kernel` runs under Taichi's `fast_math` and which tessellation levels sit on the borderline depends on the CPU evaluating the criterion" | `pn_criterion_kernel_active()` is `PN_CRITERION_KERNEL and project_on_gpu_active()`, and `project_on_gpu_active()` requires `_RENDER_DEVICE.type == "cuda"`. **On a CPU render device the criterion kernels never run** (verified in this container: `pn_criterion_kernel_active()` is `False`), so `fast_math` cannot be the mechanism for the measured CPU-to-CPU divergence. The *observation* stands — 5 of 6 scenes missed by 29-204 channel values on a GitHub runner, and what moved carried PN surfaces — so something else in the torch criterion path is machine-sensitive. Worth attributing properly, because the paragraph is the reason the suite skips itself in CI. |
 
+**Done 2026-08-27 — the tree-count family**, which
+`DESIGN_renderer_structural_candidates.md`'s drift section had queued for this
+list: `DESIGN_hybrid_raster.md` §9/§11/§13, `settings.py`'s `SHADOW_ANYHIT`
+note, `scene_builder._empty_scene_part` and the gather-march docstring in
+`raytrace_kernels_taichi.py` all said "three trees" / "six trees (3 full + 3
+opaque-prepass)". There are two geometry types and four tree *slots* since the
+PN deletion, of which only two are normally built (the opaque-prepass slots
+alias their main tree unless `WF_OPAQUE_CLOSEST` / `WF_OPAQUE_PREPASS` is
+live). §11's default table and §13's ranked list were corrected in the same
+pass — both still described `HYBRID_RASTER` / `BVH_REFIT` / `ANALYTIC_AA` as
+opt-in, and §11 still listed the retired `num_pn == 0` route gate.
+
 ---
 
 ## 16. Nine experimental toggles are unreachable from `SETTINGS`
