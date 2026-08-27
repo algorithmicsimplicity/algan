@@ -601,6 +601,32 @@ in-process alternating arms):**
 1 on 2 pixels; the fast suite (277 tests incl. the pixel-compared render)
 passes with the defaults on.
 
+**Render suites (CPU, this container).** One full-render baseline moved and
+was regenerated after inspection: `complex_hierarchy_become` — the scene
+whose ImageMob cross-dissolves — differs in 8 of 75 tail frames (max 42, on
+two mid-morph diced-surface patches and text edges). The kill switches
+restore it byte-exactly, so the cause is the toggled features, and the
+mechanism is the documented re-window effect: the estimators price the fade
+batches cheaper, the windows move, and dice levels / chord counts / CPU
+rate-function rounding are window-dependent by design. The new render sits
+as close to the CUDA reference as the old baseline did (mean |d| 0.0348 vs
+0.0331). Only `expected_outputs_cpu/` is regenerated here;
+**`expected_outputs_cuda/complex_hierarchy_become.mp4` will need the same
+treatment on a CUDA machine** — the T4 is the wrong card for baselines.
+
+**Found while validating, NOT this round's doing:** the branch tip BEFORE
+these commits (`69d5713`) already fails three full-render CPU baselines in
+this container — `materials_and_lighting` (66 of 179 frames > 2, max 14),
+`shapes_and_timeline` (6 of 301, max 26), `solids_and_camera` (7 of 239,
+max 21) — with diff signatures identical pixel-for-pixel to the ones this
+round's tree produces, while `complex_hierarchy_become` /
+`manim_compat_and_plots` / `text_and_media` reproduce their baselines
+byte-exactly there. The baselines were regenerated on this container class
+at `8f7443a` (2026-08-26), so something in `8f7443a..69d5713` — the
+structural round's own tail, its merges, or the memo round, all of which
+claim byte-identity — moved these three scenes' edge pixels. Deliberately
+NOT re-baselined here: that would bury the signal. Needs a bisect.
+
 **What this un-blocks.** Colour maps now reach the kernel as authored
 texels plus per-(map, frame) scalars — the contract stage 4 of this line of
 work (in-kernel interpolation between two endpoint maps with per-frame
