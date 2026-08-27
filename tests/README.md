@@ -54,6 +54,7 @@ render:
 | `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
 | `test_rate_functions.py` | Every animation is evaluated through one of these curves. |
 | `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
+| `test_mob_reparenting.py` | That the hierarchy is read when an animation is *recorded*, not when it plays: a parent transform resolves the descendant union to rows and the event keeps them, so re-parenting afterwards redirects the next animation without rewriting the last one. That contract lives in the timeline (`modify_attribute_and_record`, `replay_inds`) and in two version-keyed descendant caches, none of which are in this file — a mutation that forgets to bump a version does not error, it silently drops a member from a transform. Tensor-only, no render. |
 | `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
 | `test_settings_api.py` | `SETTINGS` is read live by every subsystem. |
 | `test_ux_regressions.py` (per test, not the whole module) | The front door: `save_video`/`save_frame` and what they leave behind, contexts, `Group`, the star exports, and the errors users hit. It is a catch-all file, so its tests are marked one by one — see below. |

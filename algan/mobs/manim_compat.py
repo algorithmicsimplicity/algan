@@ -22,7 +22,6 @@ import torch
 
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
-from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUTWARD
 from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -671,7 +670,7 @@ class ManimCompatMob(ManimMob):
         self.children = list(self.components) + target_non_components
         self.submobjects = target_non_components
         self._exposed_manim_baseline = None
-        bump_hierarchy_version()
+        self._note_hierarchy_change()
         return self
 
     def _is_backing_geometry(self, value):

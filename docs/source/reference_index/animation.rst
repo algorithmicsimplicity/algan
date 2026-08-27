@@ -52,6 +52,13 @@ public Mob API.
 
    The list of direct child Mobs attached to this Mob.
 
+.. _reference-mob-parents:
+
+.. py:attribute:: algan.animatable_base.mob.Mob.parents
+
+   The list of Mobs this Mob is attached to as a child, and whose changes it
+   therefore follows. A Mob may have several, and then accumulates all of them.
+
 .. _reference-text-character-mobs:
 
 .. py:attribute:: algan.mobs.text.Text.character_mobs

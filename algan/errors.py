@@ -119,6 +119,20 @@ class DespawnedMobWarning(AlganWarning):
     code = "ALGAN_DESPAWNED_MOB"
 
 
+class HierarchyChangedDuringUpdaterWarning(AlganWarning):
+    """Warns that a hierarchy change reaches back over a live updater's frames.
+
+    A recorded animation resolves which Mobs it covers once, when it is
+    recorded. An updater does not: it is re-run for every frame it covers, and
+    re-resolves its subtree against the hierarchy as it stands when the frames
+    are rendered. So attaching or detaching a Mob inside a subtree a live
+    updater drives changes the frames that updater already covered, including
+    frames before the line that made the change.
+    """
+
+    code = "ALGAN_HIERARCHY_CHANGED_DURING_UPDATER"
+
+
 __all__ = [
     "AlganError",
     "AlganConfigurationError",
@@ -134,4 +148,5 @@ __all__ = [
     "ApproximationWarning",
     "NeverSpawnedMobWarning",
     "DespawnedMobWarning",
+    "HierarchyChangedDuringUpdaterWarning",
 ]
