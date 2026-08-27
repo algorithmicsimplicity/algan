@@ -22,7 +22,11 @@ Also in this directory: `CLAUDE_CLOUD.md` (read it if you are running on Claude 
 
 Algan is in private beta and deliberately carries **no compatibility aliases for its own API**: there is exactly one Algan name for each Algan thing. If you find a second spelling of an Algan API, that is a bug to remove, not a surface to preserve.
 
-The Manim compatibility layer is the one deliberate exception, and it is a separate surface rather than a second spelling of Algan's. `Mobject = Mob`, `GenericGraph = Graph`, `install_opengl_aliases()` and the wrapper classes in `../algan/mobs/manim_compat.py`, `manim_parity.py`, `opengl_compat.py` and `point_cloud.py` exist so a Manim script keeps working under the names its author already wrote; they are exported and supported. The rule to apply: never add an Algan-side alias for an Algan name, and never delete a Manim-side name merely because it duplicates one.
+There are exactly two deliberate exceptions.
+
+The Manim compatibility layer is the first, and it is a separate surface rather than a second spelling of Algan's. `Mobject = Mob`, `GenericGraph = Graph`, `install_opengl_aliases()` and the wrapper classes in `../algan/mobs/manim_compat.py`, `manim_parity.py`, `opengl_compat.py` and `point_cloud.py` exist so a Manim script keeps working under the names its author already wrote; they are exported and supported. The rule to apply: never add an Algan-side alias for an Algan name, and never delete a Manim-side name merely because it duplicates one.
+
+The spatial shorthands `IN = INWARD` and `OUT = OUTWARD` (`../algan/constants/spatial.py`) are the second, and the reasoning is different: these are one name too many *on purpose*, so that the short one belongs to the script rather than to the library. `in` and `out` are ordinary enough words that a script will want them — a stress-test script in this repository bound `OUT` to a directory path and spent a while confused — and a name the library reads is a poor thing to leave lying in the way. Algan's own source therefore says `INWARD`/`OUTWARD` everywhere and never reads `IN` or `OUT`; `../tests/unit_tests/test_spatial_constants.py` walks the package's AST and fails on any module that does. Docs, tests and benchmarks keep writing `OUT`, which is both the friendlier spelling and what keeps the alias exercised.
 
 ## Project overview
 

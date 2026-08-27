@@ -228,7 +228,7 @@ def default_scene_initializer(scene):
     scene.light_sources = []
     PointLight(
         scene=scene,
-        location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1,
+        location=scene.camera.location + UP * 1 + RIGHT * 5 + OUTWARD * 1,
         color=WHITE,
     ).spawn(animate=False)
 

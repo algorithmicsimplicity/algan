@@ -298,7 +298,7 @@ class Camera(Mob):
         angle_2
             Rotation about the world y axis (``UP``), **in degrees**.
         angle_3
-            Rotation about the world z axis (``OUT``), **in degrees**.
+            Rotation about the world z axis (``OUTWARD``), **in degrees**.
 
         Returns
         -------
@@ -308,7 +308,7 @@ class Camera(Mob):
         with Sync(animation_manager=self.animation_manager):
             self.rotate(angle_1, RIGHT, about_point=ORIGIN)
             self.rotate(angle_2, UP, about_point=ORIGIN)
-            self.rotate(angle_3, OUT, about_point=ORIGIN)
+            self.rotate(angle_3, OUTWARD, about_point=ORIGIN)
         return self
 
     def get_render_screen_basis(self):

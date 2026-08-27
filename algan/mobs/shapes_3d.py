@@ -32,7 +32,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import WHITE
 from algan.constants.math import PI
-from algan.constants.spatial import LEFT, ORIGIN, OUT, RIGHT, UP
+from algan.constants.spatial import LEFT, ORIGIN, OUTWARD, RIGHT, UP
 from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
 from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
@@ -249,7 +249,7 @@ class _CapDisc(Surface):
         keeps the two rings together.
     direction
         The way the disc faces -- the outward normal of the solid it closes,
-        shape ``(*, 3)``; it need not be normalized. Defaults to ``OUT``.
+        shape ``(*, 3)``; it need not be normalized. Defaults to ``OUTWARD``.
     segments
         The body's ring count: the starting sample count around the rim, so
         every one of the body's ring vertices is a rim vertex from the outset.
@@ -270,7 +270,7 @@ class _CapDisc(Surface):
     def __init__(
         self,
         rim_function,
-        direction=OUT,
+        direction=OUTWARD,
         segments=25,
         *args,
         **kwargs,
@@ -401,8 +401,8 @@ class Sphere(Surface):
     u_range
         Azimuthal sweep around the sphere's own up axis, **in radians** -- a
         Manim-parity domain, which is why it contradicts Algan's usual degrees.
-        The sweep starts at the sphere's ``LEFT`` and turns through ``OUT``,
-        ``RIGHT`` and ``IN``, so ``(0, PI)`` builds the ``OUT`` half -- the one
+        The sweep starts at the sphere's ``LEFT`` and turns through ``OUTWARD``,
+        ``RIGHT`` and ``INWARD``, so ``(0, PI)`` builds the ``OUTWARD`` half -- the one
         facing the camera. Defaults to ``(0, 2 * PI)``, all the way round.
     v_range
         Pole-to-pole sweep, **in radians** and Manim-parity for the same reason:
@@ -534,7 +534,7 @@ class Cone(Surface):
         to ``1``.
     direction
         Direction the tip points, shape ``(*, 3)``; it need not be normalized.
-        Defaults to ``OUT`` (out of the screen, towards the viewer).
+        Defaults to ``OUTWARD`` (out of the screen, towards the viewer).
     show_base
         Whether to cap the base with a filled circle. Defaults to ``False``: the
         cone is open, so the camera can see inside it. The disc samples its rim
@@ -588,7 +588,7 @@ class Cone(Surface):
         self,
         base_radius=1,
         height=1,
-        direction=OUT,
+        direction=OUTWARD,
         show_base=False,
         v_range=(0, 2 * PI),
         u_min=0,
@@ -752,7 +752,7 @@ class Cylinder(Surface):
         Azimuthal sweep around the cylinder's axis, **in radians** -- a
         Manim-parity domain, which is why it contradicts Algan's usual degrees.
         The sweep starts on the side the cylinder's forward direction points at
-        (``IN``, for the default ``direction=UP``) and turns toward its left, so
+        (``INWARD``, for the default ``direction=UP``) and turns toward its left, so
         ``(0, PI)`` builds the ``LEFT`` half of the tube. Defaults to
         ``(0, 2 * PI)``, the closed tube. The extent *along* the axis comes from
         ``height``, which is where Manim also gets its ``u_range`` from.

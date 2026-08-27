@@ -218,6 +218,42 @@ def _iter_blocks(path: Path):
         i = j
 
 
+def _iter_markdown_blocks(path: Path):
+    """Yield ``(line, code)`` per fenced ``python`` block in a Markdown file."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        if lines[i].strip() != "```python":
+            i += 1
+            continue
+        start = i + 1
+        j = start
+        while j < n and lines[j].strip() != "```":
+            j += 1
+        code = "\n".join(lines[start:j]).rstrip()
+        if code:
+            yield start + 1, code
+        i = j + 1
+
+
+def _collect_markdown_examples() -> list[DocExample]:
+    """The Python in ``README.md``.
+
+    Nothing checked it, and it drifted: the Quickstart called ``spawn(duration=)``,
+    ``Sync(duration=)`` and ``Mob.shift()``, none of which exist -- three
+    failures in the first eight lines of code anyone runs, on the front page and
+    on PyPI. It is an ordinary complete script, so it goes through the same
+    tiers as every other one.
+    """
+    examples = []
+    for page in (REPO_ROOT / "README.md",):
+        if not page.exists():
+            continue
+        for line, code in _iter_markdown_blocks(page):
+            examples.append(DocExample(page, line, code, "code-block", False, ""))
+    return examples
+
+
 def _collect_examples() -> list[DocExample]:
     examples = []
     for page in sorted(DOCS_SOURCE.rglob("*.rst")):
@@ -225,7 +261,7 @@ def _collect_examples() -> list[DocExample]:
             continue
         for line, code, directive, opted_out, name in _iter_blocks(page):
             examples.append(DocExample(page, line, code, directive, opted_out, name))
-    return examples
+    return examples + _collect_markdown_examples()
 
 
 def _collect_docstring_directives() -> list[DocExample]:

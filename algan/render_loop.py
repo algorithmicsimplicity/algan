@@ -33,7 +33,12 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
 from algan.environment import env_flag, env_float
-from algan.errors import AlganWarning, UnsupportedFeatureWarning, _user_stacklevel
+from algan.errors import (
+    AlganConfigurationError,
+    AlganWarning,
+    UnsupportedFeatureWarning,
+    _user_stacklevel,
+)
 from algan.logging.logger import PERF, get_logger, resolve_progress_style
 from algan.rendering.memory_model import (
     AffineFrameCost,
@@ -329,6 +334,31 @@ def _prepare_background_for_chunk(
         background = torch.add(0.5, background, alpha=255).clamp_(0, 255)
         background = background.to(torch.uint8)
     return background
+
+
+def _check_post_processes(post_processes):
+    """Reject a non-callable pass before the render rather than after it.
+
+    Each pass is applied to finished frames, so a bad entry used to surface as
+    ``TypeError: 'int' object is not callable`` once the whole render had
+    already been paid for.
+    """
+    if post_processes is None:
+        return
+    if callable(post_processes):
+        raise AlganConfigurationError(
+            "post_processes takes a sequence of passes, not one pass. Wrap it: "
+            "post_processes=(bloom_filter,)."
+        )
+    for index, process in enumerate(post_processes):
+        if not callable(process):
+            raise AlganConfigurationError(
+                f"post_processes[{index}] is not callable: got "
+                f"{type(process).__name__}. Each pass is a function applied to "
+                f"finished frames, such as bloom_filter or "
+                f"partial(bloom_filter, glow_spread=0.015). Pass () for no "
+                f"post-processing."
+            )
 
 
 class RenderLoopMixin:
@@ -2769,6 +2799,7 @@ class RenderLoopMixin:
         its ``finally`` also runs for OOMs, worker failures, and callers that
         close the generator before consuming every frame.
         """
+        _check_post_processes(post_processes)
         original_background = self.background_frame
         original_memory = self.memory
         # A render job is the scope of the truncation instrument: its counters

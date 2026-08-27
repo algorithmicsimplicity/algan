@@ -58,7 +58,7 @@ class MobOrientationMixin:
     def rotate(
         self,
         num_degrees: float | torch.Tensor,
-        axis: torch.Tensor = OUT,
+        axis: torch.Tensor = OUTWARD,
         about_point: torch.Tensor | None = None,
     ) -> Mob:
         """Rotate the Mob about an axis, optionally around a point in space.
@@ -84,7 +84,7 @@ class MobOrientationMixin:
             down ``axis``. Accepts a tensor of shape ``(*, 1)`` to give each Mob
             of a batch its own angle.
         axis
-            Axis to rotate around; need not be normalized. Defaults to ``OUT``
+            Axis to rotate around; need not be normalized. Defaults to ``OUTWARD``
             (the -z axis, pointing out of the screen), which spins a flat 2-D
             shape in the screen plane.
         about_point
@@ -110,7 +110,7 @@ class MobOrientationMixin:
             Scene.save_video()
         """
         # num_degrees has already been through cast_to_tensor in prepare_kwargs,
-        # so a swapped rotate(OUT, 90) arrives here as a (*, 3) angle and a
+        # so a swapped rotate(OUTWARD, 90) arrives here as a (*, 3) angle and a
         # scalar axis. Catching it here names the parameters; left alone it
         # surfaces as an IndexError from deep inside the rotation matrix build.
         if isinstance(num_degrees, torch.Tensor) and num_degrees.shape[-1] != 1:
@@ -132,7 +132,7 @@ class MobOrientationMixin:
     def orbit(
         self,
         num_degrees: float | torch.Tensor,
-        axis: torch.Tensor = OUT,
+        axis: torch.Tensor = OUTWARD,
         about_point: torch.Tensor | None = None,
     ) -> Mob:
         """Move the Mob around a point without turning it.
@@ -155,7 +155,7 @@ class MobOrientationMixin:
             How far around to travel, in degrees, counter-clockwise when
             looking down ``axis``.
         axis
-            Axis to orbit around; need not be normalized. Defaults to ``OUT``
+            Axis to orbit around; need not be normalized. Defaults to ``OUTWARD``
             (the -z axis, out of the screen).
         about_point
             Point to orbit around, shape ``(*, 3)``. Defaults to ``None``, which

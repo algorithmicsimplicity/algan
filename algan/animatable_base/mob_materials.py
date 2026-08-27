@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from algan.animatable_base.mob import Mob
 
 from algan.errors import (
+    AlganConfigurationError,
     ModifiedProtectedAttributeError,
     UnsupportedFeatureWarning,
     _user_stacklevel,
@@ -258,7 +259,25 @@ class MobMaterialsMixin:
 
             Scene.save_video()
         """
-        from algan.rendering.shaders.materials import _to_color5
+        from algan.rendering.shaders.materials import Material, _to_color5
+
+        if not isinstance(material, Material):
+            # Reaching for ``set_material(GOLD)`` is a natural mistake: CHROME
+            # and COPPER are materials while GOLD is a colour. Unchecked, the
+            # first thing this method touched was ``material.shader``, so the
+            # answer was an AttributeError about a missing attribute on
+            # whatever was passed.
+            from algan.constants import material_presets
+
+            presets = ", ".join(sorted(material_presets.__all__))
+            raise AlganConfigurationError(
+                f"set_material() expects a Material, got "
+                f"{type(material).__name__}. Use one of the material classes "
+                f"-- MeshBasicMaterial, MeshStandardMaterial, "
+                f"MeshPhysicalMaterial and the rest -- or a preset "
+                f"({presets}). To change only the colour, set "
+                f"mob.color instead."
+            )
 
         if self.is_spawned():
             mob_name = type(self).__name__
