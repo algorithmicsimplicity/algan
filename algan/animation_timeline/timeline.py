@@ -2954,9 +2954,13 @@ class AnimationTimeline:
         A window materialized on the render device (see
         :func:`_wide_attr_materialize_device`) is a whole image per frame of
         the batch, and nothing reads it once the batch's primitives are built:
-        the primitive holds its own premultiplied copy, the merge decodes that
-        into the buffer the arena is filled from, and the next batch's
-        preparation replaces the window outright. Left in place it would sit
+        the primitive holds its own copy (the legacy premultiply's clone, or
+        under TEXTURE_OPACITY_IN_KERNEL a one-frame clone of a collapsed
+        window -- an UNCOLLAPSED window is deliberately aliased there, so for
+        an animating texture this release only drops the timeline's reference
+        and the memory follows the primitive's lifetime instead), the merge
+        decodes that into the buffer the arena is filled from, and the next
+        batch's preparation replaces the window outright. Left in place it would sit
         beside the *next* batch's window while this one renders -- two batches
         of texture frames on the device for one batch of pixels. The narrow
         attributes are untouched: their windows are small, and the render

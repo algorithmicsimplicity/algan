@@ -341,11 +341,21 @@ enabler that keeps three kernels' argument lists sane.
 > per-authoring cost rather than a per-batch one, so the file cache was not
 > taken). **Copy chain shortened for the static case** by item 1's window
 > collapse (`TEXTURE_WINDOW_COLLAPSE`: premultiply/pad/decode/concat run on
-> one frame instead of T). **u8 storage NOT taken**: colour maps are stored
-> premultiplied by the (animated) opacity, so exact u8 round-tripping needs
-> the premultiply moved in-kernel with a per-(prim, frame) opacity input —
-> a real contract change; a 256-entry decode LUT solves the sRGB half but
-> not this. **Mip chain NOT taken** (quality-first design, unchanged).
+> one frame instead of T). **u8 storage BUILT (2026-08-27), by taking the
+> premultiply contract change this stamp priced**: `TEXTURE_OPACITY_IN_KERNEL`
+> moves the (animated) opacity multiply into the sampler — the per-(prim,
+> frame) input rides the texel bank itself as a tiny per-map region (meta
+> cols 13-14; no new kernel argument, the resolve is at the runtime-arg
+> ceiling) — so a fade of a static image keeps a one-frame map and the
+> collapse keys on texel constancy alone; `TEXTURE_U8_STORAGE` then packs
+> authored-``k/255`` colour maps (``texture_u8_ok``, proved at authoring)
+> as RGBA bytes in bit-cast f32 lanes with a per-map decode LUT scattered
+> from the map's own decode (meta col 15). The u8 flip is frame-byte-
+> identical (asserted); the opacity flip is a qualified <= 1-channel-value
+> change (the multiply moves across the bilinear filter).
+> `benchmarks/_texture_opacity_ab.py` is the harness; measurements in
+> `DESIGN_optimization_targets.md`. **Mip chain NOT taken** (quality-first
+> design, unchanged).
 
 The shared texel bank stores **five f32 channels per texel** for every map
 (colour, material, normal — `scene_builder.py:1318`, item 1's probe: 20 B/texel

@@ -54,6 +54,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _nearest_surface_g,
     _safe_inverse,
     _sample_circuit_color,
+    _sample_texture,
     _shade_tri_hit,
     _shadow_occluded,
     _triangle_color,
@@ -523,11 +524,14 @@ def _flat_triangle_color_trim(f, prim, w0, w1, w2, tri_colors: ti.template(),
         cr = col_row[prim]                              # prims always get a map)
         color, alpha = _triangle_color(f, cr, w0, w1, w2, tri_colors)
     else:
+        # ``_sample_texture`` is meta-layout agnostic (it only indexes the row
+        # it is given), so the trim table serves it directly -- and it is the
+        # one place the in-sampler opacity multiply and the u8-packed layout
+        # (meta cols 13-15) are implemented. Its per-lane arithmetic is the
+        # ``_sample_tex_vec5`` this replaced, byte for byte, when those cols
+        # are absent (-1).
         u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
-        m = _sample_tex_vec5(f, u, v, tex_meta[prim, 0], tex_meta[prim, 1],
-                             tex_meta[prim, 2], tex_meta[prim, 10], textures)
-        color = ti.math.vec4(m[0], m[1], m[2], m[3])
-        alpha = m[4]
+        color, alpha = _sample_texture(f, u, v, prim, tex_meta, textures)
     return color, alpha
 
 

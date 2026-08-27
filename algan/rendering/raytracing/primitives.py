@@ -418,6 +418,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "normals",
         "uvs",
         "texture_map",
+        "texture_opacity",
         "material_texture_map",
         "normal_texture_map",
         "reflectivity",
@@ -1046,12 +1047,18 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # diagonal. The texture's own alpha decides instead.
         texture = getattr(self, "_rt_texture_map", None)
         if texture is not None:
-            texture_visible = (
-                texture.reshape(texture.shape[0], -1, texture.shape[-1])[..., -1].amax(
-                    -1, keepdim=True
-                )
-                > MIN_ALPHA
-            )
+            alpha_amax = texture.reshape(texture.shape[0], -1, texture.shape[-1])[
+                ..., -1
+            ].amax(-1, keepdim=True)
+            top = getattr(self, "_rt_tex_opacity", None)
+            if top is not None:
+                # The map's coverage no longer carries the mob's animated
+                # opacity (TEXTURE_OPACITY_IN_KERNEL), so fold it back in
+                # before the threshold: a faded-out frame must leave the BVH
+                # exactly as it did when the premultiplied map's amax went to
+                # zero (a non-negative scalar multiply commutes with amax).
+                alpha_amax = alpha_amax * top.view(-1, 1).to(alpha_amax.device)
+            texture_visible = alpha_amax > MIN_ALPHA
             (visible, texture_visible), _ = _unify_time(
                 [visible, texture_visible], error_context
             )
@@ -1102,6 +1109,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """
         if self.uvs is None:
             self._rt_texture_map = None
+            self._rt_tex_opacity = None
+            self._rt_texture_u8_ok = False
             self._rt_material_texture = None
             self._rt_material_flags = 0
             self._rt_normal_texture = None
@@ -1116,6 +1125,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             if self.texture_map is not None
             else None
         )
+        # In-sampler opacity + u8 provenance for the colour map
+        # (TEXTURE_OPACITY_IN_KERNEL / TEXTURE_U8_STORAGE). ``_rt_`` names on
+        # purpose: the slice-window copy drops them and this stash rebuilds
+        # both from the (sliced) source attributes.
+        top = getattr(self, "texture_opacity", None)
+        self._rt_tex_opacity = (
+            top.detach().reshape(-1).float().contiguous()
+            if top is not None and self._rt_texture_map is not None
+            else None
+        )
+        self._rt_texture_u8_ok = bool(getattr(self, "texture_u8_ok", False))
         mtex = getattr(self, "material_texture_map", None)
         self._rt_material_texture = (
             mtex.float().contiguous() if mtex is not None else None

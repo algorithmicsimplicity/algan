@@ -573,6 +573,85 @@ def set_texture_window_collapse(enabled):
     TEXTURE_WINDOW_COLLAPSE = bool(enabled)
 
 
+# Apply the mob's animated opacity to a colour texture IN THE SAMPLER instead
+# of premultiplying the map on the host. The premultiply
+# (``Color.mult_opacity`` in ``Surface.get_render_primitives`` /
+# ``TriangleMesh.get_render_primitives``) scales only the map's coverage
+# channel, but it welds the (per-frame) opacity into the (usually static)
+# texels -- so a plain fade of a static image voids TEXTURE_WINDOW_COLLAPSE
+# and rebuilds, re-decodes and re-uploads the full map once per frame
+# (DESIGN_renderer_structural_candidates.md item 5). With this on, the
+# primitive carries the opacity as per-frame scalars (``texture_opacity``),
+# the merge stores them as a tiny per-map region inside the shared texel
+# bank (tex-meta cols 13-14: row offset / frame count -- data, not a new
+# kernel argument: the resolve kernel is at Taichi's runtime-argument
+# ceiling), and the sampler multiplies the sampled coverage by the frame's
+# scalar. The collapse then keys on texel constancy alone.
+#
+# NOT byte-identical across the flip: the multiply moves from before the
+# bilinear filter (per texel, on the host) to after it (per sample, in the
+# kernel), which reorders f32 rounding by up to an ulp -- the same class of
+# qualified exception as ALGAN_WIDE_ATTR_RENDER_DEVICE. With opacity == 1
+# (no fade anywhere) the multiply is exact and the flip IS byte-identical.
+# Requires TEXTURE_TIME_FLAT and is disabled under the legacy WF_TEXTURED
+# path (which consumes premultiplied maps); see
+# ``texture_opacity_in_kernel_active``. ALGAN_TEXTURE_OPACITY_IN_KERNEL=0
+# restores the host premultiply byte-identically.
+TEXTURE_OPACITY_IN_KERNEL = env_flag("ALGAN_TEXTURE_OPACITY_IN_KERNEL", True)
+
+
+def set_texture_opacity_in_kernel(enabled):
+    """Toggle the in-sampler texture opacity multiply (see
+    ``TEXTURE_OPACITY_IN_KERNEL``). Takes effect at the next primitive build.
+    """
+    global TEXTURE_OPACITY_IN_KERNEL
+    TEXTURE_OPACITY_IN_KERNEL = bool(enabled)
+
+
+def texture_opacity_in_kernel_active():
+    """Whether primitive builds should hand opacity to the sampler.
+
+    One predicate for every decision point (Surface / TriangleMesh builds,
+    the estimators) so a build cannot half-flip. The merge itself keys off
+    the PRIMITIVE (``texture_opacity is not None``), so a setting change
+    between a build and its merge stays coherent. Requires TEXTURE_TIME_FLAT
+    (the opacity region rides the flattened bank's row addressing) and is
+    off under WF_TEXTURED, whose legacy bank builder consumes premultiplied
+    maps.
+    """
+    return TEXTURE_OPACITY_IN_KERNEL and TEXTURE_TIME_FLAT and not WF_TEXTURED
+
+
+# Store u8-provenance colour maps as RGBA bytes instead of five f32 channels:
+# x5 fewer bank bytes on the largest array of any textured merge
+# (DESIGN_renderer_structural_candidates.md item 5). A map qualifies when the
+# authoring side proved every texel is exactly k/255 with zero glow
+# (``texture_u8_ok`` -- checked ONCE at authoring, never at the merge, which
+# must not add device syncs on the prefetch worker) and its window arrived
+# collapsed to one frame (an interpolating window's in-between texels are not
+# k/255). Bytes are bit-packed into f32 lanes of the SAME shared bank (one
+# RGBA texel per lane, ``ti.bit_cast`` in the sampler) and decoded through a
+# per-map 256-entry LUT scattered from the map's OWN direct decode -- the
+# exact tensor the f32 arm would have stored -- so the sampler consumes that
+# arm's own bits. The one residue: torch-CPU's SIMD body and scalar tail can
+# decode the SAME byte to bit patterns one ulp apart within one tensor, so
+# on such (straddling) bytes the f32 arm itself stores two patterns and the
+# LUT necessarily picks one; <= 1 ulp in linear light, CPU-only, and never
+# observed to move a rendered output byte (benchmarks/_texture_opacity_ab.py
+# asserts frame bytes). Meta col 15 carries the LUT base row (-1 = plain f32
+# map). Requires the in-kernel opacity multiply (a premultiplied map is not
+# k/255). ALGAN_TEXTURE_U8_STORAGE=0 restores f32 storage.
+TEXTURE_U8_STORAGE = env_flag("ALGAN_TEXTURE_U8_STORAGE", True)
+
+
+def set_texture_u8_storage(enabled):
+    """Toggle u8 colour-map storage (see ``TEXTURE_U8_STORAGE``). Takes
+    effect at the next batch's scene merge.
+    """
+    global TEXTURE_U8_STORAGE
+    TEXTURE_U8_STORAGE = bool(enabled)
+
+
 # Per-triangle SURFACE identity at the granularity the mob declares, rather than
 # one id per merged COLLECTION MEMBER. The member count is right only when one
 # member is one surface, and it is wrong at both ends: ``Polyhedron`` hands the

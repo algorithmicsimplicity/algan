@@ -1514,6 +1514,49 @@ def _triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template()) -> ti.f32:
 
 
 @ti.func
+def _color_map_texel(tc, base_row, lut_base, texel_idx, num_points,
+                     textures: ti.template()):
+    """One texel of a colour map: ``(rgb+glow vec4, alpha)``.
+
+    ``lut_base < 0`` is a plain f32 map (five channels at row ``base_row +
+    texel_idx``, the historical layout, byte for byte). ``lut_base >= 0`` is a
+    u8-packed map (TEXTURE_U8_STORAGE): one RGBA texel bit-packed into ONE f32
+    lane of the shared bank -- lane ``base_row * 5 + texel_idx``, bytes
+    little-endian r|g<<8|b<<16|a<<24 -- decoded through the per-map 256-entry
+    LUT at rows ``lut_base..lut_base+255`` (col 0 = the value the f32 path
+    would have stored for colour byte k, col 1 = k/255 for the coverage
+    byte). The host scatters the LUT from the map's own direct decode
+    (``scene_builder._append_u8_lut``), so both layouts hand this function's
+    callers the same bits up to torch-CPU's one-ulp SIMD-tail residue. Glow
+    is 0 by the u8 map's admission rule (``texture_u8_ok``).
+    """
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    if lut_base < 0:
+        abs_idx = ti.math.clamp(base_row + texel_idx, 0, num_points - 1)
+        color = ti.math.vec4(textures[tc, abs_idx, 0],
+                             textures[tc, abs_idx, 1],
+                             textures[tc, abs_idx, 2],
+                             textures[tc, abs_idx, 3])
+        alpha = textures[tc, abs_idx, 4]
+    else:
+        lane = base_row * 5 + texel_idx
+        row = ti.math.clamp(lane // 5, 0, num_points - 1)
+        ch = lane - 5 * (lane // 5)
+        bits = ti.bit_cast(textures[tc, row, ch], ti.u32)
+        rb = ti.cast(bits & ti.u32(0xFF), ti.i32)
+        gb = ti.cast((bits >> 8) & ti.u32(0xFF), ti.i32)
+        bb = ti.cast((bits >> 16) & ti.u32(0xFF), ti.i32)
+        ab = ti.cast((bits >> 24) & ti.u32(0xFF), ti.i32)
+        color = ti.math.vec4(textures[tc, lut_base + rb, 0],
+                             textures[tc, lut_base + gb, 0],
+                             textures[tc, lut_base + bb, 0],
+                             0.0)
+        alpha = textures[tc, lut_base + ab, 1]
+    return color, alpha
+
+
+@ti.func
 def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), textures: ti.template()):
     offset = tri_tex_meta[prim_uv_index, 0]
     width = tri_tex_meta[prim_uv_index, 1]
@@ -1524,6 +1567,9 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     # stays at length 1. With the legacy shared axis t == 1 and this is the
     # old addressing exactly.
     tmap = ti.max(tri_tex_meta[prim_uv_index, 10], 1)
+    # u8-packed storage marker (meta col 15, -1 = plain f32 rows); see
+    # ``_color_map_texel``.
+    lut_base = tri_tex_meta[prim_uv_index, 15]
 
     px = u * (width - 1.0)
     py = v * (height - 1.0)
@@ -1556,18 +1602,26 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
         cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
 
         local_idx = cx * hi + cy
-        abs_idx = offset + frame_base + local_idx
-        abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
+        c, a = _color_map_texel(tc, offset + frame_base, lut_base, local_idx,
+                                num_points, textures)
 
-        color += w * ti.math.vec4(textures[tc, abs_idx, 0],
-                                  textures[tc, abs_idx, 1],
-                                  textures[tc, abs_idx, 2],
-                                  textures[tc, abs_idx, 3])
-        alpha += w * textures[tc, abs_idx, 4]
+        color += w * c
+        alpha += w * a
         sum_w += w
 
     color /= ti.max(sum_w, 1e-6)
     alpha /= ti.max(sum_w, 1e-6)
+    # In-sampler opacity multiply (TEXTURE_OPACITY_IN_KERNEL): the mob's
+    # animated opacity rides the bank as a tiny per-map region (meta col 13 =
+    # its base row, col 14 = its frame count) instead of being premultiplied
+    # into the map's coverage channel on the host -- which is what lets a fade
+    # of a static image keep a one-frame map. Legacy premultiplied maps carry
+    # op_off = -1 and skip the multiply, restoring the old values byte for
+    # byte.
+    op_off = tri_tex_meta[prim_uv_index, 13]
+    if op_off >= 0:
+        op_len = ti.max(tri_tex_meta[prim_uv_index, 14], 1)
+        alpha *= textures[tc, op_off + (f % op_len), 0]
     return color, alpha
 
 

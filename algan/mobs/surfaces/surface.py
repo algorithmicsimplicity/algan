@@ -64,6 +64,7 @@ from algan.utils.tensor_utils import (
     cast_to_tensor,
     dot_product,
     squish,
+    texture_u8_provenance,
     unsqueeze_left,
     unsquish,
 )
@@ -1580,6 +1581,12 @@ class Surface(Mob):
         self._color_texture_attr = attr
         self.texture_height = int(texture_height)
         self.texture_width = int(texture_width)
+        # u8 provenance, proved here at authoring where a full-image pass is
+        # cheap and sync-free, and trusted by the merge (TEXTURE_U8_STORAGE
+        # must not probe texels on the prefetch worker). Any later assignment
+        # re-runs the proof, so arithmetic on the texels (``tex * 0.5``)
+        # clears it exactly when it stops holding.
+        self._color_texture_u8_ok = texture_u8_provenance(texture)
         self.register_attrs_as_animatable([attr])
         # The surface's own row is the only one anything reads: the grid child
         # shades from the map through the surface, never from a row of its own.
@@ -3039,9 +3046,11 @@ class Surface(Mob):
 
         ``color_texture`` is an ordinary animated attribute whose channel width
         is the whole flattened image (``H * W * 5``), so the timeline
-        materializes a full copy of it for every frame of a batch, and
-        :meth:`get_render_primitives` keeps one more copy of the same width
-        after premultiplying opacity. Every other term in
+        materializes a full copy of it for every frame of a batch, and the
+        legacy premultiply arm of :meth:`get_render_primitives` keeps one more
+        copy of the same width (under TEXTURE_OPACITY_IN_KERNEL, the default,
+        the opacity rides the primitive as scalars and that copy does not
+        exist). Every other term in
         :meth:`_get_memory_used_per_timestep` is per grid point or per triangle,
         and a textured Surface has almost none of either -- so without this the
         batch sizer prices a 1774x887 image at a few kilobytes per frame and
@@ -3076,7 +3085,15 @@ class Surface(Mob):
         inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
-        copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
+        from algan.rendering.raytracing import settings as _rts
+
+        if _rts.texture_opacity_in_kernel_active():
+            # No premultiply copy on this path (TEXTURE_OPACITY_IN_KERNEL):
+            # per frame the animation device holds the materialized window
+            # plus, on a closed surface, the wrap pad's copy of it.
+            copies = 2 if getattr(self, "_texture_is_wrap_padded", False) else 1
+        else:
+            copies = 3 if getattr(self, "_texture_is_wrap_padded", False) else 2
         if getattr(self, "_texture_window_collapsed", False):
             # The previous build proved the window constant and collapsed it
             # (TEXTURE_WINDOW_COLLAPSE), so the premultiply/pad copies are per
@@ -3084,7 +3101,10 @@ class Surface(Mob):
             # still scales with the frame count. Priced off the previous
             # build, like ``_texture_is_wrap_padded`` above -- a texture that
             # STARTS animating re-prices dense one batch late, covered by the
-            # out-of-render-memory retry.
+            # out-of-render-memory retry. Under TEXTURE_OPACITY_IN_KERNEL the
+            # collapse fires on texel constancy alone, so a FADE of a static
+            # image prices at the window too -- which is what lets its batch
+            # windows lengthen (the point of the in-sampler multiply).
             copies = 1
         return rows * texels * 4 * copies
 
@@ -3111,14 +3131,22 @@ class Surface(Mob):
         inds = timeline.mob_id_to_inds.get(self.id)
         rows = 1 if inds is None else int(inds.numel())
         texels = int(self.texture_height) * int(self.texture_width) * 5
-        factor = 6
+        from algan.rendering.raytracing import settings as _rts
+
+        # One image of the six-image chain is the host premultiply, absent
+        # under TEXTURE_OPACITY_IN_KERNEL (the opacity rides the bank as
+        # per-frame scalars instead).
+        factor = 5 if _rts.texture_opacity_in_kernel_active() else 6
         if getattr(self, "_texture_window_collapsed", False):
             # The previous build collapsed the window's downstream copies to
             # one frame (TEXTURE_WINDOW_COLLAPSE): the per-frame residue is
             # the materialized window itself, plus margin for the handful of
             # per-batch images (premultiplied map, decode, merge concat,
             # arena copy) the collapse amortizes. Same read-off-the-previous-
-            # build contract as the animation-device estimate.
+            # build contract as the animation-device estimate. Under
+            # TEXTURE_OPACITY_IN_KERNEL a fade of a static image lands here
+            # too (the collapse keys on texel constancy alone), which is what
+            # lengthens its batch windows.
             factor = 2
         return rows * texels * 4 * factor
 
@@ -3264,6 +3292,7 @@ class Surface(Mob):
 
         uvs = None
         texture_map = None
+        texture_opacity = None
         closed_axes = (False, False)
         material_texture_map = getattr(self, "material_texture", None)
         material_texture_flags = getattr(self, "material_texture_flags", 0)
@@ -3319,15 +3348,26 @@ class Surface(Mob):
             # image pass.
             from algan.rendering.raytracing import settings as _rts
 
+            # With the in-sampler multiply the opacity never touches the
+            # texels, so the collapse keys on texel constancy ALONE -- a fade
+            # of a static image keeps its one-frame map, which is the point
+            # of TEXTURE_OPACITY_IN_KERNEL (the premultiply welded the fade
+            # into the widest attribute in the engine).
+            op_in_kernel = _rts.texture_opacity_in_kernel_active()
             collapsed = (
                 _rts.TEXTURE_WINDOW_COLLAPSE
                 and texels.shape[0] > 1
-                and (opacity.shape[0] == 1 or bool((opacity[1:] == opacity[:1]).all()))
+                and (
+                    op_in_kernel
+                    or opacity.shape[0] == 1
+                    or bool((opacity[1:] == opacity[:1]).all())
+                )
                 and bool((texels[1:] == texels[:1]).all())
             )
             if collapsed:
                 texels = texels[:1]
-                opacity = opacity[:1]
+                if not op_in_kernel:
+                    opacity = opacity[:1]
             # Observed constancy, read by the batch sizer for the NEXT batch
             # (the same read-off-the-previous-build pattern as
             # ``_texture_is_wrap_padded``): a collapsed window's premultiply /
@@ -3338,19 +3378,38 @@ class Surface(Mob):
             self._texture_window_collapsed = bool(_rts.TEXTURE_WINDOW_COLLAPSE) and (
                 collapsed or texels.shape[0] == 1
             )
-            texture_map = (
-                wrap_pad_texture(
-                    texels.view(
-                        texels.shape[0],
-                        self.texture_height,
-                        self.texture_width,
-                        5,
-                    ),
-                    closed_axes,
-                )
-                .as_subclass(Color)
-                .mult_opacity(opacity)
+            texture_map = wrap_pad_texture(
+                texels.view(
+                    texels.shape[0],
+                    self.texture_height,
+                    self.texture_width,
+                    5,
+                ),
+                closed_axes,
             )
+            if op_in_kernel:
+                # The opacity rides the primitive as per-frame scalars (the
+                # merge appends them as a tiny bank region the sampler
+                # reads); the map itself stays the authored texels, which is
+                # also what keeps them k/255 for TEXTURE_U8_STORAGE.
+                # mult_opacity's out-of-place copy used to decouple the
+                # primitive from the timeline window; without it a collapsed
+                # frame would be a VIEW pinning the whole T-frame window past
+                # release_wide_windows, so clone the one frame (1/T of the
+                # copy this path removes). An uncollapsed (animating) window
+                # is deliberately left aliased: cloning it would be the very
+                # T-frame copy this path exists to avoid.
+                if collapsed and (
+                    texture_map.untyped_storage().data_ptr()
+                    == texels.untyped_storage().data_ptr()
+                ):
+                    texture_map = texture_map.clone()
+                texture_opacity = opacity.reshape(opacity.shape[0], -1)[:, :1].reshape(
+                    -1
+                )
+            else:
+                texture_map = texture_map.as_subclass(Color).mult_opacity(opacity)
+                texture_opacity = None
 
         colors = expand_grid_to_verts(compute_grid_color())
         normals = (
@@ -3382,6 +3441,15 @@ class Surface(Mob):
                 for k, v in self.grid.get_shader_params().items()
             },
         )
+        if texture_opacity is not None:
+            # In-sampler opacity + u8 provenance for the colour map; see the
+            # texture block above. Post-construction assignment, like
+            # ``mesh_ids`` below (the collection wrapper picks both up from
+            # the member carrying the map). The provenance only holds while
+            # the map is NOT premultiplied, which texture_opacity's presence
+            # certifies.
+            primitive.texture_opacity = texture_opacity
+            primitive.texture_u8_ok = bool(getattr(self, "_color_texture_u8_ok", False))
         # A packed collection (point-cloud spheres are the main case) flattens
         # several INDEPENDENT grids into one primitive, so "one member = one
         # surface" would union every packed sphere into a single surface and let

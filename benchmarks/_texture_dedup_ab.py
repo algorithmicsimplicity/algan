@@ -101,7 +101,9 @@ class MergeWatcher:
         def watching(prims, **kwargs):
             m = watcher._orig(prims, **kwargs)
             watcher.tex_shapes.append(tuple(m["textures"].shape))
-            watcher.tex_meta_tmax.append(int(m["tri_tex_meta"][:, 10:].max()))
+            # Cols 10-12 are the per-map time lengths; cols 13+ carry the
+            # opacity region / u8 layout (row offsets, not lengths).
+            watcher.tex_meta_tmax.append(int(m["tri_tex_meta"][:, 10:13].max()))
             watcher.tri_pos_frames.append(int(m["tri_pos"].shape[0]))
             return m
 

@@ -30,6 +30,32 @@ from algan.errors import AlganConfigurationError
 from algan.settings._startup import _ANIMATION_DEVICE
 
 
+def texture_u8_provenance(texture):
+    """Whether a ``[..., 5]`` colour texture is exactly 8-bit with zero glow.
+
+    True iff every channel value is exactly ``k / 255`` for an integer ``k``
+    in ``[0, 255]`` (the values :func:`~algan.utils.file_utils.get_image`
+    produces from an 8-bit file) AND the glow channel (index 3) is
+    identically zero. Proved by the round trip itself --
+    ``round(x * 255) / 255 == x`` elementwise in f32 -- so a map this
+    accepts quantizes to u8 and back bit-identically, which is the admission
+    rule for TEXTURE_U8_STORAGE's packed colour-map layout.
+
+    Checked ONCE at authoring (the ``color_texture`` setter, a mesh
+    constructor) rather than at the merge: the merge runs on the prefetch
+    worker, where an elementwise probe's device sync waits out the whole
+    queued chunk. NaNs fail the round trip, so they fail the check.
+    """
+    tex = texture.detach().float()
+    if tex.shape[-1] < 5:
+        return False
+    q = torch.round(tex * 255.0)
+    return bool(
+        torch.equal(q.clamp(0.0, 255.0) / 255.0, tex)
+        and not bool((tex[..., 3] != 0).any())
+    )
+
+
 def packed_reorder(x, counts, ids):
     cc = counts.cumsum(0)
     cc = torch.cat((torch.zeros_like(cc[:1]), cc))
