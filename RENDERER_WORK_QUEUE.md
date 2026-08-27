@@ -451,6 +451,44 @@ separated out.
 > ~15-floats-per-sheet memoization has real headroom. The memoization itself
 > remains unbuilt.
 
+> **BUILT AND MEASURED 2026-08-27 — and it does not pay on a GPU. The
+> paragraph above is the reason it looked as though it would, and it is
+> wrong; read this one instead.**
+>
+> The memoization shipped as `SHEET_RESOLVE_MEMO`, **default OFF**: mode 1
+> stores each processed triangle sheet's colour(4), alpha, reflectivity,
+> roughness, IOR, transmission and surface point, and mode 2 reads them back
+> instead of re-calling `_tri_color_g` / `_tri_extra_g` /
+> `_tri_ior_transmission_g` / `_tri_surface_point`. Byte-identical, on CPU and
+> on CUDA (`benchmarks/_sheet_memo_parity.py`, whose third arm poisons the
+> table between the launches and must — and does — move the frame, so the
+> read is proven live rather than assumed).
+>
+> **Tesla T4, warm RUN 2, unsynced profile:**
+>
+> | scene | `sheet_resolve_shade` off → on | share of render | end to end |
+> | --- | --- | --- | --- |
+> | `nn_scene_UHD` | 0.306 → 0.304 s | **1.2%** of 22.9 s | 25.69 → 25.85 s |
+> | `static_gallery_PREVIEW` | 0.027 → 0.027 s | **0.6%** of 4.5 s | 4.73 → 4.51 s |
+>
+> The stage is under 1.5% of a render on that card and the memo moves it by
+> less than a millisecond. (The gallery's end-to-end −4.7% is NOT this change
+> — a 0.027 s kernel cannot produce it; treat it as run noise.)
+>
+> **What went wrong with the ranking, because the trap generalises.**
+> `_resolve_mode_ratio.py` brackets every launch with a device sync, so each
+> launch absorbs the queue it drains. It reported ~12 s and ~16 s per mode on
+> a render whose entire resolve kernel is 0.3 s — the numbers are queue-drain,
+> not kernel cost. Its docstring says exactly this ("read the two modes'
+> TOTALS against each other, not against an unsynced profile"); the reading
+> above went past that and treated the ratio as if it sized the stage. **A
+> ratio between two launches does not size the work either of them does.**
+> Size a stage from the unsynced profile before ranking anything on it.
+>
+> This also demotes the premise under `DESIGN_renderer_structural_candidates.md`
+> item 4 (the transport/shade/composite split), which was staged behind this
+> exact number.
+
 ---
 
 ## 10. `AttributeTimeline.get` — the prep pole

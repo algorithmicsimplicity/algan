@@ -265,11 +265,25 @@ for the estimator work both need.
 
 ## 4. Split the resolve monolith: the sheet stream was designed for material-sorted shading and never got it
 
-> **NOT BUILT (staged behind the item-9 measurement, exactly as this item
-> prescribes) — and that measurement now exists**:
-> `benchmarks/_resolve_mode_ratio.py` brackets every `sheet_resolve_shade`
-> launch with a device sync and attributes it to its mode. See the
-> structural round in `DESIGN_optimization_targets.md` for the numbers.
+> **NOT BUILT — and DEMOTED 2026-08-27, because the measurement it was
+> staged behind turned out not to size the stage.** The item-9 memoization
+> was built as the cheap half of this idea and measured on a Tesla T4:
+> `sheet_resolve_shade` is **1.2% of an `nn_scene_UHD` render and 0.6% of a
+> `static_gallery_PREVIEW` one**, and the memo moved it by under a
+> millisecond. The ~12 s / ~16 s per-mode figures that ranked this work came
+> from `benchmarks/_resolve_mode_ratio.py`, which brackets each launch with a
+> device sync and therefore charges it the queue it drains — on a render
+> whose whole resolve kernel is 0.3 s. See `RENDERER_WORK_QUEUE.md` item 9
+> for the table and the reasoning.
+>
+> That does not refute this item's *architecture* argument — the resolve is
+> still a 72-parameter megakernel at a 21-25% occupancy ceiling, and that
+> ceiling is still real. What it removes is the evidence that splitting it
+> would buy much on these scenes: a rework "on the scale of the sheet flip
+> itself" cannot be justified by a stage measured at 1.2%. Before this is
+> picked up again it needs a scene where the resolve is a large share of the
+> render, established from an UNSYNCED profile. If no such scene exists in
+> the benchmark set, that is the finding.
 
 `sheet_resolve_shade` (`sheet_resolve_taichi.py:111`) is one kernel per covered
 pixel that walks the depth-sorted sheets and does *everything* inline:

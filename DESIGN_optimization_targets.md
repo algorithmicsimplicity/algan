@@ -454,6 +454,64 @@ CPU box) — the shadowed double-resolve nearly doubles resolve cost, which
 ranks the ~15-floats-per-sheet memoization (and behind it item 4's
 transport/shade split) as a real candidate.
 
+## The sheet-resolve memo (2026-08-27): built, byte-identical, and it does not pay
+
+`RENDERER_WORK_QUEUE.md` item 9's memoization, built as the cheap half of
+`DESIGN_renderer_structural_candidates.md` item 4. Shipped as
+`SHEET_RESOLVE_MEMO`, **default OFF on measurement**.
+
+**What it does.** A shadowed batch launches `sheet_resolve_shade` twice over
+the same sheets -- mode 1 walks the transport and builds the shadow events,
+mode 2 shades reading the traced visibility -- and mode 1 already fetches
+everything mode 2 re-fetches. Mode 1 now stores each processed triangle
+sheet's colour(4), alpha, reflectivity, roughness, IOR, transmission and
+surface point (twelve floats) and mode 2 reads them back instead of calling
+`_tri_color_g` / `_tri_extra_g` / `_tri_ior_transmission_g` /
+`_tri_surface_point` again. Sound because the two walks process exactly the
+same sheets: every `mode != 1` gate in that kernel wraps a spawn, a shade, the
+truncation counter or a pixel commit, and none touches loop-carried transport
+state or a break/continue condition.
+
+**Parity.** `benchmarks/_sheet_memo_parity.py`: byte-identical with the toggle
+off and on, on this CPU box AND on a Tesla T4 -- 0 differing pixels. A third
+arm poisons the memo between the two launches and must differ, which it does
+by 1379657 pixels, so the read is proven live rather than assumed. The fixture
+carries an unlit mob (processed sheets that build no event -- the rows the
+existing event tables never cover), a translucent one (the IOR/transmission
+columns), a textured one (the sampler path) and a `Text` (interleaved circuit
+sheets, which the memo skips).
+
+**Measured, Tesla T4, warm RUN 2, UNSYNCED profile:**
+
+| scene | `sheet_resolve_shade` off -> on | share of render | end to end |
+| --- | --- | --- | --- |
+| `nn_scene_UHD` | 0.306 -> 0.304 s | **1.2%** of 22.9 s | 25.69 -> 25.85 s |
+| `static_gallery_PREVIEW` | 0.027 -> 0.027 s | **0.6%** of 4.5 s | 4.73 -> 4.51 s |
+
+The stage is under 1.5% of a render and the memo moves it by less than a
+millisecond, while costing 48 B per sheet of arena that the runtime memory
+model prices into the next chunk's length. Default off. (The gallery's
+end-to-end -4.7% is not this change: a 0.027 s kernel cannot produce it.)
+
+**The measurement lesson, which is the durable part.** The number that ranked
+this work -- mode1/mode2 = 0.685, "10.5 s against 15.3 s" -- came from
+`benchmarks/_resolve_mode_ratio.py`, which brackets every launch with a device
+sync. Each launch therefore absorbs the queue it drains, and it reported ~12 s
+and ~16 s per mode on a render whose entire resolve kernel is 0.3 s. The
+harness warns about this in its own docstring ("read the two modes' TOTALS
+against each other, not against an unsynced profile"); the reading that ranked
+the memoization went past it and treated the ratio as if it sized the stage.
+**A ratio between two launches does not size the work either of them does.**
+Size a stage from the unsynced profile before ranking anything on it -- and
+note this also demotes item 4, which was staged behind the same number.
+
+**A CPU render is a different story and is not refuted here.** On the CPU box
+the same A/B moved the sync-bracketed mode 2 by 10-13% across two independent
+runs; that measurement has the same defect, but the resolve genuinely is a
+larger share of a CPU render, so `ALGAN_SHEET_RESOLVE_MEMO=1` may be worth it
+there. It should not be flipped on for a GPU render without a fresh unsynced
+profile of the target scene.
+
 ## The T4 round (2026-08-25): the nn performance scenes
 
 > The T4 line of work has its own plan of record now:

@@ -1277,13 +1277,37 @@ SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 # verbatim through f32, so the frame is BYTE-IDENTICAL
 # (benchmarks/_sheet_memo_parity.py).
 #
-# The trade is arena bytes for fetches: 48 B per sheet against three
-# barycentric-interpolated (and, on a textured mob, texture-sampling) fetches,
-# on a stage measured at mode1/mode2 = 0.685 on a T4, i.e. the double resolve
-# nearly doubles a shadowed batch's resolve cost. The runtime memory model
-# sees the extra allocation on its own, so batches reprice without anything
-# to annotate. ALGAN_SHEET_RESOLVE_MEMO=0 restores the re-fetch.
-SHEET_RESOLVE_MEMO = env_flag("ALGAN_SHEET_RESOLVE_MEMO", True)
+# DEFAULT OFF, on measurement -- the candidate is built and correct, and it
+# does not pay on a GPU. Measured on a Tesla T4 (2026-08-27, tag memo3),
+# warm RUN 2, unsynced profile:
+#
+#   nn_scene_UHD      sheet_resolve_shade  0.306 s -> 0.304 s   (1.2% of a
+#                     22.9 s render; end to end 25.69 -> 25.85 s, neutral)
+#   static_gallery    sheet_resolve_shade  0.027 s -> 0.027 s   (0.6% of a
+#                     4.5 s render)
+#
+# The stage this optimises is 0.6-1.2% of a render on that card, and the memo
+# moves it by less than a millisecond, because the fetches it removes were
+# already cheap next to what the kernel is actually bound by. Against that it
+# costs 48 B per sheet of arena, which the runtime memory model prices into
+# the next chunk's length -- a real cost for no measured gain.
+#
+# WHY IT LOOKED PROMISING, because the trap is reusable: the number that
+# ranked this work came from benchmarks/_resolve_mode_ratio.py, which brackets
+# every launch with a device sync. That sync makes each launch absorb the
+# queue it drains, so it reported ~12 s and ~16 s per mode on a render whose
+# whole resolve kernel is 0.3 s. The harness says so in its own docstring
+# ("read the two modes' TOTALS against each other, not against an unsynced
+# profile"); the reading that ranked the memoization went past it and treated
+# the ratio as if it sized the stage. It does not. Size a stage from the
+# unsynced profile, always.
+#
+# Kept rather than reverted: it is byte-identical either way
+# (benchmarks/_sheet_memo_parity.py), it compiles out entirely when off, and
+# a CPU render spends a much larger share in this kernel -- so
+# ALGAN_SHEET_RESOLVE_MEMO=1 is worth trying there. It should not be flipped
+# on for a GPU render without a fresh unsynced profile of the target scene.
+SHEET_RESOLVE_MEMO = env_flag("ALGAN_SHEET_RESOLVE_MEMO", False)
 
 
 def set_sheet_resolve_memo(enabled):
