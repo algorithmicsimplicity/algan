@@ -512,6 +512,105 @@ larger share of a CPU render, so `ALGAN_SHEET_RESOLVE_MEMO=1` may be worth it
 there. It should not be flipped on for a GPU render without a fresh unsynced
 profile of the target scene.
 
+## The texture opacity/u8 round (2026-08-27): the premultiply leaves the host
+
+The contract change `DESIGN_renderer_structural_candidates.md` item 5's u8
+stamp priced and declined, now taken — because taking it deletes the fade
+problem the structural round left in place: `mult_opacity` scales only the
+map's coverage channel, but it welded the (animated) opacity into the
+(usually static) texels, so a plain fade of a static image voided
+`TEXTURE_WINDOW_COLLAPSE` and rebuilt, re-decoded and re-uploaded the full
+map once per frame, with the batch sizer pricing it per frame.
+
+**What shipped** (both default on, each with its own kill switch):
+
+* **`TEXTURE_OPACITY_IN_KERNEL`**: `Surface` / `TriangleMesh` hand the
+  primitive per-frame opacity scalars (`texture_opacity`) instead of
+  premultiplying the map; the merge appends them as a tiny per-map region
+  inside the shared texel bank and `_sample_texture` multiplies the sampled
+  coverage. The region rides `tri_tex_meta` cols 13-14 as DATA — no new
+  kernel argument, because `sheet_resolve_shade` sits at Taichi's
+  runtime-argument ceiling. The window collapse then keys on texel constancy
+  alone, both estimators price a fade of a static image at the collapsed
+  window (the estimator half that turns fewer bytes into longer windows,
+  per the structural round's lesson), and `_pack_frame_visibility` folds the
+  scalars back in so a faded-out frame still leaves the BVH. Two host-side
+  consumers of the premultiplied map were audited: the frame-visibility
+  amax (fixed as above) and `_texture_alpha_is_opaque`, which reads channel
+  3 — a channel `mult_opacity` never touched — so its classification is
+  unchanged by construction.
+* **`TEXTURE_U8_STORAGE`**: colour maps whose authored texels are provably
+  `k/255` with zero glow (`texture_u8_ok`, proved ONCE at authoring — the
+  merge adds no device syncs on the prefetch worker, the structural round's
+  hard-won rule) are stored as RGBA bytes bit-packed one texel per f32 lane
+  of the same bank — x5 fewer bytes on the widest array of a textured merge
+  — and decoded in-kernel through a per-map 256-entry LUT **scattered from
+  the map's own direct decode**, i.e. the f32 arm's own bits. A LUT decoded
+  from `arange(256)/255` is NOT bit-identical: torch's decode differs in the
+  last ulp between its scalar and SIMD paths across tensor sizes — and even
+  within one tensor (measured: byte 82 of a 105-element decode, body vs
+  tail), so exactness beyond the scatter is unattainable in principle on
+  CPU. `get_image`'s `float()/255` file loads qualify; procedural float
+  maps fall back to f32 rows; an interpolating window (t > 1) stays f32
+  (its in-between texels are not k/255).
+* **One bug the A/B's own numbers caught**: content dedup of packed maps
+  must compare as i32 — packed byte patterns can form float NaNs, and float
+  `torch.equal` treats NaN != NaN, which silently stored a shared image
+  twice (the u8 arm's bank read 630K rows where one map is 315K).
+
+**Parity.** `benchmarks/_texture_opacity_ab.py`, three arms in one process
+with pinned windows (legacy / opacity-in-kernel / +u8), non-vacuity asserted
+per path (a real fade region, a u8 map, the f32 fallback with a region, the
+legacy dense contrast, the dedup ratio):
+
+* **u8 flip: byte-identical** — 0 differing pixels over 6 frames, on the
+  CPU box AND on a Tesla T4 (where the wide-attr window materializes and
+  decodes on the GPU).
+* **opacity flip: qualified, not byte-identical** — the multiply moves from
+  before the bilinear filter (per texel, host) to after it (per sample,
+  kernel). Measured max channel diff **1** (CPU: 2 pixels; T4: 4 pixels, of
+  6 PREVIEW frames), against the render suites' own <= 2 tolerance; the
+  same class of exception as `ALGAN_WIDE_ATTR_RENDER_DEVICE`. With no fade
+  anywhere the multiply is by 1.0 and exact, which is why
+  `_texture_dedup_ab.py` still passes byte-identical with the new defaults
+  on. `tests/unit_tests/test_texture_opacity_u8.py` pins the host contracts
+  (provenance, collapse, kill switch, estimator, visibility, lane packing,
+  end-to-end u8 flip).
+
+**Measured, Tesla T4 (Kaggle, tag texop1, branch tip `f8b89fd`; warm
+in-process alternating arms):**
+
+* `texfade_ab_PREVIEW` (a 1774x887 image fading for the whole clip beside a
+  static copy and a moving cube): **legacy 1.74 s -> new 1.62 s (1.08x)**,
+  and the structural story behind it: max merged bank rows **23,603,072 ->
+  315,004 (74.9x)**, batch windows **3 -> 2** for the clip. The wall-clock
+  gain is modest on a T4 at PREVIEW — the GPU absorbs the upload — but the
+  memory shape is the durable part: the fade batch's texture bytes drop
+  ~75x, which is headroom on any VRAM-bound box and window length
+  everywhere.
+* The parity scene's fade batch, merged bank rows by arm: legacy
+  **9,444,110** -> opacity-in-kernel **1,574,119** (6.0x) -> +u8
+  **315,545** (another 5.0x, 29.9x total).
+* No-regression controls (every texel of the nn ImageMob animates per
+  frame, so nothing is collapsible and the new meta rides along at
+  opacity 1): `nn_scene_PREVIEW` warm RUN 2 **5.52 s**, `nn_scene_UHD`
+  **25.34 s** — inside the round-to-round band of the structural and memo
+  rounds' records (5.56 s; 24.78-25.85 s).
+
+**Measured, CPU box (4-vCPU container):** the same A/B passes with max diff
+1 on 2 pixels; the fast suite (277 tests incl. the pixel-compared render)
+passes with the defaults on.
+
+**What this un-blocks.** Colour maps now reach the kernel as authored
+texels plus per-(map, frame) scalars — the contract stage 4 of this line of
+work (in-kernel interpolation between two endpoint maps with per-frame
+weights read off the timeline, generalizing fades to texel crossfades)
+plugs into: endpoints are authored maps (u8-eligible), weights ride the
+same meta/bank pattern as the opacity region. The timeline-side "describe
+this window as segments" query is the open build, and it should be designed
+with item 3's full window stride in mind (this is its texture-shaped
+special case).
+
 ## The T4 round (2026-08-25): the nn performance scenes
 
 > The T4 line of work has its own plan of record now:
