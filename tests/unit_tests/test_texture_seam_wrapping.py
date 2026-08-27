@@ -198,30 +198,53 @@ def test_material_and_normal_maps_wrap_with_the_colour_map():
 
 def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
     """A colour texture dominates a textured surface's render memory, and the
-    wrap pad is one more live copy of it while the premultiply clones off it.
+    wrap pad is one more live copy of it (under the legacy premultiply, the
+    premultiply clones off it as a third).
 
     With the static window collapse (``TEXTURE_WINDOW_COLLAPSE``, default on)
     those copies are made once per batch rather than once per frame the
     moment a build proves the window constant, so the per-frame estimate
-    drops to the materialized window alone; the legacy per-frame pricing --
-    wrap-pad copy included -- is asserted with the collapse off.
+    drops to the materialized window alone; the dense per-frame pricing --
+    wrap-pad copy included -- is asserted with the collapse off, and the
+    legacy premultiply pricing under TEXTURE_OPACITY_IN_KERNEL's kill
+    switch.
     """
     from algan.rendering.raytracing import settings as rt_settings
 
+    frame = 32 * 32 * 5 * 4
     SceneManager.reset()
     sphere = Sphere(radius=1.5, color_texture=_checker(32, 32)).spawn()
 
-    assert sphere._color_texture_bytes_per_timestep() == 32 * 32 * 5 * 4 * 2, (
+    # Default arm (TEXTURE_OPACITY_IN_KERNEL): no premultiply copy exists.
+    assert sphere._color_texture_bytes_per_timestep() == frame * 1, (
         "before a primitive build nothing knows the surface closes"
     )
     sphere.get_render_primitives()
-    assert sphere._color_texture_bytes_per_timestep() == 32 * 32 * 5 * 4 * 1, (
-        "the build observed a constant window, so the premultiply/pad copies "
-        "are per batch and only the window itself scales with the frame count"
+    assert sphere._color_texture_bytes_per_timestep() == frame * 1, (
+        "the build observed a constant window, so the pad copy is per batch "
+        "and only the window itself scales with the frame count"
     )
     rt_settings.set_texture_window_collapse(False)
     try:
         sphere.get_render_primitives()
-        assert sphere._color_texture_bytes_per_timestep() == 32 * 32 * 5 * 4 * 3
+        assert sphere._color_texture_bytes_per_timestep() == frame * 2, (
+            "an uncollapsed wrapped window is the window plus the pad copy"
+        )
     finally:
         rt_settings.set_texture_window_collapse(True)
+
+    # Legacy arm: the premultiply clone rejoins the per-frame chain.
+    rt_settings.set_texture_opacity_in_kernel(False)
+    try:
+        sphere.get_render_primitives()
+        assert sphere._color_texture_bytes_per_timestep() == frame * 1, (
+            "a collapsed window prices the same either way"
+        )
+        rt_settings.set_texture_window_collapse(False)
+        sphere.get_render_primitives()
+        assert sphere._color_texture_bytes_per_timestep() == frame * 3, (
+            "dense legacy pricing is window + premultiply + pad"
+        )
+    finally:
+        rt_settings.set_texture_window_collapse(True)
+        rt_settings.set_texture_opacity_in_kernel(True)
