@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
+import torch
+
 from algan.constants.color import Color
+from algan.errors import AlganConfigurationError
 from algan.settings._startup import _ANIMATION_DEVICE
 
 
@@ -51,4 +55,19 @@ def get_image(file_path):
             .permute(1, 2, 0)
         )
         file_path = file_path.float() / 255
+    elif not torch.is_tensor(file_path):
+        # A numpy array is the natural way to hand over pixels -- it is what
+        # every imaging library returns and what Manim's ImageMobject takes --
+        # and it used to reach ``torch.zeros_like`` as-is and fail there.
+        try:
+            file_path = torch.as_tensor(np.asarray(file_path))
+        except (TypeError, ValueError) as not_an_array:
+            raise AlganConfigurationError(
+                f"Expected image pixels (a tensor or array of shape [H, W, C]) "
+                f"or a path to an image file, got {type(file_path).__name__}."
+            ) from not_an_array
+        if file_path.dtype == torch.uint8:
+            file_path = file_path.float() / 255
+        else:
+            file_path = file_path.float()
     return Color.add_defaults(file_path)

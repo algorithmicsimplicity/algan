@@ -589,6 +589,14 @@ class Polygon(BezierCircuitCubic):
         kwargs = _translate_vector_style_kwargs(
             kwargs, default_color=RED, shape=type(self)
         )
+        if not vertex_locations:
+            # ``torch.stack([])`` below would answer "stack expects a
+            # non-empty TensorList", which says nothing about polygons.
+            raise ValueError(
+                f"{type(self).__name__} needs its vertices: pass them as "
+                f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
+                f"[N, 3] tensor."
+            )
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
             while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:

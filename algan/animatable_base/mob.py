@@ -73,15 +73,68 @@ from algan.utils.tensor_utils import (
 _SETTABLE_PROPERTY_CACHE: dict[type, tuple[int, set[str]]] = {}
 
 
+#: Colour attributes stored in Algan's five-channel layout
+#: ``[R, G, B, glow, opacity]``. Every *other* attribute whose name contains
+#: "color" is a material shader parameter, packed as plain RGB (see
+#: ``materials._to_color3``), so a parsed colour is trimmed for those instead
+#: of widened -- widening them silently changed the shader parameter layout.
+_FIVE_CHANNEL_COLOR_ATTRS = frozenset({"color", "border_color"})
+
+
 def _coerce_if_color(attr, value):
     """Parse the colour spellings users reach for, on colour attributes only.
 
-    Keyed on the attribute name because every one of them is a colour --
-    ``color``, ``border_color``, ``emissive_color``, ``sheen_color`` -- and
-    because a non-colour attribute must keep taking exactly what it takes: a
-    hex int is a colour on ``color`` and a plain number on ``glow``.
+    Keyed on the attribute name because a non-colour attribute must keep
+    taking exactly what it takes: a hex int is a colour on ``color`` and a
+    plain number on ``glow``.
     """
-    return to_color(value) if "color" in attr else value
+    if "color" not in attr:
+        return value
+    value = to_color(value)
+    if (
+        attr not in _FIVE_CHANNEL_COLOR_ATTRS
+        and torch.is_tensor(value)
+        and value.shape
+        and value.shape[-1] == 5
+    ):
+        return value[..., :3].as_subclass(torch.Tensor)
+    return value
+
+
+#: Manim ``Mobject`` methods and the Algan call that does the same job. Algan
+#: carries no aliases for its own API (see CLAUDE.md), so these names do not
+#: exist and never will -- but a reader arriving from Manim writes them, and a
+#: bare ``AttributeError: 'Square' object has no attribute 'shift'`` does not
+#: say that ``move`` is right there. Used only to word the error.
+_MANIM_METHOD_HINTS = {
+    "shift": "move(...)",
+    "next_to": "move_next_to(...)",
+    "to_edge": "move_to_edge(...)",
+    "to_corner": "move_to_corner(...)",
+    "move_to": "move_to(...)",
+    "set_fill": "set the `color` attribute, or set_material(...)",
+    "set_stroke": "set the `border_color` and `border_width` attributes",
+    "set_opacity": "set the `opacity` attribute",
+    "fade": "set the `opacity` attribute",
+    "set_width": "scale_to_width(...)",
+    "set_height": "scale_to_height(...)",
+    "stretch_to_fit_width": "scale_to_width(...)",
+    "stretch_to_fit_height": "scale_to_height(...)",
+    "copy": "clone()",
+    "set_z_index": "set the `z_index` attribute",
+    "add": "add_children(...), or Group(...)",
+    "remove": "remove_children(...)",
+    "arrange": "move_next_to(...) on each Mob, or a Group's layout helpers",
+    "animate": (
+        "nothing -- Algan records animations from ordinary calls, so write "
+        "`mob.move(RIGHT)` where Manim writes `self.play(mob.animate.shift(RIGHT))`"
+    ),
+    "become": "become(...)",
+    "save_state": "clone(spawn=False) inside `with Off():`",
+    "restore": "become(the clone you saved)",
+    "rotate_about_origin": "rotate(..., about_point=ORIGIN)",
+    "flip": "rotate(180, axis)",
+}
 
 
 class Mob(
@@ -468,6 +521,22 @@ class Mob(
             receives = receives and bool(getattr(node, "receives_shadows", True))
             stack.extend(getattr(node, "parents", None) or ())
         return casts, receives
+
+    def __getattr__(self, name):
+        # Reached only after normal lookup has already failed, so this costs
+        # nothing on the working path and only words the error on the failing
+        # one. Manim's own compatibility Mobs override this to delegate to
+        # their backing object, which is why the hint lives on the base class.
+        hint = _MANIM_METHOD_HINTS.get(name)
+        if hint is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}. "
+            f"That is Manim's name for it; in Algan use {hint}. "
+            f"See the Manim migration guide for the full table."
+        )
 
     def _init_default_attr(self, attr, value):
         """Allocate ``attr``'s attribute-timeline buffer directly to ``value``

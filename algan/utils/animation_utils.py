@@ -51,6 +51,12 @@ def rfd(x, start_portion, run_time, lag_time):
 
 
 def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
+    if not mobs:
+        # Nothing to stagger. Reachable from ordinary authoring: Text("") and
+        # Text("   ") produce no glyphs, and their entrance wave used to die
+        # here on ``torch.cat`` of an empty list -- a torch error for a string
+        # that simply has nothing in it.
+        return
     # dots = dot_product(direction, torch.cat([mob.location for mob in mobs]), dim=-1, keepdim=True)
     dots = [dot_product(direction, mob.location, dim=-1, keepdim=True) for mob in mobs]
     dotsc = torch.cat(dots, -2)

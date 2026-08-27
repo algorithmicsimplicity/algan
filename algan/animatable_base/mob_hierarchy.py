@@ -51,7 +51,32 @@ class MobHierarchyMixin:
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.HierarchyError`
+            If ``other_mob`` is this Mob, or is already one of its children --
+            either would make the graph a cycle.
         """
+        if other_mob is self:
+            raise HierarchyError("A Mob cannot be its own parent")
+        # Walking up from the proposed parent must not arrive back here.
+        # ``Group`` has always rejected a Mob that is its own child or listed
+        # twice; this side accepted both a self-parent and a two-Mob loop in
+        # silence, leaving a graph nothing can traverse.
+        seen, frontier = {id(other_mob)}, [other_mob]
+        while frontier:
+            node = frontier.pop()
+            if node is self:
+                raise HierarchyError(
+                    f"{type(other_mob).__name__} already has "
+                    f"{type(self).__name__} above it, so making it the parent "
+                    f"would create a cycle"
+                )
+            for ancestor in getattr(node, "parents", ()):
+                if id(ancestor) not in seen:
+                    seen.add(id(ancestor))
+                    frontier.append(ancestor)
         if not any(parent is other_mob for parent in self.parents):
             self.parents.append(other_mob)
         return self

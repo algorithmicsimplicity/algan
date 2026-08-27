@@ -238,9 +238,17 @@ class Color(torch.Tensor):
 
     @staticmethod
     def add_defaults(color):
-        if color.shape[-1] < 4:
+        """Widen RGB or RGBA to Algan's ``[R, G, B, glow, opacity]``.
+
+        Only 3 and 4 channels are widened. A width that is neither is not a
+        colour missing its extra channels, and padding it anyway meant the
+        error it eventually caused reported a shape the caller never wrote --
+        ``ImageMob(torch.zeros(8, 8, 2))`` was told its texture had shape
+        ``(8, 8, 4)``.
+        """
+        if color.shape[-1] == 3:
             color = torch.cat((color, torch.ones_like(color[..., :1])), -1)
-        if color.shape[-1] < 5:
+        if color.shape[-1] == 4:
             color = torch.cat(
                 (color[..., :-1], torch.zeros_like(color[..., :1]), color[..., -1:]), -1
             )

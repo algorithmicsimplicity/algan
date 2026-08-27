@@ -932,6 +932,24 @@ class Off(AnimationContext):
         )
 
 
+def _reject_fixed_lag_ratio(name, fixed, kwargs):
+    """Explain that ``Sync`` and ``Seq`` are ``Lag`` with the ratio decided.
+
+    Both pass their own ``lag_ratio`` positionally to ``Lag``, so a caller's
+    keyword collided with it and Python reported "got multiple values for
+    keyword argument 'lag_ratio'" against ``Lag.__init__`` -- an internal class
+    the caller never mentioned.
+    """
+    if "lag_ratio" not in kwargs:
+        return
+    given = kwargs["lag_ratio"]
+    raise TypeError(
+        f"{name} is Lag with lag_ratio={fixed}, so it takes no lag_ratio of "
+        f"its own. Use Lag({given!r}) for that overlap, or {name}() for "
+        f"lag_ratio={fixed}."
+    )
+
+
 class Lag(AnimationContext):
     """Overlap the block's animations, each starting partway into the last.
 
@@ -993,6 +1011,7 @@ class Sync(Lag):
     """
 
     def __init__(self, run_time: float | None = None, **kwargs):
+        _reject_fixed_lag_ratio("Sync", 0, kwargs)
         super().__init__(lag_ratio=0, run_time=run_time, **kwargs)
 
 
@@ -1022,6 +1041,7 @@ class Seq(Lag):
     """
 
     def __init__(self, run_time: float | None = None, **kwargs):
+        _reject_fixed_lag_ratio("Seq", 1, kwargs)
         super().__init__(lag_ratio=1, run_time=run_time, **kwargs)
 
 

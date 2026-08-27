@@ -23,6 +23,7 @@ import torch.types
 
 import algan.utils.file_utils as file_utils
 from algan.constants.color import Color
+from algan.errors import AlganConfigurationError
 from algan.mobs.surfaces.surface import Surface
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.utils.lazy_import import LazyModule, isinstance_if_loaded
@@ -73,6 +74,16 @@ class ImageMob(Surface):
         else:
             rgba_array = file_utils.get_image(rgba_array_or_file_path)
 
+        if rgba_array.dim() < 3:
+            # Reported here, where the argument was written, rather than as
+            # ``IndexError: tuple index out of range`` from the shape lookup
+            # two lines down.
+            raise AlganConfigurationError(
+                f"An image needs a height, a width and colour channels: "
+                f"expected an array of shape [H, W, C] (C of 3, 4 or 5) or a "
+                f"path to an image file, got an array of shape "
+                f"{tuple(rgba_array.shape)}."
+            )
         h = rgba_array.shape[-3]
         w = rgba_array.shape[-2]
         aspect_ratio = w / h

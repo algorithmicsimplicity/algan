@@ -1113,6 +1113,12 @@ class AttributeTimeline:
             selects_nothing = t.numel() > 0 and int(t.min()) >= frames
         return slice(None, None, None) if selects_nothing else t
 
+    def _modify_time_inds(self):
+        """``_effective_time_inds`` for the write path, identity-checked first."""
+        if self.active_state is self.current_state:
+            return self._effective_time_inds()
+        return self.active_time_inds
+
     def _replay_born_rows(self, rows):
         """Mask of ``rows`` claimed after the current replay began, or ``None``.
 
@@ -1121,7 +1127,14 @@ class AttributeTimeline:
         the authoritative buffer, which is what these rows want anyway.
         """
         floor = self._replay_row_floor
-        if floor is None or self.active_state is self.current_state:
+        # ``pointer <= floor`` is the overwhelmingly common case -- it means no
+        # updater in this render has built anything -- and it is checked first
+        # so the hot read path never pays for the elementwise comparison.
+        if (
+            floor is None
+            or self.pointer <= floor
+            or self.active_state is self.current_state
+        ):
             return None
         born = rows >= floor
         return born if bool(born.any()) else None
@@ -1155,13 +1168,17 @@ class AttributeTimeline:
                 span = self._compact_span(b, e)
                 if span is not None:
                     block = self.active_state[:, span[0] : span[1]]
-                    t = self._effective_time_inds()
+                    t = self.active_time_inds
+                    if self.active_state is self.current_state:
+                        t = self._effective_time_inds()
                     if isinstance(t, slice):
                         return block[t].clone() if copy else block[t]
                     return block[t.view(-1)]
             key = key.tensor()
         columns, live = self._compact_index(key)
-        t = self._effective_time_inds()
+        t = self.active_time_inds
+        if self.active_state is self.current_state:
+            t = self._effective_time_inds()
         born = self._replay_born_rows(key)
         if live is None and born is None:
             return self.active_state[t, columns]
@@ -1219,7 +1236,9 @@ class AttributeTimeline:
                     else self._compact_span(b, e)
                 )
                 if span is not None:
-                    t = self._effective_time_inds()
+                    t = self.active_time_inds
+                    if self.active_state is self.current_state:
+                        t = self._effective_time_inds()
                     if isinstance(t, slice):
                         self.active_state[t, span[0] : span[1]] = value
                     else:
@@ -1236,7 +1255,7 @@ class AttributeTimeline:
                 return self
             live = ~born if live is None else live & ~born
         if live is None:
-            self.active_state[self._effective_time_inds(), columns] = value
+            self.active_state[self._modify_time_inds(), columns] = value
             return self
         # Rows this window did not materialize have no column to write to.
         # Dropping those writes matches the full-width buffer, where they
@@ -1254,7 +1273,7 @@ class AttributeTimeline:
             # Per-row values: drop the rows whose writes are being discarded.
             # A broadcast value (scalar, or a singleton row axis) passes through.
             value = value.index_select(-2, kept)
-        self.active_state[self._effective_time_inds(), columns[kept]] = value
+        self.active_state[self._modify_time_inds(), columns[kept]] = value
         return self
 
     def _modify_replay_born(self, rows, born, value):
@@ -2670,7 +2689,12 @@ class AnimationTimeline:
             if value is None:
                 raise AttributeError(
                     f"{type(mob).__name__} owns no rows of the '{attr}' "
-                    f"attribute timeline, so it has no value to read."
+                    f"attribute timeline, so it has no value to read. A Mob "
+                    f"loses its rows when the Scene that held them is torn "
+                    f"down -- save_video(reset=True) does that, and Mobs "
+                    f"created before such a render cannot be used after it -- "
+                    f"or when it was built by an updater during a render, "
+                    f"which lasts only for that frame."
                 )
             else:
                 timeline.add(mob, value)

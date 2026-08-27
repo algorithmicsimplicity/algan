@@ -5,9 +5,11 @@ work", but "what does a user hit when they reach for something reasonable and it
 quite what Algan expects". The brief was that anything a user might plausibly try
 should either work or say what to do instead.
 
-Everything below reproduces on `main` (98b40b5) via
-`uv run python stress_test/reproductions.py`, which prints `BUG` or `FIXED` per
-finding, so each entry doubles as a regression test.
+Every finding below was found on `main` (98b40b5) and **has since been fixed on
+this branch**. Each one carries a **Fixed** line saying what changed and where
+its regression test lives. `uv run python stress_test/reproductions.py` runs one
+check per finding and prints `FIXED` or `BUG`; `pytest -q --fast` is what
+actually guards them.
 
 ## What was exercised
 
@@ -96,12 +98,18 @@ Measured with the same script, same Algan, same settings:
 | `Sync(run_time=2)` of 3 | 2.00 s | 3.00 s |
 | `Seq` of 3 | 3.00 s | 3.00 s |
 
-**Suggested fix.** Make `__enter__` refuse a context that is already entered, with a
+**Fix taken.** Make `__enter__` refuse a context that is already entered, with a
 message pointing at `Lag`/`Sync` being cheap to construct fresh; or hold the tokens in
 a list so re-entry unwinds correctly. A guard is the safer of the two, since the
 self-referential `prev_context` is broken regardless of the token.
 
-Check: `F1`.
+**Fixed.** `AnimationContext.__enter__` now raises `ContextReuseError` on a context
+object that is already entered *or* has already been exited. A context describes one
+block -- its timespan, its child list and its reset token all belong to that block --
+so reuse has no meaning to preserve, and the message says to construct a new one.
+Tests: `test_an_animation_context_object_refuses_a_second_with_block` and
+`test_sync_still_overlaps_after_a_rejected_context_reuse` in
+`tests/unit_tests/test_ux_regressions.py` (both `fast`). Check: `F1`.
 
 ---
 
@@ -148,11 +156,22 @@ breaks, not updaters or trackers.
 the "write updaters as functions of `t`" rule but says nothing about this, and the
 `IndexError` mentions neither the updater nor the Mob.
 
-**Suggested fix.** Either grow the materialization buffers when replay allocates rows,
+**Fix taken.** Either grow the materialization buffers when replay allocates rows,
 or detect Mob creation during an updater and raise something that names the updater and
 points at building the Mob outside it (`with Off():`) and mutating it instead.
 
-Checks: `F2`, `F2b`.
+**Fixed.** A Mob built while frames materialize is now *ephemeral*: skipped by updater
+dependency tracing and by materialization (it has no history in a window that predates
+it), read and written through `current_state` so it answers with its constructed values
+rather than zeros, kept out of `Scene.actors`, and rolled back when the replay ends. A
+render therefore leaves the Scene exactly as authored, which is what lets `save_video`
+be called twice and give the same video.
+
+What an updater still cannot do is *reshape* a Mob that existed before the render: row
+layout is fixed at authoring time and the batch's window was materialized against the
+rows it had. That now raises `UnsupportedFeatureError` naming the updater and pointing
+at `NumericDisplay`, which does count. Tests:
+`tests/unit_tests/test_updater_mob_creation.py`. Checks: `F2`, `F2b`, `F2c`.
 
 ---
 
@@ -178,11 +197,17 @@ no difference either — the video is still rendered at `SETTINGS.video`.
 name, and it makes the two output calls in the same Scene disagree about resolution and
 frame rate.
 
-**Suggested fix.** Default `save_video`'s `video_settings` to the Scene's own (which
+**Fix taken.** Default `save_video`'s `video_settings` to the Scene's own (which
 itself defaults to `SETTINGS.video` at construction), matching `save_frame`. If the
 current precedence is intended, `set_video_settings` and the `Scene(video_settings=)`
 argument should say in their docstrings that they do not affect `save_video`.
 
+**Fixed.** Both paths now go through `Scene._resolve_video_settings`: an argument wins,
+then the Scene's own if it was *given* them, then `SETTINGS.video`. That last step is
+what keeps `SETTINGS.video.set(HD)` working after the Scene exists, which matters
+because the default Scene is built by the first Mob -- before most scripts' first line.
+Tests: `test_the_scenes_own_video_settings_reach_both_render_calls` and
+`test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing` (both `fast`).
 Check: `F3`.
 
 ---
@@ -216,10 +241,13 @@ with Seq():
         sphere.color = RED
 ```
 
-**Suggested fix.** Fix the README, and extend the doc-example collector to the root
+**Fix taken.** Fix the README, and extend the doc-example collector to the root
 README so it cannot drift again.
 
-Check: `F4`.
+**Fixed.** The README now reads `sphere.spawn()`, `with Sync(run_time=2.0):` and
+`sphere.move([2, 0, 0])`, and `tests/unit_tests/test_doc_examples.py` collects
+`README.md`'s fenced Python alongside the docs' blocks, so it goes through the same
+tiers as every other example and cannot drift again. Check: `F4`.
 
 ---
 
@@ -247,10 +275,17 @@ So the same literal is valid as a material colour and an `AttributeError` as a M
 colour. The error surfaces from `mob._prepare_buffers` (`mob.py:1109`) with no mention
 of colour at all.
 
-**Suggested fix.** Route the Mob `color` constructor argument and the `color` setter
+**Fix taken.** Route the Mob `color` constructor argument and the `color` setter
 through `_to_color5`.
 
-Check: `F5`.
+**Fixed.** `constants.color.to_color` is now the one parser, applied to any attribute
+whose name contains "color" and at the three places that handle a colour before
+`Mob.__init__` sees it: 2-D circuits, surface vertex grids, and the Manim constructor
+bridge (whose own parser reads a tuple of floats as a *list of colours*). Material
+colour parameters are RGB rather than Algan's five channels, so a parsed colour is
+trimmed for those instead of widened. An unparseable value raises `InvalidColorError`
+naming it. Test: `test_every_colour_spelling_reaches_every_mob` (`fast`, parametrized
+over five spellings and five Mob classes). Check: `F5`.
 
 ---
 
@@ -276,10 +311,14 @@ back; clone it before despawning if you need it again later" — but only there.
 who reaches for `spawn()` gets no signal at the call that failed, and Manim's
 `FadeOut` → `FadeIn` of the same mobject makes this a natural thing to try.
 
-**Suggested fix.** Warn from `spawn()` when `is_despawned()`, with the clone advice
+**Fix taken.** Warn from `spawn()` when `is_despawned()`, with the clone advice
 from `despawn()`'s docstring.
 
-Check: `F6`.
+**Fixed.** `spawn()` warns with `DespawnedMobWarning` when the Mob is despawned,
+carrying the clone-before-despawn advice that was only in `despawn`'s docstring.
+Spawning an already-spawned (not despawned) Mob stays a quiet no-op -- that one is
+documented and harmless. Test:
+`test_spawning_a_despawned_mob_warns_instead_of_doing_nothing` (`fast`). Check: `F6`.
 
 ---
 
@@ -303,10 +342,12 @@ a value that shrinks toward zero. Neighbouring degenerate shapes are fine:
 and `Cube(side_length=0)` all render (blank or mirrored), so the behaviour is also
 inconsistent between primitives.
 
-**Suggested fix.** Drop empty primitives before the merge, or reject a degenerate
+**Fix taken.** Drop empty primitives before the merge, or reject a degenerate
 extent at construction with a message naming the parameter.
 
-Check: `F7`.
+**Fixed.** `Surface._build_render_primitive` returns `None` when the tessellation has no
+triangles; the callers already treat that as "this actor contributes no geometry".
+Test: `test_a_surface_with_no_extent_renders_nothing_rather_than_failing`. Check: `F7`.
 
 ---
 
@@ -326,9 +367,11 @@ material presets while `GOLD` is a colour. `set_shader` next door validates prop
 `ModifiedProtectedAttributeError` for the post-spawn case — it just does not type-check
 `material` before touching `material.shader` (`mob_materials.py:262`).
 
-**Suggested fix.** `isinstance(material, Material)` check with a message listing the
+**Fix taken.** `isinstance(material, Material)` check with a message listing the
 presets and the `Mesh*Material` classes.
 
+**Fixed.** `set_material` checks `isinstance(material, Material)` and names the material
+classes and the presets. Test: `test_set_material_rejects_a_non_material` (`fast`).
 Check: `F8`.
 
 ---
@@ -338,22 +381,20 @@ Check: `F8`.
 Each of these is a poor diagnostic rather than a functional break, ordered by how
 likely a user is to meet it.
 
-| Trigger | What is reported | Should say |
+| Trigger | What was reported | What it says now |
 | --- | --- | --- |
-| `Text("")` or `Text("   ")`, on `spawn()` | `RuntimeError: torch.cat(): expected a non-empty list of Tensors` | that the string has no renderable glyphs (`F9`) |
-| `Seq(lag_ratio=0.5)`, `Sync(lag_ratio=0.5)` | `TypeError: algan...Lag.__init__() got multiple values for keyword argument 'lag_ratio'` | that `Seq`/`Sync` fix `lag_ratio`, and `Lag(0.5)` is the one to use (`F10`) |
-| `save_video(codec="notacodec")` | after a full render, `FileNotFoundError: '..._temp.mp4' -> '....mp4'` | that FFmpeg rejected the codec — and validate before rendering (`F11`) |
-| `ImageMob(numpy_array)` | `TypeError: zeros_like(): argument 'input' must be Tensor, not numpy.ndarray` | accept it; the parameter is documented as "an array of RGBA data" and Manim's `ImageMobject` is numpy-based (`F12`) |
-| `ImageMob(torch.zeros(8, 8, 2))` | `ValueError: color_texture must have shape [W, H, 5], got (8, 8, 4).` | the shape reported is the *padded* one, not the `(8, 8, 2)` that was passed (`F13`) |
-| `Scene.set_background_color("not a color")` | `RuntimeError: [Errno 2] No such file or directory: 'not a color'` | that the string is neither a colour nor a path (`F14`) |
-| a Mob used after `save_video(reset=True)` | `AttributeError: Square owns no rows of the 'location' attribute timeline` | what `reset=True`'s docstring already says — mobs from before the render are unusable (`F15`) |
-| `mob.shift(...)`, `mob.animate...`, `next_to`, `to_edge`, `arrange`, `set_fill` | bare `AttributeError` | the Algan name; the migration guide has the table, `__getattr__` could point at it (`F16`) |
-| `add_updater(lambda mob: ...)` | `TypeError: <lambda>() takes 1 positional argument but 2 were given` | that updaters take `(mob, t)` — the tutorial says so, the error does not |
-| `Speech("missing.wav")` | `RuntimeError: This means you probably do not have eSpeak or eSpeak-ng installed!` | that the file does not exist; `Audio("missing.wav")` gets this right |
-| `save_video(post_processes=(42,))` | `TypeError: 'int' object is not callable`, after the whole render | validate the passes before rendering |
-| `Code("print(1)")` | `FileNotFoundError: 'print(1)'` | first positional is `code_file`; `code_string=` is the one for a literal |
-| `Quad()` | `RuntimeError: stack expects a non-empty TensorList` | that vertices are required |
-| `draw_border_then_fill(mob)` | `TypeError: takes 0 positional arguments but 1 was given` | it is exported in `__all__`; either it takes a Mob or it should not be public |
+| `Text("")` or `Text("   ")`, on `spawn()` | `RuntimeError: torch.cat(): expected a non-empty list of Tensors` | **Fixed.** It spawns. A string with no glyphs has nothing for the entrance wave to stagger, and `animate_lagged_by_location` now returns rather than reducing over an empty list (`F9`) |
+| `Seq(lag_ratio=0.5)`, `Sync(lag_ratio=0.5)` | `TypeError: algan...Lag.__init__() got multiple values for keyword argument 'lag_ratio'` | **Fixed.** *"Seq is Lag with lag_ratio=1, so it takes no lag_ratio of its own. Use Lag(0.5) for that overlap"* (`F10`) |
+| `save_video(codec="notacodec")` | after a full render, `FileNotFoundError: '..._temp.mp4' -> '....mp4'` | **Fixed.** The codec is checked against FFmpeg's encoder list before rendering: 0.2 s instead of 27 s, and the message names the codec (`F11`) |
+| `ImageMob(numpy_array)` | `TypeError: zeros_like(): argument 'input' must be Tensor, not numpy.ndarray` | **Fixed.** numpy arrays and nested sequences are accepted, uint8 scaled by 255 (`F12`) |
+| `ImageMob(torch.zeros(8, 8, 2))` | `ValueError: color_texture must have shape [W, H, 5], got (8, 8, 4).` | **Fixed.** `Color.add_defaults` widens only 3 and 4 channels, so the complaint reports `(8, 8, 2)` — the shape that was passed (`F13`) |
+| `Scene.set_background_color("not a color")` | `RuntimeError: [Errno 2] No such file or directory: 'not a color'` | **Fixed.** A background string is read as a colour first; if it is neither a colour nor a file that exists, the message says so (`F14`) |
+| a Mob used after `save_video(reset=True)` | `AttributeError: Square owns no rows of the 'location' attribute timeline` | **Fixed.** The message now names `save_video(reset=True)` as one of the two ways a Mob loses its rows (`F15`) |
+| `mob.shift(...)`, `mob.animate...`, `next_to`, `to_edge`, `arrange`, `set_fill` | bare `AttributeError` | **Fixed.** `Mob.__getattr__` names the Algan call for ~20 Manim methods. An ordinary typo keeps the ordinary message (`F16`) |
+| `add_updater(lambda mob: ...)` | `TypeError: <lambda>() takes 1 positional argument but 2 were given` | **Fixed.** The signature is checked before the updater is recorded, and the message shows the `(mob, t)` form (`F18`) |
+| `save_video(post_processes=(42,))` | `TypeError: 'int' object is not callable`, after the whole render | **Fixed.** Each pass is checked for callability before rendering (`F19`) |
+| `Code("print(1)")` | `FileNotFoundError: 'print(1)'` | Unfixed. The first positional is `code_file`; `code_string=` is the one for a literal. This is Manim's own signature, inherited by the compatibility wrapper |
+| `Quad()` | `RuntimeError: stack expects a non-empty TensorList` | **Fixed.** *"Quad needs its vertices: pass them as points (Quad(LEFT, RIGHT, UP)) or as one [N, 3] tensor."* |
 
 ## 10. Accepted in silence
 
@@ -361,9 +402,10 @@ These neither work nor say anything. Listed because the brief was that a user sh
 always get one or the other; none of them crash, and several are arguably fine as
 clamping — but nothing distinguishes them from a scene the user got right.
 
-* `mob.set_parent_to(mob)` and two-Mob parent cycles are accepted, while `Group.add`
-  rejects the same shapes with `HierarchyError: A Mob cannot be its own child` (`F17`).
-  Rendering does not hang, so this is an inconsistency rather than a hazard.
+* **Fixed.** `mob.set_parent_to(mob)` and parent cycles were accepted, while `Group.add`
+  rejected the same shapes with `HierarchyError: A Mob cannot be its own child` (`F17`).
+  `set_parent_to` now walks up from the proposed parent and raises `HierarchyError` if
+  it arrives back at the caller. A chain that is not a cycle is unaffected.
 * `move_to(nan)` / `move_to(inf)` render a blank frame. A NaN that came out of the
   user's own arithmetic yields a black video and no clue where it came from.
 * `opacity = 5.0` and `opacity = -1.0` clamp; `scale(-1)` mirrors; `scale(0)`,
@@ -377,6 +419,36 @@ clamping — but nothing distinguishes them from a scene the user got right.
 * `set_animated_attribute("bogus", 1.0)` succeeds.
 * `FullScreenRectangle()` renders nothing at any colour — its outline sits exactly on
   the frame edge. `ScreenRectangle` and `Rectangle` are visible.
+
+The rest are unfixed, and deliberately: each is a value the renderer treats sensibly
+(clamping, mirroring, drawing nothing), and warning about every one of them would cost
+more in noise than it returns. They are recorded here because "silently reasonable" and
+"silently wrong" are indistinguishable to a reader, and a NaN in particular is worth
+revisiting.
+
+---
+
+## Two bugs found while fixing the above
+
+Neither was in the sweep -- both surfaced while chasing finding 2 -- and both are fixed.
+
+**`DecimalNumber.set_value()` made the number vanish.** Any `set_value` on a
+`DecimalNumber` or `Integer` rendered a blank frame, with or without an updater, and
+retroactively: frames from *before* the call were blank too.
+`_sync_manim_node_from_algan` pushed the Algan side's style onto every Manim node,
+including the point-less root whose colour and opacity rows are placeholders. Manim
+treats a point-less node's style as a template, and `set_value` rebuilds its glyphs and
+then calls `init_colors()` -- which broadcast that placeholder over the whole family at
+opacity 0. Style is now synchronized only onto nodes that draw something. Test:
+`test_set_value_leaves_a_manim_number_visible`. Check: `F2d`.
+
+**Growing an attribute buffer mid-render discarded the batch's frame window.**
+`AttributeTimeline.add` pointed `active_state` back at `current_state` whenever it grew
+the buffer. Claiming rows mid-render then dropped the materialized window, after which
+every read answered with the single timeless frame: the primitives came out one frame
+deep while the lights stayed the batch's depth, and the light packer raised a
+shape error naming neither. Reachable only from an updater that builds a Mob, which is
+why finding 2 was hiding it.
 
 ---
 
@@ -426,6 +498,13 @@ uv run python stress_test/reproductions.py --list   # ids and titles
 uv run python stress_test/reproductions.py F1 F3    # selected
 ```
 
-The script sets `ALGAN_USE_DAEMON=0` so that finding 1 cannot leak into the checks that
-follow it. To see finding 1's cross-script effect instead, run the poisoning snippet as
-a script with the daemon on, then render any scene containing a `Sync`.
+Every check should print `FIXED` except `F11` on a machine whose FFmpeg cannot be asked
+for its encoder list, where it reports that it skipped.
+
+The tests are the authority, and they run in CI:
+
+```bash
+uv run -m pytest -q --fast                                 # the marked ones
+uv run -m pytest -q tests/unit_tests/test_updater_mob_creation.py
+uv run -m pytest -q tests/unit_tests/test_ux_regressions.py
+```

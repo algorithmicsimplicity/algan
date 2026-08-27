@@ -62,6 +62,48 @@ from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 ANIMATABLE_PROPERTY_VERSION = [0]
 
 
+def _check_updater_signature(update_function, extra_positional):
+    """Reject an updater that cannot take ``(mob, t)`` before it is recorded.
+
+    Manim's updaters take the mobject alone, so ``add_updater(lambda m: ...)``
+    is the first thing a reader from there writes. It used to fail with
+    ``TypeError: <lambda>() takes 1 positional argument but 2 were given``,
+    raised from the immediate zero-time application and naming nothing about
+    updaters.
+    """
+    if not callable(update_function):
+        raise TypeError(
+            f"add_updater() expects a callable taking (mob, t), got "
+            f"{type(update_function).__name__}."
+        )
+    try:
+        parameters = list(inspect.signature(update_function).parameters.values())
+    except (TypeError, ValueError):
+        # A builtin or C callable has no introspectable signature; let the
+        # call itself decide.
+        return
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters):
+        return
+    accepted = sum(
+        1
+        for p in parameters
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    required = 2 + extra_positional
+    if accepted >= required:
+        return
+    name = getattr(update_function, "__name__", repr(update_function))
+    raise TypeError(
+        f"add_updater()'s function is called as (mob, t"
+        f"{', ...' if extra_positional else ''}), so it needs "
+        f"{required} positional parameters; {name} takes {accepted}. "
+        f"`t` is the seconds elapsed since the updater was added, as a torch "
+        f"tensor, and must appear even when unused:\n\n"
+        f"    mob.add_updater(lambda mob, t: mob.set_location(RIGHT * t))\n"
+    )
+
+
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     """Combine args and kwargs and record the call on this mob's timeline."""
     params = inspect.signature(func).parameters
@@ -488,6 +530,7 @@ class Animatable:
 
             Scene.save_video()
         """
+        _check_updater_signature(update_function, len(args))
         timeline = self.scene.timeline_manager
         # The span must be recorded on an *entered* context: only contexts
         # that enter and exit get their rescaled timestamps synced, so events

@@ -45,9 +45,9 @@ from algan.animation_timeline.animation_contexts import (
     animation_manager_context,
 )
 from algan.animation_timeline.timeline import TimelineManager
+from algan.constants.color import InvalidColorError, to_color
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
-
 from algan.logging.logger import get_logger
 
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
@@ -911,6 +911,41 @@ class Scene(RenderLoopMixin):
         self.reset_scene()
         return self
 
+    def _background_image_frame(self, path, not_a_colour):
+        """Load ``path`` as a full-frame background image.
+
+        Reached when a background string did not parse as a colour, so a
+        missing file has to say that the string was neither -- otherwise the
+        two mistakes are indistinguishable.
+        """
+        if not Path(path).exists():
+            raise AlganConfigurationError(
+                f"background_color {path!r} is neither a colour Algan "
+                f"recognises nor the path of an image file that exists. Pass a "
+                f"Color such as BLUE, a hex string ('#101820'), or the path of "
+                f"an image to use as the background."
+            ) from not_a_colour
+        a = self.video_settings.anti_alias_level
+        # get_image returns [height, width, channels]; interpolate wants
+        # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
+        # the image's rows and columns instead, rendering it transposed.)
+        image = get_image(path).permute(2, 0, 1).unsqueeze(0)
+        image = (
+            F.interpolate(
+                image,
+                [_ * a for _ in tuple(self.frame_size)],
+                mode="bilinear",
+                antialias="bilinear",
+            )
+            .squeeze(0)
+            .permute(1, 2, 0)
+        )
+        # Frame buffers are bottom-up (post_process_frames flips them on the
+        # way out, matching the tracer's py = height-1-row), so the background
+        # rows have to be stored bottom-up too -- as the procedural background
+        # path already produces them.
+        return image.flip(0).unsqueeze(0)
+
     @active_scene_method
     def set_video_settings(self, video_settings, _explicit: bool = True):
         """Set this Scene's resolution, frame rate and anti-aliasing.
@@ -1304,26 +1339,17 @@ class Scene(RenderLoopMixin):
         if (background_color is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background_color, str):
-            a = self.video_settings.anti_alias_level
-            # get_image returns [height, width, channels]; interpolate wants
-            # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
-            # the image's rows and columns instead, rendering it transposed.)
-            image = get_image(background_color).permute(2, 0, 1).unsqueeze(0)
-            image = (
-                F.interpolate(
-                    image,
-                    [_ * a for _ in tuple(self.frame_size)],
-                    mode="bilinear",
-                    antialias="bilinear",
+            # A string is a colour first and an image path second. Read as a
+            # path unconditionally, ``set_background_color("blue")`` answered
+            # ``No such file or directory: 'blue'`` -- blaming the filesystem
+            # for a colour name -- and a mistyped path said the same thing
+            # whether the file was missing or the word was never a colour.
+            try:
+                background_color = to_color(background_color)
+            except InvalidColorError as not_a_colour:
+                background_color = self._background_image_frame(
+                    background_color, not_a_colour
                 )
-                .squeeze(0)
-                .permute(1, 2, 0)
-            )
-            # Frame buffers are bottom-up (post_process_frames flips them on
-            # the way out, matching the tracer's py = height-1-row), so the
-            # background rows have to be stored bottom-up too -- as the
-            # procedural background path already produces them.
-            background_color = image.flip(0).unsqueeze(0)
         self.background_frame = self.background_color = background_color
         self.background_is_set = True
         return self

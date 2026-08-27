@@ -41,6 +41,7 @@ from algan.logging.logger import get_logger
 from algan.rendering.camera import Camera
 from algan.settings import SETTINGS
 from algan.utils.video_encoding import (
+    check_codec_is_available,
     override_moviepy_ffmpeg_binary,
     resolve_encode_binary,
     select_video_encoder,
@@ -350,6 +351,9 @@ def _render_scene_to_file(
         # A hardware pick can land on a binary other than moviepy's own
         # (moviepy is often configured with a static build that has no NVENC
         # encoders); None keeps moviepy's configuration untouched.
+        # Before the render, not after it: an unusable codec used to cost a
+        # whole render and then surface as a missing temporary file.
+        check_codec_is_available(codec)
         encode_binary = resolve_encode_binary(codec)
         if codec is None:
             codec = "png" if transparent else "libx264"

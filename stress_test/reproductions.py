@@ -1,4 +1,4 @@
-"""Minimal reproductions for the findings in ``STRESS_TEST_FINDINGS.md``.
+"""One check per finding in ``STRESS_TEST_FINDINGS.md``.
 
 Run it with the project venv::
 
@@ -6,9 +6,13 @@ Run it with the project venv::
     uv run python stress_test/reproductions.py --list     # just the ids
     uv run python stress_test/reproductions.py F1 F3      # selected checks
 
-Each check prints ``REPRO <id> <BUG|FIXED> -- <one line>``. ``BUG`` means the
-behaviour described in the report still reproduces; ``FIXED`` means it does
-not, so the check is the regression test for that finding.
+Each check prints ``REPRO <id> <FIXED|BUG> -- <one line>``. ``FIXED`` means the
+behaviour the report asked for is what happens now; ``BUG`` means the original
+finding still reproduces.
+
+Every finding also has a test in ``tests/unit_tests`` -- that is what CI runs,
+and it is the authority. This file exists so the report has one command behind
+it, and so the before/after of each finding can be seen in one place.
 
 Every check renders at ``SMOKE_TEST`` (32x32, 2 fps) so the whole file runs in
 a couple of minutes on CPU.
@@ -64,10 +68,12 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_repro_out")
 
 
 # --------------------------------------------------------------------------
-# F1 -- re-entering a context object leaks the animation-manager override
+# F1 -- re-entering a context object leaked the animation-manager override
 # --------------------------------------------------------------------------
-@check("F1", "re-entering an AnimationContext makes every later Sync sequential")
+@check("F1", "re-entering an AnimationContext is refused, and Sync still overlaps")
 def f1():
+    from algan.errors import ContextReuseError
+
     def sync_seconds():
         with Scene(video_settings=SMOKE_TEST):
             square = Square(color=BLUE).spawn(animate=False)
@@ -80,62 +86,140 @@ def f1():
 
     before = sync_seconds()
 
-    with Scene():
-        square = Square().spawn()
-        context = Sync()
-        with context:  # noqa: SIM117 -- the nesting is the bug being reproduced
-            with context:  # same object, entered while already entered
-                square.move(RIGHT)
+    nested = _raised(lambda: _enter_twice_nested())
+    sequential = _raised(lambda: _enter_twice_sequentially())
 
     after = sync_seconds()
     leaked = _contexts._ANIMATION_MANAGER_OVERRIDE.get(None) is not None
-    bug = leaked or after != before
-    return bug, (
-        f"Sync of 3 lasts {before:.2f}s before the re-entry and {after:.2f}s after "
-        f"(override leaked: {leaked})"
+    refused = isinstance(nested, ContextReuseError) and isinstance(
+        sequential, ContextReuseError
+    )
+    fixed = refused and not leaked and after == before
+    return not fixed, (
+        f"re-entry refused: {refused}; override leaked: {leaked}; "
+        f"Sync of 3 lasts {before:.2f}s before and {after:.2f}s after"
     )
 
 
+def _enter_twice_nested():
+    with Scene():
+        square = Square().spawn()
+        context = Sync()
+        with context:  # noqa: SIM117 -- the nesting is the point
+            with context:
+                square.move(RIGHT)
+
+
+def _enter_twice_sequentially():
+    with Scene():
+        square = Square().spawn()
+        context = Sync()
+        with context:
+            square.move(RIGHT)
+        with context:
+            square.move(UP)
+
+
 # --------------------------------------------------------------------------
-# F2 -- creating a Mob inside an updater crashes the render
+# F2 -- creating a Mob inside an updater crashed the render
 # --------------------------------------------------------------------------
-@check("F2", "constructing a Mob inside an updater crashes the render")
+@check("F2", "an updater can build a Mob, and the render leaves the Scene alone")
 def f2():
-    def build():
-        with Scene(video_settings=SMOKE_TEST):
+    def build_and_render():
+        with Scene(video_settings=SMOKE_TEST) as scene:
             square = Square(color=BLUE).spawn()
             square.add_updater(lambda mob, t: Circle(radius=0.1, color=RED))
             Scene.wait(1)
-            Scene.save_frame(_tmp("f2.png"))
+            actors = len(scene.actors)
+            rows = {
+                name: timeline.pointer
+                for name, timeline in scene.timeline_manager.attr_to_timeline.items()
+            }
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                Scene.save_video(_tmp("f2.mp4"), SMOKE_TEST)
+            return actors == len(scene.actors) and rows == {
+                name: timeline.pointer
+                for name, timeline in scene.timeline_manager.attr_to_timeline.items()
+            }
 
-    exc = _raised(build)
-    return exc is not None, f"{type(exc).__name__}: {exc}" if exc else "renders"
+    exc = _raised(lambda: _store(build_and_render))
+    unchanged = _LAST.get("value")
+    return exc is not None or not unchanged, (
+        f"{type(exc).__name__}: {exc}"
+        if exc
+        else f"renders; Scene unchanged by the render: {unchanged}"
+    )
 
 
-@check("F2b", "DecimalNumber.set_value() inside an updater crashes the render")
+_LAST = {}
+
+
+def _store(fn):
+    _LAST["value"] = fn()
+
+
+@check("F2b", "a Mob that reshapes itself in an updater is explained, not crashed")
 def f2b():
+    from algan.errors import UnsupportedFeatureError
+
     def build():
         with Scene(video_settings=SMOKE_TEST):
             number = DecimalNumber(0).spawn()
             tracker = ValueTracker(0).spawn()
             number.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
             tracker.set_value(5)
-            Scene.save_frame(_tmp("f2b.png"))
+            Scene.save_video(_tmp("f2b.mp4"), SMOKE_TEST)
+
+    exc = _raised(build)
+    explained = isinstance(exc, UnsupportedFeatureError) and "updater" in str(exc)
+    return (
+        not explained,
+        f"{type(exc).__name__}: {str(exc)[:120] if exc else 'renders'}",
+    )
+
+
+@check("F2c", "NumericDisplay counts inside an updater")
+def f2c():
+    def build():
+        with Scene(video_settings=SMOKE_TEST):
+            display = NumericDisplay(0.0).spawn()
+            tracker = ValueTracker(0).spawn()
+            display.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
+            tracker.set_value(5)
+            Scene.save_video(_tmp("f2c.mp4"), SMOKE_TEST)
 
     exc = _raised(build)
     return exc is not None, f"{type(exc).__name__}: {exc}" if exc else "renders"
 
 
+@check("F2d", "set_value leaves a Manim number visible")
+def f2d():
+    def brightest(value):
+        with Scene(video_settings=SMOKE_TEST):
+            number = DecimalNumber(0.0).spawn()
+            if value is not None:
+                number.set_value(value)
+            result = Scene.save_frame(_tmp(f"f2d_{value}.png"))
+        return cv2.imread(str(result.output_path), cv2.IMREAD_UNCHANGED).max()
+
+    plain, after_set = brightest(None), brightest(3.0)
+    return (
+        after_set == 0,
+        f"brightest pixel: {plain} plain, {after_set} after set_value",
+    )
+
+
 # --------------------------------------------------------------------------
-# F3 -- save_video ignores the Scene's own video settings
+# F3 -- save_video ignored the Scene's own video settings
 # --------------------------------------------------------------------------
-@check("F3", "save_video() ignores Scene(video_settings=...); save_frame() honours it")
+@check("F3", "save_video and save_frame agree on the Scene's video settings")
 def f3():
     with Scene(video_settings=SMOKE_TEST) as scene:
         Square(color=BLUE).spawn()
         frame = Scene.save_frame(_tmp("f3.png"))
         video = Scene.save_video(_tmp("f3.mp4"))
-        wanted = scene.video_settings.resolution
+        wanted = tuple(scene.video_settings.resolution)
 
     png = cv2.imread(str(frame.output_path), cv2.IMREAD_UNCHANGED)
     cap = cv2.VideoCapture(str(video.output_path))
@@ -144,41 +228,45 @@ def f3():
         int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
     )
     cap.release()
-    return got != tuple(wanted), (
-        f"Scene asked for {tuple(wanted)}; save_frame wrote {png.shape[1]}x{png.shape[0]}, "
+    return got != wanted, (
+        f"Scene asked for {wanted}; save_frame wrote {png.shape[1]}x{png.shape[0]}, "
         f"save_video wrote {got[0]}x{got[1]}"
     )
 
 
 # --------------------------------------------------------------------------
-# F4 -- the README quickstart does not run
+# F4 -- the README quickstart did not run
 # --------------------------------------------------------------------------
-@check("F4", "README.md quickstart calls three names that do not exist")
+@check("F4", "every name the README quickstart calls exists")
 def f4():
     with Scene(video_settings=SMOKE_TEST):
         sphere = Sphere(color=BLUE, radius=1.2)
+        sphere.set_material(MeshPhysicalMaterial(roughness=0.15))
         broken = []
-        if _raised(lambda: sphere.spawn(duration=1.0)):
-            broken.append("spawn(duration=)")
-        if _raised(lambda: Sync(duration=2.0)):
-            broken.append("Sync(duration=)")
-        if _raised(lambda: sphere.shift([2, 0, 0])):
-            broken.append("Mob.shift()")
-    return bool(broken), "unsupported in the README example: " + ", ".join(broken)
+        with Seq():
+            if _raised(sphere.spawn):
+                broken.append("spawn()")
+            if _raised(lambda: Sync(run_time=2.0)):
+                broken.append("Sync(run_time=)")
+            if _raised(lambda: sphere.move([2, 0, 0])):
+                broken.append("Mob.move()")
+    return bool(broken), "unsupported: " + (", ".join(broken) or "nothing")
 
 
 # --------------------------------------------------------------------------
-# F5 -- colour arguments only accept Color
+# F5 -- colour arguments only accepted Color
 # --------------------------------------------------------------------------
-@check("F5", "Mob colour rejects hex strings, hex ints and RGB tuples")
+@check("F5", "hex strings, CSS names, hex ints and RGB tuples are colours")
 def f5():
+    rejected = []
     with Scene(video_settings=SMOKE_TEST):
-        rejected = []
         for label, call in (
             ('Square(color="#ff0000")', lambda: Square(color="#ff0000")),
             ('Square(color="red")', lambda: Square(color="red")),
             ("Square(color=0xFF0000)", lambda: Square(color=0xFF0000)),
             ("Square(color=(1, 0, 0))", lambda: Square(color=(1, 0, 0))),
+            ("Sphere(color=0xFF0000)", lambda: Sphere(color=0xFF0000)),
+            ('Text(color="red")', lambda: Text("x", color="red")),
             (
                 'mob.color = "#ff0000"',
                 lambda: setattr(Square().spawn(), "color", "#ff0000"),
@@ -191,32 +279,26 @@ def f5():
 
 
 # --------------------------------------------------------------------------
-# F6 -- spawn() after despawn() is a silent no-op
+# F6 -- spawn() after despawn() was a silent no-op
 # --------------------------------------------------------------------------
-@check("F6", "spawn() after despawn() silently does nothing")
+@check("F6", "spawn() on a despawned Mob warns")
 def f6():
+    from algan.errors import DespawnedMobWarning
+
     with Scene(video_settings=SMOKE_TEST):
         square = Square(color=BLUE).spawn()
-        Scene.wait(1)
         square.despawn()
-        Scene.wait(1)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             square.spawn()
-        Scene.wait(1)
-        result = Scene.save_frame(_tmp("f6.png"))
-
-    image = cv2.imread(str(result.output_path), cv2.IMREAD_UNCHANGED)
-    return image.max() == 0 and not caught, (
-        f"after re-spawn the frame's brightest pixel is {image.max()}, "
-        f"warnings emitted: {len(caught)}"
-    )
+    warned = any(issubclass(w.category, DespawnedMobWarning) for w in caught)
+    return not warned, f"warnings emitted: {[w.category.__name__ for w in caught]}"
 
 
 # --------------------------------------------------------------------------
-# F7 -- a surface that tessellates to nothing crashes the renderer
+# F7 -- a zero-triangle surface crashed the renderer
 # --------------------------------------------------------------------------
-@check("F7", "a zero-triangle Surface crashes the renderer with a tensor error")
+@check("F7", "a surface with no extent renders nothing instead of failing")
 def f7():
     failures = []
     for label, build in (
@@ -237,61 +319,74 @@ def f7():
 
 
 # --------------------------------------------------------------------------
-# F8 -- set_material does not validate its argument
+# F8 -- set_material did not check its argument
 # --------------------------------------------------------------------------
-@check("F8", "set_material() reports an internal AttributeError for a non-Material")
+@check("F8", "set_material names what it wants")
 def f8():
+    from algan.errors import AlganConfigurationError
+
     with Scene(video_settings=SMOKE_TEST):
-        messages = []
-        for label, value in (
-            ("GOLD (a Color)", GOLD),
-            ("None", None),
-            ('"gold"', "gold"),
-        ):
-            exc = _raised(lambda value=value: Sphere().set_material(value))
-            if isinstance(exc, AttributeError):
-                messages.append(f"{label} -> {exc}")
-    return bool(messages), "; ".join(messages) or "validated"
+        wrong = [
+            _raised(lambda value=value: Sphere().set_material(value))
+            for value in (GOLD, None, "gold")
+        ]
+        good = _raised(lambda: Sphere().set_material(GLASS))
+    explained = all(isinstance(e, AlganConfigurationError) for e in wrong)
+    return not (explained and good is None), (
+        f"rejected with a Material message: {explained}; GLASS still accepted: "
+        f"{good is None}"
+    )
 
 
 # --------------------------------------------------------------------------
-# F9 -- empty / whitespace Text
+# F9 -- empty Text
 # --------------------------------------------------------------------------
-@check("F9", 'Text("") fails on spawn with a raw torch.cat error')
+@check("F9", 'Text("") spawns')
 def f9():
     with Scene(video_settings=SMOKE_TEST):
-        exc = _raised(lambda: Text("").spawn())
-    return exc is not None, f"{type(exc).__name__}: {exc}" if exc else "spawns"
+        failures = [
+            f"{text!r} -> {type(exc).__name__}"
+            for text in ("", "   ", "\n")
+            if (exc := _raised(lambda text=text: Text(text).spawn())) is not None
+        ]
+    return bool(failures), "; ".join(failures) or "all spawn"
 
 
 # --------------------------------------------------------------------------
-# F10 -- Seq/Sync reject lag_ratio with a message naming Lag
+# F10 -- Seq/Sync rejected lag_ratio by blaming Lag
 # --------------------------------------------------------------------------
-@check("F10", "Seq(lag_ratio=...) raises a TypeError naming an internal class")
+@check("F10", "Seq(lag_ratio=...) explains itself without naming an internal class")
 def f10():
     exc = _raised(lambda: Seq(lag_ratio=0.5))
-    return exc is not None, f"{type(exc).__name__}: {exc}" if exc else "accepted"
+    good = isinstance(exc, TypeError) and "Seq is Lag with lag_ratio=1" in str(exc)
+    return not good, f"{type(exc).__name__}: {str(exc)[:110] if exc else 'accepted'}"
 
 
 # --------------------------------------------------------------------------
-# F11 -- an unusable codec surfaces as a missing temp file
+# F11 -- an unusable codec surfaced as a missing temp file
 # --------------------------------------------------------------------------
-@check("F11", "save_video(codec=...) reports a missing temp file, not a bad codec")
+@check("F11", "an unusable codec is named, before the render")
 def f11():
+    from algan.errors import AlganConfigurationError
+    from algan.utils.video_encoding import _listed_encoders
+
+    if _listed_encoders("ffmpeg") is None:
+        return False, "skipped: this FFmpeg cannot be asked for its encoder list"
+
     def render():
         with Scene(video_settings=SMOKE_TEST):
             Square(color=BLUE).spawn()
             Scene.save_video(_tmp("f11.mp4"), SMOKE_TEST, codec="notacodec")
 
     exc = _raised(render)
-    bug = isinstance(exc, FileNotFoundError)
-    return bug, f"{type(exc).__name__}: {exc}" if exc else "encoded"
+    good = isinstance(exc, AlganConfigurationError) and "codec" in str(exc)
+    return not good, f"{type(exc).__name__}: {str(exc)[:110] if exc else 'encoded'}"
 
 
 # --------------------------------------------------------------------------
-# F12 -- ImageMob rejects numpy arrays
+# F12 / F13 -- ImageMob's inputs and its shape complaint
 # --------------------------------------------------------------------------
-@check("F12", "ImageMob(numpy_array) fails with a raw torch TypeError")
+@check("F12", "ImageMob takes a numpy array")
 def f12():
     import numpy as np
 
@@ -300,35 +395,38 @@ def f12():
     return exc is not None, f"{type(exc).__name__}: {exc}" if exc else "accepted"
 
 
-# --------------------------------------------------------------------------
-# F13 -- the texture shape error reports a shape the caller never passed
-# --------------------------------------------------------------------------
-@check("F13", "ImageMob's channel-count error reports a padded shape")
+@check("F13", "a channel-count complaint reports the shape that was passed")
 def f13():
     with Scene(video_settings=SMOKE_TEST):
         exc = _raised(lambda: ImageMob(torch.zeros(8, 8, 2)))
-    bug = exc is not None and "(8, 8, 2)" not in str(exc)
-    return bug, f"passed [8, 8, 2], error says: {exc}"
+    good = exc is not None and "(8, 8, 2)" in str(exc)
+    return not good, f"passed [8, 8, 2], error says: {exc}"
 
 
 # --------------------------------------------------------------------------
-# F14 -- a bad background colour is reported as a missing file
+# F14 -- a bad background colour was reported as a missing file
 # --------------------------------------------------------------------------
-@check("F14", "set_background_color('not a color') reports a missing file")
+@check("F14", "a background string is read as a colour first")
 def f14():
-    def call():
+    from algan.errors import AlganConfigurationError
+
+    def call(value):
         with Scene(video_settings=SMOKE_TEST):
-            Scene.set_background_color("not a color")
+            Scene.set_background_color(value)
 
-    exc = _raised(call)
-    bug = exc is not None and "No such file" in str(exc)
-    return bug, f"{type(exc).__name__}: {exc}" if exc else "accepted"
+    named = _raised(lambda: call("navy"))
+    nonsense = _raised(lambda: call("not a color"))
+    good = named is None and isinstance(nonsense, AlganConfigurationError)
+    return not good, (
+        f"'navy' accepted: {named is None}; 'not a color' -> "
+        f"{type(nonsense).__name__ if nonsense else 'accepted'}"
+    )
 
 
 # --------------------------------------------------------------------------
-# F15 -- reset=True leaves a cryptic error behind
+# F15 -- reset=True left a cryptic error behind
 # --------------------------------------------------------------------------
-@check("F15", "using a Mob after save_video(reset=True) reports an internal message")
+@check("F15", "using a Mob after save_video(reset=True) says why it cannot work")
 def f15():
     def call():
         with Scene(video_settings=SMOKE_TEST):
@@ -337,49 +435,86 @@ def f15():
             square.move(RIGHT)
 
     exc = _raised(call)
-    return exc is not None, f"{type(exc).__name__}: {exc}" if exc else "reusable"
+    good = exc is not None and "reset=True" in str(exc)
+    return not good, f"{type(exc).__name__}: {str(exc)[:150] if exc else 'reusable'}"
 
 
 # --------------------------------------------------------------------------
-# F16 -- Manim method names raise a bare AttributeError
+# F16 -- Manim method names raised a bare AttributeError
 # --------------------------------------------------------------------------
-@check("F16", "Manim's Mobject methods raise a bare AttributeError with no pointer")
+@check("F16", "Manim's Mobject method names point at the Algan one")
 def f16():
     with Scene(video_settings=SMOKE_TEST):
         square = Square().spawn()
-        missing = [
-            name
-            for name in (
-                "shift",
-                "animate",
-                "next_to",
-                "to_edge",
-                "arrange",
-                "set_fill",
-            )
-            if not hasattr(square, name)
-        ]
-    return bool(missing), "no attribute and no hint: " + ", ".join(missing)
+        hints = {}
+        for name in ("shift", "next_to", "to_edge", "animate"):
+            exc = _raised(lambda name=name: getattr(square, name))
+            hints[name] = exc is not None and "in Algan use" in str(exc)
+        plain = _raised(lambda: square.wibble)
+    good = (
+        all(hints.values()) and plain is not None and "in Algan use" not in str(plain)
+    )
+    return not good, f"hinted: {hints}; an ordinary typo stays ordinary: {plain}"
 
 
 # --------------------------------------------------------------------------
-# F17 -- self-parenting is accepted where Group rejects it
+# F17 -- self-parenting and cycles were accepted
 # --------------------------------------------------------------------------
-@check("F17", "set_parent_to() accepts self-parents and cycles that Group rejects")
+@check("F17", "set_parent_to rejects the cycles Group rejects")
 def f17():
+    from algan.errors import HierarchyError
+
     with Scene(video_settings=SMOKE_TEST):
         square = Square()
-        self_parent = _raised(lambda: square.set_parent_to(square)) is None
+        self_parent = _raised(lambda: square.set_parent_to(square))
         first, second = Square(), Circle()
         first.set_parent_to(second)
-        cycle = _raised(lambda: second.set_parent_to(first)) is None
-        group_rejects = _raised(lambda: Group(Square()).add) is None
-        holder = Group(Square())
-        group_rejects = _raised(lambda: holder.add(holder)) is not None
-    return (self_parent or cycle) and group_rejects, (
-        f"set_parent_to(self) accepted={self_parent}, 2-cycle accepted={cycle}, "
-        f"Group.add(self) rejected={group_rejects}"
+        cycle = _raised(lambda: second.set_parent_to(first))
+        chain = _raised(lambda: Square().set_parent_to(second))
+    good = (
+        isinstance(self_parent, HierarchyError)
+        and isinstance(cycle, HierarchyError)
+        and chain is None
     )
+    return not good, (
+        f"self-parent rejected: {isinstance(self_parent, HierarchyError)}; "
+        f"2-cycle rejected: {isinstance(cycle, HierarchyError)}; "
+        f"a plain chain still allowed: {chain is None}"
+    )
+
+
+# --------------------------------------------------------------------------
+# F18 -- updater arity
+# --------------------------------------------------------------------------
+@check("F18", "a one-argument updater is told it needs (mob, t)")
+def f18():
+    with Scene(video_settings=SMOKE_TEST):
+        square = Square().spawn()
+        exc = _raised(lambda: square.add_updater(lambda mob: None))
+        good_one = _raised(lambda: square.add_updater(lambda mob, t: None))
+    good = (
+        isinstance(exc, TypeError)
+        and "positional parameters" in str(exc)
+        and good_one is None
+    )
+    return not good, f"{type(exc).__name__}: {str(exc)[:110] if exc else 'accepted'}"
+
+
+# --------------------------------------------------------------------------
+# F19 -- post-processing passes
+# --------------------------------------------------------------------------
+@check("F19", "a non-callable post-processing pass is rejected before the render")
+def f19():
+    from algan.errors import AlganConfigurationError
+
+    def call():
+        with Scene(video_settings=SMOKE_TEST):
+            Square(color=BLUE).spawn()
+            Scene.save_frame(_tmp("f19.png"), post_processes=(42,))
+
+    exc = _raised(call)
+    good = isinstance(exc, AlganConfigurationError) and "post_processes" in str(exc)
+    return not good, f"{type(exc).__name__}: {str(exc)[:110] if exc else 'accepted'}"
 
 
 def main(argv):

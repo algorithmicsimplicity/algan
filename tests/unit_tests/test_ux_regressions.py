@@ -1551,3 +1551,139 @@ def test_a_surface_with_no_extent_renders_nothing_rather_than_failing(tmp_path):
     assert brightest(lambda: algan.Cylinder(radius=0, color=algan.BLUE)) == 0
     # The same surface with extent still draws, so this is not a blanket skip.
     assert brightest(lambda: algan.Sphere(radius=1, color=algan.BLUE)) > 0
+
+
+@pytest.mark.fast
+def test_seq_and_sync_explain_that_their_lag_ratio_is_fixed():
+    """Both pass their own ``lag_ratio`` positionally to ``Lag``, so a caller's
+    keyword collided with it and Python blamed ``Lag.__init__`` -- a class the
+    caller never mentioned.
+    """
+    from algan.animation_timeline.animation_contexts import Seq
+
+    with pytest.raises(TypeError, match=r"Seq is Lag with lag_ratio=1"):
+        Seq(lag_ratio=0.5)
+    with pytest.raises(TypeError, match=r"Sync is Lag with lag_ratio=0"):
+        Sync(lag_ratio=0.5)
+    assert algan.Lag(0.5) is not None
+
+
+@pytest.mark.fast
+def test_set_parent_to_rejects_cycles_like_group_does():
+    with algan.Scene():
+        square = Square()
+        with pytest.raises(HierarchyError, match="its own parent"):
+            square.set_parent_to(square)
+
+        first, second, third = Square(), algan.Circle(), algan.Triangle()
+        first.set_parent_to(second)
+        with pytest.raises(HierarchyError, match="create a cycle"):
+            second.set_parent_to(first)
+
+        second.set_parent_to(third)
+        with pytest.raises(HierarchyError, match="create a cycle"):
+            third.set_parent_to(first)
+
+        # A chain that is not a cycle is still fine.
+        assert Square().set_parent_to(second) is not None
+
+
+@pytest.mark.fast
+def test_manim_method_names_point_at_the_algan_one():
+    """Algan carries no aliases for its own API, so these names will never
+    exist -- but ``AttributeError: 'Square' object has no attribute 'shift'``
+    does not say that ``move`` is right there.
+    """
+    with algan.Scene():
+        square = Square().spawn()
+        with pytest.raises(AttributeError, match=r"in Algan use move\(\.\.\.\)"):
+            square.shift
+        with pytest.raises(AttributeError, match="Algan records animations"):
+            square.animate
+        # An ordinary typo keeps the ordinary message, and the default-valued
+        # getattr callers all over the engine keep working.
+        with pytest.raises(AttributeError, match="has no attribute 'wibble'"):
+            square.wibble
+        assert getattr(square, "wibble", "default") == "default"
+
+
+@pytest.mark.fast
+def test_an_updater_that_cannot_take_the_elapsed_time_says_so():
+    """Manim's updaters take the mobject alone, so this is the first thing a
+    reader from there writes. It failed with a bare arity TypeError from the
+    immediate zero-time application, naming nothing about updaters.
+    """
+    with algan.Scene():
+        square = Square().spawn()
+        with pytest.raises(TypeError, match="needs 2 positional parameters"):
+            square.add_updater(lambda mob: None)
+        with pytest.raises(TypeError, match="expects a callable"):
+            square.add_updater(42)
+        assert square.add_updater(lambda mob, t: None) is not None
+
+
+@pytest.mark.fast
+def test_a_non_callable_post_process_is_rejected_before_the_render(tmp_path):
+    with algan.Scene(video_settings=SMOKE_TEST):
+        Square(color=algan.BLUE).spawn()
+        with pytest.raises(AlganConfigurationError, match="post_processes"):
+            algan.Scene.save_frame(str(tmp_path / "still.png"), post_processes=(42,))
+
+
+@pytest.mark.fast
+def test_a_background_string_is_read_as_a_colour_first():
+    """Read as a path unconditionally, a colour name was reported as a missing
+    file -- and a mistyped path said the same thing as a word that was never a
+    colour.
+    """
+    with algan.Scene(video_settings=SMOKE_TEST) as scene:
+        scene.set_background_color("navy")
+        with pytest.raises(AlganConfigurationError, match="neither a colour"):
+            scene.set_background_color("not a color", overwrite=True)
+        with pytest.raises(AlganConfigurationError, match="neither a colour"):
+            scene.set_background_color("missing_background.png", overwrite=True)
+
+
+@pytest.mark.fast
+def test_empty_text_spawns_instead_of_failing_on_torch_cat():
+    """``Text("")`` has no glyphs, so its entrance wave has nothing to stagger.
+    It used to die in ``torch.cat`` on an empty list.
+    """
+    with algan.Scene(video_settings=SMOKE_TEST):
+        for text in ("", "   ", "\n"):
+            assert algan.Text(text).spawn() is not None
+        assert algan.Text("hi").spawn() is not None
+
+
+def test_an_unusable_codec_is_named(tmp_path):
+    """It used to cost a whole render and then surface as a missing temp file."""
+    from algan.utils.video_encoding import _listed_encoders
+
+    if _listed_encoders("ffmpeg") is None:
+        pytest.skip("this FFmpeg cannot be asked for its encoder list")
+
+    with algan.Scene(video_settings=SMOKE_TEST):
+        Square(color=algan.BLUE).spawn()
+        with pytest.raises(AlganConfigurationError, match="cannot encode with codec"):
+            algan.Scene.save_video(
+                str(tmp_path / "clip.mp4"), SMOKE_TEST, codec="notacodec"
+            )
+
+
+@pytest.mark.fast
+def test_image_pixels_may_arrive_as_a_numpy_array():
+    """It is what every imaging library returns and what Manim's ImageMobject
+    takes, and it used to reach ``torch.zeros_like`` and fail there.
+    """
+    import numpy as np
+
+    with algan.Scene(video_settings=SMOKE_TEST):
+        assert algan.ImageMob(np.zeros((8, 8, 4), np.uint8)) is not None
+        assert algan.ImageMob(np.zeros((8, 8, 3), np.float32)) is not None
+
+        with pytest.raises(AlganConfigurationError, match="needs a height"):
+            algan.ImageMob(torch.zeros(8, 8))
+        # The channel-count complaint reports the shape that was passed, not
+        # the one padding produced.
+        with pytest.raises(ValueError, match=r"got \(8, 8, 2\)"):
+            algan.ImageMob(torch.zeros(8, 8, 2))
