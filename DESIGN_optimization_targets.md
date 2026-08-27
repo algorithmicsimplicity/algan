@@ -586,8 +586,20 @@ the time-dedup family alone).
 its flip across the whole 3 s clip + static copy + moving cube): **4.37 s vs
 7.35 s dense (1.68x)** with equal batch windows, merged bank rows
 **944,394 vs 6,609,126 (7.0x)**; the parity scene's fade batches 8,185,432 →
-945,668 rows (8.7x). Fast suite unchanged (23 s settled). T4 numbers: see
-the measurement record below once run.
+945,668 rows (8.7x). Fast suite unchanged (23 s settled).
+
+**Measured, Kaggle Tesla T4** (tag `texlerp1`, notebook
+`algorithmicsimp/algan-t4-texop1` v2, branch tip `57376bf`, device
+verified `cuda`): the parity harness **passes on CUDA** — u8-stack flip
+byte-identical (0 differing pixels), lerp flip max channel diff 1 on 56
+pixels of 15 frames. `texlerp_ab_PREVIEW`: device texture-bank rows
+**27,065,146 → 944,439 (28.7x)** and the crossfade re-windows **3 → 2
+batches** (the render-device estimator now prices a described window at
+one image of margin); warm wall 1.99 → 1.83 s. The nn reference scenes —
+whose 1774x887 ImageMob texture animates, i.e. exactly this feature's
+case — improve against the stage-1-3 tip's own T4 record: PREVIEW warm
+RUN 2 **5.52 → 5.14 s**, UHD **25.34 → 21.79 s** (master baseline was
+29.90 s).
 
 ## The texture opacity/u8 round (2026-08-27): the premultiply leaves the host
 
