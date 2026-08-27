@@ -39,6 +39,22 @@ class MobHierarchyMixin:
     animations leaves the first one alone -- see :doc:`/new_user_tutorials/child_mobs`.
     """
 
+    def _note_hierarchy_change(self) -> None:
+        """Publish a change to this Mob's children.
+
+        Every mutation of a ``children`` list goes through here. The version
+        bump is not optional: three caches key on it
+        (``_descendants_cache``, ``_attr_inds_cache``, ``_subtree_spawn_cache``)
+        and a mutation that skips it does not error, it silently serves the
+        pre-mutation descendant set. The diagnostic beside it catches the one
+        case the record-time contract does not cover -- a live updater, whose
+        subtree is re-resolved per frame at materialization.
+        """
+        bump_hierarchy_version()
+        scene = getattr(self, "scene", None)
+        if scene is not None:
+            scene.timeline_manager.note_hierarchy_change(self)
+
     def _link_parent(self, other_mob: Mob) -> None:
         """Record the upward half of a parent/child link, and nothing else.
 
@@ -69,7 +85,7 @@ class MobHierarchyMixin:
                     (1 + item.anchor_priority for item in self.children),
                     default=0,
                 )
-                bump_hierarchy_version()
+                self._note_hierarchy_change()
                 return True
         return False
 
@@ -321,7 +337,7 @@ class MobHierarchyMixin:
             (1 + child.anchor_priority for child in new_children),
             default=0,
         )
-        bump_hierarchy_version()
+        self._note_hierarchy_change()
         return self
 
     def add_children(self, *mobs) -> Mob:
@@ -371,7 +387,7 @@ class MobHierarchyMixin:
             self.children.append(mob)
             mob._link_parent(self)
             self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
-        bump_hierarchy_version()
+        self._note_hierarchy_change()
         return self
 
     def remove_child(self, mob: Mob) -> Mob:

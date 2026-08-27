@@ -126,6 +126,24 @@ Leave the first one out and the mob is driven by both.
     that updater covers, including frames before the change. Add and remove
     updaters around a hierarchy edit rather than across one.
 
+    Algan says so when it happens, with a
+    :class:`~algan.errors.HierarchyChangedDuringUpdaterWarning` naming the
+    updater and the Mob whose children changed, at the line that changed them::
+
+        square.add_updater(spin)
+        Scene.wait(1)
+        parent.remove_child(square)   # <- warns: spin is still running
+        Scene.wait(1)
+
+    The fix is to bracket the edit instead::
+
+        updater_id = square.add_updater(spin)
+        Scene.wait(1)
+        square.remove_updater(updater_id)
+        parent.remove_child(square)
+        square.add_updater(spin)
+        Scene.wait(1)
+
 Inspecting the hierarchy
 ========================
 

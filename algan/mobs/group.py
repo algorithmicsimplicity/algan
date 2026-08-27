@@ -25,7 +25,6 @@ import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
-from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
@@ -130,7 +129,7 @@ class Group(Mob):
             # this Mob's location and color, and a recursive write caches the
             # descendant set it saw, which at that point was empty.
             self.children[:] = initial_mobs
-            bump_hierarchy_version()
+            self._note_hierarchy_change()
         if (
             self._link_children
             and initial_mobs
@@ -320,7 +319,7 @@ class Group(Mob):
                 new_children = [*self.children, *candidates]
                 self._validate_new_children(new_children)
                 self.children[:] = new_children
-                bump_hierarchy_version()
+                self._note_hierarchy_change()
         with Off(animation_manager=self.animation_manager):
             self.set_non_recursive(location=self.get_mob_midpoint())
         return self

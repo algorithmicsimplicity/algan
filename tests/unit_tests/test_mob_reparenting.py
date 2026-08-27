@@ -16,13 +16,14 @@ playback time and silently rewrote already-recorded frames.
 from __future__ import annotations
 
 import math
+import warnings
 
 import pytest
 import torch
 
 from algan import Group, Mob, Off, Scene, SceneManager
 from algan.animation_timeline.animation_contexts import Seq, Sync
-from algan.errors import HierarchyError
+from algan.errors import HierarchyChangedDuringUpdaterWarning, HierarchyError
 
 # In the fast suite: these are pure timeline/Mob tests with no rendering, and
 # what they pin is the record-time row set -- which any change to hierarchy
@@ -54,14 +55,22 @@ def scene():
     scene.terminate()
 
 
-def _mob(location):
-    return Mob(location=location, add_to_scene=False).spawn(animate=False)
+def _mob(location, name="_"):
+    return Mob(location=location, name=name, add_to_scene=False).spawn(animate=False)
 
 
 def _locations_at(scene, times, mob):
     """``mob``'s location at each of ``times``, shape ``(len(times), 3)``."""
     scene.timeline_manager.set_state_to_times(torch.tensor([float(t) for t in times]))
     return mob.location[:, 0].clone()
+
+
+def _hierarchy_warnings(caught):
+    return [
+        w
+        for w in caught
+        if issubclass(w.category, HierarchyChangedDuringUpdaterWarning)
+    ]
 
 
 def _assert_at(scene, times, mob, expected):
@@ -392,6 +401,9 @@ def test_an_updater_resolves_its_subtree_at_materialization_not_record_time(scen
     hierarchy edit made while an updater is live therefore reaches backwards
     over frames the updater already covered: here the child is detached at
     t = 1, and comes out unmoved at t = 0.5 as well.
+
+    That is what the warning asserted below is for; this test is the proof the
+    warning is not crying wolf.
     """
     parent_a, parent_b, child = _mob([0, 0, 0]), _mob([0, 0, 5]), _mob([0, 2, 0])
     parent_a.add_children(child)
@@ -399,7 +411,8 @@ def test_an_updater_resolves_its_subtree_at_materialization_not_record_time(scen
     with Seq():
         updater_id = parent_a.add_updater(lambda mob, t: mob.move_to(RIGHT * t))
         Scene.wait(1)
-        parent_a.remove_child(child)
+        with pytest.warns(HierarchyChangedDuringUpdaterWarning):
+            parent_a.remove_child(child)
         parent_b.add_children(child)
         Scene.wait(1)
         parent_a.remove_updater(updater_id)
@@ -417,3 +430,104 @@ def test_an_updater_resolves_its_subtree_at_materialization_not_record_time(scen
     torch.testing.assert_close(
         stayed, torch.tensor([[0.0, 2.0, 0.0], [0.0, 2.0, 0.0]]), atol=2e-5, rtol=2e-5
     )
+
+
+def test_the_warning_names_the_updater_the_mob_and_the_line(scene):
+    parent, child = _mob([0, 0, 0]), _mob([0, 2, 0], name="dial")
+    parent.add_children(child)
+
+    def spin(mob, t):
+        mob.move_to(RIGHT * t)
+
+    with Seq():
+        parent.add_updater(spin)
+        Scene.wait(1)
+        with pytest.warns(HierarchyChangedDuringUpdaterWarning) as caught:
+            parent.remove_child(child)
+
+    message = str(caught[0].message)
+    assert "spin" in message  # which updater
+    assert "test_mob_reparenting.py" in message  # and where it was added
+    # The warning points at the author's own line, not at algan internals.
+    assert caught[0].filename.endswith("test_mob_reparenting.py")
+
+
+def test_the_warning_stays_quiet_once_the_updater_is_removed(scene):
+    parent, child = _mob([0, 0, 0]), _mob([0, 2, 0])
+    parent.add_children(child)
+
+    with Seq(), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        updater_id = parent.add_updater(lambda mob, t: mob.move_to(RIGHT * t))
+        Scene.wait(1)
+        parent.remove_updater(updater_id)
+        parent.remove_child(child)
+
+    assert _hierarchy_warnings(caught) == []
+
+
+def test_the_warning_stays_quiet_for_a_subtree_the_updater_never_addresses(scene):
+    """The dependency set is not the test -- ``record_updater`` seeds it with
+    the caller's whole subtree, so using it here would fire on any composite
+    Mob.  What matters is whether the updater ever asked for *descendants*.
+    """
+    driven, other, child = _mob([0, 0, 0]), _mob([9, 0, 0]), _mob([0, 2, 0])
+
+    with Seq(), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        driven.add_updater(lambda mob, t: mob.move_to(RIGHT * t))
+        Scene.wait(1)
+        other.add_children(child)
+
+    assert _hierarchy_warnings(caught) == []
+
+
+def test_a_non_recursive_updater_does_not_warn(scene):
+    """``set_non_recursive`` writes one Mob's own rows, so its row set does not
+    move when that Mob gains a child -- and a warning here would be a lie.
+    """
+    parent, child = _mob([0, 0, 0]), _mob([0, 2, 0])
+
+    with Seq(), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parent.add_updater(lambda mob, t: mob.set_non_recursive(location=RIGHT * t))
+        Scene.wait(1)
+        parent.add_children(child)
+
+    assert _hierarchy_warnings(caught) == []
+
+
+def test_the_warning_is_said_once_per_updater_and_parent(scene):
+    """A loop that re-parents every iteration should not print a hundred
+    identical paragraphs.
+    """
+    parent = _mob([0, 0, 0])
+    children = [_mob([0, i + 1, 0]) for i in range(4)]
+
+    with Seq(), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parent.add_updater(lambda mob, t: mob.move_to(RIGHT * t))
+        Scene.wait(1)
+        for child in children:
+            parent.add_children(child)
+            parent.remove_child(child)
+
+    assert len(_hierarchy_warnings(caught)) == 1
+
+
+def test_a_mob_built_inside_an_updater_does_not_warn(scene):
+    """An updater that constructs Mobs edits the hierarchy on every frame by
+    construction; warning about its own edits would make the diagnostic
+    useless for exactly the scenes that use it.
+    """
+    parent = _mob([0, 0, 0])
+
+    def build(mob, t):
+        mob.add_children(Mob(location=[0, 1, 0], add_to_scene=False))
+
+    with Seq(), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parent.add_updater(build)
+        Scene.wait(1)
+
+    assert _hierarchy_warnings(caught) == []
