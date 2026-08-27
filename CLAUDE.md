@@ -69,9 +69,19 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 
 Algan is in private beta and carries **no compatibility aliases for its own
 API**. There is one Algan name for each Algan thing; if you find a second, it is
-a bug. The Manim compatibility layer (`Mobject = Mob`, `GenericGraph = Graph`,
-`install_opengl_aliases()`, the `manim_compat` / `manim_parity` / `point_cloud` wrappers) is the one deliberate
-exception and is exported and supported. Do not add an Algan-side alias for an Algan name, and do not delete a
+a bug — with exactly two deliberate exceptions, both exported and supported:
+
+- The Manim compatibility layer (`Mobject = Mob`, `GenericGraph = Graph`,
+  `install_opengl_aliases()`, the `manim_compat` / `manim_parity` / `point_cloud` wrappers).
+  It is a separate surface, not a second spelling of Algan's.
+- **`IN = INWARD` and `OUT = OUTWARD`.** `in` and `out` are ordinary enough words that a
+  script will want them for something of its own, so the short names are the script's to
+  keep or to shadow. Algan's own source therefore says `INWARD`/`OUTWARD` throughout and
+  **never reads `IN` or `OUT`** — `tests/unit_tests/test_spatial_constants.py` walks the
+  package's AST and fails if any module does. Write `OUTWARD` in library code; `OUT` is
+  fine in docs, tests and examples, which is where it stays exercised.
+
+Do not add an Algan-side alias for an Algan name, and do not delete a
 Manim-side name because it duplicates one.
 
 ```python

@@ -24,7 +24,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import Color, to_color
-from algan.constants.spatial import OUT
+from algan.constants.spatial import OUTWARD
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
@@ -341,7 +341,8 @@ def _scale_factor_to_manim(scale_factor):
     multiplier, not a coordinate: ``to_manim`` is the converter for values that
     *mean* something in Algan's coordinate system (points, directions, edges),
     and coupling a per-axis multiplier to that conversion would be wrong by
-    category -- Algan's ``OUT`` is ``-z`` where Manim's is ``+z`` (see
+    category -- Algan's ``OUTWARD`` is ``-z`` where Manim's ``OUT`` is ``+z``
+    (see
     "The z mirror" in CLAUDE.md), so any coordinate-style treatment of the
     forward component would negate the one stretch the user asked for.
 
@@ -577,7 +578,7 @@ class ManimCompatMob(ManimMob):
     def rotate(
         self,
         num_degrees: float | torch.Tensor,
-        axis: torch.Tensor = OUT,
+        axis: torch.Tensor = OUTWARD,
         about_point: torch.Tensor | None = None,
     ) -> Mob:
         """Rotate the Mob, using Algan's rotation rather than Manim's.
@@ -585,7 +586,7 @@ class ManimCompatMob(ManimMob):
         ``rotate`` is one of the names this class shares with :class:`~.Mob`,
         and the two libraries mean different things by it: Algan measures
         ``num_degrees`` in degrees where Manim's angle is in radians, and an
-        explicit ``axis`` turns the opposite way in each (their default ``OUT``
+        explicit ``axis`` turns the opposite way in each (their default z axis
         are opposite vectors, which is exactly what makes the *default*
         rotation agree).  A compatibility Mob is animated as an Algan Mob, so
         this follows :meth:`~.MobOrientationMixin.rotate` exactly -- degrees,

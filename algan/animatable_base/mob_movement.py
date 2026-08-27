@@ -63,7 +63,7 @@ class MobMovementMixin:
         self,
         point: torch.Tensor,
         arc_angle_degrees: float | torch.Tensor,
-        arc_normal: torch.Tensor = OUT,
+        arc_normal: torch.Tensor = OUTWARD,
         recursive: bool = True,
     ) -> Mob:
         """Move the Mob to ``point`` along a signed circular arc.
@@ -96,7 +96,7 @@ class MobMovementMixin:
             endpoints differ; such a path would require an infinite radius.
         arc_normal
             Normal vector of the arc plane; the chord from the current location
-            to ``point`` must be perpendicular to it. Defaults to ``OUT`` (the
+            to ``point`` must be perpendicular to it. Defaults to ``OUTWARD`` (the
             -z axis, out of the screen), which arcs in the screen plane.
         recursive
             Whether to propagate the location change to descendants, preserving

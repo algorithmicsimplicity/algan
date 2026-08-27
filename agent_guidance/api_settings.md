@@ -132,6 +132,8 @@ Algan has removed its transitional aliases ahead of public release. The canonica
 
 Do not add a second spelling for something that already has a name. If a rename is genuinely warranted, rename in place and update every call site — the project is pre-release specifically so this stays cheap.
 
+The one Algan-side pair that stays is `IN = INWARD` / `OUT = OUTWARD`, and it earns its keep by taking a name *out* of the library rather than adding one to it: `in` and `out` are words a script will want, so the short spellings are the script's to shadow and Algan's source reads only the long ones. `../tests/unit_tests/test_spatial_constants.py` enforces that. Write `OUTWARD` in `algan/`; write `OUT` in docs and tests.
+
 ### The star-import namespace is the API
 
 `from algan import *` is the documented entry point, so `algan.__all__` is effectively the public surface. `algan/__init__.py` builds it from a rule plus two deny-lists (`_INTERNAL_EXPORT_MODULES`, `_INTERNAL_EXPORT_NAMES`) and one allow-list (`_EXTRA_EXPORTS`). Generic helper names must not leak: `mean`, `interpolate`, `offset`, `shuffle`, `broadcast*`, `traverse`, `squish` and friends would shadow whatever the user imported before Algan.

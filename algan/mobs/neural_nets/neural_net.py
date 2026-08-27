@@ -7,7 +7,7 @@ from algan.animatable_base.animatable import STRUCTURE_VERSION, attr_ranges_for_
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.rate_funcs import delay_fade, identity, pulse_fade
-from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
+from algan.constants.spatial import *  # ORIGIN, OUTWARD, RIGHT
 from algan.environment import env_flag
 from algan.geometry.geometry import (
     get_orthonormal_vector,

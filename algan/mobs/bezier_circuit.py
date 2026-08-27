@@ -40,7 +40,7 @@ from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
-from algan.constants.spatial import OUT, RIGHT, UP
+from algan.constants.spatial import OUTWARD, RIGHT, UP
 from algan.geometry.geometry import rotate_vector_around_axis
 from algan.mobs.nonplanar_circuit import (
     build_render_primitives as build_nonplanar_render_primitives,
@@ -186,7 +186,7 @@ def _circuit_location_and_basis(control_points):
             _extremal_control_point_index(centre_dists, 1e-6)
         ].unsqueeze(-2)
         first_basis_n = F.normalize(first_basis, p=2, dim=-1)
-        second_basis = rotate_vector_around_axis(first_basis, 90, OUT, -1)
+        second_basis = rotate_vector_around_axis(first_basis, 90, OUTWARD, -1)
     scale = first_basis.norm(p=2, dim=-1, keepdim=True)
     second_basis = second_basis * scale / second_basis.norm(p=2, dim=-1, keepdim=True)
     third_basis_n = F.normalize(
@@ -200,7 +200,7 @@ def _circuit_location_and_basis(control_points):
         # orientation, so on a plane whose normal faces the camera it comes out
         # along -y. Only one of the three world axes can be parallel to the
         # normal, so the loop always settles.
-        for reference in (RIGHT, UP, OUT):
+        for reference in (RIGHT, UP, OUTWARD):
             candidate = reference.to(third_basis_n) - (
                 dot_product(reference.to(third_basis_n), third_basis_n) * third_basis_n
             )

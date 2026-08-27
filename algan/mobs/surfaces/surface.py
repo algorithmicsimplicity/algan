@@ -44,7 +44,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
-from algan.constants.spatial import OUT
+from algan.constants.spatial import OUTWARD
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -3668,7 +3668,8 @@ class Surface(Mob):
         Overridden by the 3-D shape classes alongside
         :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`, so each shape
         lights correctly. The base
-        implementation returns ``OUT``, the normal of a flat plane facing the viewer.
+        implementation returns ``OUTWARD``, the normal of a flat plane facing the
+        viewer.
 
         Parameters
         ----------
@@ -3681,7 +3682,7 @@ class Surface(Mob):
         torch.Tensor
             Unit normals, shape ``(*, 3)``, or a single vector broadcast over the grid.
         """
-        return OUT
+        return OUTWARD
 
     def get_base_grid(self) -> torch.Tensor:
         """Get the surface's parameter grid, the ``(u, v)`` domain it is built from.

@@ -107,7 +107,8 @@ class ManimMob(BezierCircuitCubic):
                 )
             )
 
-        # Manim's OUT is +z and Algan's is -z, so the two screen bases are mirror
+        # Manim's OUT is +z and Algan's OUTWARD is -z, so the two screen bases are
+        # mirror
         # images and imported 3-D geometry renders back-to-front unless it is
         # mirrored. Scene.use_manim_defaults() turns this on and mirrors the
         # camera and light to match; flat z == 0 geometry is unaffected either way.

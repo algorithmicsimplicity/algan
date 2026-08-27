@@ -334,7 +334,7 @@ class Scene(RenderLoopMixin):
         perspective camera reproduces 2-D scenes exactly and 3-D scenes with
         Manim's own perspective.
 
-        Because Manim's ``OUT`` is ``+z`` where Algan's is ``-z``, this also
+        Because Manim's ``OUT`` is ``+z`` where Algan's ``OUTWARD`` is ``-z``, this also
         turns on :attr:`manim_coordinates`, which makes ``ManimMob`` mirror
         imported geometry in z. Without it a converted 3-D scene renders
         back-to-front. It has no effect on flat ``z = 0`` geometry.
