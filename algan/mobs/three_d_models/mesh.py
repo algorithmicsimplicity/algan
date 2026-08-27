@@ -29,7 +29,11 @@ from algan.geometry.geometry import map_local_to_global_coords
 from algan.settings.renderer_settings import (
     effective_triangle_primitive,
 )
-from algan.utils.tensor_utils import cast_to_tensor, unsquish
+from algan.utils.tensor_utils import (
+    cast_to_tensor,
+    texture_u8_provenance,
+    unsquish,
+)
 
 
 def image_to_texture_map(image):
@@ -170,6 +174,7 @@ class TriangleMesh(Mob):
 
         # Texture / material maps.
         self.texture_map = None
+        self._texture_u8_ok = False
         if texture is not None:
             texture = cast_to_tensor(texture).to(device)
             # Already-in-layout maps are [W, H, 5] (or [T, W, H, 5]); a raw
@@ -177,6 +182,10 @@ class TriangleMesh(Mob):
             if texture.dim() == 3 and texture.shape[-1] != 5:
                 texture = image_to_texture_map(texture)
             self.texture_map = texture.to(device).as_subclass(Color)
+            # u8 provenance, proved once here at construction (the map is
+            # immutable afterwards) and consumed by TEXTURE_U8_STORAGE; see
+            # texture_u8_provenance.
+            self._texture_u8_ok = texture_u8_provenance(self.texture_map)
         self.material_texture_map = (
             cast_to_tensor(material_texture_map).to(device)
             if material_texture_map is not None
@@ -348,17 +357,25 @@ class TriangleMesh(Mob):
         colors = grid_color
 
         texture_map = None
+        texture_opacity = None
         if self.texture_map is not None:
-            # Pre-multiply the texture's opacity by the mob's (per-frame)
-            # opacity so the standard spawn/despawn fade drives textured meshes
-            # too -- the same trick Surface/ImageMob use. The map is [W, H, 5]
-            # (add a leading frame axis) and the mob opacity is one value per
-            # frame; broadcast both to [T, W, H, *].
+            # The mob's (per-frame) opacity drives textured meshes through the
+            # standard spawn/despawn fade -- the same contract Surface/ImageMob
+            # use. In-sampler by default (TEXTURE_OPACITY_IN_KERNEL): the
+            # primitive carries the opacity as per-frame scalars and the map
+            # stays the authored (u8-provenance-preserving) texels; the legacy
+            # arm premultiplies the map's coverage channel per frame.
+            from algan.rendering.raytracing import settings as _rts
+
             tmap = self.texture_map
             if tmap.dim() == 3:
                 tmap = tmap.unsqueeze(0)  # [1, W, H, 5]
-            op = self.opacity.reshape(-1, 1, 1, 1)
-            texture_map = tmap.as_subclass(Color).mult_opacity(op)
+            if _rts.texture_opacity_in_kernel_active():
+                texture_map = tmap
+                texture_opacity = self.opacity.reshape(-1)
+            else:
+                op = self.opacity.reshape(-1, 1, 1, 1)
+                texture_map = tmap.as_subclass(Color).mult_opacity(op)
 
         primitive = effective_triangle_primitive()(
             corners=corners,
@@ -373,6 +390,11 @@ class TriangleMesh(Mob):
             normal_texture_map=self.normal_texture_map,
             **self.grid.get_shader_params(),
         )
+        if texture_opacity is not None:
+            # Post-construction, like ``mesh_ids`` below; the collection
+            # wrapper picks both up beside the map itself.
+            primitive.texture_opacity = texture_opacity
+            primitive.texture_u8_ok = bool(self._texture_u8_ok)
         shells = self.triangle_shell_ids()
         if shells is not None:
             primitive.mesh_ids = shells

@@ -62,6 +62,14 @@ One `AttributeTimeline` exists per animatable attribute (location, basis, color,
 
 Edits of the same rows may overlap in time. `_resolve_replay_windows` extends each edit's effective end over the replay windows of earlier-executed edits that overlap it (transitively, unified per function application); the base state at time t is the pre-value of a row's earliest-executed edit still unfinished at t; and functions replay through their extended window (held at final parameters past their own end), so overlapping and same-end edits rematerialize in execution order.
 
+### Segment windows (TEXTURE_TIME_LERP)
+
+Attributes opted in via `enable_segment_windows` (only `Surface.color_texture`'s setter does) can skip dense materialization: `_describe_segment_windows` runs before the per-attribute rematerialization and, where its conservative gate proves the window's only writers are plain recorded assignments (`Mob._apply_change`, marked `_algan_replay_is_plain_lerp`; non-overlapping replay windows; no active updater depending on the mob; `active_mob_ids` known), describes one mob's rows as a `SegmentWindow` — K endpoint states off the edit log plus per-frame `(i0, i1, w)` whose weights are **bit-identical** to the dense replay's rate-function evaluation (same tensors, same shapes). The described rows are **excluded** from `rematerialize_state_at_times` (readers see zeros, writes drop — nothing reads them: the primitive build consults `segment_window_for` instead of `_color_texture_uncopied`), and the claimed events' replay is skipped. Three invariants to preserve when touching this:
+
+- The gate is the whole safety argument. Every condition it checks maps to a way the dense path could diverge (overlap → replay chains, updaters → mid-window overwrites, custom functions → unknowable working sets). Loosen nothing without a failing case in `tests/unit_tests/test_texture_time_lerp.py`.
+- An updater discovering the mob mid-window (a time-dependent branch, the one reader the gate cannot see coming) goes through `trace_updater_mob_access`, which rematerializes the described rows densely from `SegmentWindow.evaluate()` and drops the description. Do not remove that escape hatch.
+- `EditRecord.authored_target` (stamped by the texture setter) is the interpolation TARGET only — the stored state `pre + change` is an ulp off the authored map, and constant frames must keep reading the stored state bit-for-bit; the authored value exists so u8 provenance survives on the endpoint stack.
+
 ### Lifespans
 
 Every mob has a `Lifespan` — a `[spawn, despawn)` interval exposed as `Animatable.lifespan` and queried via `is_spawned()` / `is_despawned()`. Sub-mobs created by indexing (`mob[i]`) share their source's id and therefore its rows and lifespan; clones get a new id. Opacity is zeroed outside a mob's lifespan during materialization.

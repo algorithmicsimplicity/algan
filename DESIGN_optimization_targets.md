@@ -314,6 +314,416 @@ already been wrapping correctly all along (it just predated the helper), and
 * Re-baseline, only after looking at the frames:
   `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q`
 
+## The structural round (2026-08-26): texture/geometry time dedup, shadow any-hit, sync fixes
+
+The build-out of `DESIGN_renderer_structural_candidates.md` items 1, 3.1, 5
+(content dedup + copy chain) and 8 (avoidable syncs), plus item 2's
+qualification, on `claude/structural-redesigns-perf-pmpkv3`. Everything
+shipped is **byte-identical** on unchanged batch windows and each piece has
+its own kill switch; that file carries per-item status stamps, this section
+is the measurement record.
+
+**What shipped.**
+
+* **`TEXTURE_TIME_FLAT`** (default on): every texture map's frames are
+  flattened along the texel axis with the map's own time length riding in
+  `tri_tex_meta` cols 10-12 (the meta widened 10 → 13; placement quadruples
+  `(offset, w, h, t)`), so the assembled `scene["textures"]` always has time
+  length 1. The per-map length travels as *data* through the samplers
+  (`_sample_texture` / `_sample_tex_vec5`: `texel = offset + (f % t)*w*h +
+  local`), so one compiled kernel serves both layouts and the toggle flips
+  in-process — no `ti.static` arm to fall into. A static map stores one
+  frame whatever else animates; the environment map (which was expanded to
+  the bank's T on every append) stores one copy too.
+* **`TEXTURE_CONTENT_DEDUP`** (default on): `_append_texture` reuses the
+  placement of an already-appended map with byte-identical processed texels
+  (shape-bucketed prefilter, exact `torch.equal` match) — every textured
+  primitive is a singleton collection, so N mobs sharing one image used to
+  store it N times.
+* **`TEXTURE_WINDOW_COLLAPSE`** (default on): `Surface.get_render_primitives`
+  collapses a colour-texture window whose frames AND opacity are
+  byte-identical across the batch to one frame *before* the wrap-pad /
+  premultiply / decode / merge copies are made, and records the outcome on
+  the mob (`_texture_window_collapsed`); the batch sizers price a collapsed
+  texture at the materialized window alone (animation copies 2-3 → 1,
+  render-device factor 6 → 2) off that observation — the same
+  read-off-the-previous-build contract as `_texture_is_wrap_padded`, with
+  the out-of-render-memory retry as the backstop for a texture that starts
+  animating.
+* **`MERGE_DEDUP_GEOMETRY`** (default on, rides `MERGE_DEDUP_TIME`): the
+  merge-time collapse now also covers `tri_pos` / `tri_obj` / `tri_closed`
+  and both geometry types' per-frame bounds/opacity/caster tables. Collapsed
+  bounds reach `build_stbvh` / `build_refit_bvh` at `Tc == 1`, waking their
+  (previously starved) static branches — one instance spanning all frames
+  instead of per-frame structure over identical boxes — on the eager and the
+  deferred build path both. The raster host tables already read every input
+  `f % shape[0]` and the projection table spans the *longest* input, so a
+  fully-parked batch's tables shrink too — except that the CAMERA tensors
+  are indexed dense by the kernels (`cam_origin[f]`, no modulo), so a parked
+  camera still pins the projection tables at T. That is the next slice of
+  item 3 and is deliberately not taken here.
+* **Sync fixes (item 8)**: `_shadow_identity_epsilons`' scene diagonal — a
+  whole-batch `tri_pos` reduction ending in `.item()`, previously run once
+  per TILE ATTEMPT — is cached on the merged scene per batch;
+  the sheet compaction's two split-group diagnostics stay 0-d device
+  tensors (and their group tables over-allocate to `nb`, removing the
+  `ngroups` sync as well): three device syncs per compaction gone.
+
+**Parity.** `benchmarks/_texture_dedup_ab.py` renders a scene exercising
+every changed path — two ImageMobs of one file, a third whose texture
+animates (per-map `t > 1` asserted), a static half-scene and a moving cube
+(collapsed AND dense merges asserted), shadows on — under all-toggles-off
+(the legacy layout byte for byte) and all-toggles-on with pinned batch
+windows: **every frame byte-identical**, non-vacuity asserted per path. The
+fast suite (277 tests incl. the pixel-compared render) and the sheet
+compaction / texture memory / environment / settings-API unit tests pass.
+
+**Measured, CPU box (4-vCPU cloud container; shares, not wall-clock gospel):**
+
+* The probe scene (`scratch_perf/probe_time_expansion.py`, four static mobs
+  incl. an ImageMob, 20 PREVIEW frames): merged upload **127.2 MB → 32.3 MB**
+  (textures `[4, 1.57M, 5] → [1, 1.57M, 5]`, `tri_pos` and every bounds/flag
+  table at `[1, ...]`); with the moving-cube arm only `tri_pos`/bounds stay
+  dense at the window length — the item-3 all-or-nothing rule is broken for
+  every other table.
+* The parity scene renders **11.9 s → 3.9 s** (3.0x) across the toggle flip
+  on this CPU (merge/upload-bound at PREVIEW; treat as an upper bound for
+  GPU boxes, per the two-pole caveat).
+* **Item 9's first number** (`benchmarks/_resolve_mode_ratio.py`, the
+  measurement item 4 is staged behind): mode 1 / mode 2 = **0.78** on CPU —
+  the event-building walk costs nearly as much as the shading walk, so the
+  shadowed double-resolve is worth attacking. T4: see below.
+
+**Shadow any-hit qualification (item 2).** On this machine,
+`benchmarks/_shadow_anyhit_check.py PREVIEW`: both corner-case scenes prove
+their case reached (tie separation MATTERS; peel limit REACHED, 130 rays past
+`MAX_SURFACES_PER_RAY`) and modes 0 / 1 / gather produce **byte-identical
+videos on both** — and on `materials_and_lighting` (the pixel suite's only
+shadowed scene), rendered under all three modes in one process. T4
+qualification and the flip's measured effect: see below.
+
+**T4 (Kaggle, Tesla T4), A/B on identical code with the four toggles flipped
+per arm** (`scratch_perf/kaggle/nb_struct1.py` / `nb_struct2.py`; warm RUN 2
+of `profile_scene`, read per the usual rules):
+
+| scene | toggles ON | toggles OFF | ratio |
+| --- | --- | --- | --- |
+| `static_gallery_PREVIEW` (the item-1 population) | **4.61 s** | 12.53 s | **2.7x** |
+| `nn_scene_PREVIEW` (everything animates) | 5.56 s | 5.60 s | 1.0x |
+| `nn_scene_UHD` | 24.78 s | 24.67 s | 1.0x |
+
+The gallery's mechanism is exactly the item-1 prediction — the estimator
+repricing lengthened the batch windows and every per-batch cost amortized:
+**25 batches → 8**, arena preflight 7.79 → 2.29 s, merge 3.69 → 0.91 s,
+`_dice_logical_pn` 3.26 → 1.11 s, refit-BVH builds 2.02 → 0.62 s,
+projection prewarm 4.00 → 1.35 s, `get_batch_of_primitives` 3.47 → 1.41 s.
+This is also item 6's re-measurement baseline: the per-batch families it
+lists shrank by lengthening alone, before any cross-batch cache.
+
+The nn scenes — where every texture texel and every triangle moves per
+frame, so nothing is collapsible — are the no-regression check, and the
+FIRST cut failed it: **+22% end to end on both** (nn UHD merge own time
+0.50 → 5.82 s), because the new constancy probes each ended in a device
+sync, the merge runs on the prefetch worker while the previous chunk
+renders, and every sync waits out the whole queued chunk. Fixed
+(`679a232`) by not probing texture maps at the merge at all (a static
+window arrives already collapsed from `TEXTURE_WINDOW_COLLAPSE`, whose own
+sync sits where the queue is shallow and measured free), gating content
+dedup to maps of at least 4096 texels, and folding all per-table collapse
+probes into ONE stacked sync per geometry block (`_dedup_time_group`).
+Post-fix the nn arms read the table above — neutral — with merge own time
+back at 0.51 s. **The lesson to carry: on the prefetch worker, a device
+sync costs whatever the render thread has queued, not what the probe
+computes.**
+
+**Shadow any-hit (item 2), the flip NOT taken.** Qualification passed
+everywhere it was run — all three modes byte-identical on both corner
+scenes (cases proven reached) and on `materials_and_lighting`, on this CPU
+box and on the T4 — so the modes are safe to select per render. But the
+measured default flip is a REGRESSION on the translucent-carrying nn UHD
+batch (mode 2): **29.5 → 34.2 s**, `raster_shadow_trace` 3.8 → 6.6 s (the
+deferred any-hit pre-pass pays a second full traversal on miss-dominated
+rays) and `wavefront_shade` 6.3 → 8.2 s (the wider mode-2 variant), while
+the shadowed gallery was neutral (4.59 vs 4.66 s). `SHADOW_ANYHIT` stays
+default off; the candidate that survives this measurement is engaging the
+any-hit only where mode 3 applies (batch provably translucent-free).
+
+**Item 9's number on the T4** (`benchmarks/_resolve_mode_ratio.py`, MD):
+mode 1 / mode 2 = **0.685** (10.5 s vs 15.3 s over 7 launches; 0.78 on the
+CPU box) — the shadowed double-resolve nearly doubles resolve cost, which
+ranks the ~15-floats-per-sheet memoization (and behind it item 4's
+transport/shade split) as a real candidate.
+
+## The sheet-resolve memo (2026-08-27): built, byte-identical, and it does not pay
+
+`RENDERER_WORK_QUEUE.md` item 9's memoization, built as the cheap half of
+`DESIGN_renderer_structural_candidates.md` item 4. Shipped as
+`SHEET_RESOLVE_MEMO`, **default OFF on measurement**.
+
+**What it does.** A shadowed batch launches `sheet_resolve_shade` twice over
+the same sheets -- mode 1 walks the transport and builds the shadow events,
+mode 2 shades reading the traced visibility -- and mode 1 already fetches
+everything mode 2 re-fetches. Mode 1 now stores each processed triangle
+sheet's colour(4), alpha, reflectivity, roughness, IOR, transmission and
+surface point (twelve floats) and mode 2 reads them back instead of calling
+`_tri_color_g` / `_tri_extra_g` / `_tri_ior_transmission_g` /
+`_tri_surface_point` again. Sound because the two walks process exactly the
+same sheets: every `mode != 1` gate in that kernel wraps a spawn, a shade, the
+truncation counter or a pixel commit, and none touches loop-carried transport
+state or a break/continue condition.
+
+**Parity.** `benchmarks/_sheet_memo_parity.py`: byte-identical with the toggle
+off and on, on this CPU box AND on a Tesla T4 -- 0 differing pixels. A third
+arm poisons the memo between the two launches and must differ, which it does
+by 1379657 pixels, so the read is proven live rather than assumed. The fixture
+carries an unlit mob (processed sheets that build no event -- the rows the
+existing event tables never cover), a translucent one (the IOR/transmission
+columns), a textured one (the sampler path) and a `Text` (interleaved circuit
+sheets, which the memo skips).
+
+**Measured, Tesla T4, warm RUN 2, UNSYNCED profile:**
+
+| scene | `sheet_resolve_shade` off -> on | share of render | end to end |
+| --- | --- | --- | --- |
+| `nn_scene_UHD` | 0.306 -> 0.304 s | **1.2%** of 22.9 s | 25.69 -> 25.85 s |
+| `static_gallery_PREVIEW` | 0.027 -> 0.027 s | **0.6%** of 4.5 s | 4.73 -> 4.51 s |
+
+The stage is under 1.5% of a render and the memo moves it by less than a
+millisecond, while costing 48 B per sheet of arena that the runtime memory
+model prices into the next chunk's length. Default off. (The gallery's
+end-to-end -4.7% is not this change: a 0.027 s kernel cannot produce it.)
+
+**The measurement lesson, which is the durable part.** The number that ranked
+this work -- mode1/mode2 = 0.685, "10.5 s against 15.3 s" -- came from
+`benchmarks/_resolve_mode_ratio.py`, which brackets every launch with a device
+sync. Each launch therefore absorbs the queue it drains, and it reported ~12 s
+and ~16 s per mode on a render whose entire resolve kernel is 0.3 s. The
+harness warns about this in its own docstring ("read the two modes' TOTALS
+against each other, not against an unsynced profile"); the reading that ranked
+the memoization went past it and treated the ratio as if it sized the stage.
+**A ratio between two launches does not size the work either of them does.**
+Size a stage from the unsynced profile before ranking anything on it -- and
+note this also demotes item 4, which was staged behind the same number.
+
+**A CPU render is a different story and is not refuted here.** On the CPU box
+the same A/B moved the sync-bracketed mode 2 by 10-13% across two independent
+runs; that measurement has the same defect, but the resolve genuinely is a
+larger share of a CPU render, so `ALGAN_SHEET_RESOLVE_MEMO=1` may be worth it
+there. It should not be flipped on for a GPU render without a fresh unsynced
+profile of the target scene.
+
+## The texture time-lerp round (2026-08-27): the crossfade leaves the timeline
+
+Stage 4 of the texture line (the opacity/u8 round below is stages 1-3): an
+animated colour-texture REASSIGNMENT — the case the window collapse cannot
+touch, because its texels genuinely change per frame — no longer
+materializes, uploads, or replays one full image per frame.
+`TEXTURE_TIME_LERP` (default on; `ALGAN_TEXTURE_TIME_LERP=0` restores the
+dense pipeline) describes the window off the timeline instead:
+
+- **The timeline-side gate** (`AnimationTimeline._describe_segment_windows`,
+  run per batch before materialization, only for attributes opted in via
+  `enable_segment_windows` — the `color_texture` setter's job). It accepts a
+  (mob, attribute) window only when every event touching the rows is a plain
+  recorded assignment — `Mob._apply_change`, marked
+  `_algan_replay_is_plain_lerp` on its undecorated body, one recorded edit
+  covering exactly the rows, default 0→1 interpolation, no scope, no
+  recursion — with non-overlapping (unextended) replay windows, no active
+  updater depending on the mob, and a known actor working set. Anything else
+  — overlap, updaters, custom `animate_function` batches, endpoint counts
+  rivalling the frame count — falls back to the dense path byte-identically.
+- **The description**: K endpoint states read off the edit log (pre-values;
+  the authored target map, which the setter now stamps on the `EditRecord`
+  so u8 provenance survives — the STORED post state is `pre + change`, an
+  ulp off `k/255`; and the current-state tail), plus per-frame `(i0, i1, w)`
+  where the weights are **bit-identical** to the dense replay's
+  rate-function evaluation (same tensors, same shapes — torch CPU rounds
+  shape-dependently, so the gate re-evaluates the exact expression).
+  Endpoints are the ANIMATION's, not the batch's: consecutive batches of one
+  crossfade upload the same two maps with sub-range weights.
+- **Materialization exclusion**: described rows are dropped from the
+  attribute's working set (`rematerialize_state_at_times(exclude_rows=...)`)
+  and the claimed events' replay is skipped — the first path where the
+  timeline never builds a `[T, rows, W*H*5]` buffer at all (item 3's window
+  stride, texture-shaped). The safety net for the one reader the gate cannot
+  foresee (a time-dependent updater branch first touching the mob
+  mid-window) lives in `trace_updater_mob_access`: dense refill from
+  `SegmentWindow.evaluate()`, description dropped.
+- **Transport**: the primitive carries the endpoint stack as
+  `[1, K, H, W, 5]` (the leading singleton keeps `slice_time_window` off the
+  endpoint axis) plus `texture_lerp [T, 3]`; the merge appends the stack in
+  AUTHORED space (the linear-light decode is skipped — the sampler decodes
+  AFTER the time lerp, the dense path's own order) and the (i0, i1, w,
+  decode-flag) rows as a tiny bank region addressed by meta cols 16-17. A
+  u8-provenance stack (proved on the ACTUAL endpoints, memoized per stack)
+  packs as bytes with NO LUT (meta col 15 = -2): the bytes are the authored
+  `k/255`, recovered by an IEEE division. No new kernel arguments — the
+  resolve kernel sits at Taichi's runtime-argument ceiling.
+- **Estimators**: an observed lerp window (`_texture_window_lerp`) prices at
+  one image per frame on the host and ONE image of margin on the render
+  device (its rows never materialize there), so crossfade batches lengthen
+  the way stage 2 lengthened fades.
+- **A latent stage-3 admission bug found and fixed on the way**: the
+  per-assignment `_color_texture_u8_ok` stamp describes the LATEST map, but
+  a collapsed window can show any map ever assigned — assigning a u8 map
+  after a non-u8 one admitted the OLD map's window to u8 rounding. The dense
+  arm now reads `_color_texture_u8_ok_all` (the AND over assignments at the
+  resolution); described windows prove their own endpoints.
+
+**Parity** (`benchmarks/_texture_lerp_ab.py`: three arms, pinned windows,
+non-vacuity asserted per path — lerp regions present, u8 stack present, f32
+stack present, a lerp+opacity composition, dense contrast >2x):
+the u8-stack flip is **byte-identical**; the lerp flip vs dense is the
+qualified class the round was scoped as (weights bit-identical; the lerp
+re-associates `(post - pre) * w` against the replay's `change * w`, and the
+sRGB decode moves from torch to its kernel twin) — measured max channel
+diff **1** on 30 pixels of 15 frames (CPU). `_texture_dedup_ab.py` now pins
+TEXTURE_TIME_LERP off in both arms (its contract is byte-identity across
+the time-dedup family alone).
+
+**Measured, CPU box (4-vCPU container)** —
+`benchmarks/performance/texlerp_ab_PREVIEW.py` (world_map.png crossfading to
+its flip across the whole 3 s clip + static copy + moving cube): **4.37 s vs
+7.35 s dense (1.68x)** with equal batch windows, merged bank rows
+**944,394 vs 6,609,126 (7.0x)**; the parity scene's fade batches 8,185,432 →
+945,668 rows (8.7x). Fast suite unchanged (23 s settled).
+
+**Measured, Kaggle Tesla T4** (tag `texlerp1`, notebook
+`algorithmicsimp/algan-t4-texop1` v2, branch tip `57376bf`, device
+verified `cuda`): the parity harness **passes on CUDA** — u8-stack flip
+byte-identical (0 differing pixels), lerp flip max channel diff 1 on 56
+pixels of 15 frames. `texlerp_ab_PREVIEW`: device texture-bank rows
+**27,065,146 → 944,439 (28.7x)** and the crossfade re-windows **3 → 2
+batches** (the render-device estimator now prices a described window at
+one image of margin); warm wall 1.99 → 1.83 s. The nn reference scenes —
+whose 1774x887 ImageMob texture animates, i.e. exactly this feature's
+case — improve against the stage-1-3 tip's own T4 record: PREVIEW warm
+RUN 2 **5.52 → 5.14 s**, UHD **25.34 → 21.79 s** (master baseline was
+29.90 s).
+
+## The texture opacity/u8 round (2026-08-27): the premultiply leaves the host
+
+The contract change `DESIGN_renderer_structural_candidates.md` item 5's u8
+stamp priced and declined, now taken — because taking it deletes the fade
+problem the structural round left in place: `mult_opacity` scales only the
+map's coverage channel, but it welded the (animated) opacity into the
+(usually static) texels, so a plain fade of a static image voided
+`TEXTURE_WINDOW_COLLAPSE` and rebuilt, re-decoded and re-uploaded the full
+map once per frame, with the batch sizer pricing it per frame.
+
+**What shipped** (both default on, each with its own kill switch):
+
+* **`TEXTURE_OPACITY_IN_KERNEL`**: `Surface` / `TriangleMesh` hand the
+  primitive per-frame opacity scalars (`texture_opacity`) instead of
+  premultiplying the map; the merge appends them as a tiny per-map region
+  inside the shared texel bank and `_sample_texture` multiplies the sampled
+  coverage. The region rides `tri_tex_meta` cols 13-14 as DATA — no new
+  kernel argument, because `sheet_resolve_shade` sits at Taichi's
+  runtime-argument ceiling. The window collapse then keys on texel constancy
+  alone, both estimators price a fade of a static image at the collapsed
+  window (the estimator half that turns fewer bytes into longer windows,
+  per the structural round's lesson), and `_pack_frame_visibility` folds the
+  scalars back in so a faded-out frame still leaves the BVH. Two host-side
+  consumers of the premultiplied map were audited: the frame-visibility
+  amax (fixed as above) and `_texture_alpha_is_opaque`, which reads channel
+  3 — a channel `mult_opacity` never touched — so its classification is
+  unchanged by construction.
+* **`TEXTURE_U8_STORAGE`**: colour maps whose authored texels are provably
+  `k/255` with zero glow (`texture_u8_ok`, proved ONCE at authoring — the
+  merge adds no device syncs on the prefetch worker, the structural round's
+  hard-won rule) are stored as RGBA bytes bit-packed one texel per f32 lane
+  of the same bank — x5 fewer bytes on the widest array of a textured merge
+  — and decoded in-kernel through a per-map 256-entry LUT **scattered from
+  the map's own direct decode**, i.e. the f32 arm's own bits. A LUT decoded
+  from `arange(256)/255` is NOT bit-identical: torch's decode differs in the
+  last ulp between its scalar and SIMD paths across tensor sizes — and even
+  within one tensor (measured: byte 82 of a 105-element decode, body vs
+  tail), so exactness beyond the scatter is unattainable in principle on
+  CPU. `get_image`'s `float()/255` file loads qualify; procedural float
+  maps fall back to f32 rows; an interpolating window (t > 1) stays f32
+  (its in-between texels are not k/255).
+* **One bug the A/B's own numbers caught**: content dedup of packed maps
+  must compare as i32 — packed byte patterns can form float NaNs, and float
+  `torch.equal` treats NaN != NaN, which silently stored a shared image
+  twice (the u8 arm's bank read 630K rows where one map is 315K).
+
+**Parity.** `benchmarks/_texture_opacity_ab.py`, three arms in one process
+with pinned windows (legacy / opacity-in-kernel / +u8), non-vacuity asserted
+per path (a real fade region, a u8 map, the f32 fallback with a region, the
+legacy dense contrast, the dedup ratio):
+
+* **u8 flip: byte-identical** — 0 differing pixels over 6 frames, on the
+  CPU box AND on a Tesla T4 (where the wide-attr window materializes and
+  decodes on the GPU).
+* **opacity flip: qualified, not byte-identical** — the multiply moves from
+  before the bilinear filter (per texel, host) to after it (per sample,
+  kernel). Measured max channel diff **1** (CPU: 2 pixels; T4: 4 pixels, of
+  6 PREVIEW frames), against the render suites' own <= 2 tolerance; the
+  same class of exception as `ALGAN_WIDE_ATTR_RENDER_DEVICE`. With no fade
+  anywhere the multiply is by 1.0 and exact, which is why
+  `_texture_dedup_ab.py` still passes byte-identical with the new defaults
+  on. `tests/unit_tests/test_texture_opacity_u8.py` pins the host contracts
+  (provenance, collapse, kill switch, estimator, visibility, lane packing,
+  end-to-end u8 flip).
+
+**Measured, Tesla T4 (Kaggle, tag texop1, branch tip `f8b89fd`; warm
+in-process alternating arms):**
+
+* `texfade_ab_PREVIEW` (a 1774x887 image fading for the whole clip beside a
+  static copy and a moving cube): **legacy 1.74 s -> new 1.62 s (1.08x)**,
+  and the structural story behind it: max merged bank rows **23,603,072 ->
+  315,004 (74.9x)**, batch windows **3 -> 2** for the clip. The wall-clock
+  gain is modest on a T4 at PREVIEW — the GPU absorbs the upload — but the
+  memory shape is the durable part: the fade batch's texture bytes drop
+  ~75x, which is headroom on any VRAM-bound box and window length
+  everywhere.
+* The parity scene's fade batch, merged bank rows by arm: legacy
+  **9,444,110** -> opacity-in-kernel **1,574,119** (6.0x) -> +u8
+  **315,545** (another 5.0x, 29.9x total).
+* No-regression controls (every texel of the nn ImageMob animates per
+  frame, so nothing is collapsible and the new meta rides along at
+  opacity 1): `nn_scene_PREVIEW` warm RUN 2 **5.52 s**, `nn_scene_UHD`
+  **25.34 s** — inside the round-to-round band of the structural and memo
+  rounds' records (5.56 s; 24.78-25.85 s).
+
+**Measured, CPU box (4-vCPU container):** the same A/B passes with max diff
+1 on 2 pixels; the fast suite (277 tests incl. the pixel-compared render)
+passes with the defaults on.
+
+**Render suites (CPU, this container).** One full-render baseline moved and
+was regenerated after inspection: `complex_hierarchy_become` — the scene
+whose ImageMob cross-dissolves — differs in 8 of 75 tail frames (max 42, on
+two mid-morph diced-surface patches and text edges). The kill switches
+restore it byte-exactly, so the cause is the toggled features, and the
+mechanism is the documented re-window effect: the estimators price the fade
+batches cheaper, the windows move, and dice levels / chord counts / CPU
+rate-function rounding are window-dependent by design. The new render sits
+as close to the CUDA reference as the old baseline did (mean |d| 0.0348 vs
+0.0331). Only `expected_outputs_cpu/` is regenerated here;
+**`expected_outputs_cuda/complex_hierarchy_become.mp4` will need the same
+treatment on a CUDA machine** — the T4 is the wrong card for baselines.
+
+**Found while validating, NOT this round's doing:** the branch tip BEFORE
+these commits (`69d5713`) already fails three full-render CPU baselines in
+this container — `materials_and_lighting` (66 of 179 frames > 2, max 14),
+`shapes_and_timeline` (6 of 301, max 26), `solids_and_camera` (7 of 239,
+max 21) — with diff signatures identical pixel-for-pixel to the ones this
+round's tree produces, while `complex_hierarchy_become` /
+`manim_compat_and_plots` / `text_and_media` reproduce their baselines
+byte-exactly there. The baselines were regenerated on this container class
+at `8f7443a` (2026-08-26), so something in `8f7443a..69d5713` — the
+structural round's own tail, its merges, or the memo round, all of which
+claim byte-identity — moved these three scenes' edge pixels. Deliberately
+NOT re-baselined here: that would bury the signal. Needs a bisect.
+
+**What this un-blocks.** Colour maps now reach the kernel as authored
+texels plus per-(map, frame) scalars — the contract stage 4 of this line of
+work (in-kernel interpolation between two endpoint maps with per-frame
+weights read off the timeline, generalizing fades to texel crossfades)
+plugs into: endpoints are authored maps (u8-eligible), weights ride the
+same meta/bank pattern as the opacity region. **Stage 4 shipped the same
+day** — see "The texture time-lerp round" above.
+
 ## The T4 round (2026-08-25): the nn performance scenes
 
 > The T4 line of work has its own plan of record now:

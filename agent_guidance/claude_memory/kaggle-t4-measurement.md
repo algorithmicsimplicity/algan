@@ -30,6 +30,30 @@ Kernel config that works: `enableGpu: true`, `enableInternet: true`,
 arm that already exited 0 in a previous session of the same tag is skipped, so a
 cut-short run is continued by re-saving rather than redone.
 
+**`machineShape` must be exactly `"NvidiaTeslaT4"`, and a wrong value fails
+SILENTLY and expensively.** An unrecognised string (`"GpuT4x2"` was invented
+and tried, 2026-08-27) is dropped: the notebook is saved with the generic
+`machine_shape: "Gpu"`, which Kaggle satisfies with whatever it has — often a
+**Tesla P100**. Then the whole thing goes quiet rather than failing:
+
+* the P100 is cuda capability 6.0 and this torch build supports (7.0)-(12.0),
+  so torch refuses `sm_60` and Algan's `_auto_render_device` falls back to CPU;
+* every arm renders on two slow vCPUs, `nvidia-smi` at the top of the log still
+  shows a GPU, and the notebook is still called "t4 perf";
+* `nn_scene_UHD` then dies with `OutOfRenderMemory` (UHD on CPU), which reads
+  like a real regression and is not.
+
+Two runs (tags `memo1`, `memo2`) collected fourteen arms of CPU numbers this
+way before anyone noticed. **The check that catches it is `Rendering device set
+to <x>` in each arm's log, or the generator's guard** — and the guard has to ask
+ALGAN, not torch: `torch.cuda.is_available()` returns **True** on that P100 (it
+reports the device and only rejects the arch later), so the obvious probe
+sails straight through. `make_notebook.py` now aborts the run unless
+`algan.settings._startup._RENDER_DEVICE.type` is `cuda`.
+
+Confirm the shape took by reading `machine_shape` back from
+`get_notebook_info` — it echoes the whole source, so do it once, deliberately.
+
 Per-run fixed cost: apt ~25 s + `pip install -e` ~50 s. `/kaggle/working`
 persists between runs of the same notebook, which is what carries the git clone,
 the Taichi kernel cache (`ALGAN_CACHE_DIR=/kaggle/working/algan_cache`) and the
@@ -57,11 +81,79 @@ were held for over an hour.
 **`get_notebook_info` echoes the entire notebook source back.** It is the
 expensive way to learn a version number. Use `get_notebook_session_status`.
 
-**`COMPLETE` does not mean success**, and `ERROR` gives you nothing directly:
-`list_notebook_session_output` returns the *stderr stream* of a failed run,
-which is where a traceback shows up. For a successful run, download files with
-`download_notebook_output(filePath=...)`, which mints a signed
-`kaggleusercontent.com/kf/<session id>/...` URL that plain `curl` can fetch.
+**`COMPLETE` does not mean success**, and `ERROR` does not mean the run told
+you why. Both statuses are read the same way, through
+`list_notebook_session_output`.
+
+## Reading the output
+
+`list_notebook_session_output` returns one JSON object with three keys, and
+the useful one is not the one the name suggests:
+
+* **`log`** — the whole run transcript, stdout AND stderr interleaved, for a
+  successful run as much as a failed one. This is where everything the
+  notebook printed lives: the arm banners, each arm's captured output, the
+  final `RESULTS {...}` line. **Read this first; it usually answers the
+  question without downloading anything.**
+* **`files`** — `{url, file_name}` pairs, each a pre-signed
+  `kaggleusercontent.com/kf/<session id>/...` URL that plain `curl` fetches.
+  Paginated via `next_page_token`, and **dominated by `algan_cache/**`** (the
+  Taichi `.tic` blobs and manim glyph SVGs, hundreds of them). The files you
+  actually want — `out/<tag>/results.json`, `run.log`, the per-arm
+  `*__algan_profile_report*.txt` — sit behind several pages of that noise, so
+  paging to them is rarely worth it when `log` already has the numbers.
+* **`next_page_token`** — for `files` only. `log` always arrives whole.
+
+**Pass `pageSize: 1`.** It trims `files` to a single entry and does not touch
+`log`, which is the part you want. Without it you pay hundreds of cache-file
+URLs for nothing.
+
+**`log` is a JSON string, not a string.** It parses to a list of
+`{"stream_name": "stdout"|"stderr", "time": float, "data": str}` records, one
+per output chunk, and the transcript is the `data` fields joined. The whole
+response also reliably blows the tool-result token cap and gets spilled to a
+file, so decode from that file rather than from the tool output:
+
+```python
+import json
+d = json.load(open("<the saved tool-result path>"))
+txt = "".join(e["data"] for e in json.loads(d["log"]))
+open("/tmp/run.log", "w").write(txt)          # ~150-200 kB for a 7-arm run
+```
+
+Then grep it. For an algan perf run, in this order:
+
+```
+ALGAN_RENDER_DEVICE|Rendering device set to|Tesla   # WHICH MACHINE. First.
+=== ARM                                            # arm boundaries
+RUN 1|RUN 2                                        # profile_scene's cold/warm
+sheet_resolve_shade|raster_shadow_trace            # per-kernel device time
+RESULTS                                            # the final json line
+PASS:|FAIL:|VACUOUS                                # parity harness verdicts
+```
+
+**Verify the device before reading a single number** — the machine-shape trap
+above is silent, and the log is the only place it shows.
+
+**Read RUN 2, never the arm's `seconds`.** `results.json`'s per-arm `seconds`
+is whole-script wall clock and includes the cold Taichi JIT, which differs
+between two arms of one A/B because each toggle value compiles its own kernel
+variant. On tag memo3 that made `nn_scene_UHD` look **8.4% slower** with the
+feature on (126.09 s vs 116.29 s) when the warm RUN 2 numbers were 25.85 vs
+25.69 s — neutral. `profile_scene(runs=2)` prints `RUN 1 (cold ...)` and
+`RUN 2 (warm (steady state))`; only the second is a measurement.
+
+**Size a stage from the unsynced profile in RUN 2**, not from a
+sync-bracketed harness. A harness that fences each launch charges it the queue
+it drains: `_resolve_mode_ratio.py` reported ~12 s and ~16 s per resolve mode
+on a render whose `sheet_resolve_shade` totals 0.3 s in the profile. That
+mistake ranked a whole optimization (see `DESIGN_optimization_targets.md`,
+"The sheet-resolve memo").
+
+**Cross-arm video SHAs are a free parity check.** The harness records a
+sha256 per output mp4 in `results.json` (and the `RESULTS` log line), so two
+arms of a byte-identical A/B should print the same digest — an independent
+confirmation that costs nothing to read.
 
 **Getting code onto the box is the real problem.** If the branch can be pushed
 to GitHub, use `--branch <name>` and the notebook just fetches it — everything

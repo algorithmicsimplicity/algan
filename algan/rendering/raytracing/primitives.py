@@ -418,6 +418,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "normals",
         "uvs",
         "texture_map",
+        "texture_opacity",
+        "texture_lerp",
         "material_texture_map",
         "normal_texture_map",
         "reflectivity",
@@ -1046,12 +1048,38 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # diagonal. The texture's own alpha decides instead.
         texture = getattr(self, "_rt_texture_map", None)
         if texture is not None:
-            texture_visible = (
-                texture.reshape(texture.shape[0], -1, texture.shape[-1])[..., -1].amax(
-                    -1, keepdim=True
-                )
-                > MIN_ALPHA
-            )
+            lerp = getattr(self, "_rt_tex_lerp", None)
+            if lerp is not None:
+                # The map is a [1, K, H, W, 5] endpoint stack
+                # (TEXTURE_TIME_LERP); frame f's coverage is a lerp of two
+                # endpoints, bounded by |1-w| * amax(E_i0) + |w| * amax(E_i1)
+                # (the absolute values cover overshooting rate functions).
+                # An upper bound, so a frame is only ever KEPT relative to
+                # the dense window's exact test -- and a kept near-empty
+                # frame draws nothing.
+                stack = texture[0]
+                amax_k = stack.reshape(stack.shape[0], -1, stack.shape[-1])[
+                    ..., -1
+                ].amax(-1)
+                lerp = lerp.to(stack.device)
+                w = lerp[:, 2]
+                alpha_amax = (
+                    (1.0 - w).abs() * amax_k[lerp[:, 0].long()]
+                    + w.abs() * amax_k[lerp[:, 1].long()]
+                ).view(-1, 1)
+            else:
+                alpha_amax = texture.reshape(texture.shape[0], -1, texture.shape[-1])[
+                    ..., -1
+                ].amax(-1, keepdim=True)
+            top = getattr(self, "_rt_tex_opacity", None)
+            if top is not None:
+                # The map's coverage no longer carries the mob's animated
+                # opacity (TEXTURE_OPACITY_IN_KERNEL), so fold it back in
+                # before the threshold: a faded-out frame must leave the BVH
+                # exactly as it did when the premultiplied map's amax went to
+                # zero (a non-negative scalar multiply commutes with amax).
+                alpha_amax = alpha_amax * top.view(-1, 1).to(alpha_amax.device)
+            texture_visible = alpha_amax > MIN_ALPHA
             (visible, texture_visible), _ = _unify_time(
                 [visible, texture_visible], error_context
             )
@@ -1102,6 +1130,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """
         if self.uvs is None:
             self._rt_texture_map = None
+            self._rt_tex_opacity = None
+            self._rt_tex_lerp = None
+            self._rt_texture_u8_ok = False
             self._rt_material_texture = None
             self._rt_material_flags = 0
             self._rt_normal_texture = None
@@ -1114,6 +1145,26 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_texture_map = (
             self.texture_map.float().contiguous()
             if self.texture_map is not None
+            else None
+        )
+        # In-sampler opacity + u8 provenance for the colour map
+        # (TEXTURE_OPACITY_IN_KERNEL / TEXTURE_U8_STORAGE). ``_rt_`` names on
+        # purpose: the slice-window copy drops them and this stash rebuilds
+        # both from the (sliced) source attributes.
+        top = getattr(self, "texture_opacity", None)
+        self._rt_tex_opacity = (
+            top.detach().reshape(-1).float().contiguous()
+            if top is not None and self._rt_texture_map is not None
+            else None
+        )
+        self._rt_texture_u8_ok = bool(getattr(self, "texture_u8_ok", False))
+        # Endpoint interpolation rows (TEXTURE_TIME_LERP): [T, 3] of
+        # (i0, i1, w); present exactly when the colour map is a
+        # [1, K, H, W, 5] endpoint stack.
+        tlerp = getattr(self, "texture_lerp", None)
+        self._rt_tex_lerp = (
+            tlerp.detach().reshape(-1, 3).float().contiguous()
+            if tlerp is not None and self._rt_texture_map is not None
             else None
         )
         mtex = getattr(self, "material_texture_map", None)

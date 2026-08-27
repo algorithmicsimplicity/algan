@@ -909,7 +909,10 @@ def compact_sheets(
         are ``sheet_offsets[i] : sheet_offsets[i+1]``.
     ``num_sheets``, ``num_groups``, ``num_split_groups``
         Totals; a *group* is one ``(pixel, mesh, facing)`` (triangles only),
-        and a split group produced more than one band.
+        and a split group produced more than one band. ``num_sheets`` is an
+        int; the two group counters are DIAGNOSTIC and stay 0-d device
+        tensors (evaluated only when read), so the render path never pays
+        their device syncs.
     """
     if band_rule not in BAND_RULES:
         raise ValueError(f"unknown band rule {band_rule!r}; one of {BAND_RULES}")
@@ -1387,11 +1390,15 @@ def compact_sheets(
         nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
     del band_id
 
-    # Split-group accounting (diagnostic): groups are triangle-only.
+    # Split-group accounting (diagnostic): groups are triangle-only. Kept
+    # device-side end to end -- the group tables are over-allocated to ``nb``
+    # (group ids are < the true group count <= nb) and the two counters stay
+    # 0-d tensors, evaluated only when something reads them -- because this
+    # block used to cost three device syncs per compaction for numbers
+    # nothing on the render path consumes.
     group_id = torch.cumsum(new_group.to(torch.int64), 0) - 1
     del new_group
-    ngroups = int(group_id[-1]) + 1 if n else 0
-    bands_per_group = torch.zeros(ngroups, dtype=torch.int64, device=device)
+    bands_per_group = torch.zeros(max(nb, 1), dtype=torch.int64, device=device)
     sheet_group = group_id.index_select(0, first_sorted)
     del group_id
     bands_per_group.scatter_add_(
@@ -1400,10 +1407,10 @@ def compact_sheets(
         torch.ones(nb, dtype=torch.int64, device=device),
     )
     tri_group = is_tri.index_select(0, order).index_select(0, first_sorted)
-    tri_groups_mask = torch.zeros(ngroups, dtype=torch.bool, device=device)
+    tri_groups_mask = torch.zeros(max(nb, 1), dtype=torch.bool, device=device)
     tri_groups_mask.scatter_(0, sheet_group, tri_group)
-    num_split_groups = int(((bands_per_group > 1) & tri_groups_mask).sum().item())
-    num_tri_groups = int(tri_groups_mask.sum().item())
+    num_split_groups = ((bands_per_group > 1) & tri_groups_mask).sum()
+    num_tri_groups = tri_groups_mask.sum()
     del bands_per_group, tri_groups_mask, sheet_group, tri_group
     # Last read of the sorted stream: from here the function works only in
     # per-sheet arrays, so the per-fragment ones go now rather than at the

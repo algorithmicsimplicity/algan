@@ -1162,6 +1162,16 @@ class Mob(
             attr, new_value, include_descendants=recursive, _scope=scope
         )
 
+    # Replay-contract marker, read by the timeline's segment-window gate
+    # (AnimationTimeline._describe_segment_windows): replaying this event
+    # writes, for its recorded edit, exactly ``pre + change * a`` -- an
+    # affine path from the edit's pre-values (a = 0) to its post-values
+    # (a = 1) -- and writes nothing else, PROVIDED the gate's own kwarg
+    # checks hold (scope None, recursive False, default interpolation).
+    # Stamped on the undecorated body because that is the object
+    # record_function stores on the event; both wrappers carry __wrapped__.
+    _apply_change.__wrapped__.__wrapped__._algan_replay_is_plain_lerp = True
+
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_set(self, attr, value, recursive=True, interpolation=1.0):
         new_value = value * interpolation

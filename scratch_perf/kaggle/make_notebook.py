@@ -193,6 +193,48 @@ if SNAPSHOT:
 # ---------------------------------------------------------------- 3. install
 sh(f"pip install -q -e {{REPO}}")
 
+# ------------------------------------------------------------- 3b. GPU guard
+# Kaggle's generic "Gpu" machine shape can hand out a Tesla P100 (cuda
+# capability 6.0), which this torch build REFUSES -- its supported range is
+# (7.0)-(12.0). Algan's _auto_render_device then falls back to CPU and every
+# arm renders on a couple of slow vCPUs while the session log still shows a
+# GPU. That happened twice (tags memo1 and memo2, 2026-08-27): fourteen arms
+# of CPU numbers collected under a notebook called "t4 perf".
+#
+# ASK ALGAN, NOT TORCH. torch.cuda.is_available() returns TRUE on that P100 --
+# it reports the device and only refuses the arch later -- so the obvious
+# probe passes and the guard sleeps through exactly the case it exists for
+# (that is what memo2 proved). The render device Algan actually resolved is
+# the only answer that means anything here.
+# The answer rides behind a SENTINEL, not at the start of stdout: importing
+# algan pulls in Taichi, which prints its own two-line banner to stdout
+# ("[Taichi] version ...", "[Taichi] Starting on arch=..."). A startswith
+# check therefore reads the banner and is False whatever the device is -- it
+# aborted a genuine 2x Tesla T4 session (tag memo3 v19), and the P100 aborts
+# before it were right by accident rather than by test.
+probe = subprocess.run(
+    [sys.executable, "-c",
+     "import torch;"
+     "ok = torch.cuda.is_available();"
+     "cap = torch.cuda.get_device_capability(0) if ok else None;"
+     "name = torch.cuda.get_device_name(0) if ok else 'none';"
+     "from algan.settings._startup import _RENDER_DEVICE as D;"
+     "print('ALGAN_RENDER_DEVICE=' + D.type);"
+     "print(f'{{name}} cap={{cap}} torch_cuda_available={{ok}}')"],
+    capture_output=True, text=True)
+say(f"algan render-device probe: {{probe.stdout.strip()!r}} "
+    f"{{probe.stderr.strip()[-600:]}}")
+if "ALGAN_RENDER_DEVICE=cuda" not in probe.stdout:
+    raise SystemExit(
+        "ABORT: Algan resolved its render device to CPU, so every arm would "
+        "measure the wrong machine (a P100 is the usual cause -- torch "
+        "refuses sm_60). Re-save with machineShape='NvidiaTeslaT4' -- that "
+        "exact string, per agent_guidance/claude_memory/kaggle-t4-"
+        "measurement.md. An unrecognised value is silently dropped and "
+        "Kaggle falls back to the generic 'Gpu' shape, which is how this "
+        "run got here."
+    )
+
 # ---------------------------------------------------------------- 4. run arms
 CACHE.mkdir(exist_ok=True)
 # Resumable: an arm that already produced a result in a previous session of this

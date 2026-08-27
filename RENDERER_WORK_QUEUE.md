@@ -442,6 +442,53 @@ reference profile shadows are named only as cost item 4 ("multiplied by the
 number of lights") — that this also doubles the *resolve* has never been
 separated out.
 
+> **Measured 2026-08-26** (`benchmarks/_resolve_mode_ratio.py`, sync-bracketed
+> per-launch wall time attributed by mode): on a shadowed spheres-over-ground
+> scene, **mode 1 / mode 2 = 0.78 on a CPU box and 0.685 on a Tesla T4** (at
+> MD: 10.5 s of mode 1 against 15.3 s of mode 2 over 7 launches) — the
+> event-building walk costs nearly as much as the shading walk, so the double
+> resolve close to doubles a shadowed batch's resolve cost and the
+> ~15-floats-per-sheet memoization has real headroom. The memoization itself
+> remains unbuilt.
+
+> **BUILT AND MEASURED 2026-08-27 — and it does not pay on a GPU. The
+> paragraph above is the reason it looked as though it would, and it is
+> wrong; read this one instead.**
+>
+> The memoization shipped as `SHEET_RESOLVE_MEMO`, **default OFF**: mode 1
+> stores each processed triangle sheet's colour(4), alpha, reflectivity,
+> roughness, IOR, transmission and surface point, and mode 2 reads them back
+> instead of re-calling `_tri_color_g` / `_tri_extra_g` /
+> `_tri_ior_transmission_g` / `_tri_surface_point`. Byte-identical, on CPU and
+> on CUDA (`benchmarks/_sheet_memo_parity.py`, whose third arm poisons the
+> table between the launches and must — and does — move the frame, so the
+> read is proven live rather than assumed).
+>
+> **Tesla T4, warm RUN 2, unsynced profile:**
+>
+> | scene | `sheet_resolve_shade` off → on | share of render | end to end |
+> | --- | --- | --- | --- |
+> | `nn_scene_UHD` | 0.306 → 0.304 s | **1.2%** of 22.9 s | 25.69 → 25.85 s |
+> | `static_gallery_PREVIEW` | 0.027 → 0.027 s | **0.6%** of 4.5 s | 4.73 → 4.51 s |
+>
+> The stage is under 1.5% of a render on that card and the memo moves it by
+> less than a millisecond. (The gallery's end-to-end −4.7% is NOT this change
+> — a 0.027 s kernel cannot produce it; treat it as run noise.)
+>
+> **What went wrong with the ranking, because the trap generalises.**
+> `_resolve_mode_ratio.py` brackets every launch with a device sync, so each
+> launch absorbs the queue it drains. It reported ~12 s and ~16 s per mode on
+> a render whose entire resolve kernel is 0.3 s — the numbers are queue-drain,
+> not kernel cost. Its docstring says exactly this ("read the two modes'
+> TOTALS against each other, not against an unsynced profile"); the reading
+> above went past that and treated the ratio as if it sized the stage. **A
+> ratio between two launches does not size the work either of them does.**
+> Size a stage from the unsynced profile before ranking anything on it.
+>
+> This also demotes the premise under `DESIGN_renderer_structural_candidates.md`
+> item 4 (the transport/shade/composite split), which was staged behind this
+> exact number.
+
 ---
 
 ## 10. `AttributeTimeline.get` — the prep pole
@@ -648,6 +695,18 @@ the code actually does.
 | `settings.py:1849` (`SHADOWS`) | "Implies per-fragment shading … and forces the general kernel" | Correct for triangles; it should say that Bezier circuits neither receive shadows nor are fragment-shaded, since the same block is the reference for what shadows do. |
 | `raster_taichi.py:199-200` (`_AA_SAMPLES`) | "16 matches the sampling density of the anti_alias_level=4 reference" | The live pattern is `_AA_PATTERN_8`; `_AA_NUM_SAMPLES` is 8. The comment reads as though 16 were selected. |
 | `CLAUDE.md`, "Cloud sessions" | The full-render baselines are per machine because "`pn_criterion_kernel` runs under Taichi's `fast_math` and which tessellation levels sit on the borderline depends on the CPU evaluating the criterion" | `pn_criterion_kernel_active()` is `PN_CRITERION_KERNEL and project_on_gpu_active()`, and `project_on_gpu_active()` requires `_RENDER_DEVICE.type == "cuda"`. **On a CPU render device the criterion kernels never run** (verified in this container: `pn_criterion_kernel_active()` is `False`), so `fast_math` cannot be the mechanism for the measured CPU-to-CPU divergence. The *observation* stands — 5 of 6 scenes missed by 29-204 channel values on a GitHub runner, and what moved carried PN surfaces — so something else in the torch criterion path is machine-sensitive. Worth attributing properly, because the paragraph is the reason the suite skips itself in CI. |
+
+**Done 2026-08-27 — the tree-count family**, which
+`DESIGN_renderer_structural_candidates.md`'s drift section had queued for this
+list: `DESIGN_hybrid_raster.md` §9/§11/§13, `settings.py`'s `SHADOW_ANYHIT`
+note, `scene_builder._empty_scene_part` and the gather-march docstring in
+`raytrace_kernels_taichi.py` all said "three trees" / "six trees (3 full + 3
+opaque-prepass)". There are two geometry types and four tree *slots* since the
+PN deletion, of which only two are normally built (the opaque-prepass slots
+alias their main tree unless `WF_OPAQUE_CLOSEST` / `WF_OPAQUE_PREPASS` is
+live). §11's default table and §13's ranked list were corrected in the same
+pass — both still described `HYBRID_RASTER` / `BVH_REFIT` / `ANALYTIC_AA` as
+opt-in, and §11 still listed the retired `num_pn == 0` route gate.
 
 ---
 

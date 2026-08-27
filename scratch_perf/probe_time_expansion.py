@@ -36,8 +36,8 @@ captured = {}
 real_merge = scene_builder._merge_scene
 
 
-def fake_merge(prims):
-    m = real_merge(prims)
+def fake_merge(prims, **kwargs):
+    m = real_merge(prims, **kwargs)
     if "merged" not in captured:
         captured["merged"] = m
     return m

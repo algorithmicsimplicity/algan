@@ -490,6 +490,213 @@ def set_bvh_defer(enabled):
 MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 
 
+# Extend the merge-time collapse to the per-frame GEOMETRY the list above
+# deliberately skipped: ``tri_pos`` / ``tri_obj`` / ``tri_closed`` and the
+# per-frame bounds/opacity tables that feed the BVH builds and the raster
+# host tables. "Rigid motion lives in tri_pos" is a rationale about the
+# moving case that forfeited the static case, where the equality probe is
+# one pass and the saving is (T-1)/T of the array
+# (DESIGN_renderer_structural_candidates.md item 1). Collapsed bounds also
+# reach the BVH builders at ``Tc == 1``, waking their static branches (one
+# instance spanning all frames -- ``build_stbvh``/``build_refit_bvh`` both
+# accept it) instead of building per-frame structure over byte-identical
+# boxes. Requires MERGE_DEDUP_TIME; ALGAN_MERGE_DEDUP_GEOMETRY=0 restores
+# the dense tables (byte-level A/B).
+MERGE_DEDUP_GEOMETRY = env_flag("ALGAN_MERGE_DEDUP_GEOMETRY", True)
+
+
+def set_merge_dedup_geometry(enabled):
+    """Toggle the merge-time collapse of temporally-constant geometry tables
+    (see ``MERGE_DEDUP_GEOMETRY``). Takes effect at the next batch's merge.
+    """
+    global MERGE_DEDUP_GEOMETRY
+    MERGE_DEDUP_GEOMETRY = bool(enabled)
+
+
+# Texture banks with a real per-map time length. The shared flat texel buffer
+# used to carry one leading time axis for ALL maps, unified to the batch
+# maximum at assembly -- so one animated map re-expanded every static map (and
+# the environment map) to T copies, and a static image was still stored once
+# per materialized frame. With this on, each map's frames are flattened along
+# the texel axis (frame f of a map at (offset, w, h) starts at
+# ``offset + (f % t) * w * h``) and the map's time length ``t`` rides in the
+# texture meta (cols 10-12), so the assembled buffer's leading axis is always
+# 1 and every map keeps its own length. Byte-identical: the sampler reads the
+# same texel values through ``(f % t)`` that it read through the buffer's
+# ``f % shape[0]``. ALGAN_TEXTURE_TIME_FLAT=0 restores the shared time axis.
+TEXTURE_TIME_FLAT = env_flag("ALGAN_TEXTURE_TIME_FLAT", True)
+
+
+def set_texture_time_flat(enabled):
+    """Toggle per-map texture time lengths (see ``TEXTURE_TIME_FLAT``).
+    Takes effect at the next batch's scene merge.
+    """
+    global TEXTURE_TIME_FLAT
+    TEXTURE_TIME_FLAT = bool(enabled)
+
+
+# Content-deduplicate the shared texel buffer: a map whose processed texels
+# (post decode/pad/flatten) equal an already-appended map's reuses that map's
+# placement instead of appending a second copy. Every textured primitive is a
+# singleton collection, so N mobs sharing one image used to store the image N
+# times (DESIGN_renderer_structural_candidates.md item 5). Byte-identical by
+# construction: equality is exact (``torch.equal`` after a shape prefilter),
+# and two prims reading one placement read the same texels they read from two.
+# ALGAN_TEXTURE_CONTENT_DEDUP=0 restores per-map appends.
+TEXTURE_CONTENT_DEDUP = env_flag("ALGAN_TEXTURE_CONTENT_DEDUP", True)
+
+
+def set_texture_content_dedup(enabled):
+    """Toggle texture-bank content dedup (see ``TEXTURE_CONTENT_DEDUP``).
+    Takes effect at the next batch's scene merge.
+    """
+    global TEXTURE_CONTENT_DEDUP
+    TEXTURE_CONTENT_DEDUP = bool(enabled)
+
+
+# Collapse a temporally-constant colour-texture window before the premultiply
+# / wrap-pad / decode / merge chain runs over it (Surface.get_render_primitives).
+# The timeline materializes a wide attribute's window dense -- one image per
+# frame whether or not anything edited it -- and every downstream copy used to
+# be made per frame. When the window's frames and the surface's opacity are
+# byte-identical across the batch, one frame carries the batch (every consumer
+# reads texture time as ``f % shape[0]``). ALGAN_TEXTURE_WINDOW_COLLAPSE=0
+# restores the dense chain (byte-level A/B).
+TEXTURE_WINDOW_COLLAPSE = env_flag("ALGAN_TEXTURE_WINDOW_COLLAPSE", True)
+
+
+def set_texture_window_collapse(enabled):
+    """Toggle the static colour-texture window collapse (see
+    ``TEXTURE_WINDOW_COLLAPSE``). Takes effect at the next primitive build.
+    """
+    global TEXTURE_WINDOW_COLLAPSE
+    TEXTURE_WINDOW_COLLAPSE = bool(enabled)
+
+
+# Apply the mob's animated opacity to a colour texture IN THE SAMPLER instead
+# of premultiplying the map on the host. The premultiply
+# (``Color.mult_opacity`` in ``Surface.get_render_primitives`` /
+# ``TriangleMesh.get_render_primitives``) scales only the map's coverage
+# channel, but it welds the (per-frame) opacity into the (usually static)
+# texels -- so a plain fade of a static image voids TEXTURE_WINDOW_COLLAPSE
+# and rebuilds, re-decodes and re-uploads the full map once per frame
+# (DESIGN_renderer_structural_candidates.md item 5). With this on, the
+# primitive carries the opacity as per-frame scalars (``texture_opacity``),
+# the merge stores them as a tiny per-map region inside the shared texel
+# bank (tex-meta cols 13-14: row offset / frame count -- data, not a new
+# kernel argument: the resolve kernel is at Taichi's runtime-argument
+# ceiling), and the sampler multiplies the sampled coverage by the frame's
+# scalar. The collapse then keys on texel constancy alone.
+#
+# NOT byte-identical across the flip: the multiply moves from before the
+# bilinear filter (per texel, on the host) to after it (per sample, in the
+# kernel), which reorders f32 rounding by up to an ulp -- the same class of
+# qualified exception as ALGAN_WIDE_ATTR_RENDER_DEVICE. With opacity == 1
+# (no fade anywhere) the multiply is exact and the flip IS byte-identical.
+# Requires TEXTURE_TIME_FLAT and is disabled under the legacy WF_TEXTURED
+# path (which consumes premultiplied maps); see
+# ``texture_opacity_in_kernel_active``. ALGAN_TEXTURE_OPACITY_IN_KERNEL=0
+# restores the host premultiply byte-identically.
+TEXTURE_OPACITY_IN_KERNEL = env_flag("ALGAN_TEXTURE_OPACITY_IN_KERNEL", True)
+
+
+def set_texture_opacity_in_kernel(enabled):
+    """Toggle the in-sampler texture opacity multiply (see
+    ``TEXTURE_OPACITY_IN_KERNEL``). Takes effect at the next primitive build.
+    """
+    global TEXTURE_OPACITY_IN_KERNEL
+    TEXTURE_OPACITY_IN_KERNEL = bool(enabled)
+
+
+def texture_opacity_in_kernel_active():
+    """Whether primitive builds should hand opacity to the sampler.
+
+    One predicate for every decision point (Surface / TriangleMesh builds,
+    the estimators) so a build cannot half-flip. The merge itself keys off
+    the PRIMITIVE (``texture_opacity is not None``), so a setting change
+    between a build and its merge stays coherent. Requires TEXTURE_TIME_FLAT
+    (the opacity region rides the flattened bank's row addressing) and is
+    off under WF_TEXTURED, whose legacy bank builder consumes premultiplied
+    maps.
+    """
+    return TEXTURE_OPACITY_IN_KERNEL and TEXTURE_TIME_FLAT and not WF_TEXTURED
+
+
+# Store u8-provenance colour maps as RGBA bytes instead of five f32 channels:
+# x5 fewer bank bytes on the largest array of any textured merge
+# (DESIGN_renderer_structural_candidates.md item 5). A map qualifies when the
+# authoring side proved every texel is exactly k/255 with zero glow
+# (``texture_u8_ok`` -- checked ONCE at authoring, never at the merge, which
+# must not add device syncs on the prefetch worker) and its window arrived
+# collapsed to one frame (an interpolating window's in-between texels are not
+# k/255). Bytes are bit-packed into f32 lanes of the SAME shared bank (one
+# RGBA texel per lane, ``ti.bit_cast`` in the sampler) and decoded through a
+# per-map 256-entry LUT scattered from the map's OWN direct decode -- the
+# exact tensor the f32 arm would have stored -- so the sampler consumes that
+# arm's own bits. The one residue: torch-CPU's SIMD body and scalar tail can
+# decode the SAME byte to bit patterns one ulp apart within one tensor, so
+# on such (straddling) bytes the f32 arm itself stores two patterns and the
+# LUT necessarily picks one; <= 1 ulp in linear light, CPU-only, and never
+# observed to move a rendered output byte (benchmarks/_texture_opacity_ab.py
+# asserts frame bytes). Meta col 15 carries the LUT base row (-1 = plain f32
+# map). Requires the in-kernel opacity multiply (a premultiplied map is not
+# k/255). ALGAN_TEXTURE_U8_STORAGE=0 restores f32 storage.
+TEXTURE_U8_STORAGE = env_flag("ALGAN_TEXTURE_U8_STORAGE", True)
+
+
+def set_texture_u8_storage(enabled):
+    """Toggle u8 colour-map storage (see ``TEXTURE_U8_STORAGE``). Takes
+    effect at the next batch's scene merge.
+    """
+    global TEXTURE_U8_STORAGE
+    TEXTURE_U8_STORAGE = bool(enabled)
+
+
+# Describe an animated colour texture's frame window as ENDPOINT maps plus
+# per-frame interpolation weights read off the timeline, instead of
+# materializing one full image per frame (stage 4 of the texture line;
+# DESIGN_optimization_targets.md). The timeline's conservative gate
+# (``AnimationTimeline._describe_segment_windows``) accepts a window only
+# when every event touching the map's rows is a plain recorded assignment
+# (``Mob._apply_change``, marked ``_algan_replay_is_plain_lerp``) with
+# non-overlapping replay windows and no active updater depends on the mob;
+# anything else falls back to the dense per-frame materialization
+# byte-identically. Accepted windows upload K endpoint images (authored
+# texels, so u8-eligible) plus a tiny per-frame (i0, i1, w) region of the
+# bank (meta cols 16-17), and the sampler lerps the two endpoint texels in
+# AUTHORED space before the linear-light decode -- the same order the dense
+# path applies them (timeline lerp, then the merge's decode). The lerp's
+# arithmetic is re-associated ((E1 - E0) * w against the dense change * w)
+# and the decode runs in-kernel, so the flip is a qualified exception like
+# ALGAN_WIDE_ATTR_RENDER_DEVICE: bounded by the render suites' tolerance,
+# not byte-identical (benchmarks/_texture_lerp_ab.py asserts the bound).
+# Requires the in-kernel opacity multiply (see ``texture_time_lerp_active``).
+# ALGAN_TEXTURE_TIME_LERP=0 restores dense windows.
+TEXTURE_TIME_LERP = env_flag("ALGAN_TEXTURE_TIME_LERP", True)
+
+
+def set_texture_time_lerp(enabled):
+    """Toggle in-kernel texture time interpolation (see
+    ``TEXTURE_TIME_LERP``). Takes effect at the next frame batch.
+    """
+    global TEXTURE_TIME_LERP
+    TEXTURE_TIME_LERP = bool(enabled)
+
+
+def texture_time_lerp_active():
+    """Whether frame batches may describe texture windows as segments.
+
+    One predicate for the timeline gate and the estimators. The primitive
+    build and the merge key off the DESCRIPTION instead (a stashed segment
+    window / ``texture_lerp`` on the primitive), so a setting change
+    mid-batch stays coherent: the batch finishes in whichever mode its
+    materialization ran. Requires the in-kernel opacity multiply -- the
+    legacy host premultiply folds the animated opacity into the texels,
+    which endpoint maps cannot represent.
+    """
+    return TEXTURE_TIME_LERP and texture_opacity_in_kernel_active()
+
+
 # Per-triangle SURFACE identity at the granularity the mob declares, rather than
 # one id per merged COLLECTION MEMBER. The member count is right only when one
 # member is one surface, and it is wrong at both ends: ``Polyhedron`` hands the
@@ -597,8 +804,8 @@ def set_merge_dedup_time(enabled):
 
 
 # Opaque any-hit shadow early-out. The deterministic shadow query is an
-# ordered closest-hit march that restarts a full three-tree traversal per
-# peeled surface; but any interval-opaque blocker (main-tree leaf flag:
+# ordered closest-hit march that restarts a full two-tree (triangle + Bezier)
+# traversal per peeled surface; but any interval-opaque blocker (main-tree leaf flag:
 # classic ``leaf_tspan`` bit 31 / refit link bit 30) forces the final
 # occlusion to exactly 1.0 no matter what lies in front of it. When on, the
 # shadow query first runs a cheap unordered any-hit walk over just the
@@ -608,8 +815,21 @@ def set_merge_dedup_time(enabled):
 # cases the march itself gets wrong (an opaque edge hit seam-merged into a
 # coincident translucent edge within DEPTH_TIE_EPSILON, and an opaque
 # blocker past MAX_SURFACES_PER_RAY peels); the any-hit's answer is the
-# physically correct one in both. Experimental while the pixel suites
-# qualify it; ALGAN_SHADOW_ANYHIT=1 opts in.
+# physically correct one in both.
+#
+# QUALIFIED 2026-08-26, and deliberately NOT the default. Correctness: all
+# three modes are byte-identical on both purpose-built corner scenes (each
+# proven to reach its case) and on materials_and_lighting, on a CPU box and
+# on a Tesla T4 (benchmarks/_shadow_anyhit_check.py; the structural round in
+# DESIGN_optimization_targets.md). Performance is why the default stays off:
+# on the nn UHD benchmark (a batch with translucent geometry, so mode 2)
+# the flip measured 29.5 s -> 34.2 s end to end -- raster_shadow_trace
+# 3.8 -> 6.6 s because the deferred any-hit pre-pass pays a second full
+# traversal on the miss-dominated rays, and wavefront_shade 6.3 -> 8.2 s
+# from the wider mode-2 kernel variant -- while the shadowed static-gallery
+# scene measured neutral. Flip it per render for translucent-stack or
+# proven-all-opaque (mode 3) scenes; a smarter default would engage the
+# any-hit only where mode 3 applies. ALGAN_SHADOW_ANYHIT=1 opts in.
 #
 # ALGAN_SHADOW_ANYHIT=gather selects the gather-march instead: the same
 # ordered shadow peel rebuilt on the KBUF gather (_collect_hits), so a
@@ -1162,6 +1382,64 @@ def set_sheet_resolve(enabled):
 # gives the band one occlusion write -- so flipping it moves colour at crease
 # pixels, never coverage.
 SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
+
+
+# Cross-pass material memoization in the shadowed sheet resolve
+# (RENDERER_WORK_QUEUE.md item 9). A shadowed batch launches
+# ``sheet_resolve_shade`` TWICE over the same sheets -- mode 1 walks the
+# transport and builds the shadow events, mode 2 shades reading the traced
+# visibility -- and mode 1 already fetches everything mode 2 re-fetches. The
+# obvious saving (skip the fetches in mode 1) is not available: the colour's
+# alpha, the transmission and the reflectivity all steer the walk itself, so
+# cutting them changes which sheets are reached and therefore the shadows.
+#
+# What IS available is carrying them across. With this on, mode 1 stores each
+# processed triangle sheet's colour (4), alpha, reflectivity, roughness, IOR,
+# transmission and surface point -- twelve floats -- and mode 2 reads them
+# back instead of calling _tri_color_g / _tri_extra_g /
+# _tri_ior_transmission_g / _tri_surface_point again. The values are copied
+# verbatim through f32, so the frame is BYTE-IDENTICAL
+# (benchmarks/_sheet_memo_parity.py).
+#
+# DEFAULT OFF, on measurement -- the candidate is built and correct, and it
+# does not pay on a GPU. Measured on a Tesla T4 (2026-08-27, tag memo3),
+# warm RUN 2, unsynced profile:
+#
+#   nn_scene_UHD      sheet_resolve_shade  0.306 s -> 0.304 s   (1.2% of a
+#                     22.9 s render; end to end 25.69 -> 25.85 s, neutral)
+#   static_gallery    sheet_resolve_shade  0.027 s -> 0.027 s   (0.6% of a
+#                     4.5 s render)
+#
+# The stage this optimises is 0.6-1.2% of a render on that card, and the memo
+# moves it by less than a millisecond, because the fetches it removes were
+# already cheap next to what the kernel is actually bound by. Against that it
+# costs 48 B per sheet of arena, which the runtime memory model prices into
+# the next chunk's length -- a real cost for no measured gain.
+#
+# WHY IT LOOKED PROMISING, because the trap is reusable: the number that
+# ranked this work came from benchmarks/_resolve_mode_ratio.py, which brackets
+# every launch with a device sync. That sync makes each launch absorb the
+# queue it drains, so it reported ~12 s and ~16 s per mode on a render whose
+# whole resolve kernel is 0.3 s. The harness says so in its own docstring
+# ("read the two modes' TOTALS against each other, not against an unsynced
+# profile"); the reading that ranked the memoization went past it and treated
+# the ratio as if it sized the stage. It does not. Size a stage from the
+# unsynced profile, always.
+#
+# Kept rather than reverted: it is byte-identical either way
+# (benchmarks/_sheet_memo_parity.py), it compiles out entirely when off, and
+# a CPU render spends a much larger share in this kernel -- so
+# ALGAN_SHEET_RESOLVE_MEMO=1 is worth trying there. It should not be flipped
+# on for a GPU render without a fresh unsynced profile of the target scene.
+SHEET_RESOLVE_MEMO = env_flag("ALGAN_SHEET_RESOLVE_MEMO", False)
+
+
+def set_sheet_resolve_memo(enabled):
+    """Toggle the shadowed resolve's cross-pass material memo (see
+    ``SHEET_RESOLVE_MEMO``). Takes effect at the next resolve launch.
+    """
+    global SHEET_RESOLVE_MEMO
+    SHEET_RESOLVE_MEMO = bool(enabled)
 
 
 def set_sheet_shade_split(enabled):

@@ -54,6 +54,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _nearest_surface_g,
     _safe_inverse,
     _sample_circuit_color,
+    _sample_texture,
     _shade_tri_hit,
     _shadow_occluded,
     _triangle_color,
@@ -243,7 +244,7 @@ def _sample_env_map(f, rd, env_off, env_w, env_h, env_intensity,
     """
     u = ti.atan2(rd[2], rd[0]) * (0.5 / _PI) + 0.5
     v = 0.5 - ti.asin(ti.math.clamp(rd[1], -1.0, 1.0)) / _PI
-    smp = _sample_tex_vec5(f, u, v, env_off, env_w, env_h, textures)
+    smp = _sample_tex_vec5(f, u, v, env_off, env_w, env_h, 1, textures)
     return ti.math.vec3(smp[0], smp[1], smp[2]) * env_intensity
 
 
@@ -284,12 +285,16 @@ def _tri_uv(f, prim_uv_index, w0, w1, w2, tri_uvs: ti.template()):
 
 
 @ti.func
-def _sample_tex_vec5(f, u, v, offset, width_i, height_i,
+def _sample_tex_vec5(f, u, v, offset, width_i, height_i, tmap_i,
                      textures: ti.template()):
     """Bilinear sample of all 5 channels of a map placed at ``offset`` in the
     shared flat texel buffer (same filtering as ``_sample_texture``, but
     addressed by an explicit (offset, w, h) triplet so material and normal
-    maps can share the buffer with the color maps).
+    maps can share the buffer with the color maps). ``tmap_i`` is the map's
+    own time length (meta cols 10-12): under TEXTURE_TIME_FLAT frame f of
+    the map starts at ``offset + (f % tmap_i) * w * h`` while the buffer's
+    time axis stays at length 1; with the legacy shared axis ``tmap_i == 1``
+    and the addressing is the old one exactly.
     """
     width = ti.cast(width_i, ti.f32)
     height = ti.cast(height_i, ti.f32)
@@ -306,6 +311,7 @@ def _sample_tex_vec5(f, u, v, offset, width_i, height_i,
     sum_w = 0.0
     tc = f % textures.shape[0]
     num_points = textures.shape[1]
+    frame_base = (f % ti.max(tmap_i, 1)) * (width_i * height_i)
 
     for corner in ti.static(range(4)):
         cx = ti.cast(x_floor + (corner % 2), ti.i32)
@@ -316,7 +322,7 @@ def _sample_tex_vec5(f, u, v, offset, width_i, height_i,
         cx = ti.math.clamp(cx, 0, ti.max(width_i - 1, 0))
         cy = ti.math.clamp(cy, 0, ti.max(height_i - 1, 0))
 
-        abs_idx = ti.math.clamp(offset + cx * height_i + cy, 0,
+        abs_idx = ti.math.clamp(offset + frame_base + cx * height_i + cy, 0,
                                 num_points - 1)
         for ci in ti.static(range(5)):
             out[ci] += w * textures[tc, abs_idx, ci]
@@ -352,7 +358,7 @@ def _flat_triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template(),
             u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
             m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
                                  tri_tex_meta[idx, 4], tri_tex_meta[idx, 5],
-                                 textures)
+                                 tri_tex_meta[idx, 11], textures)
             if (flags & 1) != 0:
                 reflectivity = m[0]
             if (flags & 2) != 0:
@@ -388,7 +394,8 @@ def _flat_corner_ior_transmission(f, prim, w0, w1, w2, extra: ti.template(),
                 u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
                 m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
                                      tri_tex_meta[idx, 4],
-                                     tri_tex_meta[idx, 5], textures)
+                                     tri_tex_meta[idx, 5],
+                                     tri_tex_meta[idx, 11], textures)
                 if (flags & 4) != 0:
                     ior = m[2]
                 if (flags & 8) != 0:
@@ -424,7 +431,7 @@ def _flat_triangle_material(f, prim, w0, w1, w2, tri_extra: ti.template(),
             u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
             m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
                                  tri_tex_meta[idx, 4], tri_tex_meta[idx, 5],
-                                 textures)
+                                 tri_tex_meta[idx, 11], textures)
             if (flags & 1) != 0:
                 reflectivity = m[0]
             if (flags & 2) != 0:
@@ -456,7 +463,7 @@ def _flat_triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
             u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
             m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 6],
                                  tri_tex_meta[idx, 7], tri_tex_meta[idx, 8],
-                                 textures)
+                                 tri_tex_meta[idx, 12], textures)
             tn = ti.math.vec3(m[0], m[1], m[2])
             if tn.norm() > 1e-6 and normal.norm() > 1e-9:
                 nb = normal.normalized()
@@ -517,11 +524,14 @@ def _flat_triangle_color_trim(f, prim, w0, w1, w2, tri_colors: ti.template(),
         cr = col_row[prim]                              # prims always get a map)
         color, alpha = _triangle_color(f, cr, w0, w1, w2, tri_colors)
     else:
+        # ``_sample_texture`` is meta-layout agnostic (it only indexes the row
+        # it is given), so the trim table serves it directly -- and it is the
+        # one place the in-sampler opacity multiply and the u8-packed layout
+        # (meta cols 13-15) are implemented. Its per-lane arithmetic is the
+        # ``_sample_tex_vec5`` this replaced, byte for byte, when those cols
+        # are absent (-1).
         u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
-        m = _sample_tex_vec5(f, u, v, tex_meta[prim, 0], tex_meta[prim, 1],
-                             tex_meta[prim, 2], textures)
-        color = ti.math.vec4(m[0], m[1], m[2], m[3])
-        alpha = m[4]
+        color, alpha = _sample_texture(f, u, v, prim, tex_meta, textures)
     return color, alpha
 
 
@@ -538,7 +548,7 @@ def _flat_triangle_extra_trim(f, prim, w0, w1, w2, tri_extra: ti.template(),
         flags = tex_meta[prim, 9]
         u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
         m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
-                             tex_meta[prim, 5], textures)
+                             tex_meta[prim, 5], tex_meta[prim, 11], textures)
         if (flags & 1) != 0:
             reflectivity = m[0]
         if (flags & 2) != 0:
@@ -567,7 +577,8 @@ def _flat_corner_ior_transmission_trim(f, prim, w0, w1, w2,
         if (flags & 12) != 0:
             u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
             m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
-                                 tex_meta[prim, 5], textures)
+                                 tex_meta[prim, 5], tex_meta[prim, 11],
+                                 textures)
             if (flags & 4) != 0:
                 ior = m[2]
             if (flags & 8) != 0:
@@ -587,7 +598,8 @@ def _flat_triangle_normal_trim(f, prim, w0, w1, w2, tri_norm: ti.template(),
         if tex_meta[prim, 6] >= 0:
             u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
             m = _sample_tex_vec5(f, u, v, tex_meta[prim, 6], tex_meta[prim, 7],
-                                 tex_meta[prim, 8], textures)
+                                 tex_meta[prim, 8], tex_meta[prim, 12],
+                                 textures)
             tn = ti.math.vec3(m[0], m[1], m[2])
             if tn.norm() > 1e-6 and normal.norm() > 1e-9:
                 nb = normal.normalized()

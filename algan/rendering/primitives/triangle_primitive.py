@@ -142,6 +142,24 @@ class TrianglePrimitive(RenderPrimitive):
         self.min_interpolation_coord = 0
         self.uvs = None
         self.texture_map = None
+        # Per-frame mob opacity for the colour map, applied in the sampler
+        # instead of premultiplied into the map (TEXTURE_OPACITY_IN_KERNEL);
+        # None = the map arrived premultiplied. Set post-construction by the
+        # mob that builds the primitive, like ``mesh_ids``.
+        self.texture_opacity = None
+        # Authoring-side proof that every colour-map texel is exactly k/255
+        # with zero glow (TEXTURE_U8_STORAGE); the merge trusts this rather
+        # than probing texels (a probe is a device sync on the prefetch
+        # worker).
+        self.texture_u8_ok = False
+        # Per-frame endpoint interpolation for the colour map
+        # (TEXTURE_TIME_LERP): a ``[T, 3]`` float tensor of (endpoint index,
+        # endpoint index, weight) rows. When set, ``texture_map`` is a
+        # ``[1, K, H, W, 5]`` stack of AUTHORED endpoint images (the leading
+        # singleton keeps frame slicing away from the endpoint axis) and the
+        # sampler lerps the two endpoint texels before decoding. None = the
+        # map's leading axis is batch time, as always.
+        self.texture_lerp = None
         self.material_texture_map = None
         self.material_texture_flags = 0
         self.normal_texture_map = None
@@ -214,6 +232,13 @@ class TrianglePrimitive(RenderPrimitive):
                 tex = getattr(triangle, "texture_map", None)
                 if tex is not None:
                     self.texture_map = tex
+                    # The opacity scalars and the u8-provenance proof describe
+                    # THIS map, so they ride the same first-member-with-a-map
+                    # contract (exact because textured primitives are batched
+                    # one per collection).
+                    self.texture_opacity = getattr(triangle, "texture_opacity", None)
+                    self.texture_u8_ok = bool(getattr(triangle, "texture_u8_ok", False))
+                    self.texture_lerp = getattr(triangle, "texture_lerp", None)
                     break
 
             # Texture maps cannot be concatenated across primitives (each map

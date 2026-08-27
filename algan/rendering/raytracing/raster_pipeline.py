@@ -1427,17 +1427,27 @@ def _shadow_identity_epsilons(merged):
     triangle of the same mesh keeps. Degenerate batches -- no triangles, or a
     bounding box that is not finite -- fall back to ``MIN_HIT_DISTANCE`` so a
     pathological scene can never end up with a zero or NaN floor.
+
+    The scene diagonal is fixed for the batch (``tri_pos`` is immutable once
+    merged) but this is called once per TILE ATTEMPT, and the reduction ends
+    in a device sync (``.item()``) -- so the diagonal is computed once and
+    cached on the merged scene; only the (cheap, toggle-respecting) floor
+    arithmetic runs per call.
     """
-    tri_pos = merged["tri_pos"]
-    scale = 0.0
-    if tri_pos.numel():
-        # tri_pos is [frames, N, 9]: three vertices, three coordinates each.
-        verts = tri_pos.reshape(-1, 3, 3)
-        lo = verts.amin(dim=(0, 1))
-        hi = verts.amax(dim=(0, 1))
-        diag = (hi - lo).norm().item()
-        if math.isfinite(diag):
-            scale = diag
+    scale = merged.get("_shadow_scene_diag")
+    if scale is None:
+        tri_pos = merged["tri_pos"]
+        scale = 0.0
+        if tri_pos.numel():
+            # tri_pos is [frames, N, 9]: three vertices, three coordinates
+            # each.
+            verts = tri_pos.reshape(-1, 3, 3)
+            lo = verts.amin(dim=(0, 1))
+            hi = verts.amax(dim=(0, 1))
+            diag = (hi - lo).norm().item()
+            if math.isfinite(diag):
+                scale = diag
+        merged["_shadow_scene_diag"] = scale
     eps_self = float(rt_settings.SHADOW_EPS_RELATIVE) * scale
     if not (eps_self > 0.0) or not math.isfinite(eps_self):
         eps_self = float(MIN_HIT_DISTANCE)
@@ -2213,6 +2223,7 @@ def shade_sparse_raster_coverage(
     dummy_i = _arena_tensor(memory, (1,), torch.int32, 0)
     dummy_f3 = _arena_tensor(memory, (1, 3), torch.float32)
     dummy_f6 = _arena_tensor(memory, (1, 6), torch.float32)
+    dummy_f12 = _arena_tensor(memory, (1, 12), torch.float32)
     # RGB visibility payload: one triple per (event, light), channel-last.
     dummy_vis = _arena_tensor(memory, (1, 1, 3), torch.float32, 1.0)
     # Shadow terminator (RENDERER_WORK_QUEUE.md item 20), read live like the
@@ -2233,10 +2244,29 @@ def shade_sparse_raster_coverage(
         event_dp = _arena_tensor(memory, (S if sec_aa > 1 else 1, 6), torch.float32)
         event_toff = _arena_tensor(memory, (S if term_on else 1, 3), torch.float32)
         sheet_event_id = _arena_tensor(memory, (S,), torch.int32, -1)
+        # Cross-pass material memo (RENDERER_WORK_QUEUE.md item 9): mode 1
+        # stores each processed triangle sheet's fetched material, mode 2
+        # reads it instead of re-fetching. Uninitialised like the event
+        # tables -- both walks process the same sheets, so every row mode 2
+        # reads was written by mode 1 (see the kernel's ``memo`` comment).
+        # Lives across the trace on the same arena lifetime as event_pos.
+        # Only triangle sheets are memoized (a circuit's fetches are cheap and
+        # touch no texture), so a batch with no triangles allocates nothing --
+        # 48 B per sheet is real arena, and the runtime memory model prices it
+        # into the next chunk's length.
+        memo_on = (
+            1
+            if rt_settings.SHEET_RESOLVE_MEMO
+            and int(merged.get("num_triangles", 0)) > 0
+            else 0
+        )
+        sheet_memo = _arena_tensor(memory, (S if memo_on else 1, 12), torch.float32)
         sheet_resolve_shade(
             *pre_args,
             1,
             term_mode,
+            memo_on,
+            sheet_memo,
             sheet_accept,
             event_pos,
             event_snrm,
@@ -2351,6 +2381,8 @@ def shade_sparse_raster_coverage(
             *pre_args,
             2,
             term_mode,
+            memo_on,
+            sheet_memo,
             sheet_accept,
             event_pos,
             event_snrm,
@@ -2374,6 +2406,11 @@ def shade_sparse_raster_coverage(
             *pre_args,
             0,
             0,
+            # The memo exists only to carry mode 1's fetches into mode 2;
+            # a one-launch shadow-free resolve has nothing to carry, so it
+            # compiles the whole thing out and passes the dummy.
+            0,
+            dummy_f12,
             dummy_i,
             dummy_f3,
             dummy_f3,

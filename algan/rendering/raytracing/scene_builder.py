@@ -527,10 +527,64 @@ def _dedup_time(x):
     length 1, so a temporally-constant map/colour is stored once instead of T
     times. The kernels index the time axis as ``f % shape[0]``, so a length-1
     axis is read by every frame.
+
+    The ``bool()`` is a device sync, and the merge runs on the prefetch
+    worker while the previous batch renders -- every sync here waits out the
+    whole queued render. Prefer :func:`_dedup_time_group` for anything called
+    per merge; this stays for one-off probes outside the merge's hot path.
     """
     if x.shape[0] > 1 and bool((x == x[:1]).all()):
         return x[:1].contiguous()
     return x
+
+
+def _dedup_time_group(scene, keys):
+    """Collapse every temporally-constant ``scene[key]`` to one frame with a
+    SINGLE device sync for the whole group.
+
+    Each probe's reduction stays on the device; one stacked host transfer
+    answers all of them. Measured on the nn UHD benchmark: per-table syncs
+    inside the merge cost +5.3 s of a 24 s render (the merge overlaps the
+    render, so each sync drains the full queued chunk), while the collapse
+    itself is milliseconds.
+    """
+    probes = [k for k in keys if scene[k].shape[0] > 1]
+    if not probes:
+        return
+    flags = torch.stack([(scene[k] == scene[k][:1]).all() for k in probes]).cpu()
+    for k, flag in zip(probes, flags.tolist()):
+        if flag:
+            scene[k] = scene[k][:1].contiguous()
+
+
+#: Texture-meta row width: cols 0-2 color map (offset, w, h), 3-5 material
+#: map, 6-8 normal map, 9 the texture-driven-property bitmask, 10-12 the
+#: per-map TIME lengths (see ``_append_texture``; 1 when the buffer's own
+#: time axis carries the frames). Cols 13-14 are the colour map's opacity
+#: region (base row in the bank / frame count; -1 = premultiplied on the host,
+#: TEXTURE_OPACITY_IN_KERNEL), col 15 its u8-storage LUT base row (-1 =
+#: plain f32 rows, -2 = u8-packed WITHOUT a LUT -- an endpoint stack decodes
+#: bytes as authored k/255 directly; TEXTURE_U8_STORAGE) and cols 16-17 its
+#: endpoint-interpolation region (base row / frame count; -1 = the map's
+#: leading axis is time, TEXTURE_TIME_LERP) -- new capabilities travel as
+#: DATA in this table because the resolve kernel sits at Taichi's
+#: runtime-argument ceiling and cannot take new arrays.
+_TEX_META_W = 18
+
+
+def _tex_meta_placeholder(device):
+    """One all-absent tex-meta row (offsets -1, time lengths 1)."""
+    meta = torch.full((1, _TEX_META_W), -1, dtype=torch.int32, device=device)
+    meta[:, 10:13] = 1
+    meta[:, 14] = 1
+    meta[:, 17] = 1
+    return meta
+
+
+#: Texel count below which texture content dedup is not attempted (see
+#: ``_append_texture``): each candidate match is a synchronizing
+#: ``torch.equal``, worth it for a shared image, not for a promoted 1x1 map.
+_CONTENT_DEDUP_MIN_TEXELS = 4096
 
 
 def _split_promotable(p, _append_texture, device, scene):
@@ -555,7 +609,7 @@ def _split_promotable(p, _append_texture, device, scene):
     N = colors.shape[1]
     all_idx = torch.arange(N, device=device)
     if N == 0:
-        empty = torch.zeros((0, 10), dtype=torch.int32, device=device)
+        empty = torch.zeros((0, _TEX_META_W), dtype=torch.int32, device=device)
         return all_idx, all_idx, empty
     # Per-triangle promotable: the three corners share one colour (all channels,
     # all frames) and one material (reflectivity 0/2/4, roughness 1/3/5, index of
@@ -578,7 +632,7 @@ def _split_promotable(p, _append_texture, device, scene):
     keep_idx = all_idx[~promotable]
     promo_all = all_idx[promotable]
     if promo_all.numel() == 0:
-        empty = torch.zeros((0, 10), dtype=torch.int32, device=device)
+        empty = torch.zeros((0, _TEX_META_W), dtype=torch.int32, device=device)
         return keep_idx, promo_all, empty
 
     # Group promoted triangles by their (per-frame) constant colour + material
@@ -630,9 +684,30 @@ def _split_promotable(p, _append_texture, device, scene):
             ).any()
         ):
             scene["tex_has_reflective"] = True
-        group_meta.append([*color_meta, *material_meta, -1, 0, 0, 1 | 2 | 4 | 8])
+        group_meta.append(
+            [
+                *color_meta[:3],
+                *material_meta[:3],
+                -1,
+                0,
+                0,
+                1 | 2 | 4 | 8,
+                color_meta[3],
+                material_meta[3],
+                1,
+                # A promoted map is sliced out of per-vertex colours whose
+                # coverage already carries the mob opacity, so it takes no
+                # opacity region, stays f32 (it is 1x1) and its leading axis
+                # is time (no endpoint interpolation).
+                -1,
+                1,
+                -1,
+                -1,
+                1,
+            ]
+        )
     group_meta = torch.tensor(group_meta, dtype=torch.int32, device=device)
-    promo_meta = group_meta[inv_sorted]  # [P,10]
+    promo_meta = group_meta[inv_sorted]  # [P, _TEX_META_W]
     return keep_idx, promo_idx, promo_meta
 
 
@@ -674,7 +749,7 @@ def _build_accel(
 
 def _empty_scene_part(device, refit=None):
     """Placeholder BVH + arrays for an absent geometry type (same tree kind
-    as the batch's real trees, so one compile-time flag covers all six).
+    as the batch's real trees, so one compile-time flag covers all four).
     """
     lo = torch.full((1, 1, 3), EMPTY_LO, device=device)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=device)
@@ -994,10 +1069,20 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
         .contiguous()
     )
 
-    tex_meta_t = torch.zeros((N, 10), dtype=torch.int32, device=device)
+    tex_meta_t = torch.zeros((N, _TEX_META_W), dtype=torch.int32, device=device)
     tex_meta_t[:, 0] = -1
     tex_meta_t[:, 3] = -1
     tex_meta_t[:, 6] = -1
+    tex_meta_t[:, 10:13] = 1
+    # No-map rows: no opacity region (col 13 = -1, col 14 = 1 frame), f32
+    # storage (col 15 = -1) and no endpoint interpolation (col 16 = -1,
+    # col 17 = 1); real rows are index_selected below and carry their own
+    # values.
+    tex_meta_t[:, 13] = -1
+    tex_meta_t[:, 14] = 1
+    tex_meta_t[:, 15] = -1
+    tex_meta_t[:, 16] = -1
+    tex_meta_t[:, 17] = 1
     Tuv = tri_uvs.shape[0]
     tri_uvs_t = torch.zeros((Tuv, N, 6), dtype=tri_uvs.dtype, device=device)
     if tri_tex_meta.shape[0] > 0:
@@ -1325,16 +1410,94 @@ def _merge_scene(primitives, *, track_peak=None):
         return has_visible, has_opaque, has_translucent
 
     # Shared flat texel buffer for *all* texture maps (color / material /
-    # normal). Each map is appended once, padded to 5 channels and flattened to
-    # [T, W*H, 5]; its placement is a (offset, w, h) triplet recorded in the
-    # consuming geometry's metadata (offset -1 = no map), keyed by tri_tex_meta.
-    # Assembled into scene["textures"] once the geometry blocks below have
-    # appended.
+    # normal). Each map is appended once, padded to 5 channels and flattened;
+    # its placement is an ``(offset, w, h, t)`` quadruple recorded in the
+    # consuming geometry's metadata (offset -1 = no map), keyed by
+    # tri_tex_meta (cols 0-2 / 3-5 / 6-8 hold the triplets, cols 10-12 the
+    # per-map time lengths). Assembled into scene["textures"] once the
+    # geometry blocks below have appended. Under TEXTURE_TIME_FLAT a map's
+    # frames are flattened along the texel axis (frame f starts at
+    # ``offset + (f % t) * w * h``), so the assembled buffer keeps time
+    # length 1 and one animated map no longer re-expands every static one to
+    # the batch maximum at assembly.
     _texture_tensors = []
     _texel_offset = [0]
+    # Content dedup (TEXTURE_CONTENT_DEDUP): processed maps already appended,
+    # bucketed by shape/placement for the cheap prefilter; matching is exact
+    # (torch.equal), so a reused placement reads byte-identical texels.
+    _texture_index = {}
 
-    def _append_texture(tex, is_color=False):
-        """Append one texture map and return its ``(offset, w, h)`` placement.
+    def _append_u8_lut(rgb, q_rgb):
+        """Append one u8 map's 256-entry decode LUT; returns its base row.
+
+        PER MAP, and built by scattering the map's OWN direct decode (the
+        exact tensor the f32 arm would have stored) into byte slots -- not by
+        decoding ``arange(256) / 255``: torch's decode is not bit-stable
+        across tensor sizes (its scalar and SIMD libm paths can disagree in
+        the last ulp), so a shared vector-decoded table matches the f32 arm
+        only approximately, while the scatter copies the arm's own bits.
+        Every byte the sampler can fetch occurs in the map, so every read
+        slot is written; col 1 is ``k / 255`` for the coverage byte, exact by
+        IEEE division. The transient full-map decode this costs is the same
+        pass the f32 arm runs per batch on the (collapsed, one-frame) map.
+        """
+        dec = srgb_to_linear(rgb) if rt_settings.LINEAR_COLOR_SPACE else rgb
+        rows = torch.zeros((1, 256, 5), dtype=torch.float32, device=device)
+        rows[0, :, 0].scatter_(0, q_rgb.reshape(-1).long(), dec.reshape(-1))
+        rows[0, :, 1] = torch.arange(256, dtype=torch.float32, device=device) / 255.0
+        base = _texel_offset[0]
+        _texture_tensors.append(rows)
+        _texel_offset[0] += 256
+        return base
+
+    def _append_tex_opacity(op):
+        """Append one colour map's per-frame opacity region; ``(row, frames)``.
+
+        The region is the mob's animated opacity as bank rows (value in col
+        0), one row per frame of the batch window -- the sampler reads
+        ``textures[tc, row + (f % frames), 0]`` (meta cols 13-14) and
+        multiplies the sampled coverage by it (TEXTURE_OPACITY_IN_KERNEL).
+        ``(-1, 1)`` when the primitive premultiplied on the host. Tiny (20
+        bytes x frames), so no dedup and no constancy probe: a probe is a
+        device sync, and on the prefetch worker a sync waits out the whole
+        queued chunk.
+        """
+        if op is None:
+            return (-1, 1)
+        vals = op.detach().reshape(-1).float().to(device)
+        rows = torch.zeros((1, vals.numel(), 5), dtype=torch.float32, device=device)
+        rows[0, :, 0] = vals
+        off = _texel_offset[0]
+        _texture_tensors.append(rows)
+        _texel_offset[0] += vals.numel()
+        return (off, vals.numel())
+
+    def _append_tex_lerp(lerp):
+        """Append one colour map's endpoint-interpolation region; ``(row,
+        frames)``.
+
+        ``lerp`` is the primitive's ``[T, 3]`` (i0, i1, w) rows
+        (TEXTURE_TIME_LERP); the sampler reads row ``off + (f % frames)``
+        (meta cols 16-17), fetches endpoint texels i0 and i1 of the stack in
+        AUTHORED space, lerps by w, and -- when col 3 of the row says so --
+        decodes the lerped rgb into linear light, which is the merge-side
+        decode of the dense path moved past the lerp. ``(-1, 1)`` when the
+        map's leading axis is time. Tiny, like the opacity region: no dedup,
+        no probes.
+        """
+        if lerp is None:
+            return (-1, 1)
+        vals = lerp.detach().reshape(-1, 3).float().to(device)
+        rows = torch.zeros((1, vals.shape[0], 5), dtype=torch.float32, device=device)
+        rows[0, :, :3] = vals
+        rows[0, :, 3] = 1.0 if rt_settings.LINEAR_COLOR_SPACE else 0.0
+        off = _texel_offset[0]
+        _texture_tensors.append(rows)
+        _texel_offset[0] += vals.shape[0]
+        return (off, vals.shape[0])
+
+    def _append_texture(tex, is_color=False, u8_ok=False, authored_stack=False):
+        """Append one texture map; returns ``(offset, w, h, t, lut_base)``.
 
         ``is_color`` says the map holds authored COLOUR, so it crosses the same
         render boundary ``_decode_merged_colors`` takes the merged colour
@@ -1351,9 +1514,33 @@ def _merge_scene(primitives, *, track_peak=None):
         same values twice. ``srgb_to_linear`` returns a fresh tensor, which
         breaks any such aliasing. Only channels 0:2 are colour -- 3 is additive
         glow and 4 is coverage.
+
+        ``u8_ok`` (colour maps only) says the AUTHORING side proved every
+        texel is exactly ``k / 255`` with zero glow (``texture_u8_ok`` --
+        proved once at assignment, so this function never probes texels).
+        Such a map, when its window arrived collapsed to one frame, is stored
+        as RGBA bytes bit-packed one texel per f32 lane of this same bank and
+        decoded in-kernel through ``_ensure_u8_lut``'s table: x5 fewer bytes
+        on the widest array of a textured merge, byte-identical by the LUT's
+        construction (TEXTURE_U8_STORAGE; ``lut_base`` >= 0 marks the layout
+        in meta col 15). An interpolating window (t > 1) keeps f32 rows --
+        its in-between texels are not ``k / 255``.
+
+        ``authored_stack`` (colour maps only) says the tensor is a
+        ``[1, K, H, W, 5]`` endpoint stack (TEXTURE_TIME_LERP) whose texels
+        must stay in AUTHORED space: the sampler lerps two endpoint texels
+        and THEN decodes, matching the dense path's order (timeline lerp,
+        then this function's decode). So the linear-light decode is skipped
+        here, and a u8-eligible stack packs its bytes with NO LUT (meta
+        marker -2): the bytes ARE the authored ``k / 255`` values, decoded
+        by an IEEE division in the sampler. The stack's frames flatten along
+        the texel axis exactly like time frames (endpoint k starts at
+        ``offset + k * w * h``), with meta time length 1 -- the sampler
+        addresses endpoints through the interpolation region, never through
+        ``f % t``.
         """
         if tex is None:
-            return (-1, 0, 0)
+            return (-1, 0, 0, 1, -1)
         if tex.device != device:
             # Maps arrive on whatever device built them -- a colour map's
             # frame window materializes on the render device, a material or
@@ -1362,18 +1549,114 @@ def _merge_scene(primitives, *, track_peak=None):
             tex = tex.to(device)
         if tex.dim() == 3:  # [W, H, C]
             tex = tex.unsqueeze(0)  # [1, W, H, C]
-        if is_color and rt_settings.LINEAR_COLOR_SPACE and tex.shape[-1] >= 3:
+        as_u8 = (
+            is_color
+            and u8_ok
+            and SETTINGS.raytracing.TEXTURE_U8_STORAGE
+            and SETTINGS.raytracing.TEXTURE_TIME_FLAT
+            and tex.shape[0] == 1
+            and tex.shape[-1] == 5
+        )
+        if as_u8:
+            w, h = tex.shape[-3], tex.shape[-2]
+            # (r, g, b, a) bytes, little-endian packed into one i32 = one f32
+            # lane. round() is exact: every channel is k/255 by admission.
+            # For an authored stack tex[0] is the [K, H, W, 5] endpoint axis,
+            # packed frame-major so endpoint k's texels start at lane k*w*h;
+            # the tail pad is global, after the last endpoint.
+            q = (
+                torch.round(tex[0][..., (0, 1, 2, 4)] * 255.0)
+                .clamp_(0.0, 255.0)
+                .to(torch.uint8)
+                .reshape(-1, 4)
+                .contiguous()
+            )
+            packed = q.view(torch.int32).view(torch.float32).reshape(-1)
+            tail = (-packed.numel()) % 5
+            if tail:
+                packed = torch.cat((packed, packed.new_zeros(tail)))
+            flat = packed.reshape(1, -1, 5)
+            dedup = (
+                SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP
+                and w * h >= _CONTENT_DEDUP_MIN_TEXELS
+            )
+            if dedup:
+                key = ("u8a" if authored_stack else "u8", tuple(flat.shape), w, h)
+                for prior_flat, prior_meta in _texture_index.get(key, ()):
+                    # Compared as i32: packed byte patterns can form float
+                    # NaNs, and float torch.equal treats NaN != NaN -- which
+                    # silently stored every shared image twice.
+                    if torch.equal(
+                        prior_flat.view(torch.int32), flat.view(torch.int32)
+                    ):
+                        return prior_meta
+            o = _texel_offset[0]
+            _texture_tensors.append(flat)
+            _texel_offset[0] += flat.shape[1]
+            if authored_stack:
+                # The bytes ARE the authored k/255 values; the sampler
+                # divides by 255 and decodes AFTER the endpoint lerp, so no
+                # LUT exists. -2 marks u8 packing without one.
+                lut_base = -2
+            else:
+                # Decode EXACTLY the tensor the f32 arm would decode (same
+                # shape, same slice), so the scattered LUT carries that
+                # arm's own bits.
+                lut_base = _append_u8_lut(tex[..., :3].float(), q[..., :3])
+            meta = (o, w, h, 1, lut_base)
+            if dedup:
+                _texture_index.setdefault(key, []).append((flat, meta))
+            return meta
+        if (
+            is_color
+            and not authored_stack
+            and rt_settings.LINEAR_COLOR_SPACE
+            and tex.shape[-1] >= 3
+        ):
             tex = torch.cat(
                 (srgb_to_linear(tex[..., :3].float()), tex[..., 3:].float()), -1
             )
         w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
         if c < 5:
             tex = torch.cat((tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
-        # Flatten W and H (dimensions 1 and 2).
-        _texture_tensors.append(tex.reshape(tex.shape[0], -1, 5))
+        if SETTINGS.raytracing.TEXTURE_TIME_FLAT:
+            # No equality probe here: a static colour window arrives already
+            # collapsed to one frame (TEXTURE_WINDOW_COLLAPSE, upstream of
+            # the merge) and material/normal maps are single-frame tensors,
+            # so a map still carrying T frames here is genuinely animated
+            # and a probe would only cost a device sync -- which, on the
+            # prefetch worker mid-render, waits out the whole queued chunk
+            # (measured +5.3 s of a 24 s nn UHD render).
+            t = tex.shape[0]
+            flat = tex.reshape(1, -1, 5)
+        else:
+            # Legacy shared time axis: the buffer's leading dim carries the
+            # frames (unified at assembly), so the per-map length is 1.
+            t = 1
+            flat = tex.reshape(tex.shape[0], -1, 5)
+        # Content dedup pays only on real images (the N-mobs-one-file case):
+        # tiny maps -- the promoted 1x1s -- are already grouped by value per
+        # primitive, and each ``torch.equal`` is a device sync with the same
+        # queue-drain cost as above, so small maps skip the index entirely.
+        dedup = (
+            SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP
+            and flat.shape[1] >= _CONTENT_DEDUP_MIN_TEXELS
+        )
+        if dedup:
+            # An authored stack's texels are pre-decode; keying it apart
+            # keeps it from ever answering for (or being answered by) a
+            # decoded map that happens to hold equal bits.
+            key = (tuple(flat.shape), w, h, t, bool(authored_stack))
+            for prior_flat, prior_meta in _texture_index.get(key, ()):
+                if torch.equal(prior_flat, flat):
+                    return prior_meta
+        _texture_tensors.append(flat)
         o = _texel_offset[0]
-        _texel_offset[0] += w * h
-        return (o, w, h)
+        _texel_offset[0] += flat.shape[1]
+        meta = (o, w, h, t, -1)
+        if dedup:
+            _texture_index.setdefault(key, []).append((flat, meta))
+        return meta
 
     scene["tex_has_refractive"] = False
     scene["tex_has_reflective"] = False
@@ -1417,7 +1700,7 @@ def _merge_scene(primitives, *, track_peak=None):
                 Np = p._rt_tri_pos.shape[1]
                 k = torch.arange(Np, device=device)
                 pr = torch.zeros((0,), dtype=torch.long, device=device)
-                meta = torch.zeros((0, 10), dtype=torch.int32, device=device)
+                meta = torch.zeros((0, _TEX_META_W), dtype=torch.int32, device=device)
                 _sel_identity[id(k)] = True
             keep_idx[id(p)] = k
             promo_idx[id(p)] = pr
@@ -1597,10 +1880,28 @@ def _merge_scene(primitives, *, track_peak=None):
         # ``prim - num_colored_triangles``. Meta layout: cols 0-2 color map, 3-5
         # material map (reflectivity, roughness, index of refraction), 6-8 normal
         # map, 9 bitmask of texture-driven material properties (offset -1 = no
-        # map -> per-vertex fallback).
+        # map -> per-vertex fallback), 10-12 the per-map time lengths (1 when
+        # the buffer's own time axis carries the frames -- see _append_texture),
+        # 13-14 the colour map's opacity region (row / frames; -1 = host
+        # premultiply), 15 its u8 LUT base row (-1 = f32 rows, -2 = u8 bytes
+        # with no LUT: an authored endpoint stack) and 16-17 its
+        # endpoint-interpolation region (row / frames; -1 = leading axis is
+        # time).
         meta_parts, uvs_parts = [], []
         for p in textured_triangles:
-            color_meta = _append_texture(p._rt_texture_map, is_color=True)
+            tex_lerp = getattr(p, "_rt_tex_lerp", None)
+            color_meta = _append_texture(
+                p._rt_texture_map,
+                is_color=True,
+                u8_ok=bool(getattr(p, "_rt_texture_u8_ok", False)),
+                authored_stack=tex_lerp is not None,
+            )
+            op_off, op_len = _append_tex_opacity(
+                getattr(p, "_rt_tex_opacity", None) if color_meta[0] >= 0 else None
+            )
+            lerp_off, lerp_len = _append_tex_lerp(
+                tex_lerp if color_meta[0] >= 0 else None
+            )
             mtex = getattr(p, "_rt_material_texture", None)
             material_meta = _append_texture(mtex)
             normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
@@ -1614,12 +1915,25 @@ def _merge_scene(primitives, *, track_peak=None):
                 scene["tex_has_reflective"] = True
             meta_parts.append(
                 torch.tensor(
-                    [*color_meta, *material_meta, *normal_meta, flags],
+                    [
+                        *color_meta[:3],
+                        *material_meta[:3],
+                        *normal_meta[:3],
+                        flags,
+                        color_meta[3],
+                        material_meta[3],
+                        normal_meta[3],
+                        op_off,
+                        op_len,
+                        color_meta[4],
+                        lerp_off,
+                        lerp_len,
+                    ],
                     dtype=torch.int32,
                     device=device,
                 )
-                .view(1, 10)
-                .expand(p._rt_tri_pos.shape[1], 10)
+                .view(1, _TEX_META_W)
+                .expand(p._rt_tri_pos.shape[1], _TEX_META_W)
             )
             uvs_parts.append(p._rt_tri_uvs)
         for p in plain_triangles:
@@ -1634,27 +1948,46 @@ def _merge_scene(primitives, *, track_peak=None):
             scene["tri_uvs"] = _cat_collections(uvs_parts, 1, "triangle merge")
         else:
             scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-            scene["tri_tex_meta"] = torch.full(
-                (1, 10), -1, dtype=torch.int32, device=device
-            )
+            scene["tri_tex_meta"] = _tex_meta_placeholder(device)
 
         # Collapse temporally-constant triangle tables to one frame. Every
         # consumer reads their time axis as ``f % shape[0]`` (kernels) or
         # ``_expand_frames`` (raster host tables), and _build_mem_trim below
         # is T-agnostic, so a batch whose materials/normals/colours do not
         # animate stores one row instead of T -- tri_mat alone is [T, N, 26],
-        # tens of MB of identical frames on ordinary scenes (rigid motion
-        # lives in tri_pos, which is deliberately not collapsed).
+        # tens of MB of identical frames on ordinary scenes. Under
+        # MERGE_DEDUP_GEOMETRY the same collapse covers ``tri_pos`` and the
+        # per-frame id/flag tables it used to skip ("rigid motion lives in
+        # tri_pos" forfeited the static case, where the probe is one pass and
+        # the saving is (T-1)/T of the largest geometry array).
         if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in (
+            keys = [
                 "tri_norm",
                 "tri_mat_id",
                 "tri_mat",
                 "tri_colors",
                 "tri_extra",
                 "tri_uvs",
-            ):
-                scene[_k] = _dedup_time(scene[_k])
+            ]
+            if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
+                keys += ["tri_pos", "tri_obj", "tri_closed"]
+                # The per-frame bounds feed the BVH builds (both builders
+                # accept ``Tc == 1`` -- one instance spanning all frames --
+                # and their per-frame opacity masks accept ``To in {1, Tc}``)
+                # and the raster host tables (all ``f % shape[0]``). lo/hi
+                # collapse together or not at all: the builders require one
+                # frame count across the pair. Probed through the scene dict
+                # so the whole block shares _dedup_time_group's single sync.
+                scene["_probe_lo"], scene["_probe_hi"] = lo, hi
+                scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
+                keys += ["_probe_lo", "_probe_hi", "_probe_opaque", "_probe_casts"]
+            _dedup_time_group(scene, keys)
+            if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
+                lo2, hi2 = scene.pop("_probe_lo"), scene.pop("_probe_hi")
+                if lo2.shape[0] == hi2.shape[0]:
+                    lo, hi = lo2, hi2
+                opaque = scene.pop("_probe_opaque")
+                casts = scene.pop("_probe_casts")
 
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
         # front-end (settings.HYBRID_RASTER): candidate emission skips
@@ -1674,9 +2007,7 @@ def _merge_scene(primitives, *, track_peak=None):
         scene["tri_extra"] = torch.zeros((1, 1, _EXTRA_W), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-        scene["tri_tex_meta"] = torch.full(
-            (1, 10), -1, dtype=torch.int32, device=device
-        )
+        scene["tri_tex_meta"] = _tex_meta_placeholder(device)
         scene["num_colored_triangles"] = 0
         scene["has_material_textures"] = False
         scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32, device=device)
@@ -1836,13 +2167,15 @@ def _merge_scene(primitives, *, track_peak=None):
         # ``f % edges_2d.shape[0]``, so the two stay consistent by
         # construction).
         if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in (
-                "circuit_meta",
-                "circuit_colors",
-                "circuit_border_colors",
-                "edges_2d",
-            ):
-                scene[_k] = _dedup_time(scene[_k])
+            _dedup_time_group(
+                scene,
+                [
+                    "circuit_meta",
+                    "circuit_colors",
+                    "circuit_border_colors",
+                    "edges_2d",
+                ],
+            )
         # Degenerate sampled edges use the exact sentinel row installed by
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
         # no other edge cannot pass the circuit intersection/winding test even
@@ -1867,6 +2200,24 @@ def _merge_scene(primitives, *, track_peak=None):
             [p._rt_frame_casts for p in beziers], 1, "bezier merge"
         )
         _record_visibility("bez", lo, hi, opaque)
+        # Same static collapse as the triangle bounds above: the builders
+        # accept ``Tc == 1`` and every host/kernel consumer reads
+        # ``f % shape[0]``; lo/hi must collapse together. One grouped sync,
+        # like the circuit tables above.
+        if (
+            SETTINGS.raytracing.MERGE_DEDUP_TIME
+            and SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY
+        ):
+            scene["_probe_lo"], scene["_probe_hi"] = lo, hi
+            scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
+            _dedup_time_group(
+                scene, ["_probe_lo", "_probe_hi", "_probe_opaque", "_probe_casts"]
+            )
+            lo2, hi2 = scene.pop("_probe_lo"), scene.pop("_probe_hi")
+            if lo2.shape[0] == hi2.shape[0]:
+                lo, hi = lo2, hi2
+            opaque = scene.pop("_probe_opaque")
+            casts = scene.pop("_probe_casts")
         # Per-(frame, circuit) visibility, opacity, and AABBs for the hybrid
         # raster frontend.  Proven-opaque circuits now participate in the typed
         # visibility buffer and cull geometry behind large filled 2D shapes;
@@ -1965,6 +2316,7 @@ def _merge_scene(primitives, *, track_peak=None):
         p._rt_tri_extra = p._rt_tri_colors = None
         p._rt_tri_mat_id = p._rt_tri_mat = None
         p._rt_tri_uvs = p._rt_texture_map = None
+        p._rt_tex_opacity = p._rt_tex_lerp = None
         p._rt_material_texture = p._rt_normal_texture = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in beziers:
