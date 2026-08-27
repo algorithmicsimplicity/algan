@@ -31,21 +31,84 @@ class MobHierarchyMixin:
     build a hierarchy, or a :class:`~algan.mobs.group.Group` when you just want to
     handle several Mobs
     as one.
+
+    The hierarchy is a graph, not a tree: a Mob may have several parents and
+    then accumulates all of their changes, which is what lets two overlapping
+    Groups each arrange the same member. It is read when an animation is
+    *recorded*, not when it plays, so re-parenting between two recorded
+    animations leaves the first one alone -- see :doc:`/new_user_tutorials/child_mobs`.
     """
 
-    def set_parent_to(self, other_mob: Mob) -> Mob:
-        """Record another Mob as this Mob's parent.
+    def _note_hierarchy_change(self) -> None:
+        """Publish a change to this Mob's children.
 
-        This registers the upward link only; it does **not** add this Mob to the
-        other's children, so transforms will not propagate. Use
+        Every mutation of a ``children`` list goes through here. The version
+        bump is not optional: three caches key on it
+        (``_descendants_cache``, ``_attr_inds_cache``, ``_subtree_spawn_cache``)
+        and a mutation that skips it does not error, it silently serves the
+        pre-mutation descendant set. The diagnostic beside it catches the one
+        case the record-time contract does not cover -- a live updater, whose
+        subtree is re-resolved per frame at materialization.
+        """
+        bump_hierarchy_version()
+        scene = getattr(self, "scene", None)
+        if scene is not None:
+            scene.timeline_manager.note_hierarchy_change(self)
+
+    def _link_parent(self, other_mob: Mob) -> None:
+        """Record the upward half of a parent/child link, and nothing else.
+
+        The downward half, validation, ``anchor_priority`` and the version bump
+        belong to whoever calls this. Both public entry points --
+        :meth:`add_parent` and :meth:`add_children` -- go through one of those,
+        so a link the public API creates always has both halves.
+        """
+        if not any(parent is other_mob for parent in self.parents):
+            self.parents.append(other_mob)
+
+    def _unlink_parent(self, other_mob: Mob) -> None:
+        """Drop the upward half of a parent/child link, and nothing else."""
+        self.parents[:] = [parent for parent in self.parents if parent is not other_mob]
+
+    def _drop_child(self, mob: Mob) -> bool:
+        """Detach ``mob`` from this Mob, both halves, if it is a child here.
+
+        Returns whether anything was detached, which is what lets
+        :meth:`remove_child` raise on a non-child while :meth:`remove_parent`
+        stays silent.
+        """
+        for index, child in enumerate(self.children):
+            if child is mob:
+                del self.children[index]
+                child._unlink_parent(self)
+                self.anchor_priority = max(
+                    (1 + item.anchor_priority for item in self.children),
+                    default=0,
+                )
+                self._note_hierarchy_change()
+                return True
+        return False
+
+    def add_parent(self, other_mob: Mob) -> Mob:
+        """Attach this Mob to another as one of its children.
+
+        The mirror image of
         :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`
-        on the parent to build a working hierarchy.
+        called from the child's side: ``child.add_parent(parent)`` and
+        ``parent.add_children(child)`` build the same link, so this Mob follows
+        ``other_mob``'s transforms from here on. A Mob may have several parents,
+        and then accumulates every one of their changes.
         Re-adding an existing parent does nothing.
+
+        Animation
+        ---------
+        Not animated: the hierarchy changes immediately, and only affects
+        animations recorded from here on.
 
         Parameters
         ----------
         other_mob
-            The Mob to record as a parent.
+            The Mob to become a parent of this one.
 
         Returns
         -------
@@ -54,40 +117,50 @@ class MobHierarchyMixin:
 
         Raises
         ------
+        TypeError
+            If ``other_mob`` is not an
+            :class:`~algan.animatable_base.animatable.Animatable`.
         :class:`.HierarchyError`
-            If ``other_mob`` is this Mob, or is already one of its children --
-            either would make the graph a cycle.
+            If ``other_mob`` is this Mob, belongs to another Scene, or is
+            already somewhere below it -- any of which would make the graph a
+            cycle.
         """
+        if not isinstance(other_mob, Animatable):
+            raise TypeError(
+                f"A parent must be an Animatable instance, "
+                f"got {type(other_mob).__name__}"
+            )
         if other_mob is self:
             raise HierarchyError("A Mob cannot be its own parent")
-        # Walking up from the proposed parent must not arrive back here.
-        # ``Group`` has always rejected a Mob that is its own child or listed
-        # twice; this side accepted both a self-parent and a two-Mob loop in
-        # silence, leaving a graph nothing can traverse.
-        seen, frontier = {id(other_mob)}, [other_mob]
-        while frontier:
-            node = frontier.pop()
-            if node is self:
-                raise HierarchyError(
-                    f"{type(other_mob).__name__} already has "
-                    f"{type(self).__name__} above it, so making it the parent "
-                    f"would create a cycle"
-                )
-            for ancestor in getattr(node, "parents", ()):
-                if id(ancestor) not in seen:
-                    seen.add(id(ancestor))
-                    frontier.append(ancestor)
-        if not any(parent is other_mob for parent in self.parents):
-            self.parents.append(other_mob)
+        # Checked here as well as inside ``add_children`` so the message is
+        # phrased from the side the caller is standing on. ``Group`` has always
+        # rejected a Mob that is its own child or listed twice; this side
+        # accepted both a self-parent and a two-Mob loop in silence, leaving a
+        # graph nothing can traverse.
+        if self._contains_in_hierarchy(self, other_mob):
+            raise HierarchyError(
+                f"{type(other_mob).__name__} is already below "
+                f"{type(self).__name__}, so making it the parent "
+                f"would create a cycle"
+            )
+        other_mob.add_children(self)
         return self
 
     def remove_parent(self, other_mob: Mob) -> Mob:
-        """Drop a Mob from this Mob's list of parents.
+        """Detach this Mob from one of its parents, so it stops following that
+        Mob's transforms.
 
         The reverse of
-        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.set_parent_to`,
-        and likewise one-directional.
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_parent`,
+        and drops both halves of the link -- this Mob leaves ``other_mob``'s
+        children as well. Any *other* parents it has are untouched, and it stays
+        in the scene with its own state.
         Removing a Mob that is not a parent does nothing.
+
+        Animation
+        ---------
+        Not animated: the hierarchy changes immediately, and only affects
+        animations recorded from here on.
 
         Parameters
         ----------
@@ -99,7 +172,11 @@ class MobHierarchyMixin:
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        self.parents[:] = [parent for parent in self.parents if parent is not other_mob]
+        if not other_mob._drop_child(self):
+            # Reached for a link recorded on one side only, which the public
+            # API no longer creates but ``replace_children(link_parents=False)``
+            # still can. Clear whatever half is actually there.
+            self._unlink_parent(other_mob)
         return self
 
     def get_children(
@@ -247,17 +324,20 @@ class MobHierarchyMixin:
 
         for child in old_children:
             if link_parents and not any(child is item for item in new_children):
-                child.remove_parent(self)
+                # The half-link helpers, not remove_parent/add_parent: the
+                # child list is rebuilt wholesale just below, so the downward
+                # half must not be edited (or version-bumped) child by child.
+                child._unlink_parent(self)
 
         self.children[:] = new_children
         if link_parents:
             for child in new_children:
-                child.set_parent_to(self)
+                child._link_parent(self)
         self.anchor_priority = max(
             (1 + child.anchor_priority for child in new_children),
             default=0,
         )
-        bump_hierarchy_version()
+        self._note_hierarchy_change()
         return self
 
     def add_children(self, *mobs) -> Mob:
@@ -305,16 +385,17 @@ class MobHierarchyMixin:
         self._validate_new_children([*self.children, *candidates])
         for mob in candidates:
             self.children.append(mob)
-            mob.set_parent_to(self)
+            mob._link_parent(self)
             self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
-        bump_hierarchy_version()
+        self._note_hierarchy_change()
         return self
 
     def remove_child(self, mob: Mob) -> Mob:
         """Detach a child so it stops following this Mob's transforms.
 
         The child stays in the scene and keeps its own state; it is simply no
-        longer driven by this Mob.
+        longer driven by this Mob. Any *other* parents it has are untouched, so
+        it goes on following those.
 
         Animation
         ---------
@@ -336,14 +417,6 @@ class MobHierarchyMixin:
         ValueError
             If ``mob`` is not a child of this Mob.
         """
-        for index, child in enumerate(self.children):
-            if child is mob:
-                del self.children[index]
-                child.remove_parent(self)
-                self.anchor_priority = max(
-                    (1 + item.anchor_priority for item in self.children),
-                    default=0,
-                )
-                bump_hierarchy_version()
-                return self
-        raise ValueError("The requested Mob is not a child of this Mob")
+        if not self._drop_child(mob):
+            raise ValueError("The requested Mob is not a child of this Mob")
+        return self

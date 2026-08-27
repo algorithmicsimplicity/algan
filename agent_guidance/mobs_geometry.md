@@ -23,6 +23,13 @@ The Mob model, packing, and how geometry reaches the renderer. Read this before 
 
 Parent changes normally propagate to descendants through batched timeline row operations. The canonical hierarchy is `children`/`components`; `Group.mobs` is an alias of `children`. Keep hierarchy operations Scene-homogeneous and cycle-safe.
 
+The hierarchy is a **graph read at record time**, not a tree read at playback time. There are no local transforms: `location`/`basis` are world-space rows, and a parent transform is a delta written into the descendant union's rows *when the animation is recorded* — `modify_attribute_and_record` stores the resolved `RowRanges` on the event, so re-parenting after the fact never rewrites an animation already recorded. A Mob may have several parents and accumulates all of their deltas; that is deliberate (overlapping `Group`s arranging the same member), not a bug to guard against. `tests/unit_tests/test_mob_reparenting.py` pins all of it.
+
+Two consequences worth knowing before touching this area:
+
+- **Any mutation of a `children` list owes a `bump_hierarchy_version()`.** `_descendants_cache`, `_attr_inds_cache` and `_subtree_spawn_cache` are all keyed on those counters, so a mutation without the bump does not error — it silently serves the pre-mutation descendant set, and the transform quietly skips the new member while `len()` says it is there. `Group`'s non-owning slice path had exactly that bug.
+- **Updaters do not get the record-time freeze.** The recorded-function replay path sets `_active_replay_event` so `replay_inds` hands back the stored rows; the updater loop in `set_state_to_times` does not, so every write inside an updater re-resolves its rows against the hierarchy as it stands at materialization. A hierarchy edit made while an updater is live therefore reaches backwards over frames that updater already covers. Documented and pinned, not endorsed — `AnimationTimeline.note_hierarchy_change` raises `HierarchyChangedDuringUpdaterWarning` at the authoring line that does it. The check is deliberately narrow: it fires only when the edited parent is in the updater's `recursive_dependency_mob_ids` (a Mob the updater addressed *as a subtree*, not merely one it depends on), never while an updater or a replayed function is running, and once per (updater, parent) pair. Widening any of those turns it into noise on every composite Mob.
+
 ### Packed mobs
 
 One Mob can stand for many logical objects. Its animatable attributes carry one row per member, its components carry a block of rows per member, and `parent_batch_sizes` maps between the two. `Mob.__getitem__` slices that map to produce a **view** sharing the pack's id, rows and lifespan; `BatchedMobViewSequence` presents those views as a sequence.

@@ -1569,23 +1569,23 @@ def test_seq_and_sync_explain_that_their_lag_ratio_is_fixed():
 
 
 @pytest.mark.fast
-def test_set_parent_to_rejects_cycles_like_group_does():
+def test_add_parent_rejects_cycles_like_group_does():
     with algan.Scene():
         square = Square()
         with pytest.raises(HierarchyError, match="its own parent"):
-            square.set_parent_to(square)
+            square.add_parent(square)
 
         first, second, third = Square(), algan.Circle(), algan.Triangle()
-        first.set_parent_to(second)
+        first.add_parent(second)
         with pytest.raises(HierarchyError, match="create a cycle"):
-            second.set_parent_to(first)
+            second.add_parent(first)
 
-        second.set_parent_to(third)
+        second.add_parent(third)
         with pytest.raises(HierarchyError, match="create a cycle"):
-            third.set_parent_to(first)
+            third.add_parent(first)
 
         # A chain that is not a cycle is still fine.
-        assert Square().set_parent_to(second) is not None
+        assert Square().add_parent(second) is not None
 
 
 @pytest.mark.fast

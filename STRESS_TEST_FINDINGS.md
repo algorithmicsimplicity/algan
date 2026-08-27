@@ -406,6 +406,8 @@ clamping — but nothing distinguishes them from a scene the user got right.
   rejected the same shapes with `HierarchyError: A Mob cannot be its own child` (`F17`).
   `set_parent_to` now walks up from the proposed parent and raises `HierarchyError` if
   it arrives back at the caller. A chain that is not a cycle is unaffected.
+  *(Since renamed to `add_parent`, which also links the downward half, so the
+  cycle check walks children rather than parents. `F17` covers the new name.)*
 * `move_to(nan)` / `move_to(inf)` render a blank frame. A NaN that came out of the
   user's own arithmetic yields a black video and no clue where it came from.
 * `opacity = 5.0` and `opacity = -1.0` clamp; `scale(-1)` mirrors; `scale(0)`,

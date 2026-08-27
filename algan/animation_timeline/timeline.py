@@ -27,12 +27,18 @@ from __future__ import annotations
 import contextlib
 import copy
 import math
+import os
+import warnings
 
 import numpy as np
 import torch
 
 from algan.environment import env_flag, env_str
-from algan.errors import UnsupportedFeatureError
+from algan.errors import (
+    HierarchyChangedDuringUpdaterWarning,
+    UnsupportedFeatureError,
+    _user_stacklevel,
+)
 from algan.settings._startup import _RENDER_DEVICE
 from algan.utils.tensor_utils import cast_to_tensor
 
@@ -2091,6 +2097,27 @@ class FunctionApplicationEvent:
         self.recorded_edit_records = []
 
 
+def _describe_mob(mob):
+    """``Square``, or ``Square 'axis'`` when the author named it.
+
+    ``Animatable.__init__`` defaults ``name`` to ``"_"``, which says nothing.
+    """
+    name = getattr(mob, "name", None)
+    if name and name != "_":
+        return f"{type(mob).__name__} {name!r}"
+    return type(mob).__name__
+
+
+def _describe_updater(event):
+    """``the updater on Square (spin, scene.py:42)``."""
+    where = ""
+    code = getattr(event.function, "__code__", None)
+    if code is not None:
+        name = getattr(event.function, "__name__", "the update function")
+        where = f" ({name}, {os.path.basename(code.co_filename)}:{code.co_firstlineno})"
+    return f"the updater on {_describe_mob(event.caller)}{where}"
+
+
 class UpdaterSpan:
     """The [added, removed) interval of one updater. ``start``/``end`` expose
     the (lazily rescaled) timestamps as numbers, matching the protocol of the
@@ -2126,6 +2153,7 @@ class UpdaterEvent:
         "kwargs",
         "time",
         "dependency_mob_ids",
+        "recursive_dependency_mob_ids",
         "_history_clones",
         "_invocation_cache",
         "_known_clone_ids",
@@ -2139,6 +2167,13 @@ class UpdaterEvent:
         self.kwargs = kwargs
         self.time = time
         self.dependency_mob_ids = set()
+        # The subset of the above this updater addressed *as a subtree* -- an
+        # access that asked for descendants, so its row set is whatever
+        # ``get_descendants`` returns at the time it runs. Only these are
+        # sensitive to a hierarchy change (see
+        # AnimationTimeline.note_hierarchy_change); a Mob the updater only ever
+        # touches on its own rows is not, even though it is a dependency.
+        self.recursive_dependency_mob_ids = set()
         # ``Mob.detach_history`` leaves the live Python object on the newest
         # timeline rows and hands each earlier interval to a clone. Persistent
         # updaters still need to address whichever incarnation is visible in a
@@ -2465,6 +2500,9 @@ class AnimationTimeline:
         self._active_replay_edit_index = 0
         self._active_updater_trace = None
         self._active_updater_write_capture = None
+        # (id(updater event), parent mob id) pairs already warned about, so a
+        # loop that re-parents the same Mob every iteration says it once.
+        self._hierarchy_change_warnings = set()
         self._materialization_times = None
         self._materialized_mob_ids = None
         # Replay scope (see _replay_state_to_times). An updater re-executed
@@ -2550,6 +2588,8 @@ class AnimationTimeline:
             if not mob_ids:
                 return
         event.dependency_mob_ids.update(mob_ids)
+        if include_descendants:
+            event.recursive_dependency_mob_ids.update(mob_ids)
         mob_ids.update(self._register_known_history_clones(event, mob_ids))
 
         if self._materialized_mob_ids is None or self._materialization_times is None:
@@ -2741,6 +2781,59 @@ class AnimationTimeline:
         span = self.function_timeline.updaters[updater_id].time
         span.end_event = animation_context.timespan.get_current_time()
         return span
+
+    def note_hierarchy_change(self, parent):
+        """Warn if ``parent``'s children just changed underneath a live updater.
+
+        A recorded animation stores the rows it resolved
+        (:meth:`modify_attribute_and_record`), and replay hands them straight
+        back (:meth:`replay_inds`), so re-parenting after the fact cannot touch
+        it. The updater loop in :meth:`set_state_to_times` sets no replay event,
+        so every write inside an updater re-resolves its rows from the hierarchy
+        as it stands when the frames are materialized -- which is the hierarchy
+        at the *end* of the script, not the one in force at the frame being
+        drawn. Editing a subtree a live updater addresses therefore rewrites
+        frames that updater already covered, including frames before the edit.
+
+        Nothing here changes what is rendered. It says so at the line that did
+        it, while the script is still being authored and the fix is one move of
+        an ``add_updater`` / ``remove_updater`` pair.
+        """
+        updaters = self.function_timeline.updaters
+        if not updaters:
+            return
+        if (
+            self._active_updater_trace is not None
+            or self._active_replay_event is not None
+            or self._materialization_times is not None
+        ):
+            # An updater building Mobs of its own, or a replayed function doing
+            # the same, is not the situation this is about: it edits the
+            # hierarchy on every frame by construction, and its Mobs are
+            # discarded when the replay ends.
+            return
+        parent_id = parent.id
+        for event in updaters:
+            if event.time.end_event is not None:
+                continue  # already removed, so no frames of its are at stake
+            if parent_id not in event.recursive_dependency_mob_ids:
+                continue
+            key = (id(event), parent_id)
+            if key in self._hierarchy_change_warnings:
+                continue
+            self._hierarchy_change_warnings.add(key)
+            warnings.warn(
+                f"The children of {_describe_mob(parent)} changed while "
+                f"{_describe_updater(event)} was still running. An updater "
+                f"re-resolves which Mobs it covers when the frames are "
+                f"rendered, not when it was added, so this change applies to "
+                f"every frame that updater covers -- including the frames "
+                f"before this line, which have already gone by. Remove the "
+                f"updater before the change and add it again after, if you "
+                f"meant the change to start here.",
+                HierarchyChangedDuringUpdaterWarning,
+                stacklevel=_user_stacklevel(),
+            )
 
     def get_timeline_inds(self, mob, new_value, attr_name):
         timeline = self.attr_to_timeline[attr_name]

@@ -460,17 +460,17 @@ def f16():
 # --------------------------------------------------------------------------
 # F17 -- self-parenting and cycles were accepted
 # --------------------------------------------------------------------------
-@check("F17", "set_parent_to rejects the cycles Group rejects")
+@check("F17", "add_parent rejects the cycles Group rejects")
 def f17():
     from algan.errors import HierarchyError
 
     with Scene(video_settings=SMOKE_TEST):
         square = Square()
-        self_parent = _raised(lambda: square.set_parent_to(square))
+        self_parent = _raised(lambda: square.add_parent(square))
         first, second = Square(), Circle()
-        first.set_parent_to(second)
-        cycle = _raised(lambda: second.set_parent_to(first))
-        chain = _raised(lambda: Square().set_parent_to(second))
+        first.add_parent(second)
+        cycle = _raised(lambda: second.add_parent(first))
+        chain = _raised(lambda: Square().add_parent(second))
     good = (
         isinstance(self_parent, HierarchyError)
         and isinstance(cycle, HierarchyError)
