@@ -222,9 +222,11 @@ if not probe.stdout.startswith("cuda"):
     raise SystemExit(
         "ABORT: Algan resolved its render device to CPU, so every arm would "
         "measure the wrong machine (a P100 is the usual cause -- torch "
-        "refuses sm_60). Re-save with a T4 shape: machineShape='GpuT4x2' "
-        "AND hasMachineShape=true, which the Kaggle API needs to read the "
-        "field at all."
+        "refuses sm_60). Re-save with machineShape='NvidiaTeslaT4' -- that "
+        "exact string, per agent_guidance/claude_memory/kaggle-t4-"
+        "measurement.md. An unrecognised value is silently dropped and "
+        "Kaggle falls back to the generic 'Gpu' shape, which is how this "
+        "run got here."
     )
 
 # ---------------------------------------------------------------- 4. run arms
