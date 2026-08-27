@@ -247,6 +247,66 @@ class Color(torch.Tensor):
         return color
 
 
+def to_color(value):
+    """Coerce a user-supplied colour into something Algan can store.
+
+    The colours Algan hands out are :class:`Color` constants, but the ones
+    users reach for first are the ones every other graphics library takes: a
+    hex string, a CSS name, a hex int, an RGB triple. Materials have accepted
+    all of those since they were written -- ``MeshStandardMaterial(color=
+    0x8B5A2B)`` is how the shipped presets are spelled -- while ``Square(
+    color="#ff0000")`` raised ``AttributeError: 'str' object has no attribute
+    'reshape'`` from deep inside the timeline. This is the one place that
+    decides, so both spellings mean the same thing.
+
+    Anything already tensor-shaped is returned untouched: a per-row colour
+    buffer is a legitimate value and must not be collapsed to one colour.
+
+    Parameters
+    ----------
+    value
+        A :class:`Color`, a hex string (``"#ff0000"``) or CSS name
+        (``"red"``), a hex int (``0xff0000``), an RGB/RGBA/RGBA+glow sequence
+        of floats in ``[0, 1]``, a tensor, or ``None``.
+
+    Returns
+    -------
+    :class:`Color` or the value unchanged
+
+    Raises
+    ------
+    :class:`~algan.errors.InvalidColorError`
+        If ``value`` is a string that names no colour, or a bool.
+    """
+    if value is None:
+        return value
+    if isinstance(value, Color) or torch.is_tensor(value):
+        # An RGB or RGBA buffer is a colour that is merely missing Algan's
+        # extra channels; pad it rather than making the caller know the
+        # layout. Anything already 5 wide (or not shaped like a colour at all)
+        # is left exactly as it is, including a per-row buffer.
+        if value.shape and value.shape[-1] in (3, 4):
+            return Color.add_defaults(value)
+        return value
+    if isinstance(value, bool):
+        # bool is an int subclass, and True as a colour is a mistake, not black.
+        raise InvalidColorError(
+            f"Invalid color value: {value!r}. Use a Color such as RED, a hex "
+            f"string ('#ff0000'), a hex int (0xff0000) or an RGB tuple."
+        )
+    if isinstance(value, int):
+        return Color("#%06X" % (value & 0xFFFFFF))
+    if isinstance(value, str):
+        return Color(value)
+    if (
+        isinstance(value, (tuple, list))
+        and 3 <= len(value) <= 5
+        and all(isinstance(channel, (int, float)) for channel in value)
+    ):
+        return Color(tuple(float(channel) for channel in value))
+    return value
+
+
 def color_to_texture_map(color):
     return lambda coords: color.view(([1] * (coords.dim() - 1)) + [-1]).expand(
         list(coords.shape[:-1]) + [-1]

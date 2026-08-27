@@ -23,7 +23,7 @@ import torch
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.animation_timeline.timeline import bump_hierarchy_version
-from algan.constants.color import Color
+from algan.constants.color import Color, to_color
 from algan.constants.spatial import OUT
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
@@ -436,6 +436,15 @@ class ManimCompatMob(ManimMob):
             if key in self._ALGAN_ONLY_KWARGS
         }
         batch = bool(algan_kwargs.pop("batch", False))
+        # Colour keywords are normalized before conversion because Manim's
+        # parser is narrower than Algan's: it reads a tuple of floats as a
+        # *list of colours* and rejects each element. Everything Algan accepts
+        # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
+        # Color here, and to_manim renders that as a value Manim does take.
+        kwargs = {
+            key: (to_color(value) if "color" in key else value)
+            for key, value in kwargs.items()
+        }
         manim_kwargs = {key: to_manim(value) for key, value in kwargs.items()}
         # Several Manim graph/vector-field classes append a default step to
         # ranges in-place even though their public API accepts generic

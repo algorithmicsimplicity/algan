@@ -52,6 +52,7 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     _reject_context_kwargs,
 )
+from algan.constants.color import to_color
 from algan.constants.spatial import *
 from algan.geometry.geometry import (
     get_rotation_between_bases,
@@ -70,6 +71,17 @@ from algan.utils.tensor_utils import (
 #: class -> (ANIMATABLE_PROPERTY_VERSION, settable property names contributed
 #: by the class's MRO). See Mob._settable_property_names.
 _SETTABLE_PROPERTY_CACHE: dict[type, tuple[int, set[str]]] = {}
+
+
+def _coerce_if_color(attr, value):
+    """Parse the colour spellings users reach for, on colour attributes only.
+
+    Keyed on the attribute name because every one of them is a colour --
+    ``color``, ``border_color``, ``emissive_color``, ``sheen_color`` -- and
+    because a non-colour attribute must keep taking exactly what it takes: a
+    hex int is a colour on ``color`` and a plain number on ``glow``.
+    """
+    return to_color(value) if "color" in attr else value
 
 
 class Mob(
@@ -465,6 +477,7 @@ class Mob(
         the initial value -- the state inside :meth:`__init__`. Falls back to
         the full setter if any precondition does not hold.
         """
+        value = _coerce_if_color(attr, value)
         tm = self.scene.timeline_manager
         tl = tm.attr_to_timeline.get(attr)
         if self.children or (tl is not None and self.id in tl.mob_id_to_inds):
@@ -1214,6 +1227,7 @@ class Mob(
         """
         if self._prevent_recursive_sets:
             recursive = False
+        value = _coerce_if_color(attr, value)
         value = cast_to_tensor(value)
 
         if self._writes_through_property_setter(attr):

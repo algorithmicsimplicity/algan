@@ -242,10 +242,13 @@ def _render_scene_to_file(
     This is the implementation behind :meth:`algan.scene.Scene.save_video`,
     which carries the user-facing signature and documentation.
     """
-    if video_settings is None:
-        video_settings = SETTINGS.video
+    # The Scene's own settings outrank SETTINGS.video when it was given them:
+    # ``Scene(video_settings=...)`` and ``set_video_settings`` used to have no
+    # effect here at all, while ``save_frame`` on the same Scene honoured them.
+    video_settings = scene._resolve_video_settings(video_settings)
 
     previous_settings = scene.video_settings
+    previous_explicit = getattr(scene, "_video_settings_explicit", False)
     previous_background = (
         scene.background_frame,
         getattr(scene, "background_color", None),
@@ -425,7 +428,7 @@ def _render_scene_to_file(
                     exc_info=True,
                 )
 
-        scene.set_video_settings(previous_settings)
+        scene.set_video_settings(previous_settings, _explicit=previous_explicit)
         if render_started and reset:
             # Cleanup is unconditional, including failures during audio setup,
             # writer construction, rendering, or final file replacement.

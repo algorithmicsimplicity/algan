@@ -147,11 +147,16 @@ class Scene(RenderLoopMixin):
         memory=None,
         scene_initializer=None,
     ):
+        chose_video_settings = video_settings is not None
         if video_settings is None:
             video_settings = SETTINGS.video
         if background_frame is None:
             background_frame = SETTINGS.style.frame
         self.set_video_settings(video_settings)
+        # Whether this Scene was *given* its settings, or merely started from
+        # the process-wide ones. Only the first kind outranks a later
+        # ``SETTINGS.video`` change at render time; see _resolve_video_settings.
+        self._video_settings_explicit = chose_video_settings
         self.current_time = 0
         self.min_time = 0
         self.max_time = 0
@@ -907,12 +912,16 @@ class Scene(RenderLoopMixin):
         return self
 
     @active_scene_method
-    def set_video_settings(self, video_settings):
+    def set_video_settings(self, video_settings, _explicit: bool = True):
         """Set this Scene's resolution, frame rate and anti-aliasing.
 
         ``video_settings`` is a :class:`~algan.settings.video_settings.VideoSettings`
         instance, usually one of the built-in presets (``PREVIEW``, ``LD``,
         ``MD``, ``HD``, ``PRODUCTION``, ``UHD``).
+
+        They apply to every render of this Scene that does not name settings of
+        its own -- :meth:`save_video` and :meth:`save_frame` alike -- and are
+        outranked only by a ``video_settings`` argument to one of those calls.
 
         Most scripts do not need this: pass ``video_settings`` to
         :meth:`save_video` / :meth:`save_frame` for a one-off render, or set
@@ -938,7 +947,30 @@ class Scene(RenderLoopMixin):
         self.frames_per_second = video_settings.frames_per_second
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
+        self._video_settings_explicit = _explicit
         return self
+
+    def _resolve_video_settings(self, override):
+        """The settings a render should use, most specific first.
+
+        A ``video_settings`` argument to :meth:`save_video` / :meth:`save_frame`
+        wins; then this Scene's own, if it was given them; then
+        ``SETTINGS.video``.
+
+        The last step matters because a Scene that was never given settings
+        holds a *snapshot* of ``SETTINGS.video`` taken when it was constructed
+        -- which is before the first line of most scripts, since the default
+        Scene is built by the first Mob. Preferring the snapshot there would
+        make ``SETTINGS.video.set(HD)`` stop working. Preferring
+        ``SETTINGS.video`` unconditionally is what made ``Scene(video_settings=
+        SMOKE_TEST)`` and ``set_video_settings`` have no effect on
+        ``save_video``, while ``save_frame`` in the same Scene honoured them.
+        """
+        if override is not None:
+            return override
+        if getattr(self, "_video_settings_explicit", False):
+            return self.video_settings
+        return SETTINGS.video
 
     def background_is_transparent(self) -> bool:
         """Whether the Scene's background has any transparency.
@@ -1160,10 +1192,12 @@ class Scene(RenderLoopMixin):
             self.background_color,
             self.background_is_set,
         )
+        previous_explicit = getattr(self, "_video_settings_explicit", False)
         results = []
         try:
-            if video_settings is not None:
-                self.set_video_settings(video_settings)
+            resolved_settings = self._resolve_video_settings(video_settings)
+            if resolved_settings is not self.video_settings:
+                self.set_video_settings(resolved_settings)
             if background_color is not None:
                 self.set_background_color(background_color)
             # Rendering resolves replay windows against the timings as they
@@ -1202,7 +1236,8 @@ class Scene(RenderLoopMixin):
             # set_video_settings restores every derived cache (dimensions,
             # fps, frame size, pixel count), not merely the settings reference.
             if self.video_settings is not previous_settings:
-                self.set_video_settings(previous_settings)
+                self.set_video_settings(previous_settings, _explicit=previous_explicit)
+            self._video_settings_explicit = previous_explicit
             (
                 self.background_frame,
                 self.background_color,

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import wraps
@@ -52,6 +53,7 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     _opt_disabled,
 )
 from algan.constants.color import BLACK, Color
+from algan.errors import DespawnedMobWarning
 from algan.scene import Scene
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
@@ -1445,6 +1447,26 @@ class Animatable:
         :meth:`~.Animatable.despawn` : Remove the Mob from the video again.
         """
         if self.is_spawned() or self.animation_manager.context.spawn_at_end:
+            if self.is_despawned():
+                # Silently doing nothing here leaves a blank video and no clue
+                # which call failed: ``despawn`` closes a lifespan and a Mob
+                # has exactly one, so nothing can reopen it. The advice is the
+                # one ``despawn``'s own docstring gives, said at the call that
+                # cannot do what it looks like it does.
+                warnings.warn(
+                    f"{type(self).__name__}.spawn() did nothing: this Mob has "
+                    f"already been despawned, and a despawned Mob cannot be "
+                    f"brought back -- it keeps the lifespan it was given. To "
+                    f"show it again, clone it before despawning and spawn the "
+                    f"clone:\n\n"
+                    f"    with Off():\n"
+                    f"        spare = mob.clone(spawn=False)\n"
+                    f"    mob.despawn()\n"
+                    f"    ...\n"
+                    f"    spare.spawn()\n",
+                    DespawnedMobWarning,
+                    stacklevel=2,
+                )
             return self
         self._create_recursive(animate)
         self.animation_manager.context.on_create(self)

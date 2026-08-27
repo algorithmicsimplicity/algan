@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,7 +27,7 @@ from algan.rendering.raytracing.tracer import (
 )
 from algan.rendering.taichi_runtime import _loaded_from_offline_cache
 from algan.scene_manager import SceneManager
-from algan.settings.video_settings import PREVIEW, VideoSettings
+from algan.settings.video_settings import PREVIEW, SMOKE_TEST, VideoSettings
 from algan.utils import algan_utils
 
 # Marked per test rather than for the module, unlike the other fast-suite
@@ -1375,3 +1376,178 @@ def test_sync_still_overlaps_after_a_rejected_context_reuse():
                     square.move(algan.RIGHT)
 
     assert sync_end_time() == pytest.approx(before)
+
+
+@pytest.mark.fast
+def test_the_scenes_own_video_settings_reach_both_render_calls(tmp_path):
+    """``save_video`` used to ignore them while ``save_frame`` honoured them.
+
+    ``Scene(video_settings=...)`` and ``set_video_settings`` describe the
+    Scene, so a render that names no settings of its own should use them. The
+    video path resolved ``None`` straight to ``SETTINGS.video`` instead, so the
+    same Scene wrote a 32x32 still and an 864x486 video, and
+    ``set_video_settings`` -- whose whole job is to set the frame rate and
+    resolution -- changed nothing about the video.
+    """
+    import cv2
+
+    tiny = VideoSettings((32, 32), 2, anti_alias_level=1)
+
+    with algan.Scene(video_settings=tiny):
+        Square(color=algan.BLUE).spawn()
+        still = algan.Scene.save_frame(str(tmp_path / "still.png"))
+        clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
+
+    image = cv2.imread(str(still.output_path), cv2.IMREAD_UNCHANGED)
+    assert (image.shape[1], image.shape[0]) == (32, 32)
+
+    capture = cv2.VideoCapture(str(clip.output_path))
+    try:
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = capture.get(cv2.CAP_PROP_FPS)
+    finally:
+        capture.release()
+    assert (width, height) == (32, 32)
+    assert fps == pytest.approx(2)
+
+
+@pytest.mark.fast
+def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
+    tmp_path,
+):
+    """The half of the old behaviour that was right, kept.
+
+    A Scene that was never given settings holds a snapshot of
+    ``SETTINGS.video`` from when it was built -- which is before the first line
+    of most scripts, since the first Mob builds the default Scene. Preferring
+    that snapshot would quietly break ``SETTINGS.video.set(...)``.
+    """
+    import cv2
+
+    restore = algan.SETTINGS.video.as_preset()
+    try:
+        with algan.Scene():
+            Square(color=algan.BLUE).spawn()
+            algan.SETTINGS.video.set(VideoSettings((64, 48), 3, anti_alias_level=1))
+            clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
+    finally:
+        algan.SETTINGS.video.set(restore)
+
+    capture = cv2.VideoCapture(str(clip.output_path))
+    try:
+        size = (
+            int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        )
+    finally:
+        capture.release()
+    assert size == (64, 48)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "spelling",
+    ["#FF0000", "red", 0xFF0000, (1.0, 0.0, 0.0), [1.0, 0.0, 0.0]],
+    ids=["hex-string", "css-name", "hex-int", "rgb-tuple", "rgb-list"],
+)
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda color: algan.Square(color=color),
+        lambda color: algan.Sphere(color=color),
+        lambda color: algan.Line(algan.LEFT, algan.RIGHT, color=color),
+        lambda color: algan.Text("x", color=color),
+        lambda color: algan.Arc(color=color),
+    ],
+    ids=["Square", "Sphere", "Line", "Text", "Arc"],
+)
+def test_every_colour_spelling_reaches_every_mob(build, spelling):
+    """One parser for colour, wherever a colour is written.
+
+    ``Color("#ff0000")`` always worked and ``Square(color="#ff0000")`` did not:
+    it raised ``AttributeError: 'str' object has no attribute 'reshape'`` from
+    inside the timeline. Materials had accepted all of these spellings from the
+    start -- the shipped presets are written ``MeshStandardMaterial(color=
+    0x8B5A2B)`` -- so the same literal was a colour in one place and an
+    AttributeError in the other.
+    """
+    with algan.Scene():
+        mob = build(spelling)
+        red = mob.color.reshape(-1, mob.color.shape[-1])[0]
+
+    assert float(red[0]) == pytest.approx(1.0)
+    assert float(red[1]) == pytest.approx(0.0)
+    assert float(red[2]) == pytest.approx(0.0)
+
+
+@pytest.mark.fast
+def test_an_unparseable_colour_says_so():
+    from algan.errors import InvalidColorError
+
+    with algan.Scene():
+        with pytest.raises(InvalidColorError, match="Invalid color string"):
+            algan.Square(color="octarine")
+        with pytest.raises(InvalidColorError, match="Invalid color value"):
+            algan.Square(color=True)
+
+
+@pytest.mark.fast
+def test_spawning_a_despawned_mob_warns_instead_of_doing_nothing():
+    """It cannot work, and the silence left a blank video and no clue why.
+
+    ``spawn`` returned early because ``is_spawned()`` stays True after a
+    despawn, so the call looked like it had worked. The advice is the one
+    ``despawn``'s docstring already gave, said where it is needed.
+    """
+    from algan.errors import DespawnedMobWarning
+
+    with algan.Scene():
+        square = Square().spawn()
+        square.despawn()
+        with pytest.warns(DespawnedMobWarning, match="cannot be brought back"):
+            square.spawn()
+
+        # Spawning an already-spawned (not despawned) Mob is still a quiet
+        # no-op -- that one is documented and harmless.
+        other = Square().spawn()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DespawnedMobWarning)
+            other.spawn()
+
+
+@pytest.mark.fast
+def test_set_material_rejects_a_non_material():
+    """``set_material(GOLD)`` is a natural mistake: CHROME and COPPER are
+    materials while GOLD is a colour. It used to answer with an AttributeError
+    about ``shader``, which names nothing the caller wrote.
+    """
+    with algan.Scene():
+        for value in (algan.GOLD, None, "gold"):
+            with pytest.raises(AlganConfigurationError, match="expects a Material"):
+                algan.Sphere().set_material(value)
+
+        assert algan.Sphere().set_material(algan.GLASS) is not None
+
+
+def test_a_surface_with_no_extent_renders_nothing_rather_than_failing(tmp_path):
+    """A zero-triangle tessellation used to fail the whole render.
+
+    ``Sphere(radius=0)`` -- or a radius a calculation drove to 1e-9 -- built an
+    empty primitive that reached ``broadcast_all`` against one row of colour
+    and raised a tensor-shape error naming neither the Mob nor the radius.
+    There is nothing to draw, so the actor now contributes no geometry.
+    """
+    import cv2
+
+    def brightest(build):
+        with algan.Scene(video_settings=SMOKE_TEST):
+            build().spawn()
+            result = algan.Scene.save_frame(str(tmp_path / "degenerate.png"))
+        return cv2.imread(str(result.output_path), cv2.IMREAD_UNCHANGED).max()
+
+    assert brightest(lambda: algan.Sphere(radius=0, color=algan.BLUE)) == 0
+    assert brightest(lambda: algan.Sphere(radius=1e-9, color=algan.BLUE)) == 0
+    assert brightest(lambda: algan.Cylinder(radius=0, color=algan.BLUE)) == 0
+    # The same surface with extent still draws, so this is not a blanket skip.
+    assert brightest(lambda: algan.Sphere(radius=1, color=algan.BLUE)) > 0

@@ -415,9 +415,11 @@ class BezierCircuitCubic(Mob):
         kwargs2 = dict(kwargs.items())
 
         if "color" in kwargs2:
-            kwargs2["color"] = (
-                kwargs2["color"].reshape(-1, kwargs2["color"].shape[-1]).mean(-2)
-            )
+            # Parsed here rather than in Mob.__init__: this runs first, and it
+            # indexes the value's shape, so a hex string or an RGB tuple has to
+            # already be a colour by now.
+            color = to_color(kwargs2["color"])
+            kwargs2["color"] = color.reshape(-1, color.shape[-1]).mean(-2)
         if normals is not None:
             normals = normals.reshape(-1, 3)
         (

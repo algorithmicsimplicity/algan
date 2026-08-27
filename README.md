@@ -91,10 +91,10 @@ sphere.set_material(
 
 # 2. Stage animations inside timeline contexts
 with Seq():
-    sphere.spawn(duration=1.0)
-    with Sync(duration=2.0):
+    sphere.spawn()
+    with Sync(run_time=2.0):
         sphere.rotate(180)
-        sphere.shift([2, 0, 0])
+        sphere.move([2, 0, 0])
         sphere.color = RED
 
 # 3. Render video
