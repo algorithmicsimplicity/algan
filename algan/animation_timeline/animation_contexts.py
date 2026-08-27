@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 from algan.animation_timeline.timeline import TimelineSpan
 from algan.constants import rate_funcs
+from algan.errors import ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
 
@@ -334,8 +335,46 @@ class AnimationContext:
             self.kwargs = {}
         self.exit_callbacks = []
         self.timespan = TimelineSpan()
+        # One context object, one ``with`` block.  See _reject_reuse.
+        self._entered = False
+        self._exited = False
+
+    def _reject_reuse(self):
+        """Refuse a second ``with`` on this object.
+
+        A context is single-use: its timespan, its child list and its
+        ``ContextVar`` reset token all describe one block. Entering the same
+        object twice overwrites the token, so the first entry's override is
+        never undone and every later context in the process resolves against
+        the wrong :class:`~.AnimationManager` -- which silently turns every
+        subsequent ``Sync`` and ``Lag`` into a sequence. Nesting an object in
+        itself additionally makes ``prev_context`` self-referential, so the
+        stack can never unwind.
+
+        Contexts are cheap, so the fix is always to construct a new one.
+        """
+        if not (self._entered or self._exited):
+            return
+        name = type(self).__name__
+        detail = (
+            "is already being used by an enclosing 'with' block"
+            if self._entered
+            else "has already been used by a 'with' block that finished"
+        )
+        raise ContextReuseError(
+            f"This {name} {detail}, and an animation context can only be "
+            f"entered once. Construct a new one for each block:\n\n"
+            f"    with {name}(...):\n"
+            f"        ...\n"
+            f"    with {name}(...):   # a second object, not the same one\n"
+            f"        ...\n\n"
+            f"A context's timing describes one block, so reusing the object "
+            f"would carry the first block's cursor and children into the second."
+        )
 
     def __enter__(self):
+        self._reject_reuse()
+        self._entered = True
         am = self.animation_manager or _active_animation_manager()
         self.animation_manager = am
         if self.priority_level is None:
@@ -535,6 +574,8 @@ class AnimationContext:
         self.timespan.current_time = self.timespan.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
+        self._entered = False
+        self._exited = True
         token = getattr(self, "_manager_override_token", None)
         if self.ignored:
             if token is not None:

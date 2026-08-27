@@ -684,7 +684,11 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             This Scene, so calls can be chained.
         """
-        if self.allow_new_actors:
+        # A Mob built while frames materialize came from an updater being
+        # re-executed, not from authoring. Registering it would grow the actor
+        # list on every frame of the render and leave the Scene different
+        # afterwards from how the script wrote it.
+        if self.allow_new_actors and not self.timeline_manager.is_replaying():
             self.actors.append(actor)
         return self
 

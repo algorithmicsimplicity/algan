@@ -32,6 +32,7 @@ import numpy as np
 import torch
 
 from algan.environment import env_flag, env_str
+from algan.errors import UnsupportedFeatureError
 from algan.settings._startup import _RENDER_DEVICE
 from algan.utils.tensor_utils import cast_to_tensor
 
@@ -898,6 +899,12 @@ class AttributeTimeline:
         self._mapped_rows = None
         self.active_time_inds = slice(None, None, None)
         self.rematerialized_times = None
+        # First row claimed after the current replay began, or None outside a
+        # replay. Rows at or above it belong to Mobs an updater built while
+        # frames were materializing: they have no history in this window, so
+        # they are read and written through ``current_state`` (see
+        # _replay_born_rows) and released when the replay ends.
+        self._replay_row_floor = None
         self.pointer = 0
         self.edits = []
         self._is_ready_for_queries = False
@@ -1083,12 +1090,61 @@ class AttributeTimeline:
         # at all and the buffer is [T, 0, D].
         return mapped, live
 
+    def _effective_time_inds(self):
+        """The frame selector to read/write with, or all of them.
+
+        ``active_time_inds`` selects frames of a *materialized window*. It is
+        set on every attribute timeline the replay touches, but a timeline
+        that never materialized one is still pointing at ``current_state``,
+        which holds a single timeless frame -- every frame of the batch reads
+        the same values. Slicing that with a window's selector (``slice(4, 6)``
+        of a one-frame buffer) yields no frames at all, which reaches callers
+        as an empty tensor a long way from here. Only that empty case is
+        rewritten, so a selector that does address the buffer is left alone.
+        """
+        t = self.active_time_inds
+        if self.active_state is not self.current_state:
+            return t
+        frames = self.active_state.shape[0]
+        if isinstance(t, slice):
+            start, stop, step = t.indices(frames)
+            selects_nothing = len(range(start, stop, step)) == 0
+        else:
+            selects_nothing = t.numel() > 0 and int(t.min()) >= frames
+        return slice(None, None, None) if selects_nothing else t
+
+    def _replay_born_rows(self, rows):
+        """Mask of ``rows`` claimed after the current replay began, or ``None``.
+
+        Only meaningful while a window is materialized: with ``active_state``
+        still pointing at ``current_state`` every row already reads and writes
+        the authoritative buffer, which is what these rows want anyway.
+        """
+        floor = self._replay_row_floor
+        if floor is None or self.active_state is self.current_state:
+            return None
+        born = rows >= floor
+        return born if bool(born.any()) else None
+
+    def _current_state_rows(self, rows, n_times):
+        """``rows`` of ``current_state``, broadcast over ``n_times`` frames."""
+        block = self.current_state[0, rows].unsqueeze(0)
+        if block.device != self.active_state.device:
+            block = block.to(self.active_state.device)
+        return block.expand(n_times, -1, -1)
+
     def get(self, key, copy=True):
         if isinstance(key, RowRanges):
             if (
                 not _opt_disabled("ranges")
                 and key.pairs is not None
                 and len(key.pairs) == 1
+                # A span reaching into replay-born rows has to go through the
+                # gather path below, which reads them from current_state.
+                and not (
+                    self._replay_row_floor is not None
+                    and key.pairs[0][1] > self._replay_row_floor
+                )
             ):
                 # Contiguous rows: slice instead of index-gather. The clone
                 # keeps the copy semantics of advanced indexing (callers may
@@ -1099,14 +1155,15 @@ class AttributeTimeline:
                 span = self._compact_span(b, e)
                 if span is not None:
                     block = self.active_state[:, span[0] : span[1]]
-                    t = self.active_time_inds
+                    t = self._effective_time_inds()
                     if isinstance(t, slice):
                         return block[t].clone() if copy else block[t]
                     return block[t.view(-1)]
             key = key.tensor()
         columns, live = self._compact_index(key)
-        t = self.active_time_inds
-        if live is None:
+        t = self._effective_time_inds()
+        born = self._replay_born_rows(key)
+        if live is None and born is None:
             return self.active_state[t, columns]
         # Rows this window did not materialize read as zero, exactly as they
         # did when the buffer was full width and those rows were left zeroed.
@@ -1115,11 +1172,20 @@ class AttributeTimeline:
         # column to gather from at all.
         n_times = self.active_state[t].shape[0] if isinstance(t, slice) else t.numel()
         out = self.active_state.new_zeros(
-            (n_times, live.shape[0], self.active_state.shape[2])
+            (n_times, key.shape[0], self.active_state.shape[2])
         )
-        kept = live.nonzero().view(-1)
+        kept = (
+            torch.arange(key.shape[0], device=columns.device)
+            if live is None
+            else live.nonzero().view(-1)
+        )
         if kept.numel():
             out[:, kept] = self.active_state[t, columns[kept]]
+        if born is not None:
+            # Built by an updater during this very replay, so the frame window
+            # holds nothing for it: its constructed values are the answer.
+            born_rows = born.nonzero().view(-1)
+            out[:, born_rows] = self._current_state_rows(key[born_rows], n_times)
         return out
 
     def modify(self, key, value):
@@ -1142,9 +1208,18 @@ class AttributeTimeline:
             ):
                 # Contiguous rows: slice-assign instead of index-scatter.
                 b, e = key.pairs[0]
-                span = self._compact_span(b, e)
+                span = (
+                    None
+                    # As in get: a span reaching replay-born rows takes the
+                    # scatter path, which sends them to current_state.
+                    if (
+                        self._replay_row_floor is not None
+                        and e > self._replay_row_floor
+                    )
+                    else self._compact_span(b, e)
+                )
                 if span is not None:
-                    t = self.active_time_inds
+                    t = self._effective_time_inds()
                     if isinstance(t, slice):
                         self.active_state[t, span[0] : span[1]] = value
                     else:
@@ -1152,8 +1227,16 @@ class AttributeTimeline:
                     return self
             key = key.tensor()
         columns, live = self._compact_index(key)
+        born = self._replay_born_rows(key)
+        if born is not None:
+            # A Mob built by this replay keeps its state in current_state, so
+            # the updater that built it can go on to move or recolour it.
+            self._modify_replay_born(key, born, value)
+            if bool(born.all()):
+                return self
+            live = ~born if live is None else live & ~born
         if live is None:
-            self.active_state[self.active_time_inds, columns] = value
+            self.active_state[self._effective_time_inds(), columns] = value
             return self
         # Rows this window did not materialize have no column to write to.
         # Dropping those writes matches the full-width buffer, where they
@@ -1171,8 +1254,28 @@ class AttributeTimeline:
             # Per-row values: drop the rows whose writes are being discarded.
             # A broadcast value (scalar, or a singleton row axis) passes through.
             value = value.index_select(-2, kept)
-        self.active_state[self.active_time_inds, columns[kept]] = value
+        self.active_state[self._effective_time_inds(), columns[kept]] = value
         return self
+
+    def _modify_replay_born(self, rows, born, value):
+        """Write ``value``'s replay-born rows straight into ``current_state``.
+
+        ``current_state`` carries no time axis, so a per-frame value collapses
+        to its last frame -- the state the Mob is left in, which is what the
+        next read inside the same updater call wants.
+        """
+        born_rows = rows[born.nonzero().view(-1)]
+        if not born_rows.numel():
+            return
+        if torch.is_tensor(value):
+            if value.dim() >= 2 and value.shape[-2] == born.shape[0]:
+                value = value.index_select(-2, born.nonzero().view(-1))
+            while value.dim() > 2 and value.shape[0] > 1:
+                value = value[-1:]
+            value = value.reshape(-1, value.shape[-1])
+            if value.device != self.current_state.device:
+                value = value.to(self.current_state.device)
+        self.current_state[0, born_rows] = value
 
     def reassign_inds(self, mob_id, inds):
         """Point ``mob_id`` at ``inds``, invalidating the cached
@@ -1224,6 +1327,30 @@ class AttributeTimeline:
         replacing_rows = mob_id in self.mob_id_to_inds
         if (not overwrite) and replacing_rows:
             return
+        if replacing_rows and self._replay_row_floor is not None:
+            existing = self.mob_id_to_inds[mob_id]
+            if existing.numel() and int(existing[0]) < self._replay_row_floor:
+                # An updater running during the render asked a Mob that existed
+                # when the batch began for a different number of rows. The
+                # batch's window was materialized against the rows it had, so
+                # there is nowhere for the new ones to live and no way for this
+                # frame to draw them.
+                name = type(mob).__name__
+                subject = "A Mob" if name == "Mob" else f"A {name}"
+                raise UnsupportedFeatureError(
+                    f"{subject} tried to rebuild its own geometry from inside "
+                    f"an updater, which needs a different number of "
+                    f"'{self.attr_name}' timeline rows than it owns. Row layout "
+                    f"is fixed when the scene is authored, so a Mob cannot "
+                    f"reshape itself while frames are being rendered.\n\n"
+                    f"Updaters can set any animatable attribute (location, "
+                    f"color, opacity, ...) but not restructure a Mob. For a "
+                    f"value that counts up, use NumericDisplay, whose digits "
+                    f"animate without rebuilding geometry:\n\n"
+                    f"    tracker = ValueTracker(0).spawn()\n"
+                    f"    display = NumericDisplay(0.0).spawn()\n"
+                    f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
+                )
 
         self.invalidate_prepared_queries(retain_edit_prefix=True)
 
@@ -1231,16 +1358,39 @@ class AttributeTimeline:
         # indexes.
         bump_structure_version()
         values = cast_to_tensor(values)
+        if (
+            self._replay_row_floor is not None
+            and values.dim() > 2
+            and values.shape[0] != 1
+        ):
+            # A Mob built by a replayed updater takes its initial values from
+            # reads that carry the batch's frame axis. ``current_state`` has no
+            # frame axis, so keep the state the Mob is left in -- the last
+            # frame -- exactly as _modify_replay_born does for later writes. An
+            # updater whose frame selector is empty leaves no frame to keep.
+            values = (
+                values[-1:]
+                if values.shape[0] > 0
+                else values.new_zeros((1, *values.shape[1:]))
+            )
         n = values.shape[-2]
         new_pointer = self.pointer + n
         buffer_size = self.current_state.shape[-2]
         if new_pointer >= buffer_size:
+            # A materialized window must survive the growth. Rows are claimed
+            # mid-render whenever a replayed updater builds a Mob, and pointing
+            # active_state back at current_state there would silently discard
+            # the batch's frame window: every later read would answer with the
+            # single timeless frame, so the primitives would come out one frame
+            # deep while the lights stayed the batch's depth.
+            windowed = self.active_state is not self.current_state
             while new_pointer >= buffer_size:
                 buffer_size *= 2
             new_buffer = torch.empty((1, buffer_size, self.current_state.shape[-1]))
             new_buffer[:, : self.pointer] = self.get_current_values()
             self.current_state = new_buffer
-            self.active_state = self.current_state
+            if not windowed:
+                self.active_state = self.current_state
         self.current_state[:, self.pointer : new_pointer] = values
         inds = torch.arange(self.pointer, new_pointer)
         self.mob_id_to_inds[mob_id] = inds
@@ -1258,6 +1408,44 @@ class AttributeTimeline:
         # new rows retain the default "not visible" bounds.
         self._invalidate_endpoint_values()
         return inds
+
+    def discard_mobs(self, mob_ids):
+        """Forget ``mob_ids`` entirely, rewinding the buffer past their rows.
+
+        Used to undo the row claims of Mobs a replayed updater built (see
+        :meth:`AnimationTimeline._discard_replay_born_mobs`). The buffer is
+        rewound to one past the highest row any surviving Mob still owns rather
+        than to a remembered watermark, so it stays correct even if something
+        else re-allocated rows during the same replay.
+        """
+        dropped = False
+        for mob_id in mob_ids:
+            if self.mob_id_to_inds.pop(mob_id, None) is not None:
+                dropped = True
+            self.mob_id_to_ranges.pop(mob_id, None)
+            self.mob_id_to_starts.pop(mob_id, None)
+            self.mob_id_to_ends.pop(mob_id, None)
+            self._dirty_endpoint_rows.discard(mob_id)
+        if not dropped:
+            return self
+        self.pointer = max(
+            (
+                int(inds[-1]) + 1
+                for inds in self.mob_id_to_inds.values()
+                if inds.numel()
+            ),
+            default=0,
+        )
+        self.invalidate_prepared_queries(retain_edit_prefix=True)
+        self._invalidate_endpoint_values()
+        return self
+
+    def begin_replay_scope(self):
+        """Mark every row claimed from now on as replay-born."""
+        self._replay_row_floor = self.pointer
+
+    def end_replay_scope(self):
+        self._replay_row_floor = None
 
     def prepare_for_queries(self):
         if self._is_ready_for_queries:
@@ -2260,6 +2448,15 @@ class AnimationTimeline:
         self._active_updater_write_capture = None
         self._materialization_times = None
         self._materialized_mob_ids = None
+        # Replay scope (see _replay_state_to_times). An updater re-executed
+        # while frames materialize may construct Mobs -- the Manim
+        # compatibility layer rebuilds its whole tree on every ``set_value``,
+        # so a counting DecimalNumber does it on every frame. Those Mobs are
+        # ephemeral: they exist for the duration of the updater call and are
+        # rolled back afterwards, so rendering leaves the Scene exactly as it
+        # was authored.
+        self._replay_depth = 0
+        self._replay_born_mob_ids = set()
         self._updater_history_clones = {}
         # Bumped whenever register_updater_history_split actually adds an
         # entry; invalidates every UpdaterEvent's _known_clone_ids memo.
@@ -2324,6 +2521,15 @@ class AnimationTimeline:
         if event is None:
             return
         mob_ids = self._collect_mob_ids((mob,)) if include_descendants else {mob.id}
+        if self._replay_born_mob_ids:
+            # A Mob this very replay constructed has no recorded history to
+            # materialize -- its rows were claimed after the batch's buffers
+            # were sized, so asking for them would index past their end. It is
+            # also not a dependency worth keeping: it is discarded when the
+            # replay finishes.
+            mob_ids -= self._replay_born_mob_ids
+            if not mob_ids:
+                return
         event.dependency_mob_ids.update(mob_ids)
         mob_ids.update(self._register_known_history_clones(event, mob_ids))
 
@@ -2429,13 +2635,20 @@ class AnimationTimeline:
 
     def add_mob_attr(self, mob, attr, value, add_mob=True):
         if attr not in self.attr_to_timeline:
-            self.attr_to_timeline[attr] = AttributeTimeline(
+            timeline = AttributeTimeline(
                 value.shape[-1], attr_name=attr, record_end_points=attr == "opacity"
             )
+            if self._replay_depth > 0:
+                # An attribute first seen mid-replay is entirely replay-born.
+                timeline.begin_replay_scope()
+            self.attr_to_timeline[attr] = timeline
         if not add_mob:
             return
         timeline = self.attr_to_timeline[attr]
-        # if mob.id not in timeline.mob_id_to_inds:
+        if self._replay_depth > 0 and mob.id not in timeline.mob_id_to_inds:
+            # Built by an updater re-executed to materialize frames; rolled
+            # back when the replay ends.
+            self.note_replay_born_mob(mob.id)
         timeline.add(mob, value)
         return
 
@@ -3242,8 +3455,55 @@ class AnimationTimeline:
         ):
             return self._replay_state_to_times(times, active_mobs)
 
+    def is_replaying(self) -> bool:
+        """Whether frames are currently being materialized from the timeline.
+
+        True inside :meth:`set_state_to_times`, which re-executes recorded
+        animations and updaters to rebuild the state of a batch of frames.
+        Authoring is over by then, so anything an updater does here must not
+        change the Scene: see :meth:`_discard_replay_born_mobs`.
+        """
+        return self._replay_depth > 0
+
+    def note_replay_born_mob(self, mob_id):
+        """Mark ``mob_id`` as a Mob that a replayed updater has just built."""
+        if self._replay_depth > 0:
+            self._replay_born_mob_ids.add(mob_id)
+
+    def _discard_replay_born_mobs(self):
+        """Release the rows of Mobs an updater built during this replay.
+
+        An updater runs once per frame of every batch, so a Mob it constructs
+        would otherwise claim a fresh block of timeline rows on every frame of
+        the render and never give them back. These Mobs are also invisible to
+        the render: the batch's primitives were built from the mobs the Scene
+        had when the batch began, and nothing re-reads the actor list mid-batch.
+        Dropping them keeps a render non-mutating, which is what lets
+        ``save_video`` be called twice and get the same video.
+        """
+        born, self._replay_born_mob_ids = self._replay_born_mob_ids, set()
+        if not born:
+            return
+        for timeline in self.attr_to_timeline.values():
+            timeline.discard_mobs(born)
+        bump_structure_version()
+
     def _replay_state_to_times(self, times, active_mobs=None):
         """:meth:`set_state_to_times`' body, run under its non-recording context."""
+        self._replay_depth += 1
+        if self._replay_depth == 1:
+            for timeline in self.attr_to_timeline.values():
+                timeline.begin_replay_scope()
+        try:
+            return self._replay_state_to_times_inner(times, active_mobs)
+        finally:
+            self._replay_depth -= 1
+            if self._replay_depth == 0:
+                self._discard_replay_born_mobs()
+                for timeline in self.attr_to_timeline.values():
+                    timeline.end_replay_scope()
+
+    def _replay_state_to_times_inner(self, times, active_mobs=None):
         self._resolve_replay_windows()
         functions = self.function_timeline.get_functions_for_times(times)
         updaters = self.function_timeline.get_updaters_for_times(times)

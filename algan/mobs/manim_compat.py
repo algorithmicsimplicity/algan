@@ -225,7 +225,17 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             if len(points) == len(manim_mob.points):
                 manim_mob.points = points.copy()
 
-        if hasattr(manim_mob, "set_fill"):
+        # Style is synchronized only onto nodes that draw something. A Manim
+        # node with no points of its own has no appearance -- its style is a
+        # template that ``init_colors`` and ``match_style`` broadcast over the
+        # family whenever Manim rebuilds it. The matching Algan node is a bare
+        # container whose colour and opacity rows are placeholders, so writing
+        # them here hands Manim a template that erases the real geometry:
+        # ``DecimalNumber.set_value`` rebuilds its glyphs and then calls
+        # ``init_colors()``, which is what made every ``set_value`` render an
+        # invisible number.
+        styles_own_geometry = len(manim_mob.points) > 0
+        if styles_own_geometry and hasattr(manim_mob, "set_fill"):
             fill_color, fill_opacity = _uniform_color_and_opacity(
                 algan_mob.color, algan_mob.opacity
             )
@@ -235,7 +245,7 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
                 family=False,
             )
 
-        if hasattr(manim_mob, "set_stroke"):
+        if styles_own_geometry and hasattr(manim_mob, "set_stroke"):
             border_color = algan_mob.border_color
             border_opacity_source = algan_mob.border_texture_points.opacity
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
@@ -614,14 +624,33 @@ class ManimCompatMob(ManimMob):
         # grafted into this Mob's hierarchy below and has to render, so it is
         # built as a registered subtree.  Only the target's own root is
         # discarded, and an unspawned actor never reaches the renderer.
-        target = ManimMob(self.manim_mobject, scene=self.scene, add_to_scene=True)
+        replaying = self.scene.timeline_manager.is_replaying()
+        target = ManimMob(
+            self.manim_mobject, scene=self.scene, add_to_scene=not replaying
+        )
         if before_source is not None:
             before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
             _preserve_algan_state_unchanged_by_manim(self, before, target)
-        if self.is_spawned():
+        if self.is_spawned() and not replaying:
+            # Spawning stamps a lifespan and re-lays the endpoint map, which
+            # during a render would rewrite the very bounds the batch in flight
+            # materialized from. The morph below is all this frame needs: the
+            # target only has to supply geometry, and an unspawned Mob is a
+            # perfectly good source for that.
             target = target.spawn(animate=False)
         with Off(animation_manager=self.animation_manager):
             self.become(target, detach_history=False)
+
+        if self.scene.timeline_manager.is_replaying():
+            # Called from an updater the render is re-executing (a counting
+            # DecimalNumber does this on every frame). The morph above has
+            # already put the new geometry on the rows the batch is drawing,
+            # which is the whole of what this frame can show: the batch's
+            # primitives were built from the hierarchy as authored, and
+            # restructuring it now would desynchronize the render from them
+            # and leave the Scene different afterwards from how it was written.
+            self._exposed_manim_baseline = None
+            return self
 
         # ``become`` morphs existing child slots, but a delegated Manim method
         # may add or remove submobjects (``add_tip``, ``add_coordinates``, ...).

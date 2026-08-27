@@ -1302,3 +1302,76 @@ def test_arrow3d_endpoints_follow_the_arrow():
             torch.tensor((0.0, 1.1, 0.0)),
             atol=1e-4,
         )
+
+
+@pytest.mark.fast
+def test_an_animation_context_object_refuses_a_second_with_block():
+    """One context object, one ``with`` block -- and it says so.
+
+    Entering the same object twice used to be accepted, and it corrupted the
+    process: ``__enter__`` keeps its ``ContextVar`` reset token on the instance,
+    so the second entry overwrote the first's and nothing ever undid it. From
+    then on every ``Sync`` and ``Lag`` in the process -- in any Scene -- resolved
+    against a dead Scene's AnimationManager and silently played its animations
+    in sequence instead of together. Nesting the object in itself also made
+    ``prev_context`` point at itself, so the stack could never unwind.
+    """
+    from algan.animation_timeline import animation_contexts
+    from algan.errors import ContextReuseError
+
+    with algan.Scene():
+        square = Square().spawn()
+
+        nested = Sync()
+        # The nesting is the bug under test; ruff's "combine these" advice
+        # would remove exactly what is being reproduced.
+        with pytest.raises(ContextReuseError, match="already being used"):  # noqa: PT012, SIM117
+            with nested:
+                with nested:
+                    square.move(algan.RIGHT)
+
+        sequential = Sync()
+        with sequential:
+            square.move(algan.RIGHT)
+        with pytest.raises(ContextReuseError, match="already been used"):  # noqa: SIM117
+            with sequential:
+                square.move(algan.UP)
+
+        # Distinct objects nest as they always did, and nothing leaked.
+        with Sync():  # noqa: SIM117 -- nesting distinct contexts is the point
+            with Sync():
+                square.move(algan.UP)
+
+    assert animation_contexts._ANIMATION_MANAGER_OVERRIDE.get(None) is None
+
+
+@pytest.mark.fast
+def test_sync_still_overlaps_after_a_rejected_context_reuse():
+    """The rejection leaves timing intact -- the leak's symptom is gone.
+
+    This is the observable half of the bug above: the corruption showed up as
+    ``Sync`` behaving like ``Seq``, which nothing in the failing script pointed
+    at.
+    """
+    from algan.errors import ContextReuseError
+
+    def sync_end_time():
+        with algan.Scene() as scene:
+            square = Square().spawn(animate=False)
+            with Sync() as context:
+                square.move(algan.RIGHT * 0.1)
+                square.move(algan.RIGHT * 0.1)
+                square.move(algan.RIGHT * 0.1)
+            return float(context.timespan.end) - float(context.timespan.start)
+
+    before = sync_end_time()
+
+    with algan.Scene():
+        square = Square().spawn()
+        reused = Sync()
+        with pytest.raises(ContextReuseError):  # noqa: PT012, SIM117
+            with reused:
+                with reused:
+                    square.move(algan.RIGHT)
+
+    assert sync_end_time() == pytest.approx(before)
