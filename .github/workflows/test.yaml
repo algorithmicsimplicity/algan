@@ -169,6 +169,30 @@ jobs:
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 
+      # What the fast render drew, and -- when the comparison failed -- the
+      # difference video the harness wrote beside it. A pixel failure reports
+      # one number ("differs by up to 45 channel values, worst at frame 36"),
+      # which says how far but not what moved: glyph edges, a silhouette and a
+      # tessellation flip all look the same in that sentence and want different
+      # fixes. Both are also worth having from a *green* macOS run, where the
+      # comparison skips for want of a baseline and the render itself is the
+      # only evidence the frames are sane -- hence `always()` rather than
+      # `failure()`.
+      #
+      # `output_errors/` exists only after a failed comparison, so
+      # `if-no-files-found: ignore` keeps a passing run quiet. The name carries
+      # the platform because artifact names have to be unique within a run.
+      - name: Upload the fast render and any difference video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-render-${{ matrix.os }}
+          path: |
+            tests/fast/algan_outputs/
+            tests/fast/output_errors/
+          if-no-files-found: ignore
+          retention-days: 7
+
       # One upload, from one platform. Both jobs cover the same lines of the
       # same source, so a second report adds nothing but a second chance for a
       # Codecov outage to fail a green run -- and `fail_ci_if_error` is on.
