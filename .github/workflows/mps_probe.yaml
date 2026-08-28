@@ -252,6 +252,22 @@ jobs:
           python3 build.py --python=native 2>&1 | tee ../build-incremental.log
           echo "INCREMENTAL_BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
 
+      # The API only serves the tail of a job log, and a build failure buries
+      # its own cause under the traceback and the steps that follow. Re-print
+      # the interesting part at the very end so it is readable from outside.
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Xcode and SDKs ==="
+          ls /Applications | grep -i '^Xcode' || true
+          xcodebuild -showsdks 2>/dev/null | grep -i macos || true
+          ls /Library/Developer/CommandLineTools/SDKs 2>/dev/null || true
+          echo "=== clang identities ==="
+          /usr/bin/clang --version | head -2 || true
+          /opt/homebrew/opt/llvm@15/bin/clang --version | head -2 || true
+          echo "=== last 100 lines of the build log ==="
+          tail -100 build-cold.log 2>/dev/null || echo "(no build log)"
+
       # Confirms the build carries the Metal backend the patch would hook into,
       # and re-takes on our own binary the symbol reading that ruled out
       # patching from outside: `import_mtl_buffer` exists but is local, so no
