@@ -1,4 +1,4 @@
-"""Is an MPS render device viable? Six questions, answered on real Apple hardware.
+"""Is an MPS render device viable? Eight questions, answered on real Apple hardware.
 
 Algan pins the macOS CI job to ``ALGAN_RENDER_DEVICE=cpu`` because an MPS render
 fails in two families -- torch cannot make the raster pipeline's ``float64``
@@ -49,6 +49,27 @@ frame before it. If MPS is to run in a deliberately non-deterministic mode, the
 size of that wobble is the thing to know, and it is measured here beside a
 fixed-point i64 accumulator, which is the deterministic replacement that needs
 no f64 at all.
+
+An eighth section asks the question the first seven cannot, because every one of
+them has Taichi in the path: **what happens with no Taichi at all?** Q1-Q5's
+answers produced a NO-GO (``DESIGN_mps_support.md``), but two of its three
+blockers are properties of *Taichi* rather than of Metal -- a missing
+``Device::import_memory`` on its gfx device, and its own kernel signature shape
+-- so they have to be re-asked of hand-written MSL dispatched through
+``torch.mps.compile_shader``, which binds a tensor's own ``MTLBuffer`` and needs
+no C++ extension. It checks that a shader writes *through* a torch allocation
+rather than a copy of it, where a sliced view binds, whether one arena buffer
+plus a table of offsets replaces the 49 bindings ``sheet_resolve_shade`` wants,
+how wide MSL binding actually goes, whether MSL's own 64-bit atomics work where
+Taichi's aborted, and whether an f32 shader lands on the same u8 channel the
+host does. ``DESIGN_metal_native_port.md`` is what it feeds.
+
+**Nothing in Q8 is timed, deliberately.** GitHub's macOS runner is a
+virtualized-GPU instance: it can say whether a shader compiles, binds,
+dispatches and returns the right bits, and it cannot say how fast anything is.
+The Q5 timings below predate that observation -- they are directional, not
+numbers to plan against -- and launch overhead per dispatch, which is a real
+question for the many-small-kernel stages, needs a physical Mac.
 
 Each arm runs in its **own subprocess**. A backend that cannot compile a kernel
 does not always raise -- it can abort the process -- and an aborted arm has to
@@ -1002,6 +1023,520 @@ def _section_determinism(device):
 
 
 # ---------------------------------------------------------------------------
+# Section: msl -- Q8, the one question that does not involve Taichi
+#
+# Everything above measures Taichi on the Metal backend. Two of the three
+# blockers that answer found (DESIGN_mps_support.md §1.1, §1.3) are properties
+# of *Taichi* -- a missing ``import_memory`` on its gfx device, and its own
+# kernel signature shape -- rather than of Metal, so they have to be re-asked of
+# a path that has no Taichi in it: hand-written MSL through
+# ``torch.mps.compile_shader``, which binds a tensor's own ``MTLBuffer`` via
+# ``setArg(idx, const TensorBase&)``. See DESIGN_metal_native_port.md.
+#
+# Deliberately does NOT call ``_bring_up``. Taichi is not in this path and
+# starting it would only add a way for these arms to fail for an unrelated
+# reason.
+#
+# These are capability questions and nothing here is timed. The macOS runner is
+# a virtualized-GPU instance: sound for "does this compile, bind, dispatch and
+# return the right bits", worthless for "how fast". Launch overhead per dispatch
+# is a real question and it needs a physical Mac -- keep it out of here rather
+# than print a number that reads authoritative and is not.
+# ---------------------------------------------------------------------------
+
+_MSL_PROLOGUE = "#include <metal_stdlib>\nusing namespace metal;\n"
+
+#: Every kernel below takes its element count in a tensor rather than as a bare
+#: Python scalar, and guards on it. Two unknowns motivate that: how the Python
+#: shim marshals a scalar (its docstring shows a float against
+#: ``constant float&`` and nothing else), and how it infers the dispatch grid.
+#: A guard makes every kernel safe under any answer, so a surprise on either
+#: shows up as a recorded result rather than as an out-of-bounds write.
+_MSL_BASIC = (
+    _MSL_PROLOGUE
+    + """
+kernel void add_scaled(device float* out [[buffer(0)]],
+                       device const float* src [[buffer(1)]],
+                       device const int* meta [[buffer(2)]],
+                       uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(meta[0])) { return; }
+    out[idx] = src[idx] * 2.0f + 1.0f;
+}
+"""
+)
+
+#: Writes the flat index. Where those values land in the *base* tensor is the
+#: whole question: at the view's own offset means the shim honours
+#: ``storage_offset``, at 0 means it binds raw storage and every offset Algan
+#: needs must be passed in by hand.
+_MSL_VIEW = (
+    _MSL_PROLOGUE
+    + """
+kernel void write_index(device float* out [[buffer(0)]],
+                        device const int* meta [[buffer(1)]],
+                        uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(meta[0])) { return; }
+    out[idx] = float(idx) + 1.0f;
+}
+"""
+)
+
+#: The arena calling convention itself (DESIGN_metal_native_port.md §1.2): one
+#: ``uchar`` buffer bound once, a table of byte offsets, and pointers
+#: reinterpreted inside the kernel. This is what turns ``sheet_resolve_shade``'s
+#: 49 bindings into 2, and ``ManualMemory`` already hands out views of a single
+#: ``uint8`` allocation, so the layout it needs exists today.
+_MSL_ARENA = (
+    _MSL_PROLOGUE
+    + """
+kernel void arena_axpy(device uchar* arena [[buffer(0)]],
+                       device const int* off [[buffer(1)]],
+                       uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(off[3])) { return; }
+    device const float* a = (device const float*)(arena + off[0]);
+    device const float* b = (device const float*)(arena + off[1]);
+    device float* out = (device float*)(arena + off[2]);
+    out[idx] = a[idx] * 2.0f + b[idx];
+}
+"""
+)
+
+#: Measures the grid rather than assuming it: one atomic counts invocations and
+#: another takes the maximum index. If the shim dispatches over argument 0's
+#: element count, this returns exactly that count and that count minus one.
+_MSL_GRID = (
+    _MSL_PROLOGUE
+    + """
+kernel void grid_probe(device const float* arg0 [[buffer(0)]],
+                       device atomic_uint* counter [[buffer(1)]],
+                       uint idx [[thread_position_in_grid]]) {
+    atomic_fetch_add_explicit(&counter[0], 1u, memory_order_relaxed);
+    atomic_fetch_max_explicit(&counter[1], idx, memory_order_relaxed);
+}
+"""
+)
+
+#: A non-deterministic mode's floor, asked of MSL directly.
+#: ``src`` is argument 0 on purpose, and the ordering is load-bearing: the grid
+#: case established that the shim dispatches over argument 0's element count, so
+#: an accumulator in that slot (one element) runs the kernel on exactly ONE
+#: thread. The first run of this section did precisely that and reported a total
+#: of 1.0 against an expected 4096 -- which reads like a broken Metal atomic and
+#: is nothing of the kind. Keep the wide array first.
+_MSL_ATOMIC_F32 = (
+    _MSL_PROLOGUE
+    + """
+kernel void atomic_add_f32(device const float* src [[buffer(0)]],
+                           device atomic_float* acc [[buffer(1)]],
+                           device const int* meta [[buffer(2)]],
+                           uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(meta[0])) { return; }
+    atomic_fetch_add_explicit(acc, src[idx], memory_order_relaxed);
+}
+"""
+)
+
+#: The question DESIGN_mps_support.md §1.2 answered for Taichi and which has to
+#: be re-asked here. Its abort came out of Taichi's SPIR-V path; MSL's own
+#: 64-bit atomic support is version- and family-dependent, so this may differ.
+#: It decides whether a *deterministic* accumulator can exist in a shader at
+#: all -- an exactly order-independent fixed-point add needs a wide atomic.
+_MSL_ATOMIC_U64_ADD = (
+    _MSL_PROLOGUE
+    + """
+kernel void atomic_add_u64(device const long* src [[buffer(0)]],
+                           device atomic_ulong* acc [[buffer(1)]],
+                           device const int* meta [[buffer(2)]],
+                           uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(meta[0])) { return; }
+    atomic_fetch_add_explicit(acc, ulong(src[idx]), memory_order_relaxed);
+}
+"""
+)
+
+_MSL_ATOMIC_U64_MIN = (
+    _MSL_PROLOGUE
+    + """
+kernel void atomic_min_u64(device const long* src [[buffer(0)]],
+                           device atomic_ulong* acc [[buffer(1)]],
+                           device const int* meta [[buffer(2)]],
+                           uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(meta[0])) { return; }
+    atomic_fetch_min_explicit(acc, ulong(src[idx]), memory_order_relaxed);
+}
+"""
+)
+
+#: sRGB encode, in both of MSL's ``pow`` flavours. The renderer's suites fail on
+#: any channel deviation greater than 2, so what matters is not whether the
+#: shader is *close* but whether it lands on the same byte -- and MSL compiles
+#: with fast-math on by default, which is exactly the kind of difference that
+#: moves a rounded byte. ``precise::pow`` is the escape hatch if the default
+#: drifts; knowing which is needed before 15k lines get written is the point.
+_MSL_SRGB = (
+    _MSL_PROLOGUE
+    + """
+static inline float encode_fast(float c) {
+    return (c <= 0.0031308f) ? (12.92f * c)
+                             : (1.055f * pow(c, 1.0f / 2.4f) - 0.055f);
+}
+static inline float encode_precise(float c) {
+    return (c <= 0.0031308f) ? (12.92f * c)
+                             : (1.055f * precise::pow(c, 1.0f / 2.4f) - 0.055f);
+}
+kernel void srgb_encode(device float* out_fast [[buffer(0)]],
+                        device float* out_precise [[buffer(1)]],
+                        device const float* src [[buffer(2)]],
+                        device const int* meta [[buffer(3)]],
+                        uint idx [[thread_position_in_grid]]) {
+    if (idx >= uint(meta[0])) { return; }
+    out_fast[idx] = encode_fast(src[idx]);
+    out_precise[idx] = encode_precise(src[idx]);
+}
+"""
+)
+
+
+def _msl_wide_source(nargs):
+    """A kernel binding ``nargs`` float buffers, plus a guard buffer.
+
+    Generated for the same reason ``_build_wide_kernel`` is: the question is
+    where binding stops, and that wants a ladder rather than a guess.
+    """
+    params = "".join(
+        f"                 device float* a{i} [[buffer({i})]],\n" for i in range(nargs)
+    )
+    body = "".join(f"    a{i}[idx] = a{i}[idx] + {i}.0f;\n" for i in range(nargs))
+    return (
+        _MSL_PROLOGUE
+        + "\nkernel void wide(\n"
+        + params
+        + f"                 device const int* meta [[buffer({nargs})]],\n"
+        + "                 uint idx [[thread_position_in_grid]]) {\n"
+        + "    if (idx >= uint(meta[0])) { return; }\n"
+        + body
+        + "}\n"
+    )
+
+
+def _msl_compile(source):
+    """Compile one MSL source, or say why not.
+
+    ``compile_shader`` raises ``RuntimeError('MPS is not available')`` off
+    Apple hardware, which is how the Linux control arm reports rather than
+    fails.
+    """
+    import torch
+
+    return torch.mps.compile_shader(source)
+
+
+def _msl_shim_surface(lib, kernel_name):
+    """What the Python shim actually exposes, read off the objects.
+
+    Unknown 2 of DESIGN_metal_native_port.md §4 is whether grid and threadgroup
+    size are reachable from Python or only from C++ (``MetalKernelFunction::
+    dispatch`` takes both). Rather than guess at a signature, record the
+    surface: if the answer is "not reachable", the port needs a thin ObjC++
+    extension and it is better to learn that here than in stage 6.
+    """
+    import inspect
+
+    surface = {
+        "lib_type": type(lib).__name__,
+        "lib_dir": [n for n in dir(lib) if not n.startswith("__")],
+    }
+    try:
+        fn = getattr(lib, kernel_name)
+        surface["kernel_type"] = type(fn).__name__
+        surface["kernel_dir"] = [n for n in dir(fn) if not n.startswith("__")]
+        try:
+            surface["kernel_signature"] = str(inspect.signature(fn))
+        except (TypeError, ValueError):
+            surface["kernel_signature"] = "unavailable"
+        surface["kernel_doc"] = (inspect.getdoc(fn) or "")[:600]
+    except Exception as exc:
+        surface["kernel_error"] = f"{type(exc).__name__}: {exc}"
+    return surface
+
+
+def _msl_cases():
+    """``name -> callable(device) -> dict``. Each runs in its own subprocess."""
+    import torch
+
+    def _meta(n, device):
+        return torch.tensor([n], dtype=torch.int32, device=device)
+
+    def available(device):
+        lib = _msl_compile(_MSL_BASIC)
+        n = 64
+        src = torch.arange(n, dtype=torch.float32, device=device)
+        out = torch.zeros(n, dtype=torch.float32, device=device)
+        lib.add_scaled(out, src, _meta(n, device))
+        torch.mps.synchronize()
+        expected = torch.arange(n, dtype=torch.float32) * 2.0 + 1.0
+        return {
+            "matches": bool(torch.equal(out.cpu(), expected)),
+            "shim": _msl_shim_surface(lib, "add_scaled"),
+        }
+
+    def zero_copy(device):
+        """Did the shader write through the tensor Algan already holds?
+
+        The point is not that a value came back -- a staged round trip would
+        also return the right value. It is that the tensor whose ``data_ptr``
+        was captured *before* the launch is the one that changed, with no copy
+        made and no allocation moved. That is the property Taichi's gfx device
+        cannot provide and the whole port rests on.
+        """
+        lib = _msl_compile(_MSL_BASIC)
+        n = 64
+        src = torch.ones(n, dtype=torch.float32, device=device)
+        out = torch.zeros(n, dtype=torch.float32, device=device)
+        ptr_before = out.data_ptr()
+        lib.add_scaled(out, src, _meta(n, device))
+        torch.mps.synchronize()
+        return {
+            "data_ptr_stable": out.data_ptr() == ptr_before,
+            "written_in_place": bool(torch.all(out.cpu() == 3.0).item()),
+        }
+
+    def view_offset(device):
+        """Does a sliced view bind at its own offset, or at storage offset 0?
+
+        Decisive for the arena convention: if the shim honours
+        ``storage_offset`` then arena views bind as-is, and if it does not then
+        every offset has to be passed explicitly. Both are workable and they
+        need different code, so the answer belongs on the record before that
+        code is written.
+        """
+        lib = _msl_compile(_MSL_VIEW)
+        base = torch.zeros(1024, dtype=torch.float32, device=device)
+        view = base[256:320]
+        lib.write_index(view, _meta(64, device))
+        torch.mps.synchronize()
+        host = base.cpu()
+        wrote_at_offset = bool(torch.all(host[256:320] > 0).item())
+        wrote_at_zero = bool(torch.all(host[0:64] > 0).item())
+        return {
+            "storage_offset": view.storage_offset(),
+            "wrote_at_view_offset": wrote_at_offset,
+            "wrote_at_storage_zero": wrote_at_zero,
+            "binds": (
+                "view_offset"
+                if wrote_at_offset and not wrote_at_zero
+                else "raw_storage"
+                if wrote_at_zero and not wrote_at_offset
+                else "unclear"
+            ),
+        }
+
+    def arena(device):
+        """The 49-binding kernel's replacement, end to end at small scale."""
+        lib = _msl_compile(_MSL_ARENA)
+        n = 64
+        fbytes = n * 4
+        pool = torch.zeros(3 * fbytes, dtype=torch.uint8, device=device)
+        offsets = [0, fbytes, 2 * fbytes]
+        a = torch.arange(n, dtype=torch.float32, device=device)
+        b = torch.full((n,), 10.0, dtype=torch.float32, device=device)
+        pool[offsets[0] : offsets[0] + fbytes] = a.view(torch.uint8)
+        pool[offsets[1] : offsets[1] + fbytes] = b.view(torch.uint8)
+        off = torch.tensor([*offsets, n], dtype=torch.int32, device=device)
+        lib.arena_axpy(pool, off)
+        torch.mps.synchronize()
+        got = pool.cpu()[offsets[2] : offsets[2] + fbytes].view(torch.float32)
+        expected = torch.arange(n, dtype=torch.float32) * 2.0 + 10.0
+        return {
+            "matches": bool(torch.equal(got, expected)),
+            "max_abs_error": float((got - expected).abs().max().item()),
+        }
+
+    def grid(device):
+        lib = _msl_compile(_MSL_GRID)
+        n = 64
+        arg0 = torch.zeros(n, dtype=torch.float32, device=device)
+        counter = torch.zeros(2, dtype=torch.int32, device=device)
+        lib.grid_probe(arg0, counter)
+        torch.mps.synchronize()
+        host = counter.cpu().tolist()
+        return {
+            "arg0_numel": n,
+            "invocations": host[0],
+            "max_thread_index": host[1],
+            "grid_is_arg0_numel": host[0] == n,
+        }
+
+    def atomic_f32(device):
+        lib = _msl_compile(_MSL_ATOMIC_F32)
+        n = 4096
+        src = torch.ones(n, dtype=torch.float32, device=device)
+        acc = torch.zeros(1, dtype=torch.float32, device=device)
+        lib.atomic_add_f32(src, acc, _meta(n, device))
+        torch.mps.synchronize()
+        total = float(acc.cpu()[0])
+        return {"total": total, "expected": float(n), "matches": total == float(n)}
+
+    def atomic_u64_add(device):
+        lib = _msl_compile(_MSL_ATOMIC_U64_ADD)
+        n = 4096
+        src = torch.ones(n, dtype=torch.int64, device=device)
+        acc = torch.zeros(1, dtype=torch.int64, device=device)
+        lib.atomic_add_u64(src, acc, _meta(n, device))
+        torch.mps.synchronize()
+        total = int(acc.cpu()[0])
+        return {"total": total, "expected": n, "matches": total == n}
+
+    def atomic_u64_min(device):
+        lib = _msl_compile(_MSL_ATOMIC_U64_MIN)
+        n = 4096
+        src = torch.arange(1, n + 1, dtype=torch.int64, device=device)
+        acc = torch.full((1,), (1 << 62), dtype=torch.int64, device=device)
+        lib.atomic_min_u64(src, acc, _meta(n, device))
+        torch.mps.synchronize()
+        got = int(acc.cpu()[0])
+        return {"minimum": got, "expected": 1, "matches": got == 1}
+
+    def dispatch_control(device):
+        """Can the grid be set from Python, or is argument 0's size the grid?
+
+        Unknown 2 of DESIGN_metal_native_port.md §4, and the first run left it
+        open: the shim's surface was printed but truncated. It matters more than
+        it looks. ``grid`` established that the dispatch covers argument 0's
+        element count, and under the arena convention argument 0 is the whole
+        arena -- millions of bytes -- so without explicit control every arena
+        kernel would launch a thread per *byte* and rely on a guard to retire
+        almost all of them. Call forms are tried rather than assumed, because
+        ``MetalKernelFunction::dispatch`` takes a grid and a threadgroup size at
+        C++ level and the question is only whether Python reaches them.
+        """
+        lib = _msl_compile(_MSL_GRID)
+        n = 64
+        arg0 = torch.zeros(n, dtype=torch.float32, device=device)
+        attempts = {}
+        for label, kwargs in (
+            ("threads", {"threads": 8}),
+            ("threads+group_size", {"threads": 8, "group_size": 4}),
+            ("grid_size", {"grid_size": 8}),
+            ("threadgroup", {"threads": 8, "threadgroup": 4}),
+        ):
+            counter = torch.zeros(2, dtype=torch.int32, device=device)
+            try:
+                lib.grid_probe(arg0, counter, **kwargs)
+                torch.mps.synchronize()
+                attempts[label] = {
+                    "accepted": True,
+                    "invocations": int(counter.cpu()[0]),
+                }
+            except Exception as exc:
+                attempts[label] = {
+                    "accepted": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
+        return attempts
+
+    def precision(device):
+        """Does an f32 shader land on the same byte the CPU path does?
+
+        Reference in float64 on the host, because the question is whether the
+        *shader* agrees with the renderer's arithmetic, not whether two f32
+        paths agree with each other. Reported in u8 channel values, which is the
+        unit the render suites' tolerance of 2 is stated in.
+        """
+        lib = _msl_compile(_MSL_SRGB)
+        n = 4096
+        src_host = torch.linspace(0.0, 1.0, n, dtype=torch.float32)
+        src = src_host.to(device)
+        out_fast = torch.zeros(n, dtype=torch.float32, device=device)
+        out_precise = torch.zeros(n, dtype=torch.float32, device=device)
+        lib.srgb_encode(out_fast, out_precise, src, _meta(n, device))
+        torch.mps.synchronize()
+
+        ref64 = src_host.to(torch.float64)
+        reference = torch.where(
+            ref64 <= 0.0031308,
+            12.92 * ref64,
+            1.055 * ref64.clamp(min=0.0) ** (1.0 / 2.4) - 0.055,
+        )
+
+        def report(name, got):
+            got64 = got.cpu().to(torch.float64)
+            bytes_got = (got64.clamp(0.0, 1.0) * 255.0).round()
+            bytes_ref = (reference.clamp(0.0, 1.0) * 255.0).round()
+            delta = (bytes_got - bytes_ref).abs()
+            return {
+                f"{name}_max_float_error": float((got64 - reference).abs().max()),
+                f"{name}_max_channel_delta": int(delta.max().item()),
+                f"{name}_channels_over_tolerance": int((delta > 2).sum().item()),
+            }
+
+        out = {}
+        out.update(report("fast", out_fast))
+        out.update(report("precise", out_precise))
+        return out
+
+    return {
+        "available": available,
+        "zero_copy": zero_copy,
+        "view_offset": view_offset,
+        "arena": arena,
+        "grid": grid,
+        "dispatch_control": dispatch_control,
+        "atomic_f32": atomic_f32,
+        "atomic_u64_add": atomic_u64_add,
+        "atomic_u64_min": atomic_u64_min,
+        "precision": precision,
+    }
+
+
+def _section_msl(device, case):
+    out = {"case": case, "device": device, "path": "torch.mps.compile_shader"}
+    _emit_pre(out)
+    started = time.perf_counter()
+    try:
+        import torch
+
+        if not (
+            getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+        ):
+            out["status"] = "unavailable"
+            out["error"] = "torch reports no MPS device"
+            return out
+        out["torch_version"] = torch.__version__
+        out["has_compile_shader"] = hasattr(torch.mps, "compile_shader")
+        if case.startswith("args_"):
+            nargs = int(case.split("_", 1)[1])
+            out["nargs"] = nargs
+            lib = _msl_compile(_msl_wide_source(nargs))
+            n = 16
+            tensors = [
+                torch.zeros(n, dtype=torch.float32, device=device) for _ in range(nargs)
+            ]
+            lib.wide(*tensors, torch.tensor([n], dtype=torch.int32, device=device))
+            torch.mps.synchronize()
+            got = [float(t.cpu()[0]) for t in tensors]
+            out["result"] = {"bound": got == [float(i) for i in range(nargs)]}
+            out["status"] = "ok" if out["result"]["bound"] else "wrong_result"
+        else:
+            result = _msl_cases()[case](device)
+            out["result"] = result
+            # A case that returns a ``matches`` verdict decides its own status.
+            # Without this the atomic cases reported ``ok`` while returning a
+            # total of 1.0 against an expected 4096 -- the status said the arm
+            # ran, which is not the same as the answer being right, and only the
+            # raw numbers in the payload gave it away.
+            matches = result.get("matches") if isinstance(result, dict) else None
+            out["status"] = "wrong_result" if matches is False else "ok"
+    except Exception as exc:
+        out["status"] = "error"
+        out["error_type"] = type(exc).__name__
+        out["error"] = str(exc)[:2000]
+    finally:
+        out["seconds"] = round(time.perf_counter() - started, 3)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -1025,6 +1560,29 @@ _FEATURES = [
     "native_i64_atomic_min",
     "native_i64_fixed_point",
 ]
+
+#: Q8, in dependency order: nothing downstream is meaningful if ``available``
+#: fails, and ``arena`` is only interpretable once ``view_offset`` has said how
+#: the shim treats a slice.
+_MSL_CASES = [
+    "available",
+    "zero_copy",
+    "view_offset",
+    "arena",
+    "grid",
+    "dispatch_control",
+    "atomic_f32",
+    "atomic_u64_add",
+    "atomic_u64_min",
+    "precision",
+]
+
+#: The same ladder question as ``_ARG_LADDER``, asked of hand-written MSL. It
+#: stops lower and steps finer around 31 because that is Metal's own per-stage
+#: buffer limit and the answer here is a property of Metal rather than of
+#: Taichi's 64-argument ceiling -- and because the arena convention's whole
+#: purpose is to make the top of this ladder irrelevant.
+_MSL_ARG_LADDER = [8, 16, 24, 28, 30, 31, 32, 40, 49]
 
 #: 31 is Metal's classic per-stage buffer limit and 49 is what
 #: ``sheet_resolve_shade`` actually asks for; the rest bracket them. 63 and 64
@@ -1165,6 +1723,7 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--tensor-device", default=None)
     parser.add_argument("--feature")
+    parser.add_argument("--case")
     parser.add_argument("--nargs", type=int)
     parser.add_argument("--workload")
     parser.add_argument("--out", default=str(_REPO / "mps_probe_results.json"))
@@ -1196,6 +1755,8 @@ def _dispatch(args):
         return _section_torchops(args.device)
     if section == "determinism":
         return _section_determinism(args.device)
+    if section == "msl":
+        return _section_msl(args.device, args.case)
     raise SystemExit("unknown section: " + str(section))
 
 
@@ -1402,6 +1963,38 @@ def _orchestrate(args):
         sections["determinism"][device] = record
         print(f"  {device}: {json.dumps(record)}", flush=True)
 
+    # Q8. Skipped entirely off Apple hardware rather than run to collect nine
+    # identical "no MPS device" records -- unlike the Taichi sections, there is
+    # no CPU arm here that means anything: the whole question is what Metal
+    # does. The Linux control still proves the harness by reaching this point.
+    print("\n== Q8: hand-written MSL via torch.mps.compile_shader ==", flush=True)
+    sections["msl"] = {}
+    if "mps" not in devices:
+        print("  skipped: no MPS device on this runner", flush=True)
+    else:
+        for case in _MSL_CASES:
+            record = _run_arm(["--section", "msl", "--device", "mps", "--case", case])
+            sections["msl"][case] = record
+            # Not truncated to one line. ``available`` carries the shim's whole
+            # surface and ``dispatch_control`` every call form it accepted, and
+            # both are answers rather than colour -- the first run clipped the
+            # shim dump at 180 characters and left the question it exists to
+            # settle open for a second macOS run.
+            detail = _why(record) or json.dumps(record.get("result", {}), indent=2)
+            print("  {:<17} {:<12}".format(case, record.get("status", "?")), flush=True)
+            for line in detail.splitlines():
+                print("      " + line, flush=True)
+        for nargs in _MSL_ARG_LADDER:
+            case = f"args_{nargs}"
+            record = _run_arm(["--section", "msl", "--device", "mps", "--case", case])
+            sections["msl"][case] = record
+            print(
+                "  {:>3} buffers     {:<11} {}".format(
+                    nargs, record.get("status", "?"), _why(record)
+                ),
+                flush=True,
+            )
+
     Path(args.out).write_text(json.dumps(results, indent=2), encoding="utf-8")
     print("\nwrote " + args.out, flush=True)
     _print_verdict(results)
@@ -1467,6 +2060,86 @@ def _print_verdict(results):
     if base_c and mps_c:
         print(
             f"   compute-bound launch:   cpu arch {base_c} ms vs mps {mps_c} ms ({mps_c / base_c:.2f}x)",
+            flush=True,
+        )
+    print(
+        "   (virtualized-GPU runner: read Q5 as directional, not as a number to"
+        " plan against)",
+        flush=True,
+    )
+
+    msl = results["sections"].get("msl", {})
+    if msl:
+        print("Q8 hand-written MSL, no Taichi in the path:", flush=True)
+
+        def _res(case, key, default="n/a"):
+            return msl.get(case, {}).get("result", {}).get(key, default)
+
+        print(
+            "     compile+dispatch works:      {}".format(
+                msl.get("available", {}).get("status", "n/a")
+            ),
+            flush=True,
+        )
+        print(
+            "     binds torch storage in place: ptr_stable={} written={}".format(
+                _res("zero_copy", "data_ptr_stable"),
+                _res("zero_copy", "written_in_place"),
+            ),
+            flush=True,
+        )
+        print(
+            "     a sliced view binds at:      {}".format(_res("view_offset", "binds")),
+            flush=True,
+        )
+        print(
+            "     arena+offsets convention:    {} (49 bindings -> 2)".format(
+                msl.get("arena", {}).get("status", "n/a")
+            ),
+            flush=True,
+        )
+        ladder = {
+            int(k.split("_", 1)[1]): v for k, v in msl.items() if k.startswith("args_")
+        }
+        ok = [n for n, rec in ladder.items() if rec.get("status") == "ok"]
+        print(
+            "     widest MSL kernel that bound: {} buffers".format(
+                max(ok) if ok else "none"
+            ),
+            flush=True,
+        )
+        forms = msl.get("dispatch_control", {}).get("result")
+        if isinstance(forms, dict) and forms:
+            accepted = [k for k, v in forms.items() if v.get("accepted")]
+            print(
+                "     grid reachable from Python:   {}".format(
+                    ", ".join(accepted) if accepted else "no call form accepted"
+                ),
+                flush=True,
+            )
+        else:
+            print("     grid reachable from Python:   n/a", flush=True)
+        print(
+            "     f32 atomic add (non-deterministic mode's floor): {} ({}/{})".format(
+                msl.get("atomic_f32", {}).get("status", "n/a"),
+                _res("atomic_f32", "total"),
+                _res("atomic_f32", "expected"),
+            ),
+            flush=True,
+        )
+        print(
+            "     64-bit atomics (deterministic accumulator): add={} min={}".format(
+                msl.get("atomic_u64_add", {}).get("status", "n/a"),
+                msl.get("atomic_u64_min", {}).get("status", "n/a"),
+            ),
+            flush=True,
+        )
+        print(
+            "     f32 sRGB vs f64 host, max channel delta (tolerance 2):"
+            " fast={} precise={}".format(
+                _res("precision", "fast_max_channel_delta"),
+                _res("precision", "precise_max_channel_delta"),
+            ),
             flush=True,
         )
     print("=" * 72, flush=True)

@@ -13,6 +13,21 @@ which nobody had looked at.
 
 Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do instead.
 
+**Scope, added later.** Everything below measures **Taichi on the Metal
+backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
+Taichi's interop and codegen rather than of Metal, and they do not survive
+dropping Taichi from the path in favour of hand-written Metal shaders dispatched
+through `torch.mps.compile_shader` — see `DESIGN_metal_native_port.md`, which
+sizes that alternative and does not contradict a number here.
+
+**Timing caveat, added later.** `macos-latest` is a virtualized-GPU instance.
+It is sound for the capability results — which are the ones the verdict rests on,
+and they stand — but every millisecond figure in §1.3 and §2 should be read as
+directional only, not as a number to plan against. The staging comparison is the
+robust one (a host round-trip is a host round-trip); the compute-bound
+"52x better than CPU" is the fragile one. Sizing any of this needs physical
+Apple hardware.
+
 ---
 
 ## 1. The three blockers, in order of how much they cost to clear
