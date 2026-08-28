@@ -676,7 +676,7 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     the band's ``p_i`` as it walks and writes once, at the closing sibling,
     with ``corr`` -- the unsplit band's own write. Coverage is therefore
     identical to the unsplit band's whatever the material alpha, and the
-    colour becomes the area-weighted blend of the siblings' own shading:
+    color becomes the area-weighted blend of the siblings' own shading:
     the interior-edge AA the split is for.
 
     The sum rides in a register, so the flag marks band CONTINUATION in walk

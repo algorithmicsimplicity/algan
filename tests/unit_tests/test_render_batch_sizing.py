@@ -90,7 +90,7 @@ def test_failed_render_retry_resets_arena_with_full_gc(monkeypatch):
     cache_calls = []
     monkeypatch.setattr(
         render_loop_module,
-        "empty_cache",
+        "release_torch_memory",
         lambda force_gc=False: cache_calls.append(force_gc),
     )
 
@@ -284,7 +284,9 @@ def _make_preflight_scene(
     """A Scene whose batching loop is driven by ``preflight``."""
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "0")
     monkeypatch.setattr(render_loop_module, "_sync_devices", lambda: None)
-    monkeypatch.setattr(render_loop_module, "empty_cache", lambda force_gc=False: None)
+    monkeypatch.setattr(
+        render_loop_module, "release_torch_memory", lambda force_gc=False: None
+    )
     monkeypatch.setattr(
         render_loop_module, "get_num_available_bytes", lambda _device: 1000
     )
@@ -412,7 +414,9 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
 ):
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "0")
     monkeypatch.setattr(render_loop_module, "_sync_devices", lambda: None)
-    monkeypatch.setattr(render_loop_module, "empty_cache", lambda force_gc=False: None)
+    monkeypatch.setattr(
+        render_loop_module, "release_torch_memory", lambda force_gc=False: None
+    )
     monkeypatch.setattr(
         render_loop_module, "get_num_available_bytes", lambda _device: 1000
     )

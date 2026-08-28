@@ -74,7 +74,7 @@ def scene_function(function=None, *, name=None):
     return decorate(function)
 
 
-from algan.utils.memory_utils import empty_cache
+from algan.utils.memory_utils import release_torch_memory
 
 
 def get_file_writer(
@@ -233,7 +233,7 @@ def _render_scene_to_file(
     reset=False,
     codec=None,
     audio_codec=None,
-    background_color=None,
+    background=None,
     ffmpeg_params=None,
     animate_fade_out=None,
     **kwargs,
@@ -252,7 +252,7 @@ def _render_scene_to_file(
     previous_explicit = getattr(scene, "_video_settings_explicit", False)
     previous_background = (
         scene.background_frame,
-        getattr(scene, "background_color", None),
+        getattr(scene, "background", None),
         scene.background_is_set,
     )
     destination = None
@@ -264,11 +264,11 @@ def _render_scene_to_file(
 
     try:
         scene.set_video_settings(video_settings)
-        explicit_background = background_color is not None
-        if background_color is None:
-            background_color = SETTINGS.style.background_color
-        scene.set_background_color(
-            background_color,
+        explicit_background = background is not None
+        if background is None:
+            background = SETTINGS.style.background
+        scene.set_background(
+            background,
             overwrite=explicit_background,
         )
         # The scene now owns the normalized color/image tensor. Passing the
@@ -291,7 +291,7 @@ def _render_scene_to_file(
 
         if scene.camera is None:
             scene.camera = Camera(False, scene=scene)
-        empty_cache()
+        release_torch_memory(force_gc=False)
 
         if animate_fade_out is None:
             animate_fade_out = SETTINGS.style.fade_out_on_scene_end
@@ -402,7 +402,7 @@ def _render_scene_to_file(
             file_writer,
             str(temp_file_path),
             str(destination),
-            background_color=frame_background_override,
+            background=frame_background_override,
             despawn_camera_and_lights=scene_finalized,
             # reset=False leaves the Scene re-renderable, so the render must
             # not consume the derived state a later render depends on. With
@@ -442,7 +442,7 @@ def _render_scene_to_file(
             # renders all leave the authored scene and audio timeline intact.
             (
                 scene.background_frame,
-                scene.background_color,
+                scene.background,
                 scene.background_is_set,
             ) = previous_background
 
@@ -521,10 +521,8 @@ def render_all_funcs(
 
         for index, (scene_name, function) in list(enumerate(scene_funcs))[start:end]:
             with Scene(video_settings=video_settings) as active_scene:
-                if "background_color" in kwargs:
-                    active_scene.set_background_color(
-                        kwargs["background_color"], overwrite=False
-                    )
+                if "background" in kwargs:
+                    active_scene.set_background(kwargs["background"], overwrite=False)
                 active_scene.audio_manager.set_speech_source(speech_source)
                 function()
                 if not smoke_test:

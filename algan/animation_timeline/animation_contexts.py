@@ -446,7 +446,7 @@ class AnimationContext:
         applied.
 
         This exists for changes that have to outlive the statement that asked for
-        them: :meth:`~.Mob.wave_color` refines a Mob's sampling so its colour
+        them: :meth:`~.Mob.wave_color` refines a Mob's sampling so its color
         wave renders smoothly, and can only drop that resolution again once
         nothing further will be recorded alongside the wave.
 
@@ -889,7 +889,7 @@ class Off(AnimationContext):
 
     Everything inside the block takes effect at once: the scene jumps straight to
     the new state, and the video is no longer for it. This is how you set a scene
-    up (position, colour, materials, etc) without the viewer watching things slide
+    up (position, color, materials, etc) without the viewer watching things slide
     into place, and how you make a cut rather than a transition.
 
     ``Off`` takes priority over enclosing contexts by default, so a ``run_time``

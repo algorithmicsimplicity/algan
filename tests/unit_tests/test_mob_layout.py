@@ -53,9 +53,7 @@ def test_group_fits_exactly_into_normalized_screen_rectangle():
     top_right = (0.6, 0.7)
 
     assert (
-        group.fit_to_screen_rectangle(
-            bottom_left, top_right, preserve_aspect_ratio=False
-        )
+        group.fit_to_screen(bottom_left, top_right, preserve_aspect_ratio=False)
         is group
     )
 
@@ -72,7 +70,7 @@ def test_none_screen_rectangle_corners_default_to_whole_screen():
     square = Square(add_to_scene=False)
     expected_lower, expected_upper = _screen_rectangle_at_z_zero(scene, (0, 0), (1, 1))
 
-    square.fit_to_screen_rectangle(preserve_aspect_ratio=False)
+    square.fit_to_screen(preserve_aspect_ratio=False)
 
     bbox = square.get_bounding_box()
     torch.testing.assert_close(bbox.amin(-2, keepdim=True), expected_lower)
@@ -86,7 +84,7 @@ def test_exact_screen_rectangle_fit_animates_scale_and_position_together():
     expected_lower, expected_upper = _screen_rectangle_at_z_zero(scene, (0, 0), (1, 1))
     target_size = expected_upper - expected_lower
 
-    square.fit_to_screen_rectangle(preserve_aspect_ratio=False)
+    square.fit_to_screen(preserve_aspect_ratio=False)
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
 
     torch.testing.assert_close(
@@ -111,7 +109,7 @@ def test_screen_rectangle_fit_can_preserve_aspect_ratio():
         scene, bottom_left, top_right
     )
 
-    group.fit_to_screen_rectangle(bottom_left, top_right, preserve_aspect_ratio=True)
+    group.fit_to_screen(bottom_left, top_right, preserve_aspect_ratio=True)
 
     torch.testing.assert_close(group.get_width() / group.get_height(), source_ratio)
     torch.testing.assert_close(
@@ -150,7 +148,7 @@ def test_screen_rectangle_fit_keeps_a_mob_with_depth_inside_the_frame(camera_rot
             scene.camera.rotate(camera_rotation, UP, about_point=ORIGIN)
     cube = Cube(add_to_scene=False)
 
-    cube.fit_to_screen_rectangle()
+    cube.fit_to_screen()
 
     screen = _rendered_screen_coords(scene, cube.get_boundary_points_recursive())
     assert float(screen.amin(0).min()) >= -1e-3
@@ -172,7 +170,7 @@ def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
         scene.camera.rotate(30, UP, about_point=ORIGIN)
     square = Square(add_to_scene=False)
 
-    square.fit_to_screen_rectangle((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
+    square.fit_to_screen((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
 
     screen = _rendered_screen_coords(
         scene, square._get_bounding_box_aligned_to(square._screen_axes())
@@ -193,7 +191,7 @@ def test_screen_rectangle_fit_uses_a_camera_aligned_bounding_box():
     with Off():
         square.rotate(30, UP, about_point=ORIGIN)
 
-    square.fit_to_screen_rectangle((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
+    square.fit_to_screen((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
 
     screen = _rendered_screen_coords(scene, square.get_boundary_points_recursive())
     torch.testing.assert_close(
@@ -240,9 +238,9 @@ def test_move_center_to_screen_position_accepts_screen_edges():
 )
 def test_screen_rectangle_fit_rejects_invalid_rectangles(bottom_left, top_right):
     with pytest.raises(AlganConfigurationError, match="screen rectangle"):
-        Square(add_to_scene=False).fit_to_screen_rectangle(bottom_left, top_right)
+        Square(add_to_scene=False).fit_to_screen(bottom_left, top_right)
 
 
 def test_screen_rectangle_fit_rejects_zero_sized_mobs():
     with pytest.raises(AlganConfigurationError, match="zero width or height"):
-        Mob(add_to_scene=False).fit_to_screen_rectangle()
+        Mob(add_to_scene=False).fit_to_screen()

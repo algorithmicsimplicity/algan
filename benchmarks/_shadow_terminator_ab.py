@@ -128,7 +128,7 @@ def _ground():
 
 
 def build_scene(label):
-    Scene.set_background_color(BLACK)
+    Scene.set_background(BLACK)
     with Off():
         AmbientLight(color=WHITE, intensity=0.06).spawn(animate=False)
 

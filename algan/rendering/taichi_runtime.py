@@ -507,7 +507,7 @@ def taichi_launch_is_local(device):
 #: CPU batch-prep kernels that are dispatched by default.
 #:
 #: Only ``cpunormals`` pays. ``benchmarks/_cpu_prep_kernels_ab.py`` measures the
-#: other two at **0.69-1.03x** (the gather) and **0.79-0.81x** (the colour bake)
+#: other two at **0.69-1.03x** (the gather) and **0.79-0.81x** (the color bake)
 #: -- both byte-identical, both slower than the torch call they replace, on the
 #: shapes the batched build passes. They are the same shape of work the timeline
 #: query turned out to be: a memory-bound copy with nothing to fuse, where

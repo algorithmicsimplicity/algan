@@ -238,7 +238,7 @@ def test_a_flat_circuit_says_how_to_get_a_grid():
 def test_a_function_returning_the_wrong_count_is_rejected():
     SceneManager.reset()
     square = Square(texture_grid_width=3, add_to_scene=False)
-    with pytest.raises(ValueError, match="one colour per texel"):
+    with pytest.raises(ValueError, match="one color per texel"):
         square.set_color_by_function(lambda uv: torch.zeros(4, 3))
 
 

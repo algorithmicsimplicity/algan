@@ -1,7 +1,7 @@
 """Batched triangle geometry for the renderer.
 
 :class:`TrianglePrimitive` is what a mesh Mob hands the renderer: a batch of
-triangles as corner positions, normals and per-vertex colours, along with the
+triangles as corner positions, normals and per-vertex colors, along with the
 material parameters the shading kernel reads.
 
 Primitives from many Mobs are grouped by
@@ -35,7 +35,7 @@ def _broadcast_channel(values, rows):
     """A contiguous 1-D buffer plus the row stride that reads ``values`` from it.
 
     ``glow`` and ``opacity`` arrive as ``broadcast_all`` results -- ``expand``ed
-    stride-0 views over the colour rows -- and Taichi takes only contiguous
+    stride-0 views over the color rows -- and Taichi takes only contiguous
     ndarrays. Rather than materialize the expansion (which is most of the traffic
     the kernel exists to avoid), hand the kernel the underlying element(s) and
     let a stride of 0 do the broadcasting. Returns None for anything else, which
@@ -142,17 +142,17 @@ class TrianglePrimitive(RenderPrimitive):
         self.min_interpolation_coord = 0
         self.uvs = None
         self.texture_map = None
-        # Per-frame mob opacity for the colour map, applied in the sampler
+        # Per-frame mob opacity for the color map, applied in the sampler
         # instead of premultiplied into the map (texture_opacity_in_kernel);
         # None = the map arrived premultiplied. Set post-construction by the
         # mob that builds the primitive, like ``mesh_ids``.
         self.texture_opacity = None
-        # Authoring-side proof that every colour-map texel is exactly k/255
+        # Authoring-side proof that every color-map texel is exactly k/255
         # with zero glow (texture_u8_storage); the merge trusts this rather
         # than probing texels (a probe is a device sync on the prefetch
         # worker).
         self.texture_u8_ok = False
-        # Per-frame endpoint interpolation for the colour map
+        # Per-frame endpoint interpolation for the color map
         # (texture_time_lerp): a ``[T, 3]`` float tensor of (endpoint index,
         # endpoint index, weight) rows. When set, ``texture_map`` is a
         # ``[1, K, H, W, 5]`` stack of AUTHORED endpoint images (the leading
@@ -221,7 +221,7 @@ class TrianglePrimitive(RenderPrimitive):
                     merged_uvs.append(uv)
                 self.uvs = unsquish(torch.cat(merged_uvs, 1), -2, 3)
 
-            # Texture maps stay on whatever device built them. A colour map
+            # Texture maps stay on whatever device built them. A color map
             # is a wide animated attribute whose frame window materializes on
             # the render device (AttributeTimeline.materialize_device), and
             # relocating it beside the corners meant copying every frame of it

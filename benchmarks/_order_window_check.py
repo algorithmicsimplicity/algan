@@ -234,7 +234,7 @@ def build_scene(scene_kind):
         Sync,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     if scene_kind == "env":
         import torch  # noqa: PLC0415
 

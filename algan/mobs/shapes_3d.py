@@ -550,9 +550,9 @@ class Cone(Surface):
         Retained for Manim compatibility; stored on the instance and not used by
         :meth:`coord_function`. Defaults to ``0``.
     checkerboard_colors
-        Manim's two-tone surface styling: a sequence of two colours becomes
+        Manim's two-tone surface styling: a sequence of two colors becomes
         Algan's ``color`` and ``checkered_color``. Defaults to ``False`` (a single
-        colour).
+        color).
     radius, closed
         Algan's older spellings of ``base_radius`` and ``show_base``. When not
         ``None`` they win over the Manim-named argument. Both default to ``None``.
@@ -1894,7 +1894,7 @@ class Cube(Prism):
         to ``0.75``, Manim's value -- a cube is slightly see-through unless you
         say otherwise.
     fill_color
-        Colour of the faces: an Algan :class:`~algan.constants.color.Color`, a
+        Color of the faces: an Algan :class:`~algan.constants.color.Color`, a
         named constant such as ``BLUE``, or anything ``Color()`` accepts.
         Defaults to ``None``, meaning ``BLUE``.
     stroke_width

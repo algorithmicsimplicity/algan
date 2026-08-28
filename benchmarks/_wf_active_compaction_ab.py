@@ -50,7 +50,9 @@ from algan.settings.renderer_settings import RENDERER_SETTINGS  # noqa: E402
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)
 REPS = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-BENCH_SETTINGS = RenderSettings((640, 360), 1, anti_alias_level=1, fxaa=False)
+BENCH_SETTINGS = RenderSettings(
+    (640, 360), 1, super_sampling_anti_aliasing=1, fxaa=False
+)
 
 
 def build():

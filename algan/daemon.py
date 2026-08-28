@@ -146,7 +146,7 @@ from algan.environment import env_flag, env_int, env_str
 from algan.logging.logger import apply_environment_logging
 from algan.settings import SETTINGS
 from algan.settings.path_settings import output_filename_for, output_root_for
-from algan.utils.memory_utils import empty_cache
+from algan.utils.memory_utils import release_torch_memory
 
 
 def default_port():
@@ -240,7 +240,7 @@ def _release_run_memory():
     ``gc.collect()`` is what actually releases the tensors. They then sit in
     torch's caching allocator, visible to the next run but not to any other
     process, until ``torch.cuda.empty_cache()`` returns the blocks to the
-    driver. :func:`algan.utils.memory_utils.empty_cache` does both.
+    driver. :func:`algan.utils.memory_utils.release_torch_memory` does both.
 
     The cost is paid by the *next* run, which re-acquires its blocks from the
     driver instead of from the cache; that is a few milliseconds against a
@@ -250,7 +250,7 @@ def _release_run_memory():
         return
     before = _torch_reserved_bytes()
     started = time.perf_counter()
-    empty_cache(force_gc=True)
+    release_torch_memory(force_gc=True)
     after = _torch_reserved_bytes()
     if before is None or after is None:
         return

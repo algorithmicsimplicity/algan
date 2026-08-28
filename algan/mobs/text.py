@@ -144,10 +144,10 @@ class Tex(Mob):
         string cannot carry either). Defaults to ``None``. Set for you by
         :class:`~algan.mobs.text.Text`.
     sync_border_color
-        Whether a glyph coloured by Pango styling also gets that colour on its
+        Whether a glyph colored by Pango styling also gets that color on its
         border. Only has an effect when a border is actually drawn
         (``border_width`` above 0). Defaults to ``True``; pass an explicit
-        ``border_color`` to keep one outline colour across styled glyphs.
+        ``border_color`` to keep one outline color across styled glyphs.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` and to the packed
         :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` -- notably
@@ -655,10 +655,10 @@ class Text(Tex):
         halved on the way in, because Algan's ``border_width`` is half of
         Manim's for the same visual weight. Defaults to ``0``, no outline.
     color
-        Colour of the glyphs, and of their outline if one is drawn. Accepts an
+        Color of the glyphs, and of their outline if one is drawn. Accepts an
         Algan :class:`~algan.constants.color.Color`, a named constant such as
         ``BLUE``, or anything ``Color()`` accepts. Defaults to ``None``, meaning
-        Algan's default text colour (``WHITE``).
+        Algan's default text color (``WHITE``).
     font_size
         Glyph size in Manim's font-size units; the glyphs are built at 48 and
         scaled by ``font_size / 48``. Defaults to ``48``, so plain ``Text`` comes
@@ -676,22 +676,22 @@ class Text(Tex):
         ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, and the rest.
         Defaults to ``"NORMAL"``.
     t2c
-        Text-to-colour: maps a substring to the colour its glyphs take. Colour
-        values may be Algan colours (glow and opacity survive), hex strings, or
-        named Manim colours. A value of pure white is indistinguishable from
-        unstyled text and falls back to the base colour. Defaults to ``None``.
+        Text-to-color: maps a substring to the color its glyphs take. Color
+        values may be Algan colors (glow and opacity survive), hex strings, or
+        named Manim colors. A value of pure white is indistinguishable from
+        unstyled text and falls back to the base color. Defaults to ``None``.
     t2f
         Text-to-font: maps a substring to a font family. Defaults to ``None``.
     t2g
-        Text-to-gradient: maps a substring to a tuple of colours to fade
+        Text-to-gradient: maps a substring to a tuple of colors to fade
         between across it. Defaults to ``None``.
     t2s
         Text-to-slant: maps a substring to a slant name. Defaults to ``None``.
     t2w
         Text-to-weight: maps a substring to a weight name. Defaults to ``None``.
     gradient
-        A tuple of colours faded across the whole string. Defaults to ``None``,
-        one flat colour.
+        A tuple of colors faded across the whole string. Defaults to ``None``,
+        one flat color.
     tab_width
         How many spaces a tab in ``text`` expands to. Defaults to ``4``.
     warn_missing_font
@@ -721,7 +721,7 @@ class Text(Tex):
 
     Examples
     --------
-    Plain prose, and the same words with one span coloured:
+    Plain prose, and the same words with one span colored:
 
     .. algan:: Example1Text
         :save_last_frame:
@@ -892,9 +892,9 @@ class MarkupText(Text):
     entities are unescaped, and every other tag is deleted before the text is
     typeset. This happens whether or not the optional Pango renderer is
     available, so a ``<span foreground='red'>`` span comes out in the Mob's own
-    colour, not red. The source you passed is kept on ``original_text``.
+    color, not red. The source you passed is kept on ``original_text``.
 
-    To colour or restyle part of a string, use :class:`~algan.mobs.text.Text`'s
+    To color or restyle part of a string, use :class:`~algan.mobs.text.Text`'s
     ``t2c`` / ``t2f`` / ``t2s`` / ``t2w`` / ``t2g`` arguments instead -- those do
     reach the renderer.
 
@@ -924,7 +924,7 @@ class MarkupText(Text):
 
     Examples
     --------
-    A markup string, and the ``Text`` spelling that actually colours the span:
+    A markup string, and the ``Text`` spelling that actually colors the span:
 
     .. algan:: Example1MarkupText
         :save_last_frame:

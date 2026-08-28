@@ -90,7 +90,7 @@ def _backdrop():
 
 
 def build_scene(label):
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         AmbientLight(color=WHITE, intensity=0.35).spawn(animate=False)
         PointLight(location=LEFT * 4 + UP * 3 + OUT * 4).spawn(animate=False)

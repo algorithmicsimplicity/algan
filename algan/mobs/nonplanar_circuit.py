@@ -72,7 +72,7 @@ Known limits, all of them exotic in Manim-imported geometry:
   therefore agree on its position exactly but on its normal only to the tiling's
   own accuracy (~2.5 degrees on a stock ``Sphere()``, a sub-pixel seam at 1080p,
   against the 0.017-world-unit gap flattening opens there).
-* A non-planar circuit's texture grid is collapsed to one colour per member.
+* A non-planar circuit's texture grid is collapsed to one color per member.
   The grid is laid out across a circuit's plane frame, which a patch group and a
   split stroke no longer share.
 """
@@ -131,7 +131,7 @@ class NonPlanarPlan:
     """The construction-time decision for one non-planar circuit.
 
     Topology only -- segment groupings and vertex index lists.  Every position,
-    normal and colour is read from the live timeline at render time, so the plan
+    normal and color is read from the live timeline at render time, so the plan
     survives any amount of animation.
     """
 
@@ -750,7 +750,7 @@ def _per_item(value, member_of, frames):
 
 
 def _member_colors(values, num_members, channels):
-    """One colour per packed member, averaging a member's texture grid.
+    """One color per packed member, averaging a member's texture grid.
 
     A circuit's texture grid is laid out across its plane frame, and neither a
     patch group nor a split stroke has that frame any more, so the grid collapses

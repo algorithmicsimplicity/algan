@@ -117,7 +117,7 @@ class BackgroundRectangle(SurroundingRectangle):
         **kwargs: Any,
     ) -> None:
         if color is None:
-            color = config.background_color
+            color = config.background
 
         super().__init__(
             *mobjects,

@@ -280,7 +280,7 @@ class Mobject:
         .. manim:: ChangedDefaultTextcolor
             :save_last_frame:
 
-            config.background_color = WHITE
+            config.background = WHITE
 
             class ChangedDefaultTextcolor(Scene):
                 def construct(self):

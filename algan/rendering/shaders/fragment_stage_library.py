@@ -2,7 +2,7 @@
 
 Where :mod:`algan.constants.material_presets` collects material *presets*, this
 collects composable :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`
-looks. Every stage here is **additive**: it adds to the colour it is handed
+looks. Every stage here is **additive**: it adds to the color it is handed
 rather than replacing it, so it layers over a lit base material::
 
     from algan import *
@@ -107,7 +107,7 @@ def _stage_glass_ball(
     cam_pos,
 ):
     """Studio glass-ball edge: two Fresnel lobes, a silhouette ring and two
-    screen-space specular blobs, all added to the incoming colour.
+    screen-space specular blobs, all added to the incoming color.
     """
     tm = f % params.shape[0]
     rim = ti.math.vec3(
@@ -198,7 +198,7 @@ def _stage_glass_ball(
 #: ``key_x``/``key_y`` are fractions of the radius, right and up from the centre,
 #: and ``key_angle`` (radians) tilts the streak.
 #:
-#: Compose over a lit base or use alone over a flat colour::
+#: Compose over a lit base or use alone over a flat color::
 #:
 #:     ball.set_fragment_shader(glass_ball)
 #:     ball.edge_color = (0.6, 0.9, 1.0)

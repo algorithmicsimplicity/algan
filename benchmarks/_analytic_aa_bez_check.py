@@ -5,7 +5,7 @@ See ``algan/rendering/raytracing/DESIGN_analytic_aa.md``.  Phase 1 gives every
 circuit fragment the fraction of the pixel square its drawn region covers
 (a box filter of the outline SDF that ``_bezier_point_metrics`` already
 computes) and folds that into the fragment's alpha, so a render at
-``anti_alias_level = 1`` resolves circuit edges continuously instead of
+``super_sampling_anti_aliasing = 1`` resolves circuit edges continuously instead of
 all-or-nothing.
 
 Three things are checked, per config:
@@ -305,7 +305,7 @@ def render_once(cfg, aa_level, analytic, tag, seam=True, sliver=None, exact=None
     name = f"aaBez_{cfg}_{tag}"
     path = os.path.join(OUT_DIR, name + ".mp4")
     settings = VideoSettings(
-        (BASE_W, BASE_H), frames_per_second=FPS, anti_alias_level=aa_level
+        (BASE_W, BASE_H), frames_per_second=FPS, super_sampling_anti_aliasing=aa_level
     )
     with Scene(video_settings=settings) as scene:
         build_scene(cfg)

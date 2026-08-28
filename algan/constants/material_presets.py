@@ -8,10 +8,10 @@ The presets are reusable material configuration objects intended for
     table = Prism().set_material(WOOD).spawn()
     window = Prism(color=BLUE_A).set_material(GLASS).spawn()
 
-Presets with ``color=None`` preserve the Mob's existing colour.  Presets named
-for a naturally coloured substance (for example ``WOOD`` and ``COPPER``)
-provide a representative base colour.  These presets describe surface response
-and, where appropriate, a flat base colour; they do not add texture maps.
+Presets with ``color=None`` preserve the Mob's existing color.  Presets named
+for a naturally colored substance (for example ``WOOD`` and ``COPPER``)
+provide a representative base color.  These presets describe surface response
+and, where appropriate, a flat base color; they do not add texture maps.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ WOOD = MeshStandardMaterial(color=0x8B5A2B, roughness=0.75, metalness=0.0)
 RUBBER = MeshStandardMaterial(roughness=0.9, metalness=0.0)
 STONE = MeshStandardMaterial(color=0x8A8175, roughness=0.95, metalness=0.0)
 
-# Dielectrics.  Their unset colour lets an authored Mob colour tint the preset.
+# Dielectrics.  Their unset color lets an authored Mob color tint the preset.
 GLASS = MeshPhysicalMaterial(
     roughness=0.05,
     metalness=0.0,

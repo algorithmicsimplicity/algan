@@ -585,4 +585,4 @@ def test_doc_example_renders(example: DocExample):
     # Reclaim between examples. Every example renders in this one process and
     # the arenas are not all released on scope exit, so without this the tier
     # grows without bound and is killed part way through.
-    algan.empty_cache()
+    algan.release_torch_memory()

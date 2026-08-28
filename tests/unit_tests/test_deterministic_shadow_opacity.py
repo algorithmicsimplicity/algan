@@ -40,7 +40,7 @@ def _render_shadow_luminance(tmp_path, name, blocker_opacities):
     output_path = tmp_path / name
     SceneManager.reset()
     with Scene(video_settings=SHADOW_TEST_SETTINGS) as scene:
-        scene.set_background_color(BLACK)
+        scene.set_background(BLACK)
         with Off():
             PointLight(
                 location=RIGHT * 3.0 + OUT * 3.0,

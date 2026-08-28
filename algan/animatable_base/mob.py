@@ -73,19 +73,19 @@ from algan.utils.tensor_utils import (
 _SETTABLE_PROPERTY_CACHE: dict[type, tuple[int, set[str]]] = {}
 
 
-#: Colour attributes stored in Algan's five-channel layout
+#: Color attributes stored in Algan's five-channel layout
 #: ``[R, G, B, glow, opacity]``. Every *other* attribute whose name contains
 #: "color" is a material shader parameter, packed as plain RGB (see
-#: ``materials._to_color3``), so a parsed colour is trimmed for those instead
+#: ``materials._to_color3``), so a parsed color is trimmed for those instead
 #: of widened -- widening them silently changed the shader parameter layout.
 _FIVE_CHANNEL_COLOR_ATTRS = frozenset({"color", "border_color"})
 
 
 def _coerce_if_color(attr, value):
-    """Parse the colour spellings users reach for, on colour attributes only.
+    """Parse the color spellings users reach for, on color attributes only.
 
-    Keyed on the attribute name because a non-colour attribute must keep
-    taking exactly what it takes: a hex int is a colour on ``color`` and a
+    Keyed on the attribute name because a non-color attribute must keep
+    taking exactly what it takes: a hex int is a color on ``color`` and a
     plain number on ``glow``.
     """
     if "color" not in attr:
@@ -311,7 +311,7 @@ class Mob(
     #: It does not change what the Mob does to OTHER surfaces -- a Mob that
     #: receives no shadow still casts one unless :attr:`casts_shadows` says
     #: otherwise. Use it to keep a surface legible where a correct shadow would
-    #: not be: a caption laid on a shadowed floor, a colour key or legend that
+    #: not be: a caption laid on a shadowed floor, a color key or legend that
     #: has to stay readable wherever it is placed.
     #:
     #: Set it before the Mob is spawned, and like ``casts_shadows`` it is a
@@ -918,19 +918,19 @@ class Mob(
         restore_resolution: bool = True,
         **kwargs,
     ) -> Mob:
-        """Send a colour pulse travelling across the Mob.
+        """Send a color pulse travelling across the Mob.
 
         Every renderable part of the Mob pulses, but each one starts a little
-        later than the part behind it, so the colour sweeps across the shape
+        later than the part behind it, so the color sweeps across the shape
         instead of flashing all at once. Parts are ordered by their position
         along ``direction``.
 
-        The colour is carried by the Mob's vertices, so a Mob sampled more
+        The color is carried by the Mob's vertices, so a Mob sampled more
         coarsely than the wave is wide would show the pulse as a few flat facets
         -- a :class:`~algan.mobs.surfaces.surface.Surface` shaped like a flat
         sheet has vertices only at its corners, and a filled
         :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` has a single
-        colour sample by default. Such Mobs are re-sampled finely enough to draw
+        color sample by default. Such Mobs are re-sampled finely enough to draw
         the wave and, by default, dropped back to their original resolution once
         the block containing the wave is over; see ``samples_per_wave`` and
         ``restore_resolution``.
@@ -950,7 +950,7 @@ class Mob(
         Parameters
         ----------
         color
-            Colour for the wave to pulse to. Defaults to ``None``, which pulses
+            Color for the wave to pulse to. Defaults to ``None``, which pulses
             only opacity (pass one through ``**kwargs``).
         wave_length
             How spread out the wave is: each part's own pulse lasts
@@ -966,10 +966,10 @@ class Mob(
             Seconds between the first part starting its pulse and the last one
             starting theirs. Defaults to ``1``.
         samples_per_wave
-            How many colour samples to fit across the width of the travelling
+            How many color samples to fit across the width of the travelling
             band. Parts already sampled at least this finely along ``direction``
             are left alone; coarser ones are temporarily refined. Defaults to
-            ``12`` -- a pulse is two straight ramps, which colour interpolation
+            ``12`` -- a pulse is two straight ramps, which color interpolation
             reproduces exactly, so this only has to round off the peak between
             them and raising it buys geometry rather than smoothness. Pass
             ``None`` to leave every part's resolution exactly as it is.
@@ -982,7 +982,7 @@ class Mob(
             extent, never in pixels, so a mob a few dozen pixels wide is refined
             as heavily as a full-screen one.
         restore_resolution
-            Whether refined colour grids return to their original resolution
+            Whether refined color grids return to their original resolution
             when the enclosing animation block ends. Defaults to True. Set to
             False when a newly spawned object must retain one stable topology
             throughout and after its materialization wave.
@@ -1039,7 +1039,7 @@ class Mob(
         return self
 
     def _wave_pulsed_parts(self):
-        """Internal: the parts :meth:`~.Mob.wave_color` pulses one colour each.
+        """Internal: the parts :meth:`~.Mob.wave_color` pulses one color each.
 
         Only primitive parts, so the wave animates on individual rendering
         elements rather than on the containers holding them.
@@ -1116,7 +1116,7 @@ class Mob(
         return restores
 
     def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
-        """Internal: temporarily re-sample this Mob to render a colour wave.
+        """Internal: temporarily re-sample this Mob to render a color wave.
 
         Does nothing by default. Mobs that can rebuild themselves at a different
         resolution -- :class:`~algan.mobs.surfaces.surface.Surface` from its
@@ -1130,7 +1130,7 @@ class Mob(
             distances are measured by projecting onto it, exactly as the wave's
             own lag is.
         max_spacing
-            Largest projected gap between neighbouring colour samples that still
+            Largest projected gap between neighbouring color samples that still
             draws the wave smoothly, in the units ``direction`` projects to.
         pulsed_attrs
             Names of the attributes the wave writes on each part -- ``"color"``,
@@ -1949,7 +1949,7 @@ class Mob(
         """Raise if any of the given names is not an animatable attribute.
 
         Called by :meth:`~.Mob.set` so that a typo such as
-        ``mob.set(colour=BLUE)`` fails immediately with the list of available
+        ``mob.set(color=BLUE)`` fails immediately with the list of available
         attributes, instead of silently animating nothing.
 
         Parameters
@@ -1987,7 +1987,7 @@ class Mob(
 
         The non-propagating counterpart of :meth:`~.Mob.set`. Use it when a
         parent's own value should change while its children keep theirs -- for
-        instance recolouring a Group's frame without recolouring its contents.
+        instance recoloring a Group's frame without recoloring its contents.
 
         Animation
         ---------
@@ -2017,7 +2017,7 @@ class Mob(
 
         The attributes change together rather than one after another, which is
         what you want for a single visual beat: ``mob.set(location=RIGHT,
-        color=BLUE)`` slides and recolours in the same second, where two separate
+        color=BLUE)`` slides and recolors in the same second, where two separate
         statements would take two seconds inside a :class:`~.Seq`.
 
         Animation

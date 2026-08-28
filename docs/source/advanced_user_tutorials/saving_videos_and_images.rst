@@ -177,5 +177,5 @@ See Also
 * :doc:`multi_scene_projects` -- rendering a video made of many scenes.
 * :doc:`transparent_backgrounds` -- rendering with an alpha channel, and why
   that changes the container.
-* :doc:`backgrounds_and_post_processing` -- ``background_color`` and
+* :doc:`backgrounds_and_post_processing` -- ``background`` and
   ``post_processes``.

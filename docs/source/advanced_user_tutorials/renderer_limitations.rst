@@ -45,7 +45,7 @@ row links to the section that explains it.
      - No
      - No
      - `Anti-aliasing`_
-   * - Supersampling (``anti_alias_level``)
+   * - Supersampling (``super_sampling_anti_aliasing``)
      - Ignored
      - Yes
      - Folded into the sample count
@@ -214,8 +214,9 @@ Within the deterministic renderer: two paths
 
 The deterministic renderer has an **analytic-coverage path** (the default, and
 the one every example in these docs uses) and a **supersampled fallback**. The
-fallback renders the frame at ``anti_alias_level`` times the output resolution
-and box-filters it back down, casting one primary ray per sub-pixel sample.
+fallback renders the frame at ``super_sampling_anti_aliasing`` (``ssaa``) times
+the output resolution and box-filters it back down, casting one primary ray per
+sub-pixel sample.
 
 A batch falls back when any of the following holds:
 
@@ -241,11 +242,11 @@ A batch falls back when any of the following holds:
 The fallback is a genuine quality *and* cost change, so it is worth knowing when
 you are on it:
 
-* Analytic coverage is off. Edge quality is whatever ``anti_alias_level``
-  (default ``2``) buys.
-* The frame buffer is ``anti_alias_level ** 2`` times larger, so batches shrink
-  by the same factor and the render takes correspondingly longer. At the default
-  that is 4x.
+* Analytic coverage is off. Edge quality is whatever
+  ``super_sampling_anti_aliasing`` (default ``2``) buys.
+* The frame buffer is ``super_sampling_anti_aliasing ** 2`` times larger, so
+  batches shrink by the same factor and the render takes correspondingly longer.
+  At the default that is 4x.
 * Per-fragment shading, shadows, reflection and refraction all still work. Only
   the way primary visibility and coverage are resolved changes.
 
@@ -687,8 +688,9 @@ What analytic coverage does and does not resolve
 Other anti-aliasing notes
 -------------------------
 
-* ``anti_alias_level`` is **ignored** on the analytic path, which always renders
-  at output resolution. It applies only on the supersampled fallback.
+* ``super_sampling_anti_aliasing`` is **ignored** on the analytic path, which
+  always renders at output resolution. It applies only on the supersampled
+  fallback.
 * FXAA is available (``video_settings.fxaa``). It runs on linear HDR values
   before tonemapping, where its luma-based edge detection is not the one it was
   designed around.

@@ -24,7 +24,7 @@ from algan import *
 # tests/conftest.py registers the vendored faces.
 FONT = "Algan Test Sans"
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 # A non-convex circuit: five outer points and five inner points, so the fill
 # rule and the triangulation of a re-entrant outline are both under test.

@@ -6,7 +6,7 @@ so it stays sharp independently of the mesh's resolution.
 
 It is a :class:`~algan.mobs.surfaces.surface.Surface`, so it moves, rotates and
 deforms like any other 3-D Mob -- but it is deliberately unlit: a picture shows
-its own colours rather than a lighting gradient, whatever the Scene's lights are
+its own colors rather than a lighting gradient, whatever the Scene's lights are
 doing.
 
 Paths resolve against the working directory and then against the directory
@@ -41,7 +41,7 @@ class ImageMob(Surface):
     :class:`~algan.mobs.surfaces.surface.Surface` with color set according
     to a given image (or image file path).
 
-    The picture is shown unlit -- its own colours, unaffected by the Scene's
+    The picture is shown unlit -- its own colors, unaffected by the Scene's
     lights.
 
     Parameters
@@ -79,7 +79,7 @@ class ImageMob(Surface):
             # ``IndexError: tuple index out of range`` from the shape lookup
             # two lines down.
             raise AlganConfigurationError(
-                f"An image needs a height, a width and colour channels: "
+                f"An image needs a height, a width and color channels: "
                 f"expected an array of shape [H, W, C] (C of 3, 4 or 5) or a "
                 f"path to an image file, got an array of shape "
                 f"{tuple(rgba_array.shape)}."
@@ -106,7 +106,7 @@ class ImageMob(Surface):
         if not textured:
             self.grid._setattr_without_record("color", surface_colors.flatten(-3, -2))
         # A picture plane is unlit: null_shader returns the albedo unchanged,
-        # so the image shows its own colours instead of a lighting gradient.
+        # so the image shows its own colors instead of a lighting gradient.
         # Called after super().__init__ so it reaches the grid that actually
         # renders (set_shader walks the descendants), and before spawn, as
         # set_shader requires.

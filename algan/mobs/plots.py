@@ -219,7 +219,7 @@ class FunctionPlotMob(Mob):
     width : float, default=0.02
         Stroke width of the plotted curve.
     func_color : Color, default=RED_A
-        Colour of the plotted function curve or bars.
+        Color of the plotted function curve or bars.
     num_points : int, default=200
         Number of sample points evaluated along the domain.
     offset : float, default=1.0

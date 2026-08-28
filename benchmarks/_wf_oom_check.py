@@ -28,7 +28,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 enable_ray_tracing(1, pn_triangles=True, fragment_shading=True, shadows=False)
 set_wavefront(True)
-HD.anti_alias_level = 2
+HD.super_sampling_anti_aliasing = 2
 
 scene = SceneManager.instance()
 scene.set_render_settings(HD)

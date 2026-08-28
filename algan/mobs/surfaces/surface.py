@@ -19,7 +19,7 @@ whichever is finer at the resolution being rendered is the one that binds.
 
 Surfaces carry the texture-map API: ``color_texture`` plus per-texel
 reflectivity, roughness, refractive-index, normal and glow maps, all sampled in
-the ray-tracing kernel. :meth:`Surface.set_color_by_function` colours by ``(u, v)``,
+the ray-tracing kernel. :meth:`Surface.set_color_by_function` colors by ``(u, v)``,
 :meth:`Surface.set_color_by_image` paints an image across the domain, and
 :meth:`Surface.set_shape_to` morphs one surface into another.
 
@@ -71,11 +71,11 @@ from algan.utils.tensor_utils import (
 
 
 def _as_member_colors(colors, count):
-    """Cast per-member colours to Algan's ``[N, 5]`` RGB+glow+opacity form.
+    """Cast per-member colors to Algan's ``[N, 5]`` RGB+glow+opacity form.
 
     Accepts RGB, RGBA or the full five channels, matching what
     :class:`~algan.constants.color.Color` stores, so a point cloud's RGBA array
-    and a list of named colours both work.
+    and a list of named colors both work.
     """
     colors = cast_to_tensor(colors).reshape(-1, cast_to_tensor(colors).shape[-1])
     if len(colors) == 1 and count > 1:
@@ -90,7 +90,7 @@ def _as_member_colors(colors, count):
     ones = torch.ones_like(colors[..., :1])
     zeros = torch.zeros_like(colors[..., :1])
     if channels == 4:
-        # RGBA: glow sits between the colour and the opacity.
+        # RGBA: glow sits between the color and the opacity.
         return torch.cat((colors[..., :3], zeros, colors[..., 3:4]), -1).contiguous()
     if channels == 3:
         return torch.cat((colors, zeros, ones), -1).contiguous()
@@ -442,7 +442,7 @@ def grid_to_triangle_vertices(grid, weld=(False, False, False)):
     """Internal: gather a per-grid-point quantity into per-triangle-vertex form.
 
     Turns values laid out on the surface grid into the flat triangle-vertex layout the
-    renderer consumes. Works for positions, normals and colours alike.
+    renderer consumes. Works for positions, normals and colors alike.
 
     Parameters
     ----------
@@ -1130,9 +1130,9 @@ class Surface(Mob):
         # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         # Opt-in Manim shape profile: a mapped shape adopts Manim's
         # constructor fill (and checkerboard pair) unless the caller passed a
-        # colour of its own -- ``Sphere(checkerboard_colors=[a, b])`` arrives
+        # color of its own -- ``Sphere(checkerboard_colors=[a, b])`` arrives
         # here already translated to ``color``/``checkered_color``. Injected
-        # here so both the Mob's own colour attribute and the grid child built
+        # here so both the Mob's own color attribute and the grid child built
         # below carry it.
         if "color" not in kwargs:
             style = _manim_shape_style_for(type(self))
@@ -1229,7 +1229,7 @@ class Surface(Mob):
         )
 
         # Parsed here because the vertex grid below indexes and assigns into a
-        # colour tensor, so a hex string or an RGB tuple has to be a colour
+        # color tensor, so a hex string or an RGB tuple has to be a color
         # before it reaches Mob.__init__.
         color = to_color(
             kwargs["color"] if "color" in kwargs else self.get_default_color()
@@ -1297,7 +1297,7 @@ class Surface(Mob):
         the pack's timeline rows.
 
         Every member has the same shape, resolution and material -- only its
-        centre and colour vary. Anything else that differs needs separate Mobs.
+        centre and color vary. Anything else that differs needs separate Mobs.
 
         Parameters
         ----------
@@ -1305,7 +1305,7 @@ class Surface(Mob):
             World-space centre of each surface, shape ``(N, 3)`` in world units.
             Any nested sequence is cast to a tensor and reshaped.
         colors
-            Per-member colour, shape ``(N, 3)`` as RGB, ``(N, 4)`` as RGBA or
+            Per-member color, shape ``(N, 3)`` as RGB, ``(N, 4)`` as RGBA or
             ``(N, 5)`` as Algan's RGB+glow+opacity. Defaults to None, giving
             every member the ``color`` passed in ``kwargs``.
         *args, **kwargs
@@ -1347,7 +1347,7 @@ class Surface(Mob):
             raise ValueError("from_batches requires at least one centre")
 
         # One representative member through the ordinary constructor, at the
-        # first centre. The resolution search, colour grid, textures and
+        # first centre. The resolution search, color grid, textures and
         # materials are then exactly what a lone member would have got, and the
         # packing below only widens rows -- which is what keeps a pack
         # bit-identical to batch_mobs over separately constructed members.
@@ -1397,7 +1397,7 @@ class Surface(Mob):
                 .contiguous()
                 .view(1, count, points_per_grid, grid_color.shape[-1])
             )
-            # __init__ lays a grid out as alternating colour / checkered-colour
+            # __init__ lays a grid out as alternating color / checkered-color
             # rows. Substitute per-member values into that same layout instead
             # of rebuilding it, so the two constructions cannot drift apart.
             packed[:, :, ::2] = member_colors.view(1, count, 1, -1)
@@ -1448,7 +1448,7 @@ class Surface(Mob):
 
         Assigning an image maps it over the surface's parameter domain, so it follows
         the surface as it deforms. ``None`` means the surface is drawn from its
-        per-vertex colours instead. Assigning a texture whose resolution differs from
+        per-vertex colors instead. Assigning a texture whose resolution differs from
         the current one detaches history, since the two cannot be interpolated.
 
         Reading it back gives the image in that same ``[W, H, 5]`` layout -- not the
@@ -1458,12 +1458,12 @@ class Surface(Mob):
             surface.color_texture = surface.color_texture * 0.5  # half brightness
 
         The value is a :class:`~algan.constants.color.Color`, one per texel, so the
-        colour API applies to a whole map at once::
+        color API applies to a whole map at once::
 
             surface.color_texture = surface.color_texture.mult_opacity(0.5)
 
         Its five channels are ``(R, G, B, glow, alpha)``, which is why the plain
-        multiplication above dims the alpha and the glow along with the colour.
+        multiplication above dims the alpha and the glow along with the color.
         Reach for one of them through ``.rgb``, ``.glow`` or ``.opacity`` and assign
         the result back -- the read is a copy, so writing into it alone changes
         nothing::
@@ -1490,7 +1490,7 @@ class Surface(Mob):
         attr = getattr(self, "_color_texture_attr", None)
         if attr is None:
             return None
-        # A texel is a colour, so hand the map back as one: .rgb / .glow /
+        # A texel is a color, so hand the map back as one: .rgb / .glow /
         # .opacity and mult_opacity then apply to the whole image. Only on the
         # public read -- the primitive build goes through
         # _color_texture_uncopied, which keeps its cat and mult_opacity off
@@ -1517,7 +1517,7 @@ class Surface(Mob):
 
     @property
     def _has_color_texture(self):
-        """Whether a colour texture is set, without reading it.
+        """Whether a color texture is set, without reading it.
 
         ``color_texture is not None`` answers the same question by materializing
         the whole image out of the timeline and cloning it. The render loop and
@@ -1528,7 +1528,7 @@ class Surface(Mob):
         return getattr(self, "_color_texture_attr", None) is not None
 
     def _color_texture_uncopied(self):
-        """The colour texture as a read-only view, or None.
+        """The color texture as a read-only view, or None.
 
         Same texels as :attr:`color_texture`, but as the flat ``[..., W*H*5]``
         row the timeline stores and without the defensive clone the public
@@ -1886,7 +1886,7 @@ class Surface(Mob):
         design = torch.cat((canonical, torch.ones_like(canonical[..., :1])), dim=-1)
         # The design matrix is rank deficient whenever the canonical surface is
         # flat in some direction -- a plane spans only three of its four columns
-        # -- which is exactly the shape a colour wave most often has to refine.
+        # -- which is exactly the shape a color wave most often has to refine.
         # ``lstsq``'s CUDA driver assumes full rank and returns garbage there
         # without raising, so take the pseudo-inverse's minimum-norm solution:
         # identical where the fit is determined, and correct on the surface's own
@@ -2847,12 +2847,12 @@ class Surface(Mob):
         return self._change_resolution(width, height, surface_function)
 
     def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
-        """Refine the grid so a travelling colour wave crosses it smoothly.
+        """Refine the grid so a travelling color wave crosses it smoothly.
 
         A surface's grid resolution is chosen to fit its *shape*, so a surface
         that is flat along one axis is sampled only at the ends of it -- enough
-        to draw the geometry, far too coarse to draw a colour band moving across
-        it. Both colour and opacity are carried per grid vertex, so either kind
+        to draw the geometry, far too coarse to draw a color band moving across
+        it. Both color and opacity are carried per grid vertex, so either kind
         of wave benefits. Re-sample the parameter grid finely enough that
         neighbouring vertices are no further than ``max_spacing`` apart along the
         wave, by running ``coord_function`` over a denser ``(u, v)`` grid (see
@@ -2867,7 +2867,7 @@ class Surface(Mob):
             return None
         if self._has_color_texture:
             # Textured surfaces shade from the texture map rather than from
-            # vertex colours, so a finer grid would buy geometry and no pixels.
+            # vertex colors, so a finer grid would buy geometry and no pixels.
             return None
         width, height = self.grid_width, self.grid_height
         location = self.grid.location
@@ -3139,7 +3139,7 @@ class Surface(Mob):
         return ok
 
     def _color_texture_bytes_per_timestep(self) -> int:
-        """This surface's colour-texture cost for one frame, in bytes.
+        """This surface's color-texture cost for one frame, in bytes.
 
         ``color_texture`` is an ordinary animated attribute whose channel width
         is the whole flattened image (``H * W * 5``), so the timeline
@@ -3211,7 +3211,7 @@ class Surface(Mob):
         return rows * texels * 4 * copies
 
     def _get_render_device_memory_used_per_timestep(self) -> int:
-        """This surface's colour-texture cost for one frame on the render device.
+        """This surface's color-texture cost for one frame on the render device.
 
         Zero unless the texture's frame window materializes there (see
         :meth:`_color_texture_bytes_per_timestep`, which then prices it at
@@ -3373,7 +3373,7 @@ class Surface(Mob):
             # a degenerate ``u_range``. There is nothing to draw, and the
             # callers already treat ``None`` as "this actor contributes no
             # geometry". Built anyway, the empty primitive reached
-            # ``broadcast_all`` against one row of colour and failed the whole
+            # ``broadcast_all`` against one row of color and failed the whole
             # render with a tensor-shape error.
             return None
 
@@ -3612,7 +3612,7 @@ class Surface(Mob):
             },
         )
         if texture_opacity is not None:
-            # In-sampler opacity + u8 provenance for the colour map; see the
+            # In-sampler opacity + u8 provenance for the color map; see the
             # texture block above. Post-construction assignment, like
             # ``mesh_ids`` below (the collection wrapper picks both up from
             # the member carrying the map). The provenance only holds while
@@ -3753,7 +3753,7 @@ class Surface(Mob):
         evaluated at the barycentric coordinate -- not the analytic surface at
         the same parameter. The two differ tangentially by a fixed fraction of
         a grid cell (~12% on a stock Sphere), which is what would otherwise
-        scallop a colour boundary once the texture out-resolves the grid.
+        scallop a color boundary once the texture out-resolves the grid.
         """
         width, height = self.grid_width, self.grid_height
         fu = (u.clamp(0, 1) * (width - 1)).view(-1, 1)
@@ -3815,7 +3815,7 @@ class Surface(Mob):
         The positions are read from the surface's current mesh, so they are right
         whether the shape came from its coordinate function, from a deformation,
         or from writing ``surface.grid.location`` yourself. They describe the
-        surface *now*: a texture is carried in ``(u, v)``, so colours derived from
+        surface *now*: a texture is carried in ``(u, v)``, so colors derived from
         world position travel with the surface when it later moves. Recompute them
         in an :meth:`~algan.animatable_base.animatable.Animatable.add_updater`
         callback for a texture that stays locked to world space.
@@ -3858,7 +3858,7 @@ class Surface(Mob):
         :meth:`~algan.mobs.surfaces.surface.Surface.get_base_grid`
             The ``(u, v)`` domain these positions correspond to.
         :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function`
-            Colour the surface's vertices by ``(u, v)`` instead.
+            Color the surface's vertices by ``(u, v)`` instead.
 
         Examples
         --------
@@ -4004,7 +4004,7 @@ class Surface(Mob):
         return self
 
     def get_default_color(self):
-        """Get the colour a Surface uses when none was given.
+        """Get the color a Surface uses when none was given.
 
         Returns
         -------
@@ -4014,22 +4014,22 @@ class Surface(Mob):
         return GREEN
 
     def set_color_by_function(self, function):
-        """Colour the surface by a function of its ``(u, v)`` parameters.
+        """Color the surface by a function of its ``(u, v)`` parameters.
 
-        Gives each point of the grid its own colour, for gradients, heat maps or
-        anything where colour carries data. The colours travel with the surface as it
+        Gives each point of the grid its own color, for gradients, heat maps or
+        anything where color carries data. The colors travel with the surface as it
         deforms.
 
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second by
-        default), so the colours cross-fade smoothly.
+        default), so the colors cross-fade smoothly.
 
         Parameters
         ----------
         function
             Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
-            colours of shape ``[..., 3]`` (RGB), ``[..., 4]`` (RGBA) or ``[..., 5]``
+            colors of shape ``[..., 3]`` (RGB), ``[..., 4]`` (RGBA) or ``[..., 5]``
             (RGB, glow, alpha -- Algan's internal channel order). Channels are in
             ``[0, 1]``; a missing alpha defaults to 1 and a missing glow to 0.
             Must be vectorized over the whole grid.
@@ -4045,7 +4045,7 @@ class Surface(Mob):
             Paint an image on instead.
         """
         new_color = function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
-        # Colours are stored five-channel (RGB + glow + alpha). Accept the
+        # Colors are stored five-channel (RGB + glow + alpha). Accept the
         # three- and four-channel forms a caller naturally writes.
         self.grid.color = Color.add_defaults(new_color)
         return self
@@ -4083,7 +4083,7 @@ class Surface(Mob):
             The attribute this writes, for images already loaded as tensors.
         """
         texture_image = get_image(rgba_array_or_file_path)
-        # A colour texture is indexed by the surface's own axes, (u, v); a
+        # A color texture is indexed by the surface's own axes, (u, v); a
         # loaded image is [row, column] with rows running down the picture.
         # Same transposition ImageMob applies to the array it is built from.
         surface_texture = texture_image.transpose(-3, -2).flip(-2).contiguous()
@@ -4104,7 +4104,7 @@ class Surface(Mob):
         # The texture and the per-vertex bake are one visual change, so they
         # have to be recorded as simultaneous edits: written plainly, an
         # enclosing ``Seq`` would play them one after the other, each over half
-        # its window. The bake keeps the vertex colours in step with the
+        # its window. The bake keeps the vertex colors in step with the
         # texture -- shading reads the texture, but the glow accumulator
         # interpolates triangle corners, and this is the same bake
         # ``Surface(color_texture=...)`` does at construction.
@@ -4126,9 +4126,9 @@ class Surface(Mob):
         return self
 
     def _current_appearance_as_texture(self, texture_shape):
-        """This surface's current colours as a ``[W, H, 5]`` image of the given
-        resolution: its colour texture if it has one, its per-vertex grid colours
-        otherwise. Used as the value a freshly created colour texture
+        """This surface's current colors as a ``[W, H, 5]`` image of the given
+        resolution: its color texture if it has one, its per-vertex grid colors
+        otherwise. Used as the value a freshly created color texture
         interpolates *from*.
         """
         if self._has_color_texture:

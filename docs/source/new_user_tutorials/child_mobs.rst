@@ -219,7 +219,7 @@ evenly instead of leaving equal gaps. ``arrange_in_grid`` takes
 
     :doc:`../advanced_user_tutorials/positioning_and_layout` -- the rest of the
     positioning methods, including screen-relative placement and
-    :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`,
+    :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`,
     which is what you usually want after arranging a group.
 
 Indexing

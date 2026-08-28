@@ -26,7 +26,7 @@ def report(name, make_mob):
         f"_crack_{name}",
         HD,
         overwrite=True,  # noqa: F405
-        background_color=PURE_RED,  # noqa: F405
+        background=PURE_RED,  # noqa: F405
     )
 
     import cv2

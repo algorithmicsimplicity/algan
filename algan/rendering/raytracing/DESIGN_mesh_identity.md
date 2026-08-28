@@ -888,7 +888,7 @@ off was "a texture-mapped or normal-mapped closed surface". Measured,
 
     shape                        tris off   tris on   max|d|   px>2
     plain (Sphere/Cyl/Cone/Torus)    6668      6572        0      0
-    checker (colour texture)         4096      3968        0      0
+    checker (color texture)         4096      3968        0      0
     normals (normal map)             4096      3968        0      0
 
 The weld demonstrably engaged — 128 triangles fewer on the sphere, which is
@@ -2638,7 +2638,7 @@ sha256)**; two with it on are not. So the rule introduced it.
 per-pixel ceiling with `scatter_add_`, which is a float atomic add, so its
 summation order is not reproducible on CUDA — measured directly, a 400k-into-5k
 reduction of this shape spreads **1.5e-05** across six runs and is never bitwise
-equal. A 1e-05 wobble in a colour would be invisible. But this feeds a
+equal. A 1e-05 wobble in a color would be invisible. But this feeds a
 **threshold**: the kernel clips only when `eff > frag_cap - mesh_ink`, so a ceiling
 that moves in its low bits flips borderline fragments in and out of being clipped,
 which is a *finite* coverage change — and this scene carries bloom, which spreads
@@ -2660,7 +2660,7 @@ worth depending on when a dtype change does the job.
 *What it implies for the rest of the renderer.* Any host-side float reduction whose
 result reaches a comparison is a latent nondeterminism bug of this shape. The
 existing `_split_determinism_check` findings are the benign version — float atomic
-adds into `pix_accum`, bounded at `|d| = 1` because they only ever perturb a colour
+adds into `pix_accum`, bounded at `|d| = 1` because they only ever perturb a color
 that is then truncated to `u8`. The dangerous version is a reduction that decides a
 branch, and this was one.
 
@@ -2787,7 +2787,7 @@ wrong about truncation.
 used.** The two arms accumulate `E` differently — the host sums in float64 and
 rounds to f32, the kernel sums f32 sequentially — so they differ in the last
 bits BY CONSTRUCTION. §6.6.4 is the same lesson: a float reduction that feeds a
-threshold is not a colour. Here `E` feeds `|1 - E| > _AA_FULL_DUST`, a division
+threshold is not a color. Here `E` feeds `|1 - E| > _AA_FULL_DUST`, a division
 by `Q`, and `eff > MIN_ALPHA`, and on `materials_and_lighting` it also decides
 whether a fragment emits a SHADOW EVENT, which is discrete — a surface point
 gains or loses a shadow ray rather than shifting by an ulp. That scene is the
@@ -3302,13 +3302,13 @@ would have gone into this document.
 7.16 A nondeterministic reduction is invisible until it feeds a threshold
 -------------------------------------------------------------------------
 `scatter_add_` on CUDA floats is not reproducible, which everyone knows and nobody
-worries about, because a 1e-05 error in a colour is not a bug. §6.6 put one behind
+worries about, because a 1e-05 error in a color is not a bug. §6.6 put one behind
 a **comparison** — the cap clips when `eff > frag_cap - mesh_ink` — and the same
 1e-05 became 28 channel values over 9.6% of a frame, because a threshold turns an
 epsilon into a branch and bloom turns a branch into a region (§6.6.4).
 
 The rule to carry forward: **classify every host-side float reduction by what
-consumes it.** Feeding a colour, an atomic add is fine. Feeding a comparison, a
+consumes it.** Feeding a color, an atomic add is fine. Feeding a comparison, a
 sort key, a count, or an index, it is a correctness bug waiting for the right
 scene. The cheap defence is to accumulate in float64 and round to the consumer's
 dtype, which costs one pass and removes the class.

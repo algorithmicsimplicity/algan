@@ -127,7 +127,7 @@ def main(argv=None):
     scene = Scene(video_settings=video_settings)
     build(scene)
     path = out_dir / "aa_fan.png"
-    scene.save_frame(str(path), video_settings, background_color=BLACK)
+    scene.save_frame(str(path), video_settings, background=BLACK)
     print(f"wrote {path}")
 
     width, height = video_settings.resolution

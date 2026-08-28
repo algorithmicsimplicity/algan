@@ -731,13 +731,13 @@ def install_pipeline_hooks():
     _try_wrap(KERNEL_REGISTRY, "render_kernel", "ray traced render total")
 
     # Previously-unaccounted wall time: the per-batch memory reclaim
-    # (gc.collect + cuda cache release; gc dominates -- see empty_cache) and
+    # (gc.collect + cuda cache release; gc dominates -- see release_torch_memory) and
     # the serial video-encode tail (waiting on ffmpeg after the last frame).
     # Wrap the reference render_loop actually calls (by-value import), not just
     # the defining module, so the stage is not silently empty.
     from algan.render_loop import RenderLoopMixin
 
-    _try_wrap(rl, "empty_cache", "memory reclaim (gc + cuda cache)")
+    _try_wrap(rl, "release_torch_memory", "memory reclaim (gc + cuda cache)")
     _try_wrap(
         RenderLoopMixin, "_drain_video_writer", "video encode tail (ffmpeg drain)"
     )

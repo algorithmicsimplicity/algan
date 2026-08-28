@@ -63,7 +63,7 @@ def build_scene(variant="basic"):
         OUT as OUTV,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     movers = []
     with Off():
         a = (RIGHT * -1.1 + UP * -0.65) * 1.0
@@ -237,7 +237,7 @@ def build_matte_scene():
         TriangleTriangulated,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         a = (RIGHT * -1.1 + UP * -0.65) * 1.0
         b = (RIGHT * 1.1 + UP * -0.45) * 1.0

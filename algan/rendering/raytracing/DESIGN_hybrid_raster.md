@@ -348,7 +348,7 @@ semi-transparent reflectors) atomically append to the shared continuation pool
 via `_reserve_continuation_slot`. The pool's overflow-retry (halve the
 primaries, retry the tile) is unchanged. The front-end's postcondition matches
 the classic first traverse+shade exactly: `pix_accum` holds every retired
-pixel's colour + leftover background weight, bounced pixels are ACTIVE, and
+pixel's color + leftover background weight, bounced pixels are ACTIVE, and
 the classic loop takes it from there. Free pool slots are pre-marked DONE by
 the host so a full-pool compaction finds exactly the spawned continuations.
 
@@ -483,7 +483,7 @@ Two-kernel design:
       Each accepted point reserves one event row (position, shading normal,
       face normal, frame) via an atomic counter; `frag_shadow_id[fragment]`
       and `z_shadow_id[pixel]` record the event id (-1 = never lit, e.g.
-      bezier fragments, which keep their sampled colour and receive no
+      bezier fragments, which keep their sampled color and receive no
       shadows — but bezier geometry still occludes shadow rays).
 
   raster_shadow_trace — one thread per (event), tracing per light: any-hit
@@ -539,7 +539,7 @@ primaries so the screen-constant border width uses t directly.
 
 Proven-opaque circuits participate in the typed z-prepass (§4.2) and cull
 geometry behind them; translucent/bordered circuits ride the ordered fragment
-stream. Circuits keep their sampled colour (never material-shaded — a
+stream. Circuits keep their sampled color (never material-shaded — a
 deliberate deviation matching the classic renderer), take reflectivity / IOR /
 transmission from `circuit_meta`, use `_bezier_normal`, and their continuation
 is the "thin pane" case (reflect into a split slot, transmit unbent into the
@@ -817,7 +817,7 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
                                     downsample run in linear HDR (physically
                                     correct; HDR highlights keep their chroma).
                                     post_process_frames normalizes the
-                                    byte-range colour+glow /255 before bloom
+                                    byte-range color+glow /255 before bloom
                                     and tonemaps last (the AA downsample no
                                     longer clamps HDR to uint8). Costs a float
                                     frame buffer -> fewer frames per batch.

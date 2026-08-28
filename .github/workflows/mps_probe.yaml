@@ -27,10 +27,6 @@ name: MPS capability probe
 # that reports nothing is ambiguous between "Metal refused" and "the script is
 # broken".
 on:
-  pull_request:
-    paths:
-      - "benchmarks/_mps_capability_probe.py"
-      - ".github/workflows/mps_probe.yaml"
   workflow_dispatch:
 
 # Queue behind an in-flight run rather than cancelling it, which is where this

@@ -11,7 +11,7 @@ animatable attributes on the mob (see
 
 Channel layout
 --------------
-``albedo_color`` arrives as **4 channels** ``[R, G, B, glow]`` (the mob's colour
+``albedo_color`` arrives as **4 channels** ``[R, G, B, glow]`` (the mob's color
 without its trailing opacity channel) and the return value is written back into
 those same 4 channels, so every shader does its RGB maths on ``[..., :3]`` and
 re-attaches the passthrough ``glow`` channel. ``light_color`` is likewise
@@ -69,7 +69,7 @@ def _ambient_strength():
 
 
 def _linear_color_space():
-    """True when shading runs in the linear working colour space.
+    """True when shading runs in the linear working color space.
 
     Gates this module's two gamma-era compensations -- ``_energy_scale``'s
     illumination budget and ``_recombine``'s peak bound, the torch twins of
@@ -120,7 +120,7 @@ def _recombine(rgb, glow_tail):
     Lights accumulate without normalisation, so several of them drive a fully
     lit surface past 1.0. Scaling all three channels by the peak keeps the hue,
     where the per-channel clamp this replaced truncated each independently and
-    slid an over-range saturated colour toward white. Identity below 1.0, so
+    slid an over-range saturated color toward white. Identity below 1.0, so
     anything already in range is untouched; ``glow_tail`` is never bounded,
     which leaves glow the one route to above-1.0 output for bloom.
 
@@ -264,7 +264,7 @@ def basic_material_shader(
     light_intensity: float,
     ambient_light_intensity: float,
 ):
-    """MeshBasicMaterial: unlit, returns the flat base colour unchanged."""
+    """MeshBasicMaterial: unlit, returns the flat base color unchanged."""
     return albedo_color
 
 
@@ -322,14 +322,14 @@ def manim_shader(
 
     Under Manim's own rig -- the single white ``PointLight`` of intensity 1
     that :meth:`~.Scene.use_manim_defaults` installs, with decay 0 and
-    distance 0 -- the light-colour factor below is exactly ``(1, 1, 1)`` and
+    distance 0 -- the light-color factor below is exactly ``(1, 1, 1)`` and
     the offset reproduces Manim's scalar one exactly. Multiplying by
-    ``light_color * light_intensity`` is a strict generalisation to coloured
+    ``light_color * light_intensity`` is a strict generalisation to colored
     and multi-light rigs, which Manim does not have; the per-light offsets
     simply sum.
 
     Manim adds its offset to display-referred sRGB values. Under the default
-    linear working space this shader therefore encodes the base colour to
+    linear working space this shader therefore encodes the base color to
     sRGB, adds the offsets there, clamps the sum to ``[0, 1]`` and decodes
     back to linear light; under the display-referred setting it adds and
     clamps directly. Exact Manim fidelity further assumes exposure 1 and
@@ -346,7 +346,7 @@ def manim_shader(
     vertex_normal
         Surface normal at the vertex; need not be normalized. Shape ``(*, 3)``.
     albedo_color
-        Base colour with its trailing glow channel, shape ``(*, 4)``, which is
+        Base color with its trailing glow channel, shape ``(*, 4)``, which is
         also the shape of the return value.
     camera_location
         Camera position, shape ``(*, 3)``. Accepted for signature parity;
@@ -354,7 +354,7 @@ def manim_shader(
     light_origin
         Position of the light source, shape ``(*, 3)``.
     light_color
-        Colour of the light with its trailing opacity channel, shape
+        Color of the light with its trailing opacity channel, shape
         ``(*, 4)``; only its RGB is used.
     light_intensity
         Multiplier on the light's contribution. Defaults to whatever the
@@ -664,7 +664,7 @@ def matcap_shader(
 ):
     """MeshMatcapMaterial: the matcap image is not sampled (no UV pipeline); this
     approximates a default matcap with a view-facing diffuse term plus a rim
-    highlight, tinted by the base colour.
+    highlight, tinted by the base color.
     """
     rgb, glow = _split_albedo(albedo_color)
     n = _shading_normal(vertex_location, vertex_normal, flat_shading)

@@ -39,7 +39,7 @@ if multiplier != 1:
 
     shapes_3d._CapDisc = _ScaledCapDisc
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 with Off():
     AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)

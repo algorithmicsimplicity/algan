@@ -30,7 +30,7 @@ def test_image_background_keeps_the_source_orientation(tmp_path):
     path, source = _write_test_image(tmp_path, height, width)
 
     scene = Scene(video_settings=SMOKE_TEST)
-    scene.set_background_color(str(path))
+    scene.set_background(str(path))
     background = scene.background_frame
 
     # [1, height, width, channels] -- neither axis transposed.
@@ -43,12 +43,12 @@ def test_image_background_keeps_the_source_orientation(tmp_path):
 
 
 def test_image_background_is_scaled_to_the_supersampled_frame(tmp_path):
-    settings = SMOKE_TEST.set(anti_alias_level=2)
+    settings = SMOKE_TEST.set(super_sampling_anti_aliasing=2)
     height, width = settings.resolution[1], settings.resolution[0]
     path, _ = _write_test_image(tmp_path, height // 2, width // 2)
 
     scene = Scene(video_settings=settings)
-    scene.set_background_color(str(path))
+    scene.set_background(str(path))
 
     assert scene.background_frame.shape[:3] == (1, height * 2, width * 2)
 

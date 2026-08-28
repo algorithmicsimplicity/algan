@@ -160,7 +160,7 @@ def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
     (lambert/phong/toon/standard/physical; normal/matcap/depth consume no
     lights at all, so the cull cannot touch their output either). Callers still gate ``_stage_default``
     out on the hit's pipeline id, which is now **conservative rather than
-    load-bearing**: its base-colour fade used to accumulate a vis-weighted
+    load-bearing**: its base-color fade used to accumulate a vis-weighted
     ``w`` even at ``lc == 0``, and no longer does (the fade share carries
     ``lc``), so admitting it here would be correct -- and would spare those
     fans -- but it has not been measured and is left alone.
@@ -501,7 +501,7 @@ def _flat_triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
 # needs-norm-only | bare]) so ``tri_norm``/``tri_mat`` are compacted PREFIXES
 # (guarded by ``prim < shape[1]``), while the promotion-compacted
 # ``tri_colors``/``tri_extra`` are addressed through a per-prim remap
-# ``col_row[prim]`` (-1 = promoted -> its colour/material comes from the 1x1
+# ``col_row[prim]`` (-1 = promoted -> its color/material comes from the 1x1
 # maps). ``tex_meta``/``uvs`` are full band-order arrays here (one row per prim),
 # so texture metadata is indexed directly by ``prim`` (no ``prim-num_colored``).
 # These mirror the non-trim samplers 1:1; only the indexing differs, so the trim
@@ -517,7 +517,7 @@ def _flat_triangle_color_trim(f, prim, w0, w1, w2, tri_colors: ti.template(),
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     alpha = 0.0
     coff = tex_meta[prim, 0]
-    if coff < 0:  # no colour map -> per-vertex row (never -1 here: promoted
+    if coff < 0:  # no color map -> per-vertex row (never -1 here: promoted
         cr = col_row[prim]                              # prims always get a map)
         color, alpha = _triangle_color(f, cr, w0, w1, w2, tri_colors)
     else:
@@ -1107,9 +1107,9 @@ def _material_reflectance(rd, normal, metalness, packed_ior, albedo,
     that limit itself -- any f0 still reflects fully at grazing -- so it is an
     explicit gate rather than an f0 of zero.
 
-    Transport is full-colour: the metal lobe's F0 is the surface ``albedo``
+    Transport is full-color: the metal lobe's F0 is the surface ``albedo``
     (conductor tint, whitening to 1 at grazing -- same model as the Monte
-    Carlo megakernel's coloured throughput), the dielectric lobe stays
+    Carlo megakernel's colored throughput), the dielectric lobe stays
     achromatic.  A white metal reduces exactly to the old scalar lobe (R = 1).
     Blending the two lobes after Schlick is algebraically identical to
     blending f0 first (R is linear in f0).
@@ -1140,13 +1140,13 @@ def _material_reflectance(rd, normal, metalness, packed_ior, albedo,
     Returns ``(R, diel_pass)``.  ``diel_pass = (1-m) * (1-r_diel)`` is the
     fraction of incident light that enters the dielectric interior -- the
     only share that can transmit.  It must NOT be derived from ``1 - R``: a
-    coloured metal has ``R < 1`` in its absorbed channels, and that absorbed
+    colored metal has ``R < 1`` in its absorbed channels, and that absorbed
     share would then leak through transmissive surfaces as if dielectric
     (with scalar transport ``m = 1`` forced ``R = 1``, which hid this).
     Total internal reflection arrives here as ``r_diel = 1``, hence
     ``diel_pass = 0``: the transmitted branch is given no energy at all rather
     than being handed the mirror direction with the transmitted weight (which
-    also tinted a perfectly achromatic Fresnel reflection by the glass colour).
+    also tinted a perfectly achromatic Fresnel reflection by the glass color).
     """
     result = ti.math.vec3(0.0, 0.0, 0.0)
     diel_pass = 1.0
@@ -1191,14 +1191,14 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
                   pane: ti.template()):
     """Built-in continuation derived from the material's PBR properties.
 
-    Transport is full-colour: the branch weights (``pass_w``, ``refl_w``,
+    Transport is full-color: the branch weights (``pass_w``, ``refl_w``,
     ``trans_w``) are vec3 throughput multipliers. ``albedo`` (vec3, the raw
-    surface colour before lighting) tints the metal share of the Fresnel lobe
-    (coloured mirrors) and the transmitted share (coloured glass); the
+    surface color before lighting) tints the metal share of the Fresnel lobe
+    (colored mirrors) and the transmitted share (colored glass); the
     dielectric reflection stays achromatic. Branch decisions (which
-    continuation is heavier, minimum-weight culls) reduce a colour weight to
+    continuation is heavier, minimum-weight culls) reduce a color weight to
     its maximum component, the same convention as the Monte Carlo megakernel's
-    coloured throughput -- for a white surface every component is equal and
+    colored throughput -- for a white surface every component is equal and
     all decisions match the old scalar transport exactly.
 
     Shared body of :func:`default_scatter` (``pane`` 0, solid geometry) and
@@ -1297,7 +1297,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     #                                                    actually transmits)
     #   1 - alpha                      missed entirely  (cover_pass)
     # where trans_share = (1-m)(1-R_diel) * T: only the share entering the
-    # dielectric interior can transmit. It is NOT alpha*(1-R)*T -- a coloured
+    # dielectric interior can transmit. It is NOT alpha*(1-R)*T -- a colored
     # metal has R < 1 in its absorbed channels, and deriving transmission
     # from 1-R would leak that absorbed light through the surface (scalar
     # transport hid this because m = 1 forced R = 1). For achromatic
@@ -1311,7 +1311,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     # surfaces as opaque black.
     one3 = ti.math.vec3(1.0, 1.0, 1.0)
     trans_share = diel_pass * T
-    # The accumulator's 4th lane (glow) has no colour channel of its own; it
+    # The accumulator's 4th lane (glow) has no color channel of its own; it
     # takes the max-component reduction of the reflectance (exact when the
     # components are equal, i.e. everywhere the old scalar transport reached).
     r_glow = ti.max(R[0], ti.max(R[1], R[2]))
@@ -1471,7 +1471,7 @@ def wf_composite(
         g = ray_offset + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
-        # Colour transport: leftover throughput is per-channel (columns 0/5/6);
+        # Color transport: leftover throughput is per-channel (columns 0/5/6);
         # the glow lane and coverage alpha take its mean.
         weight = ti.math.vec4(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6], 0.0)
         weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
@@ -1530,7 +1530,7 @@ def wf_composite_accum(
         out: ti.types.ndarray()):
     """Composite the general path's per-pixel accumulator over the pre-filled
     background. Mirrors ``wf_composite`` arithmetic exactly, but reads the shared
-    ``pix_accum`` (premultiplied colour cols 0-3 + summed leftover/background
+    ``pix_accum`` (premultiplied color cols 0-3 + summed leftover/background
     weight cols 4-6, deposited by every terminating ray) instead of one ray slot
     -- so a pixel whose ray split into reflected + refracted branches sums both.
     For a non-split pixel ``pix_accum[r] == (acc, weight)`` of its lone ray, so
@@ -1756,7 +1756,7 @@ def wavefront_generate_rays(
     ``num_primary`` and ``rs_alloc[1]`` records overflow. The host discards and
     retries an overflowing tile with fewer primaries; branches are never silently
     dropped. Each ray records its target local pixel in ``rs_pix`` and commits
-    premultiplied colour/background weight into that row of ``pix_accum`` when it
+    premultiplied color/background weight into that row of ``pix_accum`` when it
     terminates.
     """
     pixels_per_frame = width * height
@@ -1999,7 +1999,7 @@ def wavefront_traverse(
                 0)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
-        # commits its accumulated colour + leftover (background) throughput to
+        # commits its accumulated color + leftover (background) throughput to
         # the per-pixel accumulator before retiring it -- a split branch's
         # background contribution must be summed, not dropped.
         if num_hits > 0:
@@ -2362,10 +2362,10 @@ def wavefront_shadow(
                                                 -1, -1, 0.0, 0.0, tri_pos, 0)
                                             if _vis_max_component(occ) > 0.5:
                                                 # Binary by necessity: the
-                                                # bit pack cannot carry colour
+                                                # bit pack cannot carry color
                                                 # (this mode is documented as
                                                 # never enabled above, and is
-                                                # now also colour-blind -- the
+                                                # now also color-blind -- the
                                                 # max-component reduction is
                                                 # what a bit test means for an
                                                 # RGB payload).
@@ -2388,7 +2388,7 @@ def wavefront_shade(
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # Family A+B memory-trim: reordered/compacted triangle arrays + the
-        # per-prim colour/extra remap ``col_row`` (see scene_builder._build_mem_
+        # per-prim color/extra remap ``col_row`` (see scene_builder._build_mem_
         # _trim). Unused when ``mem_trim == 0`` (col_row is a 1-elem stub).
         col_row: ti.types.ndarray(),
         # PN patch STBVH + geometry/shading data.
@@ -2463,7 +2463,7 @@ def wavefront_shade(
         # in-place bounce -- every reflect branch ``break``s past the in-loop
         # floor test above and the peel-complete tests exclude bounced rays,
         # so such a ray otherwise rides to the bounce cap. Completion, not
-        # truncation: the commit block below deposits its accumulated colour
+        # truncation: the commit block below deposits its accumulated color
         # + leftover throughput exactly as for any other retirement.
         weight_floor_exit: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
@@ -2487,7 +2487,7 @@ def wavefront_shade(
     spent or its K-buffer is exhausted.
 
     When ``frag_shading`` is enabled, triangle/PN hits are material-shaded per
-    fragment from the raw albedo (bezier circuits keep their sampled colour),
+    fragment from the raw albedo (bezier circuits keep their sampled color),
     and when ``shadows`` is also enabled each such fragment fires one
     opacity-accumulating shadow ray per light through all three BVHs inside the
     per-fragment lighting model.
@@ -2497,7 +2497,7 @@ def wavefront_shade(
     slot while the transmitted branch appends to the tile-wide shared pool via
     ``rs_alloc``. If the append exceeds pool capacity, the host discards and
     reruns the tile with fewer primaries rather than accepting a missing branch.
-    Every ray commits its colour + leftover background weight into ``pix_accum``
+    Every ray commits its color + leftover background weight into ``pix_accum``
     through ``rs_pix``, so all branches of a pixel sum correctly.  The sparse
     raster path stores the compact accumulator row in ``rs_int[:, 4]`` while
     retaining the real local pixel in ``rs_pix`` for frame/ray addressing;
@@ -2675,8 +2675,8 @@ def wavefront_shade(
                     reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
 
-                # Raw surface colour, saved before fragment shading replaces
-                # ``color`` with the lit result: the colour transport tints
+                # Raw surface color, saved before fragment shading replaces
+                # ``color`` with the lit result: the color transport tints
                 # the metal Fresnel lobe and the transmitted share with it.
                 # (PBR materials always shade per fragment on this renderer,
                 # so whenever the tint matters this is the true albedo.)
@@ -2701,7 +2701,7 @@ def wavefront_shade(
                                 * (3 * max_shadow_lights))
                 # Fragment shading: ``color`` arrived as the interpolated raw
                 # albedo for triangle/PN hits; evaluate the lighting model per
-                # fragment. Bezier circuits (htype 0) keep their sampled colour.
+                # fragment. Bezier circuits (htype 0) keep their sampled color.
                 # Compiled out entirely on the default (vertex-shaded) path via
                 # ti.static.
                 if ti.static(frag_shading != 0):
@@ -2712,7 +2712,7 @@ def wavefront_shade(
                         # (``sel``). This mode is currently never enabled and
                         # must use floats before it can support the active
                         # opacity-weighted shadow contract -- and its bits
-                        # cannot carry colour, so it is now also colour-blind:
+                        # cannot carry color, so it is now also color-blind:
                         # a blocked light sets all three channels to 0, an
                         # unblocked one keeps them at 1.
                         sbits = rs_vis[i]
@@ -2728,10 +2728,10 @@ def wavefront_shade(
                         # Shadow visibility is skipped exactly where it cannot
                         # reach the output: an UNLIT hit never consumes ``vis``
                         # (passthrough shading; scatters take no ``vis``), and
-                        # in every built-in stage a zero-colour light row (not
+                        # in every built-in stage a zero-color light row (not
                         # yet spawned, or despawned) contributes nothing
                         # whatever its visibility -- every lit stage's terms
-                        # carry the light colour as a factor. Only user
+                        # carry the light color as a factor. Only user
                         # pipelines, which may read ``vis`` arbitrarily, keep
                         # the exact fan for every light.
                         do_fan = 0
@@ -2867,7 +2867,7 @@ def wavefront_shade(
                                     # backface: exactly zero radiance here,
                                     # so the fan's result multiplies zero.
                                     # Skipping leaves vis[li] at its all-lit
-                                    # default, exactly like the zero-colour
+                                    # default, exactly like the zero-color
                                     # skip above.
                                     if (valid == 1) and (fan_geom == 1):
                                         if _light_zero_radiance(
@@ -3030,7 +3030,7 @@ def wavefront_shade(
                         # Light with the *normal-mapped* shading normal (equals
                         # the interpolated vertex normal when the triangle has
                         # no normal map, so unmapped scenes are byte-identical).
-                        # UNLIT hits pass their colour through unchanged and
+                        # UNLIT hits pass their color through unchanged and
                         # never consume the shading normal (a reflective/glass
                         # continuation recomputes its own normal below), so skip
                         # the normal work for them when the template is on.
@@ -3176,7 +3176,7 @@ def wavefront_shade(
                     # the metal-blended Fresnel ``R`` (the metal share
                     # reflects rather than transmits, so a fully metallic
                     # surface stays a mirror at any transmission), and the
-                    # colour transport (vec3 weights; the albedo tints the
+                    # color transport (vec3 weights; the albedo tints the
                     # metal lobe inside ``R`` and the transmitted share;
                     # decisions reduce to the maximum component).
                     is_glass = False
@@ -3194,7 +3194,7 @@ def wavefront_shade(
                     # Only the dielectric-interior share transmits -- see the
                     # four-way split derivation in ``_scatter_impl``.
                     trans_share = diel_pass * T
-                    # The glow lane has no colour channel; it takes the
+                    # The glow lane has no color channel; it takes the
                     # max-component reduction (exact when the components are
                     # equal, i.e. everywhere the old scalar transport reached).
                     r_glow = ti.max(R[0], ti.max(R[1], R[2]))
@@ -3671,7 +3671,7 @@ def wavefront_shade(
                 # later iterations (and only they) read it.
                 rs_pix[r] = r
             if done:
-                # Terminated: commit this branch's premultiplied colour and its
+                # Terminated: commit this branch's premultiplied color and its
                 # leftover throughput (what the background shows through) into
                 # the shared per-pixel accumulator. With an environment map the
                 # leftover throughput samples the map in the ray's final
@@ -3688,7 +3688,7 @@ def wavefront_shade(
                 for k in ti.static(range(3)):
                     ti.atomic_add(pix_accum[accum_pix, 4 + k], weight[k])
         else:
-            # Ray escaped to the background this segment: commit its colour +
+            # Ray escaped to the background this segment: commit its color +
             # leftover (background) throughput, then retire.
             f = time_start + (ray_offset + pix) // pixels_per_frame
             ff = ti.cast(f, ti.f32)

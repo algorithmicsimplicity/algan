@@ -157,7 +157,7 @@ def _render(build, name, *, exposure=1.0):
             path,
             SETTINGS.video.set(resolution=PROBE_RES),
             overwrite=True,
-            background_color=Color((0.0, 0.0, 0.0)),
+            background=Color((0.0, 0.0, 0.0)),
         )
     finally:
         SETTINGS.restore(snapshot)

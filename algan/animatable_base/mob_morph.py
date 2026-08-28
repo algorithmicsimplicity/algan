@@ -744,7 +744,7 @@ class MobMorphMixin:
         # re-sampling of four columns rather than the wave itself. A Surface
         # knows its own parametric function, and `_change_resolution` evaluates
         # it on the new grid (interpolating only the per-vertex attributes,
-        # which is the honest thing to do with colours). Packed surfaces keep
+        # which is the honest thing to do with colors). Packed surfaces keep
         # the interpolating path: `_change_resolution` describes one grid, not a
         # block of them.
         if surface.grid.parent_batch_sizes is None:
@@ -1311,7 +1311,7 @@ class MobMorphMixin:
             # pair to record, and a context whose block records no event never
             # advances its cursor, so this morph alone used to take zero time
             # and pull everything after it in a Seq a second early. The roots
-            # still have attributes of their own (location, opacity, colour):
+            # still have attributes of their own (location, opacity, color):
             # morphing those is both the right thing to animate and what makes
             # the morph occupy its run_time like every other route. Guarded on
             # the kinds matching because ``_record_same_kind_morph`` is only
@@ -1390,7 +1390,7 @@ class MobMorphMixin:
                     self._collapse_hierarchy_at(surrogate, anchor)
                     # A COLLAPSED SEED IS A POINT, AND A POINT AT FULL OPACITY
                     # IS A BRIGHT SPECK THAT CAME FROM NOWHERE. The seed carries
-                    # the target's colour and material, so at zero size it
+                    # the target's color and material, so at zero size it
                     # rendered as a hard dot sitting at an unrelated source
                     # vertex for a third of the morph before inflating into a
                     # solid. Growth still says where the new geometry comes

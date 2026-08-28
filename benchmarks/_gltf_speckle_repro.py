@@ -35,6 +35,6 @@ with Off():
     model.spawn(animate=False)
     model.rotate(angle, UP)
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 Scene.save_frame(str(OUT_DIR / ("angle_%g" % angle)), MD, overwrite=True)
 print("wrote", OUT_DIR / ("angle_%g.png" % angle))

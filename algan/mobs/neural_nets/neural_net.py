@@ -23,10 +23,10 @@ from algan.rendering.shaders.materials import (
 from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import dot_product, squish, unsquish
 
-# Synapses jitter their colour for visual variety. Draw that jitter from a
+# Synapses jitter their color for visual variety. Draw that jitter from a
 # dedicated, fixed-seed generator (reseeded per net in NeuralNetMLP.__init__)
 # rather than the global RNG: otherwise every render produced different synapse
-# colours, so the same scene rendered twice differed by tens of code values --
+# colors, so the same scene rendered twice differed by tens of code values --
 # which reads as nondeterministic ("order-sensitive") output and makes the
 # frame-comparison tests impossible to satisfy. A private generator keeps the
 # synapse-to-synapse variety while making each render byte-reproducible, and
@@ -616,7 +616,7 @@ class Neuron(Mob):
 
 # The V2/V3 fill light comes from envMapIntensity (ambient = albedo * 0.1 * env)
 # rather than emissive, so it tracks the albedo during wave_color pulses instead
-# of tinting them with the resting colour. Metalness stays 0 (dielectric): the
+# of tinting them with the resting color. Metalness stays 0 (dielectric): the
 # glossy look comes from low roughness, and -- in V3 -- clearcoat and sheen.
 
 
@@ -636,8 +636,8 @@ class SynapseV2(Cylinder):
             c = WHITE
         super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
         # Fill light comes from env_map_intensity (ambient = albedo * 0.1 * env)
-        # rather than emissive, so it tracks the albedo during colour-wave
-        # pulses instead of tinting them with the resting colour.
+        # rather than emissive, so it tracks the albedo during color-wave
+        # pulses instead of tinting them with the resting color.
         self.set_material(
             MeshStandardMaterial(
                 color=c.set_glow(0.04),
@@ -740,7 +740,7 @@ class NeuralNetMLP(Mob):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        # Reseed the synapse colour jitter so each net build is reproducible
+        # Reseed the synapse color jitter so each net build is reproducible
         # regardless of how many nets (or other RNG users) preceded it.
         _color_rng.manual_seed(COLOR_JITTER_SEED)
         self.look(direction)
@@ -1004,9 +1004,9 @@ class NeuralNetMLP(Mob):
                         # its glow instead of globally brightening as its
                         # one opacity value ramps up. Written non-recursively,
                         # like the wave that restores it: a part whose helper
-                        # children carry colour rows of their own (a Text's
+                        # children carry color rows of their own (a Text's
                         # texture points) has more rows under a recursive set
-                        # than its own colour getter returns.
+                        # than its own color getter returns.
                         part.set_non_recursive(color=part.color.set_opacity(0))
                     output.spawn(animate=False)
 
@@ -1053,7 +1053,7 @@ class NeuralNetMLP(Mob):
 
 class SynapseV3(Cylinder):
     """V3 synapse: a thin filament with a lacquered (clearcoat) surface, so the
-    wires pick up crisp light streaks on top of their colour-tracking fill.
+    wires pick up crisp light streaks on top of their color-tracking fill.
     """
 
     def __init__(self, grid_height=5, *args, **kwargs):

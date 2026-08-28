@@ -160,7 +160,7 @@ slack for corners). Two consequences:
 
   * **Barycentrics become extrapolated** (some `b_i < 0`) for pixels whose
     centre is outside the triangle. Depth `t` extrapolates harmlessly, but
-    colour/normal/UV sampling must not: clamp the barycentric triple to the
+    color/normal/UV sampling must not: clamp the barycentric triple to the
     simplex before `_tri_color_g` / `_tri_normal_g` / `_tri_uv`, or textures
     will sample out of range at every silhouette.
   * Fragment count grows by the silhouette perimeter. For a 200 px circle:
@@ -263,7 +263,7 @@ Add a per-triangle **object id** to the merged arrays. The merge already
 concatenates per-primitive blocks, so this is a `repeat_interleave` of block
 indices — essentially free — and no such id exists today (`scene_builder.py`
 merged keys are all per-triangle attribute arrays; `tri_col_row` is a
-*colour-row* index that constant-property promotion collapses per mob, so it is
+*color-row* index that constant-property promotion collapses per mob, so it is
 a tempting but unreliable proxy). Carry it per fragment. In the resolve, while
 consecutive fragments share an object id **union** their coverage instead of
 compositing:
@@ -343,7 +343,7 @@ fragment stream instead. `_terminal_z_hit` is then always a full-coverage hit,
 so it needs no coverage of its own.
 
 Untouched: the bounce loop, `wavefront_shade`, the BVHs, the composite
-(coverage arrives folded into `pix_accum`'s colour and leftover weight, so
+(coverage arrives folded into `pix_accum`'s color and leftover weight, so
 transparent-background alpha at `wavefront_kernels_taichi.py:1256-1260` comes
 out right for free), and the Monte Carlo path tracer.
 
@@ -493,7 +493,7 @@ eligibility scan exists.
     reference. Analytic-at-1 must beat AA=2 in the edge band.
   * `benchmarks/_aa_seam_check.py` — a subdivided sphere and a subdivided plane
     at grazing incidence, opaque and translucent. Scan for the lattice: max
-    deviation between an interior pixel's colour and its fully-covered
+    deviation between an interior pixel's color and its fully-covered
     neighbours. This is the test that fails if §5 is skipped.
   * `benchmarks/_aa_analytic_ab.py` — in-process alternating A/B of GPU render
     time (wall-clock is thermally noisy, ~2x cross-process). Report separately
@@ -597,9 +597,9 @@ proportionally more; quote per-scene numbers, never a headline multiple.
     the drawn region, which reproduces the AA=2 reference stroke weight (the
     classic constant is 0.6 of a *supersample* pixel, hence 0.3 output pixels at
     aa=2 and 0.6 at aa=1 — it was never AA-invariant).
-  * Colour classification had to widen with the region: a pixel in the
-    half-pixel band *outside* a bordered circuit is border-coloured. `|d| <
-    border_w` alone would have handed it the fill colour. (Superseded
+  * Color classification had to widen with the region: a pixel in the
+    half-pixel band *outside* a bordered circuit is border-colored. `|d| <
+    border_w` alone would have handed it the fill color. (Superseded
     2026-07-31, §13.4: a filled circuit's border no longer reaches outside the
     outline at all.)
   * Triangles were left entirely alone rather than plumbed at coverage 1.0 in
@@ -700,7 +700,7 @@ the next attempt starts from evidence rather than from the top.
     lengths added to the projection table (columns 10:12, allocated only when
     the feature is on). Acceptance widens from "centre inside" to "covers any
     sub-pixel sample", and barycentrics are projected back onto the simplex
-    before they index colours/normals/UVs.
+    before they index colors/normals/UVs.
   * `tri_obj`, a per-triangle source-primitive id built at merge in the same
     three-block order `_geom` produces (§5(a)).
   * The seam rule: consecutive same-object fragments accumulate absorption
@@ -1082,8 +1082,8 @@ exactly the old single-ray code.
   * **The split happens once, at the primary hit.** Deeper bounces continue as
     single rays, so the cost is N times the secondary traversal, not N^depth.
   * **Sub-sample 0 continues in the pixel's own ray slot** (it carries the
-    accumulated colour); the other N-1 go to the shared pool. Every branch
-    commits both its colour and its leftover background weight when it retires,
+    accumulated color); the other N-1 go to the shared pool. Every branch
+    commits both its color and its leftover background weight when it retires,
     so 1/N each leaves the pixel's totals exactly as the single ray had them.
 
 17.2 A real bug this exposed: coverage was dropping rim reflections
@@ -1307,7 +1307,7 @@ Both of the following were built, measured, and removed or corrected:
   * **Ungated secondary supersampling.** Every reflective fragment spawned N
     continuations, including the ~4% Fresnel sheen every PBR dielectric has. A
     plain glossy sphere with no mirror in the scene was paying four extra traced
-    rays per pixel for 4% of its colour: 1.89s against aa=2's 0.96s, and
+    rays per pixel for 4% of its color: 1.89s against aa=2's 0.96s, and
     slightly WORSE quality. Gated on the branch's share of the pixel
     (`ANALYTIC_AA_SECONDARY_MIN_ENERGY`) → 1.17s, now faster than aa=2. The
     lesson generalizes: the value of analytic coverage is that the expensive

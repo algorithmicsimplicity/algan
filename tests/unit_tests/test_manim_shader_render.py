@@ -113,7 +113,7 @@ def _video_settings():
     return VideoSettings(
         resolution=_RESOLUTION,
         frames_per_second=1,
-        anti_alias_level=1,
+        super_sampling_anti_aliasing=1,
     )
 
 
@@ -127,10 +127,10 @@ def restored_global_settings():
     undone at the point of use.
     """
     style = SETTINGS.style
-    saved_style = (style.default_material, style.background_color.clone())
+    saved_style = (style.default_material, style.background.clone())
     saved_tonemapping = SETTINGS.raytracing.tonemapping
     yield
-    SETTINGS.style.set(default_material=saved_style[0], background_color=saved_style[1])
+    SETTINGS.style.set(default_material=saved_style[0], background=saved_style[1])
     SETTINGS.raytracing.set(tonemapping=saved_tonemapping)
 
 
@@ -219,7 +219,7 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
     SceneManager.reset()
     try:
         with Scene(video_settings=_video_settings()) as scene:
-            scene.set_background_color(BLACK)
+            scene.set_background(BLACK)
             # Stated inputs rather than ambient defaults: single-sample
             # deterministic tracer, Manim-faithful output transform (no
             # curve, unit exposure), no shadow fans (Manim's model has none;

@@ -5,7 +5,7 @@ names and default settings -- so a material can be configured the familiar way
 and applied to a mob with
 :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`.
 One deliberate deviation:
-``color`` defaults to ``None``, meaning "keep the mob's existing colour",
+``color`` defaults to ``None``, meaning "keep the mob's existing color",
 whereas Three.js defaults it to white (which would silently repaint any mob
 the material is applied to)::
 
@@ -58,7 +58,7 @@ are likewise unsupported. The matcap, normal and depth materials use documented
 approximations (see :mod:`algan.rendering.shaders.material_shaders`). Every
 built-in material class shades per fragment in the render kernel; only a
 *custom* per-vertex shader (``set_shader`` with a plain function) is baked into
-vertex colours, which is what costs it every light beyond a plain
+vertex colors, which is what costs it every light beyond a plain
 :class:`~.PointLight`, all shadows, and an environment map's diffuse
 contribution. Combining one with a lighting rig that asks for any of those
 warns, both where the shader is set and once per render.
@@ -295,7 +295,7 @@ def _normalize_forwarded_maps(textures):
 # A material is shaded in the render kernel only when its shader has an
 # in-kernel port (raytracing.settings._core_shader_ids), which every built-in
 # material class has. Everything else -- a custom per-vertex shader handed to
-# ``set_shader`` as a plain function -- is baked into vertex colours before the
+# ``set_shader`` as a plain function -- is baked into vertex colors before the
 # frame renders, and that bake sees only plain point lights
 # (RayTracedTrianglePrimitive._shade_vertex_colors skips every light carrying
 # ``_render_aux``). The same shaders pack the unlit in-kernel material id,
@@ -320,7 +320,7 @@ _PER_FRAGMENT_ADVICE = (
 
 def _shades_per_fragment(shader):
     """Whether ``shader`` is evaluated in the render kernel rather than baked
-    into vertex colours.
+    into vertex colors.
 
     ``None`` counts (no shader, so nothing is baked and nothing is lost), as do
     the ``set_fragment_shader`` pipelines, which always shade in-kernel.
@@ -349,7 +349,7 @@ def _lighting_beyond_vertex_bake(lights=(), *, shadows=None, environment_map=Non
 
     # Phrased so each entry reads correctly after both "a custom per-vertex
     # shader's shading is baked ..., so" and
-    # "N Mob(s) ... bake into vertex colours, so".
+    # "N Mob(s) ... bake into vertex colors, so".
     features = []
     extended = sorted({type(_).__name__ for _ in lights if light_is_extended(_)})
     if extended:
@@ -368,7 +368,7 @@ def _lighting_beyond_vertex_bake(lights=(), *, shadows=None, environment_map=Non
 
 
 def _to_rgb(value):
-    """Parse a Three.js-style colour into a 3-channel rgb tensor ``[..., 3]``."""
+    """Parse a Three.js-style color into a 3-channel rgb tensor ``[..., 3]``."""
     return _to_color5(value)[..., :3]
 
 
@@ -384,13 +384,13 @@ def _attenuation_sigma(attenuation_color, attenuation_distance):
     Packed as a coefficient rather than as the two authored fields because it
     makes "no absorption" the all-zeros value, which is what a zero-padded
     custom-pipeline material block must mean (see ``shading_taichi.MAT_W``).
-    No attenuation (white colour, or an infinite / non-positive distance)
+    No attenuation (white color, or an infinite / non-positive distance)
     therefore packs as zeros.
 
-    The log is taken in the working colour space: authored colour is
+    The log is taken in the working color space: authored color is
     display-referred, and under the linear working space it is decoded first --
     the same decode ``scene_builder._decode_merged_colors`` gives every other
-    colour, gated on the same setting -- so three.js's "decode at Color, take
+    color, gated on the same setting -- so three.js's "decode at Color, take
     the log of linear" behaviour is reproduced.
     """
     import torch
@@ -411,7 +411,7 @@ def _attenuation_sigma(attenuation_color, attenuation_distance):
 
 
 def _to_color5(value):
-    """Parse a colour into a 5-channel :class:`Color` ``[R, G, B, glow, opacity]``.
+    """Parse a color into a 5-channel :class:`Color` ``[R, G, B, glow, opacity]``.
 
     Accepts a hex int (``0xff0000``), a hex string (``"#ff0000"``), an RGB tuple
     in ``[0, 1]``, or an existing :class:`Color` / tensor.
@@ -419,7 +419,7 @@ def _to_color5(value):
     if isinstance(value, Color):
         return value
     if isinstance(value, bool):  # guard: bool is a subclass of int
-        raise TypeError(f"invalid colour value: {value!r}")
+        raise TypeError(f"invalid color value: {value!r}")
     if isinstance(value, int):
         return Color("#%06X" % (value & 0xFFFFFF))
     if isinstance(value, str):
@@ -438,9 +438,9 @@ class Material:
 
     #: Lighting shader backing this material (a plain function).
     shader = staticmethod(ms.basic_material_shader)
-    #: Whether the material's ``color`` should drive the mob's base colour.
+    #: Whether the material's ``color`` should drive the mob's base color.
     #: Even then, the default ``color=None`` means "keep the mob's existing
-    #: colour" -- unlike Three.js, where an unset material colour is white --
+    #: color" -- unlike Three.js, where an unset material color is white --
     #: so ``Sphere(color=RED).set_material(MeshPhysicalMaterial())`` stays red.
     applies_color = True
 
@@ -555,7 +555,7 @@ class Material:
 
 
 class UnlitMaterial(Material):
-    """Unlit material: renders the flat base colour, ignoring lights."""
+    """Unlit material: renders the flat base color, ignoring lights."""
 
     shader = staticmethod(ms.basic_material_shader)
 
@@ -598,7 +598,7 @@ class ManimMaterial(Material):
     """Manim's default 3-D shading: one achromatic offset per light, nothing else.
 
     Per light it adds an achromatic ``0.5 * (n . to_light) ** 3`` offset
-    (halved when back-facing) to the base colour -- no ambient, no specular,
+    (halved when back-facing) to the base color -- no ambient, no specular,
     no falloff.
 
     Reproduces Manim's ``get_shaded_rgb`` exactly under the rig
@@ -812,7 +812,7 @@ class MeshToonMaterial(Material):
 
 
 class MeshNormalMaterial(Material):
-    """Encodes the surface normal as RGB. Does not use a base colour."""
+    """Encodes the surface normal as RGB. Does not use a base color."""
 
     shader = staticmethod(ms.normal_shader)
     applies_color = False
@@ -823,7 +823,7 @@ class MeshNormalMaterial(Material):
 
 class MeshMatcapMaterial(Material):
     """Material-capture shading. The matcap image is not sampled; a default
-    view-facing approximation is used (tinted by the base colour).
+    view-facing approximation is used (tinted by the base color).
     """
 
     shader = staticmethod(ms.matcap_shader)

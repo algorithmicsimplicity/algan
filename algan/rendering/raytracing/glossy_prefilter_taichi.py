@@ -56,7 +56,7 @@ GL_ROW_SIGMA_SCALE = 11
 GL_ROW_DP = 12
 GL_ROW_WIDTH = 13
 
-# Columns of ``gl_main``: the pixel's linear pre-finalize colour (with the
+# Columns of ``gl_main``: the pixel's linear pre-finalize color (with the
 # background already folded in exactly as ``wf_composite_accum_sparse`` folds
 # it), the factored-out reflection energy, and the blur radius. A NEGATIVE
 # radius is the "not a glossy pixel" flag -- the host initialises the column to
@@ -69,7 +69,7 @@ GL_MAIN_WIDTH = 8
 # Columns of a ``gl_pyr`` texel: reflected radiance, reflected glow, and the
 # validity weight that normalises them. The glow lane is ``out``'s column 3,
 # which is bloom coverage rather than alpha, and it has to be prefiltered
-# alongside the colour or a blurred reflection would carry a sharp bloom mask.
+# alongside the color or a blurred reflection would carry a sharp bloom mask.
 GL_PYR_WIDTH = 5
 
 
@@ -195,7 +195,7 @@ def gloss_scatter(
             continue
         p = covered_idx[ri] - frame_base
 
-        # The pixel's own colour, background folded in (wf_composite_accum
+        # The pixel's own color, background folded in (wf_composite_accum
         # _sparse's expression, stopped before finalize_pixel_color).
         w_main = ti.math.vec4(pix_accum[r, 4], pix_accum[r, 5],
                               pix_accum[r, 6], 0.0)
@@ -313,7 +313,7 @@ def gloss_composite(
             csum[k] += w_energy[k] * refl[k]
         # The glow lane carries the reflection's bloom coverage scaled by the
         # strongest channel of the energy, the same reduction the resolve uses
-        # to give a colour weight a scalar glow.
+        # to give a color weight a scalar glow.
         csum[3] += ti.max(w_energy[0],
                           ti.max(w_energy[1], w_energy[2])) * refl[3]
 

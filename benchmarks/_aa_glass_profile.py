@@ -1,7 +1,7 @@
 """Where does analytic AA's time go on a REFRACTIVE scene?
 
 ``_aa_match_aa2.py`` shows the glass config costing analytic AA about 1.8x what
-anti_alias_level=2 costs, which should not happen: analytic renders a quarter of
+super_sampling_anti_aliasing=2 costs, which should not happen: analytic renders a quarter of
 the primaries and spawns the same number of secondary rays per output pixel. And
 it is not the secondary sampling -- the cost is there at one continuation per
 pixel too. So this prints the per-kernel device breakdown of both arms.
@@ -62,7 +62,9 @@ if __name__ == "__main__":
         rt_settings.set_analytic_aa(True, bezier=True, triangles=True)
     else:
         aa = 2
-    print(f"arm: {ARM} (anti_alias_level={aa})")
+    print(f"arm: {ARM} (super_sampling_anti_aliasing={aa})")
     profile_scene(
-        glass, RenderSettings((640, 360), 8, anti_alias_level=aa), f"aa_glass_{ARM}"
+        glass,
+        RenderSettings((640, 360), 8, super_sampling_anti_aliasing=aa),
+        f"aa_glass_{ARM}",
     )

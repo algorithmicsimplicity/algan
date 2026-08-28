@@ -1,7 +1,7 @@
-"""Default colours and layout style.
+"""Default colors and layout style.
 
 ``SETTINGS.style`` holds the defaults a Scene picks up when you do not say
-otherwise: ``background_color`` (``BLACK``), ``frame`` for the letterbox area
+otherwise: ``background`` (``BLACK``), ``frame`` for the letterbox area
 outside the rendered frame, ``text_color`` (``WHITE``), the layout ``buffer``
 that ``move_next_to`` and the ``arrange_*`` methods leave between Mobs
 (``0.6`` world units), ``fade_out_on_scene_end``, a ``default_material`` for
@@ -11,8 +11,8 @@ shapes adopt -- Algan's own, or Manim Community's via
 ``SETTINGS.style.set(shape_style_profile="manim")``.
 
 These are process-wide defaults, and each is overridable closer to the render:
-``Scene.set_background_color(...)`` changes one Scene, and
-``save_video(background_color=...)`` changes one render.
+``Scene.set_background(...)`` changes one Scene, and
+``save_video(background=...)`` changes one render.
 
 See :doc:`/advanced_user_tutorials/settings`.
 """
@@ -34,7 +34,7 @@ SHAPE_STYLE_PROFILES = ("algan", "manim")
 
 @dataclass
 class StyleSettings(Settings):
-    background_color: Color = field(default_factory=lambda: BLACK.clone())
+    background: Color = field(default_factory=lambda: BLACK.clone())
     frame: Color = field(default_factory=lambda: BLACK.clone())
     text_color: Color = field(default_factory=lambda: WHITE.clone())
     buffer: float = 0.6

@@ -292,7 +292,7 @@ def render(scene, path, video_settings):
     from algan.constants.color import BLACK
 
     ROUTE.clear()
-    scene.save_frame(str(path), video_settings, background_color=BLACK, overwrite=True)
+    scene.save_frame(str(path), video_settings, background=BLACK, overwrite=True)
     image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise RuntimeError(f"could not read back {path}")
@@ -624,7 +624,7 @@ def reference_errors(angle_deg, width_px, shape, rng, trials=2):
     Computed against the same exact analytic coverage the renderer is measured
     against, at the same angle and width, and passed through the SAME two
     metrics -- so the yardstick is measured the way the subject is. An
-    ``anti_alias_level = k`` supersampler cannot beat ``box(k)``, and ``none``
+    ``super_sampling_anti_aliasing = k`` supersampler cannot beat ``box(k)``, and ``none``
     is what no anti-aliasing at all scores.
     """
     out = {}
@@ -741,7 +741,7 @@ def report_routes(video_settings):
             scene.save_frame(
                 str(Path(SCRATCH) / f"route_{abs(hash(name))}"),
                 video_settings,
-                background_color=BLACK,
+                background=BLACK,
             )
         finally:
             if teardown:
@@ -798,7 +798,7 @@ def main(argv=None):
     instrument_route()
 
     print(f"resolution   {video_settings.resolution}")
-    print(f"anti_alias   {video_settings.anti_alias_level} (requested)")
+    print(f"anti_alias   {video_settings.super_sampling_anti_aliasing} (requested)")
     print(
         f"analytic AA  master={rt_settings.analytic_aa} "
         f"bez={rt_settings.analytic_aa_bez_active()} "

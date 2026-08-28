@@ -1,6 +1,6 @@
 """Output format settings and the built-in quality presets.
 
-:class:`VideoSettings` carries resolution, frame rate and anti-aliasing level --
+:class:`VideoSettings` carries resolution, frame rate and supersampling level --
 what the encoder is handed, as distinct from what the renderer computes (that is
 ``SETTINGS.raytracing``).
 
@@ -23,6 +23,13 @@ The presets, in increasing cost:
 Presets are immutable, so ``HD.set(frames_per_second=60)`` returns a copy and
 leaves ``HD`` alone. Pass one to
 :meth:`~algan.scene.Scene.save_video` to override quality for a single render.
+
+Two fields carry a short second spelling, because their long names are a
+mouthful for something written this often: ``fps``/``FPS`` for
+``frames_per_second`` and ``ssaa``/``SSAA`` for
+``super_sampling_anti_aliasing``. They are the same setting -- ``HD.set(fps=60)``
+and ``HD.set(frames_per_second=60)`` do the same thing, and reading either
+spelling answers with the same value.
 """
 
 from __future__ import annotations
@@ -30,16 +37,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from algan.errors import AlganConfigurationError
-from algan.settings.abstract_settings import Settings
+from algan.settings.abstract_settings import Settings, settings_aliases
 
 
+@settings_aliases(
+    fps="frames_per_second",
+    FPS="frames_per_second",
+    ssaa="super_sampling_anti_aliasing",
+    SSAA="super_sampling_anti_aliasing",
+)
 @dataclass
 class VideoSettings(Settings):
-    """Video output settings used by :meth:`algan.scene.Scene.save_video`."""
+    """Video output settings used by :meth:`algan.scene.Scene.save_video`.
+
+    ``frames_per_second`` may also be written ``fps`` or ``FPS``, and
+    ``super_sampling_anti_aliasing`` -- how many samples per axis the frame is
+    rendered at before being filtered back down to ``resolution`` -- may also be
+    written ``ssaa`` or ``SSAA``. The short spellings are accepted for reading,
+    for assignment, as constructor keywords and by :meth:`set`; the declared
+    names are what :meth:`to_dict` and the settings snapshot answer with.
+    """
 
     resolution: tuple[int, int]
     frames_per_second: int = 30
-    anti_alias_level: int = 2
+    super_sampling_anti_aliasing: int = 2
     fxaa: bool = False
     audio_frames_per_second: int = 44100
 
@@ -66,11 +87,13 @@ class VideoSettings(Settings):
                 "frames_per_second must be a positive integer"
             )
         if (
-            not isinstance(self.anti_alias_level, int)
-            or isinstance(self.anti_alias_level, bool)
-            or self.anti_alias_level <= 0
+            not isinstance(self.super_sampling_anti_aliasing, int)
+            or isinstance(self.super_sampling_anti_aliasing, bool)
+            or self.super_sampling_anti_aliasing <= 0
         ):
-            raise AlganConfigurationError("anti_alias_level must be a positive integer")
+            raise AlganConfigurationError(
+                "super_sampling_anti_aliasing must be a positive integer"
+            )
         if (
             not isinstance(self.audio_frames_per_second, int)
             or isinstance(self.audio_frames_per_second, bool)
@@ -89,9 +112,9 @@ def _preset(*args, **kwargs):
     return VideoSettings(*args, **kwargs).as_preset()
 
 
-THUMBNAIL = _preset((1280, 720), 1, anti_alias_level=4)
-SMOKE_TEST = _preset((32, 32), 2, anti_alias_level=1)
-PREVIEW = _preset((704, 396), 10, anti_alias_level=1)
+THUMBNAIL = _preset((1280, 720), 1, super_sampling_anti_aliasing=4)
+SMOKE_TEST = _preset((32, 32), 2, super_sampling_anti_aliasing=1)
+PREVIEW = _preset((704, 396), 10, super_sampling_anti_aliasing=1)
 LD = _preset((864, 486), 15)
 MD = _preset((1280, 720), 30)
 HD = _preset((1920, 1080), 30)

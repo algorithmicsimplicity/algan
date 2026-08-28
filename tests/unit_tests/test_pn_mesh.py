@@ -82,7 +82,7 @@ def test_surface_and_pn_conversion_render_pixel_identically(tmp_path):
     def render(name, convert):
         SceneManager.reset()
         with Scene(video_settings=settings) as scene:
-            scene.set_background_color(BLACK)
+            scene.set_background(BLACK)
             with Off():
                 sphere = Sphere(
                     radius=0.8,

@@ -70,10 +70,10 @@ Cost scales with pixels *and* frames, so ``HD`` at 30 fps is roughly ten times
 ``LD`` at 15 fps. Presets are immutable; ``HD.set(frames_per_second=60)`` returns a
 modified copy rather than changing ``HD``.
 
-``anti_alias_level`` (default ``2``) multiplies the rendered resolution in each axis,
-so it costs its square: level 2 renders 4× the pixels. Dropping it to ``1`` and
-enabling ``fxaa`` is the single cheapest way to speed up a draft. See
-:doc:`backgrounds_and_post_processing`.
+``super_sampling_anti_aliasing`` -- ``ssaa`` for short -- defaults to ``2`` and
+multiplies the rendered resolution in each axis, so it costs its square: level 2
+renders 4× the pixels. Dropping it to ``1`` and enabling ``fxaa`` is the single
+cheapest way to speed up a draft. See :doc:`backgrounds_and_post_processing`.
 
 Renderer Settings
 =================
@@ -228,7 +228,8 @@ What to try, in order:
    :class:`~.Surface` close to the camera. At ``PRODUCTION`` and above, raise
    ``render_tolerance_pixels`` with it -- otherwise it is the bound still in
    force and the change buys nothing.
-2. **Lower ``anti_alias_level``** to 1. Cuts the pixel count fourfold.
+2. **Lower ``super_sampling_anti_aliasing``** (``ssaa``) to 1. Cuts the pixel
+   count fourfold.
 3. **Drop to a smaller preset** for the draft.
 4. **Reduce geometry**: fewer Mobs on screen at once, coarser
    ``grid_width``/``grid_height`` on surfaces.

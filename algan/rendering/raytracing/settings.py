@@ -69,7 +69,7 @@ def report_unsupported_features(message):
     raise UnsupportedFeatureError(message)
 
 
-# Decode authored colour to linear light at the render boundary, do all shading
+# Decode authored color to linear light at the render boundary, do all shading
 # and compositing arithmetic there, and apply the sRGB OETF at the byte write.
 # This is what three.js does (a LinearSRGBColorSpace working space, then
 # `colorspace_fragment` unconditionally at the end of the shader), and it is
@@ -109,14 +109,14 @@ linear_color_space = env_flag("ALGAN_LINEAR_COLOR", True)
 ambient_strength = env_float("ALGAN_AMBIENT_STRENGTH", 0.1)
 ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 
-# Off by default: an authored colour lands on the pixel it names. That is now
+# Off by default: an authored color lands on the pixel it names. That is now
 # true because the working space is linear and the OETF runs at the byte write
 # (see linear_color_space above), so this default is the same choice three.js
 # makes with NoToneMapping rather than a workaround for a missing conversion.
 # The curve (Khronos PBR Neutral) reserves headroom by design: it maps linear
 # 1.0 to 0.869, so even with the OETF applied afterwards an authored white
 # renders 240 rather than 255. Measured over the six full-render scenes, 98.52%
-# of colour channels are already inside the display range and 1.45% are above
+# of color channels are already inside the display range and 1.45% are above
 # it. Bloom runs *before* the tonemap on the unclamped HDR buffer, so over-range
 # energy is a visible halo before anything clamps. Turn it on for a filmic look,
 # accepting that every SDR value shifts. See TONEMAP_FINDINGS.md.
@@ -238,16 +238,16 @@ refract_initial_pool_ratio = max(
 REFRACT_SPLIT_SLOTS = refract_initial_pool_ratio
 # When True, the *deterministic* raytracer (samples_per_pixel == 1, non-physical)
 # shades the core lit materials per fragment inside the trace kernel instead of
-# baking per-vertex colours (Gouraud). Ignored by the Monte Carlo pathtracer.
+# baking per-vertex colors (Gouraud). Ignored by the Monte Carlo pathtracer.
 fragment_shading = True
-# Promote a mob whose colour AND material params (reflectivity/roughness/index
+# Promote a mob whose color AND material params (reflectivity/roughness/index
 # of refraction) are constant across the whole surface to a 1x1 texture at merge
 # time, dropping its per-vertex ``tri_colors``/``tri_extra`` rows, instead of
 # broadcasting the constant to every vertex. The shared texel buffer keeps one
-# copy per mob (and, when the colour is also constant across frames, one copy
+# copy per mob (and, when the color is also constant across frames, one copy
 # total) rather than [T, N, 3, 5] / [T, N, 15]. Only applied on the
 # deterministic fragment-shading wavefront path -- the only path where a
-# "constant colour" mob genuinely has constant per-fragment colour (vertex
+# "constant color" mob genuinely has constant per-fragment color (vertex
 # lighting bakes per-vertex variation, so a promoted mob would be wrong there).
 # The trace kernels guard every per-vertex read with ``prim < array.shape[1]``,
 # so the shrunk arrays are never indexed for a promoted prim and every other
@@ -258,7 +258,7 @@ fragment_shading = True
 promote_constants = env_flag("ALGAN_PROMOTE_CONSTANTS", True)
 
 # Skip the up-front per-fragment shading-normal computation for UNLIT hits on
-# the fragment-shading wavefront. An UNLIT material passes its colour through
+# the fragment-shading wavefront. An UNLIT material passes its color through
 # unchanged (``_run_frag_pipeline`` ignores the shading normal for it), so
 # computing the interpolated/normal-mapped normal for such a hit is wasted work.
 # Reflective/refractive continuation recomputes its own normal on demand, so
@@ -510,7 +510,7 @@ def set_bvh_defer(enabled):
     bvh_defer = bool(enabled)
 
 
-# Collapse temporally-constant merged tables (materials, normals, colours,
+# Collapse temporally-constant merged tables (materials, normals, colors,
 # per-vertex extras, UV tables and the 2-D edge tables) to a single frame at
 # merge time; every consumer reads their time axis as ``f % shape[0]``. The
 # rendered pixels are unchanged for a given batch window, but the collapse
@@ -586,7 +586,7 @@ def set_texture_content_dedup(enabled):
     texture_content_dedup = bool(enabled)
 
 
-# Collapse a temporally-constant colour-texture window before the premultiply
+# Collapse a temporally-constant color-texture window before the premultiply
 # / wrap-pad / decode / merge chain runs over it (Surface.get_render_primitives).
 # The timeline materializes a wide attribute's window dense -- one image per
 # frame whether or not anything edited it -- and every downstream copy used to
@@ -598,14 +598,14 @@ texture_window_collapse = env_flag("ALGAN_TEXTURE_WINDOW_COLLAPSE", True)
 
 
 def set_texture_window_collapse(enabled):
-    """Toggle the static colour-texture window collapse (see
+    """Toggle the static color-texture window collapse (see
     ``texture_window_collapse``). Takes effect at the next primitive build.
     """
     global texture_window_collapse
     texture_window_collapse = bool(enabled)
 
 
-# Apply the mob's animated opacity to a colour texture IN THE SAMPLER instead
+# Apply the mob's animated opacity to a color texture IN THE SAMPLER instead
 # of premultiplying the map on the host. The premultiply
 # (``Color.mult_opacity`` in ``Surface.get_render_primitives`` /
 # ``TriangleMesh.get_render_primitives``) scales only the map's coverage
@@ -654,7 +654,7 @@ def texture_opacity_in_kernel_active():
     return texture_opacity_in_kernel and texture_time_flat and not wf_textured
 
 
-# Store u8-provenance colour maps as RGBA bytes instead of five f32 channels:
+# Store u8-provenance color maps as RGBA bytes instead of five f32 channels:
 # x5 fewer bank bytes on the largest array of any textured merge
 # (DESIGN_renderer_structural_candidates.md item 5). A map qualifies when the
 # authoring side proved every texel is exactly k/255 with zero glow
@@ -677,14 +677,14 @@ texture_u8_storage = env_flag("ALGAN_TEXTURE_U8_STORAGE", True)
 
 
 def set_texture_u8_storage(enabled):
-    """Toggle u8 colour-map storage (see ``texture_u8_storage``). Takes
+    """Toggle u8 color-map storage (see ``texture_u8_storage``). Takes
     effect at the next batch's scene merge.
     """
     global texture_u8_storage
     texture_u8_storage = bool(enabled)
 
 
-# Describe an animated colour texture's frame window as ENDPOINT maps plus
+# Describe an animated color texture's frame window as ENDPOINT maps plus
 # per-frame interpolation weights read off the timeline, instead of
 # materializing one full image per frame (stage 4 of the texture line;
 # DESIGN_optimization_targets.md). The timeline's conservative gate
@@ -890,7 +890,7 @@ def set_shadow_anyhit(enabled):
         shadow_anyhit = bool(enabled)
 
 
-# Coloured shadow payloads. The deterministic shadow query's visibility value
+# Colored shadow payloads. The deterministic shadow query's visibility value
 # is an RGB triple end to end; with this on, a transmissive surface TINTS the
 # light it passes (by its albedo, matching what the bounce loop does to its
 # transmitted share) and absorbs Beer-Lambert over the interior chord of any
@@ -934,7 +934,7 @@ def set_watertight_tri(enabled):
 
 
 def set_rgb_shadow_tint(enabled):
-    """Toggle coloured shadow tinting/absorption (see ``rgb_shadow_tint``).
+    """Toggle colored shadow tinting/absorption (see ``rgb_shadow_tint``).
 
     Because the gate compiles into the kernels, this takes effect for kernels
     compiled AFTER the call -- existing variants are reused. For a guaranteed
@@ -1435,7 +1435,7 @@ def set_sheet_resolve(enabled):
 # solids are baselined with it. Turning it OFF returns every lit crease edge
 # to the winner-take-all staircase and is a re-baseline in its own right.
 # What a band's sheets COMMIT does not depend on the flag either way -- §4.4
-# gives the band one occlusion write -- so flipping it moves colour at crease
+# gives the band one occlusion write -- so flipping it moves color at crease
 # pixels, never coverage.
 sheet_shade_split = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 
@@ -1445,12 +1445,12 @@ sheet_shade_split = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 # ``sheet_resolve_shade`` TWICE over the same sheets -- mode 1 walks the
 # transport and builds the shadow events, mode 2 shades reading the traced
 # visibility -- and mode 1 already fetches everything mode 2 re-fetches. The
-# obvious saving (skip the fetches in mode 1) is not available: the colour's
+# obvious saving (skip the fetches in mode 1) is not available: the color's
 # alpha, the transmission and the reflectivity all steer the walk itself, so
 # cutting them changes which sheets are reached and therefore the shadows.
 #
 # What IS available is carrying them across. With this on, mode 1 stores each
-# processed triangle sheet's colour (4), alpha, reflectivity, roughness, IOR,
+# processed triangle sheet's color (4), alpha, reflectivity, roughness, IOR,
 # transmission and surface point -- twelve floats -- and mode 2 reads them
 # back instead of calling _tri_color_g / _tri_extra_g /
 # _tri_ior_transmission_g / _tri_surface_point again. The values are copied
@@ -1598,7 +1598,7 @@ def set_sheet_one_mesh_kernel(enabled):
 # (7.5055) is well in front of the shaft's (7.5275). The shaft sorted first
 # anyway, on a 0.017-area donor at t=7.49997 that owns no sample at all, and
 # took the pixel whole -- a supersampled reference gives that pixel ~100%
-# sphere. Those are the stray arrow-coloured specks inside the marker sphere,
+# sphere. Those are the stray arrow-colored specks inside the marker sphere,
 # and the same mechanism speckles any thin mob running inside a thicker one
 # (a ``Line3D`` inside an ``Arrow3D`` shaft).
 #
@@ -1762,7 +1762,7 @@ def set_sheet_shell_ceiling_kernel(enabled):
 
 
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
-# ``anti_alias_level`` times the output resolution and box-filtering back down
+# ``super_sampling_anti_aliasing`` times the output resolution and box-filtering back down
 # (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE
 # PIXEL SQUARE its primitive covers, and the resolve folds that into the
 # fragment's alpha. One shade per fragment, coverage resolved continuously.
@@ -1778,12 +1778,13 @@ def set_sheet_shell_ceiling_kernel(enabled):
 # coverage cannot express analytically -- shadow-edge visibility and the image
 # seen inside a reflection or refraction -- are handled by taking N sub-pixel
 # samples of those specific queries (analytic_aa_secondary_samples). Measured
-# against the supersampled anti_alias_level=2 default across eleven
-# feature-specific scenes, analytic AA at aa=1 is better on eight and 7-9% short
-# on three (specular highlights, a flat mirror's reflected image, a lens's
-# refracted image), where the residual is the CONTENT of a minified secondary
-# image. Read DESIGN_analytic_aa.md ss19 before dropping ``anti_alias_level``
-# to 1; what is still untouched is texture minification (no mip chain).
+# against the supersampled super_sampling_anti_aliasing=2 default across
+# eleven feature-specific scenes, analytic AA at aa=1 is better on eight and
+# 7-9% short on three (specular highlights, a flat mirror's reflected image, a
+# lens's refracted image), where the residual is the CONTENT of a minified
+# secondary image. Read DESIGN_analytic_aa.md ss19 before dropping
+# ``super_sampling_anti_aliasing`` to 1; what is still untouched is texture
+# minification (no mip chain).
 analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space
@@ -1791,7 +1792,7 @@ analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 # in columns 10:12 of the projection table. Triangles need a seam rule that
 # circuits do not: two triangles sharing an edge inside a pixel cover it
 # completely between them, and plain multiplicative compositing would leave a
-# background-coloured lattice on every internal edge. The resolve therefore
+# background-colored lattice on every internal edge. The resolve therefore
 # tracks transmittance independently for the fixed sub-pixel samples; disjoint
 # masks partition the pixel without a source-object side table.
 #
@@ -1802,11 +1803,11 @@ analytic_aa_bez = env_flag("ALGAN_ANALYTIC_AA_BEZ", True)
 # lattice, int64 edge functions and a top-left fill rule) partitions eight
 # sub-pixel samples among the triangles covering a pixel, the seam rule sums the
 # disjoint sub-areas of one object, and per-sample occlusion keeps a mesh's back
-# faces out of its own silhouette. Against an anti_alias_level=4 reference it
-# beats the plain aliased render on every config -- a subdivided sphere, a
-# translucent one, sub-pixel rods, a slanted quad -- at 40-78% less error, with
-# essentially the reference's own edge gradation (588 distinct edge levels
-# against 608). See DESIGN_analytic_aa.md ss14-ss16.
+# faces out of its own silhouette. Against a super_sampling_anti_aliasing=4
+# reference it beats the plain aliased render on every config -- a subdivided
+# sphere, a translucent one, sub-pixel rods, a slanted quad -- at 40-78% less
+# error, with essentially the reference's own edge gradation (588 distinct edge
+# levels against 608). See DESIGN_analytic_aa.md ss14-ss16.
 analytic_aa_tri = env_flag("ALGAN_ANALYTIC_AA_TRI", True)
 
 # The seam rule itself. Off, coverage still scales alpha but consecutive
@@ -2090,8 +2091,8 @@ solid_shell_alpha = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 # directional or point light is a delta.
 #
 # A hit's energy is partitioned into a reflected share ``R`` (traced), a
-# transmitted share, and a remainder that weights the locally shaded colour.
-# That partition is sound as reflectance, but the shaded colour is where the
+# transmitted share, and a remainder that weights the locally shaded color.
+# That partition is sound as reflectance, but the shaded color is where the
 # analytic GGX highlight lives -- so the lights' own specular reflection is
 # weighted by the share that is explicitly NOT reflected, and the materials
 # whose reflected or transmitted lobe dominates lose their highlight outright.
@@ -2101,7 +2102,7 @@ solid_shell_alpha = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 # ``R = 1`` instead, shading at weight zero.
 #
 # The scatter sites therefore add the lobe back at exactly the complement of
-# the share the shaded colour already carries (``R * _mirror_share +
+# the share the shaded color already carries (``R * _mirror_share +
 # trans_share``), which puts the reflected lobe at unit weight overall and
 # leaves the diffuse/ambient partition untouched. Not double counting: the
 # traced ray carries the environment, this carries the delta lights, and the
@@ -2133,7 +2134,7 @@ direct_specular_lobe = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 # tail iteration). The fix adds the same floor test to the post-loop block,
 # between the peel-complete tests and the surface-ceiling test, where the
 # bounced rays now arrive. Completion, not truncation: the existing commit
-# block deposits accumulated colour + leftover throughput (env map included)
+# block deposits accumulated color + leftover throughput (env map included)
 # exactly as for any other retirement, and ALLOC_TRUNC_SURFACES is untouched.
 #
 # Not provably byte-identical: it retires transport the renderer currently
@@ -2245,7 +2246,7 @@ bez_bvh_split = env_flag("ALGAN_BEZ_BVH_SPLIT", True)
 # demonstrably drops:
 #
 #   plain (Sphere/Cylinder/Cone/Torus)   6668 -> 6572 tris   max|d| 0
-#   Sphere + colour checkerboard         4096 -> 3968 tris   max|d| 0
+#   Sphere + color checkerboard         4096 -> 3968 tris   max|d| 0
 #   Sphere + normal map                  4096 -> 3968 tris   max|d| 0
 #
 # The two textured arms are the point: the POLE weld changes the triangle list, so
@@ -2297,8 +2298,8 @@ def set_bez_bvh_split(enabled):
 # of one: each is the primary ray re-generated through a different sub-pixel
 # position and re-intersected with that hit's own plane, so the reflected image
 # is sampled at N sub-pixel positions, each carrying 1/N of the throughput. At
-# N=4 those positions are the 2x2 grid anti_alias_level=2 supersamples at, which
-# is the arm this is meant to match.
+# N=4 those positions are the 2x2 grid super_sampling_anti_aliasing=2
+# supersamples at, which is the arm this is meant to match.
 #
 # The split happens ONCE, at the primary hit; deeper bounces continue as single
 # rays, so the cost is N times the secondary traversal, not N^depth. Only the
@@ -2310,7 +2311,7 @@ analytic_aa_secondary_samples = env_int("ALGAN_ANALYTIC_AA_SECONDARY", 4)
 #
 # Without this, a plain glossy sphere -- whose only "reflection" is the ~4%
 # Fresnel sheen every PBR dielectric has -- spawns four extra traced rays per
-# pixel for a lobe contributing 4% of its colour, and measures both slower and
+# pixel for a lobe contributing 4% of its color, and measures both slower and
 # slightly worse than plain supersampling. The whole value of coverage is that
 # the expensive fallbacks fire only on the pixels that need them.
 analytic_aa_secondary_min_energy = env_float(
@@ -2647,7 +2648,7 @@ def analytic_aa_tri_active():
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.
 # When on, the deterministic wavefront shaded from three per-triangle texture
-# lookups instead of per-vertex arrays: a colour texture (RGBA+glow), a
+# lookups instead of per-vertex arrays: a color texture (RGBA+glow), a
 # material texture (the shading parameter block) and a surface texture
 # (reflectivity/roughness/index-of-refraction used for scatter); see
 # scene_builder._build_textured_scene + wavefront_textured_kernels_taichi. It
@@ -3092,9 +3093,9 @@ def set_indirect_bounce_strength(strength):
 
 
 def set_linear_color_space(enabled):
-    """Enable or disable the linear working colour space.
+    """Enable or disable the linear working color space.
 
-    **On by default.** Authored colour is decoded from sRGB to linear light at
+    **On by default.** Authored color is decoded from sRGB to linear light at
     the render boundary, every shading and compositing operation happens in
     linear, and the sRGB transfer function is applied once at the byte write.
     This is the arrangement three.js uses, and it is what makes lights add:
@@ -3120,7 +3121,7 @@ def set_linear_color_space(enabled):
 def set_tonemapping(enabled):
     """Enable or disable tonemapping of the rendered frame.
 
-    **Off by default**, which makes output linear: an authored colour lands on
+    **Off by default**, which makes output linear: an authored color lands on
     the pixel it names, white renders as 255, and a primary stays primary.
 
     Enabling it applies the curve selected by :func:`set_tonemap_method`
@@ -3128,7 +3129,7 @@ def set_tonemapping(enabled):
     the old docstring said. That buys highlight roll-off, so values above 1.0
     stay distinguishable instead of clipping flat, and it costs a shift on
     *every* value: the curve is not the identity anywhere except at 0, an
-    authored 255 renders as 222, and saturated colours desaturate. The two are
+    authored 255 renders as 222, and saturated colors desaturate. The two are
     not separable -- a curve that is the identity on ``[0, 1]`` must clamp
     above it -- so this is a choice about which you would rather have.
     ``TONEMAP_FINDINGS.md`` has the measurements.
@@ -3146,7 +3147,7 @@ def set_tonemapping(enabled):
 def set_tonemap_exposure(exposure):
     """Set the exposure multiplier applied to the frame before it is encoded.
 
-    The colour is multiplied by this before the tonemap curve runs, and --
+    The color is multiplied by this before the tonemap curve runs, and --
     since tonemapping is off by default -- before the plain clamp too, so it
     brightens or darkens the whole render either way. Defaults to ``1.0``,
     which is exact: it moves no pixel.
@@ -3371,7 +3372,7 @@ def _core_shader_ids():
 
 def _shader_material_id(shader):
     """In-kernel material id for a shader function. Unknown / non-core shaders
-    (and ``None``) map to 1 (unlit passthrough: the kernel returns the colour --
+    (and ``None``) map to 1 (unlit passthrough: the kernel returns the color --
     raw or baked -- unchanged).
     """
     if shader is None:
@@ -3389,8 +3390,8 @@ def _shader_is_core(shader):
 def _constant_promotion_active():
     """True when constant-property -> 1x1-texture promotion applies to this
     render: it is enabled, and the batch will render through the deterministic
-    fragment-shading general wavefront (the only path where a mob's colours are
-    raw albedo, so a "constant colour" is genuinely constant per fragment, and
+    fragment-shading general wavefront (the only path where a mob's colors are
+    raw albedo, so a "constant color" is genuinely constant per fragment, and
     the only kernel whose per-vertex reads are guarded for shrunk arrays).
     Every deterministic (samples <= 1) batch renders through that kernel.
     """

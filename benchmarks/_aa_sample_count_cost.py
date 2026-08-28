@@ -60,6 +60,6 @@ if __name__ == "__main__":
     print(f"analytic coverage samples per pixel: {_AA_NUM_SAMPLES}")
     profile_scene(
         spheres,
-        RenderSettings((1280, 720), 30, anti_alias_level=1),
+        RenderSettings((1280, 720), 30, super_sampling_anti_aliasing=1),
         f"aa_samples_{_AA_NUM_SAMPLES}",
     )

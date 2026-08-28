@@ -63,7 +63,7 @@ from algan.utils.memory_utils import (
     ManualMemory,
     auto_record_enabled,
     begin_cuda_peak,
-    empty_cache,
+    release_torch_memory,
     end_cuda_peak,
     get_num_available_bytes,
     is_cuda_oom,
@@ -224,7 +224,7 @@ def _projection_anti_alias_level(scene, primitives):
     material/legacy check falls back, Bezier tessellation remains at least as
     fine as the AA=2 reference and its bounds are merely more conservative.
     """
-    requested = max(1, int(scene.video_settings.anti_alias_level))
+    requested = max(1, int(scene.video_settings.super_sampling_anti_aliasing))
     rt_settings = SETTINGS.raytracing
     from algan.rendering.raytracing.primitives import (
         RayTracedBezierCircuitPrimitive,
@@ -647,7 +647,7 @@ class RenderLoopMixin:
                 if name.startswith("_rt_"):
                     setattr(primitive, name, None)
         self.memory.reset()
-        empty_cache(force_gc=False)
+        release_torch_memory(force_gc=False)
 
     def _select_largest_fitting_fetched_prefix(
         self,
@@ -1008,7 +1008,7 @@ class RenderLoopMixin:
                     raise
                 primitive_batch[0]._rt_merged_scene = None
                 primitive_batch[0]._rt_prepared_host_scene = None
-                empty_cache(force_gc=False)
+                release_torch_memory(force_gc=False)
                 logger.debug("Arena preflight: projection ran out of memory (%r).", exc)
                 return False
         if not all(
@@ -1061,7 +1061,7 @@ class RenderLoopMixin:
                 raise
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
-            empty_cache(force_gc=False)
+            release_torch_memory(force_gc=False)
             logger.debug("Arena preflight: scene merge ran out of memory (%r).", exc)
             return False
         scene_bytes = get_merged_scene_arena_nbytes(
@@ -1120,7 +1120,7 @@ class RenderLoopMixin:
 
         aa = effective_anti_alias_level(
             merged_host,
-            self.video_settings.anti_alias_level,
+            self.video_settings.super_sampling_anti_aliasing,
             light_sources=lights,
             environment_map=env_map,
             near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
@@ -1249,7 +1249,7 @@ class RenderLoopMixin:
         allocations without reallocating the backing tensor.
         """
         self.memory.reset()
-        empty_cache(force_gc=True)
+        release_torch_memory(force_gc=True)
 
     def render_primitive_batch(
         self,
@@ -1259,7 +1259,7 @@ class RenderLoopMixin:
         save_image=False,
         post_processes=(),
         transparent_background=False,
-        background_color=None,
+        background=None,
         render_state=None,
     ):
         """Render one prepared primitive batch for a frame interval."""
@@ -1354,7 +1354,7 @@ class RenderLoopMixin:
                     )
 
             # Reclaim animation-phase residuals before render batching.
-            empty_cache(force_gc=False)
+            release_torch_memory(force_gc=False)
 
             # Projection ran on the source (CPU) device; the merge + STBVH
             # build ran on the CPU or (default) the render device. Upload each
@@ -1387,7 +1387,7 @@ class RenderLoopMixin:
                 # host memory kept until the batch is released).
                 primitive_batch[0]._rt_merged_scene = None
                 merged_host = device_scene
-                empty_cache(force_gc=False)
+                release_torch_memory(force_gc=False)
 
             render_pointers = self.memory.get_pointers()
             from algan.rendering.raytracing.settings import (
@@ -1400,7 +1400,7 @@ class RenderLoopMixin:
 
             aa = effective_anti_alias_level(
                 merged_host,
-                self.video_settings.anti_alias_level,
+                self.video_settings.super_sampling_anti_aliasing,
                 light_sources=render_lights,
                 environment_map=env_map,
                 near_clip=float(getattr(camera, "near", 0.0) or 0.0),
@@ -1455,9 +1455,7 @@ class RenderLoopMixin:
                 logger.debug(f"rendering batch with duration {duration}")
 
                 background_source = (
-                    self.background_frame
-                    if background_color is None
-                    else background_color
+                    self.background_frame if background is None else background
                 )
                 bgf = _prepare_background_for_chunk(
                     background_source,
@@ -1474,9 +1472,9 @@ class RenderLoopMixin:
                 # Pressure-gated gc (like every other steady-state call site):
                 # a forced full collection here cost ~150 ms per frame window
                 # and reference counting already frees the previous window's
-                # buffers; empty_cache still collects cycles when the device
+                # buffers; release_torch_memory still collects cycles when the device
                 # is genuinely near capacity.
-                empty_cache(force_gc=False)
+                release_torch_memory(force_gc=False)
                 # Baseline the high-water mark at this chunk's starting level,
                 # so what it reaches afterwards is this chunk's own footprint
                 # rather than the whole job's.
@@ -1496,7 +1494,7 @@ class RenderLoopMixin:
                     camera.ray_origin,
                     camera.screen_point,
                     camera.screen_basis,
-                    anti_alias_level=self.video_settings.anti_alias_level,
+                    anti_alias_level=self.video_settings.super_sampling_anti_aliasing,
                     light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
@@ -1545,7 +1543,7 @@ class RenderLoopMixin:
         end_ind,
         post_processes=(),
         transparent_background=False,
-        background_color=None,
+        background=None,
     ):
         """Yield background-only frame batches for ``[start_ind, end_ind)``.
 
@@ -1569,7 +1567,7 @@ class RenderLoopMixin:
             is_post_process_tonemap_enabled,
         )
 
-        aa = max(1, int(self.video_settings.anti_alias_level))
+        aa = max(1, int(self.video_settings.super_sampling_anti_aliasing))
         # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
         # default super-sampled buffer averaged down in post-processing;
         # ALGAN_INPLACE_AA keeps the buffer at output resolution.
@@ -1589,9 +1587,7 @@ class RenderLoopMixin:
             hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
         )
         device = self.memory.data.device
-        background_source = (
-            self.background_frame if background_color is None else background_color
-        )
+        background_source = self.background_frame if background is None else background
 
         original_pointers = self.memory.get_pointers()
         bytes_remaining = self.memory.get_num_bytes_remaining()
@@ -1645,7 +1641,7 @@ class RenderLoopMixin:
             # Pressure-gated gc: the background-only path allocates almost
             # nothing per window, so a forced full collection here was pure
             # fixed cost (see the render_primitive_batch call site).
-            empty_cache(force_gc=False)
+            release_torch_memory(force_gc=False)
             chunk_base = original_pointers[0] + len(self.memory) - original_pointers[1]
             self.memory.max_pointer = chunk_base
             out = self.memory.get_tensor(
@@ -1949,7 +1945,7 @@ class RenderLoopMixin:
 
     def _warn_vertex_baked_lighting(self):
         """Warn about spawned Mobs whose shading can only be baked into vertex
-        colours while this Scene's lighting rig asks for more than that bake
+        colors while this Scene's lighting rig asks for more than that bake
         delivers (extended lights, shadows, an environment map).
 
         ``set_material`` makes the same check against the lights that exist when
@@ -1996,7 +1992,7 @@ class RenderLoopMixin:
         )
         warnings.warn(
             f"{len(baked)} spawned Mob(s) use shading Algan can only bake into "
-            f"vertex colours ({', '.join(kinds)}), so {'; '.join(features)}. "
+            f"vertex colors ({', '.join(kinds)}), so {'; '.join(features)}. "
             f"{_PER_FRAGMENT_ADVICE}",
             UnsupportedFeatureWarning,
             stacklevel=_user_stacklevel(),
@@ -2657,7 +2653,7 @@ class RenderLoopMixin:
                 raise
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
-            empty_cache(force_gc=False)
+            release_torch_memory(force_gc=False)
             logger.debug("Overlapped scene merge ran out of memory (%r).", exc)
             return
         primitive_batch[0]._rt_prep_overlapped = True
@@ -2677,8 +2673,8 @@ class RenderLoopMixin:
         contributes nothing, so packing it would only cost per-light kernel
         work in every batch after its despawn. A light that is live for part
         of the window is kept; its out-of-lifespan frames materialize
-        zero-colour rows, which every lighting path treats as inert (the
-        shadow fans and the default shaders skip zero-colour rows), so the
+        zero-color rows, which every lighting path treats as inert (the
+        shadow fans and the default shaders skip zero-color rows), so the
         output does not depend on where batch boundaries happen to fall
         relative to a light's spawn.
         """
@@ -2709,11 +2705,11 @@ class RenderLoopMixin:
                 continue
             light_objects.append(light)
             loc = light.location
-            # The one ingest point for light colour, and the decode has to
+            # The one ingest point for light color, and the decode has to
             # happen here rather than at the pack: alpha and opacity below are
             # linear scalars and intensity below is a linear per-frame row, so
             # srgb_to_linear(c * k) is not srgb_to_linear(c) * k. Channel 3 is
-            # glow, not colour, so only 0:3 is decoded. This is what three.js
+            # glow, not color, so only 0:3 is decoded. This is what three.js
             # does too -- its Color is already linear by the time WebGLLights
             # multiplies in intensity.
             light_rgba = light.color
@@ -2751,7 +2747,7 @@ class RenderLoopMixin:
                 radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
                 if radiance_cols is not None:
                     # Radiance-bearing aux columns (a hemisphere's ground
-                    # colour) scale with the light's per-frame opacity and
+                    # color) scale with the light's per-frame opacity and
                     # intensity, like the RGB columns above -- so frames
                     # outside the light's lifespan pack a genuinely all-zero
                     # (inert) row rather than a row that keeps emitting from
@@ -2791,7 +2787,7 @@ class RenderLoopMixin:
         self,
         start_time_ind,
         end_time_ind,
-        background_color=None,
+        background=None,
         post_processes=(bloom_filter,),
         manual_memory=True,
     ):
@@ -2832,7 +2828,7 @@ class RenderLoopMixin:
                 yield from self._get_frames_impl(
                     start_time_ind,
                     end_time_ind,
-                    background_color=background_color,
+                    background=background,
                     post_processes=post_processes,
                     manual_memory=manual_memory,
                 )
@@ -2847,7 +2843,7 @@ class RenderLoopMixin:
         self,
         start_time_ind,
         end_time_ind,
-        background_color=None,
+        background=None,
         post_processes=(bloom_filter,),
         manual_memory=True,
     ):
@@ -2856,8 +2852,8 @@ class RenderLoopMixin:
             return
 
         self.original_background_frame = self.background_frame
-        if background_color is not None:
-            self.background_frame = background_color
+        if background is not None:
+            self.background_frame = background
 
         transparent_background = self.background_is_transparent()
         self._warn_vertex_baked_lighting()
@@ -3129,7 +3125,7 @@ class RenderLoopMixin:
                             primitives[0]._rt_merged_scene = None
                         del primitives, planned_prefix
                         self.memory.reset()
-                        empty_cache(force_gc=False)
+                        release_torch_memory(force_gc=False)
                         retry_end_ind = spawn_boundary
                         continue
 
@@ -3178,7 +3174,7 @@ class RenderLoopMixin:
                             primitives[0]._rt_merged_scene = None
                         del primitives
                         self.memory.reset()
-                        empty_cache(force_gc=False)
+                        release_torch_memory(force_gc=False)
                         target_duration = self._next_probe_duration(
                             max(1, retry_lower_duration),
                             max(1, retry_upper_duration - 1),
@@ -3198,7 +3194,7 @@ class RenderLoopMixin:
                                 primitives[0]._rt_merged_scene = None
                             del primitives
                             self.memory.reset()
-                            empty_cache(force_gc=False)
+                            release_torch_memory(force_gc=False)
                             target_duration = (
                                 retry_lower_duration + retry_upper_duration
                             ) // 2
@@ -3244,7 +3240,7 @@ class RenderLoopMixin:
                                 save_image,
                                 post_processes,
                                 transparent_background,
-                                background_color,
+                                background,
                                 render_state=render_state,
                             ):
                                 produced_output = True
@@ -3322,7 +3318,7 @@ class RenderLoopMixin:
                             primitives[0]._rt_merged_scene = None
                         del primitives
                         # Free previous batch data before allocating next batch.
-                        empty_cache(force_gc=False)
+                        release_torch_memory(force_gc=False)
                         _sync_devices()
                         e = time.time()
                         logger.debug(
@@ -3356,7 +3352,7 @@ class RenderLoopMixin:
                             new_time_ind,
                             post_processes=post_processes,
                             transparent_background=transparent_background,
-                            background_color=background_color,
+                            background=background,
                         ):
                             yield frame_batch
 
@@ -3411,7 +3407,7 @@ class RenderLoopMixin:
         file_path,
         file_path_out,
         post_processes=(bloom_filter,),
-        background_color=None,
+        background=None,
         despawn_camera_and_lights=True,
         preserve_authoring_state=False,
     ):
@@ -3489,7 +3485,7 @@ class RenderLoopMixin:
                 with preserve, _render_progress(total_frames) as report_frame:
                     for frame_batch in self.get_frames(
                         *self.scene_times[-1],
-                        background_color=background_color,
+                        background=background,
                         post_processes=post_processes,
                         manual_memory=True,
                     ):

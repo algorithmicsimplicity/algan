@@ -208,7 +208,7 @@ def _build_edge_scene(roughness):
     from algan.rendering.lights import AmbientLight
     from algan.rendering.shaders.materials import MeshStandardMaterial
 
-    Scene.instance().set_background_color(BLACK, True)
+    Scene.instance().set_background(BLACK, True)
     SceneManager.instance().light_sources = [
         AmbientLight(color=WHITE, intensity=1.0).spawn(animate=False)
     ]
@@ -258,7 +258,9 @@ def _render_edge(roughness, tag):
     _build_edge_scene(roughness)
     render_to_file(
         file_path=path,
-        video_settings=RenderSettings((MIRROR_W, MIRROR_H), 1, anti_alias_level=1),
+        video_settings=RenderSettings(
+            (MIRROR_W, MIRROR_H), 1, super_sampling_anti_aliasing=1
+        ),
     )
     cap = cv2.VideoCapture(path)
     ok, frame = cap.read()

@@ -13,15 +13,15 @@ the fill instead of growing the silhouette -- which keeps bordered text legible
 and stops neighbouring glyphs fusing. An unfilled circuit has no interior to eat
 into, so its stroke stays centred on the path.
 
-It owns colour *across* the shape too. Since there are no vertices to hang
-colours off, a circuit carries a ``texture_grid_width`` x
-``texture_grid_height`` grid of colour samples laid over its own frame, which
+It owns color *across* the shape too. Since there are no vertices to hang
+colors off, a circuit carries a ``texture_grid_width`` x
+``texture_grid_height`` grid of color samples laid over its own frame, which
 the renderer samples bilinearly per fragment.
 :meth:`BezierCircuitCubic.set_color_by_function` fills the grid in from ``(u,
 v)`` -- the same domain :class:`~algan.mobs.surfaces.surface.Surface` uses --
 :meth:`BezierCircuitCubic.set_color_by_image` from a picture, and
 :meth:`~algan.mobs.shapes_2d.Line.set_color_by_function` from a single ``t``
-along the path. The grid is one texel, i.e. one flat colour, unless it was asked
+along the path. The grid is one texel, i.e. one flat color, unless it was asked
 for.
 
 ``build_render_primitives_batched`` packs many circuits into one
@@ -229,12 +229,12 @@ class BezierCircuitCubic(Mob):
     eats into the fill instead of growing the silhouette; an unfilled circuit has
     no interior to eat into, so its stroke stays centred on the path.
 
-    **Colour across a circuit.** A circuit carries a rectangular texture grid of
-    colour samples, laid across its own frame and sampled bilinearly per
+    **Color across a circuit.** A circuit carries a rectangular texture grid of
+    color samples, laid across its own frame and sampled bilinearly per
     fragment by the renderer. ``texture_grid_width`` x ``texture_grid_height``
     is therefore the resolution of everything painted on the shape -- a
-    gradient, an image, a colour wave -- and it defaults to a single texel, i.e.
-    one flat colour. Raise it and fill it in with
+    gradient, an image, a color wave -- and it defaults to a single texel, i.e.
+    one flat color. Raise it and fill it in with
     :meth:`~.BezierCircuitCubic.set_color_by_function` or
     :meth:`~.BezierCircuitCubic.set_color_by_image`.
 
@@ -261,8 +261,8 @@ class BezierCircuitCubic(Mob):
         it keeps its apparent weight at any resolution. Defaults to ``5``; pass
         ``0`` for no border.
     border_color
-        Colour of the border stroke. Defaults to ``WHITE``. The circuit's
-        ``color`` is its *fill* colour and does not touch the border; see
+        Color of the border stroke. Defaults to ``WHITE``. The circuit's
+        ``color`` is its *fill* color and does not touch the border; see
         :attr:`~.BezierCircuitCubic.border_color`.
     portion_of_curve_drawn
         How much of the path is drawn, from 0 (nothing) to 1 (all of it).
@@ -273,14 +273,14 @@ class BezierCircuitCubic(Mob):
         :class:`~algan.mobs.shapes_2d.Line` uses).
     add_texture_grid
         Whether to build the texture grid at all. Defaults to ``True``. ``False``
-        leaves the circuit one colour and no per-texel storage, and the
+        leaves the circuit one color and no per-texel storage, and the
         ``set_color_by_*`` methods then have nothing to write to.
     texture_grid_width
-        Number of colour samples along the circuit's first basis row -- ``u``,
-        left to right on an upright shape. Defaults to ``1``: one flat colour,
+        Number of color samples along the circuit's first basis row -- ``u``,
+        left to right on an upright shape. Defaults to ``1``: one flat color,
         which is what a shape wants unless you are painting something across it.
     texture_grid_height
-        Number of colour samples along the second basis row (``v``). Defaults to
+        Number of color samples along the second basis row (``v``). Defaults to
         ``None``, meaning match ``texture_grid_width`` -- except on a circuit
         whose control points are collinear (a straight
         :class:`~algan.mobs.shapes_2d.Line`), where the second row is synthesized
@@ -310,11 +310,11 @@ class BezierCircuitCubic(Mob):
         :class:`~algan.mobs.manim_mob.ManimMob` carries it across on import.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
-        which is the fill colour.
+        which is the fill color.
 
     See Also
     --------
-    :meth:`~.BezierCircuitCubic.set_color_by_function` : Colour it by a function of ``(u, v)``.
+    :meth:`~.BezierCircuitCubic.set_color_by_function` : Color it by a function of ``(u, v)``.
     :meth:`~.BezierCircuitCubic.set_color_by_image` : Paint an image across it.
     :class:`~algan.mobs.surfaces.surface.Surface` : The 3-D counterpart, with the same ``(u, v)`` conventions.
 
@@ -417,7 +417,7 @@ class BezierCircuitCubic(Mob):
         if "color" in kwargs2:
             # Parsed here rather than in Mob.__init__: this runs first, and it
             # indexes the value's shape, so a hex string or an RGB tuple has to
-            # already be a colour by now.
+            # already be a color by now.
             color = to_color(kwargs2["color"])
             kwargs2["color"] = color.reshape(-1, color.shape[-1]).mean(-2)
         if normals is not None:
@@ -468,7 +468,7 @@ class BezierCircuitCubic(Mob):
             # ``linspace(-1, 1, 1)`` is -1, so a single-sample axis puts its one
             # texel at that end of the frame rather than in the middle. The
             # renderer clamps the whole axis to it either way, so it is one
-            # colour across the span regardless; what it does change is where
+            # color across the span regardless; what it does change is where
             # ``wave_color`` reads the texel's position from.
             a1 = torch.linspace(-1, 1, width).view(-1, 1, 1) * (1 + 1e-5)
             a2 = torch.linspace(-1, 1, height).view(1, -1, 1) * (1 + 1e-5)
@@ -611,13 +611,13 @@ class BezierCircuitCubic(Mob):
         return mob
 
     def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
-        """Refine the texture grids so a colour wave crosses the shape smoothly.
+        """Refine the texture grids so a color wave crosses the shape smoothly.
 
-        A circuit's fill and border are coloured by bilinearly sampling the
+        A circuit's fill and border are colored by bilinearly sampling the
         independent ``texture_points`` and ``border_texture_points`` grids laid
         across it. Those grids are a single sample unless
         ``texture_grid_width`` / ``texture_grid_height`` were raised by hand, so
-        a shape flashes as one flat colour instead of showing the wave
+        a shape flashes as one flat color instead of showing the wave
         travelling over it. Lay down a grid fine enough that neighbouring
         samples are no further than ``max_spacing`` apart along the wave (see
         :meth:`~.Mob._refine_sampling_for_color_wave`).
@@ -627,7 +627,7 @@ class BezierCircuitCubic(Mob):
         for the duration of a wave.
         """
         if "color" not in pulsed_attrs:
-            # Only colour is stored per texture point. A circuit's opacity is a
+            # Only color is stored per texture point. A circuit's opacity is a
             # single shader parameter for the whole fill, so an opacity wave --
             # the fade Text and Tex spawn with, for one -- cannot be made any
             # smoother by adding texels.
@@ -746,7 +746,7 @@ class BezierCircuitCubic(Mob):
     #: ``filled`` and ``empty`` decide whether the circuit is a disc or a ring.
     #: ``get_render_primitives`` reads both live and neither is animatable, so a
     #: filled Square becoming an unfilled one used to stay solid -- a full-range
-    #: difference over 3.6% of the frame. The colours that go with the fill
+    #: difference over 3.6% of the frame. The colors that go with the fill
     #: arrive separately: ``texture_points`` and ``border_texture_points`` are
     #: components, and the morph recurses into them. ``z_index`` is deliberately
     #: absent -- it already reaches the endpoint on its own, and assigning it
@@ -779,7 +779,7 @@ class BezierCircuitCubic(Mob):
         self.border_texture_points.color = value
 
     def get_base_grid(self) -> torch.Tensor:
-        """Get the circuit's texture grid, the ``(u, v)`` domain it is coloured
+        """Get the circuit's texture grid, the ``(u, v)`` domain it is colored
         over.
 
         Values run from 0 to 1 along both axes: ``u`` along the circuit's first
@@ -787,7 +787,7 @@ class BezierCircuitCubic(Mob):
         ``u`` left to right and ``v`` top to bottom. Both rows are as long as the
         distance from the circuit's centre to its furthest control point, so the
         domain covers the square that circumscribes the shape and the shape sits
-        in the middle of it. An axis with a single sample carries one colour for the whole span
+        in the middle of it. An axis with a single sample carries one color for the whole span
         and is evaluated at its centre, ``0.5``.
 
         This is the input the ``set_color_by_*`` methods evaluate their
@@ -801,7 +801,7 @@ class BezierCircuitCubic(Mob):
 
         See Also
         --------
-        :meth:`~.BezierCircuitCubic.set_color_by_function` : Colour the circuit over this grid.
+        :meth:`~.BezierCircuitCubic.set_color_by_function` : Color the circuit over this grid.
         """
         device = self.texture_points.location.device
 
@@ -820,27 +820,27 @@ class BezierCircuitCubic(Mob):
         )
 
     def _apply_texture_grid_colors(self, colors, what):
-        """Internal: write one colour per texel onto the grids that are visible.
+        """Internal: write one color per texel onto the grids that are visible.
 
         ``colors`` holds one entry per texel of :meth:`get_base_grid`, in that
         grid's own layout. The fill grid always takes them; an unfilled circuit
         has no interior to show them in, so its border grid takes them too --
         the same pairing the constructor makes when it hands an unfilled
-        circuit's texture grids the border colour.
+        circuit's texture grids the border color.
         """
         colors = Color.add_defaults(cast_to_tensor(colors))
         colors = colors.reshape(-1, colors.shape[-1])
         if colors.shape[-2] != self.num_texture_points:
             raise ValueError(
-                f"{what} must return one colour per texel: expected "
+                f"{what} must return one color per texel: expected "
                 f"{self.num_texture_points} "
                 f"({self.grid_width} x {self.grid_height}), got {colors.shape[-2]}"
             )
         objects = self.location.shape[-2]
         if objects > 1:
             # ``from_batches`` mobs (Text, Tex) pack every circuit's texels into
-            # one row block each, and every circuit is coloured over its own
-            # frame, so the same grid of colours repeats per circuit.
+            # one row block each, and every circuit is colored over its own
+            # frame, so the same grid of colors repeats per circuit.
             colors = colors.repeat(objects, 1)
         targets = [self.texture_points]
         if not self.filled:
@@ -857,39 +857,39 @@ class BezierCircuitCubic(Mob):
                 f"{type(self).__name__}.{method} needs a texture grid with more "
                 "than one texel, but this circuit has "
                 f"{self.num_texture_points}. The grid is the resolution of "
-                "anything painted across the shape, and it is one flat colour "
+                "anything painted across the shape, and it is one flat color "
                 "by default -- construct the shape with e.g. "
                 "texture_grid_width=64, texture_grid_height=64."
             )
 
     def set_color_by_function(self, function):
-        """Colour the circuit by a function of its ``(u, v)`` parameters.
+        """Color the circuit by a function of its ``(u, v)`` parameters.
 
-        Gives each texel of the circuit's texture grid its own colour, for
-        gradients, heat maps or anything where colour carries data, and the
-        renderer interpolates between them across the shape. The colours travel
+        Gives each texel of the circuit's texture grid its own color, for
+        gradients, heat maps or anything where color carries data, and the
+        renderer interpolates between them across the shape. The colors travel
         with the circuit as it moves and morphs.
 
-        The grid is the resolution of the result, and it is a single flat colour
+        The grid is the resolution of the result, and it is a single flat color
         unless you asked for more: build the shape with ``texture_grid_width`` /
         ``texture_grid_height`` (see :class:`~.BezierCircuitCubic`). On a filled
-        circuit this colours the fill, leaving ``border_color`` alone; on an
-        unfilled one, where the stroke is all there is, it colours the stroke.
+        circuit this colors the fill, leaving ``border_color`` alone; on an
+        unfilled one, where the stroke is all there is, it colors the stroke.
         A multi-circuit mob (a :class:`~algan.mobs.text.Text`, a
-        :class:`~algan.mobs.text.Tex`) colours every circuit over its own frame,
+        :class:`~algan.mobs.text.Tex`) colors every circuit over its own frame,
         so the pattern repeats per glyph.
 
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second
-        by default), so the colours cross-fade smoothly. Wrap the call in
+        by default), so the colors cross-fade smoothly. Wrap the call in
         ``Off()`` to apply it instantly.
 
         Parameters
         ----------
         function
             Callable taking a ``(u, v)`` tensor of shape ``[..., 2]``, with both
-            coordinates in ``[0, 1]``, and returning colours of shape
+            coordinates in ``[0, 1]``, and returning colors of shape
             ``[..., 3]`` (RGB), ``[..., 4]`` (RGBA) or ``[..., 5]`` (RGB, glow,
             alpha -- Algan's internal channel order). Channels are in ``[0, 1]``;
             a missing alpha defaults to 1 and a missing glow to 0. Must be
@@ -904,7 +904,7 @@ class BezierCircuitCubic(Mob):
         ------
         ValueError
             If the circuit has a single-texel texture grid, or if ``function``
-            returns the wrong number of colours.
+            returns the wrong number of colors.
 
         See Also
         --------
@@ -975,7 +975,7 @@ class BezierCircuitCubic(Mob):
 
         See Also
         --------
-        :meth:`~.BezierCircuitCubic.set_color_by_function` : Colour it by a function instead.
+        :meth:`~.BezierCircuitCubic.set_color_by_function` : Color it by a function instead.
         :class:`~algan.mobs.image_mob.ImageMob` : An image as a Mob of its own, at full resolution.
         """
         self._require_texture_grid("set_color_by_image")
@@ -1078,7 +1078,7 @@ class BezierCircuitCubic(Mob):
                 *shader_vars[:1],
                 *shader_vars[2:],
             )
-        # Read the colour rows as plain tensors. ``mob.color`` hands back a
+        # Read the color rows as plain tensors. ``mob.color`` hands back a
         # :class:`~algan.constants.color.Color` so callers get its rgb / glow /
         # opacity views, but a Tensor subclass routes *every* subsequent
         # operation through ``__torch_function__``, and building one batch's

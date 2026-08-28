@@ -22,7 +22,7 @@ from algan.utils.tensor_utils import (
     dot_product,
 )
 
-# Refinement budget for fit_to_screen_rectangle. The scale converges
+# Refinement budget for fit_to_screen. The scale converges
 # superlinearly, but re-centering under perspective only converges linearly, so
 # the cap is set by the latter; the common cases (a flat Mob, or any Mob under an
 # unrotated camera) are exact after one pass and stop on the tolerance. The
@@ -721,7 +721,7 @@ class MobLayoutMixin:
         self._apply_set("basis", new_bases, recursive=True)
         return self
 
-    def fit_to_screen_rectangle(
+    def fit_to_screen(
         self,
         bottom_left=None,
         top_right=None,

@@ -52,7 +52,7 @@ from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _unify_time
 from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
 from algan.settings import SETTINGS
-from algan.utils.memory_utils import empty_cache
+from algan.utils.memory_utils import release_torch_memory
 from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
 
 # rt_settings values are mutable module globals (set_samples_per_pixel etc.);
@@ -125,7 +125,7 @@ class _PatchChunk(NamedTuple):
         and the rows are there for the taking: a barycentric blend of three
         corner values is so cheap that fanning the result back out costs more
         than evaluating it per row (measured 0.86x on a deforming mesh whose
-        colours were static). Only the patch evaluation is expensive enough for
+        colors were static). Only the patch evaluation is expensive enough for
         the trade to pay.
         """
         values = source[self.frames, self.patches]
@@ -793,10 +793,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                     # path, which their presence forces on; the per-vertex
                     # shader convention only knows point lights.
                     continue
-                # A zero-colour frame row is a light outside its lifespan (or
+                # A zero-color frame row is a light outside its lifespan (or
                 # genuinely black) and must contribute nothing -- exactly as
                 # if the light were not in the list. The legacy default shader
-                # lerps toward the light colour with a colour-independent
+                # lerps toward the light color with a color-independent
                 # weight, so without this gate a not-yet-spawned light would
                 # darken vertex-shaded mobs, and the output would depend on
                 # whether a batch boundary happened to include the light.
@@ -1040,7 +1040,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # un-spawned or faded out is absent, while clear glass keeps its
         # coverage and stays visible (see _derive_material_surface_params).
         visible = alpha.amax(-1) > min_alpha
-        # ...except where a colour texture, not the corner colours, is what
+        # ...except where a color texture, not the corner colors, is what
         # supplies coverage. Every cut-out image (a PNG sticker, an ImageMob)
         # has transparent corner texels, and a textured quad's corners ARE its
         # triangles' corners, so this test culled whole triangles out of an
@@ -1090,7 +1090,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         transmission = getattr(self, "transmission", None)
         if transmission is not None:
             opaque = opaque & (transmission[..., 0] <= 1e-6).all(-1)
-        # ...and a colour texture that cannot be proven alpha-opaque makes
+        # ...and a color texture that cannot be proven alpha-opaque makes
         # every hit's alpha texture-dependent, so the primitive must not
         # carry the interval-opaque BVH leaf flag: the traversal gather
         # prunes hits behind an opaque-flagged hit, which for a cut-out
@@ -1147,7 +1147,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             if self.texture_map is not None
             else None
         )
-        # In-sampler opacity + u8 provenance for the colour map
+        # In-sampler opacity + u8 provenance for the color map
         # (texture_opacity_in_kernel / texture_u8_storage). ``_rt_`` names on
         # purpose: the slice-window copy drops them and this stash rebuilds
         # both from the (sliced) source attributes.
@@ -1159,7 +1159,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         )
         self._rt_texture_u8_ok = bool(getattr(self, "texture_u8_ok", False))
         # Endpoint interpolation rows (texture_time_lerp): [T, 3] of
-        # (i0, i1, w); present exactly when the colour map is a
+        # (i0, i1, w); present exactly when the color map is a
         # [1, K, H, W, 5] endpoint stack.
         tlerp = getattr(self, "texture_lerp", None)
         self._rt_tex_lerp = (
@@ -1189,7 +1189,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self.material_texture_map = self.normal_texture_map = None
 
         # Ensure released geometry is actually freed before rendering.
-        empty_cache(force_gc=False)
+        release_torch_memory(force_gc=False)
 
     def project_to_screen(self, camera, light_sources):
         self._shade_vertex_colors(camera, light_sources)
@@ -1289,7 +1289,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         screen_height,
         time_start,
         time_end,
-        background_color,
+        background,
         transparent_background=False,
         *args,
         **kwargs,
@@ -1301,7 +1301,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             screen_height,
             time_start,
             time_end,
-            background_color,
+            background,
             transparent_background,
             *args,
             **kwargs,
@@ -2880,7 +2880,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         # Ratio of the internal render resolution to the output resolution: the
         # supersampling factor actually in force for this batch, which is 1 on
-        # the analytic-AA route regardless of the requested anti_alias_level.
+        # the analytic-AA route regardless of the requested super_sampling_anti_aliasing.
         self._rt_projection_aa = float(camera.screen_height) / float(
             getattr(camera, "output_screen_height", camera.screen_height)
         )
@@ -2901,7 +2901,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self.corners = None
 
         # Ensure released geometry is actually freed before rendering.
-        empty_cache(force_gc=False)
+        release_torch_memory(force_gc=False)
         return self
 
     def _apply_z_index_bias(self, corners, cam_o, sp):
@@ -3462,7 +3462,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         screen_height,
         time_start,
         time_end,
-        background_color,
+        background,
         transparent_background=False,
         *args,
         **kwargs,
@@ -3474,7 +3474,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             screen_height,
             time_start,
             time_end,
-            background_color,
+            background,
             transparent_background,
             *args,
             **kwargs,

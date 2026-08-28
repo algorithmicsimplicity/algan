@@ -470,7 +470,7 @@ class HemisphereLight(Light):
 
     light_type = LIGHT_HEMISPHERE
 
-    # Ground colour (aux columns 9:12) is emitted radiance: without opacity
+    # Ground color (aux columns 9:12) is emitted radiance: without opacity
     # scaling, a not-yet-spawned or despawned hemisphere light would keep
     # lighting downward-facing surfaces from its aux row alone.
     _AUX_RADIANCE_COLS = (9, 12)
@@ -483,7 +483,7 @@ class HemisphereLight(Light):
         super().__init__(*args, **kwargs)
 
     def build_aux(self, location):
-        """Internal: pack this light's up direction and ground colour.
+        """Internal: pack this light's up direction and ground color.
 
         Parameters
         ----------
@@ -503,7 +503,7 @@ class HemisphereLight(Light):
         if not torch.is_tensor(gc):
             gc = torch.tensor(gc, dtype=torch.float32)
         # Decoded to linear light here, and left at that: cols 9:12 carry the
-        # decoded ground colour -- an authored colour like any other, and the
+        # decoded ground color -- an authored color like any other, and the
         # one radiance-bearing aux column, so it has to make the same trip
         # into linear light the RGB columns do (srgb_to_linear(c * i) is not
         # srgb_to_linear(c) * i). The per-frame opacity and intensity scaling

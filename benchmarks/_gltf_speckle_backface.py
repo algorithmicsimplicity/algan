@@ -76,7 +76,7 @@ with Off():
         texture=torch.as_tensor(base_img[..., :3]),
     )
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 mesh.spawn(animate=False)
 
 name = "bf_culled" if CULL else "bf_whole"

@@ -228,7 +228,7 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
         # node with no points of its own has no appearance -- its style is a
         # template that ``init_colors`` and ``match_style`` broadcast over the
         # family whenever Manim rebuilds it. The matching Algan node is a bare
-        # container whose colour and opacity rows are placeholders, so writing
+        # container whose color and opacity rows are placeholders, so writing
         # them here hands Manim a template that erases the real geometry:
         # ``DecimalNumber.set_value`` rebuilds its glyphs and then calls
         # ``init_colors()``, which is what made every ``set_value`` render an
@@ -436,9 +436,9 @@ class ManimCompatMob(ManimMob):
             if key in self._ALGAN_ONLY_KWARGS
         }
         batch = bool(algan_kwargs.pop("batch", False))
-        # Colour keywords are normalized before conversion because Manim's
+        # Color keywords are normalized before conversion because Manim's
         # parser is narrower than Algan's: it reads a tuple of floats as a
-        # *list of colours* and rejects each element. Everything Algan accepts
+        # *list of colors* and rejects each element. Everything Algan accepts
         # -- a Color, a hex string, a hex int, an RGB sequence -- becomes one
         # Color here, and to_manim renders that as a value Manim does take.
         kwargs = {
@@ -784,11 +784,11 @@ substrings_to_isolate
     own piece of the result. Defaults to ``None``, meaning no extra splitting
     beyond what the separate ``tex_strings`` already give.
 tex_to_color_map
-    Maps a substring of the source to the colour its glyphs take; the substring
-    is isolated for you. Accepts Manim colours, hex strings, or Algan
-    :class:`~algan.constants.color.Color` values -- an Algan colour is converted
+    Maps a substring of the source to the color its glyphs take; the substring
+    is isolated for you. Accepts Manim colors, hex strings, or Algan
+    :class:`~algan.constants.color.Color` values -- an Algan color is converted
     to hex on the way through Manim, so its glow and opacity are dropped and
-    have to be set on the Mob afterwards. Defaults to ``None``, one colour
+    have to be set on the Mob afterwards. Defaults to ``None``, one color
     throughout.
 tex_environment
     Name of the LaTeX environment to typeset in, such as ``"gather*"``.
@@ -805,7 +805,7 @@ Raises
     If LaTeX fails to compile the source. The most common cause is
     ``tex_to_color_map`` or ``substrings_to_isolate``: they split the source on
     the literal substring, so a key that also occurs inside a control sequence
-    or a brace group cuts it in half. Colouring ``"n"`` in a formula containing
+    or a brace group cuts it in half. Coloring ``"n"`` in a formula containing
     ``\\infty`` is enough to do it. Pick a key that stands alone, or pass the
     pieces as separate ``tex_strings``.
 

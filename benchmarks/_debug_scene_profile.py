@@ -14,7 +14,7 @@ from algan.utils.profiling_utils import profile_scene
 
 
 def build_scene():
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     SETTINGS.raytracing.set(shadows=True)
 
     # ------------------------------------------------------------------

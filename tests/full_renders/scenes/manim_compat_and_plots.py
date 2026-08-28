@@ -22,7 +22,7 @@ from algan import *
 # tests/conftest.py registers the vendored faces.
 FONT = "Algan Test Sans"
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 # --------------------------------------------------------------------------
 # Act 1 -- axes with delegated plots, a brace, and a number plane.

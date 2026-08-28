@@ -2,7 +2,7 @@
 
 A **fragment stage** is a Taichi ``@ti.func`` with the uniform stage contract
 (see :mod:`algan.rendering.raytracing.shading_taichi`): it shades one surface hit
-from the running colour, the interpolated surface attributes, its slice of the
+from the running color, the interpolated surface attributes, its slice of the
 per-primitive parameter block and the scene lights, and returns the new
 ``vec4`` (RGB + glow). Stages are composed into a **pipeline** (a list run
 left-to-right, each fed the previous stage's output) via :func:`register_pipeline`,
@@ -19,7 +19,7 @@ wrapping the user's own ``@ti.func`` plus its animatable parameter specs.
 
 Because a stage is plain Taichi scalar math, existing built-in materials double
 as fragment shaders and compose with custom ones, e.g.
-``mob.set_fragment_shader([cosine_color, phong_shader])`` recolours each fragment
+``mob.set_fragment_shader([cosine_color, phong_shader])`` recolors each fragment
 with a cosine wave and then lights the result with Blinn-Phong.
 """
 
@@ -267,7 +267,7 @@ class FragmentPipelineShader:
     reaches the ray-traced primitive through the ordinary ``shader=`` handoff
     (see ``RayTracedTrianglePrimitive._pack_frag_pipeline``). As a *vertex*
     shader it is a no-op returning the raw albedo, so if the vertex path ever
-    runs it leaves the colour raw for the in-kernel pipeline to shade.
+    runs it leaves the color raw for the in-kernel pipeline to shade.
     """
 
     def __init__(self, pipeline_id, layout, total_width):
@@ -350,7 +350,7 @@ def _stage_cosine_color(
     return ti.math.vec4(in_rgb[0] * r, in_rgb[1] * g, in_rgb[2] * b, in_glow)
 
 
-#: Example custom fragment stage: recolours each fragment with a cosine wave.
+#: Example custom fragment stage: recolors each fragment with a cosine wave.
 #: Compose before a lighting stage, e.g. ``[cosine_color, phong_shader]``.
 cosine_color = FragmentStage(
     _stage_cosine_color,
@@ -383,9 +383,9 @@ def _scatter_forced_mirror(
     refraction: ti.template(),
 ):
     """Treat the surface as a 85% mirror regardless of its per-vertex
-    reflectivity: commit 15% of the shaded colour and bounce the remaining
+    reflectivity: commit 15% of the shaded color and bounce the remaining
     throughput along the mirror direction (no transmission). Branch weights
-    are vec3 per-channel throughput multipliers (colour transport); this
+    are vec3 per-channel throughput multipliers (color transport); this
     scatter reflects achromatically, so all three channels match.
     """
     n = n_interp.normalized()

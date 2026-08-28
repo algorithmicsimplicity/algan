@@ -287,7 +287,7 @@ def test_prepare_batch_on_worker_merge_oom_defers_to_render_thread(
     cache_calls = []
     monkeypatch.setattr(
         render_loop_module,
-        "empty_cache",
+        "release_torch_memory",
         lambda force_gc=False: cache_calls.append(True),
     )
 
@@ -368,7 +368,7 @@ def _make_preflight_driver(monkeypatch, overlapped):
     scene.memory = render_loop_module.ManualMemory(
         0, device=torch.device("cpu"), managed=True, num_bytes=1 << 16
     )
-    scene.video_settings = SimpleNamespace(anti_alias_level=1)
+    scene.video_settings = SimpleNamespace(super_sampling_anti_aliasing=1)
     scene.num_pixels_screen_width = 4
     scene.num_pixels_screen_height = 4
     scene.camera = SimpleNamespace(near=0.0, far=100.0)
@@ -459,7 +459,9 @@ def _make_loop_scene(monkeypatch, *, overlap_enabled):
     """Drive the real batching loop with prefetching and a faked overlap."""
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "1")
     monkeypatch.setattr(render_loop_module, "_sync_devices", lambda: None)
-    monkeypatch.setattr(render_loop_module, "empty_cache", lambda force_gc=False: None)
+    monkeypatch.setattr(
+        render_loop_module, "release_torch_memory", lambda force_gc=False: None
+    )
     monkeypatch.setattr(
         render_loop_module, "get_num_available_bytes", lambda _device: 1000
     )

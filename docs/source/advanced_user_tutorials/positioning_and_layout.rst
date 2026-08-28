@@ -119,7 +119,7 @@ see the Mob:
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position`
      - Place at fractional screen coordinates: ``(0, 0)`` bottom-left,
        ``(1, 1)`` top-right.
-   * - :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`
+   * - :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`
      - Scale *and* move so the Mob fills a rectangle of the screen.
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_out_of_screen`
      - Slide off-screen entirely (and despawn there, by default).
@@ -144,7 +144,7 @@ so a big shape and a small shape both end up equally inset. It defaults to
 ``SETTINGS.style.buffer`` (``0.6`` world units) and every one of those methods
 takes a ``buffer`` argument to override it.
 
-:meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle` is the quickest way to say "put this
+:meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen` is the quickest way to say "put this
 diagram in the left half of the frame":
 
 .. algan:: PositioningFitToScreen
@@ -154,8 +154,8 @@ diagram in the left half of the frame":
     diagram = Group([Square(color=BLUE).scale(0.3).move(RIGHT * x + UP * y)
                      for x in (-1, 0, 1) for y in (-1, 1)]).spawn()
 
-    diagram.fit_to_screen_rectangle((0.0, 0.0), (0.5, 1.0))   # left half
-    diagram.fit_to_screen_rectangle()                          # whole screen
+    diagram.fit_to_screen((0.0, 0.0), (0.5, 1.0))   # left half
+    diagram.fit_to_screen()                          # whole screen
 
     Scene.save_video()
 
@@ -273,11 +273,11 @@ For collections, put them in a :class:`~algan.mobs.group.Group` and let it do th
     group = Group(squares).spawn()
     with Sync():
         group.arrange_in_line(RIGHT)
-        group.fit_to_screen_rectangle()
+        group.fit_to_screen()
     group.wait()
     with Sync():
         group.arrange_in_grid(3)
-        group.fit_to_screen_rectangle()
+        group.fit_to_screen()
     group.wait()
 
     Scene.save_video()

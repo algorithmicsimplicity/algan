@@ -17,7 +17,7 @@ from algan import *
 # tests/conftest.py registers the vendored faces.
 FONT = "Algan Test Sans"
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 # Restored by the full-render harness after this scene renders.
 SETTINGS.raytracing.set(shadows=True)
 

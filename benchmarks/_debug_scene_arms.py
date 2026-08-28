@@ -22,7 +22,7 @@ OUT_DIR = os.path.join("algan_outputs", "profiling")
 
 
 def build_acts_1_2():
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():

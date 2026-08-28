@@ -71,7 +71,7 @@ def build_scene(shape):
     Everything animates: a static fast path is off-limits (memory note
     "optimization scope: general not static").
     """
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     solids = []
     with Off():
         _lights(shape == "mixed")

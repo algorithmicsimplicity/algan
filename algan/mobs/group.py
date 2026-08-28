@@ -2,7 +2,7 @@
 
 :class:`Group` creates an invisible Mob at the centre of a collection and adds
 everything to it as children, so every parent/child propagation rule applies:
-move, rotate, scale or colour the Group and the whole collection follows. Its
+move, rotate, scale or color the Group and the whole collection follows. Its
 ``mobs`` attribute is an alias for ``children``.
 
 On top of that it adds layout: :meth:`Group.arrange_in_line` spreads members

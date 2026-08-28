@@ -43,7 +43,7 @@ PINNED_BYTES = 2_400_000_000
 
 
 def build_scene(mixed):
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     SETTINGS.raytracing.set(shadows=True)
     with Off():
         AmbientLight(color=WHITE, intensity=0.3).spawn(animate=False)

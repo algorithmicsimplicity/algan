@@ -46,7 +46,7 @@ def image_to_texture_map(image):
     ``_sample_texture`` in ``ray_trace_taichi``), with ``v`` measured
     bottom-up. An image is stored ``[row, col]`` with ``row`` top-down, so we
     transpose ``[H, W] -> [W, H]`` (columns become the ``u`` axis) and flip the
-    ``v`` axis. Channels are padded to the engine's 5-slot colour
+    ``v`` axis. Channels are padded to the engine's 5-slot color
     ``(r, g, b, glow, opacity)`` by
     :meth:`Color.add_defaults <algan.constants.color.Color.add_defaults>`.
     """
@@ -107,9 +107,9 @@ class TriangleMesh(Mob):
         Either a ``[W, H, 5]`` texture map already in engine layout (as built
         by :func:`image_to_texture_map`) or a raw image ``[H, W, C]`` which is
         converted automatically. Provides the surface albedo; replaces the
-        per-vertex colour where present.
+        per-vertex color where present.
     vertex_colors : torch.Tensor[V, 5], optional
-        Per-vertex colours (RGB + glow + opacity). Ignored when a ``texture``
+        Per-vertex colors (RGB + glow + opacity). Ignored when a ``texture``
         is given. Falls back to a single ``color`` otherwise.
     material_texture_map, material_texture_flags, normal_texture_map
         Optional per-texel material-property / tangent-space normal maps,
@@ -221,15 +221,15 @@ class TriangleMesh(Mob):
         else:
             self.corner_uvs = None
 
-        # Per-corner base colours. A colour map supplies the real albedo per
-        # fragment, so the per-vertex colours are only a fallback / frame
+        # Per-corner base colors. A color map supplies the real albedo per
+        # fragment, so the per-vertex colors are only a fallback / frame
         # visibility signal there -- keep them opaque white. Otherwise use the
-        # supplied per-vertex colours (or the single mob colour).
+        # supplied per-vertex colors (or the single mob color).
         if self.texture_map is not None:
             corner_colors = WHITE.view(1, -1).expand(corner_positions.shape[0], -1)
         elif vertex_colors is not None:
             # Flatten to [V, C] (cast_to_tensor may prepend a batch axis) before
-            # padding to the 5-slot colour and indexing per corner.
+            # padding to the 5-slot color and indexing per corner.
             vertex_colors = cast_to_tensor(vertex_colors).to(device)
             vertex_colors = vertex_colors.reshape(-1, vertex_colors.shape[-1])
             vertex_colors = Color.add_defaults(vertex_colors)
@@ -239,7 +239,7 @@ class TriangleMesh(Mob):
         corner_colors = corner_colors.contiguous().as_subclass(Color)
 
         # The child Mob carries the per-corner geometry as its animatable
-        # location/colour (mirrors Surface.self.grid). Style attributes
+        # location/color (mirrors Surface.self.grid). Style attributes
         # (opacity, glow) are inherited from kwargs.
         grid_kwargs = {
             k: v for k, v in kwargs.items() if k not in ("location", "color", "basis")
@@ -288,8 +288,8 @@ class TriangleMesh(Mob):
         if "map" in maps:
             self.texture_map = maps["map"].to(device).as_subclass(Color)
             self._texture_u8_ok = texture_u8_provenance(self.texture_map)
-            # A colour map replaces the per-vertex colour in the kernel rather
-            # than modulating it, so the corner colours become the same opaque
+            # A color map replaces the per-vertex color in the kernel rather
+            # than modulating it, so the corner colors become the same opaque
             # white placeholder __init__ uses for a mesh built with a texture.
             self.grid.color = (
                 WHITE.view(1, -1).expand(self.grid.color.shape[-2], -1).contiguous()

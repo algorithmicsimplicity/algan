@@ -32,7 +32,7 @@ def neural_net():
         nn.move(DOWN)
 
 
-video_settings = HD  # .set_anti_alias_level(2).set_frames_per_second(60)
+video_settings = HD  # .set_super_sampling_anti_aliasing(2).set_frames_per_second(60)
 profile_scene(neural_net, video_settings, "neural_net", runs=2, kernel_profiler=False)
 # neural_net()
 # render_to_file('nn_profile2', video_settings=video_settings)

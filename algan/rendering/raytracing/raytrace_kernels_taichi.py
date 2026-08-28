@@ -2,7 +2,7 @@
 
 This module holds the ``@ti.func`` building blocks every renderer uses --
 sibling-block STBVH traversal, triangle / bezier-circuit
-intersection and colour/material sampling, batched hit gathering
+intersection and color/material sampling, batched hit gathering
 (``_collect_hits``), shadow occlusion and tonemapping -- plus the Monte Carlo
 megakernels used when ``samples_per_pixel > 1``: ``path_trace_scene_stbvh``
 and the physical-mode ``path_trace_physical_stbvh``, each launching one
@@ -86,7 +86,7 @@ from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16, bvh_leaf_
 
 
 def rgb_shadow_tint():
-    """Whether shadow rays carry coloured payloads end to end (the
+    """Whether shadow rays carry colored payloads end to end (the
     ``ALGAN_RGB_SHADOW_TINT`` gate, default on): a transmissive surface tints
     the light it passes with its albedo and absorbs over its interior chord,
     instead of passing an achromatic fraction.
@@ -1440,7 +1440,7 @@ def _sample_circuit_color_blend(circuit, f, u, v, border_frac,
                                 circuit_meta: ti.template(),
                                 circuit_colors: ti.template(),
                                 circuit_border_colors: ti.template()):
-    """Colour of a circuit point whose pixel straddles the border's inner edge.
+    """Color of a circuit point whose pixel straddles the border's inner edge.
 
     ``border_frac`` is the share of the pixel's COVERED area lying in the border
     band. 0 and 1 reduce to :func:`_sample_circuit_color`'s fill and border
@@ -1556,7 +1556,7 @@ def _triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template()) -> ti.f32:
 @ti.func
 def _color_map_texel(tc, base_row, lut_base, texel_idx, num_points,
                      textures: ti.template()):
-    """One texel of a colour map: ``(rgb+glow vec4, alpha)``.
+    """One texel of a color map: ``(rgb+glow vec4, alpha)``.
 
     ``lut_base < 0`` is a plain f32 map (five channels at row ``base_row +
     texel_idx``, the historical layout, byte for byte). ``lut_base >= 0`` is a
@@ -1564,7 +1564,7 @@ def _color_map_texel(tc, base_row, lut_base, texel_idx, num_points,
     lane of the shared bank -- lane ``base_row * 5 + texel_idx``, bytes
     little-endian r|g<<8|b<<16|a<<24 -- decoded through the per-map 256-entry
     LUT at rows ``lut_base..lut_base+255`` (col 0 = the value the f32 path
-    would have stored for colour byte k, col 1 = k/255 for the coverage
+    would have stored for color byte k, col 1 = k/255 for the coverage
     byte). The host scatters the LUT from the map's own direct decode
     (``scene_builder._append_u8_lut``), so both layouts hand this function's
     callers the same bits up to torch-CPU's one-ulp SIMD-tail residue. Glow
@@ -1824,7 +1824,7 @@ def _shadow_pass_through(f, prim, hit_type, w0, w1, w2,
     does to its transmitted share (``trans_w = trans_energy * tint`` in
     ``_scatter_impl``, with ``tint = clamp(albedo, 0, 1)``), so light through
     green glass now arrives green instead of grey. ``tint`` arrives from the
-    caller's colour fetch -- the march reads the surface colour row anyway for
+    caller's color fetch -- the march reads the surface color row anyway for
     its alpha, so this reuses that fetch rather than issuing a second one.
     With the gate off the scalar pass-through is broadcast to all three
     channels unchanged, byte-identical to the pre-RGB renderer.
@@ -2173,7 +2173,7 @@ def pbr_neutral_tonemap(color: ti.math.vec3) -> ti.math.vec3:
         # value and an authored white tonemaps to 244 instead of 222. Algan runs
         # with that pass off so released renders never saw it, but ALGAN_ADV_OPT=1
         # and any bare `ti.init` do turn it on. Bit-identical to the in-place
-        # form under Algan's own config, measured over 250k random colours.
+        # form under Algan's own config, measured over 250k random colors.
         scale = newPeak / peak
 
         g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0)
@@ -3052,7 +3052,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
     deferred opaque any-hit early-out documented there).
 
     The payload is RGB: each channel carries its own transmittance, so a
-    coloured transmissive blocker tints what it passes. With every channel
+    colored transmissive blocker tints what it passes. With every channel
     equal -- which is exactly the pre-RGB world, and always the case while
     :func:`rgb_shadow_tint` is off -- the per-channel arithmetic is today's
     scalar arithmetic, operation for operation.
@@ -3074,7 +3074,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
     alpha 1 with transmission 1 -- so requiring full coverage keeps half-faded
     panes, which are not solids, from opening a medium their far side may never
     close. That floor carries a one-ulp tolerance for a reason the constant's
-    own comment gives: an exact ``>= 1.0`` speckles every coloured shadow,
+    own comment gives: an exact ``>= 1.0`` speckles every colored shadow,
     because barycentric alpha misses 1.0 by an ulp often enough to drop whole
     chords at random.
     """
@@ -3124,7 +3124,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
             layer_prev = hit_layer
             continue
         seam_t = t_hit if edge_hit == 1 else -1e30
-        # Colour + alpha from ONE fetch: alpha gates the covered share, and
+        # Color + alpha from ONE fetch: alpha gates the covered share, and
         # the RGB (clamped, like ``_scatter_impl``'s tint) is what a
         # transmissive surface tints the light it passes with. This replaces
         # the alpha-only helpers, whose loads this subsumes -- no extra array
@@ -3170,7 +3170,7 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
         passed = _shadow_pass_through(f, prim, hit_type, 1.0 - a - b, a, b,
                                       tri_extra, circuit_meta, tint)
         transmitted *= one3 - alpha * (one3 - passed)
-        # Scalar early-outs become max-component tests: reducing a colour
+        # Scalar early-outs become max-component tests: reducing a color
         # weight to its maximum component is this codebase's convention
         # (``_scatter_impl``, see shading_taichi._vis_max_component), and the
         # max of equal channels IS the old scalar, so both tests fire at the
@@ -3353,7 +3353,7 @@ def _shadow_gather_occluded(refit: ti.template(),
                     layer_prev = hit_layer
                 else:
                     seam_t = t_hit if edge_hit == 1 else -1e30
-                    # Colour + alpha from one fetch, exactly like the march.
+                    # Color + alpha from one fetch, exactly like the march.
                     color4 = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     alpha = 0.0
                     if hit_type == 1:

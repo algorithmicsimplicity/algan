@@ -80,7 +80,8 @@ def render(roughness, tag):
         torch.cuda.synchronize()
     t0 = time.perf_counter()
     render_to_file(
-        file_path=path, video_settings=RenderSettings((W, H), 1, anti_alias_level=1)
+        file_path=path,
+        video_settings=RenderSettings((W, H), 1, super_sampling_anti_aliasing=1),
     )
     if torch.cuda.is_available():
         torch.cuda.synchronize()

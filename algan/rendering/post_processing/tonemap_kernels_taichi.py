@@ -36,7 +36,7 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
     ``[N, H, W, 4]`` (transparent RGBA) uint8. The glow channel (3) is
     dropped. ``method``: 0 = clamp only, 1 = neutral, 2 = AgX. Matches
     ``finalize_pixel_color`` / the torch ``_neutral_tonemap`` arithmetic
-    (tonemap the exposure-scaled 0-1 colour, then ``*255 + 0.5`` round).
+    (tonemap the exposure-scaled 0-1 color, then ``*255 + 0.5`` round).
     Alpha is already byte-range (never normalised) so it is only clamped.
     """
     for f, y, x in ti.ndrange(frame.shape[0], frame.shape[1], frame.shape[2]):
@@ -67,7 +67,7 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
                     c = linear_to_srgb_v3(c * (1.0 / a)) * a
                 else:
                     # Fully transparent: nothing is visible through it, and
-                    # dividing by ~0 would blow the colour up before the
+                    # dividing by ~0 would blow the color up before the
                     # multiply brought it back.
                     c = ti.math.vec3(0.0, 0.0, 0.0)
             else:

@@ -95,7 +95,7 @@ def run_patches():
                 path,
                 SETTINGS.video.set(resolution=(64, 64)),
                 overwrite=True,
-                background_color=_col((0, 0, 0)),
+                background=_col((0, 0, 0)),
             )
             out[tag] = _centre(_read(path))
         rows.append((name, rgb, out["on"], out["off"]))
@@ -140,7 +140,7 @@ def run_background():
                 path,
                 SETTINGS.video.set(resolution=(64, 64)),
                 overwrite=True,
-                background_color=_col(rgb),
+                background=_col(rgb),
             )
             out[tag] = _centre(_read(path))
         rows.append((name, rgb, out["on"], out["off"]))
@@ -174,7 +174,7 @@ def run_agx():
             path,
             SETTINGS.video.set(resolution=(64, 64)),
             overwrite=True,
-            background_color=_col((0, 0, 0)),
+            background=_col((0, 0, 0)),
         )
         rows.append((name, rgb, _centre(_read(path))))
     SETTINGS.raytracing.set(tonemapping=True, tonemap_method="neutral")
@@ -215,7 +215,7 @@ def run_scene():
             path,
             SETTINGS.video.set(resolution=(640, 360)),
             overwrite=True,
-            background_color=_col((0, 0, 0)),
+            background=_col((0, 0, 0)),
         )
         results[tag] = _read(path)
 

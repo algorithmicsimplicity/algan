@@ -2,7 +2,7 @@
 
 A shader here is a plain torch function: it receives per-vertex geometry, normals
 and material parameters along with the Scene's lights, and returns per-vertex
-colour. It runs before upload, once per vertex, which is cheap -- the trade-off
+color. It runs before upload, once per vertex, which is cheap -- the trade-off
 is that highlights are interpolated across a triangle rather than evaluated at
 each pixel.
 
@@ -10,7 +10,7 @@ A Mob that sets no material of its own does not come here: it is shaded by
 :class:`~algan.rendering.shaders.materials.DiffuseMaterial`, Algan's default
 material, whose lighting shaders live in
 :mod:`algan.rendering.shaders.material_shaders`.
-:func:`null_shader` skips lighting entirely, leaving a Mob its own flat colour.
+:func:`null_shader` skips lighting entirely, leaving a Mob its own flat color.
 :func:`basic_pbr_shader` is the metallic/roughness model the
 :class:`~algan.rendering.shaders.materials.MeshStandardMaterial` family builds on.
 

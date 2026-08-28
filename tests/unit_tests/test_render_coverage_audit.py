@@ -177,7 +177,7 @@ def test_every_light_class_appears_in_a_scene():
             (
                 "get_camera().rotate(",
                 "orbit(",
-                "fit_to_screen_rectangle(",
+                "fit_to_screen(",
                 "move_center_to_screen_position(",
                 "move_out_of_screen(",
             ),

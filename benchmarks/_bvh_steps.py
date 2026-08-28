@@ -674,7 +674,7 @@ def _scene_bez():
         Triangle,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     shapes = []
     with Off():
         for i in range(7):
@@ -726,7 +726,7 @@ def _scene_tri():
         Sync,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     solids = []
     tints = (RED, GREEN, BLUE, ORANGE, PURPLE)
     with Off():

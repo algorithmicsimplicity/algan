@@ -25,7 +25,7 @@ class MobHierarchyMixin:
     """Parent, child and descendant management, mixed into
     :class:`~algan.animatable_base.mob.Mob`.
 
-    A Mob's children follow its transforms: move, rotate, scale or recolour a
+    A Mob's children follow its transforms: move, rotate, scale or recolor a
     parent and the change propagates down. Use
     :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children` to
     build a hierarchy, or a :class:`~algan.mobs.group.Group` when you just want to
@@ -343,7 +343,7 @@ class MobHierarchyMixin:
     def add_children(self, *mobs) -> Mob:
         """Attach Mobs as children, so they follow this Mob's transforms.
 
-        Once attached, moving, rotating, scaling or recolouring this Mob carries
+        Once attached, moving, rotating, scaling or recoloring this Mob carries
         the children along. Adding a Mob that is already a child does nothing.
 
         Animation

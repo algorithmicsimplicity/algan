@@ -74,7 +74,7 @@ def _probe(
 
 PROBE = FragmentStage(_probe, [])
 
-Scene.set_background_color(BLACK)
+Scene.set_background(BLACK)
 
 with Off():
     AmbientLight(color=WHITE, intensity=0.55).spawn(animate=False)

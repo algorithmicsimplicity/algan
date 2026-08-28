@@ -80,7 +80,7 @@ def normal_texture(width=64, height=32, bumps=6):
 
 def scene_plain():
     """ss3.1's own control: every closed family, no textures."""
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         AmbientLight(color=WHITE, intensity=0.3).spawn(animate=False)
         PointLight(location=LEFT * 4 + UP * 3 + OUT * 4).spawn(animate=False)
@@ -99,7 +99,7 @@ def scene_plain():
 
 
 def scene_checker():
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         AmbientLight(color=WHITE, intensity=0.6).spawn(animate=False)
         PointLight(location=LEFT * 4 + UP * 3 + OUT * 4).spawn(animate=False)
@@ -111,7 +111,7 @@ def scene_checker():
 
 
 def scene_normals():
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         AmbientLight(color=WHITE, intensity=0.3).spawn(animate=False)
         PointLight(location=LEFT * 4 + UP * 3 + OUT * 4).spawn(animate=False)

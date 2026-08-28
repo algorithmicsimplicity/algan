@@ -346,7 +346,7 @@ def post_process_frames(
         # The render/composite and background pre-fill carry byte-range values
         # (0-255, with HDR headroom above 255 preserved by the f16 buffer).
         # Bloom and the post-process tonemap expect linear 0-1, so normalise
-        # the colour + glow channels (0-3) in place -- once, in f16 -- leaving
+        # the color + glow channels (0-3) in place -- once, in f16 -- leaving
         # any alpha channel (4) in byte range for the finalize step. Bloom then
         # runs on unclamped linear HDR and tonemapping is applied last. In
         # place (no extra frame-sized buffer): frame_out here is either the

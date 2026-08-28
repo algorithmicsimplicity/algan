@@ -47,7 +47,7 @@ from algan.utils.profiling_utils import profile_scene  # noqa: E402
 
 
 def build_scene():
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     solids = []
     with Off():
         AmbientLight(color=WHITE, intensity=0.25).spawn(animate=False)

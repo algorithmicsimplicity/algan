@@ -132,7 +132,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 )
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
-    empty_cache,
+    release_torch_memory,
     ensure_render_headroom,
     is_cuda_oom,
 )
@@ -225,7 +225,7 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
         memory.get_tensor((tn, 3), f32),  # rs_rd
         memory.get_tensor((tn, 4), f32),  # rs_acc
         # rs_sca: 0 weight red, 1 t_prev, 2 layer_prev, 3 seam_t, 4 base_dist,
-        # 5 weight green, 6 weight blue (colour transport).
+        # 5 weight green, 6 weight blue (color transport).
         memory.get_tensor((tn, sca_width), f32),  # rs_sca (7 general)
         # rs_int: 0 bounces_left, 1 processed, 2 status, 3 num_hits, 4 drained
         # (column 4 is used only by the legacy sorted-material path
@@ -902,8 +902,8 @@ def _append_env_texture(textures, env, intensity, device):
 def _env_sh_coeffs(env, intensity):
     """Order-1 spherical-harmonics irradiance of an equirect environment map,
     as the linear form ``E(n) / pi = A + Bx*nx + By*ny + Bz*nz`` consumed by
-    the in-kernel ENV_SH light row. A uniform map of colour ``c`` yields
-    ``A = c, B = 0`` -- i.e. it lights like an ambient light of colour ``c``.
+    the in-kernel ENV_SH light row. A uniform map of color ``c`` yields
+    ``A = c, B = 0`` -- i.e. it lights like an ambient light of color ``c``.
     """
     import math
 
@@ -1118,7 +1118,7 @@ def render_batch_raytraced(
     screen_height,
     time_start,
     time_end,
-    background_color,
+    background,
     transparent_background,
     ray_origin,
     screen_point,
@@ -1276,7 +1276,7 @@ def render_batch_raytraced(
         pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
 
     # An animated/image background arrives super-sampled at the *requested*
-    # anti-alias level (Scene.set_background_color and
+    # anti-alias level (Scene.set_background and
     # _prepare_background_for_chunk both build it at screen * anti_alias_level).
     # This batch's frame buffer is at output resolution whenever the route
     # takes one sample per output pixel: in-place AA, and the analytic raster
@@ -1286,8 +1286,8 @@ def render_batch_raytraced(
     # frame. (Solid colors are resolution-free and pass through untouched.)
     background_aa = max(1, int(anti_alias_level))
     if background_aa > 1 and width == screen_width and height == screen_height:
-        background_color = _downsample_background(
-            background_color,
+        background = _downsample_background(
+            background,
             background_aa,
             time_end - time_start,
             screen_height,
@@ -1597,7 +1597,7 @@ def render_batch_raytraced(
                 out = memory.get_tensor((end - start, width * height, C_out), out_dtype)
                 _prefill_background(
                     out,
-                    background_color,
+                    background,
                     start - time_start,
                     device,
                     background_frames=time_end - time_start,
@@ -1777,7 +1777,7 @@ def render_batch_raytraced(
         except (InsufficientMemoryException, RuntimeError) as exc:
             # A Taichi kernel launch (e.g. the post-process tonemap) exhausts
             # VRAM as a plain RuntimeError from its own allocator, not a torch
-            # OOM; recognise it so the same rewind + empty_cache + split retry
+            # OOM; recognise it so the same rewind + release_torch_memory + split retry
             # recovers it. Any non-OOM RuntimeError is a real error -- re-raise.
             if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
                 exc
@@ -1793,7 +1793,7 @@ def render_batch_raytraced(
             # exc_traceback.tb_next.tb_frame.clear()
             # Release the failed allocation (e.g. the wavefront's large per-ray
             # state) so it doesn't fragment/block the smaller retry.
-            empty_cache()
+            release_torch_memory(force_gc=False)
             if end - start <= 1:
                 raise OutOfRenderMemory(
                     "Insufficient memory to ray trace a single frame. "
@@ -2983,8 +2983,7 @@ def raytrace_render_wavefront(
                         ) and not is_cuda_oom(exc):
                             raise
                         memory.set_pointers(state_ptrs)
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                        release_torch_memory(force_gc=False)
                         if attempt_primary <= 1:
                             raise OutOfRenderMemory(
                                 "Sparse raster state did not fit for one "
@@ -3064,8 +3063,7 @@ def raytrace_render_wavefront(
                         ) and not is_cuda_oom(exc):
                             raise
                         memory.set_pointers(state_ptrs)
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                        release_torch_memory(force_gc=False)
                         if attempt_primary <= 1:
                             raise OutOfRenderMemory(
                                 "Sparse raster bounce scratch did not fit for "

@@ -47,7 +47,7 @@ RIGHT_FROM = 400
 
 
 def build_scene(arm):
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     SETTINGS.raytracing.set(shadows=True)
     with Off():
         AmbientLight(color=WHITE, intensity=0.25).spawn(animate=False)

@@ -181,7 +181,7 @@ class Scene(RenderLoopMixin):
             )
         self.background_frame = background_frame
         self._initial_background_frame = background_frame
-        self.background_color = background_frame
+        self.background = background_frame
         self.actors = []
         self.effects = []
         self.camera = None
@@ -350,7 +350,7 @@ class Scene(RenderLoopMixin):
             Whether to move the camera to Manim's viewpoint and set its field of
             view. Defaults to ``True``.
         shading
-            Whether to reproduce Manim's colour pipeline: its single light in
+            Whether to reproduce Manim's color pipeline: its single light in
             its own position, ``ManimMaterial`` as the default material for
             3-D Mobs with none of their own -- reproducing the shading Manim's
             ``get_shaded_rgb`` applies to 3-D geometry, where flat vector
@@ -370,7 +370,7 @@ class Scene(RenderLoopMixin):
             survives the call. Only the *aspect ratio* affects framing.
         shape_defaults
             Whether Algan's own shapes (``Square``, ``Circle``, ...) also adopt
-            Manim's default colours and stroke styling. Defaults to ``False``,
+            Manim's default colors and stroke styling. Defaults to ``False``,
             since it changes shapes that have nothing to do with Manim.
 
         Returns
@@ -503,7 +503,7 @@ class Scene(RenderLoopMixin):
         cheapest way to make metal look like metal.
 
         The map is also the backdrop: rays that hit no geometry sample it, so it
-        **replaces** ``background_color`` rather than sitting behind it. Only the
+        **replaces** ``background`` rather than sitting behind it. Only the
         camera's share of the map is visible (the frustum's solid angle), and the
         map is downsampled above 2048 texels wide, so bake the backdrop into it at
         a resolution that accounts for that if the backdrop carries detail.
@@ -886,7 +886,7 @@ class Scene(RenderLoopMixin):
         self.id_count = 0
         self.scene_times = [[0, 0]]
         self.background_frame = self._initial_background_frame
-        self.background_color = self._initial_background_frame
+        self.background = self._initial_background_frame
         self.background_is_set = False
         depth_source = (
             SETTINGS.style.frame
@@ -911,21 +911,21 @@ class Scene(RenderLoopMixin):
         self.reset_scene()
         return self
 
-    def _background_image_frame(self, path, not_a_colour):
+    def _background_image_frame(self, path, not_a_color):
         """Load ``path`` as a full-frame background image.
 
-        Reached when a background string did not parse as a colour, so a
+        Reached when a background string did not parse as a color, so a
         missing file has to say that the string was neither -- otherwise the
         two mistakes are indistinguishable.
         """
         if not Path(path).exists():
             raise AlganConfigurationError(
-                f"background_color {path!r} is neither a colour Algan "
+                f"background {path!r} is neither a color Algan "
                 f"recognises nor the path of an image file that exists. Pass a "
                 f"Color such as BLUE, a hex string ('#101820'), or the path of "
                 f"an image to use as the background."
-            ) from not_a_colour
-        a = self.video_settings.anti_alias_level
+            ) from not_a_color
+        a = self.video_settings.super_sampling_anti_aliasing
         # get_image returns [height, width, channels]; interpolate wants
         # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
         # the image's rows and columns instead, rendering it transposed.)
@@ -1130,7 +1130,7 @@ class Scene(RenderLoopMixin):
         at: float | Sequence[float] | None = None,
         *,
         overwrite: bool = True,
-        background_color=None,
+        background=None,
         post_processes=None,
     ) -> RenderResult | list[RenderResult]:
         """Render one or more still frames from this Scene.
@@ -1162,10 +1162,10 @@ class Scene(RenderLoopMixin):
         overwrite
             Whether an existing file at the destination is replaced. Defaults to
             True; False leaves it alone and reports ``"skipped"``.
-        background_color
+        background
             A color, image, or procedural callable, applied to this still only.
             Defaults to ``None``, meaning keep the Scene's background. See
-            :meth:`~.Scene.set_background_color` for the callable's contract --
+            :meth:`~.Scene.set_background` for the callable's contract --
             it runs on the render device and is handed broadcastable grids, not
             scalars.
         post_processes
@@ -1224,7 +1224,7 @@ class Scene(RenderLoopMixin):
         previous_settings = self.video_settings
         previous_background = (
             self.background_frame,
-            self.background_color,
+            self.background,
             self.background_is_set,
         )
         previous_explicit = getattr(self, "_video_settings_explicit", False)
@@ -1233,8 +1233,8 @@ class Scene(RenderLoopMixin):
             resolved_settings = self._resolve_video_settings(video_settings)
             if resolved_settings is not self.video_settings:
                 self.set_video_settings(resolved_settings)
-            if background_color is not None:
-                self.set_background_color(background_color)
+            if background is not None:
+                self.set_background(background)
             # Rendering resolves replay windows against the timings as they
             # stand. Mid-authoring those are not final -- an enclosing context
             # with a run_time rescales its block when it exits -- so the
@@ -1275,7 +1275,7 @@ class Scene(RenderLoopMixin):
             self._video_settings_explicit = previous_explicit
             (
                 self.background_frame,
-                self.background_color,
+                self.background,
                 self.background_is_set,
             ) = previous_background
 
@@ -1285,27 +1285,27 @@ class Scene(RenderLoopMixin):
         return result
 
     @active_scene_method
-    def set_background_color(self, background_color, overwrite: bool = True):
+    def set_background(self, background, overwrite: bool = True):
         """Set what the Scene is drawn against.
 
         Animation
         ---------
         Not animated: the background changes for the whole video, not from this point
         onwards, since it is Scene state rather than timeline state. For a one-off
-        render, pass ``background_color`` to :meth:`~.Scene.save_video` instead.
+        render, pass ``background`` to :meth:`~.Scene.save_video` instead.
 
         Parameters
         ----------
-        background_color
-            A colour, a path to an image (scaled to the frame), or a procedural
-            callable ``(x, y, time) -> color``. A colour with alpha below 1 makes the
+        background
+            A color, a path to an image (scaled to the frame), or a procedural
+            callable ``(x, y, time) -> color``. A color with alpha below 1 makes the
             output transparent. ``None`` leaves the background unchanged.
 
             The callable is evaluated on the **render device** and receives
             broadcastable grids, not scalars: ``x`` is ``[1, width, 1]`` and ``y``
             is ``[height, 1, 1]``, both in ``[0, 1)`` with ``y = 0`` at the
             *bottom* of the frame, and ``time`` is ``[frames, 1, 1, 1]`` in
-            seconds. It must return either a resolution-free colour or a tensor
+            seconds. It must return either a resolution-free color or a tensor
             broadcasting to ``[frames, height, width, channels]`` -- so build
             constants with ``x.new_tensor(...)`` (not ``torch.tensor``, which
             lands on the CPU) and keep the leading frame axis, e.g. by
@@ -1334,37 +1334,35 @@ class Scene(RenderLoopMixin):
                 return x.new_tensor((0.02, 0.03, 0.08)) * fade
 
 
-            Scene.save_frame("shot", background_color=vignette)
+            Scene.save_frame("shot", background=vignette)
         """
-        if (background_color is None) or (self.background_is_set and not overwrite):
+        if (background is None) or (self.background_is_set and not overwrite):
             return self
-        if isinstance(background_color, str):
-            # A string is a colour first and an image path second. Read as a
-            # path unconditionally, ``set_background_color("blue")`` answered
+        if isinstance(background, str):
+            # A string is a color first and an image path second. Read as a
+            # path unconditionally, ``set_background("blue")`` answered
             # ``No such file or directory: 'blue'`` -- blaming the filesystem
-            # for a colour name -- and a mistyped path said the same thing
-            # whether the file was missing or the word was never a colour.
+            # for a color name -- and a mistyped path said the same thing
+            # whether the file was missing or the word was never a color.
             try:
-                background_color = to_color(background_color)
-            except InvalidColorError as not_a_colour:
-                background_color = self._background_image_frame(
-                    background_color, not_a_colour
-                )
-        self.background_frame = self.background_color = background_color
+                background = to_color(background)
+            except InvalidColorError as not_a_color:
+                background = self._background_image_frame(background, not_a_color)
+        self.background_frame = self.background = background
         self.background_is_set = True
         return self
 
     @active_scene_method
-    def get_background_color(self):
+    def get_background(self):
         """Get the Scene's current background.
 
         Returns
         -------
         :class:`~.Color` or torch.Tensor or Callable
-            Whatever the background was set to: a colour, an image tensor, or a
+            Whatever the background was set to: a color, an image tensor, or a
             procedural callable.
         """
-        return self.background_color
+        return self.background
 
     def get_new_id(self) -> int:
         """Internal: allocate the next Mob id for this Scene.
@@ -1387,7 +1385,7 @@ class Scene(RenderLoopMixin):
         *,
         overwrite: bool = True,
         reset: bool = False,
-        background_color=None,
+        background=None,
         animate_fade_out: bool | None = None,
         post_processes=None,
         codec: str | None = None,
@@ -1423,11 +1421,11 @@ class Scene(RenderLoopMixin):
             ``with`` block that has not finished yet. A mid-block render covers
             everything recorded so far and changes nothing, so the final render
             is the same as if the preview had never happened.
-        background_color
+        background
             A color, image, or procedural callable ``(x, y, time) -> color``.
             Python callables run on the render device and receive broadcastable
             Torch tensors, not scalars -- see
-            :meth:`~.Scene.set_background_color` for the exact shapes and the two
+            :meth:`~.Scene.set_background` for the exact shapes and the two
             traps (build constants with ``x.new_tensor``; keep the leading frame
             axis). A Taichi ``@ti.func`` receives scalar normalized coordinates
             and time and must return a color vector; it is evaluated for the
@@ -1498,7 +1496,7 @@ class Scene(RenderLoopMixin):
                 reset=reset,
                 codec=codec,
                 audio_codec=audio_codec,
-                background_color=background_color,
+                background=background,
                 ffmpeg_params=ffmpeg_params,
                 animate_fade_out=animate_fade_out,
                 **extra,

@@ -16,7 +16,7 @@ Fully transparent output
 
     with Scene() as scene:
         Square().spawn()
-        scene.save_video("transparent.mov", background_color=TRANSPARENT)
+        scene.save_video("transparent.mov", background=TRANSPARENT)
 
 Partially transparent output
 ============================
@@ -32,7 +32,7 @@ than over nothing:
         Square().spawn()
         scene.save_video(
             "red_overlay.mov",
-            background_color=RED.set_opacity(0.5),
+            background=RED.set_opacity(0.5),
         )
 
 Containers
@@ -45,9 +45,9 @@ you get an error rather than a silently opaque video.
 
 .. code-block:: python
 
-    scene.save_video("out.mov", background_color=TRANSPARENT)   # explicit
-    scene.save_video("out", background_color=TRANSPARENT)       # -> out.mov
-    scene.save_video("out.mp4", background_color=TRANSPARENT)   # error
+    scene.save_video("out.mov", background=TRANSPARENT)   # explicit
+    scene.save_video("out", background=TRANSPARENT)       # -> out.mov
+    scene.save_video("out.mp4", background=TRANSPARENT)   # error
 
 .. warning::
 
@@ -60,7 +60,7 @@ you get an error rather than a silently opaque video.
 
     scene.save_video(
         "out.webm",
-        background_color=TRANSPARENT,
+        background=TRANSPARENT,
         codec="libvpx-vp9",
         ffmpeg_params=["-pix_fmt", "yuva420p"],
     )

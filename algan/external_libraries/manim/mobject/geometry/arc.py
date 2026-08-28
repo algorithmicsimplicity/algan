@@ -877,7 +877,7 @@ class AnnularSector(Arc):
         class AnnularSectorExample(Scene):
             def construct(self):
                 # Changes background color to clearly visualize changes in fill_opacity.
-                self.camera.background_color = WHITE
+                self.camera.background = WHITE
 
                 # The default parameter start_angle is 0, so the AnnularSector starts from the +x-axis.
                 s1 = AnnularSector(color=YELLOW).move_to(2 * UL)

@@ -4,8 +4,8 @@ formats): parse a model file into a
 
 trimesh is pure-Python (plus numpy) and needs no native library, so unlike the
 pyassimp/FBX path this works out of the box. It loads geometry, per-vertex
-normals / UVs / colours, the node-instance transforms, and PBR materials
-(including *embedded* base-colour textures, which are handed to the IR as
+normals / UVs / colors, the node-instance transforms, and PBR materials
+(including *embedded* base-color textures, which are handed to the IR as
 in-memory images).
 
 The output is the same backend-independent :class:`SceneData` the FBX loader
@@ -54,7 +54,7 @@ def _image_to_float_hwc(image):
 
 
 def _normalize_color(color):
-    """glTF colour factors may be uint8 [0, 255] or float [0, 1]; return a
+    """glTF color factors may be uint8 [0, 255] or float [0, 1]; return a
     4-tuple in [0, 1].
     """
     if color is None:
@@ -68,7 +68,7 @@ def _normalize_color(color):
 
 
 def _convert_material(visual):
-    """trimesh visual -> :class:`MaterialData` (PBR base colour + embedded
+    """trimesh visual -> :class:`MaterialData` (PBR base color + embedded
     diffuse texture where present).
     """
     material = getattr(visual, "material", None)

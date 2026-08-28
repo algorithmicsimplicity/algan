@@ -19,7 +19,7 @@ chooses a shape's defaults:
 - :func:`algan.mobs.shapes_2d._translate_vector_style_kwargs` for every
   bezier-circuit shape (``Square``, ``Circle``, ``Triangle``, ``Polygon``,
   ``Line``, ...),
-- the fill-colour fallback in
+- the fill-color fallback in
   :meth:`algan.mobs.surfaces.surface.Surface.__init__` for the curved solids
   (``Sphere``, ``Cylinder``, ``Cone``, ``Torus``),
 - the face styling in
@@ -91,7 +91,7 @@ _SHAPE_STYLES: dict[str, dict | None] | None = None
 
 
 def _to_algan_color(manim_color, opacity=None):
-    """Convert a Manim colour to an Algan Color, folding in an opacity."""
+    """Convert a Manim color to an Algan Color, folding in an opacity."""
     from algan.constants.color import Color
 
     rgba = manim_color.to_rgba()

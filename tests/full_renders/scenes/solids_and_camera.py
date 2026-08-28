@@ -22,7 +22,7 @@ from algan import *
 # tests/conftest.py registers the vendored faces.
 FONT = "Algan Test Sans"
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 
 def saddle(uv):
@@ -239,7 +239,7 @@ with Sync(run_time=0.8):
 
 with Off():
     layout_label = Text(
-        "fit_to_screen_rectangle  +  wave_color  +  move_out_of_screen",
+        "fit_to_screen  +  wave_color  +  move_out_of_screen",
         font_size=23,
         color=TEAL_A,
         font=FONT,
@@ -250,7 +250,7 @@ with Seq():
     with Sync(run_time=1.4):
         # Fit a named rectangle of the frame, then park the rest on a grid of
         # screen positions the camera resolves at record time.
-        curved[4].fit_to_screen_rectangle(
+        curved[4].fit_to_screen(
             bottom_left=(0.06, 0.3),
             top_right=(0.40, 0.76),
         )

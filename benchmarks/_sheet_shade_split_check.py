@@ -73,7 +73,7 @@ def build_tent():
         OUT as OUTV,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         # Both faces must land at DISTINCT, UNSATURATED values: a blend of
         # two clipped whites is invisible, and the first cut of this harness
@@ -123,7 +123,7 @@ def build_icosa():
         OUT as OUTV,
     )
 
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     with Off():
         AmbientLight(color=WHITE, intensity=0.35).spawn(animate=False)
         DirectionalLight(

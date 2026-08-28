@@ -24,7 +24,7 @@ OUTDIR.mkdir(parents=True, exist_ok=True)
 SETTINGS.paths.set(output_root=str(OUTDIR), output_directory=".")
 SETTINGS.raytracing.set(max_bounces=BOUNCES)
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 with Off():
     AmbientLight(color=WHITE, intensity=0.55).spawn(animate=False)

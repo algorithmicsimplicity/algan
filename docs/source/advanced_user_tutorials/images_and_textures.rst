@@ -39,7 +39,7 @@ textured surface:
 Image paths are resolved against the working directory and then against the
 directory holding your script, so an image sitting beside your ``.py`` file loads
 regardless of where you launch Python from. The same resolution applies to
-:meth:`~algan.scene.Scene.set_background_color`,
+:meth:`~algan.scene.Scene.set_background`,
 :meth:`~algan.scene.Scene.set_environment_map` and
 :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`.
 

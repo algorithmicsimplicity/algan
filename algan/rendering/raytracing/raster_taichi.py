@@ -955,7 +955,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
     the comment at that step for the silhouette-ordering failure this exists to
     prevent).  A fully covered fragment's centroid IS the pixel centre, so only
     partially covering ones move.  The returned barycentrics are still projected
-    onto the simplex, because they go on to index colours, normals and UVs and
+    onto the simplex, because they go on to index colors, normals and UVs and
     must not sample outside the triangle.
     """
     qx = ti.cast(px, ti.f32) + 0.5
@@ -1342,7 +1342,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                 # sheet's extrapolated distance is the SMALLER one and the rim
                 # pixel sorts the two faces back to front. The far face won the
                 # per-sample transmittance, occluded the near one entirely, and
-                # the silhouette was drawn in the colour of the geometry behind
+                # the silhouette was drawn in the color of the geometry behind
                 # it -- brighter than the surface it outlines whenever the far
                 # sheet is the better lit one. Whether a given rim pixel's centre
                 # falls inside or outside is pure sub-pixel phase, which is why
@@ -1523,7 +1523,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                 msk = m
                 # The centre may lie outside the triangle when only some samples
                 # are inside, so project its barycentrics onto the simplex
-                # before they index colours, normals and UVs (as _ss_pixel does).
+                # before they index colors, normals and UVs (as _ss_pixel does).
                 cb1 = ti.max(b1, 0.0)
                 cb2 = ti.max(b2, 0.0)
                 cb0 = ti.max(1.0 - b1 - b2, 0.0)
@@ -2004,7 +2004,7 @@ def raster_tri_write(
 
     Acceptance replays ``pair_accept`` -- the per-pixel decision bits the
     count pass recorded -- rather than recomputing the acceptance chain, so
-    the two passes cannot diverge and this pass never touches the colour /
+    the two passes cannot diverge and this pass never touches the color /
     texture arrays at all. Emission order per pair is ascending chunk pixel,
     exactly the order the recompute produced. The record's geometry lanes
     (lp/t/w1/w2/cov/msk) still come from the exact ``_pair_pixel`` evaluation
@@ -2130,7 +2130,7 @@ def raster_bez_write(
 
     Acceptance replays the count pass's ``pair_accept`` bits (see
     :func:`raster_tri_write`) -- the passes cannot diverge, and this one
-    skips the colour sampling entirely; the exact ``_bez_pair_pixel``
+    skips the color sampling entirely; the exact ``_bez_pair_pixel``
     evaluation still supplies the record's geometry lanes.  ``frag_cov`` is
     the analytic coverage lane, pre-filled with 1.0 by the host so geometry
     without analytic coverage (flat triangles today) needs no write of its
@@ -2870,10 +2870,10 @@ def raster_shadow_trace(
             dpy = ti.math.vec3(event_dp[e, 3], event_dp[e, 4], event_dp[e, 5])
         tl = f % light_pos.shape[0]
         # The event's material pipeline id (packed above the 4-bit sub-pixel
-        # position mask at build time). In every built-in stage a zero-colour
+        # position mask at build time). In every built-in stage a zero-color
         # light row (not yet spawned, or despawned) contributes nothing
         # whatever its visibility -- every lit stage's terms carry the light
-        # colour as a factor -- so such rows keep their all-lit default
+        # color as a factor -- so such rows keep their all-lit default
         # without tracing. Only user pipelines, which may read visibility
         # arbitrarily, keep the exact fan for every light.
         pid_e = event_msk[e] >> 8
@@ -2934,7 +2934,7 @@ def raster_shadow_trace(
         # A light past its range, a fragment outside a spot cone, an
         # area sample's backface: exactly zero radiance here, so the
         # fan's result multiplies zero. Skipping leaves the event's
-        # all-lit default, exactly like the zero-colour skip below.
+        # all-lit default, exactly like the zero-color skip below.
         if (valid == 1) and (fan_geom == 1):
             if _light_zero_radiance(light_col, tl, li, ltype, to_light,
                                     ldist) == 1:

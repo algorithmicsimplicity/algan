@@ -105,7 +105,7 @@ class Table(VGroup):
         ``True`` if the table should include outer lines, by default False.
     add_background_rectangles_to_entries
         ``True`` if background rectangles should be added to entries, by default ``False``.
-    entries_background_color
+    entries_background
         Background color of entries if ``add_background_rectangles_to_entries`` is ``True``.
     include_background_rectangle
         ``True`` if the table should have a background rectangle, by default ``False``.
@@ -193,7 +193,7 @@ class Table(VGroup):
         h_buff: float = 1.3,
         include_outer_lines: bool = False,
         add_background_rectangles_to_entries: bool = False,
-        entries_background_color: ParsableManimColor = BLACK,
+        entries_background: ParsableManimColor = BLACK,
         include_background_rectangle: bool = False,
         background_rectangle_color: ParsableManimColor = BLACK,
         element_to_mobject: Callable[
@@ -214,7 +214,7 @@ class Table(VGroup):
         self.h_buff = h_buff
         self.include_outer_lines = include_outer_lines
         self.add_background_rectangles_to_entries = add_background_rectangles_to_entries
-        self.entries_background_color = ManimColor(entries_background_color)
+        self.entries_background = ManimColor(entries_background)
         self.include_background_rectangle = include_background_rectangle
         self.background_rectangle_color = ManimColor(background_rectangle_color)
         self.element_to_mobject = element_to_mobject
@@ -244,7 +244,7 @@ class Table(VGroup):
         self._add_horizontal_lines()
         self._add_vertical_lines()
         if self.add_background_rectangles_to_entries:
-            self.add_background_to_entries(color=self.entries_background_color)
+            self.add_background_to_entries(color=self.entries_background)
         if self.include_background_rectangle:
             self.add_background_rectangle(color=self.background_rectangle_color)
 

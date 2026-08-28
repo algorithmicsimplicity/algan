@@ -67,7 +67,7 @@ def build_scene():
     small separate circuits rather than a few big ones, spread over the frame so
     a space-filling curve's discontinuities have somewhere to land.
     """
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     shapes = []
     with Off():
         for i in range(7):

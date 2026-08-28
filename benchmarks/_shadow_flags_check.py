@@ -91,7 +91,7 @@ def build_scene(arm):
     Flags are applied BEFORE spawn -- the render primitive reads them once, the
     same contract ``two_sided`` and ``closed_shell`` keep.
     """
-    Scene.set_background_color(DARKER_GRAY)
+    Scene.set_background(DARKER_GRAY)
     SETTINGS.raytracing.set(shadows=(arm != "noshadow"))
 
     with Off():

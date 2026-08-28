@@ -79,7 +79,7 @@ def measure(build, *, glow=0.0, light_intensity=None, ambient=None):
             "algan_outputs/tonemap_check/light_probe.png",
             SETTINGS.video.set(resolution=(160, 120)),
             overwrite=True,
-            background_color=Color((0.0, 0.0, 0.0)),
+            background=Color((0.0, 0.0, 0.0)),
         )
     finally:
         post_process._finalize_on_device = original

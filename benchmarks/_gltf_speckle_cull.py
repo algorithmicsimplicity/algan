@@ -56,7 +56,7 @@ if CULL:
 
     gltf_loader._convert_mesh = _culled
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 with Off():
     AmbientLight(color=WHITE, intensity=0.55).spawn(animate=False)

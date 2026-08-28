@@ -62,6 +62,25 @@ retains a reference to it:
 
     SETTINGS.video = HD  # raises AlganConfigurationError
 
+Short spellings
+---------------
+
+Two video settings have long names for something written this often, so each
+takes a short alias as well -- ``fps`` or ``FPS`` for ``frames_per_second``, and
+``ssaa`` or ``SSAA`` for ``super_sampling_anti_aliasing``:
+
+.. code-block:: python
+
+    SETTINGS.video.set(fps=60, ssaa=1)
+    SETTINGS.video.FPS = 60
+    draft = HD.set(fps=24, SSAA=1)
+
+An alias is a second *spelling*, not a second setting: it reads back the same
+value, and a snapshot or ``to_dict()`` always answers with the declared name, so
+state saved through one spelling restores through the other. Naming the same
+setting twice in one call (``set(fps=60, frames_per_second=30)``) is rejected
+rather than resolved to whichever came last.
+
 Supported settings versus experimental switches
 ===============================================
 
@@ -158,11 +177,11 @@ Style defaults
 otherwise. Unlike the other sections it is mostly about *authoring*, so its
 fields are the ones you set once at the top of a script:
 
-``background_color``
+``background``
     The color behind everything, as an Algan
     :class:`~algan.constants.color.Color`. Defaults to ``BLACK``. This is the
-    process-wide default; ``Scene.set_background_color(...)`` changes one Scene
-    and the ``background_color=`` argument to
+    process-wide default; ``Scene.set_background(...)`` changes one Scene
+    and the ``background=`` argument to
     :meth:`~algan.scene.Scene.save_video` changes one render, each overriding
     the one before it. It also accepts an image path or ``TRANSPARENT`` -- see
     :doc:`backgrounds_and_post_processing` and
@@ -213,7 +232,7 @@ fields are the ones you set once at the top of a script:
 
 .. code-block:: python
 
-    SETTINGS.style.set(background_color=Color([0.05, 0.05, 0.15]), buffer=0.3)
+    SETTINGS.style.set(background=Color([0.05, 0.05, 0.15]), buffer=0.3)
 
 Choosing the render device
 ==========================

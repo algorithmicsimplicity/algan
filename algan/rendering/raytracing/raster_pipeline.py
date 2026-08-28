@@ -1349,7 +1349,7 @@ def _one_mesh_pixel_caps(
     # than cautious. ``scatter_add_`` is a float atomic add, so its summation
     # order is not reproducible on CUDA -- measured, a 400k-into-5k reduction
     # of this shape spreads 1.5e-05 across runs. That would be invisible in a
-    # colour, but this feeds a THRESHOLD: the kernel clips only when
+    # color, but this feeds a THRESHOLD: the kernel clips only when
     # ``eff > frag_cap - mesh_ink``, so a ceiling that wobbles in its low bits
     # flips borderline fragments in and out of being clipped, which is a
     # finite coverage change, which bloom then amplifies. It was measured: two

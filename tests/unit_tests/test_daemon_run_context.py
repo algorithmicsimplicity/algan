@@ -192,14 +192,18 @@ def test_a_finished_run_returns_its_memory(monkeypatch):
     makes the *next* render run out of memory.
     """
     calls = []
-    monkeypatch.setattr(d, "empty_cache", lambda force_gc: calls.append(force_gc))
+    monkeypatch.setattr(
+        d, "release_torch_memory", lambda force_gc: calls.append(force_gc)
+    )
     d._release_run_memory()
     assert calls == [True], "the collection is what actually frees the tensors"
 
 
 def test_the_release_can_be_turned_off(monkeypatch):
     calls = []
-    monkeypatch.setattr(d, "empty_cache", lambda force_gc: calls.append(force_gc))
+    monkeypatch.setattr(
+        d, "release_torch_memory", lambda force_gc: calls.append(force_gc)
+    )
     monkeypatch.setenv("ALGAN_DAEMON_RELEASE_MEMORY", "0")
     d._release_run_memory()
     assert calls == []
@@ -207,7 +211,7 @@ def test_the_release_can_be_turned_off(monkeypatch):
 
 def test_a_worthwhile_release_is_reported(monkeypatch):
     said = []
-    monkeypatch.setattr(d, "empty_cache", lambda force_gc: None)
+    monkeypatch.setattr(d, "release_torch_memory", lambda force_gc: None)
     monkeypatch.setattr(d, "_say", said.append)
     reserved = iter([2 << 30, 8 << 20])
     monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: next(reserved))
@@ -219,7 +223,7 @@ def test_a_worthwhile_release_is_reported(monkeypatch):
 
 def test_a_release_that_frees_nothing_is_quiet(monkeypatch):
     said = []
-    monkeypatch.setattr(d, "empty_cache", lambda force_gc: None)
+    monkeypatch.setattr(d, "release_torch_memory", lambda force_gc: None)
     monkeypatch.setattr(d, "_say", said.append)
     monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: 8 << 20)
     d._release_run_memory()
@@ -228,7 +232,7 @@ def test_a_release_that_frees_nothing_is_quiet(monkeypatch):
 
 def test_the_report_is_skipped_without_cuda(monkeypatch):
     said = []
-    monkeypatch.setattr(d, "empty_cache", lambda force_gc: None)
+    monkeypatch.setattr(d, "release_torch_memory", lambda force_gc: None)
     monkeypatch.setattr(d, "_say", said.append)
     monkeypatch.setattr(d, "_torch_reserved_bytes", lambda: None)
     d._release_run_memory()

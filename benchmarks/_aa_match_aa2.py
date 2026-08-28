@@ -1,4 +1,4 @@
-"""THE gate for turning analytic AA on: does it match anti_alias_level=2?
+"""THE gate for turning analytic AA on: does it match super_sampling_anti_aliasing=2?
 
 The goal analytic AA has to clear before it can replace supersampling is not
 "better than no AA" -- that was ss13-ss17 -- but "at least as good as the shipped
@@ -275,7 +275,9 @@ def render_once(cfg, aa_level, analytic, tag, reps=2):
         set_shadows(cfg in SHADOWED)
         rt_settings.set_analytic_aa(analytic, bezier=True, triangles=True, exact=EXACT)
         settings = VideoSettings(
-            (BASE_W, BASE_H), frames_per_second=FPS, anti_alias_level=aa_level
+            (BASE_W, BASE_H),
+            frames_per_second=FPS,
+            super_sampling_anti_aliasing=aa_level,
         )
         with Scene(video_settings=settings) as scene:
             build_scene(cfg)

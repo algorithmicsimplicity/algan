@@ -31,7 +31,7 @@ from algan.settings._startup import _ANIMATION_DEVICE
 
 
 def texture_u8_provenance(texture):
-    """Whether a ``[..., 5]`` colour texture is exactly 8-bit with zero glow.
+    """Whether a ``[..., 5]`` color texture is exactly 8-bit with zero glow.
 
     True iff every channel value is exactly ``k / 255`` for an integer ``k``
     in ``[0, 255]`` (the values :func:`~algan.utils.file_utils.get_image`
@@ -39,7 +39,7 @@ def texture_u8_provenance(texture):
     identically zero. Proved by the round trip itself --
     ``round(x * 255) / 255 == x`` elementwise in f32 -- so a map this
     accepts quantizes to u8 and back bit-identically, which is the admission
-    rule for texture_u8_storage's packed colour-map layout.
+    rule for texture_u8_storage's packed color-map layout.
 
     Checked ONCE at authoring (the ``color_texture`` setter, a mesh
     constructor) rather than at the merge: the merge runs on the prefetch

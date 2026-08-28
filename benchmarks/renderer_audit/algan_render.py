@@ -284,7 +284,7 @@ def render(
     r = spec.get("render", {})
     width = int(r.get("width", 640))
     height = int(r.get("height", 480))
-    video = VideoSettings((width, height), 30, anti_alias_level=aa)
+    video = VideoSettings((width, height), 30, super_sampling_anti_aliasing=aa)
     SETTINGS.video.set(video)
     SETTINGS.raytracing.set(shadows=shadows, tonemapping=tonemap)
     if bounces is not None:
@@ -295,7 +295,7 @@ def render(
     # ``"glossy_reflection": false`` beside the frame it had just produced.
     SETTINGS.raytracing.set(glossy_reflection=glossy)
 
-    Scene.set_background_color(_color(r.get("background"), (0.0, 0.0, 0.0)))
+    Scene.set_background(_color(r.get("background"), (0.0, 0.0, 0.0)))
 
     cam_spec = spec["camera"]
     with Off():
@@ -337,7 +337,7 @@ def main(argv=None):
     ap.add_argument("scene", type=Path)
     ap.add_argument("--out", type=Path, default=_HERE / "out")
     ap.add_argument("--suffix", default="algan")
-    ap.add_argument("--aa", type=int, default=3, help="anti_alias_level")
+    ap.add_argument("--aa", type=int, default=3, help="super_sampling_anti_aliasing")
     ap.add_argument(
         "--no-tonemap",
         dest="tonemap",

@@ -192,7 +192,7 @@ def apply_manim_defaults(
         )
 
     if background:
-        scene.set_background_color(BLACK.clone())
+        scene.set_background(BLACK.clone())
 
     if camera:
         scene_camera = scene.get_camera()
@@ -213,7 +213,7 @@ def apply_manim_defaults(
         ).spawn(animate=False)
         # What the default material reaches, engine by engine. Manim applies
         # no lighting at all to a flat 2-D VMobject -- Cairo fills it in its
-        # own colour -- and Algan's 2-D content never consults this setting
+        # own color -- and Algan's 2-D content never consults this setting
         # (circuits and images are drawn unlit by construction), so flat
         # 2-D matches on both sides without it. The setting's audience is
         # 3-D geometry, which is Manim's ``ThreeDVMobject`` territory: there
@@ -223,11 +223,11 @@ def apply_manim_defaults(
         # The light above is what it responds to, placed where Manim's own
         # light sits; a Mob given an explicitly lit material keeps it.
         SETTINGS.style.set(default_material=ManimMaterial())
-        # Manim writes its colours straight out. Algan does too now -- this is
+        # Manim writes its colors straight out. Algan does too now -- this is
         # its own default since 2026-08-22 -- so this is belt-and-braces against
         # a Scene that turned tonemapping on. With the curve on, every fill
         # darkens by about 10/255 and white lands on 222, uniformly enough to
-        # read as a colour error rather than as a highlight roll-off. Off, a
+        # read as a color error rather than as a highlight roll-off. Off, a
         # flat fill comes out byte-identical to Manim's.
         SETTINGS.raytracing.set(tonemapping=False)
 

@@ -290,7 +290,7 @@ shaded by a ray tracer rather than by Manim's two-point gradient.
 
 Without ``use_manim_defaults``, imported diagrams usually want a modest
 :meth:`~algan.animatable_base.mob.Mob.scale` or
-:meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`
+:meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`
 instead.
 
 Transforms
@@ -453,7 +453,7 @@ Built-in presets are immutable, so this creates a modified copy:
 
 .. code-block:: python
 
-    fast_hd = HD.set(frames_per_second=24, anti_alias_level=1)
+    fast_hd = HD.set(frames_per_second=24, super_sampling_anti_aliasing=1)
 
 The render device is a setting: ``SETTINGS.computing.set(render_device="cuda")``,
 at the top of the script. The animation device is not -- set

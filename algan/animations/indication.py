@@ -1,7 +1,7 @@
 """Attention animations: drawing the viewer's eye to something.
 
 These are the "look here" effects. :func:`Indicate` swells a Mob and flashes its
-colour; :func:`Wiggle` shakes it; :func:`Blink` flickers it; :func:`FocusOn`
+color; :func:`Wiggle` shakes it; :func:`Blink` flickers it; :func:`FocusOn`
 dims everything else and closes a spotlight onto a point; the passing-flash
 family runs a highlight along an outline.
 
@@ -97,9 +97,9 @@ def _indicate_scale_step(mobject, scale_factor, interpolation=1.0):
 
 
 def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float = 1.0):
-    """Draw attention to a Mob by briefly growing and recolouring it.
+    """Draw attention to a Mob by briefly growing and recoloring it.
 
-    The Mob swells and flashes colour, then returns to exactly how it was -- the
+    The Mob swells and flashes color, then returns to exactly how it was -- the
     standard "look here" gesture.
 
     Animation
@@ -116,7 +116,7 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float =
         How large the Mob grows at the peak, as a multiple of its current size.
         Defaults to ``1.2``.
     color
-        Colour to flash. Defaults to ``YELLOW``.
+        Color to flash. Defaults to ``YELLOW``.
     run_time
         Duration of the whole gesture, in seconds. Defaults to ``1.0``.
 
@@ -284,8 +284,8 @@ def Blink(
     Animation
     ---------
     Recorded as an animation whose duration comes from these parameters rather than
-    the enclosing context. Opacity is driven through the Mob's colour, so parts with
-    their own colours keep them.
+    the enclosing context. Opacity is driven through the Mob's color, so parts with
+    their own colors keep them.
 
     Parameters
     ----------
@@ -340,7 +340,7 @@ def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, run_time: float = 2.0
     opacity
         Peak opacity of the disc as it closes in, ``0`` to ``1``. Defaults to ``0.2``.
     color
-        Colour of the disc. Defaults to ``GRAY``.
+        Color of the disc. Defaults to ``GRAY``.
     run_time
         Duration of the contraction, in seconds. Defaults to ``2.0``.
 
@@ -613,7 +613,7 @@ def Flash(
     line_stroke_width
         Thickness of each line. Defaults to ``3``.
     color
-        Colour of the lines. Defaults to ``YELLOW``.
+        Color of the lines. Defaults to ``YELLOW``.
     time_width
         Fraction of each line visible at a time. Defaults to ``1.0``, i.e. the whole
         line.
@@ -704,7 +704,7 @@ def Circumscribe(
     buff
         Gap between the Mob and the outline, in world units. Defaults to ``0.2``.
     color
-        Colour of the outline. Defaults to ``YELLOW``.
+        Color of the outline. Defaults to ``YELLOW``.
     run_time
         Duration of the whole gesture, in seconds. Defaults to ``1.0``.
     stroke_width

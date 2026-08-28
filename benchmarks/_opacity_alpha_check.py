@@ -128,7 +128,7 @@ def _render(background, ambient, alpha, path):
     into this one through the timeline.
     """
     with Scene() as scene:
-        scene.set_background_color(background)
+        scene.set_background(background)
         with Off():
             if ambient:
                 AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)

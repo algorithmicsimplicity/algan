@@ -1,6 +1,6 @@
 """The sRGB transfer functions, and the working-space split they implement.
 
-Algan authors colour **display-referred**: ``RED = (255, 0, 0)`` names a pixel,
+Algan authors color **display-referred**: ``RED = (255, 0, 0)`` names a pixel,
 not a radiance, and a flat fill of it must come back out of the encoder as the
 bytes the user typed. Light, on the other hand, only adds up correctly in
 **linear** light -- sRGB encoding is concave, so ``encode(a) + encode(b)`` is far
@@ -8,7 +8,7 @@ more than ``encode(a + b)``, and summing two encoded halves overshoots instead
 of landing on the encoded sum.
 
 Those two facts are reconciled the way every other renderer reconciles them, and
-the way three.js does specifically: decode authored colour into a linear working
+the way three.js does specifically: decode authored color into a linear working
 space at the render boundary, do every arithmetic operation there, and apply the
 OETF once at the final byte write. Unlit flat content passes through decode and
 then encode with no arithmetic in between, which is the identity, so it is

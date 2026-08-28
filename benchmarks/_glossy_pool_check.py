@@ -120,7 +120,7 @@ def run(roughness, glossy):
         file_path=os.path.join(
             OUT_DIR, f"glossyPool_r{roughness:g}_{'on' if glossy else 'off'}.mp4"
         ),
-        video_settings=RenderSettings((864, 486), 1, anti_alias_level=1),
+        video_settings=RenderSettings((864, 486), 1, super_sampling_anti_aliasing=1),
     )
     slots = sum(s[0] for s in STATS)
     covered = sum(s[1] for s in STATS)

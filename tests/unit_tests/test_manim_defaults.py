@@ -22,15 +22,13 @@ from algan.manim_defaults import (
 def scene():
     """A fresh Scene, with the process-global style settings restored after."""
     style = SETTINGS.style
-    saved_style = (style.default_material, style.background_color.clone())
+    saved_style = (style.default_material, style.background.clone())
     saved_tonemapping = SETTINGS.raytracing.tonemapping
     created = Scene()
     try:
         yield created
     finally:
-        SETTINGS.style.set(
-            default_material=saved_style[0], background_color=saved_style[1]
-        )
+        SETTINGS.style.set(default_material=saved_style[0], background=saved_style[1])
         SETTINGS.raytracing.set(tonemapping=saved_tonemapping)
 
 

@@ -80,7 +80,7 @@ def _render_one_reflective_frame(tmp_path, name):
     SceneManager.reset()
     try:
         with Scene(video_settings=SMOKE_TEST) as scene:
-            scene.set_background_color(BLACK)
+            scene.set_background(BLACK)
             with Off():
                 Scene.clear_light_sources()
                 PointLight(

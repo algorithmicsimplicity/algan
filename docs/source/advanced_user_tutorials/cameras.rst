@@ -191,7 +191,7 @@ these Mob methods all resolve against it:
 * :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` and
   :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner` -- rest against a
   screen border.
-* :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle` -- scale and move to fill a screen
+* :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen` -- scale and move to fill a screen
   rectangle.
 
 Each of them resolves the camera *once*, when the call is recorded, so a later

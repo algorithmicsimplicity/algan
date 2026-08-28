@@ -85,7 +85,7 @@ def _render_bar(tmp_path, name, color, lights):
     output_path = tmp_path / name
     SceneManager.reset()
     with Scene(video_settings=ALBEDO_TEST_SETTINGS) as scene:
-        scene.set_background_color(BLACK)
+        scene.set_background(BLACK)
         scene.clear_light_sources()
         with Off():
             lights()

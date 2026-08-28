@@ -102,7 +102,8 @@ def render(builder, roughness, tag):
     rt_settings.set_analytic_aa(True, bezier=True, triangles=True)
     builder(roughness)
     render_to_file(
-        file_path=path, video_settings=RenderSettings((W, H), FPS, anti_alias_level=1)
+        file_path=path,
+        video_settings=RenderSettings((W, H), FPS, super_sampling_anti_aliasing=1),
     )
     cap = cv2.VideoCapture(path)
     frames = []

@@ -75,7 +75,9 @@ def render(build, path, probe=None, shadows=False, run=False):
     SETTINGS.raytracing.set(shadows=shadows)
     rt_settings.set_analytic_aa(True, run=run)
     try:
-        settings = VideoSettings((W, H), frames_per_second=4, anti_alias_level=1)
+        settings = VideoSettings(
+            (W, H), frames_per_second=4, super_sampling_anti_aliasing=1
+        )
         with Scene(video_settings=settings) as scene:
             build()
             scene.save_frame(path, video_settings=settings, overwrite=True)

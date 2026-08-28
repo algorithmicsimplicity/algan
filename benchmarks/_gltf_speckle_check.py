@@ -34,7 +34,7 @@ SETTINGS.paths.set(output_root=str(OUTDIR), output_directory=".")
 if "SPECKLE_BOUNCES" in os.environ:
     SETTINGS.raytracing.set(max_bounces=int(os.environ["SPECKLE_BOUNCES"]))
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 with Off():
     if LIGHTS in ("both", "ambient"):

@@ -580,7 +580,7 @@ def bloom_filter_premultiply(
     if x.shape[-1] < 5:
         raise ValueError(
             "bloom_filter_premultiply only works for scenes with transparent backgrounds, please set"
-            "background_color=TRANSPARENT when rendering."
+            "background=TRANSPARENT when rendering."
         )
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
 

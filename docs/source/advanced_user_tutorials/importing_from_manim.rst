@@ -183,7 +183,7 @@ The two libraries use different conventions, and the boundary is the
   construction on one side of the line.
 * **Sizes.** Manim's default frame is 8 units tall; Algan's visible area at the
   origin plane is about 7. Imported diagrams usually want a modest
-  :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`.
+  :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`.
 
 Matching Manim's framing exactly
 ================================

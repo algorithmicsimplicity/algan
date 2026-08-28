@@ -66,7 +66,7 @@ def render() -> np.ndarray:
     SETTINGS.computing.set(available_memory_override=1536 * 1024 * 1024)
     path = OUT_DIR / "reach.mp4"
     with Scene() as scene:
-        Scene.set_background_color(DARKER_GRAY)
+        Scene.set_background(DARKER_GRAY)
         with Off():
             AmbientLight(color=WHITE, intensity=0.55).spawn(animate=False)
             rows = Group(

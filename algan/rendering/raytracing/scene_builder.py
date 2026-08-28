@@ -42,7 +42,7 @@ from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     begin_cuda_peak,
-    empty_cache,
+    release_torch_memory,
     end_cuda_peak,
 )
 
@@ -525,7 +525,7 @@ def _copy_merged_scene_to_arena(scene, memory, *, persist=True):
 
 def _dedup_time(x):
     """Collapse a leading (time) dimension that is constant across frames to
-    length 1, so a temporally-constant map/colour is stored once instead of T
+    length 1, so a temporally-constant map/color is stored once instead of T
     times. The kernels index the time axis as ``f % shape[0]``, so a length-1
     axis is read by every frame.
 
@@ -561,7 +561,7 @@ def _dedup_time_group(scene, keys):
 #: Texture-meta row width: cols 0-2 color map (offset, w, h), 3-5 material
 #: map, 6-8 normal map, 9 the texture-driven-property bitmask, 10-12 the
 #: per-map TIME lengths (see ``_append_texture``; 1 when the buffer's own
-#: time axis carries the frames). Cols 13-14 are the colour map's opacity
+#: time axis carries the frames). Cols 13-14 are the color map's opacity
 #: region (base row in the bank / frame count; -1 = premultiplied on the host,
 #: texture_opacity_in_kernel), col 15 its u8-storage LUT base row (-1 =
 #: plain f32 rows, -2 = u8-packed WITHOUT a LUT -- an endpoint stack decodes
@@ -592,17 +592,17 @@ content_dedup_min_texels = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096
 
 def _split_promotable(p, _append_texture, device, scene):
     """Partition a non-textured triangle primitive into the triangles that must
-    stay per-vertex and the triangles whose colour + material are constant
+    stay per-vertex and the triangles whose color + material are constant
     across their three corners and every frame (and are non-glowing). The
     constant triangles are grouped by value -- so a uniform mob is one group even
-    when it was batched into a primitive alongside differently-coloured mobs --
-    and each group is promoted to one shared 1x1 colour map + 1x1 material map
+    when it was batched into a primitive alongside differently-colored mobs --
+    and each group is promoted to one shared 1x1 color map + 1x1 material map
     (appended here to the shared texel buffer).
 
     Returns ``(keep_idx, promo_idx, promo_meta)``: ascending ``keep_idx`` selects
     the per-vertex triangles; ``promo_idx`` selects the promoted triangles
     grouped by value; ``promo_meta`` is the ``[len(promo_idx), 10]`` tex-meta
-    (colour map cols 0-2, material map 3-5, no normal map 6-8 = -1, bitmask 9 =
+    (color map cols 0-2, material map 3-5, no normal map 6-8 = -1, bitmask 9 =
     refl|rough|ior) aligned to ``promo_idx``. The kernel reads all three material
     properties from the material map, so promoted triangles need no per-vertex
     ``tri_colors``/``tri_extra`` row.
@@ -614,7 +614,7 @@ def _split_promotable(p, _append_texture, device, scene):
     if N == 0:
         empty = torch.zeros((0, _TEX_META_W), dtype=torch.int32, device=device)
         return all_idx, all_idx, empty
-    # Per-triangle promotable: the three corners share one colour (all channels,
+    # Per-triangle promotable: the three corners share one color (all channels,
     # all frames) and one material (reflectivity 0/2/4, roughness 1/3/5, index of
     # refraction 6/7/8), and the triangle is non-glowing (glow magnitude cols
     # 9-11 -- which hold per-corner transmission since the transmission work;
@@ -638,9 +638,9 @@ def _split_promotable(p, _append_texture, device, scene):
         empty = torch.zeros((0, _TEX_META_W), dtype=torch.int32, device=device)
         return keep_idx, promo_all, empty
 
-    # Group promoted triangles by their (per-frame) constant colour + material
+    # Group promoted triangles by their (per-frame) constant color + material
     # value, so identical mobs share one pair of maps. The key is the corner-0
-    # colour [T,5] plus material (refl, rough, ior) [T,3] over all frames.
+    # color [T,5] plus material (refl, rough, ior) [T,3] over all frames.
     Tc, Te = colors.shape[0], extra.shape[0]
     T = max(Tc, Te)
     col0 = _expand_frames(colors[:, :, 0, :], T)[:, promo_all, :]  # [T,P,5]
@@ -655,7 +655,7 @@ def _split_promotable(p, _append_texture, device, scene):
     promo_idx = promo_all[order]
     inv_sorted = inv[order]
 
-    # One colour + material map per distinct value; each promoted triangle's meta
+    # One color + material map per distinct value; each promoted triangle's meta
     # row points at its group's maps.
     group_meta = []
     for gid in range(uniq.shape[0]):
@@ -698,7 +698,7 @@ def _split_promotable(p, _append_texture, device, scene):
                 color_meta[3],
                 material_meta[3],
                 1,
-                # A promoted map is sliced out of per-vertex colours whose
+                # A promoted map is sliced out of per-vertex colors whose
                 # coverage already carries the mob opacity, so it takes no
                 # opacity region, stays f32 (it is 1x1) and its leading axis
                 # is time (no endpoint interpolation).
@@ -1018,7 +1018,7 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     become compacted PREFIXES (needs_mat subset needs_norm, so both nest under a
     single permutation). ``tri_colors``/``tri_extra`` stay in their original
     (promotion-compacted) order, addressed by a per-prim remap ``col_row`` (-1 =
-    promoted, colour/material from its 1x1 maps); ``tex_meta``/``uvs`` are widened
+    promoted, color/material from its 1x1 maps); ``tex_meta``/``uvs`` are widened
     to full band-order arrays indexed directly by prim. Byte-identical to the
     untrimmed path (only indexing/layout changes). Stores ``*_t`` variants +
     ``col_row`` + a band-reordered BVH; the wavefront picks them when engaged.
@@ -1036,7 +1036,7 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     tri_tex_meta = scene["tri_tex_meta"].to(device)
     num_colored = int(scene["num_colored_triangles"])
     _UNLIT = 1
-    Nc = tri_extra.shape[1]  # prims with a per-vertex colour/extra row
+    Nc = tri_extra.shape[1]  # prims with a per-vertex color/extra row
 
     lit = (tri_mat_id != _UNLIT).any(0)  # [N]
     refl = torch.zeros(N, dtype=torch.bool, device=device)
@@ -1214,13 +1214,13 @@ def _build_textured_scene(scene, num_frames, device):
 
     Groups, each promoted independently by :func:`_promote_property_group`:
 
-    * **colour** -- RGBA + glow (``tri_colors`` 5 channels, per vertex).
+    * **color** -- RGBA + glow (``tri_colors`` 5 channels, per vertex).
     * **surface** -- reflectivity / roughness / index-of-refraction (from
       ``tri_extra``, per vertex) used for scatter; index -1 for a matte surface
       (no reflectivity, no refraction) so the kernel skips the lookup.
     * **material** -- the shading parameter block prefixed with the pipeline id
       (``tri_mat_id`` + ``tri_mat``, per primitive, hence always 1x1); index -1
-      for an unlit surface (no shading, colour passes through).
+      for an unlit surface (no shading, color passes through).
 
     Every triangle is assigned the canonical corner UVs ``(0,0)/(1,0)/(0,1)``.
     """
@@ -1231,7 +1231,7 @@ def _build_textured_scene(scene, num_frames, device):
     tmi = _expand_frames(scene["tri_mat_id"].to(device), T)  # [T,N]
     N = tc.shape[1]
 
-    # Colour: every triangle carries a colour.
+    # Color: every triangle carries a color.
     present = torch.ones(N, dtype=torch.bool, device=device)
     col_bank, col_meta, col_idx = _promote_property_group(tc, present, T, device)
 
@@ -1269,7 +1269,7 @@ def _build_textured_scene(scene, num_frames, device):
     scene["tx_mat_idx"] = mat_idx
     # Normal-map bank (feature): placeholder / index -1 for every triangle until
     # a Surface carries a normal map (the normal-map feature measures the
-    # compiled-in cost; real maps would be promoted here like the colour bank).
+    # compiled-in cost; real maps would be promoted here like the color bank).
     scene["tx_nmap_bank"] = torch.zeros((1, 1, 3), device=device)
     scene["tx_nmap_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
     scene["tx_nmap_idx"] = torch.full((N,), -1, dtype=torch.int32, device=device)
@@ -1368,11 +1368,11 @@ def _merge_scene(primitives, *, track_peak=None):
         if track_peak:
             peak_token = begin_cuda_peak(device)
         _upload_primitive_inputs(primitives, device)
-        empty_cache(force_gc=False)
+        release_torch_memory(force_gc=False)
     else:
         device = _projected_scene_device(primitives)
         if device.type != "cpu":
-            empty_cache(force_gc=False)
+            release_torch_memory(force_gc=False)
     triangles = [p for p in primitives if isinstance(p, RayTracedTrianglePrimitive)]
     beziers = [p for p in primitives if isinstance(p, RayTracedBezierCircuitPrimitive)]
     unknown = [p for p in primitives if p not in triangles and p not in beziers]
@@ -1454,7 +1454,7 @@ def _merge_scene(primitives, *, track_peak=None):
         return base
 
     def _append_tex_opacity(op):
-        """Append one colour map's per-frame opacity region; ``(row, frames)``.
+        """Append one color map's per-frame opacity region; ``(row, frames)``.
 
         The region is the mob's animated opacity as bank rows (value in col
         0), one row per frame of the batch window -- the sampler reads
@@ -1476,7 +1476,7 @@ def _merge_scene(primitives, *, track_peak=None):
         return (off, vals.numel())
 
     def _append_tex_lerp(lerp):
-        """Append one colour map's endpoint-interpolation region; ``(row,
+        """Append one color map's endpoint-interpolation region; ``(row,
         frames)``.
 
         ``lerp`` is the primitive's ``[T, 3]`` (i0, i1, w) rows
@@ -1503,22 +1503,22 @@ def _merge_scene(primitives, *, track_peak=None):
         """Append one texture map; returns ``(offset, w, h, t, lut_base)``.
 
         ``is_color`` says the map holds authored COLOUR, so it crosses the same
-        render boundary ``_decode_merged_colors`` takes the merged colour
+        render boundary ``_decode_merged_colors`` takes the merged color
         arrays across and is decoded into linear light here. A material map
         (metalness / roughness / IOR / transmission) or a normal map is not
-        colour and must not be touched, which is why the caller declares it
+        color and must not be touched, which is why the caller declares it
         rather than the decode guessing from the buffer.
 
         Decoded on the way IN rather than by ``_decode_merged_colors`` on the
-        assembled ``scene["textures"]``: a promoted 1x1 colour map is sliced out
-        of the primitive's own per-vertex colours and may share storage with
+        assembled ``scene["textures"]``: a promoted 1x1 color map is sliced out
+        of the primitive's own per-vertex colors and may share storage with
         them (``_cat_collections`` also passes a lone collection through
         uncopied), so decoding the assembled buffer in place could decode the
         same values twice. ``srgb_to_linear`` returns a fresh tensor, which
-        breaks any such aliasing. Only channels 0:2 are colour -- 3 is additive
+        breaks any such aliasing. Only channels 0:2 are color -- 3 is additive
         glow and 4 is coverage.
 
-        ``u8_ok`` (colour maps only) says the AUTHORING side proved every
+        ``u8_ok`` (color maps only) says the AUTHORING side proved every
         texel is exactly ``k / 255`` with zero glow (``texture_u8_ok`` --
         proved once at assignment, so this function never probes texels).
         Such a map, when its window arrived collapsed to one frame, is stored
@@ -1529,7 +1529,7 @@ def _merge_scene(primitives, *, track_peak=None):
         in meta col 15). An interpolating window (t > 1) keeps f32 rows --
         its in-between texels are not ``k / 255``.
 
-        ``authored_stack`` (colour maps only) says the tensor is a
+        ``authored_stack`` (color maps only) says the tensor is a
         ``[1, K, H, W, 5]`` endpoint stack (texture_time_lerp) whose texels
         must stay in AUTHORED space: the sampler lerps two endpoint texels
         and THEN decodes, matching the dense path's order (timeline lerp,
@@ -1545,7 +1545,7 @@ def _merge_scene(primitives, *, track_peak=None):
         if tex is None:
             return (-1, 0, 0, 1, -1)
         if tex.device != device:
-            # Maps arrive on whatever device built them -- a colour map's
+            # Maps arrive on whatever device built them -- a color map's
             # frame window materializes on the render device, a material or
             # normal map is a plain host tensor -- and the buffer they share
             # is built on the merge device.
@@ -1623,7 +1623,7 @@ def _merge_scene(primitives, *, track_peak=None):
         if c < 5:
             tex = torch.cat((tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
         if SETTINGS.raytracing.texture_time_flat:
-            # No equality probe here: a static colour window arrives already
+            # No equality probe here: a static color window arrives already
             # collapsed to one frame (texture_window_collapse, upstream of
             # the merge) and material/normal maps are single-frame tensors,
             # so a map still carrying T frames here is genuinely animated
@@ -1668,12 +1668,12 @@ def _merge_scene(primitives, *, track_peak=None):
     # or, for batches that provably never traverse one, defers them).
     tri_bvh_inputs = bez_bvh_inputs = None
     if triangles:
-        # Constant-property promotion: triangles whose colour + material params
+        # Constant-property promotion: triangles whose color + material params
         # are constant across their corners (and frames) are rendered from a
-        # shared 1x1 colour + material map instead of per-vertex tri_colors /
+        # shared 1x1 color + material map instead of per-vertex tri_colors /
         # tri_extra rows (see _split_promotable). Detection is per triangle and
         # grouped by value, so a uniform mob is promoted even when it was batched
-        # into one primitive alongside differently-coloured mobs. Promoted
+        # into one primitive alongside differently-colored mobs. Promoted
         # triangles are ordered LAST (their prims sit past the shrunk arrays,
         # which the guarded kernel reads never index). With promotion inactive
         # every triangle is kept and this reduces byte-identically to the plain
@@ -1843,7 +1843,7 @@ def _merge_scene(primitives, *, track_peak=None):
 
         # tri_colors / tri_extra span only the kept per-vertex triangles + the
         # textured primitives (a textured primitive may carry only material /
-        # normal maps and fall back to per-vertex colour, color-map offset -1).
+        # normal maps and fall back to per-vertex color, color-map offset -1).
         # Promoted triangles have no row here; guarded kernel reads keep their
         # (past-the-end) prims from ever indexing these.
         vcolors = [
@@ -1885,7 +1885,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # map, 9 bitmask of texture-driven material properties (offset -1 = no
         # map -> per-vertex fallback), 10-12 the per-map time lengths (1 when
         # the buffer's own time axis carries the frames -- see _append_texture),
-        # 13-14 the colour map's opacity region (row / frames; -1 = host
+        # 13-14 the color map's opacity region (row / frames; -1 = host
         # premultiply), 15 its u8 LUT base row (-1 = f32 rows, -2 = u8 bytes
         # with no LUT: an authored endpoint stack) and 16-17 its
         # endpoint-interpolation region (row / frames; -1 = leading axis is
@@ -1956,7 +1956,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # Collapse temporally-constant triangle tables to one frame. Every
         # consumer reads their time axis as ``f % shape[0]`` (kernels) or
         # ``_expand_frames`` (raster host tables), and _build_mem_trim below
-        # is T-agnostic, so a batch whose materials/normals/colours do not
+        # is T-agnostic, so a batch whose materials/normals/colors do not
         # animate stores one row instead of T -- tri_mat alone is [T, N, 26],
         # tens of MB of identical frames on ordinary scenes. Under
         # merge_dedup_geometry the same collapse covers ``tri_pos`` and the
@@ -2330,7 +2330,7 @@ def _merge_scene(primitives, *, track_peak=None):
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
 
     if device.type != "cpu":
-        empty_cache(force_gc=False)
+        release_torch_memory(force_gc=False)
     # Measured transient device bytes the build allocated above the pre-merge
     # baseline, when opt-in peak tracking is on (see settings.merge_track_peak);
     # -1 marks "not measured". Purely diagnostic -- the arena preflight bounds
@@ -2344,15 +2344,15 @@ def _merge_scene(primitives, *, track_peak=None):
     return scene
 
 
-#: The merged arrays holding authored colour. Each is ``[..., 5]`` --
-#: ``[r, g, b, glow, alpha]`` -- so only channels 0:3 are colour. Glow is an
-#: additive emissive strength and alpha is coverage; neither is a colour and
+#: The merged arrays holding authored color. Each is ``[..., 5]`` --
+#: ``[r, g, b, glow, alpha]`` -- so only channels 0:3 are color. Glow is an
+#: additive emissive strength and alpha is coverage; neither is a color and
 #: neither is decoded.
 _MERGED_COLOR_KEYS = ("tri_colors", "circuit_colors", "circuit_border_colors")
 
-#: Colour-valued entries of the built-in material parameter block, by name in
+#: Color-valued entries of the built-in material parameter block, by name in
 #: ``_MAT_SLOTS`` (resolved rather than hard-coded so a renumbered slot map
-#: carries this with it). Authored like every other colour, and consumed by
+#: carries this with it). Authored like every other color, and consumed by
 #: arithmetic that runs in linear light: emissive is light the surface adds to
 #: the frame, and the two specular tints and the sheen tint multiply lobes the
 #: shading stages compute. Everything else in the block is a scalar coefficient
@@ -2362,10 +2362,10 @@ _MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color"
 
 
 def _decode_merged_colors(scene):
-    """Decode the batch's authored colour into the linear working space.
+    """Decode the batch's authored color into the linear working space.
 
     This is the geometry half of the render boundary -- the single point where
-    every primitive's colour crosses from display-referred (what the author
+    every primitive's color crosses from display-referred (what the author
     typed, and what ``Mob.color`` still reads back) into the linear light the
     shading and compositing arithmetic needs. It runs once per batch, on the
     merged arrays, just before they are cached.
@@ -2373,23 +2373,23 @@ def _decode_merged_colors(scene):
     Deliberately *not* done in :class:`~algan.constants.color.Color`: that is a
     ``torch.Tensor`` subclass which flows through the animation timeline, so
     decoding there would change what ``mob.color`` reads back and would make
-    colour tweens interpolate in linear light. three.js does decode at its
+    color tweens interpolate in linear light. three.js does decode at its
     ``Color``; Algan does not, and a red-to-blue tween staying perceptually
     even is the reason.
 
-    Three kinds of authored colour reach the renderer and all three cross here:
+    Three kinds of authored color reach the renderer and all three cross here:
 
-    * the per-vertex colour arrays (``_MERGED_COLOR_KEYS``);
-    * the **colour texture maps**, which are decoded as they are appended
+    * the per-vertex color arrays (``_MERGED_COLOR_KEYS``);
+    * the **color texture maps**, which are decoded as they are appended
       (``_append_texture(..., is_color=True)``) because a promoted map can alias
       the per-vertex array it came from -- and this is not a corner: with
-      constant-property promotion on (the default) a mob whose colour and
-      material are uniform is rendered from a 1x1 colour map, so most content
+      constant-property promotion on (the default) a mob whose color and
+      material are uniform is rendered from a 1x1 color map, so most content
       arrives that way rather than through ``tri_colors``;
-    * the **colour slots of the material parameter block**
+    * the **color slots of the material parameter block**
       (``_MAT_COLOR_SLOT_NAMES``), for primitives on a built-in pipeline. A
       custom fragment pipeline's block is its own layout, so those slots are not
-      colours there and are left alone.
+      colors there and are left alone.
     """
     if not rt_settings.linear_color_space:
         return
@@ -2402,7 +2402,7 @@ def _decode_merged_colors(scene):
 
 
 def _decode_material_block_colors(scene):
-    """Decode the colour slots of ``tri_mat`` for built-in-pipeline primitives.
+    """Decode the color slots of ``tri_mat`` for built-in-pipeline primitives.
 
     ``tri_mat`` is ``[Tm, N, MAT_W]`` and ``tri_mat_id`` ``[Tm', N]``; a
     primitive whose pipeline id is at or above ``_USER_PIPELINE_BASE`` carries a
@@ -2629,12 +2629,10 @@ def _prefill_deferred_background(out, background, frame_offset):
     del x, y
     # Return callback intermediates held by PyTorch's caching allocator to the
     # device before Taichi begins using the arena-backed frame.
-    empty_cache(force_gc=False)
+    release_torch_memory(force_gc=False)
 
 
-def _prefill_background(
-    out, background_color, frame_offset, device, background_frames=None
-):
+def _prefill_background(out, background, frame_offset, device, background_frames=None):
     """Fill the output buffer with the background. Solid colors arrive as a
     float [channels] tensor in [0, 1]; animated/image backgrounds arrive as a
     uint8 row tensor [1 + frames * pixels, channels] (leading padding row).
@@ -2645,8 +2643,8 @@ def _prefill_background(
     scrolls a different slice of the background into every frame rather than
     failing (the deferred path already raises for the same reason).
     """
-    if isinstance(background_color, _DeferredBackground):
-        _prefill_deferred_background(out, background_color, frame_offset)
+    if isinstance(background, _DeferredBackground):
+        _prefill_deferred_background(out, background, frame_offset)
         return
 
     num_frames, num_pixels, C_out = out.shape
@@ -2654,12 +2652,12 @@ def _prefill_background(
     # materialize a full, untracked peer tensor on the rendering device before
     # writing the arena-backed output. ``copy_`` below performs device and dtype
     # conversion directly into the reserved destination instead.
-    bg = background_color
+    bg = background
     linear = rt_settings.linear_color_space
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
         vals = bg.float().flatten()[:5]
         if linear:
-            # The background is the second colour ingest, and it composites
+            # The background is the second color ingest, and it composites
             # against linear geometry (``rs_acc * 255 + weight * bg``), so it
             # has to be linear too. Only 0:3 -- channel 3 is glow and the last
             # is alpha. Not rounded to integers under the linear space: this
@@ -2694,7 +2692,7 @@ def _prefill_background(
         k = min(rows.shape[-1], C_out)
         if linear:
             # An image background is 8-bit sRGB like any other texture, so it
-            # decodes the same way the solid colour above does. Done in float
+            # decodes the same way the solid color above does. Done in float
             # at 0-255 scale to match what the composite expects.
             head = rows[..., : min(3, k)].float() * (1.0 / 255.0)
             out[..., : min(3, k)].copy_(srgb_to_linear(head) * 255.0)
@@ -2706,9 +2704,7 @@ def _prefill_background(
             out[..., k:].copy_(rows[..., -1:])
 
 
-def _downsample_background(
-    background_color, aa, num_frames, screen_height, screen_width
-):
+def _downsample_background(background, aa, num_frames, screen_height, screen_width):
     """Average a super-sampled animated/image background down to the output
     resolution (box filter, matching ``post_process_frames``), so the in-place
     anti-aliased renderer -- which samples the background once per output pixel
@@ -2718,7 +2714,7 @@ def _downsample_background(
     (row count not ``num_frames * (screen_height*aa) * (screen_width*aa)``) are
     returned unchanged.
     """
-    bg = background_color
+    bg = background
     if not torch.is_tensor(bg) or bg.dim() <= 1 or bg.shape[0] == 1:
         return bg  # solid color
     # This is preparation for an arena-backed copy; do the resampling on the

@@ -1174,7 +1174,7 @@ class Animatable:
         return self
 
     def get_default_color(self):
-        """Get the colour this Mob uses when none was given.
+        """Get the color this Mob uses when none was given.
 
         Override in a subclass to give a shape its own default; the built-in shapes
         do exactly that.
@@ -1377,7 +1377,7 @@ class Animatable:
     ):
         """Make a copy of this Mob, by default spawned into the scene.
 
-        The copy starts out identical -- same position, colour, material, children --
+        The copy starts out identical -- same position, color, material, children --
         but is independent from then on: animating one does not affect the other. Use
         it to stamp out repeated shapes, or to get a second version of something you
         are about to change.

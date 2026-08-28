@@ -439,7 +439,7 @@ def sheet_resolve_shade(
             if not fetched_bez:
                 prim = prim_raw
                 # MEMO READ (mode 2). Column layout, shared with the mode-1
-                # write below: 0-3 colour, 4 alpha, 5 reflectivity,
+                # write below: 0-3 color, 4 alpha, 5 reflectivity,
                 # 6 roughness, 7 IOR, 8 transmission, 9-11 surface point.
                 # Read here, before ``partial``, because ``surf_rd`` is
                 # derived from ``surf_pos`` and the shading below needs both.
@@ -504,7 +504,7 @@ def sheet_resolve_shade(
                     ior, T = _tri_ior_transmission_g(
                         0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles)
-                # MEMO WRITE (mode 1). ``color`` is still the FETCHED colour
+                # MEMO WRITE (mode 1). ``color`` is still the FETCHED color
                 # here: _shade_tri_hit is inside the ``mode != 1`` branch
                 # above, so the event walk never overwrites it. Written for
                 # every processed triangle sheet, not only accepted events --
@@ -693,7 +693,7 @@ def sheet_resolve_shade(
             # bloom pass reads exactly what it read before.
             if ti.static(frag_shading != 0 and mode != 1 and direct_spec != 0):
                 # Triangles/PN only. A bezier circuit is never material-
-                # shaded -- its colour is sampled, not lit, so it carries no
+                # shaded -- its color is sampled, not lit, so it carries no
                 # GGX term to restore -- and its ``prim`` indexes
                 # ``circuit_meta``, not ``tri_mat``, so reading a material
                 # block with it would silently pick another primitive's.

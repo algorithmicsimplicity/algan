@@ -12,8 +12,8 @@ coarse meshes shade smoothly.
 
 Shading is expressed as **stages** with a single uniform ``@ti.func`` contract
 (see ``_stage_phong`` etc.). A per-primitive **pipeline** is an ordered list of
-stages run left-to-right, each receiving the previous stage's output colour --
-so a user recolour stage can feed a built-in lighting stage. The built-in
+stages run left-to-right, each receiving the previous stage's output color --
+so a user recolor stage can feed a built-in lighting stage. The built-in
 materials are the first stages: Manim's default 3-D lighting
 (:func:`~algan.rendering.shaders.material_shaders.manim_shader`),, ``MeshBasicMaterial``
 (unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``,
@@ -61,7 +61,7 @@ block of a custom pipeline keeps its historical look slot by slot.
 The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
 terms, ``ambient_strength``, ``light_intensity == ambient == 1``) and reproduces
 its multi-light behaviour: each light is applied in sequence with the running
-colour as the albedo (the renderer's vertex path overwrites the colour per
+color as the albedo (the renderer's vertex path overwrites the color per
 light), which is identical to a single light -- the common case.
 """
 
@@ -160,7 +160,7 @@ def _ambient_strength():
 
 
 def _linear_color_space():
-    """True when shading runs in the linear working colour space.
+    """True when shading runs in the linear working color space.
 
     Gates the two gamma-era compensations defined here -- ``_energy_scale``'s
     illumination budget and ``_run_frag_pipeline``'s peak bound. They exist to
@@ -181,7 +181,7 @@ def _linear_color_space():
 
 @ti.func
 def _as_written_bytes(v):
-    """Pre-compensate a value that is DATA rather than colour, so it survives
+    """Pre-compensate a value that is DATA rather than color, so it survives
     the output transfer function unchanged.
 
     ``MeshNormalMaterial`` and ``MeshDepthMaterial`` do not produce radiance:
@@ -211,8 +211,8 @@ def _energy_scale(weight):
     """Reciprocal of the illumination budget, for energy-conserving shading.
 
     ``weight`` is the total illumination arriving at the surface: the ambient
-    fill's coefficient plus, per light, ``(n.l) * visibility * peak(colour)``.
-    Weighting by the light's own colour is what stops a rig of dim lights being
+    fill's coefficient plus, per light, ``(n.l) * visibility * peak(color)``.
+    Weighting by the light's own color is what stops a rig of dim lights being
     penalised for its light *count*: three lights at 0.5 spend the same budget
     as one at 1.5, not three times as much.
     A reflective surface cannot send out more light than arrives, so once the
@@ -232,7 +232,7 @@ def _energy_scale(weight):
     the second lamp's extra radiance to go, so the budget is normalised instead
     of the result being clipped. See TONEMAP_FINDINGS.md.
 
-    Off under the linear working colour space (:func:`_linear_color_space`):
+    Off under the linear working color space (:func:`_linear_color_space`):
     there lights sum plainly and this returns exactly 1.0, since normalising
     would make them stop adding. The gate is compile-time (``ti.static``), so
     the off arm is not compiled into the kernel at all.
@@ -644,7 +644,7 @@ def _reflect_frame(rd, snrm, fnrm):
     own far side; because Fresnel at grazing incidence weights that hit at
     nearly 1, the far side is composited over the silhouette at close to full
     strength. On a coarsely tessellated sphere that is a dashed fringe of the
-    opposite side's colour beading along the rim, brighter than both the
+    opposite side's color beading along the rim, brighter than both the
     surface and the background, and it moves as the tessellation turns.
 
     So the side comes from the geometric normal, via :func:`_orient_hit_normals`
@@ -684,7 +684,7 @@ def _reflect_frame(rd, snrm, fnrm):
 
 @ti.func
 def _light(light_pos: ti.template(), light_col: ti.template(), f, li):
-    """Point-light world position and RGB colour for light ``li`` at frame ``f``."""
+    """Point-light world position and RGB color for light ``li`` at frame ``f``."""
     tl = f % light_pos.shape[0]
     lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
                       light_pos[tl, li, 2])
@@ -827,9 +827,9 @@ def _vis_max_component(v):
     payload channel equal) reproduces today's scalar number bit for bit,
     which is the invariant the RGB payload is built around. A mean would
     divide by three and move every ordinary render. It is also this codebase's
-    established convention for reducing a colour weight to a decision scalar:
+    established convention for reducing a color weight to a decision scalar:
     ``_scatter_impl`` in ``wavefront_kernels_taichi.py`` takes the max
-    component of its colour weights for exactly the same reason.
+    component of its color weights for exactly the same reason.
     """
     return ti.max(v[0], ti.max(v[1], v[2]))
 
@@ -845,14 +845,14 @@ def direct_specular_lobe(f, prim, pos, view_dir, n_interp, face_n,
     **Why this exists separately from the material stages, which already
     compute the very same lobe.** A hit's outgoing energy is split by the
     scatter sites into a reflected share ``R`` traced as a continuation ray, a
-    transmitted share, and a remainder that weights the locally shaded colour
+    transmitted share, and a remainder that weights the locally shaded color
     (see ``_scatter_impl``). That partition is a statement about *reflectance*,
     and it is sound -- but the continuation carrying ``R`` is a ray, and a ray
     can only find light that has geometry to hit. A directional or point light
     is a delta: no continuation will ever land on it, however many bounces it
     is given. So the reflected lobe's response to the direct lights exists
     ONLY as the analytic GGX term the stages evaluate -- and that term rides
-    inside the shaded colour, which is weighted by the share that is
+    inside the shaded color, which is weighted by the share that is
     explicitly *not* reflected.
 
     The result is that exactly the materials whose reflected lobe dominates
@@ -869,7 +869,7 @@ def direct_specular_lobe(f, prim, pos, view_dir, n_interp, face_n,
 
     So the scatter sites add this back at the weight the traced ray took
     (``R * _mirror_share``), which restores the lobe to unit weight overall:
-    the shaded colour's share plus the traced share is 1. It is not double
+    the shaded color's share plus the traced share is 1. It is not double
     counting -- the two carry disjoint sources, the ray the environment and
     this the delta lights.
 
@@ -930,7 +930,7 @@ def direct_specular_lobe(f, prim, pos, view_dir, n_interp, face_n,
 # Built-in core lit material stages.
 #
 # Stage contract (a ``@ti.func``): evaluate one shading pass for a surface hit
-# and return the new RGB + glow as a ``vec4``. ``in_rgb`` is the running colour
+# and return the new RGB + glow as a ``vec4``. ``in_rgb`` is the running color
 # (the previous stage's output, or the interpolated raw albedo for the first
 # stage); ``in_glow`` is the passthrough 4th channel; ``view_dir`` is the unit
 # direction from the surface back toward the viewer; ``cam_pos`` is the
@@ -941,7 +941,7 @@ def direct_specular_lobe(f, prim, pos, view_dir, n_interp, face_n,
 # is enabled, ``vis`` carries one RGB visibility triple per light (see
 # ``_light_vis``); only the direct diffuse/specular response is gated by it
 # (ambient/emissive stay lit). Stages loop the lights internally, exactly as
-# the single-light vertex path overwrites the colour per light.
+# the single-light vertex path overwrites the color per light.
 # ---------------------------------------------------------------------------
 
 @ti.func
@@ -949,7 +949,7 @@ def _stage_unlit(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                  params: ti.template(), f, prim, off,
                  light_pos: ti.template(), light_col: ti.template(),
                  num_lights, shadows: ti.template(), vis, cam_pos):
-    """MeshBasicMaterial / passthrough: returns the colour unchanged."""
+    """MeshBasicMaterial / passthrough: returns the color unchanged."""
     return ti.math.vec4(in_rgb[0], in_rgb[1], in_rgb[2], in_glow)
 
 
@@ -961,21 +961,21 @@ def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     """manim_shader: Manim's default 3-D lighting, ported in-kernel.
 
     Each light adds an offset of ``0.5 * (n . to_light) ** 3`` -- halved when
-    negative -- scaled by the light's evaluated colour and gated by its
+    negative -- scaled by the light's evaluated color and gated by its
     shadow visibility. No ambient, no emissive, no falloff of its own:
     Manim's model has none. Under the single white intensity-1 point light
-    that ``use_manim_defaults`` installs (decay 0 / distance 0), the colour
+    that ``use_manim_defaults`` installs (decay 0 / distance 0), the color
     factor is exactly ``(1, 1, 1)`` and this reproduces Manim's scalar
     ``get_shaded_rgb`` offset exactly; see
     :func:`~algan.rendering.shaders.material_shaders.manim_shader`.
 
-    Every vis-weighted term carries the evaluated light colour ``lc`` as a
-    factor, so a zero-colour row (a light outside its lifespan) contributes
+    Every vis-weighted term carries the evaluated light color ``lc`` as a
+    factor, so a zero-color row (a light outside its lifespan) contributes
     nothing with no row-liveness gate, and skipping a shadow fan whose
     radiance is geometrically zero cannot change this stage's output.
 
     Manim shades in display-referred sRGB. Under the linear working space the
-    running colour is encoded before the offsets are added and decoded after
+    running color is encoded before the offsets are added and decoded after
     (clamped to [0, 1] in between), under a compile-time gate exactly the way
     ``_energy_scale`` gates its budget -- which means A/B-ing the two arms
     needs one process per arm (CLAUDE.md on ``ti.static``).
@@ -1018,7 +1018,7 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     # Additive multi-light accumulation over a fixed albedo: ambient + emissive
     # once, then each light's direct diffuse. For a single light this equals
     # the legacy expression; for many lights it sums correctly (the old
-    # per-light overwrite collapsed the colour and re-added ambient/emissive
+    # per-light overwrite collapsed the color and re-added ambient/emissive
     # per light -- e.g. an area light's sample fan came out wrong).
     amb = ti.static(_ambient_strength())
     refl = in_rgb * (amb * env)
@@ -1215,8 +1215,8 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
         # ``BRDF_Sheen`` term for term), and Three.js's ``RE_Direct_Physical``
         # then scales the base layer's irradiance by
         # ``1 - max3(sheenColor) * max(E(n.v), E(n.l))`` so the fibres cannot
-        # add light the base already spent. ``sheen`` premultiplies the colour
-        # exactly as ``WebGLMaterials`` does. At ``sheen == 0`` the colour is
+        # add light the base already spent. ``sheen`` premultiplies the color
+        # exactly as ``WebGLMaterials`` does. At ``sheen == 0`` the color is
         # zero, so the compensation is exactly 1.0 and the lobe exactly 0 --
         # every material that leaves sheen alone renders bit-for-bit as before.
         sheen_c = sheen_color * sheen
@@ -1335,7 +1335,7 @@ def _stage_matcap(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                   light_pos: ti.template(), light_col: ti.template(),
                   num_lights, shadows: ti.template(), vis, cam_pos):
     """MeshMatcapMaterial: the no-image approximation -- a view-facing diffuse
-    term plus an additive rim highlight tinting the base colour, no lights.
+    term plus an additive rim highlight tinting the base color, no lights.
 
     The in-kernel port of ``material_shaders.matcap_shader``:
     ``rgb * (0.3 + 0.7 * n.v) + clamp(1 - n.v, 0, 1)^3 * 0.4``. The matcap
@@ -1437,9 +1437,9 @@ def make_pipeline_func(stages, offsets):
 #             refl_orig, refl_dir, refl_w,
 #             trans_orig, trans_dir, trans_w)
 #
-# ``rd`` is the unit ray direction, ``shaded`` the pipeline's output colour
-# (vec4: RGB + glow), ``albedo`` the raw surface colour before lighting
-# (vec3), ``contrib`` the premultiplied colour committed to the ray (the
+# ``rd`` is the unit ray direction, ``shaded`` the pipeline's output color
+# (vec4: RGB + glow), ``albedo`` the raw surface color before lighting
+# (vec3), ``contrib`` the premultiplied color committed to the ray (the
 # kernel adds ``weight * contrib``). The surface properties come straight
 # from the material: ``alpha`` is coverage, ``transmission`` how much light the
 # covered part passes, ``reflectivity`` packed metalness (negative = non-PBR)
@@ -1453,7 +1453,7 @@ def make_pipeline_func(stages, offsets):
 # signature above cannot say what medium the returned ``trans_dir`` leaves the
 # ray in -- such scenes get no nested IOR.
 #
-# Transport is full-colour: ray throughput is a vec3 and the branch weights
+# Transport is full-color: ray throughput is a vec3 and the branch weights
 # ``pass_w`` / ``refl_w`` / ``trans_w`` are vec3 per-channel multipliers (the
 # built-in scatter tints the metal Fresnel lobe and the transmitted share by
 # ``albedo``; kernels reduce a weight to its maximum component for branch
@@ -1508,7 +1508,7 @@ def solo_pid(pids_present, frag_pipelines):
     top = _USER_PIPELINE_BASE + len(injected)
     if mask >> top:
         # An id with no injected pipeline behind it: keep the runtime switch
-        # (it matches nothing and passes the colour through, as before).
+        # (it matches nothing and passes the color through, as before).
         return -1
     live = [pid for pid in range(top) if (mask >> pid) & 1]
     if len(live) != 1:
@@ -1591,7 +1591,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
         else:
             shade_n = _two_sided_normal(n_interp, face_n, 0.0, view_dir)
         if ti.static(solo == _MID_UNLIT):
-            pass  # passthrough: colour returned unchanged (raw or baked).
+            pass  # passthrough: color returned unchanged (raw or baked).
         elif ti.static(solo < _USER_PIPELINE_BASE):
             stage = ti.static(_BUILTIN_STAGE_FNS[solo])
             r = stage(pos, view_dir, shade_n, face_n, out, g,
@@ -1673,7 +1673,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
             out = ti.math.vec3(r[0], r[1], r[2])
             g = r[3]
         elif pid == _MID_UNLIT:
-            pass  # passthrough: colour returned unchanged (raw or baked).
+            pass  # passthrough: color returned unchanged (raw or baked).
         else:
             for pi in ti.static(range(len(frag_pipelines))):
                 # ``bool(func) is True`` / ``bool(None) is False``: a slot the
@@ -1697,7 +1697,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
         else:
             shade_n = _two_sided_normal(n_interp, face_n, 0.0, view_dir)
         # GATED: only the ids the batch carries get a branch. _MID_UNLIT never
-        # needs one -- matching nothing leaves the colour unchanged, which is
+        # needs one -- matching nothing leaves the color unchanged, which is
         # its whole semantics.
         for mid in ti.static(range(len(_BUILTIN_STAGE_FNS))):
             if ti.static(mid != _MID_UNLIT and ((pids_present >> mid) & 1)):
@@ -1720,16 +1720,16 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
                            cam_pos)
                     out = ti.math.vec3(r[0], r[1], r[2])
                     g = r[3]
-    # Bound the shaded colour to the display range. Lights accumulate here
+    # Bound the shaded color to the display range. Lights accumulate here
     # without any normalisation -- each one adds its diffuse, ambient and
-    # specular terms to the running colour -- so a scene with more than one
+    # specular terms to the running color -- so a scene with more than one
     # light drives a fully lit surface past 1.0 even though every individual
     # light is at or below unit intensity. Algan's own default rig (one white
     # PointLight) lands exactly on 1.0; tests/fast's three lights reach 2.15.
     #
     # That used to be the tonemap's problem. With tonemapping off by default
     # the encoder clamps instead, and a per-channel clamp truncates each
-    # channel independently, so an over-range saturated colour loses its hue
+    # channel independently, so an over-range saturated color loses its hue
     # and slides toward white -- a lit orange face turning flat yellow-white.
     # Scaling all three channels by the peak instead keeps the hue and only
     # gives up the brightness that had nowhere to go.
@@ -1739,7 +1739,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(
     # ``g`` (glow) is returned untouched, so glow remains the one thing that
     # can produce above-1.0 output for bloom to work with.
     #
-    # Off under the linear working colour space (:func:`_linear_color_space`):
+    # Off under the linear working color space (:func:`_linear_color_space`):
     # there light sums are physically additive and the sRGB OETF at the byte
     # write owns the range, so scaling by the peak would make lights stop
     # adding. The ``max(out, 0.0)`` clamp stays either way -- it is not part

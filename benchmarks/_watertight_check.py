@@ -83,7 +83,7 @@ OUT_DIR = os.path.join("algan_outputs", "watertight_check")
 PINNED_BYTES = 2_200_000_000
 
 # A background no unlit surface in these scenes can produce -- every shape is
-# red or green. ``set_background_color`` also accepts image paths and procedural
+# red or green. ``set_background`` also accepts image paths and procedural
 # callables, so rather than hard-code what BLUE decodes to after tonemapping and
 # encoding, the reference is READ BACK from a corner pixel of the rendered frame
 # (every scene here is centred, so a corner is background by construction).
@@ -114,7 +114,7 @@ def scene_grazing():
     *exactly* negated between neighbours produces a visible seam. Several
     strips at several angles, each a run of quads sharing interior edges.
     """
-    Scene.set_background_color(BACKGROUND)
+    Scene.set_background(BACKGROUND)
     with Off():
         for row, tilt in enumerate((84.0, 87.0, 89.0)):
             for i in range(6):
@@ -130,7 +130,7 @@ def scene_diced_sphere():
     Thousands of interior shared edges, and a silhouette where adjacent patches
     meet at extreme angles -- the ss4.7 "extreme silhouette" case.
     """
-    Scene.set_background_color(BACKGROUND)
+    Scene.set_background(BACKGROUND)
     with Off():
         sphere = Sphere(radius=1.9, resolution=(192, 96))
         _unlit(sphere, GREEN).spawn(animate=False)
@@ -143,7 +143,7 @@ def scene_translucent(alpha):
     as a one-pixel ridge along interior edges. Opacity has to be < 1 for the
     second blend to be visible at all.
     """
-    Scene.set_background_color(BACKGROUND)
+    Scene.set_background(BACKGROUND)
     with Off():
         sphere = Sphere(radius=1.1, resolution=(96, 48)).move(LEFT * 1.3)
         _unlit(sphere, GREEN)

@@ -14,14 +14,14 @@ Backgrounds
 
 A Scene's background can be a solid color, an image, or a procedural function.
 Set it for one
-render by passing ``background_color`` to
+render by passing ``background`` to
 :meth:`~algan.scene.Scene.save_video`, or for the Scene as a whole with
-:meth:`~algan.scene.Scene.set_background_color`:
+:meth:`~algan.scene.Scene.set_background`:
 
 .. code-block:: python
 
-    Scene.save_video("my_video", background_color=BLUE)   # For this render only
-    Scene.set_background_color(BLUE)                      # Across the whole Scene
+    Scene.save_video("my_video", background=BLUE)   # For this render only
+    Scene.set_background(BLUE)                      # Across the whole Scene
 
 .. note::
 
@@ -39,7 +39,7 @@ dark tint:
 
 .. code-block:: python
 
-    Scene.save_video("my_video", background_color=Color([0.05, 0.05, 0.15]))
+    Scene.save_video("my_video", background=Color([0.05, 0.05, 0.15]))
 
 .. important::
     Be careful with ``BLUE * 0.15``. Colors have five components including
@@ -60,7 +60,7 @@ Pass a path and the image is scaled to the frame:
     Circle(color=YELLOW, glow=0.4).scale(0.8).spawn()
     Scene.wait(1)
 
-    Scene.save_video(background_color='world_map.png')
+    Scene.save_video(background='world_map.png')
 
 Paths resolve against the working directory and then your script's directory.
 
@@ -92,7 +92,7 @@ seconds; all three arrive as broadcastable torch tensors:
     Circle(color=YELLOW).scale(0.8).spawn()
     Scene.wait(1)
 
-    Scene.save_video(background_color=sunset)
+    Scene.save_video(background=sunset)
 
 Because ``time`` is passed in, a procedural background can animate (e.g. a drifting
 gradient, a pulse, a scrolling pattern) even though the background itself is not
@@ -172,18 +172,19 @@ Anti-aliasing
 
 Algan supports three anti-aliasing techniques:
 
-* **Supersampling (SSAA):** ``SETTINGS.video.anti_alias_level`` (default ``2``)
-  renders at 2x resolution and downsamples.
+* **Supersampling (SSAA):** ``SETTINGS.video.super_sampling_anti_aliasing``
+  (default ``2``) renders at 2x resolution and downsamples. It is written
+  ``ssaa`` or ``SSAA`` just as often -- both are the same setting.
 * **Analytic AA:** ``SETTINGS.raytracing.analytic_aa`` (on by default) resolves
   vector edges analytically inside the rasterizer with almost zero overhead.
 * **FXAA:** ``SETTINGS.video.fxaa`` (off by default) is a cheap post-pass that
-  smooths remaining edges. Useful when you have had to drop the supersampling level
-  for speed.
+  smooths remaining edges. Useful when you have had to drop the supersampling
+  level for speed.
 
 .. code-block:: python
 
-    SETTINGS.video.set(anti_alias_level=1, fxaa=True)   # Fast draft mode
-    SETTINGS.video.set(anti_alias_level=2, fxaa=False)  # High quality default
+    SETTINGS.video.set(ssaa=1, fxaa=True)   # Fast draft mode
+    SETTINGS.video.set(ssaa=2, fxaa=False)  # High quality default
 
 Tonemapping
 -----------
@@ -244,5 +245,5 @@ See Also
 - :doc:`renderer_limitations` -- what analytic anti-aliasing does and does not
   resolve.
 - :doc:`settings` -- the settings system these knobs live in.
-- :doc:`saving_videos_and_images` -- passing ``background_color`` and
+- :doc:`saving_videos_and_images` -- passing ``background`` and
   ``post_processes`` per render.

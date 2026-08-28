@@ -133,8 +133,8 @@ class MobMaterialsMixin:
         (a Taichi ``@ti.func`` stage plus its parameter specs), a built-in
         material shader function (e.g. ``phong_shader``), or a **list** of
         these forming a *pipeline* run left-to-right -- each stage receives the
-        previous stage's output colour. For example
-        ``mob.set_fragment_shader([cosine_color, phong_shader])`` recolours each
+        previous stage's output color. For example
+        ``mob.set_fragment_shader([cosine_color, phong_shader])`` recolors each
         fragment with a cosine wave and then lights the result with Blinn-Phong.
 
         The stages' parameters become animatable attributes (duplicate names
@@ -201,10 +201,10 @@ class MobMaterialsMixin:
         metal without touching a shader directly. Applies to this Mob and all its
         descendants.
 
-        The material's numeric and colour properties land on the Mob as animatable
+        The material's numeric and color properties land on the Mob as animatable
         attributes -- ``mob.roughness``, ``mob.emissive_intensity`` and so on -- so
-        they can be animated afterwards like any other. Its colour drives the Mob's
-        base colour and its ``opacity`` the Mob's maximum opacity.
+        they can be animated afterwards like any other. Its color drives the Mob's
+        base color and its ``opacity`` the Mob's maximum opacity.
 
         The material is also the sole public source of ray-transport
         properties. ``metalness`` and ``roughness`` drive reflections, while a
@@ -230,7 +230,7 @@ class MobMaterialsMixin:
         Every built-in material class shades per fragment in the render kernel,
         so it sees every light type, receives shadows, and its look no longer
         depends on the mesh's tessellation. Only a *custom* per-vertex shader
-        (``set_shader`` with a plain function) is baked into vertex colours
+        (``set_shader`` with a plain function) is baked into vertex colors
         before the frame renders -- lit only by a plain :class:`~.PointLight`
         and never receiving shadows. Applying one under a lighting rig that
         asks for more than that warns, rather than quietly dropping the
@@ -246,8 +246,8 @@ class MobMaterialsMixin:
         material
             A :class:`~algan.rendering.shaders.materials.Material` instance, e.g.
             ``MeshStandardMaterial(metalness=1.0, roughness=0.2)``. A material
-            built with the default ``color=None`` leaves the Mob's own colour
-            alone, so material and colour can be chosen independently.
+            built with the default ``color=None`` leaves the Mob's own color
+            alone, so material and color can be chosen independently.
 
         Returns
         -------
@@ -276,7 +276,7 @@ class MobMaterialsMixin:
 
         if not isinstance(material, Material):
             # Reaching for ``set_material(GOLD)`` is a natural mistake: CHROME
-            # and COPPER are materials while GOLD is a colour. Unchecked, the
+            # and COPPER are materials while GOLD is a color. Unchecked, the
             # first thing this method touched was ``material.shader``, so the
             # answer was an AttributeError about a missing attribute on
             # whatever was passed.
@@ -288,7 +288,7 @@ class MobMaterialsMixin:
                 f"{type(material).__name__}. Use one of the material classes "
                 f"-- MeshBasicMaterial, MeshStandardMaterial, "
                 f"MeshPhysicalMaterial and the rest -- or a preset "
-                f"({presets}). To change only the colour, set "
+                f"({presets}). To change only the color, set "
                 f"mob.color instead."
             )
 
@@ -306,7 +306,7 @@ class MobMaterialsMixin:
         self.set_shader(material.shader)
         params = material.get_shader_param_values()
         # ``color=None`` (the default) means the material does not repaint the
-        # mob -- only an explicitly supplied material colour overrides it.
+        # mob -- only an explicitly supplied material color overrides it.
         color5 = (
             _to_color5(material.color)
             if material.applies_color and material.color is not None
@@ -337,8 +337,8 @@ class MobMaterialsMixin:
         caution is never understated.
 
         Run after the loop above, so a forwarded ``map`` wins over the
-        material's flat ``color``: the kernel's colour sampler replaces the
-        per-vertex colour rather than modulating it.
+        material's flat ``color``: the kernel's color sampler replaces the
+        per-vertex color rather than modulating it.
         """
         from algan.rendering.shaders.materials import _normalize_forwarded_maps
 
@@ -421,7 +421,7 @@ class MobMaterialsMixin:
         return {}
 
     def _warn_lighting_beyond_vertex_bake(self, material):
-        """Warn when ``material`` can only be baked into vertex colours and the
+        """Warn when ``material`` can only be baked into vertex colors and the
         Scene's lighting rig asks for more than that bake can deliver.
 
         Checked against the lights registered *now*, so the usual authoring
@@ -445,7 +445,7 @@ class MobMaterialsMixin:
         if not features:
             return
         warnings.warn(
-            f"{type(material).__name__}: shading is baked into vertex colours "
+            f"{type(material).__name__}: shading is baked into vertex colors "
             f"(it has no in-kernel port), so {'; '.join(features)}. "
             f"{_PER_FRAGMENT_ADVICE}",
             UnsupportedFeatureWarning,

@@ -18,7 +18,7 @@ from algan import *
 FONT = "Algan Test Sans"
 MONO_FONT = "Algan Test Mono"
 
-Scene.set_background_color(DARKER_GRAY)
+Scene.set_background(DARKER_GRAY)
 
 # --------------------------------------------------------------------------
 # Act 1 -- the typesetting stack, one family per column.

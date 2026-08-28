@@ -1,4 +1,4 @@
-"""CPU batch-prep kernel for :class:`TrianglePrimitive`'s vertex-colour bake.
+"""CPU batch-prep kernel for :class:`TrianglePrimitive`'s vertex-color bake.
 
 ``DESIGN_optimization_targets.md`` P10b measures this at **13.5% of
 ``get_render_primitives_batched``** -- the largest row of the stage's
@@ -8,7 +8,7 @@ per-surface tail, and one no earlier plan had named. The torch form is
     self.colors[..., -2:-1] += glow
     self.colors[..., -1:] *= opacity
 
-which is one full-size clone of the ``[T, M, 5]`` colours followed by two
+which is one full-size clone of the ``[T, M, 5]`` colors followed by two
 in-place passes over strided one-channel views of it. Three passes to produce
 one buffer, where the arithmetic is one add and one multiply per row.
 

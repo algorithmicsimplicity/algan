@@ -69,7 +69,7 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 
 Algan is in private beta and carries **no compatibility aliases for its own
 API**. There is one Algan name for each Algan thing; if you find a second, it is
-a bug — with exactly two deliberate exceptions, both exported and supported:
+a bug — with exactly three deliberate exceptions, all exported and supported:
 
 - The Manim compatibility layer (`Mobject = Mob`, `GenericGraph = Graph`,
   `install_opengl_aliases()`, the `manim_compat` / `manim_parity` / `point_cloud` wrappers).
@@ -80,6 +80,14 @@ a bug — with exactly two deliberate exceptions, both exported and supported:
   **never reads `IN` or `OUT`** — `tests/unit_tests/test_spatial_constants.py` walks the
   package's AST and fails if any module does. Write `OUTWARD` in library code; `OUT` is
   fine in docs, tests and examples, which is where it stays exercised.
+- **Two `SETTINGS.video` fields take a short spelling**: `fps`/`FPS` for
+  `frames_per_second`, and `ssaa`/`SSAA` for `super_sampling_anti_aliasing`. These are
+  what the rest of the world calls them, and they are written often enough that the long
+  names get in the way. An alias is a spelling and not a field — it never appears in
+  `to_dict()`, `dataclasses.fields` or a snapshot — so state saved through one spelling
+  restores through the other. The mechanism (`settings_aliases`, in
+  `algan/settings/abstract_settings.py`) is general; the roster is not. Do not add
+  another alias just because a name is long.
 
 Do not add an Algan-side alias for an Algan name, and do not delete a
 Manim-side name because it duplicates one.
@@ -100,7 +108,7 @@ Scene.save_video("example", HD)  # one-off quality override
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background_color, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background_color, post_processes)`. Both return `RenderResult`; `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
 - **`reset` defaults to False**, so `save_video` leaves the Scene exactly as authored and you can render again — including a preview from inside a `with` block that has not finished yet. `save_frame` never mutates the Scene.
-- **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy.
+- **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `super_sampling_anti_aliasing` (`ssaa`/`SSAA`), `fxaa` and `audio_frames_per_second`.
 - **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The ~55 kernel/perf switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
 - **Paths**: `SETTINGS.paths.output_root / output_directory / name`. A bare filename goes to the output directory; anything with a directory in it is used as given.

@@ -140,7 +140,7 @@ class ThreeDModelMob(Mob):
     load_textures : bool
         Load and apply diffuse texture maps referenced by materials
         (default True). When False (or a texture fails to load) meshes fall
-        back to their material's flat base colour.
+        back to their material's flat base color.
     normalize : bool
         Recenter and uniformly scale the whole model to fit a box of
         ``normalize_size`` (handy since model files use wildly different unit
@@ -262,7 +262,7 @@ class ThreeDModelMob(Mob):
             if (texture is None and mesh.vertex_colors is not None)
             else None
         )
-        # A texture needs UVs; without them, fall back to the flat colour.
+        # A texture needs UVs; without them, fall back to the flat color.
         if texture is not None and uvs is None:
             texture = None
 
@@ -290,7 +290,7 @@ class ThreeDModelMob(Mob):
 
         # PBR shading: apply the material's metalness/roughness/emissive as a
         # MeshStandardMaterial (Cook-Torrance GGX per fragment). The texture (or
-        # per-vertex colour) still supplies albedo; the material colour is only
+        # per-vertex color) still supplies albedo; the material color is only
         # the flat fallback.
         if self.pbr_materials and material is not None:
             self._apply_pbr_material(
@@ -429,7 +429,7 @@ class ThreeDModelMob(Mob):
 
     def get_part(self, name):
         """The imported mesh mob(s) for a named node, so a sub-part of the model
-        can be manipulated (moved, coloured, animated) on its own. Returns a
+        can be manipulated (moved, colored, animated) on its own. Returns a
         single :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` when the node has one
         mesh, else a list. Raises ``KeyError`` for an unknown node.
         """

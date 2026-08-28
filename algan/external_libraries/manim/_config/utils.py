@@ -180,8 +180,8 @@ class ManimConfig(MutableMapping):
     .. code-block:: pycon
 
         >>> from manim import WHITE
-        >>> config.background_color = WHITE
-        >>> config["background_color"] = WHITE
+        >>> config.background = WHITE
+        >>> config["background"] = WHITE
 
     The former is preferred; the latter is provided mostly for backwards
     compatibility.
@@ -198,7 +198,7 @@ class ManimConfig(MutableMapping):
         10.0
 
     There are many ways of interacting with config options.  Take for example
-    the config option ``background_color``.  There are three ways to change it:
+    the config option ``background``.  There are three ways to change it:
     via a config file, via CLI flags, or programmatically.
 
     To set the background color via a config file, save the following
@@ -207,7 +207,7 @@ class ManimConfig(MutableMapping):
     .. code-block::
 
        [CLI]
-       background_color = WHITE
+       background = WHITE
 
     In order to have this ``.cfg`` file apply to a manim scene, it needs to be
     placed in the same directory as the script,
@@ -245,7 +245,7 @@ class ManimConfig(MutableMapping):
 
         from manim import *
 
-        config.background_color = RED
+        config.background = RED
 
 
         class MyScene(Scene): ...
@@ -257,7 +257,7 @@ class ManimConfig(MutableMapping):
 
     _OPTS = {
         "assets_dir",
-        "background_color",
+        "background",
         "background_opacity",
         "custom_folders",
         "disable_caching",
@@ -622,7 +622,7 @@ class ManimConfig(MutableMapping):
             "input_file",
             "output_file",
             "movie_file_extension",
-            "background_color",
+            "background",
             "renderer",
             "window_position",
         ]:
@@ -756,7 +756,7 @@ class ManimConfig(MutableMapping):
             "scene_names",
             "verbosity",
             "renderer",
-            "background_color",
+            "background",
             "enable_gui",
             "fullscreen",
             "use_projection_fill_shaders",
@@ -1179,13 +1179,13 @@ class ManimConfig(MutableMapping):
 
     # TODO: This was parsed before maybe add ManimColor(val), but results in circular import
     @property
-    def background_color(self) -> ManimColor:
+    def background(self) -> ManimColor:
         """Background color of the scene (-c)."""
-        return self._d["background_color"]
+        return self._d["background"]
 
-    @background_color.setter
-    def background_color(self, value: Any) -> None:
-        self._d.__setitem__("background_color", ManimColor(value))
+    @background.setter
+    def background(self, value: Any) -> None:
+        self._d.__setitem__("background", ManimColor(value))
 
     @property
     def from_animation_number(self) -> int:

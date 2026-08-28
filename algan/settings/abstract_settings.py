@@ -26,12 +26,20 @@ answers ``set()`` with a modified copy instead of mutating, which is what lets
 Sections declare initialization-only fields so that assigning one raises a
 message naming the environment variable to set instead of a generic unknown-key
 error.
+
+A section may also declare **aliases** with :func:`settings_aliases` -- a second
+spelling for a field, honoured everywhere the declared name is (construction,
+``set()``, ``override()``, attribute read and attribute write). An alias is not a
+second setting: ``to_dict`` and snapshots always answer with the declared name,
+so a save/restore round-trips through one spelling no matter which one was
+written.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import difflib
+import functools
 import typing
 from contextlib import contextmanager
 from copy import deepcopy
@@ -81,6 +89,10 @@ class Settings:
 
     _is_preset = False
 
+    #: ``alias -> declared field name``, filled in by :func:`settings_aliases`
+    #: and empty for a section that declares none.
+    _ALIASES: dict[str, str] = {}
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
@@ -101,6 +113,10 @@ class Settings:
                     setattr(cls, setter_name, make_setter(name))
 
     def __setattr__(self, name, value):
+        # Resolved up front so an alias is the field for every branch below --
+        # a preset refuses it, and a mutable section validates it, exactly as
+        # the declared spelling does.
+        name = type(self)._ALIASES.get(name, name)
         declared = type(self)._declared_field_names()
         if getattr(self, "_is_preset", False) and name in declared:
             raise AlganConfigurationError(
@@ -108,8 +124,9 @@ class Settings:
                 f"preset.set({name}=...) to create a modified copy"
             )
         if not name.startswith("_") and name not in declared:
-            # Without this, ``SETTINGS.video.fps = 60`` would quietly attach a
-            # junk attribute and the real setting would keep its old value.
+            # Without this, ``SETTINGS.video.frame_rate = 60`` would quietly
+            # attach a junk attribute and the real setting would keep its old
+            # value.
             type(self)._check_keys({name: value})
         if name in declared and self.__dict__.keys() >= declared:
             # Assignment and ``set`` are the same operation, so a field cannot
@@ -130,6 +147,21 @@ class Settings:
             return
         object.__setattr__(self, name, value)
 
+    def __getattr__(self, name):
+        # Only reached when normal lookup has already failed, so an alias can
+        # never shadow a real attribute of the same name.
+        target = type(self)._ALIASES.get(name)
+        if target is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        return getattr(self, target)
+
+    def __dir__(self):
+        # Aliases exist as behaviour rather than as attributes, so without this
+        # they are invisible to ``dir()`` and to tab completion.
+        return sorted(set(super().__dir__()) | set(type(self)._ALIASES))
+
     @classmethod
     def _declared_field_names(cls) -> set[str]:
         names: set[str] = set()
@@ -140,16 +172,46 @@ class Settings:
         return names
 
     @classmethod
+    def _canonical_keys(cls, kwargs):
+        """Return ``kwargs`` with every alias replaced by the field it names.
+
+        Everything downstream -- validation, ``dataclasses.replace``, the
+        write-back loop in :meth:`set` -- works in declared names only, so the
+        aliases are resolved once, here, at each entry point.
+        """
+        if not any(key in cls._ALIASES for key in kwargs):
+            return kwargs
+        canonical: dict = {}
+        written_as: dict = {}
+        for key, value in kwargs.items():
+            name = cls._ALIASES.get(key, key)
+            if name in canonical:
+                raise AlganConfigurationError(
+                    f"{cls.__name__} setting '{name}' was given twice, as "
+                    f"'{written_as[name]}' and '{key}'"
+                )
+            written_as[name] = key
+            canonical[name] = value
+        return canonical
+
+    @classmethod
     def _check_keys(cls, kwargs):
         valid = cls._declared_field_names()
-        unknown = [name for name in kwargs if name not in valid]
+        unknown = [
+            name for name in kwargs if name not in valid and name not in cls._ALIASES
+        ]
         if unknown:
             name = unknown[0]
-            suggestion = difflib.get_close_matches(name, sorted(valid), n=1)
+            suggestion = difflib.get_close_matches(
+                name, sorted(valid | set(cls._ALIASES)), n=1
+            )
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+            aliases = (
+                f" Aliases: {', '.join(sorted(cls._ALIASES))}." if cls._ALIASES else ""
+            )
             raise AlganConfigurationError(
                 f"Unknown {cls.__name__} setting '{name}'.{hint} "
-                f"Valid settings are: {', '.join(sorted(valid))}."
+                f"Valid settings are: {', '.join(sorted(valid))}.{aliases}"
             )
 
     def _validate(self):
@@ -182,7 +244,11 @@ class Settings:
         Every field is validated -- the replacement is built by re-running the
         section's own construction -- but only the fields whose value actually
         changed are written back, so an unrelated field keeps its identity.
+
+        Keywords may use a field's alias; naming one field by two spellings in
+        the same call is an error rather than a silent last-one-wins.
         """
+        kwargs = type(self)._canonical_keys(kwargs)
         values = {}
         if source is not None:
             if type(source) is not type(self):
@@ -206,7 +272,7 @@ class Settings:
                 # the value is the one already stored -- writing a deepcopy of
                 # it back would swap a live object for an equal stranger. That
                 # is not hypothetical: ``SETTINGS.style.set(buffer=0.7)`` used
-                # to replace ``background_color`` too, so anything holding that
+                # to replace ``background`` too, so anything holding that
                 # Color by reference silently stopped tracking the setting.
                 #
                 # Identity, deliberately, not equality: a ``Color`` is a torch
@@ -253,3 +319,72 @@ class Settings:
             yield self
         finally:
             self.set(**previous)
+
+
+def _alias_setter(alias: str, target: str):
+    def setter(self, value):
+        return self.set(**{target: value})
+
+    setter.__name__ = f"set_{alias}"
+    setter.__qualname__ = f"set_{alias}"
+    setter.__doc__ = (
+        f"Set '{target}' (spelled '{alias}'), or return a modified preset copy."
+    )
+    return setter
+
+
+def settings_aliases(**aliases: str):
+    """Give a settings section a second spelling for some of its fields.
+
+    Apply it *outside* ``@dataclass``, so that it wraps the ``__init__`` that
+    decorator generates::
+
+        @settings_aliases(fps="frames_per_second")
+        @dataclass
+        class VideoSettings(Settings):
+            frames_per_second: int = 30
+
+    ``fps`` then works wherever ``frames_per_second`` does -- as a constructor
+    keyword, in ``set()`` and ``override()``, as ``set_fps(...)``, and for
+    reading and assigning the attribute. It stays a spelling rather than
+    becoming a field: it is absent from ``to_dict()``, from snapshots and from
+    ``dataclasses.fields``, so state that round-trips through those cannot end
+    up carrying the same value twice under two names.
+    """
+
+    def decorate(cls):
+        declared = cls._declared_field_names()
+        merged = dict(cls._ALIASES)
+        for alias, target in aliases.items():
+            if target not in declared:
+                raise AlganConfigurationError(
+                    f"{cls.__name__} has no setting '{target}' for alias "
+                    f"'{alias}' to point at"
+                )
+            if alias in declared:
+                raise AlganConfigurationError(
+                    f"{cls.__name__} alias '{alias}' is already the name of a setting"
+                )
+            merged[alias] = target
+        cls._ALIASES = merged
+
+        # The dataclass __init__ knows only the declared names, so the aliases
+        # are translated on the way in. Everything else on the class routes
+        # through set/__setattr__, which resolve them themselves.
+        original_init = cls.__init__
+
+        @functools.wraps(original_init)
+        def __init__(self, *args, **kwargs):
+            original_init(self, *args, **type(self)._canonical_keys(kwargs))
+
+        cls.__init__ = __init__
+
+        # A distinct function per alias rather than a second reference to the
+        # declared field's setter, so that ``set_fps.__name__`` is ``set_fps``
+        # and the generated API reference does not list one method twice under
+        # two headings.
+        for alias, target in aliases.items():
+            setattr(cls, f"set_{alias}", _alias_setter(alias, target))
+        return cls
+
+    return decorate

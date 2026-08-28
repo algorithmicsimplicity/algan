@@ -813,7 +813,7 @@ _INITIAL_RESERVATION_BYTES = 1 << 20
 
 
 #: Attributes at least this wide materialize their per-frame state on the render
-#: device (see :func:`_wide_attr_materialize_device`). A colour texture is
+#: device (see :func:`_wide_attr_materialize_device`). A color texture is
 #: ``H * W * 5`` channels -- 7.9M for a 1774x887 image -- while every geometric
 #: or material attribute is under 16, so the threshold only ever selects
 #: textures and leaves the ordinary attributes exactly where they were.
@@ -1292,7 +1292,7 @@ class AttributeTimeline:
         born = self._replay_born_rows(key)
         if born is not None:
             # A Mob built by this replay keeps its state in current_state, so
-            # the updater that built it can go on to move or recolour it.
+            # the updater that built it can go on to move or recolor it.
             self._modify_replay_born(key, born, value)
             if bool(born.all()):
                 return self
@@ -1867,7 +1867,7 @@ class AttributeTimeline:
             # ``arange(pointer, new_pointer)`` and every edit, range and
             # endpoint layout is built from those. Materializing ``pointer + 1``
             # rows -- as this did -- appended a row nothing can address, which
-            # for a colour-texture timeline is a whole spare image per frame.
+            # for a color-texture timeline is a whole spare image per frame.
             #
             # The compact path above needs no equivalent: it is handed the live
             # rows explicitly rather than a count.

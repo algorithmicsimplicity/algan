@@ -45,7 +45,7 @@ def is_cuda_oom(exc):
     the driver mid-render, so a batch that over-committed VRAM fails *inside a
     Taichi launch* (typically the post-process tonemap) rather than as a torch
     OOM -- and the retry loops, which only knew the torch type, let it escape.
-    Matching the driver message lets the same ``empty_cache`` + window-split
+    Matching the driver message lets the same ``release_torch_memory`` + window-split
     retry recover it (``torch.cuda.empty_cache`` hands torch's reserved-but-free
     blocks back to the driver, which is exactly the memory Taichi needs).
     """
@@ -71,7 +71,7 @@ def get_num_available_bytes(device=torch.device("cuda")):
     if override is not None and device.type in ("cuda", "mps"):
         return int(override)
     if device.type == "cuda":
-        # ``empty_cache`` acts on PyTorch's current CUDA device.  The render
+        # ``release_torch_memory`` acts on PyTorch's current CUDA device.  The render
         # arena may target a different indexed device, so make that device
         # current while reclaiming its cached blocks before measuring it.
         with torch.cuda.device(device):
@@ -101,8 +101,8 @@ def _gpu_memory_pressure(threshold=0.8):
         return True
 
 
-#: Reclaimable torch cache below which a steady-state ``empty_cache`` call is
-#: not worth its cost (see :func:`empty_cache`). One HD frame buffer's worth.
+#: Reclaimable torch cache below which a steady-state ``release_torch_memory`` call is
+#: not worth its cost (see :func:`release_torch_memory`). One HD frame buffer's worth.
 _MIN_RECLAIMABLE_BYTES = 128 << 20
 
 
@@ -116,7 +116,7 @@ def _reclaimable_cuda_bytes():
         return 0
 
 
-def empty_cache(force_gc=True):
+def release_torch_memory(force_gc=True):
     """Reclaim freed memory back to the allocators.
 
     ``gc.collect()`` walks the entire Python object graph and dominates this
@@ -160,7 +160,7 @@ def empty_cache(force_gc=True):
 def scene_excluded_from_gc():
     """Keep the authored scene out of every collection made inside the block.
 
-    ``empty_cache`` runs ``gc.collect()`` several times per frame batch to break
+    ``release_torch_memory`` runs ``gc.collect()`` several times per frame batch to break
     the reference cycles a batch leaves behind before the device runs out of
     memory, and a collection walks *every* tracked object in the process. An
     authored scene is millions of them -- one per Mob, per recorded edit, per

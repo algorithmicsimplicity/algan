@@ -221,8 +221,8 @@ Two per-**frame** buffers, allocated once outside the tile loop:
 
 | buffer | shape | contents |
 | --- | --- | --- |
-| `gl_main` | `(pixels_per_frame, 8)` f32 | `csum.rgba` (the pixel's linear pre-finalize colour, background folded in), `W.rgb`, `sigma_px` (`< 0` = not a glossy pixel) |
-| `gl_pyr` | `(~4/3 · pixels_per_frame, 5)` f32 | the mip pyramid of `B`: `(B.rgb, B.glow, v)` with `v` the validity weight, level 0 first. The glow lane is `out`'s column 3 (it is bloom coverage, not alpha) and it has to be prefiltered with the colour or a blurred reflection would carry a sharp bloom mask. |
+| `gl_main` | `(pixels_per_frame, 8)` f32 | `csum.rgba` (the pixel's linear pre-finalize color, background folded in), `W.rgb`, `sigma_px` (`< 0` = not a glossy pixel) |
+| `gl_pyr` | `(~4/3 · pixels_per_frame, 5)` f32 | the mip pyramid of `B`: `(B.rgb, B.glow, v)` with `v` the validity weight, level 0 first. The glow lane is `out`'s column 3 (it is bloom coverage, not alpha) and it has to be prefiltered with the color or a blurred reflection would carry a sharp bloom mask. |
 
 Per frame, not per batch: a batch is many frames and this would otherwise be the
 dominant allocation. Covered ordinals are ordered by global pixel index, so a

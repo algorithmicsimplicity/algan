@@ -7,7 +7,7 @@
 smooth at any zoom and morph into one another. They take ``color``,
 ``border_color`` and ``border_width``, plus ``texture_grid_width`` /
 ``texture_grid_height`` for shapes that carry a gradient or an image rather than
-one flat colour.
+one flat color.
 
 A second family -- :class:`~.Arc`, :class:`~.Annulus`, :class:`~.Ellipse`,
 :class:`~.Star`, :class:`~.Arrow` -- comes from the Manim compatibility layer and
@@ -103,7 +103,7 @@ def _translate_vector_style_kwargs(
     if line:
         # A Line is an unfilled path; Manim's generic ``color`` controls its
         # stroke, while fill settings are accepted but have no visible effect.
-        # The profile's own border colour stands in for that stroke when it has
+        # The profile's own border color stands in for that stroke when it has
         # already been injected, so the (invisible) profile fill never leaks
         # into the stroke.
         if stroke_color is None and has_color and "border_color" not in kwargs:
@@ -165,7 +165,7 @@ class Line(BezierCircuitCubic):
     an accident of how the frame is derived. And its second row is synthesized
     perpendicular to the path rather than measured from it, so the texture grid
     defaults to ``texture_grid_width`` samples along the line and a single row
-    across it. Colour along the line with
+    across it. Color along the line with
     :meth:`~.Line.set_color_by_function`, which parametrizes it by ``t`` running
     from the start to the end.
 
@@ -262,7 +262,7 @@ class Line(BezierCircuitCubic):
         return self.get_vector().norm(p=2, dim=-1)
 
     def set_color_by_function(self, function):
-        """Colour the line by a function of ``t``, its progress from start to end.
+        """Color the line by a function of ``t``, its progress from start to end.
 
         The same as
         :meth:`BezierCircuitCubic.set_color_by_function <algan.mobs.bezier_circuit.BezierCircuitCubic.set_color_by_function>`,
@@ -271,24 +271,24 @@ class Line(BezierCircuitCubic):
         :meth:`~.Line.get_start` to 1 at :meth:`~.Line.get_end`. A gradient along
         a line, or a value plotted onto one, is written directly in those terms.
 
-        A line is unfilled, so this colours its stroke. The resolution is the
-        line's texture grid, which is one flat colour unless you asked for more:
+        A line is unfilled, so this colors its stroke. The resolution is the
+        line's texture grid, which is one flat color unless you asked for more:
         build it with ``texture_grid_width`` (``Line(LEFT, RIGHT,
         texture_grid_width=64)``). The height defaults to a single row across
-        the line, so ``texture_grid_width`` alone is the number of colour
+        the line, so ``texture_grid_width`` alone is the number of color
         samples along it.
 
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second
-        by default), so the colours cross-fade smoothly. Wrap the call in
+        by default), so the colors cross-fade smoothly. Wrap the call in
         ``Off()`` to apply it instantly.
 
         Parameters
         ----------
         function
             Callable taking a ``t`` tensor of shape ``[..., 1]``, in ``[0, 1]``,
-            and returning colours of shape ``[..., 3]`` (RGB), ``[..., 4]``
+            and returning colors of shape ``[..., 3]`` (RGB), ``[..., 4]``
             (RGBA) or ``[..., 5]`` (RGB, glow, alpha -- Algan's internal channel
             order). Channels are in ``[0, 1]``; a missing alpha defaults to 1 and
             a missing glow to 0. Must be vectorized -- it is called once on the
@@ -303,7 +303,7 @@ class Line(BezierCircuitCubic):
         ------
         ValueError
             If the line has a single-texel texture grid, or if ``function``
-            returns the wrong number of colours.
+            returns the wrong number of colors.
 
         Examples
         --------
@@ -733,7 +733,7 @@ class Rectangle(Quad):
         Height in world units. Defaults to ``2`` -- so the default ``Rectangle()``
         is a 2x2 square.
     color
-        Fill colour. Defaults to ``None``, meaning the class default (see
+        Fill color. Defaults to ``None``, meaning the class default (see
         :meth:`~algan.animatable_base.animatable.Animatable.get_default_color`).
     **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
@@ -779,7 +779,7 @@ class SurroundingRectangle(Quad):
     *mobjects
         The Mobs to enclose. At least one is required.
     color
-        Colour of the rectangle. Defaults to ``None``, meaning the class default.
+        Color of the rectangle. Defaults to ``None``, meaning the class default.
     buff
         Gap between the contents and the rectangle, in world units. A ``(horizontal,
         vertical)`` pair sets the two axes separately. Defaults to ``None``, meaning
@@ -905,7 +905,7 @@ class Circle(BezierCircuitCubic):
     radius
         Radius in world units. Defaults to ``1``; ``None`` is also treated as ``1``.
     color
-        Fill colour. Defaults to ``None``, meaning ``BLUE``.
+        Fill color. Defaults to ``None``, meaning ``BLUE``.
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
         ``border_color``, ``border_width`` and ``filled``.

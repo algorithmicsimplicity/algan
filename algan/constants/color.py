@@ -1,22 +1,22 @@
-"""Colour representation and Algan's named colour palette.
+"""Color representation and Algan's named color palette.
 
-Algan stores colour in **five channels** -- red, green, blue, glow, alpha -- so
-that emissive strength travels with a colour the way opacity does. RGB and alpha
+Algan stores color in **five channels** -- red, green, blue, glow, alpha -- so
+that emissive strength travels with a color the way opacity does. RGB and alpha
 are in ``[0, 1]``; glow is an additive brightness fed to the bloom accumulator.
 
 :class:`Color` accepts the forms you would expect -- a hex string such as
 ``"#58C4DD"``, or an ``(r, g, b)`` tuple -- with ``glow`` and ``opacity`` as
-separate arguments. It subclasses :class:`torch.Tensor`, so a colour takes part
+separate arguments. It subclasses :class:`torch.Tensor`, so a color takes part
 in ordinary tensor arithmetic and can carry batch dimensions.
 :meth:`Color.add_defaults` pads a bare RGB or RGBA tensor out to the five-channel
-layout, which is how the API accepts the shorter forms wherever a colour array is
+layout, which is how the API accepts the shorter forms wherever a color array is
 expected.
 
 The module then defines the palette exported by ``from algan import *``:
 ``BLACK``, ``WHITE``, the greys, and the ``BLUE``/``RED``/``GREEN``/``YELLOW``
 families with their ``_A`` (lightest) through ``_E`` (darkest) shades. Both
 British and American spellings of grey are provided. Two special values are worth
-knowing: ``TRANSPARENT`` (invisible, and the background colour that produces an
+knowing: ``TRANSPARENT`` (invisible, and the background color that produces an
 alpha-channel video) and ``GLOW`` (black with full glow).
 """
 
@@ -206,11 +206,11 @@ class Color(torch.Tensor):
         value = cast_to_tensor(value)
         out = self.new_empty()
         out.data = self.data.clone()
-        # A named colour is a single ``[5]`` row, so painting a grid of values
+        # A named color is a single ``[5]`` row, so painting a grid of values
         # onto it -- one per vertex, one per texel -- has nothing to broadcast
         # against until the leading axes exist. Give it the value's, but only
         # when the value really carries a grid: a scalar opacity arrives padded
-        # to ``[1, 1, 1]``, and inflating a named colour to match it would
+        # to ``[1, 1, 1]``, and inflating a named color to match it would
         # change the shape every existing caller gets back.
         if any(size > 1 for size in value.shape[:-1]):
             out = unsqueeze_left(out, value)
@@ -218,9 +218,9 @@ class Color(torch.Tensor):
         return out
 
     def set_opacity(self, opacity):
-        """Return a copy of this colour with its opacity replaced.
+        """Return a copy of this color with its opacity replaced.
 
-        Opacity is one of the five channels, so ordinary colour arithmetic
+        Opacity is one of the five channels, so ordinary color arithmetic
         moves it along with the others -- ``BLUE * 0.5`` halves the alpha as
         well as the brightness, and renders half-transparent. This sets the
         alpha channel alone and leaves red, green, blue and glow as they are.
@@ -229,13 +229,13 @@ class Color(torch.Tensor):
         ----------
         opacity
             The new opacity, in ``[0, 1]``: 0 is invisible, 1 fully opaque.
-            A tensor is broadcast against this colour, giving one opacity per
+            A tensor is broadcast against this color, giving one opacity per
             row -- per vertex or per texel.
 
         Returns
         -------
         :class:`Color`
-            A new colour. The colour it was called on is left unchanged, so
+            A new color. The color it was called on is left unchanged, so
             the named palette constants stay safe to reuse.
         """
         out = self.prep_set(opacity)
@@ -261,7 +261,7 @@ class Color(torch.Tensor):
         """Widen RGB or RGBA to Algan's ``[R, G, B, glow, opacity]``.
 
         Only 3 and 4 channels are widened. A width that is neither is not a
-        colour missing its extra channels, and padding it anyway meant the
+        color missing its extra channels, and padding it anyway meant the
         error it eventually caused reported a shape the caller never wrote --
         ``ImageMob(torch.zeros(8, 8, 2))`` was told its texture had shape
         ``(8, 8, 4)``.
@@ -276,9 +276,9 @@ class Color(torch.Tensor):
 
 
 def to_color(value):
-    """Coerce a user-supplied colour into something Algan can store.
+    """Coerce a user-supplied color into something Algan can store.
 
-    The colours Algan hands out are :class:`Color` constants, but the ones
+    The colors Algan hands out are :class:`Color` constants, but the ones
     users reach for first are the ones every other graphics library takes: a
     hex string, a CSS name, a hex int, an RGB triple. Materials have accepted
     all of those since they were written -- ``MeshStandardMaterial(color=
@@ -287,8 +287,8 @@ def to_color(value):
     'reshape'`` from deep inside the timeline. This is the one place that
     decides, so both spellings mean the same thing.
 
-    Anything already tensor-shaped is returned untouched: a per-row colour
-    buffer is a legitimate value and must not be collapsed to one colour.
+    Anything already tensor-shaped is returned untouched: a per-row color
+    buffer is a legitimate value and must not be collapsed to one color.
 
     Parameters
     ----------
@@ -304,20 +304,20 @@ def to_color(value):
     Raises
     ------
     :class:`~algan.errors.InvalidColorError`
-        If ``value`` is a string that names no colour, or a bool.
+        If ``value`` is a string that names no color, or a bool.
     """
     if value is None:
         return value
     if isinstance(value, Color) or torch.is_tensor(value):
-        # An RGB or RGBA buffer is a colour that is merely missing Algan's
+        # An RGB or RGBA buffer is a color that is merely missing Algan's
         # extra channels; pad it rather than making the caller know the
-        # layout. Anything already 5 wide (or not shaped like a colour at all)
+        # layout. Anything already 5 wide (or not shaped like a color at all)
         # is left exactly as it is, including a per-row buffer.
         if value.shape and value.shape[-1] in (3, 4):
             return Color.add_defaults(value)
         return value
     if isinstance(value, bool):
-        # bool is an int subclass, and True as a colour is a mistake, not black.
+        # bool is an int subclass, and True as a color is a mistake, not black.
         raise InvalidColorError(
             f"Invalid color value: {value!r}. Use a Color such as RED, a hex "
             f"string ('#ff0000'), a hex int (0xff0000) or an RGB tuple."

@@ -87,7 +87,7 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
         "width": scene.num_pixels_screen_width,
         "height": scene.num_pixels_screen_height,
     }
-    temporary = VideoSettings((17, 13), 2, anti_alias_level=1)
+    temporary = VideoSettings((17, 13), 2, super_sampling_anti_aliasing=1)
 
     def fake_frames(*_args, **_kwargs):
         yield torch.zeros(
@@ -134,7 +134,9 @@ def test_save_frame_resolves_negative_at_from_current_context_time(
     monkeypatch, tmp_path
 ):
     scene = SceneManager.instance().current_scene
-    scene.set_video_settings(VideoSettings((17, 13), 10, anti_alias_level=1))
+    scene.set_video_settings(
+        VideoSettings((17, 13), 10, super_sampling_anti_aliasing=1)
+    )
     scene.animation_manager.context.timespan.current_time = 3.0
     requested_windows = []
 
@@ -166,7 +168,9 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
     algan_logger.addHandler(caplog.handler)
     try:
         scene = SceneManager.instance().current_scene
-        scene.set_video_settings(VideoSettings((17, 13), 10, anti_alias_level=1))
+        scene.set_video_settings(
+            VideoSettings((17, 13), 10, super_sampling_anti_aliasing=1)
+        )
         _stub_out_frame_writing(monkeypatch, scene)
 
         scene.save_frame(tmp_path / "single_still", at=0.0)
@@ -461,7 +465,7 @@ def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path
 
     result = algan.Scene.save_video(
         tmp_path / "scene",
-        video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
         overwrite=False,
     )
 
@@ -478,8 +482,8 @@ def test_transparent_mp4_fails_before_render_and_preserves_scene(tmp_path):
     with pytest.raises(AlganConfigurationError, match="MP4"):
         algan.Scene.save_video(
             tmp_path / "scene.mp4",
-            video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
-            background_color=algan.TRANSPARENT,
+            video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+            background=algan.TRANSPARENT,
         )
     assert SceneManager.instance().current_scene is scene
     assert scene.video_settings == before_settings
@@ -504,7 +508,7 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="writer failed"):
         algan.Scene.save_video(
             tmp_path / "failure.mp4",
-            video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
+            video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
             animate_fade_out=False,
             reset=True,
         )
@@ -538,7 +542,7 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
 
     result = algan.Scene.save_video(
         tmp_path / "keep.mp4",
-        video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
         animate_fade_out=False,
     )
 
@@ -572,7 +576,7 @@ def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
 
     algan.Scene.save_video(
         tmp_path / "discard.mp4",
-        video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
         animate_fade_out=False,
         reset=True,
     )
@@ -807,9 +811,9 @@ def test_camera_validates_projection_and_clip_parameters():
     assert camera.orthographic is True
     assert camera.set_fov(45) is camera
     assert camera.orthographic is False
-    scene.set_video_settings(VideoSettings((20, 10), 1, anti_alias_level=1))
+    scene.set_video_settings(VideoSettings((20, 10), 1, super_sampling_anti_aliasing=1))
     assert camera.pixel_height == pytest.approx(0.2)
-    scene.set_video_settings(VideoSettings((40, 20), 1, anti_alias_level=1))
+    scene.set_video_settings(VideoSettings((40, 20), 1, super_sampling_anti_aliasing=1))
     assert camera.pixel_height == pytest.approx(0.1)
 
 
@@ -838,12 +842,12 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
 
     def fake_render_to_video(*_args, **render_kwargs):
         observed["end"] = scene.animation_manager.context.timespan.original_end
-        observed["background_override"] = render_kwargs.get("background_color")
+        observed["background_override"] = render_kwargs.get("background")
 
     monkeypatch.setattr(scene, "render_to_video", fake_render_to_video)
     result = algan.Scene.save_video(
         tmp_path / "static.mp4",
-        video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
         animate_fade_out=False,
     )
 
@@ -1097,7 +1101,7 @@ def test_by_name_basis_write_carries_the_subtree():
 
 def test_unknown_setting_lists_the_valid_names():
     with pytest.raises(AlganConfigurationError, match="frames_per_second"):
-        VideoSettings((8, 8), 4).set(fps=60)
+        VideoSettings((8, 8), 4).set(frame_rate=60)
 
 
 @pytest.mark.fast
@@ -1135,7 +1139,7 @@ def test_never_spawned_mob_warns(monkeypatch, tmp_path):
     with pytest.warns(NeverSpawnedMobWarning, match="Circle"):
         algan.Scene.save_video(
             tmp_path / "forgot.mp4",
-            video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+            video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
         )
 
 
@@ -1158,7 +1162,7 @@ def test_add_to_scene_false_is_the_only_way_to_mark_reference_geometry(
     _stub_render(monkeypatch, scene)
     algan.Scene.save_video(
         tmp_path / "become.mp4",
-        video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
     )
     assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
 
@@ -1174,7 +1178,7 @@ def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
     with pytest.warns(NeverSpawnedMobWarning, match="add_to_scene=False"):
         algan.Scene.save_video(
             tmp_path / "become_unflagged.mp4",
-            video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+            video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
         )
 
 
@@ -1391,7 +1395,7 @@ def test_the_scenes_own_video_settings_reach_both_render_calls(tmp_path):
     """
     import cv2
 
-    tiny = VideoSettings((32, 32), 2, anti_alias_level=1)
+    tiny = VideoSettings((32, 32), 2, super_sampling_anti_aliasing=1)
 
     with algan.Scene(video_settings=tiny):
         Square(color=algan.BLUE).spawn()
@@ -1429,7 +1433,9 @@ def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
     try:
         with algan.Scene():
             Square(color=algan.BLUE).spawn()
-            algan.SETTINGS.video.set(VideoSettings((64, 48), 3, anti_alias_level=1))
+            algan.SETTINGS.video.set(
+                VideoSettings((64, 48), 3, super_sampling_anti_aliasing=1)
+            )
             clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
     finally:
         algan.SETTINGS.video.set(restore)
@@ -1637,11 +1643,11 @@ def test_a_background_string_is_read_as_a_colour_first():
     colour.
     """
     with algan.Scene(video_settings=SMOKE_TEST) as scene:
-        scene.set_background_color("navy")
-        with pytest.raises(AlganConfigurationError, match="neither a colour"):
-            scene.set_background_color("not a color", overwrite=True)
-        with pytest.raises(AlganConfigurationError, match="neither a colour"):
-            scene.set_background_color("missing_background.png", overwrite=True)
+        scene.set_background("navy")
+        with pytest.raises(AlganConfigurationError, match="neither a color"):
+            scene.set_background("not a color", overwrite=True)
+        with pytest.raises(AlganConfigurationError, match="neither a color"):
+            scene.set_background("missing_background.png", overwrite=True)
 
 
 @pytest.mark.fast

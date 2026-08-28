@@ -95,7 +95,7 @@ def _manim_generated_svg_basename_is_content_addressed(path: Path) -> bool:
     Manim names both kinds after a hash of what produced them --
     ``tex_hash(source) + .svg`` in ``tex_dir``, ``_text2hash(settings) + .svg``
     in ``text_dir`` -- so for these the basename already encodes the LaTeX
-    source, template, environment and preamble, or the string, font and colour.
+    source, template, environment and preamble, or the string, font and color.
     Everything else -- a user's own ``logo.svg`` -- has a basename that says
     nothing about its contents.
     """

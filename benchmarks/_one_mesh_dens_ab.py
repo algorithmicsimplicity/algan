@@ -88,12 +88,12 @@ def render_once(shape, background, dens, quality, tag=""):
         SETTINGS.raytracing.set(shadows=True)
     scene = SceneManager.instance().current_scene
     scene.set_video_settings(quality)
-    Scene.set_background_color(BACKGROUNDS[background])
+    Scene.set_background(BACKGROUNDS[background])
     if shape == "cylfine":
         build_cylfine()
     else:
         build_scene(shape)
-        Scene.set_background_color(BACKGROUNDS[background])
+        Scene.set_background(BACKGROUNDS[background])
     t0 = time.perf_counter()
     Scene.save_video(path, quality, overwrite=True)
     return path, time.perf_counter() - t0

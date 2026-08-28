@@ -8,6 +8,7 @@ wrong thing, which is exactly the failure mode these tests exist to prevent.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import sys
@@ -140,18 +141,18 @@ def test_a_write_leaves_the_fields_it_did_not_change_alone():
     """Identity, not just equality: callers hold these objects.
 
     ``set`` used to write a deepcopy of *every* field, so changing ``buffer``
-    swapped ``background_color`` for an equal stranger and anything holding the
+    swapped ``background`` for an equal stranger and anything holding the
     old Color stopped tracking the setting.
     """
-    background = SETTINGS.style.background_color
+    background = SETTINGS.style.background
     text = SETTINGS.style.text_color
 
     SETTINGS.style.set(buffer=0.7)
-    assert SETTINGS.style.background_color is background
+    assert SETTINGS.style.background is background
     assert SETTINGS.style.text_color is text
 
     SETTINGS.style.buffer = 0.8
-    assert SETTINGS.style.background_color is background
+    assert SETTINGS.style.background is background
     assert SETTINGS.style.text_color is text
 
 
@@ -161,14 +162,14 @@ def test_a_changed_field_is_still_applied_and_still_copied():
     Copying is what stops a caller mutating their own value afterwards and
     silently reconfiguring the renderer.
     """
-    original = SETTINGS.style.background_color
+    original = SETTINGS.style.background
     replacement = original.clone()
 
-    SETTINGS.style.set(background_color=replacement)
+    SETTINGS.style.set(background=replacement)
 
-    assert SETTINGS.style.background_color is not original, "the change was skipped"
-    assert SETTINGS.style.background_color is not replacement, "aliased the argument"
-    assert bool((SETTINGS.style.background_color == replacement).all())
+    assert SETTINGS.style.background is not original, "the change was skipped"
+    assert SETTINGS.style.background is not replacement, "aliased the argument"
+    assert bool((SETTINGS.style.background == replacement).all())
 
 
 def test_a_section_can_still_be_constructed_directly():
@@ -338,6 +339,85 @@ def test_set_rejects_a_settings_object_of_the_wrong_section():
         SETTINGS.video.set(RayTracingSettings())
     with pytest.raises(AlganConfigurationError, match="expected"):
         SETTINGS.raytracing.set(VideoSettings((16, 16), 2))
+
+
+# --------------------------------------------------------------------------
+# Field aliases
+# --------------------------------------------------------------------------
+ALIASES = (
+    ("fps", "frames_per_second", 24),
+    ("FPS", "frames_per_second", 48),
+    ("ssaa", "super_sampling_anti_aliasing", 3),
+    ("SSAA", "super_sampling_anti_aliasing", 4),
+)
+
+
+@pytest.mark.parametrize(("alias", "field", "value"), ALIASES)
+def test_an_alias_is_the_field_everywhere_it_is_written(alias, field, value):
+    """Every way of writing the setting has to reach the same field.
+
+    A spelling that construction accepts but ``set`` rejects -- or that writes
+    a junk attribute while the real field keeps its old value -- is worse than
+    no alias at all, because it fails silently at render time.
+    """
+    built = VideoSettings((16, 16), **{alias: value})
+    assert getattr(built, field) == value
+    assert getattr(built, alias) == value
+
+    section = VideoSettings((16, 16))
+    section.set(**{alias: value})
+    assert getattr(section, field) == value
+
+    section = VideoSettings((16, 16))
+    setattr(section, alias, value)
+    assert getattr(section, field) == value
+
+    section = VideoSettings((16, 16))
+    getattr(section, f"set_{alias}")(value)
+    assert getattr(section, field) == value
+
+
+def test_an_alias_is_a_spelling_rather_than_a_second_field():
+    """State that round-trips must not come back carrying the value twice."""
+    section = VideoSettings((16, 16), fps=24, ssaa=3)
+    assert "fps" not in section.to_dict()
+    assert "ssaa" not in section.to_dict()
+    assert section.to_dict()["frames_per_second"] == 24
+    assert section.to_dict()["super_sampling_anti_aliasing"] == 3
+    assert {field.name for field in dataclasses.fields(section)}.isdisjoint(
+        {"fps", "FPS", "ssaa", "SSAA"}
+    )
+
+    SETTINGS.video.set(fps=24)
+    snapshot = SETTINGS.snapshot()
+    SETTINGS.video.set(FPS=48)
+    SETTINGS.restore(snapshot)
+    assert SETTINGS.video.fps == 24
+
+
+def test_an_alias_is_validated_like_the_field_it_names():
+    with pytest.raises(AlganConfigurationError, match="super_sampling_anti_aliasing"):
+        VideoSettings((16, 16), ssaa=0)
+    with pytest.raises(AlganConfigurationError, match="frames_per_second"):
+        VideoSettings((16, 16)).set(fps=0)
+    with pytest.raises(AlganConfigurationError, match="frames_per_second"):
+        SETTINGS.video.fps = -1
+
+
+def test_naming_one_setting_twice_is_refused_rather_than_last_one_wins():
+    with pytest.raises(AlganConfigurationError, match="given twice"):
+        VideoSettings((16, 16), fps=24, frames_per_second=48)
+    with pytest.raises(AlganConfigurationError, match="given twice"):
+        VideoSettings((16, 16)).set(ssaa=2, SSAA=4)
+
+
+def test_a_preset_answers_an_alias_with_a_copy():
+    faster = HD.set(fps=60)
+    assert faster.frames_per_second == 60
+    assert HD.frames_per_second == 30
+    assert faster.is_preset
+    with pytest.raises(AlganConfigurationError, match="immutable"):
+        HD.ssaa = 1
 
 
 # --------------------------------------------------------------------------

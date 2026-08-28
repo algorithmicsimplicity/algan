@@ -2,7 +2,7 @@
 
 Everything configurable at runtime hangs off one object, grouped into sections
 by what it affects: ``SETTINGS.video`` (resolution, frame rate, anti-aliasing),
-``SETTINGS.style`` (default colours, layout buffer, scene-end fade),
+``SETTINGS.style`` (default colors, layout buffer, scene-end fade),
 ``SETTINGS.paths`` (output and cache locations), ``SETTINGS.computing`` (memory
 budgets and authoring controls) and ``SETTINGS.raytracing`` (what the renderer
 produces).
