@@ -72,15 +72,15 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_REFLECTIVITY,
     _M_ROUGHNESS,
     _M_TRANSMISSION,
-    MAX_SHADOW_LIGHTS,
-    MAX_SURFACES_PER_RAY,
-    MIN_ALPHA,
-    MIN_HIT_DISTANCE,
-    MIN_WEIGHT,
     _bezier_normal,
     _generate_ray,
     _sample_circuit_color_blend,
     _shade_tri_hit,
+    max_shadow_lights,
+    max_surfaces_per_ray,
+    min_alpha,
+    min_hit_distance,
+    min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_NO_SHADOW_RECEIVE,
@@ -175,7 +175,7 @@ def sheet_resolve_shade(
         # loop-carried transport state (``weight``, ``svis``, ``band_p``,
         # ``bounces_left``, ``processed``, ``done``) or any break/continue
         # condition. The two skips that precede the fetch -- the far-clip
-        # break and the ``eff <= MIN_ALPHA`` continue -- are transport-only
+        # break and the ``eff <= min_alpha`` continue -- are transport-only
         # for the same reason. So a row read in mode 2 was written in mode 1.
         # Values are copied verbatim through f32, hence byte-identical.
         memo: ti.template(),
@@ -287,7 +287,7 @@ def sheet_resolve_shade(
         done = False
 
         q = 0
-        while q < total and processed < MAX_SURFACES_PER_RAY:
+        while q < total and processed < max_surfaces_per_ray:
             idx = start + q
             t_hit = _frag_t(sheet_key[idx])
             prim_raw = sheet_ref[idx]
@@ -380,12 +380,12 @@ def sheet_resolve_shade(
                     and (sheet_cap[idx] <= 1.0):
                 room = ti.max(sheet_cap[idx] - mesh_ink, 0.0)
                 if eff > room:
-                    dens *= room / ti.max(eff, MIN_ALPHA)
+                    dens *= room / ti.max(eff, min_alpha)
                     eff = room
             # This sheet's contribution to its band's single occlusion write
             # (inert outside a band: there band_p IS the sheet's own factor).
             band_p += cfac * dens
-            if eff <= MIN_ALPHA:
+            if eff <= min_alpha:
                 if not defer:
                     # The band ends here with nothing left to claim -- its
                     # samples are already dark -- so drop the pending sum
@@ -416,7 +416,7 @@ def sheet_resolve_shade(
             # scope rather than inside the shading branch that fills it,
             # because the reflected lobe's direct-light add-back reads it
             # again further down, once the surface normal is known.
-            lvis = ti.Vector([1.0] * (3 * MAX_SHADOW_LIGHTS))
+            lvis = ti.Vector([1.0] * (3 * max_shadow_lights))
             prim = 0
             circuit = 0
             fetched_bez = False
@@ -471,7 +471,7 @@ def sheet_resolve_shade(
                         event_id = sheet_event_id[idx]
                         if event_id >= 0:
                             for li in range(num_lights):
-                                if li < MAX_SHADOW_LIGHTS:
+                                if li < max_shadow_lights:
                                     base = light_vis_index(li, 0)
                                     for c in ti.static(range(3)):
                                         lvis[base + c] = \
@@ -713,7 +713,7 @@ def sheet_resolve_shade(
 
             split_refl = False
             if ti.static(refraction != 0):
-                if (refl_max > MIN_ALPHA) and (cover_pass > MIN_ALPHA) \
+                if (refl_max > min_alpha) and (cover_pass > min_alpha) \
                         and (bounces_left > 0):
                     split_refl = True
 
@@ -730,7 +730,7 @@ def sheet_resolve_shade(
             if is_glass:
                 wt = weight * trans_energy * tint
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
-                if wt_max > MIN_WEIGHT:
+                if wt_max > min_weight:
                     hp = surf_pos
                     tp = f % tri_pos.shape[0]
                     v0 = ti.math.vec3(tri_pos[tp, prim, 0],
@@ -792,7 +792,7 @@ def sheet_resolve_shade(
                                 bounces_left - 1, processed, pixel, r, r, 1,
                                 ior_stack, 1, ior,
                                 surf_rd.dot(face_normal) < 0.0)
-                if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
+                if (refl_max > min_alpha) and (refl_max >= cover_pass):
                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hit_point = surf_pos
                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
@@ -820,7 +820,7 @@ def sheet_resolve_shade(
                                             rdj, nj, rough, jtap, sec_n,
                                             g_roff, g_aoff)
                                 jtap += 1
-                                org = hpj + nj * (10.0 * MIN_HIT_DISTANCE)
+                                org = hpj + nj * (10.0 * min_hit_distance)
                                 if placed:
                                     if ti.static(mode != 1):
                                         _spawn_pool_ray(
@@ -835,7 +835,7 @@ def sheet_resolve_shade(
                                     placed = True
                     else:
                         rd = refl_rd
-                        ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                        ro = hit_point + nref * (10.0 * min_hit_distance)
                         weight *= refl_energy
                     base_dist += t_hit
                     bounces_left -= 1
@@ -852,7 +852,7 @@ def sheet_resolve_shade(
                 else:
                     rwt = weight * refl_energy
                     rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
-                    if rwt_max > MIN_WEIGHT:
+                    if rwt_max > min_weight:
                         refl_rd, nref = _reflect_frame(surf_rd, normal,
                                                        geo_normal)
                         rhp = surf_pos
@@ -887,7 +887,7 @@ def sheet_resolve_shade(
                                         _spawn_pool_ray(
                                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                             rs_pix, rs_alloc,
-                                            hpj + nj * (10.0 * MIN_HIT_DISTANCE),
+                                            hpj + nj * (10.0 * min_hit_distance),
                                             rdr, rwsub, base_dist + t_hit,
                                             bounces_left - 1, processed, pixel, r, r,
                                             1, ior_stack, 0, 0.0, 0)
@@ -896,7 +896,7 @@ def sheet_resolve_shade(
                                 _spawn_pool_ray(
                                     rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                     rs_alloc,
-                                    rhp + nref * (10.0 * MIN_HIT_DISTANCE),
+                                    rhp + nref * (10.0 * min_hit_distance),
                                     refl_rd, rwt, base_dist + t_hit,
                                     bounces_left - 1, processed, pixel, r, r, 1,
                                     ior_stack, 0, 0.0, 0)
@@ -924,7 +924,7 @@ def sheet_resolve_shade(
                 # reflection always has a pool slot of its own.
                 wt = weight * refl_energy
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
-                if wt_max > MIN_WEIGHT:
+                if wt_max > min_weight:
                     # Claimed here rather than on a successful spawn, so the
                     # event-build walk (mode 1, which spawns nothing) and the
                     # shading walk agree about which sheet took the pixel's one
@@ -940,7 +940,7 @@ def sheet_resolve_shade(
                         if _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
-                                surf_pos + nref * (10.0 * MIN_HIT_DISTANCE),
+                                surf_pos + nref * (10.0 * min_hit_distance),
                                 refl_rd, one3, base_dist + t_hit,
                                 bounces_left - 1, processed, pixel, r, gl_row,
                                 1, ior_stack, 0, 0.0, 0):
@@ -956,7 +956,7 @@ def sheet_resolve_shade(
             elif is_pane or split_refl:
                 wt = weight * refl_energy
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
-                if wt_max > MIN_WEIGHT:
+                if wt_max > min_weight:
                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hp = surf_pos
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
@@ -987,7 +987,7 @@ def sheet_resolve_shade(
                                     _spawn_pool_ray(
                                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                         rs_pix, rs_alloc,
-                                        hpj + nj * (10.0 * MIN_HIT_DISTANCE),
+                                        hpj + nj * (10.0 * min_hit_distance),
                                         rdr,
                                         wsub, base_dist + t_hit, bounces_left - 1,
                                         processed, pixel, r, r, 1,
@@ -997,7 +997,7 @@ def sheet_resolve_shade(
                             _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
-                                hp + nref * (10.0 * MIN_HIT_DISTANCE),
+                                hp + nref * (10.0 * min_hit_distance),
                                 refl_rd,
                                 wt, base_dist + t_hit, bounces_left - 1,
                                 processed, pixel, r, r, 1,
@@ -1014,7 +1014,7 @@ def sheet_resolve_shade(
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - w_a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
-            elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
+            elif (refl_max > min_alpha) and (refl_max >= cover_pass):
                 refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                 hit_point = surf_pos
                 if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
@@ -1040,7 +1040,7 @@ def sheet_resolve_shade(
                                         rdj, nj, rough, jtap, sec_n,
                                         g_roff, g_aoff)
                             jtap += 1
-                            org = hpj + nj * (10.0 * MIN_HIT_DISTANCE)
+                            org = hpj + nj * (10.0 * min_hit_distance)
                             if placed:
                                 if ti.static(mode != 1):
                                     _spawn_pool_ray(
@@ -1055,7 +1055,7 @@ def sheet_resolve_shade(
                                 placed = True
                 else:
                     rd = refl_rd
-                    ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                    ro = hit_point + nref * (10.0 * min_hit_distance)
                     weight *= refl_energy
                 base_dist += t_hit
                 bounces_left -= 1
@@ -1093,7 +1093,7 @@ def sheet_resolve_shade(
             for s in ti.static(range(_AA_NUM_SAMPLES)):
                 vis_all += svis[s]
             cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
-            if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < MIN_WEIGHT:
+            if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < min_weight:
                 done = True
                 break
 
@@ -1103,7 +1103,7 @@ def sheet_resolve_shade(
                 vis_all += svis[s]
             weight *= vis_all * _AA_SAMPLE_WEIGHT
 
-        if processed >= MAX_SURFACES_PER_RAY:
+        if processed >= max_surfaces_per_ray:
             # Truncation, not completion (``truncation.py``): ``done`` is
             # already set for a walk that ended at the far clip or ran its
             # weight out, and ``q == total`` means every sheet was composited.

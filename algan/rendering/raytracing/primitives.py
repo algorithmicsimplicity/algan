@@ -34,8 +34,8 @@ from algan.rendering.raytracing.logical_pn_taichi import (
     pn_patch_flatness_error,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    DEPTH_TIE_EPSILON,
-    MIN_ALPHA,
+    depth_tie_epsilon,
+    min_alpha,
 )
 from algan.rendering.raytracing.settings import (
     _MAT_DEFAULTS,
@@ -1039,7 +1039,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # Alpha is pure coverage, so it alone decides presence: a mob that is
         # un-spawned or faded out is absent, while clear glass keeps its
         # coverage and stays visible (see _derive_material_surface_params).
-        visible = alpha.amax(-1) > MIN_ALPHA
+        visible = alpha.amax(-1) > min_alpha
         # ...except where a colour texture, not the corner colours, is what
         # supplies coverage. Every cut-out image (a PNG sticker, an ImageMob)
         # has transparent corner texels, and a textured quad's corners ARE its
@@ -1079,7 +1079,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 # exactly as it did when the premultiplied map's amax went to
                 # zero (a non-negative scalar multiply commutes with amax).
                 alpha_amax = alpha_amax * top.view(-1, 1).to(alpha_amax.device)
-            texture_visible = alpha_amax > MIN_ALPHA
+            texture_visible = alpha_amax > min_alpha
             (visible, texture_visible), _ = _unify_time(
                 [visible, texture_visible], error_context
             )
@@ -2910,7 +2910,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         Exactly coplanar circuits produce the same hit distance, so the resolve
         ranks them by an internal index that follows neither creation order nor
         hierarchy (see :attr:`~.BezierCircuitCubic.z_index`). Moving a circuit
-        ``z_index * DEPTH_TIE_EPSILON`` along the view axis puts it that many
+        ``z_index * depth_tie_epsilon`` along the view axis puts it that many
         depth bins nearer, which is the smallest displacement the ordering can
         see and far below anything the frame can show: at the default camera
         distance one bin is a relative depth change of ~1.4e-5.
@@ -2931,7 +2931,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             return corners
         # Unit view axis per frame: the screen centre as seen from the eye.
         forward = F.normalize((sp - cam_o).float(), p=2, dim=-1)  # [T, 3]
-        bias = self.z_index.to(corners.device).float() * DEPTH_TIE_EPSILON  # [1, C, 1]
+        bias = self.z_index.to(corners.device).float() * depth_tie_epsilon  # [1, C, 1]
         num_segments = self.num_segments_per_object.to(corners.device).view(-1).long()
         circuit_of_segment = torch.repeat_interleave(
             torch.arange(num_segments.shape[0], device=corners.device), num_segments
@@ -3380,8 +3380,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         border_on = self._rt_border_width > 1e-3
         glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
         visible = (
-            (fill_alpha > MIN_ALPHA)
-            | ((border_alpha > MIN_ALPHA) & border_on)
+            (fill_alpha > min_alpha)
+            | ((border_alpha > min_alpha) & border_on)
             | (glow_alpha > 0.0)
         )
         # Alpha is pure coverage, so it alone decides presence (see

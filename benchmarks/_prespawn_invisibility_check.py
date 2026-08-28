@@ -9,7 +9,7 @@ them out of the batch entirely. This measures the difference between the two.
 Nothing un-spawned is *drawn*: materialization zeroes a mob's opacity outside
 its lifespan (``AttributeTimeline.rematerialize_state_at_times``) and
 ``_pack_frame_visibility`` gives a primitive empty *per-frame* bounds wherever
-its alpha falls below ``MIN_ALPHA``, so it never enters the BVH on those
+its alpha falls below ``min_alpha``, so it never enters the BVH on those
 frames. That holds across the paths that reach alpha differently: flat colours,
 glow (a separate channel), semi-transparency, PN-triangle surfaces, and
 colour-textured primitives -- whose fragment alpha comes from the texture

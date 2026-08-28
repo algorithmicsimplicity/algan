@@ -561,7 +561,7 @@ class RenderLoopMixin:
         The prefix then carries actors that have not spawned by the time it
         ends. Their geometry is inert: materialization zeroes a mob's opacity
         outside its lifespan, and ``_pack_frame_visibility`` gives a primitive
-        empty per-frame bounds wherever its alpha is below ``MIN_ALPHA``, so it
+        empty per-frame bounds wherever its alpha is below ``min_alpha``, so it
         never enters the BVH on those frames -- nothing un-spawned is drawn.
 
         It is not byte-identical to re-fetching the prefix, though: carrying

@@ -17,10 +17,10 @@ Memory footprint is optimized in two ways:
    nothing at all.
 2. **Pointer-free layout** -- instances are sorted along a 4D (x, y, z, t)
    Morton curve so that nodes are coherent in space *and* time, then grouped
-   ``LEAF_SIZE`` at a time into the leaves of an implicit complete
-   ``BVH_ARITY``-ary tree (heap order), so children are found by index
+   ``bvh_leaf_size`` at a time into the leaves of an implicit complete
+   ``bvh_arity``-ary tree (heap order), so children are found by index
    arithmetic. The kernels traverse *sibling blocks*: each internal node
-   stores the bounds + frame intervals of its ``BVH_ARITY`` children
+   stores the bounds + frame intervals of its ``bvh_arity`` children
    contiguously (``blocks``, one aligned 128-byte fetch -- or 64 bytes
    f16-compressed -- per visit), so one dependent memory round tests a whole
    sibling group instead of one box, and the walk needs no per-node miss
@@ -54,17 +54,17 @@ EMPTY_HI = -1e17
 _QUANT_BITS = 15  # 4 * 15 = 60 bits used, keeping codes positive in int64.
 
 # Instances per leaf. Grouping shrinks the tree (depth and node memory both
-# divide by LEAF_SIZE) at the cost of testing up to LEAF_SIZE primitives per
+# divide by bvh_leaf_size) at the cost of testing up to bvh_leaf_size primitives per
 # leaf visit. Measured on animated scenes, grouping is counterproductive:
 # the 4D Morton order places the *same* primitive at adjacent frames next to
 # each other, so grouped leaves get time-swept union boxes whose slots are
 # then mostly rejected by their frame intervals. Default to one instance per
 # leaf; the env knob remains for experiments. Read once at import (the
 # traversal kernels specialize on it).
-LEAF_SIZE = max(1, env_int("ALGAN_STBVH_LEAF_SIZE", 1))
+bvh_leaf_size = max(1, env_int("ALGAN_STBVH_LEAF_SIZE", 1))
 
 # Branching factor of the implicit tree. A wider tree is shallower -- depth
-# divides by log2(BVH_ARITY) -- which shortens the serial chain of dependent
+# divides by log2(bvh_arity) -- which shortens the serial chain of dependent
 # node reads that dominates traversal latency, without changing which
 # primitives a leaf holds (so renders are byte-for-byte identical to a binary
 # tree). 4 (BVH4) is the measured sweet spot: depth halves vs binary for a
@@ -72,14 +72,14 @@ LEAF_SIZE = max(1, env_int("ALGAN_STBVH_LEAF_SIZE", 1))
 # level outweigh the further depth cut). 2 reproduces the original binary
 # layout. Read once at import; the traversal kernels specialize on it. Must
 # be >= 2.
-BVH_ARITY = max(2, env_int("ALGAN_BVH_ARITY", 4))
+bvh_arity = max(2, env_int("ALGAN_BVH_ARITY", 4))
 
 # Relative weight of the (normalized) time axis in the median-split builder's
 # widest-axis choice. > 1 makes time splits happen higher in the tree, so
 # subtrees become frame-pure sooner and the traversal's frame gate rejects
 # them wholesale for rays in other frames. Purely a build-quality knob: the
 # traversal is arrangement-invariant, so renders are byte-identical.
-SPLIT_TIME_WEIGHT = env_float("ALGAN_SPLIT_TIME_WEIGHT", 1.0)
+bvh_split_time_weight = env_float("ALGAN_SPLIT_TIME_WEIGHT", 1.0)
 
 # Store the sibling-block child bounds as conservatively rounded float16
 # (64-byte blocks) instead of exact float32 (128-byte blocks). Lower bounds
@@ -87,13 +87,13 @@ SPLIT_TIME_WEIGHT = env_float("ALGAN_SPLIT_TIME_WEIGHT", 1.0)
 # contain the exact ones and can never falsely cull a hit. NOT byte-identical
 # though: hits routinely lie exactly on their (exact) box faces, and the
 # looser boxes admit candidates within a float ulp of the traversal's
-# DEPTH_TIE_EPSILON window boundaries that the exact boxes cull -- measured
+# depth_tie_epsilon window boundaries that the exact boxes cull -- measured
 # as epsilon-level image changes (few % of pixels by a few LSB), the same
 # class of deviation as changing ``tightness``. Default on;
 # ALGAN_BVH_BLOCK_F16=0 opts out (exact f32 blocks). Read once at import by
 # both this module (build) and the traversal kernels (block decode + ndarray
 # element type).
-BLOCK_F16 = env_flag("ALGAN_BVH_BLOCK_F16", True)
+bvh_block_f16 = env_flag("ALGAN_BVH_BLOCK_F16", True)
 
 # Smallest normal float16. Conservative rounding pushes would-be-subnormal
 # magnitudes outward to 0 or +-this, so a flush-to-zero f16->f32 conversion
@@ -139,21 +139,21 @@ def _build_blocks(nodes, first_leaf):
     ``nodes`` is the builders' unpacked ``[num_nodes, 8]`` float32 rows
     ``(lo.xyz, hi.xyz, tmin, tmax)`` in heap order, so the children of the
     ``first_leaf`` internal nodes are exactly rows ``1 .. ARITY*first_leaf``
-    in order. Returns ``[first_leaf, 8, BVH_ARITY]`` -- SoA across the
+    in order. Returns ``[first_leaf, 8, bvh_arity]`` -- SoA across the
     sibling group: lanes 0-5 hold the children's ``lo.x/lo.y/lo.z/hi.x/hi.y/
     hi.z``, lanes 6-7 their packed frame interval ``tmin | (tmax << 16)``.
     float32 blocks bit-cast the int32 tspan into lane 6 (lane 7 pads the
-    block to an aligned 128 bytes); float16 blocks (``BLOCK_F16``) store
+    block to an aligned 128 bytes); float16 blocks (``bvh_block_f16``) store
     conservatively rounded bounds plus the tspan's low/high u16 halves as
     lanes 6/7 (64 bytes).
     """
-    a = BVH_ARITY
+    a = bvh_arity
     device = nodes.device
     child = nodes[1 : 1 + a * first_leaf].view(first_leaf, a, 8)
     t0 = child[..., 6].to(torch.int32).clamp(0, (1 << 15) - 1)
     t1 = child[..., 7].to(torch.int32).clamp(0, (1 << 15) - 1)
     tspan = (t0 | (t1 << 16)).contiguous()
-    if BLOCK_F16:
+    if bvh_block_f16:
         blk = torch.zeros((first_leaf, 8, a), dtype=torch.int16, device=device)
         for d in range(3):
             blk[:, d] = _half_bits_directed(child[..., d], up=False)
@@ -172,11 +172,11 @@ def _build_blocks(nodes, first_leaf):
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
 
-    Node data is in heap order over a complete ``BVH_ARITY``-ary tree with
-    ``num_leaves`` (a power of ``BVH_ARITY``) leaves: the root is node 0, the
-    children of node ``i`` are ``BVH_ARITY*i + 1 .. BVH_ARITY*i + BVH_ARITY``,
+    Node data is in heap order over a complete ``bvh_arity``-ary tree with
+    ``num_leaves`` (a power of ``bvh_arity``) leaves: the root is node 0, the
+    children of node ``i`` are ``bvh_arity*i + 1 .. bvh_arity*i + bvh_arity``,
     and the ``num_leaves`` leaves occupy the last nodes (from ``first_leaf``).
-    Each leaf holds ``LEAF_SIZE`` instance slots.
+    Each leaf holds ``bvh_leaf_size`` instance slots.
 
     Attributes
     ----------
@@ -186,22 +186,22 @@ class STBVH:
         ``tmin, tmax`` stored as floats (exact for < 2**24 frames). Host-side
         source of truth (block construction, debugging); the traversal
         kernels read ``blocks``.
-    blocks : Tensor[first_leaf, 8, BVH_ARITY] (float32 or float16)
+    blocks : Tensor[first_leaf, 8, bvh_arity] (float32 or float16)
         Kernel-facing sibling blocks: the bounds + packed frame interval of
         internal node ``i``'s children, SoA across the group (see
         :func:`_build_blocks`). One aligned fetch per node visit tests the
         whole sibling group; a ray belonging to frame ``f`` may only enter
         children whose interval satisfies ``tmin <= f <= tmax``. float16
-        blocks store conservatively out-rounded bounds (``BLOCK_F16``, the
+        blocks store conservatively out-rounded bounds (``bvh_block_f16``, the
         default, epsilon-level non-identical to f32 -- see its comment).
     node_miss : Tensor[num_nodes] (int32)
         Stackless DFS miss links (next node when a node is skipped or a leaf
         has been processed, -1 terminates). Host-side/debug only: the block
         walk keeps a small in-kernel stack instead of following miss links.
-    leaf_prim : Tensor[num_leaves * LEAF_SIZE] (int32)
+    leaf_prim : Tensor[num_leaves * bvh_leaf_size] (int32)
         Primitive index for each leaf slot, -1 for padding slots. Slot ``j``
-        of leaf ``l`` is at index ``l * LEAF_SIZE + j``.
-    leaf_tspan : Tensor[num_leaves * LEAF_SIZE] (int32)
+        of leaf ``l`` is at index ``l * bvh_leaf_size + j``.
+    leaf_tspan : Tensor[num_leaves * bvh_leaf_size] (int32)
         Frame interval of each slot's instance, packed as
         ``tmin | (tmax << 16)`` (requires frame batches < 2**15 frames,
         enforced by the renderer's chunking). Bit 31 (the sign bit) flags
@@ -214,10 +214,10 @@ class STBVH:
         self.node_miss = node_miss
         self.leaf_prim = leaf_prim
         self.leaf_tspan = leaf_tspan
-        # Implicit complete BVH_ARITY-ary tree with P leaves has
+        # Implicit complete bvh_arity-ary tree with P leaves has
         # num_nodes = (A*P - 1)/(A - 1) nodes, the P leaves last in heap order.
         num_nodes = nodes.shape[0]
-        self.num_leaves = (num_nodes * (BVH_ARITY - 1) + 1) // BVH_ARITY
+        self.num_leaves = (num_nodes * (bvh_arity - 1) + 1) // bvh_arity
         self.first_leaf = num_nodes - self.num_leaves
         self.blocks = _build_blocks(nodes, self.first_leaf)
 
@@ -241,7 +241,7 @@ class STBVH:
         self.leaf_prim = leaf_prim
         self.leaf_tspan = leaf_tspan
         num_nodes = nodes.shape[0]
-        self.num_leaves = (num_nodes * (BVH_ARITY - 1) + 1) // BVH_ARITY
+        self.num_leaves = (num_nodes * (bvh_arity - 1) + 1) // bvh_arity
         self.first_leaf = num_nodes - self.num_leaves
         self.blocks = blocks
         return self
@@ -304,9 +304,12 @@ def _quantize(c, lo, hi):
 # (verified byte-identical), "morton" for bezier circuits, whose
 # seam de-duplication is discovery-order sensitive (split changes output at
 # the epsilon level there -- faster, but kept off to preserve baselines).
-# Setting ALGAN_BVH_BUILD forces one builder for every type (A/B escape
-# hatch).
-_BVH_BUILD = env_str("ALGAN_BVH_BUILD", None)
+# "auto" (the default) keeps that per-type choice; naming a builder forces it
+# for every type, which is the A/B escape hatch. Spelled as a word rather than
+# ``None`` so it is a scalar like every other setting, and so
+# ``SETTINGS.raytracing.experimental.bvh_build`` reads as something rather than
+# as nothing.
+bvh_build = env_str("ALGAN_BVH_BUILD", "auto").strip().lower() or "auto"
 
 
 def _median_split_slots(centers, P):
@@ -608,12 +611,12 @@ def segment_primitives_in_time(frame_lo, frame_hi, tightness=2.0):
 
 
 def _compute_miss_links(num_leaves, device):
-    """Miss links for stackless DFS over the implicit complete BVH_ARITY-ary
+    """Miss links for stackless DFS over the implicit complete bvh_arity-ary
     tree: a skipped or finished node jumps to its next sibling, or -- for the
     last sibling in a group -- to its parent's miss target. Levels are filled
     top-down so each parent's link is already set when its children read it.
     """
-    a = BVH_ARITY
+    a = bvh_arity
     num_internal = (num_leaves - 1) // (a - 1)
     num_nodes = num_internal + num_leaves
     miss = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
@@ -709,11 +712,11 @@ def build_stbvh(
         exactly as it was before the flag existed.
     builder : str
         Instance-ordering strategy: "morton", "split" or "sah" (see the
-        ``_BVH_BUILD`` comment above for the trade-offs and per-geometry-type
-        defaults). Overridden globally by env ALGAN_BVH_BUILD when set.
+        ``bvh_build`` comment above for the trade-offs and per-geometry-type
+        defaults). Overridden globally by ``bvh_build`` when it is not "auto".
     """
-    if _BVH_BUILD is not None:
-        builder = _BVH_BUILD
+    if bvh_build != "auto":
+        builder = bvh_build
     Tc, N, _ = frame_lo.shape
     device = frame_lo.device
     if num_frames is None:
@@ -766,8 +769,8 @@ def build_stbvh(
         )
 
     M = prim_id.shape[0]
-    L = LEAF_SIZE
-    a = BVH_ARITY
+    L = bvh_leaf_size
+    a = bvh_arity
     num_groups = max((M + L - 1) // L, 1)
     # Leaf count: the smallest power of the arity that holds all groups, and
     # at least one full sibling group -- the block walk always fetches
@@ -793,7 +796,7 @@ def build_stbvh(
         smax = inst_hi.amax(0)
         cn = (center - smin) / (smax - smin).clamp_min(1e-12)
         tn = (t_center / float(max(num_frames - 1, 1))).unsqueeze(-1)
-        tn = tn * SPLIT_TIME_WEIGHT
+        tn = tn * bvh_split_time_weight
         slot_src = _median_split_slots(torch.cat((cn, tn), -1), P)  # [P]
         real = slot_src >= 0
         src = slot_src.clamp_min(0)
@@ -831,7 +834,7 @@ def build_stbvh(
             if inst_opaque is not None:
                 inst_opaque = inst_opaque[order]
 
-        # Consecutive Morton-ordered instances share leaves, LEAF_SIZE at a time.
+        # Consecutive Morton-ordered instances share leaves, bvh_leaf_size at a time.
         # Padding slots get an impossible frame interval (tmin > tmax) and empty
         # bounds so they are never visited.
         slot_lo = torch.full((P * L, 3), EMPTY_LO, device=device)

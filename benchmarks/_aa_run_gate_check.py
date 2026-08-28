@@ -250,8 +250,8 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_SLIVER_BIT,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
-    MIN_ALPHA,
-    MIN_WEIGHT,
+    min_alpha,
+    min_weight,
 )
 
 RESOLUTIONS = {"ld": LD, "md": MD, "hd": HD}
@@ -749,9 +749,9 @@ def _replay(
                 # ss6.6.2: the kernel scales the occlusion write by the same
                 # ratio, so the replay must too or --verify compares two rules.
                 if mesh_cap_dens:
-                    dens *= room / max(eff, MIN_ALPHA)
+                    dens *= room / max(eff, min_alpha)
                 eff = room
-        if eff <= MIN_ALPHA:
+        if eff <= min_alpha:
             effs.append(0.0)
             continue
         effs.append(eff)
@@ -775,7 +775,7 @@ def _replay(
             svis[s] *= fct
         if run_pd > 0.0:
             run_claimed += a_s * (1.0 - run_claimed)
-        if sum(svis) / N < MIN_WEIGHT:
+        if sum(svis) / N < min_weight:
             break
     if rule_b and run_pending:
         _host_redistribute(svis, run_U, run_resid)
@@ -1431,7 +1431,7 @@ def _verify(build, settings, silhouettes, limit):
         effs = captured[(px, py)][0]
         # Fragment rows only (q >= 0); the kernel emits one per fragment it
         # processes, an eff-skip included (note 1), which the replay records
-        # as a zero. It stops at the MIN_WEIGHT break, so compare the prefix.
+        # as a zero. It stops at the min_weight break, so compare the prefix.
         frag = [r for r in rows if r[0] >= 0]
         for r in frag:
             q = int(r[0])

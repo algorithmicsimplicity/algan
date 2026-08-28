@@ -68,7 +68,7 @@ def _suffix():
     kernel spawns the shadow ray (``receives_shadows``), and
     ``ALGAN_SHADOW_ANYHIT`` decides which of FOUR traversal bodies answers it
     (``casts_shadows``) -- the ordered march by default, the opaque any-hit
-    walks at ``1``, the KBUF gather march at ``gather``. Every one of those
+    walks at ``1``, the kbuf gather march at ``gather``. Every one of those
     bodies carries its own copy of the leaf test, so a set rendered at the
     default proves nothing about the other two.
     """

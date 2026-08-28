@@ -64,7 +64,7 @@ blurs the staircase would fail:
     touching.
 
 One ceiling worth knowing before reading any ``--samples`` sweep:
-``MAX_SHADOW_LIGHTS`` is 16 and **every emitter sample spends one slot**, so an
+``max_shadow_lights`` is 16 and **every emitter sample spends one slot**, so an
 area light past ``samples = 16`` has its surplus rows lit but unshadowed and its
 shadow washes out (measured: the scanline minimum jumps to 0.73 at
 ``samples = 64``). The render warns about it -- see ``truncation.py``'s
@@ -103,7 +103,7 @@ _CALIB = _AUDIT / "scenes" / "calib_lights.json"
 _SUBJECT = "rect_area"
 _CONTROLS = ("point", "spot")
 
-#: Emitter count for the convergence arm. 16 is ``MAX_SHADOW_LIGHTS``, so it
+#: Emitter count for the convergence arm. 16 is ``max_shadow_lights``, so it
 #: is the finest grid whose rows all still cast shadow -- past it the surplus
 #: rows are lit but unshadowed and the measurement means nothing.
 _FINE = 16

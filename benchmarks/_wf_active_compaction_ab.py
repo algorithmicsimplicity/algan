@@ -24,8 +24,6 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from algan.settings.render_settings import RenderSettings  # noqa: E402
-
 import algan.rendering.raytracing.settings as rt_settings  # noqa: E402
 import algan.rendering.raytracing.tracer as tracer_mod  # noqa: E402
 from algan import (  # noqa: E402
@@ -43,9 +41,10 @@ from algan import (  # noqa: E402
 from algan.rendering.raytracing import (  # noqa: E402
     RayTracedTrianglePrimitive,
     set_fragment_shading,
-    set_shadows,
     set_samples_per_pixel,
+    set_shadows,
 )
+from algan.settings.render_settings import RenderSettings  # noqa: E402
 from algan.settings.renderer_settings import RENDERER_SETTINGS  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")

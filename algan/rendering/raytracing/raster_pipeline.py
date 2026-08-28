@@ -1,7 +1,7 @@
 """Host orchestration for the deterministic hybrid raster front-end.
 
 The frontend emits exact primary coverage for the whole prepared frame window
-at once (not per GPU tile): each primitive is split into ``RASTER_CHUNK``-sized
+at once (not per GPU tile): each primitive is split into ``raster_chunk``-sized
 candidate chunks, exact hits are emitted, the surviving fragment records are
 ordered by the classic deterministic ``(depth-bin, descending layer)``
 relation, and ``sheets.compact_sheets`` aggregates them into the per-pixel
@@ -23,7 +23,7 @@ import torch
 
 from algan.environment import env_str
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    MIN_HIT_DISTANCE,
+    min_hit_distance,
 )
 from algan.settings import SETTINGS
 
@@ -46,17 +46,17 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raster_taichi import (
     _BEZ_BORDER_BITS,
     AA_FULL_COVERAGE,
-    RASTER_CHUNK,
     Z_SENTINEL,
     _aa_run_full,
     raster_bez_count,
     raster_bez_write,
+    raster_chunk,
     raster_shadow_trace,
     raster_tri_count,
     raster_tri_write,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    DEPTH_TIE_EPSILON,
+    depth_tie_epsilon,
 )
 
 # Per-fragment walk dump (DESIGN_analytic_aa_v2.md ss7.1). Debug-only:
@@ -314,14 +314,14 @@ def _class_pairs(mask, x0, x1, y0, y1, f, device):
     bw = x1[idx] - bx0 + 1
     bh = y1[idx] - by0 + 1
     area = bw * bh
-    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
+    nch = (area + (raster_chunk - 1)) // raster_chunk
     # Avoid an explicit GPU scalar read. repeat_interleave determines the
     # dynamic output length; subsequent shape metadata is host-visible.
     rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
-    off = (torch.arange(rep.shape[0], device=device) - base[rep]) * RASTER_CHUNK
+    off = (torch.arange(rep.shape[0], device=device) - base[rep]) * raster_chunk
     rows = torch.stack(
         [
             idx[rep],
@@ -960,7 +960,7 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
     y1f = y1.reshape(-1).contiguous()
     counts = torch.empty(numel, dtype=torch.int64, device=device)
     pair_expand_count(
-        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, RASTER_CHUNK, counts
+        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, raster_chunk, counts
     )
     offs = torch.cumsum(counts, 0) - counts
     total = int(counts.sum().item())
@@ -976,7 +976,7 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
         offs,
         numel,
         ncirc,
-        RASTER_CHUNK,
+        raster_chunk,
         total,
         rows,
     )
@@ -1005,12 +1005,12 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     bw = x1.reshape(-1)[idx] - bx0 + 1
     bh = y1.reshape(-1)[idx] - by0 + 1
     area = bw * bh
-    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
+    nch = (area + (raster_chunk - 1)) // raster_chunk
     rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
-    off = (torch.arange(rep.shape[0], device=device) - base[rep]) * RASTER_CHUNK
+    off = (torch.arange(rep.shape[0], device=device) - base[rep]) * raster_chunk
     rows = torch.stack(
         [
             (idx % ncirc)[rep],
@@ -1134,7 +1134,7 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     del key_l
     # dtype-view reinterprets IEEE bits; it does not allocate a numeric cast.
     t = t_bits.view(torch.float32)
-    depth_bin = torch.floor(t / DEPTH_TIE_EPSILON).to(torch.int64)
+    depth_bin = torch.floor(t / depth_tie_epsilon).to(torch.int64)
     del t, t_bits
     depth_bin.clamp_(0, 0x7FFFFFFF)
     primary_key = (pixel << 32) | depth_bin
@@ -1416,7 +1416,7 @@ def _shadow_identity_epsilons(merged):
 
     Identity-aware rejection (``shadow_identity_reject``,
     DESIGN_mesh_identity_open.md ssI) replaces the absolute
-    ``MIN_HIT_DISTANCE`` on the shadow path with a floor proportional to the
+    ``min_hit_distance`` on the shadow path with a floor proportional to the
     batch's own scene scale -- the diagonal of the merged triangle bounding
     box over every frame of the batch. That is what decouples the shadow path
     from scene scale: 1e-4 is only ever the right number for a scene about
@@ -1425,7 +1425,7 @@ def _shadow_identity_epsilons(merged):
     Returns ``(eps_self, eps_near)``: the floor a hit on the ray's own
     triangle keeps, and the (by default zero) share of it a hit on another
     triangle of the same mesh keeps. Degenerate batches -- no triangles, or a
-    bounding box that is not finite -- fall back to ``MIN_HIT_DISTANCE`` so a
+    bounding box that is not finite -- fall back to ``min_hit_distance`` so a
     pathological scene can never end up with a zero or NaN floor.
 
     The scene diagonal is fixed for the batch (``tri_pos`` is immutable once
@@ -1450,7 +1450,7 @@ def _shadow_identity_epsilons(merged):
         merged["_shadow_scene_diag"] = scale
     eps_self = float(rt_settings.shadow_eps_relative) * scale
     if not (eps_self > 0.0) or not math.isfinite(eps_self):
-        eps_self = float(MIN_HIT_DISTANCE)
+        eps_self = float(min_hit_distance)
     # Clamped, not merely scaled: a negative fraction would make the same-mesh
     # floor negative, and `t > eps_near` would then accept hits at t <= 0 --
     # geometry BEHIND the ray origin occluding the light. NaN fails the
@@ -2317,7 +2317,7 @@ def shade_sparse_raster_coverage(
                 eps_self, eps_near = _shadow_identity_epsilons(merged)
             else:
                 ev_src_prim = dummy_i
-                eps_self, eps_near = float(MIN_HIT_DISTANCE), 0.0
+                eps_self, eps_near = float(min_hit_distance), 0.0
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
             ev_toff = event_toff.index_select(0, acc_idx) if term_on else event_toff
             from algan.rendering.raytracing.refit_bvh import RefitBVH

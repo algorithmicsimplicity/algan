@@ -3,20 +3,20 @@
 import math
 import tempfile
 from pathlib import Path
+
 import pytest
 import torch
 
+from algan.cli import main as cli_main
 from algan.constants import rate_funcs
-from algan.constants.color import Color, WHITE, RED, BLUE
+from algan.constants.color import BLUE, RED, WHITE, Color
 from algan.errors import (
     AlganError,
+    InvalidColorError,
     ModifiedProtectedAttributeError,
     TranscriptAudioMismatchError,
-    InvalidColorError,
 )
 from algan.utils.algan_utils import RenderResult
-from algan.cli import main as cli_main
-
 
 # ---------------------------------------------------------------------------
 # Rate Functions Tests

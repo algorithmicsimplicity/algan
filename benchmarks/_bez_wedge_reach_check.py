@@ -32,25 +32,24 @@ sys.path.insert(0, str(REPO))
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
 import cv2  # noqa: E402
-import numpy as np  # noqa: E402
-
 import manimpango  # noqa: E402
+import numpy as np  # noqa: E402
 
 for _face in sorted((REPO / "tests" / "assets" / "fonts").glob("*.ttf")):
     manimpango.register_font(str(_face))
 
 from algan import (  # noqa: E402
-    PREVIEW,
-    SETTINGS,
     DARKER_GRAY,
+    DOWN,
+    PREVIEW,
     PURPLE_A,
+    SETTINGS,
     WHITE,
     AmbientLight,
     Group,
     Off,
     Scene,
     Text,
-    DOWN,
 )
 
 FONT = "Algan Test Sans"

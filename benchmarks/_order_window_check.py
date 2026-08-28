@@ -11,7 +11,7 @@ That property is *claimed* to hold at shipped defaults, because the greedy
 ``seam_t`` dedup that broke it is compiled out. Nothing demonstrated it. This
 does, by rendering ONE scene under each lever and diffing:
 
-    KBUF                 1 / 4 / 8        depth-window width of the hit gather
+    kbuf                 1 / 4 / 8        depth-window width of the hit gather
     BVH instance order   morton / split   which order leaves reach the walk in
     wavefront tile       2M / 128k rays   how many rays are in flight at once
     frame batch window   pinned large / pinned small
@@ -67,7 +67,7 @@ floor goes to exactly ZERO once the resolve ships. Check it with
 
 WHY SUBPROCESSES
 -----------------
-``KBUF`` is a module-level constant read at import and baked into array widths,
+``kbuf`` is a module-level constant read at import and baked into array widths,
 and ``ALGAN_WAVEFRONT_TILE`` is read the same way. Neither can be changed in a
 live process, so every arm is its own interpreter. That also removes any
 question of stale module state carrying between arms.
@@ -140,7 +140,7 @@ ARMS = {
     # DESIGN_sheet_resolve.md Phase 0: the two configurations the sparse gate
     # excludes today, exercised with the levers that could plausibly reach
     # their dense resolve. The env scene's mirror sphere reflects the map, so
-    # KBUF and instance order reach it through secondary rays.
+    # kbuf and instance order reach it through secondary rays.
     "env_ref": ({}, "env", WINDOW_BIG),
     "env_noise": ({}, "env", WINDOW_BIG),
     "env_kbuf1": ({"ALGAN_KBUF": "1"}, "env", WINDOW_BIG),
@@ -205,7 +205,7 @@ def build_scene(scene_kind):
 
     A stack of partly transparent sheets in front of solids is what makes the
     hit list at a pixel LONGER than any K-buffer, which is the only regime in
-    which KBUF could change an answer. Reflective and refractive members put the
+    which kbuf could change an answer. Reflective and refractive members put the
     secondary continuations through the same question. ``static`` drops the
     animation so the timeline hands every batching the same numbers. ``env``
     surrounds the same moving scene with a deterministic gradient environment
@@ -250,7 +250,7 @@ def build_scene(scene_kind):
     solids = []
     with Off():
         # Six coplanar-ish translucent sheets: the hit list at a centre pixel is
-        # six long before any solid behind them, so KBUF = 1, 4 and 8 all have
+        # six long before any solid behind them, so kbuf = 1, 4 and 8 all have
         # to refill a different number of times to resolve it.
         for i in range(6):
             sheet = Square(color=(WHITE if i % 2 else YELLOW), opacity=0.35).scale(1.5)
@@ -383,7 +383,7 @@ def main():
     for tag in needed:
         env = dict(os.environ)
         env.update(ARMS[tag][0])
-        # Every arm renders in its OWN interpreter: KBUF and the tile size are
+        # Every arm renders in its OWN interpreter: kbuf and the tile size are
         # read at import and baked into array widths, so an in-process sweep
         # would silently measure the first arm's constants under later arms'
         # labels.

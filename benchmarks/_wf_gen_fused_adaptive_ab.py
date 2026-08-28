@@ -36,8 +36,6 @@ ANIMATE_PORTION = float(os.environ.get("ALGAN_AB_ANIMATE_PORTION", "2e-4"))
 
 def child(name):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from algan.settings.defaults import COMPUTING_DEFAULTS  # noqa: E402
-
     from algan import (  # noqa: E402
         BLUE,
         DOWN,
@@ -55,6 +53,7 @@ def child(name):
         Sphere,
         Sync,
     )
+    from algan.settings.defaults import COMPUTING_DEFAULTS  # noqa: E402
     from algan.utils.algan_utils import render_to_file  # noqa: E402
 
     COMPUTING_DEFAULTS.portion_of_memory_used_for_animating = ANIMATE_PORTION

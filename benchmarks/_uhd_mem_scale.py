@@ -1,13 +1,15 @@
 """Arena vs non-arena peak as a function of frame resolution (one sphere)."""
 
-import os, sys
+import os
+import sys
 
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 import torch
+
 import algan  # noqa: F401
 from algan import *  # noqa: F401,F403
-from algan.utils import memory_utils as mu
 from algan.rendering.raytracing import raster_pipeline, sheets
+from algan.utils import memory_utils as mu
 
 GB = 1 << 30
 MB = 1 << 20

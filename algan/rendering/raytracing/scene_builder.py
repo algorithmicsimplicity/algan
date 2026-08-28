@@ -587,7 +587,7 @@ def _tex_meta_placeholder(device):
 #: ``torch.equal``, worth it for a shared image, not for a promoted 1x1 map.
 #: Output-neutral (dedup only ever shares identical texels), so this trades
 #: merge-time syncs against texture memory and is exposed for that.
-_CONTENT_DEDUP_MIN_TEXELS = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096))
+content_dedup_min_texels = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096))
 
 
 def _split_promotable(p, _append_texture, device, scene):
@@ -871,7 +871,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
         # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
         # extra build per batch; byte-identical for triangles (the depth-peel
         # is arrangement-invariant). PN/bezier BVHs stay Morton -- their
-        # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
+        # seam de-dup is discovery-order sensitive (see stbvh.bvh_build).
         scene["tri_bvh"] = _build_accel(
             lo,
             hi,
@@ -1581,7 +1581,7 @@ def _merge_scene(primitives, *, track_peak=None):
             flat = packed.reshape(1, -1, 5)
             dedup = (
                 SETTINGS.raytracing.texture_content_dedup
-                and w * h >= _CONTENT_DEDUP_MIN_TEXELS
+                and w * h >= content_dedup_min_texels
             )
             if dedup:
                 key = ("u8a" if authored_stack else "u8", tuple(flat.shape), w, h)
@@ -1643,7 +1643,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # queue-drain cost as above, so small maps skip the index entirely.
         dedup = (
             SETTINGS.raytracing.texture_content_dedup
-            and flat.shape[1] >= _CONTENT_DEDUP_MIN_TEXELS
+            and flat.shape[1] >= content_dedup_min_texels
         )
         if dedup:
             # An authored stack's texels are pre-decode; keying it apart

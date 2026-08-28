@@ -9,13 +9,13 @@ from __future__ import annotations
 import io
 
 import manim as mn
-from algan.settings.defaults import COMPUTING_DEFAULTS
 
 from algan import *
 from algan.animation_timeline.animation_contexts import AnimationManager
 from algan.animation_timeline.timeline import TimelineManager
 from algan.mobs.neural_nets.neural_net import NeuralNetMLP
 from algan.scene_manager import SceneManager
+from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import get_num_available_bytes
 
 

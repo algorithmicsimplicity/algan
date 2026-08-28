@@ -50,38 +50,121 @@ from copy import deepcopy
 
 from algan.errors import AlganConfigurationError, AlganError
 
-#: The live field values, and the type each one ships with. Populated the first
-#: time the storage module is resolved -- before any ``set`` can have run, so
-#: these are the shipped defaults rather than whatever the configuration
-#: currently holds. That matters for ``shadow_terminator``, whose default is a
-#: bool but which stores ``2`` once someone selects ``"relax"``.
+#: The modules the renderer keeps its configuration in, in the order a field
+#: is looked for. The first is the toggles module; the rest each own the
+#: settings of one subsystem and keep them beside the code and the comment that
+#: explain them, which is why the values are not gathered into one file.
+#:
+#: A module joins this list by declaring a public lowercase scalar -- there is
+#: nothing else to register, and nothing here mirrors what those modules
+#: contain. Two modules may not declare the same field name; that is refused at
+#: resolution rather than resolved by order, because silently preferring one
+#: module's value is how a setting ends up meaning two things.
+_STORAGE_MODULES = (
+    "algan.rendering.raytracing.settings",
+    "algan.rendering.raytracing.stbvh",
+    "algan.rendering.raytracing.refit_bvh",
+    "algan.rendering.raytracing.raytrace_kernels_taichi",
+    "algan.rendering.raytracing.shading_taichi",
+    "algan.rendering.raytracing.raster_taichi",
+    "algan.rendering.raytracing.sheets",
+    "algan.rendering.raytracing.scene_builder",
+    "algan.rendering.raytracing.tracer",
+    "algan.rendering.raytracing.bezier_acceleration",
+    "algan.rendering.primitives.bezier_circuit_primitive",
+    "algan.rendering.memory_model",
+)
+
+#: ``field -> the module that stores it``, and ``field -> the type it ships
+#: with``. Both are populated the first time the modules are resolved -- before
+#: any ``set`` can have run, so the types are the shipped defaults rather than
+#: whatever the configuration currently holds. That matters for
+#: ``shadow_terminator``, whose default is a bool but which stores ``2`` once
+#: someone selects ``"relax"``.
+_FIELD_MODULE: dict[str, object] = {}
 _DEFAULT_TYPES: dict[str, type] = {}
 
-#: Resolved storage module, cached. It used to be re-imported on every read,
-#: which made ``SETTINGS.raytracing.x`` 34x slower than the module global it
-#: was reading (868 ns against 25 ns measured) -- and that gap is the whole
-#: reason engine code reaches past this object for the module instead.
-_MODULE = None
+_RESOLVED = False
 
 
-def _module():
-    """The module the fields live in, resolved lazily and cached.
+def _resolve():
+    """Import the storage modules once and index the fields they declare."""
+    global _RESOLVED
+    if _RESOLVED:
+        return
+    import importlib
 
-    Lazily because this package is imported while ``algan.settings`` is being
-    assembled, and the storage module imports back into the renderer; by the
-    time anything asks for a field, both are long since built.
+    for name in _STORAGE_MODULES:
+        module = importlib.import_module(name)
+        for attribute, value in vars(module).items():
+            if not _is_field(attribute, value):
+                continue
+            owner = _FIELD_MODULE.get(attribute)
+            if owner is None:
+                _FIELD_MODULE[attribute] = module
+                _DEFAULT_TYPES[attribute] = type(value)
+                continue
+            if owner is module:
+                continue
+            # A name in two namespaces is nearly always a re-export -- these
+            # modules import each other's constants freely -- and only rarely
+            # two declarations. Telling them apart needs the source, so it is
+            # done here rather than for every name: parsing all the storage
+            # modules up front costs ~260 ms of a process that may never look
+            # at a setting, and collisions are a handful.
+            here, there = _declares(module, attribute), _declares(owner, attribute)
+            if here and there:
+                raise AlganConfigurationError(
+                    f"'{attribute}' is declared as a renderer setting by both "
+                    f"{owner.__name__} and {module.__name__}. A setting has one "
+                    "home; rename one of them."
+                )
+            if here and not there:
+                _FIELD_MODULE[attribute] = module
+                _DEFAULT_TYPES[attribute] = type(value)
+    _RESOLVED = True
+
+
+_DECLARED_CACHE: dict[str, frozenset[str]] = {}
+
+
+def _declares(module, name: str) -> bool:
+    """Whether ``module``'s own source assigns ``name`` at module level.
+
+    What separates a declaration from an imported re-export, which ``vars()``
+    cannot: ``refit_bvh`` holds ``bvh_arity`` because it imports it from
+    ``stbvh``, not because it owns it.
     """
-    global _MODULE
-    if _MODULE is None:
-        import importlib
+    names = _DECLARED_CACHE.get(module.__name__)
+    if names is None:
+        import ast
+        import inspect
 
-        _MODULE = importlib.import_module("algan.rendering.raytracing.settings")
-        _DEFAULT_TYPES.update(
-            (name, type(value))
-            for name, value in vars(_MODULE).items()
-            if _is_field(name, value)
-        )
-    return _MODULE
+        declared = set()
+        for node in ast.parse(inspect.getsource(module)).body:
+            if isinstance(node, ast.Assign):
+                declared.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                declared.add(node.target.id)
+        names = frozenset(declared)
+        _DECLARED_CACHE[module.__name__] = names
+    return name in names
+
+
+def _module(field=None):
+    """The module storing ``field``, or the toggles module when unnamed.
+
+    Resolution is lazy because this package is imported while
+    ``algan.settings`` is being assembled and every storage module imports back
+    into the renderer; by the time anything asks for a field, both are long
+    since built.
+    """
+    _resolve()
+    if field is None:
+        import sys
+
+        return sys.modules[_STORAGE_MODULES[0]]
+    return _FIELD_MODULE[field]
 
 
 def _is_field(name: str, value) -> bool:
@@ -92,11 +175,13 @@ def _is_field(name: str, value) -> bool:
     UPPER_CASE global of the same name, and the two spellings are exactly what
     let nine switches reach the engine with no way to set them: they had a
     global and a setter, and nobody added the row. There is one spelling now,
-    so a switch declared in that module IS a field and cannot be forgotten.
+    so a switch declared in a storage module IS a field and cannot be
+    forgotten.
 
-    A field is public, lowercase, and holds a scalar. Everything else there is
-    a helper (callable), an internal (``_``-prefixed), a genuine constant that
-    is not configuration (``ANALYTIC_AA_SLIVER_MODES``, ``WF_TEX_BEZ`` -- still
+    A field is public, lowercase, and holds a scalar. Everything else in those
+    modules is a helper (callable), an internal (``_``-prefixed), a genuine
+    constant that is not configuration (``ANALYTIC_AA_SLIVER_MODES``,
+    ``BEZIER_SPATIAL_CELLS``, the packed-layout offsets -- all still
     UPPER_CASE, as constants are), or an import.
     """
     return (
@@ -107,12 +192,12 @@ def _is_field(name: str, value) -> bool:
 
 
 def _field_names() -> frozenset[str]:
-    _module()
+    _resolve()
     return frozenset(_DEFAULT_TYPES)
 
 
 def _shadowed_fields(module) -> list[str]:
-    """Fields whose name a later ``def`` in the storage module took over.
+    """Fields whose name a later ``def`` in a storage module took over.
 
     One spelling means a field and a helper cannot share a name, and Python
     will not say so: the later binding simply wins, the field stops existing,
@@ -203,13 +288,52 @@ _INERT_FIELDS = {
 }
 
 
+#: Fields the renderer freezes when it is imported, and what to set instead.
+#:
+#: These are promoted so they can be *read* through ``SETTINGS`` -- discovered,
+#: documented, captured in a snapshot -- but writing one is refused rather than
+#: silently ignored, because each has something derived from it at import that a
+#: later write cannot reach: an ndarray element type the kernels are annotated
+#: with (``bvh_arity``, ``bvh_block_f16``), a reciprocal
+#: (``depth_tie_epsilon`` -> ``INV_DEPTH_TIE_EPSILON``), a packed header layout
+#: the kernels decode by fixed offsets (``bezier_scan_bins``,
+#: ``bezier_spatial_grid``), or a ``ti.static`` payload width
+#: (``kbuf``, ``max_shadow_lights``, ``bvh_leaf_size``).
+#:
+#: Refusing matters more than a no-op would: a host that builds an arity-8 tree
+#: for kernels annotated arity-4 does not fail, it renders wrong.
+#:
+#: Checked against the names the caller passed, never against a restored
+#: snapshot -- ``set(source=...)`` and ``_restore`` round-trip every field,
+#: exactly as they do for :data:`_INERT_FIELDS`, because replaying a captured
+#: configuration is not a request to tune anything.
+_IMPORT_FROZEN_FIELDS = {
+    field: (
+        f"'{field}' is fixed when algan is imported: the renderer derives "
+        f"kernel layout from it, so a later write would leave the host and the "
+        f"compiled kernels disagreeing rather than merely doing nothing. Set "
+        f"{variable} before importing algan."
+    )
+    for field, variable in (
+        ("bvh_arity", "ALGAN_BVH_ARITY"),
+        ("bvh_block_f16", "ALGAN_BVH_BLOCK_F16"),
+        ("bvh_leaf_size", "ALGAN_STBVH_LEAF_SIZE"),
+        ("kbuf", "ALGAN_KBUF"),
+        ("max_shadow_lights", "ALGAN_MAX_SHADOW_LIGHTS"),
+        ("depth_tie_epsilon", "ALGAN_DEPTH_TIE_EPSILON"),
+        ("bezier_scan_bins", "ALGAN_BEZIER_SCAN_BINS"),
+        ("bezier_spatial_grid", "ALGAN_BEZIER_SPATIAL_GRID"),
+    )
+}
+
+
 #: Fields whose setter deliberately accepts a type other than the one the field
 #: ships with, so the derived type check has to stand aside for them. Each is a
 #: mode switch that spells one of its states as a bool and another as a string.
 _POLYMORPHIC_FIELDS = frozenset(
     {
         "shadow_terminator",  # bool, plus "relax" for the third state
-        "shadow_anyhit",  # bool, plus "gather" for the KBUF gather-march
+        "shadow_anyhit",  # bool, plus "gather" for the kbuf gather-march
         "wavefront_sort_materials",  # str, plus True meaning "auto"
         "wf_gen_fused",  # str "auto", plus True/False forcing the mode
     }
@@ -488,12 +612,13 @@ class RayTracingSettings:
         # read experimental switches off it on the hot path.
         if name.startswith("set_") and name[4:] in _field_names():
             return lambda value: self._set(None, {name[4:]: value}, True)
-        module = _module()
+        _resolve()
         if name in _DEFAULT_TYPES:
-            return getattr(module, name)
-        # Preserve helper functions such as analytic_aa_tri_active().
+            return getattr(_FIELD_MODULE[name], name)
+        # Preserve helper functions such as analytic_aa_tri_active(), which
+        # live in the toggles module beside the fields they read.
         try:
-            return getattr(module, name)
+            return getattr(_module(), name)
         except AttributeError:
             raise AttributeError(name) from None
 
@@ -523,13 +648,13 @@ class RayTracingSettings:
         # configuration (``source``) still round-trips every field, inert ones
         # included -- a snapshot is not a request to tune anything.
         for name in kwargs:
-            message = _INERT_FIELDS.get(name)
+            message = _INERT_FIELDS.get(name) or _IMPORT_FROZEN_FIELDS.get(name)
             if message is not None:
                 raise AlganConfigurationError(message)
 
         # Resolved before the validation loop, not after: _DEFAULT_TYPES is
         # populated as a side effect of this call, and _check_value reads it.
-        module = _module()
+        _resolve()
 
         normalized = []
         for name, value in values.items():
@@ -542,12 +667,13 @@ class RayTracingSettings:
                     f"SETTINGS.raytracing.experimental.set({field}=...) if you "
                     "accept that its name and behaviour can change."
                 )
-            normalized.append((field, _check_value(field, value, module)))
+            normalized.append((field, _check_value(field, value, _module(field))))
 
         previous = self.to_dict()
         field = None
         try:
             for field, value in normalized:
+                module = _module(field)
                 setter = _setter(module, field)
                 if setter is not None:
                     setter(value)
@@ -575,8 +701,9 @@ class RayTracingSettings:
         return self
 
     def to_dict(self):
-        module = _module()
-        return {field: deepcopy(getattr(module, field)) for field in _field_names()}
+        return {
+            field: deepcopy(getattr(_module(field), field)) for field in _field_names()
+        }
 
     def as_preset(self):
         return RayTracingPreset(self.to_dict())
@@ -587,12 +714,12 @@ class RayTracingSettings:
 
     def _restore(self, values):
         """Restore an already-validated snapshot without invoking setters."""
-        module = _module()
         for field, value in values.items():
             if field not in _field_names():
                 _unknown(field)
-            setattr(module, field, deepcopy(value))
-        module.REFRACT_SPLIT_SLOTS = module.refract_initial_pool_ratio
+            setattr(_module(field), field, deepcopy(value))
+        toggles = _module()
+        toggles.REFRACT_SPLIT_SLOTS = toggles.refract_initial_pool_ratio
         return self
 
     @contextmanager

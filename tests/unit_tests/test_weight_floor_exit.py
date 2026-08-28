@@ -1,7 +1,7 @@
 """The bounced-ray weight-floor exit: gated, compiled, and reaching the drain.
 
 ``wavefront_shade``'s post-loop block retires a ray whose throughput fell
-under ``MIN_WEIGHT`` even when its last processed hit took an in-place
+under ``min_weight`` even when its last processed hit took an in-place
 reflection branch -- previously every such ray rode to the bounce cap, because
 all three reflect branches ``break`` past the in-loop floor test and the
 peel-complete tests exclude bounced rays (scratch_perf/r3/ox/

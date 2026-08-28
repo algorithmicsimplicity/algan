@@ -14,8 +14,8 @@ affordable because topology is built once per batch.
 This module implements that structure:
 
 * **Topology**: a top-down *binned SAH* build over the batch-union boxes of
-  the ever-visible primitives -- binary splits, ``log2(BVH_ARITY)`` of them
-  per emitted node level, collapsed directly into ``BVH_ARITY``-wide sibling
+  the ever-visible primitives -- binary splits, ``log2(bvh_arity)`` of them
+  per emitted node level, collapsed directly into ``bvh_arity``-wide sibling
   blocks. The tree is *unbalanced* (a leaf child can sit beside an internal
   child), which the implicit-heap layout of the classic tree cannot express,
   so every sibling block carries **explicit per-child links**.
@@ -28,8 +28,8 @@ This module implements that structure:
 Kernel-facing layout (consumed by the ``refit`` compile-time branch of the
 walks in ``raytrace_kernels_taichi.py``):
 
-``blocks [Tb * num_blocks, 8, BVH_ARITY]`` (f32, or conservatively
-out-rounded f16 under ``stbvh.BLOCK_F16``): frame ``t``'s sibling block for
+``blocks [Tb * num_blocks, 8, bvh_arity]`` (f32, or conservatively
+out-rounded f16 under ``stbvh.bvh_block_f16``): frame ``t``'s sibling block for
 internal node ``i`` is row ``t * num_blocks + i``. Lanes 0-5 hold each
 child's per-frame bounds exactly like the classic blocks; lanes 6-7 hold a
 packed **per-(frame, child) int32 link word** (f32 blocks bit-cast it into
@@ -69,12 +69,12 @@ import torch
 
 from algan.environment import env_int
 from algan.rendering.raytracing.stbvh import (
-    BLOCK_F16,
-    BVH_ARITY,
     EMPTY_HI,
     EMPTY_LO,
     STBVH,
     _half_bits_directed,
+    bvh_arity,
+    bvh_block_f16,
 )
 
 # Number of centroid bins per axis for the SAH split search. 16 is the
@@ -82,7 +82,7 @@ from algan.rendering.raytracing.stbvh import (
 # histogram/prefix cost grows linearly. Purely a build-quality/build-cost knob
 # -- the traversal is arrangement-invariant -- so it is exposed for tuning
 # rather than fixed.
-SAH_BINS = max(2, env_int("ALGAN_SAH_BINS", 16))
+bvh_sah_bins = max(2, env_int("ALGAN_SAH_BINS", 16))
 
 # Depth budget of the emitted ARITY-ary tree. Must not exceed the traversal
 # kernels' fixed sibling-stack depth (raytrace_kernels_taichi._GROUP_STACK,
@@ -95,8 +95,8 @@ MAX_DEPTH = 16
 # Link-word encoding (see module docstring). Bits 0-29 carry a primitive
 # index for leaf children, so a batch is limited to 2**30 - 1 primitives per
 # geometry type; block indices are stored raw, and the walk packs
-# ``block << BVH_ARITY`` into its int32 stack entries, capping blocks at
-# 2**(31 - BVH_ARITY).
+# ``block << bvh_arity`` into its int32 stack entries, capping blocks at
+# 2**(31 - bvh_arity).
 LINK_INVALID = -1
 LINK_LEAF_BIT = -2147483648  # 1 << 31 as int32
 LINK_OPAQUE_BIT = 1 << 30
@@ -118,7 +118,7 @@ class RefitBVH(STBVH):
     Attributes mirror :class:`stbvh.STBVH` so scene plumbing (arena upload,
     aliased-field memory accounting, kernel launch quintuples) is type-blind:
 
-    ``blocks``    -- ``[Tb * num_blocks, 8, BVH_ARITY]`` per-frame sibling
+    ``blocks``    -- ``[Tb * num_blocks, 8, bvh_arity]`` per-frame sibling
                      blocks (see module docstring).
     ``first_leaf``-- carries ``num_blocks`` (the walk derives the frame count
                      as ``blocks.shape[0] // num_blocks`` and the row base as
@@ -209,7 +209,7 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
         cmin.index_reduce_(0, seg, pc, "amin")
         cmax.index_reduce_(0, seg, pc, "amax")
     ext = cmax - cmin
-    nb = SAH_BINS
+    nb = bvh_sah_bins
     t = (pc - cmin[seg]) / ext[seg].clamp_min(1e-30)
     bins = (t * nb).long().clamp_(0, nb - 1)  # [S, 3]
 
@@ -322,7 +322,7 @@ def build_refit_bvh(
     uhi = vhi.amax(0)[pids]
     cent = (ulo + uhi) * 0.5
 
-    a = BVH_ARITY
+    a = bvh_arity
     s_rounds = a.bit_length() - 1  # log2(arity)
 
     # ------------------------------------------------------------------
@@ -408,10 +408,13 @@ def build_refit_bvh(
                 raise RuntimeError("refit BVH exceeded its depth budget (builder bug)")
 
     B = next_block
-    if B > (1 << (31 - BVH_ARITY)):
+    # SIM300 fires here only because bvh_arity is lowercase now: ruff
+    # read the old BVH_ARITY as the constant side. "blocks exceed the cap"
+    # is the reading that matches the message it raises.
+    if B > (1 << (31 - bvh_arity)):  # noqa: SIM300
         raise ValueError(
             f"refit BVH has {B} sibling blocks; the traversal stack packs "
-            f"block << {BVH_ARITY} into int32 entries"
+            f"block << {bvh_arity} into int32 entries"
         )
     child_kind = torch.cat(kind_rows, 0)  # [B, A]
     child_ref = torch.cat(ref_rows, 0)  # [B, A]
@@ -515,7 +518,7 @@ def build_refit_bvh(
     lo_flat = ch_lo.view(rows, a, 3)
     hi_flat = ch_hi.view(rows, a, 3)
     link_flat = link.view(rows, a)
-    if BLOCK_F16:
+    if bvh_block_f16:
         blk = torch.zeros((rows, 8, a), dtype=torch.int16, device=device)
         for d in range(3):
             blk[:, d] = _half_bits_directed(lo_flat[..., d], up=False)

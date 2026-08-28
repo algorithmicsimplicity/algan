@@ -7,7 +7,7 @@ ALGAN_SHADOW_ANYHIT off/on within each round. Reports per-arm times (round
 last mp4, and the speedup.
 
 The ON arm's mode is selectable: ``1`` = any-hit walks (deferred mode 2 on
-this scene), ``gather`` (default) = KBUF gather-march (mode 4).
+this scene), ``gather`` (default) = kbuf gather-march (mode 4).
 
 Usage:
     .venv/Scripts/python.exe benchmarks/_shadow_anyhit_debug_scene.py [reps] [1|gather]

@@ -8,7 +8,7 @@ by per-ray state in global memory, driven by a host-side iteration loop
   rays (skipped when fused generation folds this into the first traverse; see
   ``settings.wf_gen_fused``).
 * :func:`wavefront_traverse_events` -- for each *active* ray, gather the
-  KBUF nearest hits (reusing the unchanged ``_collect_hits``) into a transient
+  kbuf nearest hits (reusing the unchanged ``_collect_hits``) into a transient
   compact event batch indexed by active-queue ordinal.
 * :func:`wavefront_shade` -- immediately drain that event batch: built-in /
   custom fragment shading, shadows, and reflection / refraction continuations.
@@ -32,19 +32,9 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
-    _M_TRANSMISSION,
-    DEPTH_TIE_EPSILON,
-    KBUF,
-    MAX_SHADOW_LIGHTS,
-    MAX_SURFACES_PER_RAY,
-    MIN_ALPHA,
-    MIN_HIT_DISTANCE,
-    MIN_WEIGHT,
-    NODE_ARG,
-    _M_IOR,
-    _M_REFLECTIVITY,
     _M_ROUGHNESS,
     _M_TRANSMISSION,
+    NODE_ARG,
     _axis_cos,
     _bezier_normal,
     _collect_hits,
@@ -60,7 +50,14 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _triangle_color,
     _triangle_extra,
     _triangle_normal,
+    depth_tie_epsilon,
     finalize_pixel_color,
+    kbuf,
+    max_shadow_lights,
+    max_surfaces_per_ray,
+    min_alpha,
+    min_hit_distance,
+    min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
@@ -224,12 +221,12 @@ _PI = 3.141592653589793
 # shade kernel; currently never enabled -- the tracer always passes 0, the
 # separate shadow kernel having measured slower than inline shadows) pack a
 # per-(K-buffer hit, light) occlusion bit into a single int32, so at most
-# 32 // KBUF lights fit.
-# The inline (default) shadow path uses the full ``MAX_SHADOW_LIGHTS``; only
+# 32 // kbuf lights fit.
+# The inline (default) shadow path uses the full ``max_shadow_lights``; only
 # the deferred bit-packing is bounded here (lights past it stay lit in
 # deferred mode -- a no-op unless a user both enables deferred shadows and
-# uses more than 32 // KBUF lights).
-_DEFERRED_SHADOW_LIGHTS = max(1, min(MAX_SHADOW_LIGHTS, 32 // KBUF))
+# uses more than 32 // kbuf lights).
+_DEFERRED_SHADOW_LIGHTS = max(1, min(max_shadow_lights, 32 // kbuf))
 
 
 @ti.func
@@ -888,7 +885,7 @@ def _offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
     n = n.normalized()
     if n.dot(out_dir) < 0.0:
         n = -n
-    return hit_point + (n + out_dir) * (10.0 * MIN_HIT_DISTANCE)
+    return hit_point + (n + out_dir) * (10.0 * min_hit_distance)
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +901,7 @@ def _offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
 ALLOC_NEXT = 0
 #: Raised to 1 by any reservation that did not fit.
 ALLOC_OVERFLOW = 1
-#: Rays retired by the ``MAX_SURFACES_PER_RAY`` compositing ceiling with
+#: Rays retired by the ``max_surfaces_per_ray`` compositing ceiling with
 #: transport still to carry (``rendering.raytracing.truncation``).
 ALLOC_TRUNC_SURFACES = 2
 #: Number of ``rs_alloc`` words the host must allocate and zero.
@@ -1333,7 +1330,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     # are traced -- see the branch below.
     split_refl = False
     if ti.static(refraction != 0):
-        if (refl_max > MIN_ALPHA) and (cover_pass > MIN_ALPHA) \
+        if (refl_max > min_alpha) and (cover_pass > min_alpha) \
                 and (bounces_left > 0):
             split_refl = True
     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1354,9 +1351,9 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         trans_orig = _offset_transmitted_origin(
             hit_point, rdt, face_n, normal)
         trans_w = trans_energy * tint
-        if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
+        if (refl_max > min_alpha) and (refl_max >= cover_pass):
             refl_dir, nref = _reflect_frame(rd, normal, face_n)
-            refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+            refl_orig = hit_point + nref * (10.0 * min_hit_distance)
             refl_w = refl_energy
         else:
             pass_w = cover3
@@ -1366,13 +1363,13 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         # which spends no bounce) along with the coverage-miss. Only the
         # reflection needs a ray of its own, so it takes the split slot.
         trans_dir, nref = _reflect_frame(rd, normal, face_n)
-        trans_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+        trans_orig = hit_point + nref * (10.0 * min_hit_distance)
         trans_w = refl_energy
         pass_w = cover3 + trans_energy * tint
-    elif split_refl or ((refl_max > MIN_ALPHA)
+    elif split_refl or ((refl_max > min_alpha)
                         and (refl_max >= cover_pass)):
         rdir, nref = _reflect_frame(rd, normal, face_n)
-        rorig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+        rorig = hit_point + nref * (10.0 * min_hit_distance)
         if split_refl:
             # Reflection into the split slot; the pass-through stays the
             # primary ray. It continues the depth-layer walk (no bounce
@@ -1871,7 +1868,7 @@ def wavefront_traverse(
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
         gen_meta: ti.types.ndarray()):
-    """Gather KBUF nearest hits across all three BVHs for each active ray
+    """Gather kbuf nearest hits across all three BVHs for each active ray
     (reuses the unchanged general ``_collect_hits``, Matrix Pencil solver
     included). The frame is taken from the ray's *pixel* (``rs_pix``), not its
     slot index -- a spawned (split) ray lives in a spare slot whose index is not
@@ -1933,12 +1930,12 @@ def wavefront_traverse(
         pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, pro, prd,
                                                             screen_point)
 
-        kb_t = ti.Vector([0.0] * KBUF)
-        kb_layer = ti.Vector([0.0] * KBUF)
-        kb_prim = ti.Vector([0] * KBUF)
-        kb_flags = ti.Vector([0] * KBUF)
-        kb_a = ti.Vector([0.0] * KBUF)
-        kb_b = ti.Vector([0.0] * KBUF)
+        kb_t = ti.Vector([0.0] * kbuf)
+        kb_layer = ti.Vector([0.0] * kbuf)
+        kb_prim = ti.Vector([0] * kbuf)
+        kb_flags = ti.Vector([0] * kbuf)
+        kb_a = ti.Vector([0.0] * kbuf)
+        kb_b = ti.Vector([0.0] * kbuf)
         num_hits = 0
         if ti.static(opaque_closest):
             (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
@@ -2006,7 +2003,7 @@ def wavefront_traverse(
         # the per-pixel accumulator before retiring it -- a split branch's
         # background contribution must be summed, not dropped.
         if num_hits > 0:
-            for q in ti.static(range(KBUF)):
+            for q in ti.static(range(kbuf)):
                 rs_kt[r, q] = kb_t[q]
                 rs_kl[r, q] = kb_layer[q]
                 rs_kp[r, q] = kb_prim[q]
@@ -2056,7 +2053,7 @@ def wavefront_traverse_events(
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
         gen_meta: ti.types.ndarray()):
-    """Gather KBUF nearest hits into a transient compact event batch.
+    """Gather kbuf nearest hits into a transient compact event batch.
 
     This reuses the general ``_collect_hits`` path, including the Matrix Pencil
     PN solver. Events are indexed by active-queue ordinal and consumed by the
@@ -2121,12 +2118,12 @@ def wavefront_traverse_events(
         pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, pro, prd,
                                                             screen_point)
 
-        kb_t = ti.Vector([0.0] * KBUF)
-        kb_layer = ti.Vector([0.0] * KBUF)
-        kb_prim = ti.Vector([0] * KBUF)
-        kb_flags = ti.Vector([0] * KBUF)
-        kb_a = ti.Vector([0.0] * KBUF)
-        kb_b = ti.Vector([0.0] * KBUF)
+        kb_t = ti.Vector([0.0] * kbuf)
+        kb_layer = ti.Vector([0.0] * kbuf)
+        kb_prim = ti.Vector([0] * kbuf)
+        kb_flags = ti.Vector([0] * kbuf)
+        kb_a = ti.Vector([0.0] * kbuf)
+        kb_b = ti.Vector([0.0] * kbuf)
         num_hits = 0
         if ti.static(opaque_closest):
             (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
@@ -2192,8 +2189,8 @@ def wavefront_traverse_events(
         if num_hits > 0:
             # Surface events are indexed by compacted active-queue ordinal,
             # not by the sparse ray-pool slot.  The host releases this exact
-            # [num_active, KBUF] batch immediately after shade consumes it.
-            for q in ti.static(range(KBUF)):
+            # [num_active, kbuf] batch immediately after shade consumes it.
+            for q in ti.static(range(kbuf)):
                 hit_f[i, q, 0] = kb_t[q]
                 hit_f[i, q, 1] = kb_layer[q]
                 hit_f[i, q, 2] = kb_a[q]
@@ -2237,7 +2234,7 @@ def wavefront_shadow(
     ``deferred_shadows == 0`` -- the split measured slower than inline
     shadows; kept for a future occupancy-bound workload): for each active ray,
     precompute per-(K-buffer hit, light) occlusion into a packed int32 (bit
-    ``q * MAX_SHADOW_LIGHTS + li``). Run between traverse and shade so the
+    ``q * max_shadow_lights + li``). Run between traverse and shade so the
     shade kernel reads visibility bits instead of inlining the heavy
     ``_shadow_occluded`` -> ``_nearest_surface_g`` -> PN-solver call graph
     (register-pressure relief -> higher shade-kernel occupancy). The per-hit
@@ -2272,7 +2269,7 @@ def wavefront_shadow(
             base_dist = rs_sca[r, 4]
             pixel_size_per_t = pixel_world_scale[f]
             tl = f % light_pos.shape[0]
-            for q in ti.static(range(KBUF)):
+            for q in ti.static(range(kbuf)):
                 if q < num_hits:
                     prim = hit_i[i, q, 0]
                     if prim >= 0:
@@ -2309,7 +2306,7 @@ def wavefront_shadow(
                             # constant normal field) to license the
                             # horizon-cull relaxation below.
                             # RENDERER_WORK_QUEUE.md item 20.
-                            sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+                            sorigin = spos + fnrm * (10.0 * min_hit_distance)
                             lifted = 0
                             if ti.static(shadow_term != 0):
                                 if ti.static(shadow_term == 1):
@@ -2343,7 +2340,7 @@ def wavefront_shadow(
                                         if horizon_ok:
                                             occ = _shadow_occluded(
                                                 refit, 1, sorigin, wi, f, ff,
-                                                ldist - 20.0 * MIN_HIT_DISTANCE,
+                                                ldist - 20.0 * min_hit_distance,
                                                 pixel_size_per_t, base_dist,
                                                 layer_offset_triangles,
                                                 has_tri, has_bez,
@@ -2462,7 +2459,7 @@ def wavefront_shade(
         compact: ti.template(),
         # Post-loop significance-floor exit (rt_settings.weight_floor_exit,
         # read live per batch like the other template gates): a ray whose
-        # throughput fell under MIN_WEIGHT retires even if its last act was an
+        # throughput fell under min_weight retires even if its last act was an
         # in-place bounce -- every reflect branch ``break``s past the in-loop
         # floor test above and the peel-complete tests exclude bounced rays,
         # so such a ray otherwise rides to the bounce cap. Completion, not
@@ -2575,13 +2572,13 @@ def wavefront_shade(
                 bounces_left = rs_int[r, 0]
                 processed = rs_int[r, 1]
 
-            kb_t = ti.Vector([0.0] * KBUF)
-            kb_layer = ti.Vector([0.0] * KBUF)
-            kb_prim = ti.Vector([0] * KBUF)
-            kb_flags = ti.Vector([0] * KBUF)
-            kb_a = ti.Vector([0.0] * KBUF)
-            kb_b = ti.Vector([0.0] * KBUF)
-            for q in ti.static(range(KBUF)):
+            kb_t = ti.Vector([0.0] * kbuf)
+            kb_layer = ti.Vector([0.0] * kbuf)
+            kb_prim = ti.Vector([0] * kbuf)
+            kb_flags = ti.Vector([0] * kbuf)
+            kb_a = ti.Vector([0.0] * kbuf)
+            kb_b = ti.Vector([0.0] * kbuf)
+            for q in ti.static(range(kbuf)):
                 kb_t[q] = hit_f[i, q, 0]
                 kb_layer[q] = hit_f[i, q, 1]
                 kb_a[q] = hit_f[i, q, 2]
@@ -2603,7 +2600,7 @@ def wavefront_shade(
                 sel_found = 0
                 t_hit = 0.0
                 hit_layer = 0.0
-                for q in ti.static(range(KBUF)):
+                for q in ti.static(range(kbuf)):
                     if (q < num_hits) and (kb_prim[q] >= 0):
                         if sel_found == 0:
                             sel = q
@@ -2625,7 +2622,7 @@ def wavefront_shade(
                 flags = 0
                 a = 0.0
                 b = 0.0
-                for q in ti.static(range(KBUF)):
+                for q in ti.static(range(kbuf)):
                     if q == sel:
                         prim = kb_prim[q]
                         flags = kb_flags[q]
@@ -2650,7 +2647,7 @@ def wavefront_shade(
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
 
-                seam_eps = DEPTH_TIE_EPSILON
+                seam_eps = depth_tie_epsilon
                 if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                     t_prev = t_hit
                     layer_prev = hit_layer
@@ -2701,7 +2698,7 @@ def wavefront_shade(
                 # direct-light add-back further down is a sibling ti.static
                 # block, and Taichi scopes a name to the block it is bound in.
                 vis = ti.Vector([1.0]
-                                * (3 * MAX_SHADOW_LIGHTS))
+                                * (3 * max_shadow_lights))
                 # Fragment shading: ``color`` arrived as the interpolated raw
                 # albedo for triangle/PN hits; evaluate the lighting model per
                 # fragment. Bezier circuits (htype 0) keep their sampled colour.
@@ -2799,7 +2796,7 @@ def wavefront_shade(
                             # constant normal field) to license the
                             # horizon-cull relaxation in the sample loop
                             # below. RENDERER_WORK_QUEUE.md item 20.
-                            sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+                            sorigin = spos + fnrm * (10.0 * min_hit_distance)
                             lifted = 0
                             if ti.static(shadow_term != 0):
                                 if ti.static(shadow_term == 1):
@@ -2814,7 +2811,7 @@ def wavefront_shade(
                                     lifted = 1
                             tl = f % light_pos.shape[0]
                             for li in range(num_lights):
-                                if (li < MAX_SHADOW_LIGHTS) and (
+                                if (li < max_shadow_lights) and (
                                         (fan_exact == 1)
                                         or (light_col[tl, li, 0] != 0.0)
                                         or (light_col[tl, li, 1] != 0.0)
@@ -2994,7 +2991,7 @@ def wavefront_shade(
                                                     refit, shadows,
                                                     sorigin, wis, f, ff,
                                                     ldn - 20.0
-                                                    * MIN_HIT_DISTANCE,
+                                                    * min_hit_distance,
                                                     pixel_size_per_t, base_dist,
                                                     layer_offset_triangles,
                                                     has_tri, has_bez,
@@ -3249,15 +3246,15 @@ def wavefront_shade(
                     # ``default_scatter`` for why this way round).
                     split_refl = False
                     if ti.static(refraction != 0):
-                        if (refl_max > MIN_ALPHA) \
-                                and (cover_pass > MIN_ALPHA) \
+                        if (refl_max > min_alpha) \
+                                and (cover_pass > min_alpha) \
                                 and (bounces_left > 0):
                             split_refl = True
 
                     if is_glass:
                         wt = weight * trans_energy * tint
                         wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
-                        if wt_max > MIN_WEIGHT:
+                        if wt_max > min_weight:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -3304,11 +3301,11 @@ def wavefront_shade(
                         # coverage-miss; the lighter one takes a pool slot, so
                         # all three continuations are traced. At full coverage
                         # the miss is empty and the primary always reflects.
-                        if (refl_max > MIN_ALPHA) \
+                        if (refl_max > min_alpha) \
                                 and (refl_max >= cover_pass):
                             hit_point = ro + t_hit * rd
                             rd, nref = _reflect_frame(rd, normal, geo_normal)
-                            ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                            ro = hit_point + nref * (10.0 * min_hit_distance)
                             weight *= refl_energy
                             base_dist += t_hit
                             t_prev = 0.0
@@ -3329,7 +3326,7 @@ def wavefront_shade(
                             # the matching branch in ``raster_taichi``).
                             rwt = weight * refl_energy
                             rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
-                            if rwt_max > MIN_WEIGHT:
+                            if rwt_max > min_weight:
                                 c, have_slot = _reserve_continuation_slot(
                                     rs_alloc, rs_ro.shape[0])
                                 if have_slot:
@@ -3339,7 +3336,7 @@ def wavefront_shade(
                                     for k in ti.static(range(3)):
                                         rs_ro[c, k] = (
                                             hp[k] + nref[k]
-                                            * (10.0 * MIN_HIT_DISTANCE))
+                                            * (10.0 * min_hit_distance))
                                         rs_rd[c, k] = rdr[k]
                                     for k in ti.static(range(4)):
                                         rs_acc[c, k] = 0.0
@@ -3370,7 +3367,7 @@ def wavefront_shade(
                         # reflection needs a slot (see ``_scatter_impl``).
                         wt = weight * refl_energy
                         wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
-                        if wt_max > MIN_WEIGHT:
+                        if wt_max > min_weight:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -3379,7 +3376,7 @@ def wavefront_shade(
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + nref[k]
-                                                   * (10.0 * MIN_HIT_DISTANCE))
+                                                   * (10.0 * min_hit_distance))
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -3406,7 +3403,7 @@ def wavefront_shade(
                     elif split_refl:
                         wt = weight * refl_energy
                         wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
-                        if wt_max > MIN_WEIGHT:
+                        if wt_max > min_weight:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -3415,7 +3412,7 @@ def wavefront_shade(
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + nref[k]
-                                                   * (10.0 * MIN_HIT_DISTANCE))
+                                                   * (10.0 * min_hit_distance))
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -3442,11 +3439,11 @@ def wavefront_shade(
                         layer_prev = hit_layer
                     # No split pool: reflect only while the reflection
                     # outweighs what shows through (see ``default_scatter``).
-                    elif ((refl_max > MIN_ALPHA)
+                    elif ((refl_max > min_alpha)
                           and (refl_max >= cover_pass)):
                         hit_point = ro + t_hit * rd
                         rd, nref = _reflect_frame(rd, normal, geo_normal)
-                        ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                        ro = hit_point + nref * (10.0 * min_hit_distance)
                         weight *= refl_energy
                         base_dist += t_hit
                         t_prev = 0.0
@@ -3561,7 +3558,7 @@ def wavefront_shade(
                         wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
                         trans_w_max = ti.max(trans_w[0],
                                              ti.max(trans_w[1], trans_w[2]))
-                        if (trans_w_max > 0.0) and (wt_max > MIN_WEIGHT) \
+                        if (trans_w_max > 0.0) and (wt_max > min_weight) \
                                 and (bounces_left > 0):
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
@@ -3618,7 +3615,7 @@ def wavefront_shade(
                         t_prev = t_hit
                         layer_prev = hit_layer
                 if ti.max(weight[0], ti.max(weight[1], weight[2])) \
-                        < MIN_WEIGHT:
+                        < min_weight:
                     done = True
                     break
 
@@ -3626,7 +3623,7 @@ def wavefront_shade(
                 if (not done) and (not bounced):
                     done = True
             else:
-                if (not done) and (not bounced) and (num_hits < KBUF):
+                if (not done) and (not bounced) and (num_hits < kbuf):
                     done = True
             if ti.static(weight_floor_exit):
                 # The same significance floor the in-loop test applies to
@@ -3635,9 +3632,9 @@ def wavefront_shade(
                 # ALLOC_TRUNC_SURFACES -- what this drops is sub-floor
                 # transport, not image the ceiling cuts short.
                 if ti.max(weight[0], ti.max(weight[1], weight[2])) \
-                        < MIN_WEIGHT:
+                        < min_weight:
                     done = True
-            if processed >= MAX_SURFACES_PER_RAY:
+            if processed >= max_surfaces_per_ray:
                 # Truncation, not completion: the blocks above have already set
                 # ``done`` for every ray that finished on its own terms, so a
                 # ray still active here is one the ceiling is cutting short --

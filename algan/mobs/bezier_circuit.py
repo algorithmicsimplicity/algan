@@ -1416,7 +1416,7 @@ def build_render_primitives_batched(actors, scene):
     """
     from algan.animation_timeline.timeline import RowRanges
     from algan.rendering.primitives.bezier_circuit_primitive import (
-        DEFAULT_CHORD_TOLERANCE_PIXELS,
+        chord_tolerance_pixels,
     )
 
     timeline = scene.timeline_manager
@@ -1570,7 +1570,7 @@ def build_render_primitives_batched(actors, scene):
     # was flattened to twice the per-actor path's chord error. Harmless while
     # the batched build reached a fifth of a scene's circuits; not harmless now
     # that a group clash no longer sends the rest down the other path (P9).
-    mega.num_pixels_per_sample = DEFAULT_CHORD_TOLERANCE_PIXELS
+    mega.num_pixels_per_sample = chord_tolerance_pixels
     mega.num_bezier_parameters = 4
     mega.num_texture_points = ntp
     mega.filled = first.filled

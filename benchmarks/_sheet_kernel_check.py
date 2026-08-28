@@ -860,12 +860,12 @@ def torch_pair_rows(mask, x0, x1, y0, y1, f_abs):
     bw = x1.reshape(-1)[idx] - bx0 + 1
     bh = y1.reshape(-1)[idx] - by0 + 1
     area = bw * bh
-    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
+    nch = (area + (raster_chunk - 1)) // raster_chunk
     rep = torch.repeat_interleave(torch.arange(idx.numel(), device=DEV), nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
-    off = (torch.arange(rep.shape[0], device=DEV) - base[rep]) * RASTER_CHUNK
+    off = (torch.arange(rep.shape[0], device=DEV) - base[rep]) * raster_chunk
     rows = torch.stack(
         [
             (idx % ncirc)[rep],
@@ -883,8 +883,8 @@ def torch_pair_rows(mask, x0, x1, y0, y1, f_abs):
 
 
 from algan.rendering.raytracing.raster_pipeline import (  # noqa: E402
-    RASTER_CHUNK,
     _class_pairs_flat,
+    raster_chunk,
 )
 
 
@@ -965,7 +965,7 @@ pairs_case(
 single_mask = torch.zeros(1, 1, dtype=torch.bool, device=DEV)
 single_mask[0, 0] = True
 pairs_case(
-    "one candidate, one chunk (area <= RASTER_CHUNK)",
+    "one candidate, one chunk (area <= raster_chunk)",
     single_mask,
     torch.tensor([[10]], dtype=torch.int64, device=DEV),
     torch.tensor([[37]], dtype=torch.int64, device=DEV),

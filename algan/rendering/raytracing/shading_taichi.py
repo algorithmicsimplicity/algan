@@ -70,8 +70,8 @@ import taichi as ti
 from algan.environment import env_int
 from algan.rendering.raytracing.color_space_taichi import (
     linear_to_srgb_v3,
-    srgb_to_linear_v3,
     srgb_to_linear_f,
+    srgb_to_linear_v3,
 )
 
 # Width of the built-in per-primitive material parameter block (see slot map).
@@ -253,7 +253,7 @@ SHADOW_VIS_CHANNELS = 3
 def light_vis_index(li, c):
     """Flat index of channel ``c`` of light ``li`` in a packed per-hit
     shadow-visibility payload (``vis``/``lvis``, length ``SHADOW_VIS_CHANNELS *
-    MAX_SHADOW_LIGHTS``).
+    max_shadow_lights``).
 
     One module-level helper rather than an inline ``3 * li + c`` at every site
     so the producers and consumers of the payload cannot disagree about the
@@ -279,7 +279,7 @@ def light_vis_index(li, c):
 # unshadowed one). A
 # truly unbounded (runtime) count would need the per-fragment visibilities in
 # a global scratch buffer instead of a stack vector.
-MAX_SHADOW_LIGHTS = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
+max_shadow_lights = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
 
 
 @ti.func
@@ -575,7 +575,7 @@ def _shadow_terminator_delta(f, prim, w0, a, b, p, snrm,
     ``_tri_normal_g`` result).
 
     The caller STILL adds the face-normal lift on top of this displacement
-    (``sorigin = spos + delta + fnrm * (10 * MIN_HIT_DISTANCE)``); the lift
+    (``sorigin = spos + delta + fnrm * (10 * min_hit_distance)``); the lift
     is what keeps flat facets working exactly as they always have.
     """
     tn = f % tri_norm.shape[0]
@@ -811,7 +811,7 @@ def _light_vis(shadows: ti.template(), vis, li):
     """
     v = ti.math.vec3(1.0, 1.0, 1.0)
     if ti.static(shadows != 0):
-        if li < MAX_SHADOW_LIGHTS:
+        if li < max_shadow_lights:
             base = light_vis_index(li, 0)
             v = ti.math.vec3(vis[base], vis[base + 1], vis[base + 2])
     return v

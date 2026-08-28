@@ -86,7 +86,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_SLIVER_BIT as AA_SLIVER_BIT,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    DEPTH_TIE_EPSILON,
+    depth_tie_epsilon,
 )
 from algan.rendering.raytracing.truncation import record_truncation
 
@@ -127,7 +127,7 @@ FULL_DUST = 1e-3
 #: 0.0 (cede whatever is lost) reinstates both regressions. Tuned against that
 #: reference frame rather than derived, so it is exposed for re-tuning; it
 #: moves rendered output.
-_SAMPLE_DEPTH_CEDE_FRACTION = min(
+sheet_sample_depth_cede = min(
     1.0, max(0.0, env_float("ALGAN_SHEET_SAMPLE_DEPTH_CEDE", 0.25))
 )
 
@@ -147,7 +147,7 @@ def resolve_pixel_reference(
     mask words ``msks`` (low sample bits + flag bits), ``is_bez`` flags, and
     optional per-sheet material ``alphas`` (default 1, matte) and transmission
     shares ``trans`` (default 0). ``min_alpha`` mirrors the walk's
-    ``eff <= MIN_ALPHA`` skip when parity with a kernel is wanted.
+    ``eff <= min_alpha`` skip when parity with a kernel is wanted.
 
     Returns ``(claims, T)``: what each sheet paints, and the per-sample
     transmittance left for the background (§4.5's final sheet).
@@ -861,13 +861,13 @@ def compact_sheets(
     sample it publishes that minimum depth as a floor. A SUBJECT — triangle,
     positioned, not areal, its band's only sheet, non-negative weight — then
     cedes (loses) every owned sample where the best OTHER-surface enforcer is
-    strictly nearer beyond ``DEPTH_TIE_EPSILON``, and the resolve zeroes those
+    strictly nearer beyond ``depth_tie_epsilon``, and the resolve zeroes those
     samples' claim/occlusion slots. Ties and near-ties keep today's walk order;
     the walk order itself never changes, only what a sheet may claim. Sheets of
     multi-sheet bands — shading-class siblings, conflict-rank splits — are
     exempt on both sides: their band's pooled arithmetic writes occlusion once,
     ignoring slots. And a sheet cedes everything it loses or nothing at all,
-    and only once it is losing more than ``_SAMPLE_DEPTH_CEDE_FRACTION`` of
+    and only once it is losing more than ``sheet_sample_depth_cede`` of
     what it owns: a lane's depth is its fragment's CENTROID depth rather than
     the lane's own, so a thin margin is the reading least entitled to decide. The lose bits ride bits 20..27 of BOTH
     mask words (record and weights). Off, no bit is set anywhere and the output
@@ -1024,7 +1024,7 @@ def compact_sheets(
     # every downstream aggregate -- band areas, corr, sibling shares, the
     # dominant fragment -- sees exactly the coverage that will composite. A
     # fragment clamped to zero contributes no area anywhere: its sheet falls
-    # out at the resolve's ``eff <= MIN_ALPHA`` branch, claiming nothing and
+    # out at the resolve's ``eff <= min_alpha`` branch, claiming nothing and
     # occluding nothing. Determinism follows the §6.6.4 pattern (float64
     # accumulate, float32 round) because the cap feeds a threshold.
     closed_s = None
@@ -1218,7 +1218,7 @@ def compact_sheets(
             )
             del spent, cap, seg
             # A fragment clamped to zero carries no area into any band aggregate:
-            # its sheet falls out at the resolve's ``eff <= MIN_ALPHA`` branch,
+            # its sheet falls out at the resolve's ``eff <= min_alpha`` branch,
             # claiming nothing and occluding nothing.
             cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
             del scale, c2, o2
@@ -1583,11 +1583,11 @@ def compact_sheets(
             del sec_d, lanes
 
         # Lose: the subject owns s AND the best other-surface enforcer there
-        # is strictly nearer beyond DEPTH_TIE_EPSILON -- exact ties and
+        # is strictly nearer beyond depth_tie_epsilon -- exact ties and
         # near-ties keep today's walk order.
         lane_bits = torch.arange(AA_NUM_SAMPLES, device=device)
         owns = ((low.unsqueeze(1) >> lane_bits.view(1, -1)) & 1) == 1
-        gate = owns & (other_d < sample_depths - DEPTH_TIE_EPSILON)
+        gate = owns & (other_d < sample_depths - depth_tie_epsilon)
         gate &= subject.unsqueeze(1)
         # ALL OR NOTHING, above a floor. A fragment's depth is evaluated at
         # the centroid of the samples it OWNS (raster_taichi.py:1308-1330), so
@@ -1598,13 +1598,12 @@ def compact_sheets(
         # there regressed two pixels by 110 and 55 channel values while fixing
         # nothing, because the surface behind does not always claim what was
         # ceded. So a sheet cedes everything it loses or nothing at all, and
-        # only once it is losing more than _SAMPLE_DEPTH_CEDE_FRACTION of what
+        # only once it is losing more than sheet_sample_depth_cede of what
         # it owns.
         n_lose = gate.sum(dim=1)
         n_own = owns.sum(dim=1)
         gate &= (
-            n_lose.to(torch.float32)
-            > _SAMPLE_DEPTH_CEDE_FRACTION * n_own.to(torch.float32)
+            n_lose.to(torch.float32) > sheet_sample_depth_cede * n_own.to(torch.float32)
         ).unsqueeze(1)
         del n_lose, n_own
         lose_word = (

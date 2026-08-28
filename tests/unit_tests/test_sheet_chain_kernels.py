@@ -20,8 +20,8 @@ import pytest
 import torch
 
 from algan.rendering.raytracing.raster_pipeline import (
-    RASTER_CHUNK,
     _class_pairs_flat,
+    raster_chunk,
 )
 from algan.rendering.raytracing.raster_taichi import _AA_MASK_ALL as MASK_ALL
 from algan.rendering.raytracing.sheet_compact_taichi import (
@@ -296,12 +296,12 @@ def _torch_pair_rows(mask, x0, x1, y0, y1, f_abs):
     bw = x1.reshape(-1)[idx] - bx0 + 1
     bh = y1.reshape(-1)[idx] - by0 + 1
     area = bw * bh
-    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
+    nch = (area + (raster_chunk - 1)) // raster_chunk
     rep = torch.repeat_interleave(torch.arange(idx.numel()), nch)
     if rep.numel() == 0:
         return None
     base = torch.cumsum(nch, 0) - nch
-    off = (torch.arange(rep.shape[0]) - base[rep]) * RASTER_CHUNK
+    off = (torch.arange(rep.shape[0]) - base[rep]) * raster_chunk
     rows = torch.stack(
         [
             (idx % ncirc)[rep],
@@ -329,7 +329,7 @@ def _kernel_pair_rows(mask, x0, x1, y0, y1, f_abs):
     y1f = y1.reshape(-1).contiguous()
     counts = torch.empty(numel, dtype=torch.int64)
     pair_expand_count(
-        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, RASTER_CHUNK, counts
+        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, raster_chunk, counts
     )
     offs = torch.cumsum(counts, 0) - counts
     total = int(counts.sum().item())
@@ -345,7 +345,7 @@ def _kernel_pair_rows(mask, x0, x1, y0, y1, f_abs):
         offs,
         numel,
         ncirc,
-        RASTER_CHUNK,
+        raster_chunk,
         total,
         rows,
     )
@@ -357,7 +357,7 @@ def test_pair_expand_kernels_match_class_pairs_flat_body():
     ft, ncirc = 3, 64
     # Interleaved candidates and non-candidates, multi-frame so both e % ncirc
     # and e // ncirc carry real values; one candidate's area is an exact
-    # multiple of RASTER_CHUNK, another's degenerate (x0 == x1, y0 == y1).
+    # multiple of raster_chunk, another's degenerate (x0 == x1, y0 == y1).
     mask = torch.rand(ft, ncirc, generator=g) < 0.4
     mask[0, ::16] = True
     x0 = torch.randint(0, 800, (ft, ncirc), generator=g)

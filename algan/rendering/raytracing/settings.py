@@ -160,7 +160,7 @@ wf_opaque_prepass = env_flag("ALGAN_WF_OPAQUE_PREPASS", False)
 
 inplace_aa = env_flag("ALGAN_INPLACE_AA", False)
 # Rays per wavefront screen tile. The wavefront holds per-ray state for every
-# ray it processes at once (~(18 + 6*KBUF) floats/ray); processing the chunk in
+# ray it processes at once (~(18 + 6*kbuf) floats/ray); processing the chunk in
 # tiles of this many rays bounds that state so it fits at any resolution / chunk
 # length (a single HD frame is ~2M rays). ~2M rays * ~168 B ~= 350 MB of state.
 wavefront_tile_rays = env_int("ALGAN_WAVEFRONT_TILE", 1 << 21)
@@ -845,8 +845,8 @@ def set_merge_dedup_time(enabled):
 # that provably contain no translucent geometry skip the march entirely (a
 # miss then proves the ray lit). Not strictly byte-identical in two corner
 # cases the march itself gets wrong (an opaque edge hit seam-merged into a
-# coincident translucent edge within DEPTH_TIE_EPSILON, and an opaque
-# blocker past MAX_SURFACES_PER_RAY peels); the any-hit's answer is the
+# coincident translucent edge within depth_tie_epsilon, and an opaque
+# blocker past max_surfaces_per_ray peels); the any-hit's answer is the
 # physically correct one in both.
 #
 # QUALIFIED 2026-08-26, and deliberately NOT the default. Correctness: all
@@ -864,8 +864,8 @@ def set_merge_dedup_time(enabled):
 # any-hit only where mode 3 applies. ALGAN_SHADOW_ANYHIT=1 opts in.
 #
 # ALGAN_SHADOW_ANYHIT=gather selects the gather-march instead: the same
-# ordered shadow peel rebuilt on the KBUF gather (_collect_hits), so a
-# k-surface translucent stack costs ceil((k+1)/KBUF) traversals instead of
+# ordered shadow peel rebuilt on the kbuf gather (_collect_hits), so a
+# k-surface translucent stack costs ceil((k+1)/kbuf) traversals instead of
 # k+1 while all-opaque rays stay at one. Valid for any batch (the drain
 # evaluates translucent attenuation exactly like the march); shares the
 # march's output up to the seam-merge corner the camera peel also has.
@@ -880,7 +880,7 @@ def set_shadow_anyhit(enabled):
     """Select the shadow-query early-out mode (see ``shadow_anyhit``).
 
     ``True`` enables the opaque any-hit walks, the string ``"gather"`` the
-    KBUF gather-march, ``False`` the classic ordered march. Takes effect at
+    kbuf gather-march, ``False`` the classic ordered march. Takes effect at
     the next render batch.
     """
     global shadow_anyhit
@@ -946,15 +946,15 @@ def set_rgb_shadow_tint(enabled):
 
 
 # Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
-# shadow ray currently rejects its own surface with MIN_HIT_DISTANCE plus a
-# normal offset of 10 * MIN_HIT_DISTANCE -- absolute world-space constants
+# shadow ray currently rejects its own surface with min_hit_distance plus a
+# normal offset of 10 * min_hit_distance -- absolute world-space constants
 # applied to EVERY hit, so a small object resting on a plane loses its contact
 # shadow within 1e-3 of the contact and grazing light on small geometry
 # produces acne. On the sheet route's shadow queue the event's source surface
 # id is available (packed into ``event_msk`` above the material pipeline id),
 # so the acceptance test becomes
 #
-#     accept = (t < max_t) and (hit_mesh != src_mesh ? t > 0 : t > MIN_HIT_DISTANCE)
+#     accept = (t < max_t) and (hit_mesh != src_mesh ? t > 0 : t > min_hit_distance)
 #
 # and the cross-mesh threshold goes to zero while self-rejection stays exactly
 # as safe. The rejection is per hit -- "same mesh AND near-zero t", never
@@ -977,7 +977,7 @@ def set_shadow_identity_reject(enabled):
 # Microfacet-Based Shadow Terminator", Ray Tracing Gems II ch. 4). A PN patch
 # or any smooth-shaded mesh reaches the renderer as FLAT triangles carrying a
 # smooth per-vertex normal field, and every shadow ray starts from the FACE
-# normal's fixed lift (``10 * MIN_HIT_DISTANCE`` in ``raster_shadow_trace``).
+# normal's fixed lift (``10 * min_hit_distance`` in ``raster_shadow_trace``).
 # The facet is a chord BELOW the smooth surface it approximates, so
 # neighbouring facets rise above the plane the origin was lifted from: near
 # the terminator the shadow ray leaves almost tangentially and strikes a
@@ -1062,7 +1062,7 @@ def shadow_terminator_mode():
 # The acceptance floor a shadow ray keeps against its OWN primitive, as a
 # fraction of the batch's scene scale (the diagonal of the merged triangle
 # bounding box over every frame of the batch). This is what retires the last
-# absolute constant on the shadow path: `MIN_HIT_DISTANCE` = 1e-4 is only ever
+# absolute constant on the shadow path: `min_hit_distance` = 1e-4 is only ever
 # right for a scene about ten units across, which is where the default below
 # reproduces it exactly (1e-5 * 10). A scene authored at millimetre or
 # kilometre scale gets a floor in proportion instead of acne at one end and
@@ -1139,7 +1139,7 @@ def refit_bvh_active():
 # old per-slot K-buffers). Primary hard shadows and emitter-radius
 # soft shadows use a sparse any-hit event queue. PN geometry is preserved and
 # simply falls back to classic primary traversal. The straight-ray safety limit
-# is MAX_SURFACES_PER_RAY (currently 256), not literally unbounded. Custom
+# is max_surfaces_per_ray (currently 256), not literally unbounded. Custom
 # scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
 # back to classic. Default ON (ALGAN_HYBRID_RASTER=0 restores the classic
 # iteration-zero wavefront).
@@ -1632,7 +1632,7 @@ def set_sheet_positioned_depth(enabled):
 # ss6.1.1, OX_SHEET_INTERPENETRATION_AUDIT.md ss6). At compaction the host
 # computes, per sub-pixel sample, each material-opaque full-coverage triangle
 # sheet's exact nearest depth at that sample, and a sheet cedes a sample when
-# another SURFACE's enforcer is strictly nearer there beyond DEPTH_TIE_EPSILON;
+# another SURFACE's enforcer is strictly nearer there beyond depth_tie_epsilon;
 # the resolve zeroes those samples' claim/occlusion slots, so two surfaces
 # crossing inside one pixel paint winner-per-sample instead of whole-pixel to
 # whichever sheet sorted first. Ties and near-ties keep today's walk order.
@@ -2119,7 +2119,7 @@ solid_shell_alpha = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 # a GGX highlight to restore. OFF restores the previous weighting exactly.
 direct_specular_lobe = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 
-# Retire a bounce-loop ray whose throughput fell under MIN_WEIGHT even when
+# Retire a bounce-loop ray whose throughput fell under min_weight even when
 # its last processed hit took an in-place reflection branch.
 #
 # The drain loop already retires any ray whose post-hit weight crosses the
@@ -2930,7 +2930,7 @@ def set_wf_textured_features(mask):
 # Values: "auto" (default) and False/"0" both use the monolithic shade kernel,
 # which supports *everything* the sorted path did -- custom ray-bouncing
 # (scatter) and normal-mapped lighting -- while staying faster on the built-in
-# materials (it drains up to KBUF hits per launch, whereas sorting pays
+# materials (it drains up to kbuf hits per launch, whereas sorting pays
 # per-event kernel round trips + host syncs; see benchmarks/_wf_sorted_ab.py
 # and _wf_monolith_scatter_ab.py). True/"1" still routes to the sorted
 # pipeline, but that route is unsupported (kept for reference only). "auto" is
@@ -3254,9 +3254,9 @@ def _build_core_shader_ids():
         basic_material_shader,
         depth_shader,
         lambert_shader,
+        manim_shader,
         matcap_shader,
         normal_shader,
-        manim_shader,
         phong_shader,
         physical_shader,
         standard_shader,

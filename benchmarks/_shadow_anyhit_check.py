@@ -12,9 +12,9 @@ about that scene, not about the renderer.
 deliberately overrules the march, and they have different causes:
 
 1. **An opaque edge hit** the seam merge would have folded into an earlier
-   TRANSLUCENT edge hit within ``DEPTH_TIE_EPSILON`` (1e-4 world units). This one
+   TRANSLUCENT edge hit within ``depth_tie_epsilon`` (1e-4 world units). This one
    is identity-related, so it is the case ss3.3 could remove.
-2. **An opaque blocker past ``MAX_SURFACES_PER_RAY``** (256) peeled surfaces. Not
+2. **An opaque blocker past ``max_surfaces_per_ray``** (256) peeled surfaces. Not
    identity-related at all -- it is the peel depth, and no amount of identity work
    touches it.
 
@@ -48,17 +48,17 @@ MODES = ("0", "1", "gather")
 #: other along the shadow ray. Read from the kernel so the scene cannot drift
 #: away from the constant it is built against.
 from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
-    DEPTH_TIE_EPSILON,
-    MAX_SURFACES_PER_RAY,
+    depth_tie_epsilon,
+    max_surfaces_per_ray,
 )
 
 #: Deliberately INSIDE the tie window, by an order of magnitude: the point is to
 #: land in the band where the merge folds the two hits together, not near its
 #: edge where float noise decides.
-TIE_GAP = DEPTH_TIE_EPSILON * 0.1
+TIE_GAP = depth_tie_epsilon * 0.1
 
 #: Comfortably past the peel depth, so the blocker is unreachable by the march.
-STACK_COUNT = MAX_SURFACES_PER_RAY + 48
+STACK_COUNT = max_surfaces_per_ray + 48
 
 
 def _ground():
@@ -83,7 +83,7 @@ def build_tie_scene(gap=None):
     """Case 1: an opaque quad edge a hair in front of a translucent quad edge.
 
     Both quads are edge-on to the light, so the shadow ray from the receiver
-    grazes both edges and the two hits land within ``DEPTH_TIE_EPSILON`` of each
+    grazes both edges and the two hits land within ``depth_tie_epsilon`` of each
     other -- which is the band the seam merge folds.
 
     ``gap`` is the separation along the shadow ray, defaulting to ``TIE_GAP``
@@ -128,7 +128,7 @@ def build_tie_scene(gap=None):
 
 
 def build_stack_scene(count=None):
-    """Case 2: an opaque blocker behind more than ``MAX_SURFACES_PER_RAY`` sheets.
+    """Case 2: an opaque blocker behind more than ``max_surfaces_per_ray`` sheets.
 
     The march peels 256 surfaces and stops; the opaque blocker is past that, so
     the two disagree by construction -- and the early-out's answer (full
@@ -220,8 +220,8 @@ def main():
     quality = sys.argv[1] if len(sys.argv) > 1 else "MD"
     os.makedirs(OUT_DIR, exist_ok=True)
     print(
-        f"DEPTH_TIE_EPSILON={DEPTH_TIE_EPSILON} tie gap={TIE_GAP}  "
-        f"MAX_SURFACES_PER_RAY={MAX_SURFACES_PER_RAY} stack={STACK_COUNT}",
+        f"depth_tie_epsilon={depth_tie_epsilon} tie gap={TIE_GAP}  "
+        f"max_surfaces_per_ray={max_surfaces_per_ray} stack={STACK_COUNT}",
         flush=True,
     )
     import numpy as np
@@ -273,12 +273,12 @@ def main():
         if key == "tie":
             # REACH CHECK, and a weaker one than the stack's -- say so rather
             # than dress it up. Re-rendering with the two quads separated by
-            # 1000x DEPTH_TIE_EPSILON, where they are unambiguously distinct
+            # 1000x depth_tie_epsilon, where they are unambiguously distinct
             # surfaces, tells us the scene is SENSITIVE to that separation. It
             # does not prove the shadow ray lands inside the merge band, which
             # is a question about kernel state that nothing outside the kernel
             # can see. A difference here is necessary, not sufficient.
-            wide = DEPTH_TIE_EPSILON * 1000.0
+            wide = depth_tie_epsilon * 1000.0
             _sha, far = _render(key, base, quality, arg=wide, tag="_wide")
             a, b = read_frames(paths[base]), read_frames(far)
             n = min(len(a), len(b))

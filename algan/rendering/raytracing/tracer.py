@@ -43,9 +43,9 @@ from algan.errors import UnsupportedFeatureError
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    KBUF,
-    MAX_SURFACES_PER_RAY,
     finalize_samples,
+    kbuf,
+    max_surfaces_per_ray,
     path_trace_scene_stbvh,
 )
 from algan.rendering.raytracing.scene_builder import (
@@ -81,7 +81,7 @@ rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     ALL_PIDS,
-    MAX_SHADOW_LIGHTS,
+    max_shadow_lights,
 )
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
@@ -95,7 +95,6 @@ _WAVEFRONT_POOL_RETRIES = [0]
 # instead of inferring it from timings (benchmarks/_frag_pid_gate_ab.py).
 _FRAG_PID_LAST = {"tri": ALL_PIDS, "pn": ALL_PIDS}
 from algan.logging.logger import PERF, get_logger
-from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
@@ -111,13 +110,14 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     gloss_pyramid_level,
     gloss_scatter,
 )
+from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _SCA_IOR_DEPTH,
-    SCA_WIDTH_PLAIN,
     ALLOC_NEXT,
     ALLOC_OVERFLOW,
     ALLOC_TRUNC_SURFACES,
     ALLOC_WIDTH,
+    SCA_WIDTH_PLAIN,
     compact_ray_slots,
     sca_width,
     wavefront_generate_rays,
@@ -235,12 +235,12 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     )
     if global_hits:
         return core + (
-            memory.get_tensor((tn, KBUF), f32),  # rs_kt
-            memory.get_tensor((tn, KBUF), f32),  # rs_kl
-            memory.get_tensor((tn, KBUF), f32),  # rs_ka
-            memory.get_tensor((tn, KBUF), f32),  # rs_kb
-            memory.get_tensor((tn, KBUF), i32),  # rs_kp
-            memory.get_tensor((tn, KBUF), i32),  # rs_kf
+            memory.get_tensor((tn, kbuf), f32),  # rs_kt
+            memory.get_tensor((tn, kbuf), f32),  # rs_kl
+            memory.get_tensor((tn, kbuf), f32),  # rs_ka
+            memory.get_tensor((tn, kbuf), f32),  # rs_kb
+            memory.get_tensor((tn, kbuf), i32),  # rs_kp
+            memory.get_tensor((tn, kbuf), i32),  # rs_kf
         )
 
     # The supported general renderer no longer attaches a K-buffer to every
@@ -483,7 +483,7 @@ def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_ra
 # in per-pixel demand that a coverage partition produces. Lower it on a scene
 # that still overflows its retry; raise it towards 1 to trade retry risk for
 # tile efficiency.
-_POOL_RETRY_SAFETY = min(1.0, max(0.0, env_float("ALGAN_POOL_RETRY_SAFETY", 0.85)))
+pool_retry_safety = min(1.0, max(0.0, env_float("ALGAN_POOL_RETRY_SAFETY", 0.85)))
 
 # Bounce iterations that get their own profile label
 # (``wavefront:   - bounce <i> <phase>``); iterations past this share the one
@@ -517,7 +517,7 @@ def _record_tile_truncations(alloc, pool):
     record_truncation(
         "surfaces_per_ray",
         alloc[ALLOC_TRUNC_SURFACES],
-        cap=MAX_SURFACES_PER_RAY,
+        cap=max_surfaces_per_ray,
     )
     # ``rs_alloc[ALLOC_NEXT]`` keeps counting past the capacity (a failed
     # reservation still does its atomic increment), so the surplus over the
@@ -545,7 +545,7 @@ def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
     """
     if slots_wanted <= 0 or pool <= 0:
         return max(1, attempt_primary // 2)
-    scaled = int(attempt_primary * pool * _POOL_RETRY_SAFETY / slots_wanted)
+    scaled = int(attempt_primary * pool * pool_retry_safety / slots_wanted)
     return max(1, min(scaled, attempt_primary - 1))
 
 
@@ -693,7 +693,7 @@ def _wavefront_state_bytes_per_primary(
 # Ray-state cost of one pool slot and one primary ray, in bytes. These are
 # *measured*, not derived: recording the arena while rendering gives 100 and 28
 # for the maintained route. An earlier hand-derived version charged 196 per
-# slot because it counted 6*KBUF words of K-buffers that this route does not
+# slot because it counted 6*kbuf words of K-buffers that this route does not
 # allocate at all -- they are (1,1) stubs, with a transient event batch sized
 # to the live queue instead -- which halved every tile for no reason.
 #
@@ -1373,7 +1373,7 @@ def render_batch_raytraced(
     # the ray lit). Uncertain texture alpha keeps the fallback: such
     # primitives are not opaque-flagged, and their shadow attenuation only
     # the march can evaluate. 4 = gather-march: the ordered peel rebuilt on
-    # the KBUF gather, valid for any batch (the drain evaluates translucent
+    # the kbuf gather, valid for any batch (the drain evaluates translucent
     # attenuation exactly like the march), so it needs no translucent gate.
     if shadow_flag and rt_settings.shadow_anyhit:
         if rt_settings.shadow_anyhit == "gather":
@@ -1502,18 +1502,18 @@ def render_batch_raytraced(
         num_lights = 0
 
     # The shadow-light ceiling is the one truncation the host can see without
-    # asking a kernel: MAX_SHADOW_LIGHTS is the length of a ``ti.Vector`` and
+    # asking a kernel: max_shadow_lights is the length of a ``ti.Vector`` and
     # therefore compile-time, so every light slot past it is simply never
     # written and the surplus lights render lit-but-shadowless. Counted per
     # batch, since a light spawning mid-scene can push a later batch over a cap
     # the first ones sat under. Each RectAreaLight emitter sample already
     # occupies its own row here (``_pack_lights`` expands them), which is why
     # the count is of light SLOTS rather than of the author's lights.
-    if shadow_flag and num_lights > MAX_SHADOW_LIGHTS:
+    if shadow_flag and num_lights > max_shadow_lights:
         record_truncation(
             "shadow_lights",
-            int(num_lights) - MAX_SHADOW_LIGHTS,
-            cap=MAX_SHADOW_LIGHTS,
+            int(num_lights) - max_shadow_lights,
+            cap=max_shadow_lights,
         )
 
     # Frame counts of the windows that were actually launched. They differ from
@@ -2173,7 +2173,7 @@ def raytrace_render_wavefront(
 
     Persistent continuation state is stage-split in global memory and PyTorch
     compacts ray indices between host iterations. Hit records are different:
-    traversal writes one exact-size ``[num_active, KBUF]`` transient event
+    traversal writes one exact-size ``[num_active, kbuf]`` transient event
     batch, shade consumes it immediately, and the arena range is then reused.
     No pool-wide K-buffer is attached to secondary radiance ray slots. The
     persistent scalar state carries ``base_dist`` for Bezier border widths
@@ -2204,7 +2204,7 @@ def raytrace_render_wavefront(
     selects the shade architecture: the monolithic ``wavefront_shade`` kernel
     below (the default, and the only supported path -- it handles custom
     scatter and normal-mapped lighting, and on the built-in materials it is
-    faster because it drains up to KBUF hits per launch while sorting pays
+    faster because it drains up to kbuf hits per launch while sorting pays
     per-event kernel round trips and host syncs), or the UNSUPPORTED legacy
     Cycles-style *sorted* pipeline (rays suspended at their material events,
     bucketed by (geometry type, material pipeline id) and shaded by dedicated
@@ -2309,7 +2309,7 @@ def raytrace_render_wavefront(
         )
     i32 = torch.int32
     f32 = torch.float32
-    max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
+    max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
 
     # Compile-time walk selector: the merge builds either all-classic or
@@ -2590,8 +2590,8 @@ def raytrace_render_wavefront(
             bounce = f"bounce {it - 1}" if it <= _BOUNCE_STAGE_CAP else "bounce 8+"
             with memory.temp():
                 with _stage("wavefront:   - drain scratch"):
-                    hit_f = memory.get_tensor((na, KBUF, 4), f32)
-                    hit_i = memory.get_tensor((na, KBUF, 2), i32)
+                    hit_f = memory.get_tensor((na, kbuf, 4), f32)
+                    hit_i = memory.get_tensor((na, kbuf, 2), i32)
                 with _stage(f"wavefront:   - {bounce} traverse", items=na):
                     wavefront_traverse_events(
                         active,
@@ -3221,14 +3221,14 @@ def raytrace_render_wavefront(
             # persistent state.
             first = 1 if (gen_fused and it == 0) else 0
             # The hit batch is phase-local: traversal writes one compact
-            # [active ray, KBUF] surface-event record and shade consumes it in
+            # [active ray, kbuf] surface-event record and shade consumes it in
             # the same host iteration. Releasing this arena scope before
-            # compaction removes the six permanent [pool, KBUF] arrays from
+            # compaction removes the six permanent [pool, kbuf] arrays from
             # secondary radiance state while preserving the existing four-hit
             # traversal/shading behavior.
             with memory.temp():
-                hit_f = memory.get_tensor((na, KBUF, 4), f32)
-                hit_i = memory.get_tensor((na, KBUF, 2), i32)
+                hit_f = memory.get_tensor((na, kbuf, 4), f32)
+                hit_i = memory.get_tensor((na, kbuf, 2), i32)
                 wavefront_traverse_events(
                     active,
                     na,
@@ -3437,7 +3437,7 @@ def _raytrace_render_wavefront_textured(
 
     i32 = torch.int32
     f32 = torch.float32
-    max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
+    max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
 
     # Feature templates (compiled into the shade kernel one at a time to measure
@@ -3816,10 +3816,10 @@ def _raytrace_render_wavefront_sorted(
     # refractive surface.
     refraction_flag = 1 if (refraction_flag or has_custom_scatter) else 0
 
-    # Worst case: every one of MAX_SURFACES_PER_RAY hits is a material event
+    # Worst case: every one of max_surfaces_per_ray hits is a material event
     # (one peel+shade pass each) plus a traverse per K-buffer refill / bounce.
     max_iters = (
-        MAX_SURFACES_PER_RAY + MAX_SURFACES_PER_RAY // KBUF + max_bounces * 2 + 8
+        max_surfaces_per_ray + max_surfaces_per_ray // kbuf + max_bounces * 2 + 8
     )
 
     pool_ratio = rt_settings.refract_initial_pool_ratio if refraction_flag else 1

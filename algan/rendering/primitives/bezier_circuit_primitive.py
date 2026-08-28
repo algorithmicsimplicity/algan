@@ -72,7 +72,7 @@ def _circuit_z_index(primitive):
 #: silhouette fidelity, so it takes an environment default rather than being a
 #: bare literal. (Under analytic AA the tighter
 #: ``rt_settings.analytic_aa_chord_tolerance`` overrides it.)
-DEFAULT_CHORD_TOLERANCE_PIXELS = env_float("ALGAN_CHORD_TOLERANCE_PIXELS", 0.5)
+chord_tolerance_pixels = env_float("ALGAN_CHORD_TOLERANCE_PIXELS", 0.5)
 
 
 class BezierCircuitPrimitive(RenderPrimitive):
@@ -95,7 +95,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
         glow=0,
         num_texture_points=0,
         filled=True,
-        num_pixels_per_sample=DEFAULT_CHORD_TOLERANCE_PIXELS,
+        num_pixels_per_sample=chord_tolerance_pixels,
         z_index=None,
     ):
         # Legacy name retained for compatibility.  The ray tracer uses this as

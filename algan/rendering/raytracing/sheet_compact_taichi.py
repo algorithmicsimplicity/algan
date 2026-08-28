@@ -585,10 +585,10 @@ def pair_expand_count(
     y0f: ti.types.ndarray(),  # [N] i64
     y1f: ti.types.ndarray(),  # [N] i64
     n: ti.i32,  # N = frames * primitives
-    chunk: ti.i32,  # RASTER_CHUNK
+    chunk: ti.i32,  # raster_chunk
     counts: ti.types.ndarray(),  # [N] i64 OUT -- chunks per candidate, 0 elsewhere
 ):
-    """One pass: how many ``RASTER_CHUNK`` rows each candidate expands to."""
+    """One pass: how many ``raster_chunk`` rows each candidate expands to."""
     for e in range(n):
         if mask[e] != 0:
             bx0 = x0f[e]

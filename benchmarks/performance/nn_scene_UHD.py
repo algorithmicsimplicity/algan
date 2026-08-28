@@ -3,8 +3,8 @@ import os
 os.environ["ALGAN_USE_DAEMON"] = "0"
 
 from algan import *
-from algan.utils.profiling_utils import profile_scene
 from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
+from algan.utils.profiling_utils import profile_scene
 
 
 def scene():

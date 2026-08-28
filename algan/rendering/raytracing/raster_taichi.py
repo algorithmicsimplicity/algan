@@ -33,7 +33,7 @@ Important implementation properties:
   the classic wavefront path.
 
 Emission covers the whole prepared frame window at once; each pair covers up
-to ``RASTER_CHUNK`` pixels.  Future work should benchmark square block bins
+to ``raster_chunk`` pixels.  Future work should benchmark square block bins
 and candidate-parallel block kernels. PN patches, custom scatter, near
 clipping, and in-place supersampling still route to the classic frontend
 without changing geometry construction.
@@ -50,8 +50,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_NORMAL,
     BARYCENTRIC_EPSILON,
     INV_DEPTH_TIE_EPSILON,
-    MIN_ALPHA,
-    MIN_HIT_DISTANCE,
     NODE_ARG,
     _axis_cos,
     _bezier_point_metrics,
@@ -61,6 +59,8 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _sample_circuit_color_blend,
     _shadow_occluded,
     _tri_hit,
+    min_alpha,
+    min_hit_distance,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
@@ -88,12 +88,12 @@ from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 # most this many pixels, bounding load imbalance for large bboxes. Purely a
 # work-partitioning knob -- every candidate is exact-tested either way, so the
 # image does not depend on it -- exposed for tuning against a card's occupancy.
-RASTER_CHUNK = max(1, env_int("ALGAN_RASTER_CHUNK", 32))
+raster_chunk = max(1, env_int("ALGAN_RASTER_CHUNK", 32))
 
 # Empty typed visibility-buffer entry. Real hits pack the same strict ordering
 # used by the classic deterministic tracer:
 #
-#   high 32 bits: floor(t / DEPTH_TIE_EPSILON)
+#   high 32 bits: floor(t / depth_tie_epsilon)
 #   low  32 bits: bitwise-inverted layer index (higher layer sorts first)
 #
 # Triangle layers are ``layer_offset_triangles + prim``; bezier layers are the
@@ -1380,7 +1380,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
             v2 = ti.math.vec3(vm[2, 0], vm[2, 1], vm[2, 2])
             hp = b0 * v0 + b1 * v1 + b2 * v2
             tt = (hp - cam_o).norm()
-            if tt > MIN_HIT_DISTANCE:
+            if tt > min_hit_distance:
                 ok = 1
                 t = tt
                 cov = c
@@ -1488,7 +1488,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                 # cannot use that, because the projection it would need is
                 # precisely what straddling the camera plane invalidates.
                 hit_s, _c1, _c2, ts = _tri_hit(ros, rds, v0, v1, v2)
-                if hit_s and (ts > MIN_HIT_DISTANCE):
+                if hit_s and (ts > min_hit_distance):
                     m |= 1 << k
                     sox += ti.static(float(_AA_SAMPLES[k][0]))
                     soy += ti.static(float(_AA_SAMPLES[k][1]))
@@ -1516,7 +1516,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                     b1 = tvc.dot(pvc) * ivc
                     b2 = rdc.dot(qvc) * ivc
                     th = e2.dot(qvc) * ivc
-            if (m != 0) and (th > MIN_HIT_DISTANCE):
+            if (m != 0) and (th > min_hit_distance):
                 ok = 1
                 t = th
                 cov = ti.cast(_popcount_samples(m), ti.f32) * _AA_SAMPLE_WEIGHT
@@ -1533,7 +1533,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                     w1 = cb1 * inv_b
                     w2 = cb2 * inv_b
         else:
-            if inside and (th > MIN_HIT_DISTANCE):
+            if inside and (th > min_hit_distance):
                 ok = 1
                 t = th
                 w1 = b1
@@ -1653,7 +1653,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                               circuit_meta[tm, circuit, _M_CENTER + 1],
                               circuit_meta[tm, circuit, _M_CENTER + 2])
         th = (center - ro).dot(n) / denom
-        if th > MIN_HIT_DISTANCE:
+        if th > min_hit_distance:
             hit = ro + th * rd - center
             bu = ti.math.vec3(circuit_meta[tm, circuit, _M_BASIS_U],
                               circuit_meta[tm, circuit, _M_BASIS_U + 1],
@@ -1929,7 +1929,7 @@ def raster_tri_count(
     owned); the sparse emission always passes 0, as it does for ``z_cull``.
 
     ``pair_accept[p]`` records the per-pixel acceptance decisions as a bitmask
-    (bit ``j`` = chunk pixel ``j`` survived; ``RASTER_CHUNK`` is 32, one i32).
+    (bit ``j`` = chunk pixel ``j`` survived; ``raster_chunk`` is 32, one i32).
     The write pass replays these bits instead of recomputing the whole
     acceptance chain -- most importantly the texture-sampling alpha fetch --
     so this kernel IS the acceptance authority the write contract points at.
@@ -1947,7 +1947,7 @@ def raster_tri_count(
         layer = ti.cast(layer_offset_triangles, ti.i32) + prim
         cnt = 0
         bits = 0
-        for j in range(RASTER_CHUNK):
+        for j in range(raster_chunk):
             ok, lp, t, w1, w2, cov, msk = _pair_pixel(
                 prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
                 tile_start, tile_pixels, half_w, half_h, use_ss, sm, vm, cam_o,
@@ -1973,7 +1973,7 @@ def raster_tri_count(
                         tri_tex_meta, textures, num_colored_triangles)
                     if ti.static(aa):
                         alpha *= cov
-                    if alpha > MIN_ALPHA:
+                    if alpha > min_alpha:
                         cnt += 1
                         bits |= 1 << j
         pair_count[p] = cnt
@@ -2024,7 +2024,7 @@ def raster_tri_write(
             f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, aa)
         w = pair_offset[p]
         bits = pair_accept[p]
-        for j in range(RASTER_CHUNK):
+        for j in range(raster_chunk):
             if ((bits >> j) & 1) != 0:
                 ok, lp, t, w1, w2, cov, msk = _pair_pixel(
                     prim, f, x0, y0, bw, bh, off, j, time_start, width,
@@ -2079,7 +2079,7 @@ def raster_bez_count(
         off = pairs[p, 6]
         cnt = 0
         bits = 0
-        for j in range(RASTER_CHUNK):
+        for j in range(raster_chunk):
             ok, lp, t, u, v, ib, cov = _bez_pair_pixel(
                 circuit, f, x0, y0, bw, bh, off, j, time_start, width, height,
                 tile_start, tile_pixels, half_w, half_h, cam_origin,
@@ -2099,7 +2099,7 @@ def raster_bez_count(
                         circuit_border_colors)
                     if ti.static(aa):
                         alpha *= cov
-                    if alpha > MIN_ALPHA:
+                    if alpha > min_alpha:
                         cnt += 1
                         bits |= 1 << j
         pair_count[p] = cnt
@@ -2146,7 +2146,7 @@ def raster_bez_write(
         off = pairs[p, 6]
         w = pair_offset[p]
         bits = pair_accept[p]
-        for j in range(RASTER_CHUNK):
+        for j in range(raster_chunk):
             if ((bits >> j) & 1) != 0:
                 ok, lp, t, u, v, ib, cov = _bez_pair_pixel(
                     circuit, f, x0, y0, bw, bh, off, j, time_start, width,
@@ -2533,7 +2533,7 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
         den = rd.dot(nrm)
         if ti.abs(den) > 1e-9:
             ts = (hit_point - ro).dot(nrm) / den
-            if ts > MIN_HIT_DISTANCE:
+            if ts > min_hit_distance:
                 hp = ro + ts * rd
     else:
         tp = f % tri_pos.shape[0]
@@ -2549,7 +2549,7 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
         den = rd.dot(gn)
         if ti.abs(den) > 1e-9:
             ts = (v0 - ro).dot(gn) / den
-            if ts > MIN_HIT_DISTANCE:
+            if ts > min_hit_distance:
                 hp = ro + ts * rd
                 nn = gn.dot(gn)
                 if nn > 1e-30:
@@ -2583,7 +2583,7 @@ def _plane_pt(f, px, py, jx, jy, gen_meta: ti.template(), p0, nrm, fallback,
     out = fallback
     if ti.abs(den) > 1e-9:
         ts = (p0 - ro).dot(nrm) / den
-        if ts > MIN_HIT_DISTANCE:
+        if ts > min_hit_distance:
             out = ro + ts * rd
     return out
 
@@ -2642,7 +2642,7 @@ def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
     centre ray advanced to a distance measured along a different ray. On a
     closed mesh that lands it up to a facet-depth INSIDE the geometry, past the
     shared edge and below the neighbouring facet, and the fixed
-    ``10 * MIN_HIT_DISTANCE`` normal offset applied to every secondary origin is
+    ``10 * min_hit_distance`` normal offset applied to every secondary origin is
     far too small to escape. The continuation then re-hits the surface it just
     left, at grazing incidence where Fresnel goes to one, and the pixel gets a
     bright desaturated spike -- speckle scattered over every smooth-shaded mesh
@@ -2851,7 +2851,7 @@ def raster_shadow_trace(
         # normal field), and is what licenses the horizon-cull relaxation in
         # the sample loop below. shadow_term == 2 lifts nothing -- that
         # diagnostic arm exists to show what relaxing alone does.
-        sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+        sorigin = spos + fnrm * (10.0 * min_hit_distance)
         lifted = 0
         if ti.static(shadow_term != 0):
             if ti.static(shadow_term == 1):
@@ -3033,7 +3033,7 @@ def raster_shadow_trace(
                     n_valid += 1.0
                     occ_sum += _shadow_occluded(
                         refit, shadow_anyhit, sorg, wis, f, ff,
-                        ldn - 20.0 * MIN_HIT_DISTANCE,
+                        ldn - 20.0 * min_hit_distance,
                         pixel_world_scale[
                             f % pixel_world_scale.shape[0]], 0.0,
                         layer_offset_triangles,

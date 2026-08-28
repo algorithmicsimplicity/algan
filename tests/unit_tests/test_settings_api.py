@@ -604,6 +604,74 @@ def test_every_renderer_switch_is_reachable_through_SETTINGS():
     )
 
 
+def test_every_env_backed_renderer_global_is_a_setting():
+    """Nothing in the renderer is configurable by environment variable alone.
+
+    A module-level value with an ``env_*`` default is renderer configuration by
+    definition. Before this, twenty-five of them lived outside the toggles
+    module -- BVH arity, the ray epsilons, the memory model's margins -- and
+    ``SETTINGS.raytracing`` derived from one module, so the only way to reach
+    any of them was to set an environment variable before ``import algan``.
+    They are fields now; this is what stops the next one from landing outside.
+
+    Exempted: the four in ``settings/_startup.py``, which are consumed while
+    Torch and Taichi initialise and so have no runtime object to own them.
+    """
+    import ast
+    from pathlib import Path
+
+    accessors = {"env_flag", "env_int", "env_float", "env_str", "env_is_set"}
+    fields = set(SETTINGS.raytracing.field_names())
+    root = Path(__file__).parents[2] / "algan"
+    stray = []
+    for path in sorted(root.rglob("*.py")):
+        if "external_libraries" in path.parts or path.name == "environment.py":
+            continue
+        if path.match("settings/_startup.py"):
+            continue
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                name = target.id if isinstance(target, ast.Name) else None
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                name = node.target.id
+            else:
+                continue
+            if name is None or node.value is None or name in fields:
+                continue
+            reads_env = any(
+                isinstance(c, ast.Call) and getattr(c.func, "id", None) in accessors
+                for c in ast.walk(node.value)
+            )
+            if reads_env:
+                stray.append(f"{path.relative_to(root.parent)}: {name}")
+    assert not stray, (
+        "environment-backed renderer configuration with no SETTINGS field -- "
+        "give it a lowercase field name in its module, and add that module to "
+        "_STORAGE_MODULES if it is not there yet:\n  " + "\n  ".join(stray)
+    )
+
+
+def test_an_import_frozen_field_is_readable_but_refuses_a_write():
+    """Reading one is the point of promoting it; writing one would render wrong.
+
+    ``bvh_arity`` is baked into the ndarray element type the traversal kernels
+    are annotated with, so a host that took a new value would build a tree the
+    kernels cannot read -- which does not fail, it renders wrong. A snapshot
+    still round-trips it, exactly as it does an inert field.
+    """
+    from algan.settings.raytracing_settings import _IMPORT_FROZEN_FIELDS
+
+    assert SETTINGS.raytracing.bvh_arity >= 2
+    for field in _IMPORT_FROZEN_FIELDS:
+        assert field in SETTINGS.raytracing.field_names()
+        with pytest.raises(AlganConfigurationError, match="before importing algan"):
+            SETTINGS.raytracing.experimental.set(
+                **{field: SETTINGS.raytracing.bvh_arity}
+            )
+    SETTINGS.restore(SETTINGS.snapshot())
+
+
 def test_no_renderer_switch_is_shadowed_by_a_helper_of_the_same_name():
     """A field and a function cannot share a name, and Python will not say so.
 
@@ -613,10 +681,16 @@ def test_no_renderer_switch_is_shadowed_by_a_helper_of_the_same_name():
     ``return`` of itself. Three did that the moment the two spellings merged.
     Nothing about it raises, so it needs asserting.
     """
-    from algan.rendering.raytracing import settings as storage
-    from algan.settings.raytracing_settings import _shadowed_fields
+    import importlib
 
-    shadowed = _shadowed_fields(storage)
+    from algan.settings.raytracing_settings import (
+        _STORAGE_MODULES,
+        _shadowed_fields,
+    )
+
+    shadowed = []
+    for name in _STORAGE_MODULES:
+        shadowed += _shadowed_fields(importlib.import_module(name))
     assert not shadowed, (
         "these renderer settings are declared as fields but the name is bound "
         "to a function by the time the module finishes -- rename the function "

@@ -1,7 +1,7 @@
 """The shadow acceptance floor scales with the scene, not with a constant.
 
 Identity-aware shadow rejection (``shadow_identity_reject``,
-DESIGN_mesh_identity_open.md ssI) replaces the absolute ``MIN_HIT_DISTANCE``
+DESIGN_mesh_identity_open.md ssI) replaces the absolute ``min_hit_distance``
 = 1e-4 on the shadow path with a floor proportional to the batch's own scene
 scale. That constant is only ever right for a scene about ten units across:
 smaller geometry loses contact shadows it should keep, larger geometry gets
@@ -21,7 +21,7 @@ from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_pipeline import (
     _shadow_identity_epsilons,
 )
-from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_HIT_DISTANCE
+from algan.rendering.raytracing.raytrace_kernels_taichi import min_hit_distance
 from algan.settings import SETTINGS
 
 rt = SETTINGS.raytracing
@@ -57,14 +57,14 @@ def test_floor_is_proportional_to_scene_scale(restore_settings):
 def test_default_reproduces_the_constant_it_replaces(restore_settings):
     """At the scale the old constant was chosen for, the new floor matches it.
 
-    ``MIN_HIT_DISTANCE`` = 1e-4 is 1e-5 of a ten-unit scene, so a scene of
+    ``min_hit_distance`` = 1e-4 is 1e-5 of a ten-unit scene, so a scene of
     roughly that size must land on the same number the renderer used before.
     Without this the change would silently re-tune every existing scene.
     """
     rt.experimental.set(shadow_eps_relative=1e-5, shadow_near_fraction=0.0)
     # A triangle spanning ten units has a bounding-box diagonal near ten.
     eps_self, _ = _shadow_identity_epsilons(_merged(10.0 / (3.0**0.5)))
-    assert eps_self == pytest.approx(MIN_HIT_DISTANCE, rel=0.05)
+    assert eps_self == pytest.approx(min_hit_distance, rel=0.05)
 
 
 def test_near_fraction_scales_the_same_mesh_tier(restore_settings):
@@ -123,5 +123,5 @@ def test_degenerate_geometry_falls_back_to_the_constant(tri_pos, restore_setting
     """
     rt.experimental.set(shadow_eps_relative=1e-5, shadow_near_fraction=0.0)
     eps_self, eps_near = _shadow_identity_epsilons({"tri_pos": tri_pos})
-    assert eps_self == pytest.approx(MIN_HIT_DISTANCE)
+    assert eps_self == pytest.approx(min_hit_distance)
     assert eps_near == 0.0

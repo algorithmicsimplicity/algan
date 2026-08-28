@@ -9,17 +9,17 @@ from algan.rendering.raytracing.scene_builder import (
     get_merged_scene_arena_nbytes,
     get_merged_scene_tensor_nbytes,
 )
-from algan.rendering.raytracing.stbvh import BVH_ARITY, STBVH
+from algan.rendering.raytracing.stbvh import STBVH, bvh_arity
 from algan.utils.memory_utils import ManualMemory
 
 
 def _prebuilt_bvh():
-    num_leaves = BVH_ARITY
-    num_nodes = (BVH_ARITY * num_leaves - 1) // (BVH_ARITY - 1)
+    num_leaves = bvh_arity
+    num_nodes = (bvh_arity * num_leaves - 1) // (bvh_arity - 1)
     first_leaf = num_nodes - num_leaves
     nodes = torch.arange(num_nodes * 8, dtype=torch.float32).reshape(num_nodes, 8)
-    blocks = torch.arange(first_leaf * 8 * BVH_ARITY, dtype=torch.float16).reshape(
-        first_leaf, 8, BVH_ARITY
+    blocks = torch.arange(first_leaf * 8 * bvh_arity, dtype=torch.float16).reshape(
+        first_leaf, 8, bvh_arity
     )
     node_miss = torch.arange(num_nodes, dtype=torch.int32)
     leaf_prim = torch.arange(num_leaves, dtype=torch.int32)

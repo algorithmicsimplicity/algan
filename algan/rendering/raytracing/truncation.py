@@ -10,11 +10,11 @@ one.
 The ceilings, and what each costs when it binds:
 
 ``surfaces_per_ray``
-    ``MAX_SURFACES_PER_RAY`` (256) surfaces composited along one primary ray.
+    ``max_surfaces_per_ray`` (256) surfaces composited along one primary ray.
     The walk stops and the ray's leftover weight is handed to the background,
     so a deep translucent stack goes see-through at the 257th layer.
 ``shadow_lights``
-    ``MAX_SHADOW_LIGHTS`` (16, ``ALGAN_MAX_SHADOW_LIGHTS``) shadowed lights per
+    ``max_shadow_lights`` (16, ``ALGAN_MAX_SHADOW_LIGHTS``) shadowed lights per
     fragment.  A compile-time vector length, so the surplus lights are still
     *lit* -- they simply never cast.  Each :class:`~.RectAreaLight` emitter
     sample spends one slot, so a 4x4 area light fills the default cap alone.
@@ -67,10 +67,10 @@ class TruncationCounts:
     A count of zero means the ceiling was watched and never bound.
     """
 
-    #: Primary rays that composited ``MAX_SURFACES_PER_RAY`` surfaces and
+    #: Primary rays that composited ``max_surfaces_per_ray`` surfaces and
     #: stopped with transport left to carry.
     surfaces_per_ray: int = 0
-    #: Light slots past ``MAX_SHADOW_LIGHTS`` in the worst batch of the render.
+    #: Light slots past ``max_shadow_lights`` in the worst batch of the render.
     #: Those lights are lit but cast no shadow. The one counter here that is a
     #: *state* rather than a tally of events -- the same surplus lights are
     #: over the cap in every batch they are spawned for -- so it is reduced
@@ -101,7 +101,7 @@ class TruncationCounts:
 _CEILING_MESSAGES = {
     "surfaces_per_ray": (
         "{count} primary ray(s) hit the {cap}-surface compositing ceiling "
-        "(MAX_SURFACES_PER_RAY) and stopped early: the background shows "
+        "(max_surfaces_per_ray) and stopped early: the background shows "
         "through the rest of the stack. Reduce the number of overlapping "
         "transparent surfaces along the view direction."
     ),
@@ -157,7 +157,7 @@ class _TruncationRecorder:
         """Add ``count`` occurrences of ``ceiling``.
 
         ``cap`` is the ceiling's value at the time, carried only so the warning
-        can name it (``MAX_SHADOW_LIGHTS`` is an env-var knob, so it is not a
+        can name it (``max_shadow_lights`` is an env-var knob, so it is not a
         constant this module may bake in).
         """
         count = int(count)
