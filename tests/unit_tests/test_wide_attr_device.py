@@ -17,11 +17,11 @@ Two later rounds changed what the estimators and the primitive build produce,
 and because everything here is CUDA-only (``skipif`` on the render device) the
 staleness was invisible on a CPU box until 2026-08-28:
 
-* ``TEXTURE_OPACITY_IN_KERNEL`` (default on) removed the host premultiply from
+* ``texture_opacity_in_kernel`` (default on) removed the host premultiply from
   both estimators' image chains -- 6 images to 5 on the render device, 2 copies
   to 1 on the animation device. The pricing test now pins **both** arms of that
   split rather than one default.
-* ``TEXTURE_TIME_LERP`` (default on) stopped materializing an animated
+* ``texture_time_lerp`` (default on) stopped materializing an animated
   reassignment frame by frame: the window is described by K endpoint images
   stacked out of the **edit log**, which lives on the animation device. So on
   the default path the primitive's ``texture_map`` is a small host tensor, not
@@ -114,7 +114,7 @@ def test_window_materializes_on_the_render_device_bit_identically(monkeypatch):
 @pytest.mark.parametrize(
     ("opacity_in_kernel", "device_images", "host_copies"),
     # The image chain each estimator counts, per the two docstrings. Under
-    # TEXTURE_OPACITY_IN_KERNEL the host premultiply disappears from both
+    # texture_opacity_in_kernel the host premultiply disappears from both
     # sides: the opacity rides the primitive as per-frame scalars instead.
     [(True, 5, 1), (False, 6, 2)],
 )
@@ -124,7 +124,7 @@ def test_texture_is_priced_against_the_render_device_budget(
     # Restore what was there rather than the shipped default: these are
     # module-level globals with no reset fixture, and the suite must survive
     # being run under ALGAN_TEXTURE_OPACITY_IN_KERNEL=0.
-    previous = rt_settings.TEXTURE_OPACITY_IN_KERNEL
+    previous = rt_settings.texture_opacity_in_kernel
     rt_settings.set_texture_opacity_in_kernel(opacity_in_kernel)
     try:
         scene, mob = _build_scene()
@@ -159,10 +159,10 @@ def _build_one_batch(scene):
 def test_batch_preparation_releases_the_dense_window():
     """The dense path: one image per frame, on the render device.
 
-    ``TEXTURE_TIME_LERP`` off, so the window really is materialized frame by
+    ``texture_time_lerp`` off, so the window really is materialized frame by
     frame -- which is the arrangement the render-device placement exists for.
     """
-    previous = rt_settings.TEXTURE_TIME_LERP
+    previous = rt_settings.texture_time_lerp
     rt_settings.set_texture_time_lerp(False)
     try:
         scene, mob = _build_scene()
@@ -179,12 +179,12 @@ def test_batch_preparation_releases_the_dense_window():
 
 @pytest.mark.skipif(render_device().type != "cuda", reason="needs a CUDA render device")
 @pytest.mark.skipif(
-    not rt_settings.TEXTURE_TIME_LERP, reason="describes the TEXTURE_TIME_LERP path"
+    not rt_settings.texture_time_lerp, reason="describes the texture_time_lerp path"
 )
 def test_batch_preparation_releases_the_segment_window():
     """The default path: K endpoints and a lerp, not one image per frame.
 
-    ``TEXTURE_TIME_LERP`` describes this window as its two endpoints, and the
+    ``texture_time_lerp`` describes this window as its two endpoints, and the
     gate stacks those out of the **edit log** -- which lives on the animation
     device -- so the stack is a host tensor and the render device holds no
     per-frame image at all. Asserting ``cuda`` here would be asserting that

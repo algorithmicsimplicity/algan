@@ -132,7 +132,7 @@ def test_weights_are_bit_identical_to_the_dense_replay():
     assert torch.equal(seg.weights[sel], expected.view(-1))
 
     # The dense window, under the kill switch, frame for frame.
-    previous_lerp = rt_settings.TEXTURE_TIME_LERP
+    previous_lerp = rt_settings.texture_time_lerp
     rt_settings.set_texture_time_lerp(False)
     try:
         with Off(
@@ -237,7 +237,7 @@ def test_the_kill_switch_restores_the_dense_window():
     tex_a, tex_b = _tex(8, 8, 16), _tex(8, 8, 17)
     scene, surface = _crossfade_scene(tex_a, tex_b)
     times = torch.linspace(1.0, 3.0, 5)
-    previous_lerp = rt_settings.TEXTURE_TIME_LERP
+    previous_lerp = rt_settings.texture_time_lerp
     rt_settings.set_texture_time_lerp(False)
     try:
         primitive, seg = _materialize(scene, surface, times)
@@ -315,7 +315,7 @@ def test_u8_admission_is_proved_on_the_endpoints_not_the_latest_stamp():
     )
 
     # Dense arm, window before the fade: the map on screen is tex_a.
-    previous_lerp = rt_settings.TEXTURE_TIME_LERP
+    previous_lerp = rt_settings.texture_time_lerp
     rt_settings.set_texture_time_lerp(False)
     try:
         primitive, seg = _materialize(scene, surface, torch.linspace(0.2, 0.9, 3))
