@@ -131,8 +131,15 @@ class SceneManager(Singleton):
         is reset.  Existing scene references remain valid objects but are marked
         terminated and no longer receive implicitly-created mobs.
         """
+        from algan.animation_timeline.timeline import (
+            clear_wide_attribute_device_pin,
+        )
+
         manager = cls.instance()
         for scene in manager._scene_stack:
             scene._terminated = True
         manager._scene_stack.clear()
+        # Every AttributeTimeline just went with those scenes, so the render
+        # device is free to move again.
+        clear_wide_attribute_device_pin()
         return manager.current_scene

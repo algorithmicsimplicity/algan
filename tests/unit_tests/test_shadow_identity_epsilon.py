@@ -17,6 +17,7 @@ can break, so they stay out of the fast suite.
 import pytest
 import torch
 
+from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_pipeline import (
     _shadow_identity_epsilons,
 )
@@ -81,15 +82,24 @@ def test_primitive_precise_is_the_default(restore_settings):
 
 
 @pytest.mark.parametrize("fraction", [-0.5, float("nan")])
-def test_same_mesh_floor_is_never_negative(fraction, restore_settings):
+def test_same_mesh_floor_is_never_negative(fraction, monkeypatch, restore_settings):
     """A negative floor would let geometry BEHIND the origin cast a shadow.
 
     ``t > eps_near`` is the acceptance test, so a negative ``eps_near`` admits
     hits at ``t <= 0`` on every non-source triangle of the source mesh. The
     self floor has always been guarded; this pins the same guarantee on the
     same-mesh tier, which is reachable from a single bad env var.
+
+    Written straight to the module global, because the env var is: ``env_float``
+    parses ``-0.5`` and ``nan`` happily -- it only falls back on a value it
+    cannot parse at all -- so ``ALGAN_SHADOW_NEAR_FRACTION=-0.5`` lands here
+    with nothing in between. ``SETTINGS.raytracing.experimental`` now refuses
+    both, which is why this no longer goes through it, and is also why the
+    clamp below is still load-bearing rather than dead: the settings API is not
+    the only way in.
     """
-    rt.experimental.set(shadow_eps_relative=1e-5, shadow_near_fraction=fraction)
+    rt.experimental.set(shadow_eps_relative=1e-5, shadow_near_fraction=0.0)
+    monkeypatch.setattr(rt_settings, "SHADOW_NEAR_FRACTION", fraction)
     eps_self, eps_near = _shadow_identity_epsilons(_merged(7.0))
     assert eps_self > 0.0
     assert eps_near == 0.0

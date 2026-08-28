@@ -99,21 +99,26 @@ When adding a renderer toggle, add it to `_FIELD_TO_LEGACY` and leave it out of 
 
 Use `SETTINGS.snapshot()`/`SETTINGS.restore()` for complete public-settings state capture, and `SETTINGS.override(...)` or section-level `override(...)` for temporary changes. Do not hand-roll partial restoration that leaves live settings leaked into later tests or daemon runs.
 
+`SETTINGS.raytracing` validates every write: the accepted type of each of its ~106 fields is derived from the value it ships with (three polymorphic mode switches are exempted by name), numeric fields carry a lower bound taken from their documented meaning, and floats must be finite. A setter's own `ValueError` is re-raised as an `AlganConfigurationError` naming the field; `UnsupportedFeatureError` passes through unflattened, because it is a distinct type callers catch and *is* a subclass of `AlganConfigurationError`.
+
+Writing a section is one operation with one set of rules: `SETTINGS.video.frames_per_second = 60` routes through `set()`, so assignment validates and normalizes exactly as `set(frames_per_second=60)` does, and `set()` writes back only the fields that actually changed (identity comparison) so an unrelated field keeps its object identity. Assigning a whole *section* (`SETTINGS.video = HD`) is still refused — sections have stable identity.
+
 Engine modules must read mutable settings live through `SETTINGS`. Never import a mutable ray-tracing setting by value at module import time; doing so freezes the old value and makes public setters ineffective. Immutable constants may be imported by value.
 
 Initialization-only settings intentionally have no public mutable Python object. Set these before importing `algan`:
 
 - `ALGAN_ANIMATION_DEVICE`;
-- `ALGAN_RENDER_DEVICE`;
 - `ALGAN_HOME`;
 - `ALGAN_CACHE_DIR`;
 - `TI_OFFLINE_CACHE_FILE_PATH`;
 - `ALGAN_SOFT_SHADOW_SAMPLES`;
 - `ALGAN_HDR_BUFFER_F16`.
 
+`ALGAN_RENDER_DEVICE` is **not** one of them any more. It seeds `SETTINGS.computing.render_device`, which owns the value from then on and can be changed between renders; `taichi_runtime.ensure_taichi_for_render()` re-selects Taichi's arch at the start of each render job when the device has moved across the CPU/GPU line. Read it with `algan.settings._startup.render_device()` — never bind it at import, which is the mistake the old `_RENDER_DEVICE` constant made unavoidable. A change is refused while a render is running and once a wide attribute (a texture) has been placed on the render device.
+
 `RENDERER_REGISTRY` and `KERNEL_REGISTRY` are runtime service registries, not user settings, and therefore live outside `SETTINGS` and outside the star-import namespace.
 
-`SETTINGS.computing` rejects `render_device`, `animation_device` and `render_on_cpu` with a message naming the environment variable to use instead, rather than a generic "unknown setting".
+`SETTINGS.computing` accepts `render_device`; it rejects `animation_device` with a message naming the environment variable to use instead, and `render_on_cpu` with one naming `render_device`, rather than a generic "unknown setting".
 
 The old `COMPUTING_DEFAULTS`, `DIRECTORY_DEFAULTS`, `STYLE_DEFAULTS` and `RENDERING_DEFAULTS` facades and the `algan.settings.render_settings` / `algan.settings.style_defaults` modules have been **deleted**. Do not reintroduce them.
 
@@ -194,7 +199,9 @@ Adding a knob is therefore two steps: put the name in the right tuple in `algan/
 
 ### Initialization-only settings
 
-These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_RENDER_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it. `SETTINGS.computing.set(render_device=...)` raises with that instruction rather than a generic "unknown setting".
+These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
+
+`ALGAN_RENDER_DEVICE` is in that tuple too — it *is* read at startup — but it is also in `_DAEMON_ADOPTED_STARTUP_VARIABLES`, because all it does there is seed `SETTINGS.computing.render_device`. A warm daemon therefore re-applies the client's value per run (`daemon._adopt_render_device`) instead of refusing it, and the run renders where a cold one would. Anything added to that tuple needs both halves — a runtime setting that owns the value, and a daemon that re-applies it — or a mismatched run silently renders wrong.
 
 ### Variables an A/B script sets before `import algan` do not reach a warm daemon
 

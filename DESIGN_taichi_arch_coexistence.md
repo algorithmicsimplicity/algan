@@ -28,6 +28,14 @@ Goal: let Algan run Taichi kernels on the **CPU** inside a process whose Taichi
 arch is **CUDA**, so that CPU batch-prep work can be written as kernels without
 their arguments being staged through VRAM.
 
+**This is still about running two arches at once.** Since
+`SETTINGS.computing.render_device` became settable, Algan does re-run `ti.init`
+when the render device moves across the CPU/GPU line
+(`taichi_runtime.ensure_taichi_for_render`) -- which is §3.2, accepted at its
+full cost because it happens once per device change rather than per batch.
+Nothing about that gives a CUDA render a CPU kernel, so §5 is unaffected and
+the verdict in §12.9 stands.
+
 Everything in §2–§4 was verified on taichi 1.7.4 against this repository. Every
 verification was **x64-against-x64** on a CPU-only box; the cuda-against-x64
 pairing this design actually needs is argued from the mechanism, not measured
@@ -37,9 +45,9 @@ pairing this design actually needs is argued from the mechanism, not measured
 
 ## 1. The problem
 
-Taichi's arch is chosen once, by `ti.init`, for the whole process
+Taichi's arch is chosen by `ti.init`, for the whole process
 ([`algan/rendering/taichi_runtime.py`](algan/rendering/taichi_runtime.py) picks
-it from `_RENDER_DEVICE`). Every Algan kernel takes its arguments as torch
+it from the render device). Every Algan kernel takes its arguments as torch
 tensors, and Taichi **stages any argument that does not already live on its
 arch's device** — `kernel_impl.py` passes `tensor.data_ptr()` straight through,
 and the LLVM CUDA backend copies host pointers to device memory and back around

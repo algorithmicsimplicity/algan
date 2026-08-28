@@ -29,7 +29,7 @@ from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.primitives import LogicalPNTrianglePrimitive
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
 from algan.rendering.taichi_runtime import sync_devices
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 
 
 def make_camera(z_positions, *, screen_height=1080, device=None):
@@ -137,7 +137,7 @@ def _timed_search(primitive, inputs, *, use_kernel, repeats):
 
 
 def report(name, mob, z_positions, *, repeats=3, moving=False):
-    device = torch.device(_RENDER_DEVICE)
+    device = render_device()
     primitive = LogicalPNTrianglePrimitive(
         triangle_collection=[mob.get_render_primitives()]
     )
@@ -200,7 +200,7 @@ def shared_edge_check(mob, z_positions):
     ``logical_pn_edge_control_points`` is for), so grouping every (frame, patch,
     edge) by those twelve floats recovers the adjacency without any topology.
     """
-    device = torch.device(_RENDER_DEVICE)
+    device = render_device()
     primitive = LogicalPNTrianglePrimitive(
         triangle_collection=[mob.get_render_primitives()]
     )

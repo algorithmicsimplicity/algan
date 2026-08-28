@@ -2,36 +2,90 @@
 
 ``SETTINGS.computing`` holds the knobs that decide how much of the machine a
 render may use and how much work is done eagerly -- memory budgets, batch-prep
-behaviour, and authoring-time controls.
+behaviour, the render device, and authoring-time controls.
 
-Device selection is deliberately **not** settable here. The render and animation
-devices are read while Torch and Taichi initialize, so
-``SETTINGS.computing.set(render_device=...)`` raises with a message pointing at
-``ALGAN_RENDER_DEVICE`` rather than silently doing nothing.
+The **animation** device is still initialization-only: it is where every Mob's
+authoring state is allocated, from the first ``Square()`` onward, so by the time
+a script could ask for it the tensors already exist.
+``SETTINGS.computing.set(animation_device=...)`` raises with a message pointing
+at ``ALGAN_ANIMATION_DEVICE`` rather than silently doing nothing.
+
+The **render** device is settable, because nothing that outlives a render is
+allocated on it: the arena is built per job, every cross-render geometry cache
+is keyed by device, and Taichi's arch is re-selected at render start (see
+``taichi_runtime.ensure_taichi_for_render``). The one exception is a wide
+attribute -- a texture, which materializes its frame window on the render device
+-- and :func:`~algan.animation_timeline.timeline.wide_attribute_device_pin`
+refuses a change once one exists rather than letting the two disagree.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+import torch
 
 from algan.constants.math import GIGABYTES
 from algan.errors import AlganConfigurationError
+from algan.settings._startup import _DEFAULT_RENDER_DEVICE, coerce_device
 from algan.settings.abstract_settings import Settings
 
 _INITIALIZATION_ONLY = {
     "animation_device": "ALGAN_ANIMATION_DEVICE",
-    "render_device": "ALGAN_RENDER_DEVICE",
-    "render_on_cpu": "ALGAN_RENDER_DEVICE",
 }
+
+#: Names that used to exist here, and the field that replaced them.
+_RENAMED = {
+    "render_on_cpu": "render_device",
+}
+
+
+def _check_render_device_change_allowed(current, requested):
+    """Raise unless the render device can still be changed.
+
+    Two things stand in the way. The first is a render **in progress**: the
+    batch-prep worker launches kernels on its own thread, so a change mid-job
+    could have it re-initialize Taichi -- discarding every compiled kernel --
+    while the render thread is inside one.
+
+    The second outlives a render: a **wide attribute**.
+    ``AttributeTimeline`` decides at construction whether an attribute is wide
+    enough to materialize its frame window on the render device, and a texture
+    is, so a ``Surface`` created before the change holds a decision made for the
+    old device. Nothing downstream re-asks. Rather than migrate buffers whose
+    whole purpose is to be large, refuse: the device is a property of the
+    process and belongs at the top of the script, before any Mob exists.
+    """
+    from algan.animation_timeline.timeline import wide_attribute_device_pin
+    from algan.rendering.taichi_runtime import render_is_active
+
+    if render_is_active():
+        raise AlganConfigurationError(
+            f"render_device cannot change from {current} to {requested} while a "
+            "render is in progress: the batch-prep worker is launching kernels "
+            "on the arch this would replace. Set it before save_video() or "
+            "save_frame(), not from inside an updater or a post-process."
+        )
+    pin = wide_attribute_device_pin()
+    if pin is None:
+        return
+    raise AlganConfigurationError(
+        f"render_device cannot change from {current} to {requested}: a wide "
+        f"attribute (a texture) already materializes on {pin}, and its buffers "
+        "are placed when the Mob is created. Set the render device before "
+        "creating any textured Mob -- at the top of the script, or with "
+        "ALGAN_RENDER_DEVICE -- or start a fresh Scene with "
+        "SceneManager.reset()."
+    )
 
 
 @dataclass
 class ComputingSettings(Settings):
-    """Runtime-adjustable memory and authoring controls.
+    """Runtime-adjustable memory, device and authoring controls.
 
-    Device selection is intentionally absent: set ``ALGAN_ANIMATION_DEVICE``
-    and ``ALGAN_RENDER_DEVICE`` before importing Algan.
+    ``render_device`` is settable here; the animation device is not -- set
+    ``ALGAN_ANIMATION_DEVICE`` before importing Algan.
 
     ``available_memory_override`` pins what
     :func:`~algan.utils.memory_utils.get_num_available_bytes` reports for a
@@ -56,7 +110,7 @@ class ComputingSettings(Settings):
 
     @classmethod
     def _check_keys(cls, kwargs):
-        # Devices are chosen while Torch/Taichi initialize, so answer the
+        # The animation device is chosen while Torch initializes, so answer the
         # obvious attempt with the fix rather than "unknown setting".
         for name in kwargs:
             variable = _INITIALIZATION_ONLY.get(name)
@@ -65,8 +119,41 @@ class ComputingSettings(Settings):
                     f"{name} is initialization-only; set the {variable} "
                     "environment variable before importing algan"
                 )
+            replacement = _RENAMED.get(name)
+            if replacement is not None:
+                raise AlganConfigurationError(
+                    f"There is no {name} setting; set {replacement} instead, "
+                    f"e.g. SETTINGS.computing.set({replacement}='cpu')"
+                )
         super()._check_keys(kwargs)
 
+    def set(self, source=None, **kwargs):
+        """Apply settings, refusing a render-device change that is too late.
+
+        The check runs *before* the base class writes anything: a rejected
+        change must leave the section exactly as it was, not half-applied.
+        """
+        if "render_device" in kwargs:
+            requested = kwargs["render_device"]
+        elif source is not None:
+            requested = getattr(source, "render_device", self.render_device)
+        else:
+            requested = self.render_device
+        requested = coerce_device(requested, "render_device")
+        if not self.is_preset and requested != self.render_device:
+            _check_render_device_change_allowed(self.render_device, requested)
+        return super().set(source, **kwargs)
+
+    #: Where render primitives are built and the ray tracer runs. Accepts a
+    #: ``torch.device``, a device string, or ``'auto'`` (what
+    #: ``ALGAN_RENDER_DEVICE`` defaults to), and is normalized to a
+    #: ``torch.device``. Read it through
+    #: :func:`algan.settings._startup.render_device`, never by binding it at
+    #: import. Changing it re-selects Taichi's arch at the next render, which
+    #: costs one kernel-preparation pass (the compiled kernels of the old arch
+    #: are discarded), so switch once at the top of a script rather than
+    #: between renders.
+    render_device: torch.device = field(default_factory=lambda: _DEFAULT_RENDER_DEVICE)
     animation_memory_fraction: float = 0.15
     rendering_memory_fraction: float = 0.4
     max_animation_batch_size: int = 10000
@@ -91,6 +178,9 @@ class ComputingSettings(Settings):
     overlap_pool_headroom_fraction: float = 0.6
 
     def __post_init__(self):
+        object.__setattr__(
+            self, "render_device", coerce_device(self.render_device, "render_device")
+        )
         for name in ("animation_memory_fraction", "rendering_memory_fraction"):
             value = float(getattr(self, name))
             if not math.isfinite(value) or not 0 < value <= 1:

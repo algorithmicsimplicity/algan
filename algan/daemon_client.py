@@ -77,6 +77,7 @@ import sys
 import time
 
 from algan.environment import (
+    daemon_adopted_startup_variables,
     env_flag,
     env_float,
     env_int,
@@ -108,10 +109,19 @@ FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 #: Environment variables consumed while Torch and Taichi initialise. The daemon
 #: baked its values at launch and cannot change them, so a client whose values
 #: differ is refused and runs cold rather than silently rendering on the wrong
-#: device or against the wrong cache. Declared in :mod:`algan.environment`
-#: alongside every other variable Algan honors; see also the
-#: "Initialization-only settings" section of ``CLAUDE.md``.
+#: device or against the wrong cache -- except for
+#: :data:`STARTUP_ENV_ADOPTED`. Declared in :mod:`algan.environment` alongside
+#: every other variable Algan honors; see also the "Initialization-only
+#: settings" section of ``CLAUDE.md``.
 STARTUP_ENV = startup_environment_variables()
+
+#: The startup variables a difference in is *not* refused. Their import-time
+#: read only seeds a runtime setting, and the daemon re-applies the client's
+#: value at the start of each run (``algan.daemon._adopt_render_device``), so a
+#: script that asks for a different render device is served warm and renders
+#: where it asked to. Declared in :mod:`algan.environment` beside the tuple it
+#: subtracts from.
+STARTUP_ENV_ADOPTED = frozenset(daemon_adopted_startup_variables())
 
 #: Environment variables algan consumes while it is *imported*, which in a
 #: daemon happened at its launch. Their values are already module-level
@@ -178,7 +188,8 @@ def describe_env_mismatch(client_env, daemon_env):
         f"  {name}: this script wants {client_env.get(name, '') or '<unset>'!r}, "
         f"daemon was launched with {daemon_env.get(name, '') or '<unset>'!r}"
         for name in STARTUP_ENV
-        if client_env.get(name, "") != daemon_env.get(name, "")
+        if name not in STARTUP_ENV_ADOPTED
+        and client_env.get(name, "") != daemon_env.get(name, "")
     ]
     if not diffs:
         return None

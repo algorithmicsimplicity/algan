@@ -243,25 +243,37 @@ tessellated and stops being rasterized.
 Devices
 =======
 
-The animation and render devices are chosen at import time and cannot be changed
-afterwards, so they are environment variables set **before** ``import algan``:
+The **render** device is a setting, so it belongs at the top of the script:
+
+.. code-block:: python
+
+    from algan import *
+
+    SETTINGS.computing.set(render_device="cuda")   # or "auto", "mps", "cpu"
+
+It defaults to ``auto``, which picks CUDA, then MPS, then CPU, and starts at
+whatever ``ALGAN_RENDER_DEVICE`` said if you prefer the environment. It can be
+changed between renders, at the cost of a fresh kernel-preparation pass whenever
+the change crosses the CPU/GPU line -- see :doc:`settings` for that and for the
+two changes that are refused rather than mishandled.
+
+The **animation** device is chosen at import time and cannot be changed
+afterwards, so it is an environment variable set **before** ``import algan``:
 
 .. code-block:: python
 
     import os
-    os.environ["ALGAN_RENDER_DEVICE"] = "cuda"     # or "auto", "mps", "cpu"
     os.environ["ALGAN_ANIMATION_DEVICE"] = "cpu"
 
     from algan import *
 
-``ALGAN_RENDER_DEVICE`` defaults to ``auto``, which picks CUDA, then MPS, then CPU.
-The animation device defaults to ``cpu``, which is usually right: materializing the
-timeline is Python-bound rather than compute-bound, and the geometry is moved to the
-render device afterwards anyway.
+It defaults to ``cpu``, which is usually right: materializing the timeline is
+Python-bound rather than compute-bound, and the geometry is moved to the render
+device afterwards anyway.
 
 :meth:`~algan.settings.abstract_settings.Settings.set` raises a specific error,
-rather than a generic unknown
-setting error, if you try to set the render device at runtime.
+rather than a generic unknown setting error, if you try to set the animation
+device at runtime.
 
 Caching
 =======

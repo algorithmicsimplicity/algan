@@ -440,7 +440,10 @@ Texture maps
 ============
 
 Algan samples exactly three maps per triangle, bilinearly, in the render kernel.
-They are set on the geometry, not on the material.
+They live on the geometry. A material forwards ``map``, ``normal_map``,
+``roughness_map`` and ``metalness_map`` onto it (see
+:doc:`shaders_and_materials`), but only the geometry's own arguments reach every
+channel, and only they can be animated.
 
 .. list-table::
    :header-rows: 1

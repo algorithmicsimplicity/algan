@@ -10,6 +10,7 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
 )
 from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
 from algan.settings import SETTINGS
+from algan.settings._startup import render_device
 
 
 def test_grouped_triangle_stays_on_its_source_device():
@@ -75,9 +76,20 @@ def test_primitive_source_device_uses_primitive_tensor():
     assert _primitive_source_device(primitive).type == "cpu"
 
 
-def test_render_device_setting_is_initialization_only():
-    with pytest.raises(AlganConfigurationError, match="ALGAN_RENDER_DEVICE"):
+def test_render_device_setting_is_live_and_batch_prep_follows_it():
+    """The device is a setting, and nothing here may hold a copy of it.
+
+    Batch prep decides per tensor whether to move it to the render device, so a
+    module that bound the device at import would keep preparing for the old one
+    after a change and hand the tracer tensors on the wrong device.
+    """
+    original = SETTINGS.computing.render_device
+    try:
         SETTINGS.computing.set(render_device=torch.device("meta"))
+        assert render_device() == torch.device("meta")
+    finally:
+        SETTINGS.computing.set(render_device=original)
+    assert render_device() == original
 
 
 def test_animation_device_setting_is_initialization_only():

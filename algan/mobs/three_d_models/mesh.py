@@ -48,7 +48,7 @@ def image_to_texture_map(image):
     transpose ``[H, W] -> [W, H]`` (columns become the ``u`` axis) and flip the
     ``v`` axis. Channels are padded to the engine's 5-slot colour
     ``(r, g, b, glow, opacity)`` by
-    :ref:`Color.add_defaults <reference-color-add-defaults>`.
+    :meth:`Color.add_defaults <algan.constants.color.Color.add_defaults>`.
     """
     image = cast_to_tensor(image).float()
     if image.dim() != 3:
@@ -203,16 +203,21 @@ class TriangleMesh(Mob):
             or self.material_texture_map is not None
             or self.normal_texture_map is not None
         )
+        # Kept whether or not anything samples them yet, because a material
+        # applied later (``set_material`` carrying a map) needs them to build
+        # ``corner_uvs``. ``corner_uvs`` itself cannot stand in for them: it
+        # doubles as the primitive build's "this mesh is textured" signal, so
+        # it stays None until a map actually exists.
+        self._authored_uvs = (
+            None if uvs is None else cast_to_tensor(uvs).view(-1, 2).to(device)
+        )
         if has_any_texture:
-            if uvs is None:
+            if self._authored_uvs is None:
                 raise ValueError(
                     "TriangleMesh with a texture/material/normal map requires "
                     "per-vertex `uvs`"
                 )
-            uvs = cast_to_tensor(uvs).view(-1, 2).to(device)
-            # [1, 3F, 2] -- static per-corner UVs (broadcast over time in the
-            # primitive, matching Surface.get_render_primitives).
-            self.corner_uvs = uvs[corner_index].unsqueeze(0)
+            self.corner_uvs = self._build_corner_uvs()
         else:
             self.corner_uvs = None
 
@@ -250,6 +255,78 @@ class TriangleMesh(Mob):
         self.is_primitive = True
         self.ignore_wave_animations = True
 
+    def _build_corner_uvs(self):
+        """The authored per-vertex UVs as ``[1, 3F, 2]`` per-corner UVs, static
+        (broadcast over time in the primitive, matching
+        ``Surface.get_render_primitives``).
+        """
+        return self._authored_uvs[self.corner_index].unsqueeze(0)
+
+    def _can_accept_material_textures(self):
+        """Only a mesh built with ``uvs`` can sample a map: nothing derives
+        them from an arbitrary triangle soup.
+        """
+        return self._authored_uvs is not None
+
+    def _accept_material_textures(self, maps):
+        """Take a material's texture maps onto this mesh's own map slots.
+
+        See
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin._accept_material_textures`.
+        Every map needs the mesh's own ``uvs``; without them nothing is taken,
+        and ``set_material`` reports the maps as ignored rather than leaving a
+        mesh that samples an undefined coordinate.
+        """
+        from algan.rendering.shaders.materials import (
+            _MAP_SLOT_PROPERTIES,
+            _MATERIAL_TEXTURE_CHANNELS,
+            _pack_material_texture,
+        )
+
+        device = self.corner_index.device
+        applied = {}
+        if "map" in maps:
+            self.texture_map = maps["map"].to(device).as_subclass(Color)
+            self._texture_u8_ok = texture_u8_provenance(self.texture_map)
+            # A colour map replaces the per-vertex colour in the kernel rather
+            # than modulating it, so the corner colours become the same opaque
+            # white placeholder __init__ uses for a mesh built with a texture.
+            self.grid.color = (
+                WHITE.view(1, -1).expand(self.grid.color.shape[-2], -1).contiguous()
+            )
+            applied["map"] = False
+        if "normal_map" in maps:
+            self.normal_texture_map = maps["normal_map"].to(device)
+            applied["normal_map"] = False
+        properties = {
+            name: maps[slot]
+            for slot, (name, _) in _MAP_SLOT_PROPERTIES.items()
+            if slot in maps
+        }
+        if properties:
+            # A mesh is built with an already-packed material map rather than
+            # per-property ones, so carry the channels it already has across as
+            # inputs of their own -- the repack resamples them to whatever
+            # resolution the new maps bring, instead of dropping them.
+            if self.material_texture_map is not None:
+                for name, channel in _MATERIAL_TEXTURE_CHANNELS.items():
+                    if (
+                        name not in properties
+                        and (self.material_texture_flags >> channel) & 1
+                    ):
+                        properties[name] = self.material_texture_map[
+                            ..., channel : channel + 1
+                        ]
+            self.material_texture_map, self.material_texture_flags = (
+                _pack_material_texture(properties, device)
+            )
+            applied.update(
+                {slot: False for slot in _MAP_SLOT_PROPERTIES if slot in maps}
+            )
+        if applied:
+            self.corner_uvs = self._build_corner_uvs()
+        return applied
+
     def _rebatch_structural_attrs(self, repeat_indices, *, child=None):
         if child is not None and child is not self.grid:
             return self
@@ -280,6 +357,9 @@ class TriangleMesh(Mob):
         )
         self.corner_uvs = (
             None if target.corner_uvs is None else target.corner_uvs.clone()
+        )
+        self._authored_uvs = (
+            None if target._authored_uvs is None else target._authored_uvs.clone()
         )
         self.num_triangles = target.num_triangles
         self.num_vertices = target.num_vertices

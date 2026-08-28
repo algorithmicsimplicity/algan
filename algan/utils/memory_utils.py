@@ -28,7 +28,7 @@ import torch
 from algan.constants.math import GIGABYTES
 from algan.environment import env_int
 from algan.settings import SETTINGS
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 
 
 class InsufficientMemoryException(Exception):
@@ -615,7 +615,7 @@ class ManualMemory:
         num_bytes=None,
     ):
         if device is None:
-            device = _RENDER_DEVICE
+            device = render_device()
         self.current_pointer = 0
         self.max_pointer = 0
         # Largest frame window a render kernel actually launched for the chunk

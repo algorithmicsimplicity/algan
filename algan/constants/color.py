@@ -218,6 +218,26 @@ class Color(torch.Tensor):
         return out
 
     def set_opacity(self, opacity):
+        """Return a copy of this colour with its opacity replaced.
+
+        Opacity is one of the five channels, so ordinary colour arithmetic
+        moves it along with the others -- ``BLUE * 0.5`` halves the alpha as
+        well as the brightness, and renders half-transparent. This sets the
+        alpha channel alone and leaves red, green, blue and glow as they are.
+
+        Parameters
+        ----------
+        opacity
+            The new opacity, in ``[0, 1]``: 0 is invisible, 1 fully opaque.
+            A tensor is broadcast against this colour, giving one opacity per
+            row -- per vertex or per texel.
+
+        Returns
+        -------
+        :class:`Color`
+            A new colour. The colour it was called on is left unchanged, so
+            the named palette constants stay safe to reuse.
+        """
         out = self.prep_set(opacity)
         out.opacity = opacity
         return out

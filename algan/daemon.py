@@ -82,11 +82,17 @@ them and a warm process never shuts down.
 
 Three more limits that are specific to serving other processes:
 
-* **Startup-only settings cannot be adopted from a client.**
-  ``ALGAN_RENDER_DEVICE`` and friends are read while Torch/Taichi initialise,
-  i.e. when the *daemon* started. A script that sets one to a different value
-  is refused with an explanation and runs cold in its own process, rather than
-  being silently rendered on the wrong device.
+* **Startup-only settings cannot be adopted from a client**, with one
+  exception. ``ALGAN_ANIMATION_DEVICE`` and friends are read while Torch/Taichi
+  initialise, i.e. when the *daemon* started. A script that sets one to a
+  different value is refused with an explanation and runs cold in its own
+  process, rather than being silently rendered on the wrong device.
+  ``ALGAN_RENDER_DEVICE`` **is** adopted (:func:`_adopt_render_device`): it
+  only seeds ``SETTINGS.computing.render_device``, which owns the value from
+  then on, and every render re-selects Taichi's arch from it. A script that
+  wants the other device is served warm; if that crosses the CPU/GPU line its
+  first render pays one kernel-preparation pass, which is still far less than
+  the cold start refusing it used to cost.
 * **Neither can settings read while algan is imported.** The renderer's
   toggles become module-level defaults during ``import algan``, which in a
   daemon happened at *its* launch -- so a script that sets one before its own
@@ -136,7 +142,7 @@ os.environ["ALGAN_DAEMON_CHILD"] = "1"
 import algan  # noqa: E402, F401  (the whole point: pay the import once, up front)
 from algan import SceneManager
 from algan import daemon_client as _dc
-from algan.environment import env_flag, env_int
+from algan.environment import env_flag, env_int, env_str
 from algan.settings import SETTINGS
 from algan.settings.path_settings import output_filename_for, output_root_for
 from algan.utils.memory_utils import empty_cache
@@ -536,6 +542,37 @@ def _restore_std_handle(token):
 
         which, previous = token
         ctypes.windll.kernel32.SetStdHandle(which, ctypes.c_void_p(previous))
+
+
+def _adopt_render_device():
+    """Adopt the client's ``ALGAN_RENDER_DEVICE`` for this run.
+
+    The one startup variable a warm process *can* take from a client. It is
+    read at import only to seed ``SETTINGS.computing.render_device``, which
+    owns the value from then on, and Taichi re-selects its arch at the start of
+    every render (``taichi_runtime.ensure_taichi_for_render``) -- so applying
+    the client's value here makes the run render where a cold one would.
+
+    Called from :func:`execute` after ``reset_state()`` has restored the
+    settings snapshot, so the value never leaks into the next run. It runs
+    before the script does, so the script can still change the device itself.
+
+    A change across the CPU/GPU line costs the next render one
+    kernel-preparation pass, since ``ti.init`` discards the compiled kernels of
+    the old arch. That is still far less than the cold start the refusal used
+    to force, and a daemon serving one device repeatedly pays it once.
+
+    An unusable device raises here exactly as it would at import in a cold
+    process; the run reports it and fails rather than rendering somewhere else.
+    """
+    from algan.settings._startup import coerce_device
+
+    device = coerce_device(
+        env_str("ALGAN_RENDER_DEVICE", "auto"), "ALGAN_RENDER_DEVICE"
+    )
+    if device != SETTINGS.computing.render_device:
+        _say(f"adopting this script's render device: {device}")
+        SETTINGS.computing.set(render_device=device)
 
 
 @contextlib.contextmanager
@@ -1036,6 +1073,7 @@ def main(argv=None):
             output_root=output_root_for(path),
             output_filename=output_filename_for(path),
         )
+        _adopt_render_device()
         script_dirs.add(os.path.dirname(path))
         _add_to_path(os.path.dirname(path))
         _say(f"run #{run_count} ({reason}): {path}")
