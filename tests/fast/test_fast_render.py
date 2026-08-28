@@ -46,7 +46,19 @@ SCENE_FILE = HERE / "scene.py"
 OUTPUT_DIR = HERE / "algan_outputs"
 CACHE_DIR = HERE / "algan_cache"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
+# Baselines are keyed by render device, and on macOS by platform as well. The
+# committed ``cpu`` baseline was rendered on x86-64; Apple Silicon is a
+# different instruction set with a different libm, and a path tracer's fp32
+# arithmetic does not agree across the two to within the two-channel tolerance
+# this suite asserts. Pointing a Mac at that baseline would fail every run
+# without ever having seen a regression, so a Mac looks for a baseline of its
+# own -- and, with none committed, renders the scene and skips the comparison
+# below. That still exercises the whole pipeline (kernel compilation,
+# tessellation, LaTeX, the fonts, the encoder); it just cannot see a
+# pixel-level regression. Render with ALGAN_UPDATE_FAST_BASELINE=1 on a Mac and
+# commit the directory it writes, and the comparison turns itself back on.
+BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
+EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINE = os.getenv("ALGAN_UPDATE_FAST_BASELINE") == "1"
 LOG_FILE = HERE / "pytest.log"
 
@@ -200,7 +212,7 @@ def test_the_fast_scene_renders_and_matches_its_baseline(
         shutil.copy2(output_path, expected_path)
         pytest.skip(f"re-baselined {output_path.name}")
     if not EXPECTED_DIR.exists():
-        pytest.skip(f"no {DEVICE} fast-suite baseline is available")
+        pytest.skip(f"no {BASELINE_KEY} fast-suite baseline is available")
 
     assert expected_path.exists(), (
         "Missing the fast-suite baseline. Re-run with "

@@ -40,7 +40,13 @@ OUTPUT_DIR = HERE / "algan_outputs2"
 CACHE_DIR = HERE / "algan_cache"
 ERRORS_DIR = HERE / "output_errors"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
+# Keyed by render device, and on macOS by platform as well -- for the reason
+# spelled out in ``tests/fast/test_fast_render.py``: the committed ``cpu``
+# baselines were rendered on x86-64, and Apple Silicon does not reproduce a
+# path tracer's fp32 arithmetic to within the two-channel tolerance. A Mac with
+# no baseline of its own renders every scene and skips the comparisons.
+BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
+EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 LOG_FILE = HERE / "pytest.log"
 
@@ -262,7 +268,7 @@ def test_full_render_scene(
         shutil.copy2(output_path, expected_path)
         pytest.skip(f"re-baselined {output_path.name}")
     if not EXPECTED_DIR.exists():
-        pytest.skip(f"no {DEVICE} full-render baselines are available")
+        pytest.skip(f"no {BASELINE_KEY} full-render baselines are available")
 
     assert expected_path.exists(), (
         f"Missing baseline for {scene_path.name}. Re-run with "

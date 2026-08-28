@@ -23,10 +23,27 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      # One platform failing must not cancel the other. The point of a
+      # two-platform matrix is to learn whether a change is portable, and that
+      # answer only exists when both halves have reported.
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10"]
+
+    env:
+      # Both runners are CPU-only in practice, but macos-latest is Apple
+      # Silicon, where the automatic device probe would resolve to MPS: Torch
+      # on Metal, and Taichi on its Metal backend. Neither the kernels nor the
+      # committed baselines have ever been validated there, so a Mac job that
+      # took the default would be testing an untested backend rather than the
+      # portability of the code the other job runs. Pinning the device makes
+      # the two jobs the same job on two platforms. MPS is its own piece of
+      # work; when it is done, give it its own matrix entry.
+      ALGAN_RENDER_DEVICE: cpu
 
     steps:
       - uses: actions/checkout@v4
@@ -36,12 +53,23 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install system dependencies for manimpango
+      - name: Install system dependencies for manimpango (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
 
-      - name: Install LaTeX dependencies
+      # The macOS ManimPango wheel bundles its own Pango, but the Pango stack
+      # still resolves family names through fontconfig, and tests/conftest.py
+      # registers the vendored test faces through it before any scene renders.
+      # Installing the Homebrew stack gives that a system configuration to
+      # read, and mirrors what the Linux job installs.
+      - name: Install system dependencies for manimpango (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pango cairo pkg-config
+
+      - name: Install LaTeX dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -50,6 +78,26 @@ jobs:
             texlive-fonts-recommended \
             latexmk # or full texlive-full if needed
 
+      # BasicTeX, not MacTeX: MacTeX is a multi-gigabyte download, and Algan
+      # needs only `latex`, `dvisvgm` (both in the base install) and the
+      # packages the default Tex template asks for. `standalone` and `preview`
+      # come from the documentclass line, and are the two that scheme-basic
+      # does not already carry; the other two are named because a missing
+      # transitive dependency here shows up as a silent LaTeX failure rather
+      # than as an error anyone can read.
+      #
+      # If `tlmgr` ever fails with "Local TeX Live is older than remote
+      # repository", the cask is lagging a TeX Live release -- point tlmgr at
+      # the matching historic repository (tug.org/historic/systems/texlive/
+      # <year>/tlnet-final) rather than waiting for Homebrew to catch up.
+      - name: Install LaTeX dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval
+
       # apt supplies ffmpeg 6.1.1 on ubuntu-24.04, which is all moviepy and
       # opencv need. A second step ran federicocarboni/setup-ffmpeg@v3 straight
       # after this one; it fetched a static build by scraping an upstream readme
@@ -57,7 +105,15 @@ jobs:
       # with "AssertionError: Failed to read version from readme". Since apt has
       # already installed ffmpeg by this point the step was redundant as well as
       # broken, so it is gone rather than pinned.
-      - name: Install ffmpeg
+      #
+      # There is no macOS counterpart on purpose. moviepy encodes through the
+      # binary that `imageio-ffmpeg` ships -- a locked dependency, so `uv sync`
+      # has already put one on the machine -- and Algan only reaches for a
+      # system ffmpeg when hunting for an NVENC-capable build, which no Mac
+      # has. `brew install ffmpeg` is several minutes of dependency building
+      # for something nothing in the test run would call.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get install -y ffmpeg
 
       - name: Install uv
@@ -80,15 +136,24 @@ jobs:
       # 191 hand-picked tests marked 'fast', while everything under these two
       # paths is portable and passes here. CI can afford the whole thing; the
       # fast suite is a development loop, not a CI scope.
+      #
+      # On macOS the render in tests/fast still runs, but its pixel comparison
+      # skips: the committed cpu baseline was rendered on x86-64 and Apple
+      # Silicon does not reproduce a path tracer's fp32 arithmetic to within
+      # the two-channel tolerance. What the Mac job proves is that the whole
+      # pipeline -- kernel compilation, tessellation, LaTeX, the fonts, the
+      # encoder -- works there. See tests/fast/test_fast_render.py.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 
+      # One upload, from one platform. Both jobs cover the same lines of the
+      # same source, so a second report adds nothing but a second chance for a
+      # Codecov outage to fail a green run -- and `fail_ci_if_error` is on.
       - name: Upload coverage to Codecov
+        if: runner.os == 'Linux'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           fail_ci_if_error: true
           verbose: true
-
-
