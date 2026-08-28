@@ -46,25 +46,21 @@ from algan.utils.tensor_utils import dot_product
 #: ``len(inspect.signature(basic_material_shader).parameters)``.
 SHADER_FIXED_PARAM_COUNT = 9
 
-# Base ambient coefficient. The renderer always passes ``ambient_light_intensity``
-# as 1, so we scale it down here to avoid washing surfaces out to white and to
-# keep unlit sides dark (matching a Three.js scene lit by a single point light
-# with no AmbientLight).
-AMBIENT_STRENGTH = 0.1
-
-# The same fill in linear light. 0.1 was chosen as a display-referred
-# coefficient; carrying it unchanged into the linear working space would make
-# the ambient nearly nine times brighter, because 0.1 of linear light encodes
-# to byte 89 where 0.1 of an encoded value is byte 26. srgb_to_linear(0.1) =
-# 0.01003, so 0.01 delivers the fill the old pipeline delivered -- the number
-# changes because the units changed, not because the look was retuned. Twin of
-# shading_taichi.AMBIENT_STRENGTH_LINEAR.
-AMBIENT_STRENGTH_LINEAR = 0.01
-
 
 def _ambient_strength():
-    """The ambient coefficient for the active working space."""
-    return AMBIENT_STRENGTH_LINEAR if _linear_color_space() else AMBIENT_STRENGTH
+    """The ambient coefficient for the active working space.
+
+    Both numbers live on ``rt_settings`` (``ambient_strength`` /
+    ``ambient_strength_linear``) and are read through the module object at
+    every call, exactly as :func:`_linear_color_space` reads its gate: this
+    module and ``raytracing/shading_taichi`` each used to keep their own copy
+    of the pair, so one look-defining constant had two sources of truth.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    if _linear_color_space():
+        return float(rt_settings.ambient_strength_linear)
+    return float(rt_settings.ambient_strength)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +83,7 @@ def _linear_color_space():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    return bool(rt_settings.LINEAR_COLOR_SPACE)
+    return bool(rt_settings.linear_color_space)
 
 
 def _split_albedo(albedo_color):

@@ -1,6 +1,6 @@
 """Exact parity and engagement check for sparse hybrid-raster coverage.
 
-Runs the same hybrid rasterizer with ``RASTER_SPARSE_COVERAGE`` off/on.  The
+Runs the same hybrid rasterizer with ``raster_sparse_coverage`` off/on.  The
 sparse run must discover exact coverage, allocate/resolve only covered rows,
 and produce pixel-identical decoded video.
 
@@ -49,7 +49,7 @@ from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
 from algan.mobs.shapes_2d import QuadTriangulated
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.primitives import set_fragment_shading
-from algan.rendering.raytracing.settings import set_ray_traced_shadows
+from algan.rendering.raytracing.settings import set_shadows
 from algan.rendering.shaders.materials import (
     MeshLambertMaterial,
     MeshPhysicalMaterial,
@@ -180,7 +180,7 @@ def build_scene(config):
 def render(config, sparse, tag):
     SceneManager.reset()
     set_fragment_shading(config in ("split", "shadow"))
-    set_ray_traced_shadows(config == "shadow")
+    set_shadows(config == "shadow")
     rt_settings.set_hybrid_raster(True)
     rt_settings.set_raster_empty_skip(True)
     rt_settings.set_raster_covered_shade(True)
@@ -258,7 +258,7 @@ def main():
         assert worst == 0
     rt_settings.set_raster_sparse_coverage(True)
     set_fragment_shading(False)
-    set_ray_traced_shadows(False)
+    set_shadows(False)
     print("PASS: sparse coverage engaged and decoded videos are pixel-exact")
 
 

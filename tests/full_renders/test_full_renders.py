@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 
 from algan import PREVIEW, SETTINGS, Scene
 from algan.scene_manager import SceneManager
@@ -39,8 +38,13 @@ SCENES_DIR = HERE / "scenes"
 OUTPUT_DIR = HERE / "algan_outputs2"
 CACHE_DIR = HERE / "algan_cache"
 ERRORS_DIR = HERE / "output_errors"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
+# The device the renders will actually run on, and -- on macOS -- the platform
+# too. Both choices are explained at the top of ``tests/fast/test_fast_render.py``.
+# Nothing is committed for macOS here, so a Mac renders all six scenes and
+# skips the comparisons.
+DEVICE = SETTINGS.computing.render_device.type
+BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
+EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 LOG_FILE = HERE / "pytest.log"
 
@@ -262,7 +266,7 @@ def test_full_render_scene(
         shutil.copy2(output_path, expected_path)
         pytest.skip(f"re-baselined {output_path.name}")
     if not EXPECTED_DIR.exists():
-        pytest.skip(f"no {DEVICE} full-render baselines are available")
+        pytest.skip(f"no {BASELINE_KEY} full-render baselines are available")
 
     assert expected_path.exists(), (
         f"Missing baseline for {scene_path.name}. Re-run with "

@@ -20,7 +20,7 @@ import algan.render_loop as render_loop_module
 import algan.rendering.raytracing.settings as rt_module
 from algan.errors import AlganConfigurationError, AlganWarning
 from algan.render_loop import RenderLoopMixin
-from algan.rendering.memory_model import HISTORY, PeakRatioModel
+from algan.rendering.memory_model import PeakRatioModel, memory_model_history
 from algan.settings import SETTINGS
 
 
@@ -645,5 +645,5 @@ def test_peak_ratio_model_survives_concurrent_observers_and_readers():
         thread.join()
 
     assert errors == []
-    assert len(model._samples) == HISTORY
+    assert len(model._samples) == memory_model_history
     assert model.is_calibrated()

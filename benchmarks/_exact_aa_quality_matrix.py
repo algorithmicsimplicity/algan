@@ -176,13 +176,13 @@ def _build(case):
 def _render(case, tag, aa, analytic):
     settings = VideoSettings(RESOLUTION, frames_per_second=1, anti_alias_level=aa)
     SceneManager.reset()
-    rt_settings.ANALYTIC_AA = analytic
+    rt_settings.analytic_aa = analytic
     rt_settings.ANALYTIC_AA_EXACT_COVERAGE = True
     rt_settings.ANALYTIC_AA_FORCE_FALLBACK = False
     # The acceptance reference is the complete ray path that sparse fallback
     # invokes, not the old hybrid first-hit rasterizer whose tilted-circuit
     # coverage this benchmark is specifically replacing.
-    rt_settings.HYBRID_RASTER = analytic
+    rt_settings.hybrid_raster = analytic
     reset_exact_aa_fallback_counts()
     tracer._EXACT_AA_FALLBACK_PIXELS[0] = 0
     tracer._EXACT_AA_FALLBACK_PRIMARY_PATHS[0] = 0
@@ -214,10 +214,10 @@ def main():
 
     snapshot = SETTINGS.snapshot()
     globals_before = (
-        rt_settings.ANALYTIC_AA,
+        rt_settings.analytic_aa,
         rt_settings.ANALYTIC_AA_EXACT_COVERAGE,
         rt_settings.ANALYTIC_AA_FORCE_FALLBACK,
-        rt_settings.HYBRID_RASTER,
+        rt_settings.hybrid_raster,
     )
     rows = []
     try:
@@ -260,10 +260,10 @@ def main():
             )
     finally:
         (
-            rt_settings.ANALYTIC_AA,
+            rt_settings.analytic_aa,
             rt_settings.ANALYTIC_AA_EXACT_COVERAGE,
             rt_settings.ANALYTIC_AA_FORCE_FALLBACK,
-            rt_settings.HYBRID_RASTER,
+            rt_settings.hybrid_raster,
         ) = globals_before
         SETTINGS.restore(snapshot)
         SceneManager.reset()

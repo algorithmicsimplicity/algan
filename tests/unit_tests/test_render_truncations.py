@@ -12,7 +12,7 @@ otherwise:
   scene built to exceed them, which is the acceptance criterion the queue item
   states.
 * ``surfaces_per_ray`` needs 257 surfaces stacked in one pixel, each thin
-  enough that the ray's throughput has not already fallen under ``MIN_WEIGHT``
+  enough that the ray's throughput has not already fallen under ``min_weight``
   by the 256th. That is a real render but a slow one, so it is checked here at
   the level of the counter and left to the manual probe in the commit message
   as a scene.
@@ -39,7 +39,7 @@ from algan.constants.color import BLUE
 from algan.logging.logger import PERF
 from algan.mobs.shapes_3d import Polyhedron
 from algan.rendering.lights import PointLight
-from algan.rendering.raytracing.shading_taichi import MAX_SHADOW_LIGHTS
+from algan.rendering.raytracing.shading_taichi import max_shadow_lights
 from algan.rendering.raytracing.sheets import SHEET_RANK_LIMIT
 from algan.rendering.raytracing.tracer import (
     ALLOC_NEXT,
@@ -194,7 +194,7 @@ def test_the_first_batch_to_truncate_warns_and_names_the_ceiling(recorder, algan
     assert record.levelno == logging.WARNING
     assert "12" in record.message
     assert "256" in record.message
-    assert "MAX_SURFACES_PER_RAY" in record.message
+    assert "max_surfaces_per_ray" in record.message
 
 
 def test_later_batches_escalate_the_total_below_info_instead_of_warning_again(
@@ -403,7 +403,7 @@ def test_more_lights_than_the_shadow_cap_reports_the_surplus(tmp_path, algan_log
             Polyhedron(*_stacked_faces(1), color=BLUE).spawn(animate=False)
             # The Scene already carries one light of its own, so spawn one
             # fewer than the surplus the cap should end up reporting.
-            for i in range(MAX_SHADOW_LIGHTS + surplus - 1):
+            for i in range(max_shadow_lights + surplus - 1):
                 PointLight(location=(i * 0.1, 0.0, 3.0)).spawn(animate=False)
             result = scene.save_frame(
                 str(tmp_path / "lights.png"),

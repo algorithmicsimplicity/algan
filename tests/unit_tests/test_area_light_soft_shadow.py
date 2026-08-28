@@ -171,7 +171,7 @@ def test_other_light_types_pack_aux_6_to_11_exactly_as_before():
     assert not directional[9:12].any()
 
     ground = torch.tensor((0.25, 0.5, 1.0))
-    if rt_settings.LINEAR_COLOR_SPACE:
+    if rt_settings.linear_color_space:
         ground = srgb_to_linear(ground)
     assert not hemisphere[6:9].any()
     assert torch.allclose(hemisphere[9:12], ground)
@@ -181,7 +181,7 @@ def test_flag_off_packs_todays_row(monkeypatch):
     """With the toggle off, build_aux writes zeros to aux 6-11: bit-for-bit
     today's row, so the kernels take their existing single-ray path.
     """
-    monkeypatch.setattr(rt_settings, "AREA_LIGHT_SOFT_SHADOWS", False)
+    monkeypatch.setattr(rt_settings, "area_light_soft_shadows", False)
     with Scene():
         aux = _aux(_light(width=1.8, height=1.0, samples=4))
     assert not aux[:, 6:12].any()
@@ -198,13 +198,13 @@ def test_experimental_setting_surfaces_and_drives_the_legacy_global():
     previous = SETTINGS.raytracing.experimental.area_light_soft_shadows
     try:
         SETTINGS.raytracing.experimental.area_light_soft_shadows = False
-        assert rt_settings.AREA_LIGHT_SOFT_SHADOWS is False
+        assert rt_settings.area_light_soft_shadows is False
         with Scene():
             aux = _aux(_light(samples=4))
         assert not aux[:, 6:12].any()
 
         SETTINGS.raytracing.experimental.area_light_soft_shadows = True
-        assert rt_settings.AREA_LIGHT_SOFT_SHADOWS is True
+        assert rt_settings.area_light_soft_shadows is True
         with Scene():
             aux = _aux(_light(samples=4))
         assert aux[:, 6:12].any()

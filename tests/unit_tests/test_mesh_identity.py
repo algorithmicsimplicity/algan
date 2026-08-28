@@ -301,17 +301,17 @@ def test_mesh_identity_is_off_switchable():
         assert all(getattr(p, "mesh_key", None) is not None for p in prims)
 
     rt = SETTINGS.raytracing
-    assert rt.MESH_ID is True, (
+    assert rt.mesh_id is True, (
         "mesh identity is ON by default since the packed-grid case measured "
         "positive -- see the MESH_ID comment in raytracing/settings.py"
     )
-    original = rt.MESH_ID
+    original = rt.mesh_id
     try:
         rt.experimental.set(mesh_id=False)
-        assert rt.MESH_ID is False
+        assert rt.mesh_id is False
     finally:
         rt.experimental.set(mesh_id=original)
-    assert rt.MESH_ID is original
+    assert rt.mesh_id is original
 
 
 @pytest.mark.fast
@@ -372,7 +372,7 @@ def test_shipped_platonic_solids_are_not_consistently_wound():
         Dodecahedron: (12, 3),
     }
     rt = SETTINGS.raytracing
-    original = rt.POLYHEDRON_WINDING
+    original = rt.polyhedron_winding
     try:
         rt.experimental.set(polyhedron_winding=False)
         with Scene(), Off():
@@ -479,7 +479,7 @@ def test_declared_shells_survive_the_logical_pn_dice(tmp_path):
     priority over ``_obj_ids``. The dice built its patch->surface map from
     the per-member COUNTS alone, so a lone packed primitive -- one member
     covering every sphere -- collapsed to a single id and the ``mesh_ids``
-    resolved above were read by nothing, with MESH_ID on or off.
+    resolved above were read by nothing, with mesh_id on or off.
 
     Renders a frame and reads the ``tri_obj`` the scene merge actually hands
     the resolve, because that discarding happened downstream of every
@@ -516,7 +516,7 @@ def test_declared_shells_survive_the_logical_pn_dice(tmp_path):
         return max(seen) if seen else 0
 
     rt = SETTINGS.raytracing
-    original = rt.MESH_ID
+    original = rt.mesh_id
     try:
         rt.experimental.set(mesh_id=True)
         assert render_and_read_tri_obj() == 4, (

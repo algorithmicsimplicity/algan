@@ -82,7 +82,7 @@ def render(
 ):
     bez_accel.BEZIER_CLASS_ENABLED = bez_class
     rt_settings.set_bvh_defer(bvh_defer)
-    rt_settings.set_ray_traced_shadows(shadows)
+    rt_settings.set_shadows(shadows)
     orig_eligible = scene_builder._bvh_deferral_eligible
     if force_defer:
         # Force deferral for a batch the predicate would (correctly) refuse,
@@ -93,7 +93,7 @@ def render(
         render_to_file(file_name=name, output_dir=OUT_DIR, render_settings=SETTINGS)
     finally:
         scene_builder._bvh_deferral_eligible = orig_eligible
-        rt_settings.set_ray_traced_shadows(False)
+        rt_settings.set_shadows(False)
     return os.path.join(OUT_DIR, name + ".mp4")
 
 

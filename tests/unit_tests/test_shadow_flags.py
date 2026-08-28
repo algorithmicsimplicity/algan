@@ -200,7 +200,7 @@ def test_the_kill_switch_stops_the_flag_reaching_the_primitive(
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    monkeypatch.setattr(rt_settings, "PER_MOB_SHADOW_FLAGS", False)
+    monkeypatch.setattr(rt_settings, "per_mob_shadow_flags", False)
     cube = Cube(side_length=1.0, fill_opacity=1)
     cube.casts_shadows = False
     cube.spawn(animate=False)

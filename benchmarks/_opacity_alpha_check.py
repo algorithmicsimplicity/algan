@@ -177,7 +177,7 @@ def _ink_ratio(opaque, faded, background_byte):
     interior right by under-covering the edge -- which is the failure mode the
     one-mesh ceiling's ``max(front, back)`` shape exists to avoid (a plain
     suppression flipped a rod's signed coverage error negative and notched
-    1676 of 3508 interior pixels; see ``ANALYTIC_AA_ONE_MESH``). For a correct
+    1676 of 3508 interior pixels; see ``analytic_aa_one_mesh``). For a correct
     alpha composite this ratio is the authored alpha, edge and all.
 
     The absolute value is load-bearing, not tidiness. Signed, a shape that is

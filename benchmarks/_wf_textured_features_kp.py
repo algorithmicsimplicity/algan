@@ -56,8 +56,8 @@ from algan.rendering.raytracing.settings import (  # noqa: E402
     WF_TEX_NORMALMAP,
     WF_TEX_SCATTER,
     WF_TEX_SHADOWS,
-    set_textured_features,
-    set_textured_wavefront,
+    set_wf_textured,
+    set_wf_textured_features,
 )
 from algan.utils.profiling_utils import (  # noqa: E402
     _collect_taichi_kernel_gpu,
@@ -123,9 +123,9 @@ def _kernel_ms(rows, name):
 def render_stage(textured, feat, tag):
     SceneManager.reset()
     set_fragment_shading(True)
-    set_textured_wavefront(textured)
+    set_wf_textured(textured)
     if textured:
-        set_textured_features(feat)
+        set_wf_textured_features(feat)
     build()
     ti.profiler.clear_kernel_profiler_info()
     SceneManager.instance().save_frame(os.path.join(OUT_DIR, f"kp_{tag}.png"))

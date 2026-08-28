@@ -1,7 +1,7 @@
 """The bounced-ray weight-floor exit: gated, compiled, and reaching the drain.
 
 ``wavefront_shade``'s post-loop block retires a ray whose throughput fell
-under ``MIN_WEIGHT`` even when its last processed hit took an in-place
+under ``min_weight`` even when its last processed hit took an in-place
 reflection branch -- previously every such ray rode to the bounce cap, because
 all three reflect branches ``break`` past the in-loop floor test and the
 peel-complete tests exclude bounced rays (scratch_perf/r3/ox/
@@ -64,9 +64,9 @@ def test_experimental_setting_surfaces_and_drives_the_legacy_global():
     previous = SETTINGS.raytracing.experimental.weight_floor_exit
     try:
         SETTINGS.raytracing.experimental.weight_floor_exit = False
-        assert rt_settings.WEIGHT_FLOOR_EXIT is False
+        assert rt_settings.weight_floor_exit is False
         SETTINGS.raytracing.experimental.weight_floor_exit = True
-        assert rt_settings.WEIGHT_FLOOR_EXIT is True
+        assert rt_settings.weight_floor_exit is True
     finally:
         SETTINGS.raytracing.experimental.weight_floor_exit = previous
 

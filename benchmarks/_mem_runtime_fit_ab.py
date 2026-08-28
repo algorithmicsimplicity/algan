@@ -10,7 +10,7 @@ This measures whether that holds up, on two questions that decide it:
 1. **Is the peak actually affine in the frame count?** If it is, two points
    determine it and points 3/5/8 will land exactly. If it is not, the fit is
    wrong in a direction that matters.
-2. **Does ``WAVEFRONT_TILE_AUTO`` break the measurement?** The wavefront tile
+2. **Does ``wavefront_tile_auto`` break the measurement?** The wavefront tile
    sizes itself from whatever arena is free, so it is *elastic*: measuring a
    peak that includes it may just measure the arena. Every scene is run with
    the toggle both ways.
@@ -44,7 +44,7 @@ def measure_scene(scene_func, name, frame_counts, tile_auto):
 
     peaks = {}
     original_post = pp.post_process_frames
-    saved_auto = rt_settings.WAVEFRONT_TILE_AUTO
+    saved_auto = rt_settings.wavefront_tile_auto
     saved_batch = SETTINGS.computing.max_animation_batch_size
 
     for frames in frame_counts:
@@ -57,7 +57,7 @@ def measure_scene(scene_func, name, frame_counts, tile_auto):
             observed.append(int(memory.max_pointer))
             return result
 
-        rt_settings.WAVEFRONT_TILE_AUTO = tile_auto
+        rt_settings.wavefront_tile_auto = tile_auto
         # Force one batch (and therefore one render chunk) per frame count.
         SETTINGS.computing.set(max_animation_batch_size=frames)
         pp.post_process_frames = _capturing_post
@@ -72,7 +72,7 @@ def measure_scene(scene_func, name, frame_counts, tile_auto):
         finally:
             pp.post_process_frames = original_post
             rtr.post_process_frames = original_post
-            rt_settings.WAVEFRONT_TILE_AUTO = saved_auto
+            rt_settings.wavefront_tile_auto = saved_auto
             SETTINGS.computing.set(max_animation_batch_size=saved_batch)
         if observed:
             peaks[frames] = max(observed)

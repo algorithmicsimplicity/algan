@@ -696,7 +696,7 @@ def install_pipeline_hooks():
     _try_wrap(
         stbvh_mod, "segment_primitives_in_time", "  - STBVH temporal segmentation"
     )
-    # The builders that actually run by default were unhooked (BVH_REFIT is
+    # The builders that actually run by default were unhooked (bvh_refit is
     # default ON, and the bezier edge table is built every bezier batch),
     # leaving their cost inside the merge total with no line of their own.
     import algan.rendering.raytracing.bezier_acceleration as bezacc_mod

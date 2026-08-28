@@ -1642,12 +1642,12 @@ class Polyhedron(Mob):
         # Polyhedron -- both of which the public constructor accepts --
         # "outward" has no answer, so such a mob stays two-sided.
         self._faces_are_outward = False
-        if rt_settings.POLYHEDRON_WINDING:
+        if rt_settings.polyhedron_winding:
             # Gated, but not because it is known to move output -- measured, the
             # fast-suite render is BYTE-IDENTICAL across this flag while
             # ALGAN_MESH_ID is off, since a per-triangle surface id makes every
             # run one fragment and the facing bit then groups nothing. With
-            # MESH_ID on it does move, which is the mechanism: one id per solid
+            # mesh_id on it does move, which is the mechanism: one id per solid
             # leaves facing as the only thing separating the two sheets. ON by
             # default since DESIGN_mesh_identity.md ss3.7, and now load-bearing
             # rather than cosmetic: one-sided shading below is declared off the

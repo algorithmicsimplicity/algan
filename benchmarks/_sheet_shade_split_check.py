@@ -1,11 +1,11 @@
-"""Interior-edge AA under the sheet resolve: the SHEET_SHADE_SPLIT A/B.
+"""Interior-edge AA under the sheet resolve: the sheet_shade_split A/B.
 
 The sheet resolve shades once per sheet at its dominant fragment, so a hard
 crease -- two flat-shaded faces of one solid meeting inside a pixel: same
 mesh id, same facing, no depth gap -- fuses into ONE sheet and the pixel
 takes the dominant face's color outright. Along an interior (non-silhouette)
 edge that is a per-pixel winner-take-all staircase where the deleted fragment
-walk used to blend per fragment by exact area. ``SHEET_SHADE_SPLIT`` keys the
+walk used to blend per fragment by exact area. ``sheet_shade_split`` keys the
 compaction additionally by a flat-face shading class so crease faces become
 sibling sheets, each shaded with its own normal.
 

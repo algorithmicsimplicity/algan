@@ -1,0 +1,126 @@
+name: MPS capability probe
+
+# Answers, on a real Apple GPU, the questions that decide whether Algan can
+# render on MPS. The macOS test job is pinned to `ALGAN_RENDER_DEVICE=cpu`
+# because it cannot; what nobody could establish from a Linux box is whether the
+# port is worth starting, because the deciding facts are properties of the Metal
+# backend and of Taichi's torch interop.
+#
+# This is deliberately NOT part of the ordinary test matrix. macOS minutes bill
+# at ten times the Linux rate and nothing here guards a regression -- it takes a
+# measurement. So it runs only when the probe itself changes, or when someone
+# dispatches it by hand (which needs the file on the default branch first;
+# before then, pushing to a pull request is what triggers it).
+#
+# The Linux arm is the control. It has no MPS, so every GPU section skips and
+# what it proves is that the harness itself works and what the numbers look like
+# on a backend whose capabilities are already known -- without it, a macOS arm
+# that reports nothing is ambiguous between "Metal refused" and "the script is
+# broken".
+on:
+  pull_request:
+    paths:
+      - "benchmarks/_mps_capability_probe.py"
+      - ".github/workflows/mps_probe.yaml"
+  workflow_dispatch:
+
+# Queue behind an in-flight run rather than cancelling it, which is where this
+# differs from the test and code-quality workflows and why. Those cancel because
+# a superseded run answers a question about a commit nobody cares about any
+# more. This one is not a check, it is a measurement, and a half-finished
+# measurement on macOS has already spent the minutes it costs -- most of a run
+# here is the probe itself, on the arm that bills at ten times the Linux rate.
+# Every run is pinned to its own commit, so an older one finishing later is
+# still a valid reading rather than a stale verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # The whole point is a comparison, and a comparison only exists when both
+      # halves have reported.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+
+    # Pinned rather than left on `auto` so that *importing* algan never selects
+    # a device. The probe sets `SETTINGS.computing.render_device` explicitly for
+    # each arm -- which device Algan resolves, and which Taichi backend that
+    # gets, is question 1, and it has to be asked deliberately rather than
+    # inherited from the environment.
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: ./.github/actions/install-uv
+
+      - name: Create venv
+        run: uv venv
+
+      # pycairo publishes no manylinux wheel, so `uv sync` builds it from
+      # source on Linux and meson needs a system cairo to build against -- the
+      # first run of this workflow died here with `Dependency "cairo" not found
+      # (tried pkg-config and cmake)`. Pango comes along because manimpango
+      # links the same stack.
+      #
+      # There is deliberately no macOS counterpart. The wheel exists there, and
+      # the measurement says so: the same step installed the whole locked
+      # environment on macos-latest in 18 seconds, building nothing. LaTeX and
+      # ffmpeg are absent on both, because the probe renders nothing.
+      - name: Install cairo and pango headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
+
+      # The full locked environment, matching the test job, so the torch and
+      # taichi versions the probe reports are the ones Algan actually ships
+      # against.
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      # A one-line check that separates "algan does not import on this runner"
+      # from "the probe found something", which are otherwise the same silence.
+      - name: Check that algan imports
+        run: uv run python -c "import algan; print('algan imported OK')"
+
+      - name: Run the MPS capability probe
+        run: uv run python benchmarks/_mps_capability_probe.py | tee probe-output.txt
+
+      # The report is the deliverable, so put it where it can be read without
+      # opening the log.
+      - name: Publish the report to the job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## MPS capability probe -- ${{ matrix.os }}"
+            echo
+            echo '```'
+            cat probe-output.txt 2>/dev/null || echo "(the probe produced no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mps-probe-${{ matrix.os }}
+          path: |
+            mps_probe_results.json
+            probe-output.txt
+          if-no-files-found: warn
+          retention-days: 14

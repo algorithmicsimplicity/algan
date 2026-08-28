@@ -65,7 +65,7 @@ def _probe(values, *, tonemapping, kernel):
         frame[0, 0, i, 2] = v
 
     memory = ManualMemory(0.0, device=render_device(), managed=False, num_bytes=1 << 22)
-    was_kernel = rt_settings.POST_TONEMAP_KERNEL
+    was_kernel = rt_settings.post_tonemap_kernel
     rt_settings.set_post_tonemap_kernel(kernel)
     try:
         out = _finalize_on_device(
@@ -74,8 +74,8 @@ def _probe(values, *, tonemapping, kernel):
             memory,
             tonemap_enabled=True,  # post-process tonemap stage runs
             tonemapping=tonemapping,  # ...applying a curve, or just clamping
-            tonemap_method=rt_settings.TONEMAP_METHOD,
-            exposure=rt_settings.TONEMAP_EXPOSURE,
+            tonemap_method=rt_settings.tonemap_method,
+            exposure=rt_settings.tonemap_exposure,
         )
         return [int(x) for x in out[0, 0, :, 0].tolist()]
     finally:
@@ -89,7 +89,7 @@ def main():
     off_t = _probe(RAMP, tonemapping=False, kernel=False)
 
     print(
-        f"method={rt_settings.TONEMAP_METHOD!r} exposure={rt_settings.TONEMAP_EXPOSURE}"
+        f"method={rt_settings.tonemap_method!r} exposure={rt_settings.tonemap_exposure}"
     )
     print()
     print(

@@ -19,9 +19,18 @@ from __future__ import annotations
 
 import torch
 
-BEZIER_SCAN_BINS = 16
-BEZIER_SPATIAL_GRID = 8
-BEZIER_SPATIAL_CELLS = BEZIER_SPATIAL_GRID * BEZIER_SPATIAL_GRID
+from algan.environment import env_int
+
+# Resolution of the two indices. Both are pure acceleration: a query that a
+# coarser index sends more edges to still exact-tests every one of them, so
+# neither moves rendered output. Finer bins prune harder and cost header
+# memory per (edge frame, circuit) record -- the header below is sized from
+# them -- so they are exposed for tuning against glyph-heavy scenes. Read once
+# here, and the kernels read the derived offsets, so host and device always
+# agree on one layout.
+bezier_scan_bins = max(1, env_int("ALGAN_BEZIER_SCAN_BINS", 16))
+bezier_spatial_grid = max(1, env_int("ALGAN_BEZIER_SPATIAL_GRID", 8))
+BEZIER_SPATIAL_CELLS = bezier_spatial_grid * bezier_spatial_grid
 
 # Fixed header layout for each (edge frame, circuit) record.
 _BEZ_EDGE_START = 0
@@ -34,7 +43,7 @@ _BEZ_GRID_INV_U = 6
 _BEZ_GRID_INV_V = 7
 _BEZ_SCAN_INV_V = 8
 BEZIER_SCAN_OFFSET_BASE = 9
-BEZIER_SPATIAL_OFFSET_BASE = BEZIER_SCAN_OFFSET_BASE + BEZIER_SCAN_BINS + 1
+BEZIER_SPATIAL_OFFSET_BASE = BEZIER_SCAN_OFFSET_BASE + bezier_scan_bins + 1
 BEZIER_ACCEL_HEADER_SIZE = BEZIER_SPATIAL_OFFSET_BASE + BEZIER_SPATIAL_CELLS + 1
 
 # Public aliases used by the Taichi module.  Keeping the field constants here
@@ -210,9 +219,9 @@ def build_bezier_edge_acceleration(
 
     extent_u = (max_u - min_u).clamp_min(1e-12)
     extent_v = (max_v - min_v).clamp_min(1e-12)
-    grid_inv_u = BEZIER_SPATIAL_GRID / extent_u
-    grid_inv_v = BEZIER_SPATIAL_GRID / extent_v
-    scan_inv_v = BEZIER_SCAN_BINS / extent_v
+    grid_inv_u = bezier_spatial_grid / extent_u
+    grid_inv_v = bezier_spatial_grid / extent_v
+    scan_inv_v = bezier_scan_bins / extent_v
 
     num_groups = num_frames * num_circuits
     frame_ids = (
@@ -250,23 +259,23 @@ def build_bezier_edge_acceleration(
         torch.long
     )
     scan_end = torch.floor((flat_hi_v - group_min_v) * group_scan_inv_v).to(torch.long)
-    scan_start.clamp_(0, BEZIER_SCAN_BINS - 1)
-    scan_end.clamp_(0, BEZIER_SCAN_BINS - 1)
+    scan_start.clamp_(0, bezier_scan_bins - 1)
+    scan_end.clamp_(0, bezier_scan_bins - 1)
     scan_valid = flat_finite & (flat_y0 != flat_y1)
     scan_counts_per_edge = (scan_end - scan_start + 1).clamp_min(0)
     scan_sources = torch.nonzero(scan_valid, as_tuple=False).flatten()
     scan_expanded, scan_local = _expand_intervals(scan_sources, scan_counts_per_edge)
     if scan_expanded.numel() > 0:
         scan_bins = scan_start[scan_expanded] + scan_local
-        scan_keys = group_ids[scan_expanded] * BEZIER_SCAN_BINS + scan_bins
+        scan_keys = group_ids[scan_expanded] * bezier_scan_bins + scan_bins
         scan_order, scan_offsets = _grouped_offsets(
-            scan_keys, num_groups, BEZIER_SCAN_BINS
+            scan_keys, num_groups, bezier_scan_bins
         )
         scan_refs = edge_ids[scan_expanded][scan_order].to(torch.int32)
     else:
         scan_refs = torch.empty((0,), dtype=torch.int32, device=device)
         scan_offsets = torch.zeros(
-            (num_groups, BEZIER_SCAN_BINS + 1), dtype=torch.long, device=device
+            (num_groups, bezier_scan_bins + 1), dtype=torch.long, device=device
         )
 
     # Spatial border table.  Each visible edge is inserted into every uniform
@@ -286,7 +295,7 @@ def build_bezier_edge_acceleration(
         torch.long
     )
     for values in (spatial_x0, spatial_y0, spatial_x1, spatial_y1):
-        values.clamp_(0, BEZIER_SPATIAL_GRID - 1)
+        values.clamp_(0, bezier_spatial_grid - 1)
     nx = (spatial_x1 - spatial_x0 + 1).clamp_min(0)
     ny = (spatial_y1 - spatial_y0 + 1).clamp_min(0)
     spatial_counts_per_edge = nx * ny
@@ -300,7 +309,7 @@ def build_bezier_edge_acceleration(
         expanded_nx = nx[spatial_expanded]
         cell_x = spatial_x0[spatial_expanded] + spatial_local % expanded_nx
         cell_y = spatial_y0[spatial_expanded] + spatial_local // expanded_nx
-        cells = cell_y * BEZIER_SPATIAL_GRID + cell_x
+        cells = cell_y * bezier_spatial_grid + cell_x
         spatial_keys = group_ids[spatial_expanded] * BEZIER_SPATIAL_CELLS + cells
         spatial_order, spatial_offsets = _grouped_offsets(
             spatial_keys, num_groups, BEZIER_SPATIAL_CELLS

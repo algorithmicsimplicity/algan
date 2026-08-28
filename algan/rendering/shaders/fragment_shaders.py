@@ -392,7 +392,7 @@ def _scatter_forced_mirror(
     if n.dot(rd) > 0.0:
         n = -n
     refl_dir = (rd - 2.0 * rd.dot(n) * n).normalized()
-    refl_orig = hit_point + n * 1e-3  # 10 * MIN_HIT_DISTANCE
+    refl_orig = hit_point + n * 1e-3  # 10 * min_hit_distance
     contrib = (alpha * 0.15) * shaded
     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
     rw = 0.85 * alpha

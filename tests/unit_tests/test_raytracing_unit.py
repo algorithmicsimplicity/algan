@@ -35,8 +35,8 @@ import torch
 # megakernel directly are skipped below (see ``_run_kernel``); the Monte Carlo /
 # physical / Morton / STBVH-structure tests still exercise live code.
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    MIN_ALPHA,
     finalize_samples,
+    min_alpha,
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
 )
@@ -112,26 +112,26 @@ def test_stbvh_structure():
     assert not missing.any(), "a visible (frame, prim) pair is not covered"
 
     # Parents must bound children spatially and temporally. The implicit tree
-    # is BVH_ARITY-ary: the internal nodes are [0, first_leaf), and the
-    # children of internal node i are BVH_ARITY*i + 1 .. BVH_ARITY*i + ARITY.
-    from algan.rendering.raytracing.stbvh import BVH_ARITY
+    # is bvh_arity-ary: the internal nodes are [0, first_leaf), and the
+    # children of internal node i are bvh_arity*i + 1 .. bvh_arity*i + ARITY.
+    from algan.rendering.raytracing.stbvh import bvh_arity
 
     for parent in range(bvh.first_leaf):
-        for k in range(BVH_ARITY):
-            child = BVH_ARITY * parent + 1 + k
+        for k in range(bvh_arity):
+            child = bvh_arity * parent + 1 + k
             assert (bvh.nodes[parent, 0:3] <= bvh.nodes[child, 0:3] + 1e-5).all()
             assert (bvh.nodes[parent, 3:6] >= bvh.nodes[child, 3:6] - 1e-5).all()
             assert bvh.nodes[parent, 6] <= bvh.nodes[child, 6]
             assert bvh.nodes[parent, 7] >= bvh.nodes[child, 7]
     # Leaf slots must lie within their leaf node's bounds/interval.
-    from algan.rendering.raytracing.stbvh import LEAF_SIZE
+    from algan.rendering.raytracing.stbvh import bvh_leaf_size
 
     prim = bvh.leaf_prim.long().cpu()
     tspan = bvh.leaf_tspan.long().cpu()
     nodes_cpu = bvh.nodes.cpu()
     for i in range(prim.shape[0]):
         if prim[i] >= 0:
-            leaf_node = bvh.first_leaf + i // LEAF_SIZE
+            leaf_node = bvh.first_leaf + i // bvh_leaf_size
             assert nodes_cpu[leaf_node, 6] <= (tspan[i] & 0xFFFF)
             assert nodes_cpu[leaf_node, 7] >= ((tspan[i] >> 16) & 0x7FFF)
     instances = int((bvh.leaf_prim >= 0).sum())
@@ -379,7 +379,7 @@ def _random_triangle_scene(T=7, N=30):
 
     lo = corners.amin(-2)
     hi = corners.amax(-2)
-    vis = (colors[..., 4].amax(-1) > MIN_ALPHA).expand(T, -1)
+    vis = (colors[..., 4].amax(-1) > min_alpha).expand(T, -1)
     lo = torch.where(vis.unsqueeze(-1), lo, torch.full_like(lo, EMPTY_LO))
     hi = torch.where(vis.unsqueeze(-1), hi, torch.full_like(hi, EMPTY_HI))
     opaque = colors[..., 4].amin(-1) >= 1.0 - 1e-6  # [1, N], as in production
@@ -424,7 +424,7 @@ def test_deep_translucent_stack():
     tri_verts = torch.cat((corners, torch.zeros(1, N, 3, 5, device=DEVICE)), -1)
     torch.manual_seed(3)
     colors = torch.rand(1, N, 3, 5, device=DEVICE)
-    colors[..., 4] = 0.3  # translucent layers stay above MIN_WEIGHT
+    colors[..., 4] = 0.3  # translucent layers stay above min_weight
     # Opaque sheet at z=0.6; its coplanar partner (index 9, higher layer)
     # still peels first, and the sheets behind it are absorbed.
     colors[0, 8, :, 4] = 1.0

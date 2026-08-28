@@ -28,7 +28,7 @@ import algan.rendering.raytracing.tracer as tracer_mod  # noqa: E402
 from algan import PREVIEW, SceneManager  # noqa: E402
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
 )
 from algan.utils.algan_utils import render_to_file  # noqa: E402
 
@@ -62,7 +62,7 @@ for _name in _HOOKED:
 def render_once():
     SceneManager.reset()
     set_fragment_shading(True)
-    set_ray_traced_shadows(True)
+    set_shadows(True)
     build_and_animate()
     for name in _HOOKED:
         _times[name] = 0.0

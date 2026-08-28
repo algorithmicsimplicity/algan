@@ -22,7 +22,7 @@ the render arena, and dispatches on the sample count:
 Reflections and refraction are inferred from the mob's Three.js-style
 material properties. Use ``MeshStandardMaterial(metalness=..., roughness=...)``
 or ``MeshPhysicalMaterial`` before spawning; rays bounce up to
-``MAX_BOUNCES`` times.
+``max_bounces`` times.
 
 On out-of-memory the frame window is halved and retried
 (``OutOfRenderMemory``); see ``render_batch_raytraced``.
@@ -38,13 +38,14 @@ from typing import Literal
 
 import torch
 
+from algan.environment import env_float
 from algan.errors import UnsupportedFeatureError
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    KBUF,
-    MAX_SURFACES_PER_RAY,
     finalize_samples,
+    kbuf,
+    max_surfaces_per_ray,
     path_trace_scene_stbvh,
 )
 from algan.rendering.raytracing.scene_builder import (
@@ -56,7 +57,7 @@ from algan.rendering.raytracing.scene_builder import (
 )
 
 # NOTE: only immutable settings values may be imported by value here; the
-# mutable module globals (SAMPLES_PER_PIXEL, TONEMAP_*, SHADOWS, ...) must be
+# mutable module globals (samples_per_pixel, TONEMAP_*, shadows, ...) must be
 # read live as ``rt_settings.X`` or their setters silently stop working.
 from algan.rendering.raytracing.settings import (
     _get_tonemap_t_val,
@@ -80,7 +81,7 @@ rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     ALL_PIDS,
-    MAX_SHADOW_LIGHTS,
+    max_shadow_lights,
 )
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
@@ -94,7 +95,6 @@ _WAVEFRONT_POOL_RETRIES = [0]
 # instead of inferring it from timings (benchmarks/_frag_pid_gate_ab.py).
 _FRAG_PID_LAST = {"tri": ALL_PIDS, "pn": ALL_PIDS}
 from algan.logging.logger import PERF, get_logger
-from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
@@ -110,13 +110,14 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     gloss_pyramid_level,
     gloss_scatter,
 )
+from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _SCA_IOR_DEPTH,
-    SCA_WIDTH_PLAIN,
     ALLOC_NEXT,
     ALLOC_OVERFLOW,
     ALLOC_TRUNC_SURFACES,
     ALLOC_WIDTH,
+    SCA_WIDTH_PLAIN,
     compact_ray_slots,
     sca_width,
     wavefront_generate_rays,
@@ -234,12 +235,12 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     )
     if global_hits:
         return core + (
-            memory.get_tensor((tn, KBUF), f32),  # rs_kt
-            memory.get_tensor((tn, KBUF), f32),  # rs_kl
-            memory.get_tensor((tn, KBUF), f32),  # rs_ka
-            memory.get_tensor((tn, KBUF), f32),  # rs_kb
-            memory.get_tensor((tn, KBUF), i32),  # rs_kp
-            memory.get_tensor((tn, KBUF), i32),  # rs_kf
+            memory.get_tensor((tn, kbuf), f32),  # rs_kt
+            memory.get_tensor((tn, kbuf), f32),  # rs_kl
+            memory.get_tensor((tn, kbuf), f32),  # rs_ka
+            memory.get_tensor((tn, kbuf), f32),  # rs_kb
+            memory.get_tensor((tn, kbuf), i32),  # rs_kp
+            memory.get_tensor((tn, kbuf), i32),  # rs_kf
         )
 
     # The supported general renderer no longer attaches a K-buffer to every
@@ -327,7 +328,7 @@ def _gloss_finish_frame(
         num_levels,
         int(frame_rel),
         int(tonemapping),
-        float(rt_settings.TONEMAP_EXPOSURE),
+        float(rt_settings.tonemap_exposure),
         gl_levels,
         gl_main,
         gl_pyr,
@@ -350,7 +351,7 @@ def _secondary_split_needed(merged, analytic_raster=False):
        better the coverage. Splitting is the correct answer there -- the
        reflection goes to a pool slot and the pass-through continues -- and it is
        the same thing a semi-transparent reflector already does.
-    2. CONTINUATION-RAY SUPERSAMPLING (``ANALYTIC_AA_SECONDARY_SAMPLES > 1``),
+    2. CONTINUATION-RAY SUPERSAMPLING (``analytic_aa_secondary_samples > 1``),
        which needs N-1 spare slots for every reflective primary at once.
 
     A plain opaque mirror was never a splitting path before, so such a scene got
@@ -479,8 +480,10 @@ def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_ra
 # Fraction of the exactly-measured fit to actually retry with (see
 # ``_overflow_retry_primary``). A second overflow costs another discarded
 # resolve, so the margin is deliberately generous relative to the ~10% spread
-# in per-pixel demand that a coverage partition produces.
-_POOL_RETRY_SAFETY = 0.85
+# in per-pixel demand that a coverage partition produces. Lower it on a scene
+# that still overflows its retry; raise it towards 1 to trade retry risk for
+# tile efficiency.
+pool_retry_safety = min(1.0, max(0.0, env_float("ALGAN_POOL_RETRY_SAFETY", 0.85)))
 
 # Bounce iterations that get their own profile label
 # (``wavefront:   - bounce <i> <phase>``); iterations past this share the one
@@ -514,7 +517,7 @@ def _record_tile_truncations(alloc, pool):
     record_truncation(
         "surfaces_per_ray",
         alloc[ALLOC_TRUNC_SURFACES],
-        cap=MAX_SURFACES_PER_RAY,
+        cap=max_surfaces_per_ray,
     )
     # ``rs_alloc[ALLOC_NEXT]`` keeps counting past the capacity (a failed
     # reservation still does its atomic increment), so the surplus over the
@@ -542,7 +545,7 @@ def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
     """
     if slots_wanted <= 0 or pool <= 0:
         return max(1, attempt_primary // 2)
-    scaled = int(attempt_primary * pool * _POOL_RETRY_SAFETY / slots_wanted)
+    scaled = int(attempt_primary * pool * pool_retry_safety / slots_wanted)
     return max(1, min(scaled, attempt_primary - 1))
 
 
@@ -572,14 +575,14 @@ def analytic_raster_route_active(
     combination also falls back.
     """
     if (
-        int(rt_settings.SAMPLES_PER_PIXEL) > 1
-        or not rt_settings.HYBRID_RASTER
-        or not rt_settings.ANALYTIC_AA
-        or not rt_settings.SHEET_RESOLVE
-        or not rt_settings.ANALYTIC_AA_RUN
-        or not rt_settings.RASTER_SPARSE_COVERAGE
-        or not rt_settings.RASTER_EMPTY_SKIP
-        or not rt_settings.RASTER_COVERED_SHADE
+        int(rt_settings.samples_per_pixel) > 1
+        or not rt_settings.hybrid_raster
+        or not rt_settings.analytic_aa
+        or not rt_settings.sheet_resolve
+        or not rt_settings.analytic_aa_run
+        or not rt_settings.raster_sparse_coverage
+        or not rt_settings.raster_empty_skip
+        or not rt_settings.raster_covered_shade
         or (transparent_background and environment_map is not None)
         or merged.get("tri_frame_valid") is None
         or merged.get("textured_active")
@@ -596,14 +599,14 @@ def analytic_raster_route_active(
     if num_bez > 0 and not rt_settings.analytic_aa_bez_active():
         return False
 
-    shadow = bool(rt_settings.SHADOWS)
+    shadow = bool(rt_settings.shadows)
     lights_extended = any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
     )
     has_environment = environment_map is not None
     frag = (
-        bool(rt_settings.FRAGMENT_SHADING)
+        bool(rt_settings.fragment_shading)
         or shadow
         or _scene_has_user_pipeline(merged)
         or lights_extended
@@ -621,7 +624,7 @@ def analytic_raster_route_active(
     )
     if (
         frag
-        and rt_settings.WAVEFRONT_SORT_MATERIALS is True
+        and rt_settings.wavefront_sort_materials is True
         and not extended
         and not merged.get("bez_has_reflective", False)
     ):
@@ -634,7 +637,7 @@ def analytic_raster_route_active(
         or analytic_split
     )
     mem_trim = bool(
-        rt_settings.WF_MEM_TRIM
+        rt_settings.wf_mem_trim
         and merged.get("mem_trim_active")
         and not shadow
         and not refraction
@@ -690,7 +693,7 @@ def _wavefront_state_bytes_per_primary(
 # Ray-state cost of one pool slot and one primary ray, in bytes. These are
 # *measured*, not derived: recording the arena while rendering gives 100 and 28
 # for the maintained route. An earlier hand-derived version charged 196 per
-# slot because it counted 6*KBUF words of K-buffers that this route does not
+# slot because it counted 6*kbuf words of K-buffers that this route does not
 # allocate at all -- they are (1,1) stubs, with a transient event batch sized
 # to the live queue instead -- which halved every tile for no reason.
 #
@@ -742,14 +745,14 @@ def _auto_primary_per_tile(
     state_sca_width=SCA_WIDTH_PLAIN,
 ):
     """Primary rays per wavefront tile, sized from the render pool's free
-    bytes when ``settings.WAVEFRONT_TILE_AUTO`` is on (see settings.py for the
+    bytes when ``settings.wavefront_tile_auto`` is on (see settings.py for the
     rationale: fewer, bigger tiles amortize the fixed host-side kernel-launch
-    cost). Falls back to ``static_primary`` (the WAVEFRONT_TILE_RAYS-derived
+    cost). Falls back to ``static_primary`` (the wavefront_tile_rays-derived
     value) for unmanaged pools or when auto is disabled. Byte-identical to any
     other tile size: tiles partition pixels, and every per-pixel computation
     is independent of its tile.
     """
-    if not rt_settings.WAVEFRONT_TILE_AUTO or not getattr(memory, "managed", False):
+    if not rt_settings.wavefront_tile_auto or not getattr(memory, "managed", False):
         return static_primary
     bytes_per_primary = _wavefront_state_bytes_per_primary(
         pool_ratio, extra_bytes_per_slot, extra_bytes_per_primary, state_sca_width
@@ -761,11 +764,11 @@ def _auto_primary_per_tile(
     # subsequent allocations remain aligned because their sizes are multiples
     # of four.
     alignment_bytes = (-memory.current_pointer) % torch.float32.itemsize
-    safety = min(1.0, max(0.0, float(rt_settings.WAVEFRONT_TILE_SAFETY)))
+    safety = min(1.0, max(0.0, float(rt_settings.wavefront_tile_safety)))
     usable = int(free * safety) - alignment_bytes - int(fixed_bytes)
     budget = max(0, usable) // bytes_per_primary
-    hi = max(1, rt_settings.WAVEFRONT_TILE_MAX // pool_ratio)
-    lo = min(hi, max(1, rt_settings.WAVEFRONT_TILE_MIN // pool_ratio))
+    hi = max(1, rt_settings.wavefront_tile_max // pool_ratio)
+    lo = min(hi, max(1, rt_settings.wavefront_tile_min // pool_ratio))
     # The minimum is a launch-amortisation preference, not permission to
     # overrun the arena.  When less than the preferred floor fits, use the
     # exact smaller value; a one-primary allocation is attempted only when no
@@ -1022,11 +1025,11 @@ def _validate_render_capabilities(
     # Keep direct mutation of the legacy globals from bypassing the guarded
     # public setters. These backends are known-broken and must not render a
     # misleading result.
-    if bool(getattr(rt_settings, "WF_TEXTURED", False)):
+    if bool(getattr(rt_settings, "wf_textured", False)):
         raise UnsupportedFeatureError(
             "The legacy textured wavefront renderer is unsupported."
         )
-    if getattr(rt_settings, "WAVEFRONT_SORT_MATERIALS", "auto") is True:
+    if getattr(rt_settings, "wavefront_sort_materials", "auto") is True:
         raise UnsupportedFeatureError(
             "The legacy sorted-material wavefront renderer is unsupported."
         )
@@ -1075,7 +1078,7 @@ def _build_raster_tables(
         # Live reads (settings convention): each kill-switch falls back to
         # the per-frame pair emission inside prepare_sparse_raster_coverage.
         if (
-            rt_settings.RASTER_TRI_PRECOMPUTE
+            rt_settings.raster_tri_precompute
             and int(merged.get("num_triangles", 0)) > 0
         ):
             tri_bounds = precompute_triangle_screen_bounds(
@@ -1091,7 +1094,7 @@ def _build_raster_tables(
                 memory,
                 persist=True,
             )
-        if rt_settings.RASTER_BEZ_PRECOMPUTE and int(merged.get("num_circuits", 0)) > 0:
+        if rt_settings.raster_bez_precompute and int(merged.get("num_circuits", 0)) > 0:
             bez_bounds = precompute_circuit_screen_bounds(
                 merged,
                 cam_origin,
@@ -1136,16 +1139,16 @@ def render_batch_raytraced(
     # Read the user-toggleable settings *live* from the settings module.
     # These names used to be imported by value at module-import time, which
     # froze them before user code ran -- silently disabling
-    # set_ray_traced_shadows() / set_samples_per_pixel() / etc. for anyone
+    # set_shadows() / set_samples_per_pixel() / etc. for anyone
     # calling the setters after `import algan` (i.e. everyone).
-    SAMPLES_PER_PIXEL = rt_settings.SAMPLES_PER_PIXEL
-    SHADOWS = rt_settings.SHADOWS
-    FRAGMENT_SHADING = rt_settings.FRAGMENT_SHADING
-    MAX_BOUNCES = rt_settings.MAX_BOUNCES
-    TONEMAP_EXPOSURE = rt_settings.TONEMAP_EXPOSURE
-    INDIRECT_BOUNCE_STRENGTH = rt_settings.INDIRECT_BOUNCE_STRENGTH
+    samples_per_pixel = rt_settings.samples_per_pixel
+    shadows = rt_settings.shadows
+    fragment_shading = rt_settings.fragment_shading
+    max_bounces = rt_settings.max_bounces
+    tonemap_exposure = rt_settings.tonemap_exposure
+    indirect_bounce_strength = rt_settings.indirect_bounce_strength
     scene_env_map = getattr(scene, "environment_map", None)
-    env_map = scene_env_map if int(SAMPLES_PER_PIXEL) <= 1 else None
+    env_map = scene_env_map if int(samples_per_pixel) <= 1 else None
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
     merged = getattr(primitives[0], "_rt_device_scene", None)
@@ -1155,7 +1158,7 @@ def render_batch_raytraced(
         # device scene. Unsupported combinations therefore fail before costly
         # arena allocations or any Taichi kernel compilation.
         plan = _validate_render_capabilities(
-            SAMPLES_PER_PIXEL,
+            samples_per_pixel,
             scene_env_map,
             merged_host,
             light_sources,
@@ -1172,7 +1175,7 @@ def render_batch_raytraced(
         merged = copy_merged_scene_to_arena(merged_host, memory, persist=True)
     else:
         plan = _validate_render_capabilities(
-            SAMPLES_PER_PIXEL,
+            samples_per_pixel,
             scene_env_map,
             merged,
             light_sources,
@@ -1183,12 +1186,12 @@ def render_batch_raytraced(
     # already where every deterministic (samples <= 1) batch goes -- so this
     # only gates the refraction template, not routing. The Monte Carlo
     # megakernel (samples > 1) ignores the refractive index.
-    refractive_det = bool(merged.get("has_refractive")) and int(SAMPLES_PER_PIXEL) <= 1
+    refractive_det = bool(merged.get("has_refractive")) and int(samples_per_pixel) <= 1
     # Semi-transparent PBR surfaces split off a reflection branch, so they need
     # the same pool + split code the refraction path compiles in. No routing
     # implication: the deterministic (samples <= 1) path is already wavefront.
     refl_transparent_det = (
-        bool(merged.get("has_refl_transparent")) and int(SAMPLES_PER_PIXEL) <= 1
+        bool(merged.get("has_refl_transparent")) and int(samples_per_pixel) <= 1
     )
 
     # Extended lights (directional / ambient / hemisphere / spot / area /
@@ -1197,7 +1200,7 @@ def render_batch_raytraced(
     # presence forces fragment shading on and routes away from the textured /
     # sorted variants. Plain point-light scenes keep the compact light packing
     # and are untouched.
-    lights_extended = int(SAMPLES_PER_PIXEL) <= 1 and any(
+    lights_extended = int(samples_per_pixel) <= 1 and any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
     )
@@ -1216,7 +1219,7 @@ def render_batch_raytraced(
 
     # Anti-aliasing strategy. Analytic raster coverage always renders at output
     # resolution (aa == 1). Every route it cannot cover keeps the requested
-    # setting and either renders a supersampled buffer or, with INPLACE_AA,
+    # setting and either renders a supersampled buffer or, with inplace_aa,
     # averages ``aa^2`` jittered sub-pixel rays in place at the output
     # resolution, so the frame buffer stays ``screen_width x screen_height``
     # regardless of ``aa`` (aa^2x less render memory than super-sampling): the
@@ -1224,7 +1227,7 @@ def render_batch_raytraced(
     # once per sub-pixel sample, accumulating into a float buffer and
     # averaging at the end, while the Monte Carlo megakernel folds the aa^2
     # factor into its per-pixel sample count (see samples_eff below).
-    inplace_aa = bool(rt_settings.INPLACE_AA)
+    inplace_aa = bool(rt_settings.inplace_aa)
     if inplace_aa:
         width = screen_width
         height = screen_height
@@ -1295,7 +1298,7 @@ def render_batch_raytraced(
     # trees; the Monte Carlo megakernel traverses unconditionally, so build
     # the real trees now if that is where this batch is headed. (The
     # deterministic wavefront has its own later, finer-grained check.)
-    if merged.get("bvh_deferred") and int(SAMPLES_PER_PIXEL) > 1:
+    if merged.get("bvh_deferred") and int(samples_per_pixel) > 1:
         from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
 
         build_deferred_bvhs(merged)
@@ -1317,11 +1320,11 @@ def render_batch_raytraced(
     # pass.  This applies to moving batches too; it is not a static-scene
     # shortcut.
     sparse_batch_empty = bool(
-        int(SAMPLES_PER_PIXEL) <= 1
-        and rt_settings.HYBRID_RASTER
-        and rt_settings.RASTER_SPARSE_COVERAGE
-        and rt_settings.RASTER_EMPTY_SKIP
-        and rt_settings.RASTER_COVERED_SHADE
+        int(samples_per_pixel) <= 1
+        and rt_settings.hybrid_raster
+        and rt_settings.raster_sparse_coverage
+        and rt_settings.raster_empty_skip
+        and rt_settings.raster_covered_shade
         and t_val == 3
         and env_map is None
         and not any(
@@ -1335,7 +1338,7 @@ def render_batch_raytraced(
         )
     )
 
-    samples = max(1, int(SAMPLES_PER_PIXEL))
+    samples = max(1, int(samples_per_pixel))
     # In-place AA folds the anti-alias super-sampling into the Monte Carlo
     # sample count: each of the ``aa^2`` sub-pixels would have drawn ``samples``
     # random rays jittered over its own cell and then been averaged down, which
@@ -1349,12 +1352,12 @@ def render_batch_raytraced(
     # in the kernel. (Physical mode packs the same lights for its own path.)
     # Deterministic hard shadows are evaluated inside the per-fragment lighting
     # model, so enabling them implies fragment shading for this render.
-    det_shadows = bool(SHADOWS) and samples <= 1
+    det_shadows = bool(shadows) and samples <= 1
     # A mob with a custom fragment pipeline (Mob.set_fragment_shader) forces
     # fragment shading on for this render, without a persistent global toggle.
     scene_has_frag_pipeline = _scene_has_user_pipeline(merged)
     det_frag = (
-        bool(FRAGMENT_SHADING)
+        bool(fragment_shading)
         or det_shadows
         or scene_has_frag_pipeline
         or lights_extended
@@ -1363,17 +1366,17 @@ def render_batch_raytraced(
     frag_flag = 1 if det_frag else 0
     shadow_flag = 1 if det_shadows else 0
     # Opaque any-hit shadow early-out (compile-time mode of the shadow
-    # query; see rt_settings.SHADOW_ANYHIT): 2 = any-hit pre-pass over the
+    # query; see rt_settings.shadow_anyhit): 2 = any-hit pre-pass over the
     # opaque-flagged leaves with the ordered march as fallback; 3 = any-hit
     # only, valid when the batch provably contains no translucent geometry
     # (every visible primitive carries the opaque leaf flag, so a miss proves
     # the ray lit). Uncertain texture alpha keeps the fallback: such
     # primitives are not opaque-flagged, and their shadow attenuation only
     # the march can evaluate. 4 = gather-march: the ordered peel rebuilt on
-    # the KBUF gather, valid for any batch (the drain evaluates translucent
+    # the kbuf gather, valid for any batch (the drain evaluates translucent
     # attenuation exactly like the march), so it needs no translucent gate.
-    if shadow_flag and rt_settings.SHADOW_ANYHIT:
-        if rt_settings.SHADOW_ANYHIT == "gather":
+    if shadow_flag and rt_settings.shadow_anyhit:
+        if rt_settings.shadow_anyhit == "gather":
             shadow_flag = 4
         elif merged.get("has_transmissive", True):
             # Both any-hit modes ask "is anything there", and answer full
@@ -1399,7 +1402,7 @@ def render_batch_raytraced(
     # Phase 4a — the resolve kernel's event pass builds the shadow queue
     # from sheet records, so no second walk exists. The sheet resolve is
     # the ONLY resolve for analytic coverage (the fragment walk is deleted),
-    # so its preconditions — SHEET_RESOLVE, ANALYTIC_AA_RUN, the sparse
+    # so its preconditions — sheet_resolve, analytic_aa_run, the sparse
     # toggles, samples <= 1, transparent background only without an env map
     # — all live inside analytic_raster_route_active, and the route IS the
     # analytic-raster decision. prepare_sparse_raster_coverage still raises
@@ -1453,7 +1456,7 @@ def render_batch_raytraced(
     # load-bearing beyond "the stack only makes sense where rays split": the
     # stack rides a WIDER rs_sca and its initialisation story leans on the
     # split pool existing. Every batch with refraction_flag == 1 has
-    # pool_ratio > 1 (REFRACT_INITIAL_POOL_RATIO >= 2), which is exactly what
+    # pool_ratio > 1 (refract_initial_pool_ratio >= 2), which is exactly what
     # excludes the two init paths that cannot write the new columns -- the
     # host const_fill broadcast (requires pool_ratio == 1) and fused
     # generation (same). Key this gate on the raw setting alone and those
@@ -1499,18 +1502,18 @@ def render_batch_raytraced(
         num_lights = 0
 
     # The shadow-light ceiling is the one truncation the host can see without
-    # asking a kernel: MAX_SHADOW_LIGHTS is the length of a ``ti.Vector`` and
+    # asking a kernel: max_shadow_lights is the length of a ``ti.Vector`` and
     # therefore compile-time, so every light slot past it is simply never
     # written and the surplus lights render lit-but-shadowless. Counted per
     # batch, since a light spawning mid-scene can push a later batch over a cap
     # the first ones sat under. Each RectAreaLight emitter sample already
     # occupies its own row here (``_pack_lights`` expands them), which is why
     # the count is of light SLOTS rather than of the author's lights.
-    if shadow_flag and num_lights > MAX_SHADOW_LIGHTS:
+    if shadow_flag and num_lights > max_shadow_lights:
         record_truncation(
             "shadow_lights",
-            int(num_lights) - MAX_SHADOW_LIGHTS,
-            cap=MAX_SHADOW_LIGHTS,
+            int(num_lights) - max_shadow_lights,
+            cap=max_shadow_lights,
         )
 
     # Frame counts of the windows that were actually launched. They differ from
@@ -1566,7 +1569,7 @@ def render_batch_raytraced(
         entry_truncations = snapshot_truncations()
         try:
             post_tonemap = is_post_process_tonemap_enabled()
-            if rt_settings.LINEAR_COLOR_SPACE and not post_tonemap:
+            if rt_settings.linear_color_space and not post_tonemap:
                 # The in-composite route's frame buffer is uint8, and linear
                 # values must never be stored in 8 bits: linear 0.033 -- an
                 # ordinary dark grey -- quantises to byte 8, and the darks fall
@@ -1684,7 +1687,7 @@ def render_batch_raytraced(
                 float(width // 2),
                 float(height // 2),
                 layer_offset_triangles,
-                int(MAX_BOUNCES),
+                int(max_bounces),
                 1 if transparent_background else 0,
             )
             if samples > 1:
@@ -1694,7 +1697,7 @@ def render_batch_raytraced(
                     1 if isinstance(tri_bvh, RefitBVH) else 0,
                     *shared_args,
                     samples_eff,
-                    float(INDIRECT_BOUNCE_STRENGTH),
+                    float(indirect_bounce_strength),
                     out,
                     accum,
                 )
@@ -1702,7 +1705,7 @@ def render_batch_raytraced(
                     samples_eff,
                     1 if transparent_background else 0,
                     t_val,
-                    float(TONEMAP_EXPOSURE),
+                    float(tonemap_exposure),
                     accum,
                     out,
                 )
@@ -1732,7 +1735,7 @@ def render_batch_raytraced(
                             layer_offset_triangles,
                             has_tri,
                             has_bez,
-                            int(MAX_BOUNCES),
+                            int(max_bounces),
                             light_pos,
                             light_col,
                             int(num_lights),
@@ -1940,7 +1943,7 @@ def _run_wavefront_tiles(
                         # ``attempt_primary`` per-primary rows. Calibrated as
                         # unit coefficients (bytes per slot, per primary, and
                         # fixed per tile) rather than as a peak -- under
-                        # WAVEFRONT_TILE_AUTO the tile is sized from whatever
+                        # wavefront_tile_auto the tile is sized from whatever
                         # arena is free, so its peak would measure the arena.
                         with memory.scope(
                             "wavefront_state",
@@ -2104,7 +2107,7 @@ def _run_wavefront_tiles(
                             int(tile_start),
                             pix_accum,
                             t_val,
-                            float(rt_settings.TONEMAP_EXPOSURE),
+                            float(rt_settings.tonemap_exposure),
                             0,
                             0,
                             covered_dummy,
@@ -2122,7 +2125,7 @@ def _run_wavefront_tiles(
             1 if transparent else 0,
             float(inv_aa * inv_aa),
             t_val,
-            float(rt_settings.TONEMAP_EXPOSURE),
+            float(rt_settings.tonemap_exposure),
             aa_accum,
             out,
         )
@@ -2170,7 +2173,7 @@ def raytrace_render_wavefront(
 
     Persistent continuation state is stage-split in global memory and PyTorch
     compacts ray indices between host iterations. Hit records are different:
-    traversal writes one exact-size ``[num_active, KBUF]`` transient event
+    traversal writes one exact-size ``[num_active, kbuf]`` transient event
     batch, shade consumes it immediately, and the arena range is then reused.
     No pool-wide K-buffer is attached to secondary radiance ray slots. The
     persistent scalar state carries ``base_dist`` for Bezier border widths
@@ -2197,16 +2200,16 @@ def raytrace_render_wavefront(
     (``pix_accum``) on termination, so a pixel's reflected and refracted branches
     sum.
 
-    When fragment shading is active, ``settings.WAVEFRONT_SORT_MATERIALS``
+    When fragment shading is active, ``settings.wavefront_sort_materials``
     selects the shade architecture: the monolithic ``wavefront_shade`` kernel
     below (the default, and the only supported path -- it handles custom
     scatter and normal-mapped lighting, and on the built-in materials it is
-    faster because it drains up to KBUF hits per launch while sorting pays
+    faster because it drains up to kbuf hits per launch while sorting pays
     per-event kernel round trips and host syncs), or the UNSUPPORTED legacy
     Cycles-style *sorted* pipeline (rays suspended at their material events,
     bucketed by (geometry type, material pipeline id) and shaded by dedicated
     per-material kernels -- see ``wavefront_sorted_kernels_taichi``), routed
-    only when explicitly forced (``set_material_sorting(True)``) and kept for
+    only when explicitly forced (``set_wavefront_sort_materials(True)``) and kept for
     reference only. The vertex-shaded path below is unaffected either way.
     """
     rt_settings = SETTINGS.raytracing
@@ -2224,7 +2227,7 @@ def raytrace_render_wavefront(
     state_sca_width = sca_width(ior_stack_flag)
     # UNSUPPORTED legacy textured-surface shader (Surface / flat-triangle
     # scenes): shades from three per-triangle texture lookups instead of
-    # per-vertex arrays. Only reachable via the opt-in WF_TEXTURED toggle;
+    # per-vertex arrays. Only reachable via the opt-in wf_textured toggle;
     # kept for reference. Extended lights, environment maps and near/far
     # clipping live in the monolithic general shade kernel below; a scene
     # using any of them skips the textured / sorted variants.
@@ -2263,7 +2266,7 @@ def raytrace_render_wavefront(
             out,
             aa_level,
         )
-    sort_mode = rt_settings.WAVEFRONT_SORT_MATERIALS
+    sort_mode = rt_settings.wavefront_sort_materials
     # The monolith handles custom scatter + normal maps, so it is the default
     # for every fragment-shaded scene; the UNSUPPORTED legacy sorted pipeline
     # runs only when explicitly forced (kept for reference -- see settings).
@@ -2306,7 +2309,7 @@ def raytrace_render_wavefront(
         )
     i32 = torch.int32
     f32 = torch.float32
-    max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
+    max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
 
     # Compile-time walk selector: the merge builds either all-classic or
@@ -2325,7 +2328,7 @@ def raytrace_render_wavefront(
         refraction_flag, merged, analytic_raster, bool(frag_scatters)
     )
     # Read live (settings convention): runtime-mutable for tile-size A/B.
-    primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // pool_ratio)
+    primary_per_tile = max(1, rt_settings.wavefront_tile_rays // pool_ratio)
 
     # Family A+B memory-trim: engage only for the no-shadow, non-refractive,
     # scatter-free triangle path (the trim arrays are built by scene_builder
@@ -2336,7 +2339,7 @@ def raytrace_render_wavefront(
     mem_trim = (
         1
         if (
-            rt_settings.WF_MEM_TRIM
+            rt_settings.wf_mem_trim
             and merged.get("mem_trim_active")
             and shadow_flag == 0
             and len(frag_scatters) == 0
@@ -2364,7 +2367,7 @@ def raytrace_render_wavefront(
     # this batch even if a toggle flipped since (the dedicated trees do not
     # exist to walk).
     opaque_closest = int(
-        rt_settings.WF_OPAQUE_CLOSEST
+        rt_settings.wf_opaque_closest
         and not merged.get("opaque_bvh_skipped", False)
         and merged.get("all_visible_opaque", False)
         and not refraction_flag
@@ -2373,7 +2376,7 @@ def raytrace_render_wavefront(
         and not merged.get("textured_active", False)
     )
     opaque_prepass = int(
-        rt_settings.WF_OPAQUE_PREPASS
+        rt_settings.wf_opaque_prepass
         and not merged.get("opaque_bvh_skipped", False)
         and merged.get("has_any_opaque", False)
         and merged.get("has_any_translucent", False)
@@ -2385,7 +2388,7 @@ def raytrace_render_wavefront(
     )
     # Compile-time material gating of the shade kernels: the pipeline ids this
     # batch's triangles / PN patches carry, as a bitmask template, so the
-    # stages it cannot reach are never compiled in (rt_settings.FRAG_PID_GATE;
+    # stages it cannot reach are never compiled in (rt_settings.frag_pid_gate;
     # ALL_PIDS = ungated). Per geometry type, because the two shade sites are
     # separate funcs -- a mesh scene's flat triangles and its PN patches each
     # get their own gate.
@@ -2400,7 +2403,7 @@ def raytrace_render_wavefront(
     # allocation-time decision (analytic_raster, which IS the sheet route) is
     # caught below rather than rendered wrong.
     use_raster = (
-        rt_settings.HYBRID_RASTER
+        rt_settings.hybrid_raster
         and analytic_raster
         and merged.get("tri_frame_valid") is not None
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
@@ -2409,9 +2412,9 @@ def raytrace_render_wavefront(
         and len(frag_scatters) == 0
         and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
-        and rt_settings.RASTER_SPARSE_COVERAGE
-        and rt_settings.RASTER_EMPTY_SKIP
-        and rt_settings.RASTER_COVERED_SHADE
+        and rt_settings.raster_sparse_coverage
+        and rt_settings.raster_empty_skip
+        and rt_settings.raster_covered_shade
     )
     if analytic_raster and not use_raster:
         raise RuntimeError(
@@ -2425,7 +2428,7 @@ def raytrace_render_wavefront(
     # composite + the uncovered-pixel finalize (DESIGN_sheet_resolve.md §5).
     sparse_coverage = use_raster
 
-    # Fused primary-ray generation (settings.WF_GEN_FUSED): the tile's first
+    # Fused primary-ray generation (settings.wf_gen_fused): the tile's first
     # traverse generates its rays in-kernel and the first shade uses the
     # implicit initial state, skipping the standalone generate pass. Only for
     # split-free (one slot per pixel, so pix == r), near-clip-free (implicit
@@ -2587,8 +2590,8 @@ def raytrace_render_wavefront(
             bounce = f"bounce {it - 1}" if it <= _BOUNCE_STAGE_CAP else "bounce 8+"
             with memory.temp():
                 with _stage("wavefront:   - drain scratch"):
-                    hit_f = memory.get_tensor((na, KBUF, 4), f32)
-                    hit_i = memory.get_tensor((na, KBUF, 2), i32)
+                    hit_f = memory.get_tensor((na, kbuf, 4), f32)
+                    hit_i = memory.get_tensor((na, kbuf, 2), i32)
                 with _stage(f"wavefront:   - {bounce} traverse", items=na):
                     wavefront_traverse_events(
                         active,
@@ -2686,8 +2689,8 @@ def raytrace_render_wavefront(
                         # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
                         # read live per batch like the other shadow toggles.
                         int(rt_settings.shadow_terminator_mode()),
-                        int(rt_settings.WF_SKIP_UNLIT_NORMAL),
-                        int(rt_settings.DIRECT_SPECULAR_LOBE),
+                        int(rt_settings.wf_skip_unlit_normal),
+                        int(rt_settings.direct_specular_lobe),
                         int(mem_trim),
                         opaque_closest,
                         0,
@@ -2695,7 +2698,7 @@ def raytrace_render_wavefront(
                         # Post-loop weight-floor exit, read live per batch
                         # (a ti.template() gate: flipping it mid-process
                         # compiles the other variant rather than reusing one).
-                        int(rt_settings.WEIGHT_FLOOR_EXIT),
+                        int(rt_settings.weight_floor_exit),
                         a_matid,
                         a_mat,
                         light_pos,
@@ -2722,7 +2725,7 @@ def raytrace_render_wavefront(
                 rs_int,
                 0,
                 source=active,
-                scan_pool=(pool_ratio != 1 or not rt_settings.WF_COMPACT_ACTIVE_ONLY),
+                scan_pool=(pool_ratio != 1 or not rt_settings.wf_compact_active_only),
             )
             it += 1
 
@@ -2780,7 +2783,7 @@ def raytrace_render_wavefront(
                             int(height),
                             covered_mask,
                             t_val_sparse,
-                            float(rt_settings.TONEMAP_EXPOSURE),
+                            float(rt_settings.tonemap_exposure),
                             out,
                         )
                 if coverage is None:
@@ -2799,7 +2802,7 @@ def raytrace_render_wavefront(
                 #
                 # ALLOCATED BEFORE THE TILE IS SIZED, exactly as the classic route
                 # allocates ``aa_accum`` first: ``_auto_primary_per_tile`` spends
-                # every free arena byte (WAVEFRONT_TILE_SAFETY is 1.0), so a buffer
+                # every free arena byte (wavefront_tile_safety is 1.0), so a buffer
                 # taken AFTER it is taken out of the tile's own state. At PREVIEW
                 # these are only 16 MB, but the tile is sized against a nearly
                 # exhausted arena by the last chunk of a batch, and 16 MB there is
@@ -2814,7 +2817,7 @@ def raytrace_render_wavefront(
                 gl_bounds = None
                 if gl_active:
                     levels, pyr_texels = _gloss_pyramid_levels(
-                        width, height, int(rt_settings.GLOSSY_PREFILTER_MAX_LEVELS)
+                        width, height, int(rt_settings.glossy_prefilter_max_levels)
                     )
                     gl_main = memory.get_tensor(
                         (int(width) * int(height), GL_MAIN_WIDTH), f32
@@ -2954,7 +2957,7 @@ def raytrace_render_wavefront(
                                 frag_flag,
                                 frag_pipelines,
                                 int(tri_pids),
-                                int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                                int(rt_settings.wf_skip_unlit_normal),
                                 refraction_flag,
                                 ior_stack_flag,
                                 time_start,
@@ -3149,7 +3152,7 @@ def raytrace_render_wavefront(
                                     covered_idx[a:b],
                                     pix_accum[a:b],
                                     t_val_sparse,
-                                    float(rt_settings.TONEMAP_EXPOSURE),
+                                    float(rt_settings.tonemap_exposure),
                                     out,
                                 )
                                 covered_start = part_end
@@ -3181,7 +3184,7 @@ def raytrace_render_wavefront(
                             covered_idx,
                             pix_accum,
                             t_val_sparse,
-                            float(rt_settings.TONEMAP_EXPOSURE),
+                            float(rt_settings.tonemap_exposure),
                             out,
                         )
                         memory.set_pointers(state_ptrs)
@@ -3218,14 +3221,14 @@ def raytrace_render_wavefront(
             # persistent state.
             first = 1 if (gen_fused and it == 0) else 0
             # The hit batch is phase-local: traversal writes one compact
-            # [active ray, KBUF] surface-event record and shade consumes it in
+            # [active ray, kbuf] surface-event record and shade consumes it in
             # the same host iteration. Releasing this arena scope before
-            # compaction removes the six permanent [pool, KBUF] arrays from
+            # compaction removes the six permanent [pool, kbuf] arrays from
             # secondary radiance state while preserving the existing four-hit
             # traversal/shading behavior.
             with memory.temp():
-                hit_f = memory.get_tensor((na, KBUF, 4), f32)
-                hit_i = memory.get_tensor((na, KBUF, 2), i32)
+                hit_f = memory.get_tensor((na, kbuf, 4), f32)
+                hit_i = memory.get_tensor((na, kbuf, 2), i32)
                 wavefront_traverse_events(
                     active,
                     na,
@@ -3321,15 +3324,15 @@ def raytrace_render_wavefront(
                     # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
                     # read live per batch like the other shadow toggles.
                     int(rt_settings.shadow_terminator_mode()),
-                    int(rt_settings.WF_SKIP_UNLIT_NORMAL),
-                    int(rt_settings.DIRECT_SPECULAR_LOBE),
+                    int(rt_settings.wf_skip_unlit_normal),
+                    int(rt_settings.direct_specular_lobe),
                     int(mem_trim),
                     opaque_closest,
                     first,
                     0,  # compact: dense tiles accumulate at the ray's pixel
                     # Post-loop weight-floor exit, read live per batch (see
                     # the sparse drain call site).
-                    int(rt_settings.WEIGHT_FLOOR_EXIT),
+                    int(rt_settings.weight_floor_exit),
                     a_matid,
                     a_mat,
                     light_pos,
@@ -3356,7 +3359,7 @@ def raytrace_render_wavefront(
                 rs_int,
                 0,
                 source=active,
-                scan_pool=(pool_ratio != 1 or not rt_settings.WF_COMPACT_ACTIVE_ONLY),
+                scan_pool=(pool_ratio != 1 or not rt_settings.wf_compact_active_only),
             )
             it += 1
 
@@ -3419,7 +3422,7 @@ def _raytrace_render_wavefront_textured(
 ):
     """UNSUPPORTED legacy textured-surface wavefront orchestration (Surface /
     flat-triangle scenes only; no longer maintained, kept for reference --
-    see ``settings.WF_TEXTURED``). Same generate -> traverse -> shade ->
+    see ``settings.wf_textured``). Same generate -> traverse -> shade ->
     composite tile loop as the monolithic :func:`raytrace_render_wavefront`,
     but the shade stage is ``wf_shade_textured`` reading the three
     per-triangle texture banks built by
@@ -3434,12 +3437,12 @@ def _raytrace_render_wavefront_textured(
 
     i32 = torch.int32
     f32 = torch.float32
-    max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
+    max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
 
     # Feature templates (compiled into the shade kernel one at a time to measure
-    # each feature's cost -- see settings.WF_TEXTURED_FEATURES).
-    feat = int(rt_settings.WF_TEXTURED_FEATURES)
+    # each feature's cost -- see settings.wf_textured_features).
+    feat = int(rt_settings.wf_textured_features)
     feat_bez = 1 if (feat & rt_settings.WF_TEX_BEZ) else 0
     feat_scatter = 1 if (feat & rt_settings.WF_TEX_SCATTER) else 0
     feat_shadows = 1 if (feat & rt_settings.WF_TEX_SHADOWS) else 0
@@ -3449,7 +3452,7 @@ def _raytrace_render_wavefront_textured(
     has_bez_eff = 1 if (feat_bez or has_bez) else 0
 
     pool_ratio = rt_settings.refract_initial_pool_ratio if refraction_flag else 1
-    primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // pool_ratio)
+    primary_per_tile = max(1, rt_settings.wavefront_tile_rays // pool_ratio)
     # The gen block compiles out on this path (the classic generate kernel is
     # kept), but traverse still reads gen_meta[2:] to rebuild each pixel's
     # primary ray for the perpendicular-depth conversion (see _axis_cos), so
@@ -3592,7 +3595,7 @@ def _raytrace_render_wavefront_textured(
                 rs_int,
                 0,
                 source=active,
-                scan_pool=(pool_ratio != 1 or not rt_settings.WF_COMPACT_ACTIVE_ONLY),
+                scan_pool=(pool_ratio != 1 or not rt_settings.wf_compact_active_only),
             )
             it += 1
 
@@ -3684,7 +3687,7 @@ def _batch_user_pipeline_ids(merged):
 def _frag_pid_mask(merged, prefix, active, _record=True):
     """Compile-time bitmask of the material pipeline ids ``prefix`` geometry
     carries in this batch (bit ``p`` = pipeline id ``p``), for the shade
-    kernels' compile-time material gating (see ``rt_settings.FRAG_PID_GATE``
+    kernels' compile-time material gating (see ``rt_settings.frag_pid_gate``
     and ``shading_taichi._run_frag_pipeline``).
 
     ``ALL_PIDS`` -- every stage compiled in, i.e. the ungated kernel -- is
@@ -3700,7 +3703,7 @@ def _frag_pid_mask(merged, prefix, active, _record=True):
     """
     mask = ALL_PIDS
     material_ids = merged.get(f"{prefix}_material_ids")
-    if rt_settings.FRAG_PID_GATE and active and material_ids:
+    if rt_settings.frag_pid_gate and active and material_ids:
         mask = 0
         for pid in material_ids:
             pid = int(pid)
@@ -3745,7 +3748,7 @@ def _raytrace_render_wavefront_sorted(
 ):
     """UNSUPPORTED legacy Cycles-style sorted-material orchestration of the
     fragment-shading wavefront (no longer maintained, kept for reference; only
-    reachable via ``set_material_sorting(True)`` -- see
+    reachable via ``set_wavefront_sort_materials(True)`` -- see
     ``wavefront_sorted_kernels_taichi`` for the kernel split).
 
     Per host iteration: rays needing a K-buffer refill are traversed
@@ -3813,16 +3816,16 @@ def _raytrace_render_wavefront_sorted(
     # refractive surface.
     refraction_flag = 1 if (refraction_flag or has_custom_scatter) else 0
 
-    # Worst case: every one of MAX_SURFACES_PER_RAY hits is a material event
+    # Worst case: every one of max_surfaces_per_ray hits is a material event
     # (one peel+shade pass each) plus a traverse per K-buffer refill / bounce.
     max_iters = (
-        MAX_SURFACES_PER_RAY + MAX_SURFACES_PER_RAY // KBUF + max_bounces * 2 + 8
+        max_surfaces_per_ray + max_surfaces_per_ray // kbuf + max_bounces * 2 + 8
     )
 
     pool_ratio = rt_settings.refract_initial_pool_ratio if refraction_flag else 1
     # The sorted path carries ~1.5x the classic per-ray state (the event
     # record + keys), so tiles hold fewer rays for the same memory envelope.
-    primary_per_tile = max(1, (rt_settings.WAVEFRONT_TILE_RAYS * 2) // (3 * pool_ratio))
+    primary_per_tile = max(1, (rt_settings.wavefront_tile_rays * 2) // (3 * pool_ratio))
     # The gen block compiles out on this path (the classic generate kernel is
     # kept), but traverse still reads gen_meta[2:] to rebuild each pixel's
     # primary ray for the perpendicular-depth conversion (see _axis_cos), so

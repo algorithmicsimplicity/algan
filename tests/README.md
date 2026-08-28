@@ -88,6 +88,18 @@ and runs everything under them, `fast`-marked or not (see the comment in
 `.github/workflows/test.yaml`). The fast suite is a development loop; CI can
 afford twelve minutes and should keep spending them.
 
+It runs those paths twice, on `ubuntu-latest` and on `macos-latest`. Linux
+takes the ordinary `auto` probe and lands on the CPU. **macOS is pinned to
+`ALGAN_RENDER_DEVICE=cpu`**, because `auto` there resolves to MPS — the runner
+does offer one — and Algan does not run on MPS: the raster pipeline allocates
+in `float64`, which MPS refuses, and `ti.gpu` on a Mac resolves through Vulkan,
+whose SPIR-V builder refuses `f64` in the same kernels. 88 tests failed that
+way on the first macOS CI run. Supporting MPS means taking `float64` out of the
+raster pipeline and the kernels; until that happens the Mac job tests the CPU
+path, which is what makes it a portability check rather than a standing
+failure. The `algan check` step ahead of the tests prints the device that came
+out, along with whether LaTeX and FFmpeg are on `PATH`.
+
 ## The full suite
 
 ```bash
@@ -200,6 +212,25 @@ between them with `torch.cuda.is_available()`. A machine with no baseline
 directory for its device renders the scene and then skips the comparison, so
 **a suite that reports itself green on a new device may not have compared
 anything**; check for skips before believing it.
+
+The device is the one the render will actually run on —
+`SETTINGS.computing.render_device`, so `ALGAN_RENDER_DEVICE=cpu` on a CUDA
+machine compares against the CPU baseline, and an Apple Silicon Mac (where the
+automatic probe resolves to MPS) does not silently compare a Metal render
+against a CPU one.
+
+**macOS is keyed separately** (`expected_outputs_macos_cpu/`), and nothing is
+committed under that name, so a Mac renders and skips the comparison. That is
+measured, not assumed: the x86-64 CPU baseline was copied in and run on an
+Apple Silicon CI runner, and it missed by **up to 45 channel values** (worst at
+frame 36) against a tolerance of 2. This is the scene that matched *exactly*
+across two x86-64 machines when five of the six full-render scenes did not — so
+the change of instruction set is its own axis, separate from the per-machine
+spread below, and fp32 arithmetic through a path tracer does not survive it.
+
+A Mac therefore covers kernel compilation, tessellation, LaTeX, the fonts and
+the encoder, but not the pixels. To gate pixels there, render with
+`ALGAN_UPDATE_FAST_BASELINE=1` on the Mac, look at the result, and commit it.
 
 Both sets are checked in. They are *not* interchangeable, and the differences
 between them are larger than the tolerance by design:

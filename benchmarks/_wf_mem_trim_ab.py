@@ -1,5 +1,5 @@
 """In-process A/B for the full 'Family A+B' material-field memory trim
-(settings.WF_MEM_TRIM). Baseline (off) vs trim (on): triangles reordered into
+(settings.wf_mem_trim). Baseline (off) vs trim (on): triangles reordered into
 material-class bands so tri_norm/tri_mat are compacted prefixes, tri_colors/
 tri_extra addressed via a per-prim col_row remap, tex_meta/uvs widened to full
 band-order arrays. The trim saves per-primitive memory but pays a per-hit
@@ -48,8 +48,8 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
     set_reflectivity,
+    set_shadows,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -109,8 +109,8 @@ tracer_mod.raytrace_render_wavefront = _timed_wf
 def render_once(trim_on, tag):
     SceneManager.reset()
     set_fragment_shading(True)
-    set_ray_traced_shadows(False)
-    rt_settings.WF_MEM_TRIM = bool(trim_on)
+    set_shadows(False)
+    rt_settings.wf_mem_trim = bool(trim_on)
     build()
     scene = SceneManager.instance()
     _wf_times.clear()

@@ -1,6 +1,6 @@
 """Warm in-process alternating A/B: the crossfading-texture window cost.
 
-The scene is the case TEXTURE_TIME_LERP exists for -- a large image texture
+The scene is the case texture_time_lerp exists for -- a large image texture
 whose TEXELS animate across the whole clip (a crossfade to the flipped
 image), which stages 1-3 could not collapse: every batch materialized,
 decoded and uploaded one full map per frame, and the batch sizer priced it
@@ -8,7 +8,7 @@ per frame. Beside it a static copy of the same image and a moving cube keep
 this a general moving scene.
 
 Arms alternate in one process (new, dense, new, dense) after a discarded
-warm-up, flipping TEXTURE_TIME_LERP through its setter -- the description is
+warm-up, flipping texture_time_lerp through its setter -- the description is
 data-driven (bank regions + meta columns), no ``ti.static`` gate, so the
 in-process flip is legal. Reported per render: wall seconds, the batch
 windows chosen, and the merged texture-bank rows (which prove the arm

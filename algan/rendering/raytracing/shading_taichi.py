@@ -59,7 +59,7 @@ before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
 block of a custom pipeline keeps its historical look slot by slot.
 
 The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
-terms, ``AMBIENT_STRENGTH``, ``light_intensity == ambient == 1``) and reproduces
+terms, ``ambient_strength``, ``light_intensity == ambient == 1``) and reproduces
 its multi-light behaviour: each light is applied in sequence with the running
 colour as the albedo (the renderer's vertex path overwrites the colour per
 light), which is identical to a single light -- the common case.
@@ -70,8 +70,8 @@ import taichi as ti
 from algan.environment import env_int
 from algan.rendering.raytracing.color_space_taichi import (
     linear_to_srgb_v3,
-    srgb_to_linear_v3,
     srgb_to_linear_f,
+    srgb_to_linear_v3,
 )
 
 # Width of the built-in per-primitive material parameter block (see slot map).
@@ -138,27 +138,25 @@ _MID_DEPTH = 9
 # (``frag_pipelines``): user pipeline k has id ``_USER_PIPELINE_BASE + k``.
 _USER_PIPELINE_BASE = 10
 
-# Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
-AMBIENT_STRENGTH = 0.1
-
-# The same fill, expressed in linear light. 0.1 was chosen as a display-referred
-# coefficient, and moving the working space without moving it would have made
-# the ambient nearly nine times brighter: 0.1 of linear light encodes to byte
-# 89, where 0.1 of an encoded value is byte 26, so every shadowed and unlit
-# region would have lifted. srgb_to_linear(0.1) = 0.01003, so 0.01 is the same
-# fill the old pipeline delivered -- the constant changes because the units
-# changed, not because the look was retuned.
-AMBIENT_STRENGTH_LINEAR = 0.01
-
-
 def _ambient_strength():
     """The ambient coefficient for the active working space.
 
     A Python-level function rather than a constant because the two spaces need
     different numbers for the same result; call it inside ``ti.static`` so the
     value is folded in when the kernel compiles.
+
+    Both numbers live on ``rt_settings`` (``ambient_strength`` /
+    ``ambient_strength_linear``) and are read through the module object at
+    every call, for the same two reasons as :func:`_linear_color_space`: a
+    module-level import back would be circular, and a copy here would freeze
+    the value before user code could set it. This module and
+    ``shaders/material_shaders`` each used to hold their own copy of the pair.
     """
-    return AMBIENT_STRENGTH_LINEAR if _linear_color_space() else AMBIENT_STRENGTH
+    from algan.rendering.raytracing import settings as rt_settings
+
+    if _linear_color_space():
+        return float(rt_settings.ambient_strength_linear)
+    return float(rt_settings.ambient_strength)
 
 
 def _linear_color_space():
@@ -178,7 +176,7 @@ def _linear_color_space():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    return bool(rt_settings.LINEAR_COLOR_SPACE)
+    return bool(rt_settings.linear_color_space)
 
 
 @ti.func
@@ -255,7 +253,7 @@ SHADOW_VIS_CHANNELS = 3
 def light_vis_index(li, c):
     """Flat index of channel ``c`` of light ``li`` in a packed per-hit
     shadow-visibility payload (``vis``/``lvis``, length ``SHADOW_VIS_CHANNELS *
-    MAX_SHADOW_LIGHTS``).
+    max_shadow_lights``).
 
     One module-level helper rather than an inline ``3 * li + c`` at every site
     so the producers and consumers of the payload cannot disagree about the
@@ -281,7 +279,7 @@ def light_vis_index(li, c):
 # unshadowed one). A
 # truly unbounded (runtime) count would need the per-fragment visibilities in
 # a global scratch buffer instead of a stack vector.
-MAX_SHADOW_LIGHTS = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
+max_shadow_lights = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
 
 
 @ti.func
@@ -577,7 +575,7 @@ def _shadow_terminator_delta(f, prim, w0, a, b, p, snrm,
     ``_tri_normal_g`` result).
 
     The caller STILL adds the face-normal lift on top of this displacement
-    (``sorigin = spos + delta + fnrm * (10 * MIN_HIT_DISTANCE)``); the lift
+    (``sorigin = spos + delta + fnrm * (10 * min_hit_distance)``); the lift
     is what keeps flat facets working exactly as they always have.
     """
     tn = f % tri_norm.shape[0]
@@ -813,7 +811,7 @@ def _light_vis(shadows: ti.template(), vis, li):
     """
     v = ti.math.vec3(1.0, 1.0, 1.0)
     if ti.static(shadows != 0):
-        if li < MAX_SHADOW_LIGHTS:
+        if li < max_shadow_lights:
             base = light_vis_index(li, 0)
             v = ti.math.vec3(vis[base], vis[base + 1], vis[base + 2])
     return v
@@ -1447,7 +1445,7 @@ def make_pipeline_func(stages, offsets):
 # covered part passes, ``reflectivity`` packed metalness (negative = non-PBR)
 # and ``ior`` an unsigned magnitude.
 #
-# With the nested-IOR media stack on (``NESTED_IOR``, DESIGN_mesh_identity_
+# With the nested-IOR media stack on (``nested_ior``, DESIGN_mesh_identity_
 # open.md §H), a custom scatter's transmitted ray continues in the PARENT
 # medium: the renderer copies the calling ray's media stack onto the split
 # branch unchanged and passes the material's own index as ``ior``, because a

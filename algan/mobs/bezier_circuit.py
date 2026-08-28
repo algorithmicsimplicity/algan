@@ -1416,7 +1416,7 @@ def build_render_primitives_batched(actors, scene):
     """
     from algan.animation_timeline.timeline import RowRanges
     from algan.rendering.primitives.bezier_circuit_primitive import (
-        DEFAULT_CHORD_TOLERANCE_PIXELS,
+        chord_tolerance_pixels,
     )
 
     timeline = scene.timeline_manager
@@ -1565,12 +1565,12 @@ def build_render_primitives_batched(actors, scene):
     # whole contract is to be a byte-identical replacement for that
     # constructor: it stood at 1 against the per-actor path's 0.5, which the
     # default analytic-AA route hides (it clamps the tolerance to
-    # ANALYTIC_AA_CHORD_TOLERANCE = 0.25, so 0.5 and 1 both land on 0.25) and
+    # analytic_aa_chord_tolerance = 0.25, so 0.5 and 1 both land on 0.25) and
     # the classic supersampled route does not -- there every batched circuit
     # was flattened to twice the per-actor path's chord error. Harmless while
     # the batched build reached a fifth of a scene's circuits; not harmless now
     # that a group clash no longer sends the rest down the other path (P9).
-    mega.num_pixels_per_sample = DEFAULT_CHORD_TOLERANCE_PIXELS
+    mega.num_pixels_per_sample = chord_tolerance_pixels
     mega.num_bezier_parameters = 4
     mega.num_texture_points = ntp
     mega.filled = first.filled

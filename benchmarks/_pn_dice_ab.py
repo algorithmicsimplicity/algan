@@ -53,8 +53,8 @@ from algan.rendering.raytracing.primitives import (  # noqa: E402
     _scatter_diced_rows,
 )
 from algan.rendering.raytracing.settings import (  # noqa: E402
-    MESH_ID,
-    PN_GEOMETRY_SLACK,
+    mesh_id,
+    pn_geometry_slack,
 )
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
@@ -138,7 +138,7 @@ def reference_dice(self, camera):
     # Same criterion inputs as production: the arms differ in how the dice is
     # written out, never in which dice the search picks.
     slack = None
-    if PN_GEOMETRY_SLACK and self.geometry_slack_ratio > 0:
+    if pn_geometry_slack and self.geometry_slack_ratio > 0:
         slack = _expand_frames(
             mean_patch_edge_length(source_corners) * self.geometry_slack_ratio,
             num_frames,
@@ -153,7 +153,7 @@ def reference_dice(self, camera):
 
     num_patches = counts.shape[1] if counts.ndim > 1 else 0
     counts_src = getattr(self, "_obj_counts", None)
-    obj_ids = getattr(self, "_obj_ids", None) if MESH_ID else None
+    obj_ids = getattr(self, "_obj_ids", None) if mesh_id else None
     if obj_ids is not None:
         patch_source = obj_ids.reshape(-1).to(device=device, dtype=torch.int32)
         self._logical_pn_tri_obj_n = int(self._obj_ids_n)

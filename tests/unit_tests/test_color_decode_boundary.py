@@ -95,7 +95,7 @@ class rt_settings_off_tonemap:  # noqa: N801 - a context manager, not a class AP
 
 
 @pytest.mark.skipif(
-    not rt_settings.LINEAR_COLOR_SPACE,
+    not rt_settings.linear_color_space,
     reason="the display-referred pipeline neither decodes nor encodes",
 )
 def test_an_unlit_authored_colour_renders_as_itself(tmp_path):
@@ -111,7 +111,7 @@ def test_an_unlit_authored_colour_renders_as_itself(tmp_path):
 
 
 @pytest.mark.skipif(
-    not rt_settings.LINEAR_COLOR_SPACE,
+    not rt_settings.linear_color_space,
     reason="the display-referred pipeline neither decodes nor encodes",
 )
 def test_an_emissive_colour_renders_as_itself(tmp_path):
@@ -136,7 +136,7 @@ def test_only_the_colour_slots_of_the_material_block_are_decoded():
     ``ior`` is the one that shows it: 1.5 is not a fixed point of the transfer
     function, where roughness 1 and metalness 0 both are.
     """
-    if not rt_settings.LINEAR_COLOR_SPACE:
+    if not rt_settings.linear_color_space:
         pytest.skip("the display-referred pipeline does not decode at all")
     width = max(start + w for start, w in _MAT_SLOTS.values())
     mat = torch.zeros((1, 2, width))
@@ -160,7 +160,7 @@ def test_a_custom_pipeline_block_is_left_alone():
     those slots are not colours and decoding them would corrupt the pipeline's
     parameters.
     """
-    if not rt_settings.LINEAR_COLOR_SPACE:
+    if not rt_settings.linear_color_space:
         pytest.skip("the display-referred pipeline does not decode at all")
     width = max(start + w for start, w in _MAT_SLOTS.values())
     mat = torch.full((1, 1, width), 0.5)
@@ -180,7 +180,7 @@ def test_the_decode_is_a_no_op_under_the_display_referred_pipeline(monkeypatch):
     """With ``linear_color_space`` off there is no OETF at the byte write, so
     there must be no decode either -- the two halves are one switch.
     """
-    monkeypatch.setattr(rt_settings, "LINEAR_COLOR_SPACE", False)
+    monkeypatch.setattr(rt_settings, "linear_color_space", False)
     width = max(start + w for start, w in _MAT_SLOTS.values())
     scene = {
         "tri_colors": torch.full((1, 1, 3, 5), 0.5),

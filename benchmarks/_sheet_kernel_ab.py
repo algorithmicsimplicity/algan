@@ -1,7 +1,7 @@
 """A/B the compaction/emission host-pass kernels in a real render:
-RASTER_FUSED_GATHER + SHEET_MASK_KERNEL + SHEET_RANK_KERNEL
-+ RASTER_OPAQUE_TRUNC_KERNEL + SHEET_ONE_MESH_KERNEL
-+ SHEET_SAMPLE_DEPTH_KERNEL.
+raster_fused_gather + sheet_mask_kernel + sheet_rank_kernel
++ raster_opaque_trunc_kernel + sheet_one_mesh_kernel
++ sheet_sample_depth_kernel.
 
 Alternates the arms inside one process (wall-clock across processes swings ~2x
 with thermal throttling on this hardware) and reports the median of each arm,

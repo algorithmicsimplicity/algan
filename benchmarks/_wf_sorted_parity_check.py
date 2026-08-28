@@ -50,9 +50,11 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
 )
-from algan.rendering.raytracing.settings import set_material_sorting  # noqa: E402
+from algan.rendering.raytracing.settings import (
+    set_wavefront_sort_materials,  # noqa: E402
+)
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -128,8 +130,8 @@ def build_refract():
 def render_once(sort_on, frag, shadows, build_fn, tag, **build_kwargs):
     SceneManager.reset()
     set_fragment_shading(frag)
-    set_ray_traced_shadows(shadows)
-    set_material_sorting(sort_on)
+    set_shadows(shadows)
+    set_wavefront_sort_materials(sort_on)
     build_fn(**build_kwargs)
     scene = SceneManager.instance()
     out = os.path.join(OUT_DIR, f"wfsort_{tag}.png")

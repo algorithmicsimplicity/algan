@@ -2,9 +2,9 @@
 
 Three arms of one scene, rendered in one process with pinned batch windows:
 
-* ``dense``   -- TEXTURE_TIME_LERP=0: every animated colour-texture window
+* ``dense``   -- texture_time_lerp=0: every animated colour-texture window
   materializes one image per frame, byte for byte the stage-1-3 pipeline.
-* ``lerp``    -- TEXTURE_TIME_LERP=1, TEXTURE_U8_STORAGE=0: endpoint stacks
+* ``lerp``    -- texture_time_lerp=1, texture_u8_storage=0: endpoint stacks
   as plain f32 authored rows.
 * ``lerp_u8`` -- both on (the defaults): u8-provenance endpoint stacks pack
   as bytes with no LUT.

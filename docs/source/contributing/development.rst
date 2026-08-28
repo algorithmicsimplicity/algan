@@ -131,7 +131,12 @@ pixel-compared render test.
    Render tests compare generated frames against baselines committed in
    ``expected_outputs_cuda/`` or ``expected_outputs_cpu/``. Because CPU and GPU
    rasterization differences are expected, baseline files are maintained
-   separately for each backend.
+   separately for each backend. macOS is keyed separately again
+   (``expected_outputs_macos_cpu/``) and ships no baselines: the x86-64 CPU set
+   was measured against an Apple Silicon runner and missed by up to 45 channel
+   values, against a tolerance of 2, so a path tracer's ``float32`` arithmetic
+   does not survive the change of instruction set. On a Mac the render still
+   runs; only the pixel comparison is skipped.
 
 Updating Baseline Videos
 ------------------------

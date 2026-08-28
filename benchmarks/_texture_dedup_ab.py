@@ -1,8 +1,8 @@
 """Frame-level A/B for the texture-bank/geometry time dedup family.
 
 Renders one scene twice IN ONE PROCESS -- once with the four structural
-toggles OFF (``TEXTURE_TIME_FLAT`` / ``TEXTURE_CONTENT_DEDUP`` /
-``TEXTURE_WINDOW_COLLAPSE`` / ``MERGE_DEDUP_GEOMETRY``, i.e. the legacy
+toggles OFF (``texture_time_flat`` / ``texture_content_dedup`` /
+``texture_window_collapse`` / ``merge_dedup_geometry``, i.e. the legacy
 merge layout byte for byte) and once with all four ON (the defaults) -- and
 requires every frame byte-identical. The toggles are read live at the merge /
 primitive build, so in-process flipping through their setters is legal (none
@@ -83,7 +83,7 @@ def set_arm(on):
     rt_settings.set_texture_window_collapse(on)
     rt_settings.set_merge_dedup_geometry(on)
     # Held OFF in BOTH arms: this A/B's contract is byte-identity across the
-    # time-dedup family alone, and TEXTURE_TIME_LERP (its own harness:
+    # time-dedup family alone, and texture_time_lerp (its own harness:
     # _texture_lerp_ab.py, a QUALIFIED flip) would otherwise turn the ON
     # arm's animated map into an endpoint stack -- comparing two different
     # features and voiding the dense-animated-map (t > 1) evidence.

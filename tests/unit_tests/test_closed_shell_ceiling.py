@@ -1,4 +1,4 @@
-"""The solid-shell coverage ceiling (``SOLID_SHELL_ALPHA``) on synthetic streams.
+"""The solid-shell coverage ceiling (``solid_shell_alpha``) on synthetic streams.
 
 What ``Mob.opacity`` delivers on a declared closed shell: one attenuation of
 what is behind it, per pixel, per surface -- not one per shell crossing. These
@@ -108,7 +108,7 @@ def test_the_far_shell_of_an_interior_pixel_gets_nothing():
 
 
 def test_disabling_the_toggle_restores_today_behaviour():
-    """With ``SOLID_SHELL_ALPHA`` off nothing is clamped: byte-identical to the
+    """With ``solid_shell_alpha`` off nothing is clamped: byte-identical to the
     pre-change compaction on the same stream.
     """
     frags = [

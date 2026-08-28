@@ -1,5 +1,5 @@
 """Host-side logic of the shade kernels' compile-time material gating
-(``ALGAN_FRAG_PID_GATE`` / ``rt_settings.FRAG_PID_GATE``).
+(``ALGAN_FRAG_PID_GATE`` / ``rt_settings.frag_pid_gate``).
 
 The mask decides which material stages are compiled into the shade kernels,
 so an id the kernel can still read but the mask omits would shade that
@@ -29,7 +29,7 @@ from algan.rendering.raytracing.tracer import _frag_pid_mask
 
 @pytest.fixture
 def gate_on():
-    before = rt_settings.FRAG_PID_GATE
+    before = rt_settings.frag_pid_gate
     rt_settings.set_frag_pid_gate(True)
     yield
     rt_settings.set_frag_pid_gate(before)
@@ -37,7 +37,7 @@ def gate_on():
 
 @pytest.fixture
 def gate_off():
-    before = rt_settings.FRAG_PID_GATE
+    before = rt_settings.frag_pid_gate
     rt_settings.set_frag_pid_gate(False)
     yield
     rt_settings.set_frag_pid_gate(before)

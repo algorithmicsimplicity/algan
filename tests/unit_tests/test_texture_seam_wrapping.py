@@ -201,12 +201,12 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
     wrap pad is one more live copy of it (under the legacy premultiply, the
     premultiply clones off it as a third).
 
-    With the static window collapse (``TEXTURE_WINDOW_COLLAPSE``, default on)
+    With the static window collapse (``texture_window_collapse``, default on)
     those copies are made once per batch rather than once per frame the
     moment a build proves the window constant, so the per-frame estimate
     drops to the materialized window alone; the dense per-frame pricing --
     wrap-pad copy included -- is asserted with the collapse off, and the
-    legacy premultiply pricing under TEXTURE_OPACITY_IN_KERNEL's kill
+    legacy premultiply pricing under texture_opacity_in_kernel's kill
     switch.
     """
     from algan.rendering.raytracing import settings as rt_settings
@@ -215,7 +215,7 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
     SceneManager.reset()
     sphere = Sphere(radius=1.5, color_texture=_checker(32, 32)).spawn()
 
-    # Default arm (TEXTURE_OPACITY_IN_KERNEL): no premultiply copy exists.
+    # Default arm (texture_opacity_in_kernel): no premultiply copy exists.
     assert sphere._color_texture_bytes_per_timestep() == frame * 1, (
         "before a primitive build nothing knows the surface closes"
     )

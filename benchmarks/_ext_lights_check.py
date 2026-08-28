@@ -44,7 +44,7 @@ from algan import (  # noqa: E402
 )
 from algan.mobs.shapes_2d import QuadTriangulated  # noqa: E402
 from algan.rendering.raytracing.primitives import set_reflectivity  # noqa: E402
-from algan.rendering.raytracing.settings import set_ray_traced_shadows  # noqa: E402
+from algan.rendering.raytracing.settings import set_shadows  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -74,13 +74,13 @@ def save(tag):
 
 def fresh():
     SceneManager.reset()
-    set_ray_traced_shadows(False)
+    set_shadows(False)
 
 
 def scene_directional_soft():
     """Directional 'sun' + dim ambient; soft-edged shadows on the ground."""
     fresh()
-    set_ray_traced_shadows(True)
+    set_shadows(True)
     scene = SceneManager.instance()
     scene.light_sources = [
         DirectionalLight(
@@ -115,7 +115,7 @@ def scene_directional_soft():
 def scene_spot():
     """Spot light pool with a soft penumbra edge and inverse-square decay."""
     fresh()
-    set_ray_traced_shadows(True)
+    set_shadows(True)
     scene = SceneManager.instance()
     scene.light_sources = [
         SpotLight(
@@ -164,7 +164,7 @@ def scene_hemisphere():
 def scene_area():
     """Rect area light overhead: smooth lighting + a soft contact shadow."""
     fresh()
-    set_ray_traced_shadows(True)
+    set_shadows(True)
     scene = SceneManager.instance()
     scene.light_sources = [
         RectAreaLight(

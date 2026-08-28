@@ -16,7 +16,7 @@ bounded screen tiles through generate -> traverse -> shade -> composite kernel
 stages, with per-ray state pool-allocated from the render arena and host-side
 compaction between iterations. Each ray depth-peels its hits front-to-back and
 alpha-blends every surface -- following reflections and refractive splits up
-to ``MAX_BOUNCES`` -- into a fixed ``[frames, pixels, channels]`` output
+to ``max_bounces`` -- into a fixed ``[frames, pixels, channels]`` output
 buffer. ``samples_per_pixel > 1`` switches to the Monte Carlo path-tracing
 megakernel (:mod:`~algan.rendering.raytracing.raytrace_kernels_taichi`), one
 thread per (frame, pixel, sample) path. Tree and geometry preparation is
@@ -44,17 +44,17 @@ Usage::
 from __future__ import annotations
 
 from algan.rendering.raytracing.primitives import (
-    MAX_BOUNCES,
     LogicalPNTrianglePrimitive,
     RayTracedBezierCircuitPrimitive,
     RayTracedTrianglePrimitive,
     is_post_process_tonemap_enabled,
+    max_bounces,
     set_ambient_light,
     set_fragment_shading,
     set_indirect_bounce_strength,
     set_light_intensity,
-    set_ray_traced_shadows,
     set_samples_per_pixel,
+    set_shadows,
     set_unsupported_feature_policy,
 )
 from algan.rendering.raytracing.stbvh import STBVH, build_stbvh
@@ -62,7 +62,7 @@ from algan.rendering.raytracing.tracer import RenderPlan
 from algan.rendering.raytracing.truncation import TruncationCounts
 
 __all__ = [
-    "MAX_BOUNCES",
+    "max_bounces",
     "STBVH",
     "build_stbvh",
     "LogicalPNTrianglePrimitive",
@@ -74,7 +74,7 @@ __all__ = [
     "set_light_intensity",
     "set_ambient_light",
     "set_fragment_shading",
-    "set_ray_traced_shadows",
+    "set_shadows",
     "set_unsupported_feature_policy",
     "RenderPlan",
     "TruncationCounts",

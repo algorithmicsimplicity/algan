@@ -9,6 +9,11 @@ algan_outputs/
 algan_outputs
 algan_cache
 
+# What benchmarks/_mps_capability_probe.py writes. It is a measurement of the
+# machine it ran on, so it belongs in a CI artifact, not in the tree.
+mps_probe_results.json
+probe-output.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
