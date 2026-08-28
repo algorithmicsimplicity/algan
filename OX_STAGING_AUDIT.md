@@ -4,6 +4,15 @@ Source-reading audit only (no renders, no runtime device checks — per brief).
 Question: is the PCIe round-trip staging tax actually being paid today by any
 Algan Taichi launch? All paths are `algan/...` unless marked.
 
+> **Naming note, added later.** This audit was written when the render device
+> was the import-time constant `algan.settings._startup._RENDER_DEVICE`. That
+> name is gone: the device is now `SETTINGS.computing.render_device`, read
+> through `algan.settings._startup.render_device()`, and Taichi's arch is
+> re-selected per render job by `taichi_runtime.ensure_taichi_for_render()`.
+> Read `_RENDER_DEVICE` below as "the render device". Every conclusion holds —
+> the gates it traces still compare against that device, and none of them cached
+> it.
+
 ## Verdict summary
 
 | # | Claim | Verdict |

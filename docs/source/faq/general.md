@@ -18,7 +18,7 @@ See {doc}`../advanced_user_tutorials/the_render_daemon`.
 
 ## Do I need a dedicated GPU?
 
-No. Algan will automatically detect and use CUDA (NVIDIA) or MPS (Apple Silicon). If no compatible GPU is found, it falls back to your CPU. CPU renders produce identical visual output, just at a slower rendering speed. You can override device selection with the `ALGAN_RENDER_DEVICE` environment variable.
+No. Algan will automatically detect and use CUDA (NVIDIA) or MPS (Apple Silicon). If no compatible GPU is found, it falls back to your CPU. CPU renders produce identical visual output, just at a slower rendering speed. You can override device selection with `SETTINGS.computing.set(render_device="cpu")` at the top of your script, or with the `ALGAN_RENDER_DEVICE` environment variable.
 
 ## Can I keep animating after calling `save_video()`?
 

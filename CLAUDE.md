@@ -126,6 +126,8 @@ Every `ALGAN_` variable the package honors is declared in `algan/environment.py`
 
 Some variables are **initialization-only** (set before `import algan`, no runtime object), and variables an A/B script sets before `import algan` do not reach a warm daemon, so it refuses the run. Both lists of record, and the daemon rules, are in `agent_guidance/api_settings.md`.
 
+**`ALGAN_RENDER_DEVICE` is not one of them.** It seeds `SETTINGS.computing.render_device`, which is the runtime source of truth and is settable between renders; a warm daemon adopts a client's differing value rather than refusing the run. Engine code reads the device with `algan.settings._startup.render_device()` and must **never bind it at import** — `taichi_runtime.ensure_taichi_for_render()` re-selects Taichi's arch at the start of a render job, so a bound copy renders on the wrong device. See `VALIDATE_render_device_on_cuda.md`.
+
 ### Performance discipline
 Optimizations target general moving scenes, not static-only fast paths, and the standard is **byte-identical output**
 validated by an A/B parity script (`benchmarks/_*_check.py` / `_*_ab.py`). `DESIGN_optimization_targets.md` is the plan

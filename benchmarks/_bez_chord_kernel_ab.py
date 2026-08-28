@@ -23,7 +23,7 @@ from algan.rendering.raytracing.primitives import (
 )
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
 from algan.rendering.taichi_runtime import sync_devices
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 
 
 def make_camera(z_positions, *, screen_height=1080, device=None):
@@ -81,7 +81,7 @@ def _circuit_primitives(mob):
 
 
 def report(name, mob, z_positions, *, repeats=3):
-    device = torch.device(_RENDER_DEVICE)
+    device = render_device()
     primitive = RayTracedBezierCircuitPrimitive(
         triangle_collection=_circuit_primitives(mob)
     )

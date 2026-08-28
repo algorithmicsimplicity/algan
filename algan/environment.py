@@ -28,10 +28,11 @@ from collections.abc import Mapping
 from algan.errors import AlganConfigurationError, AlganWarning
 
 #: Variables consumed while Torch and Taichi initialise. They must be set
-#: before ``import algan`` and have no runtime Python setting; the render
-#: daemon bakes their values at launch and refuses a client whose values
-#: differ (see :data:`algan.daemon_client.STARTUP_ENV`, derived from this
-#: tuple). Order is the order mismatches are reported in.
+#: before ``import algan``; except for the ones in
+#: :data:`_DAEMON_ADOPTED_STARTUP_VARIABLES` they have no runtime Python
+#: setting, and the render daemon bakes their values at launch and refuses a
+#: client whose values differ (see :data:`algan.daemon_client.STARTUP_ENV`,
+#: derived from this tuple). Order is the order mismatches are reported in.
 _STARTUP_VARIABLES = (
     "ALGAN_ANIMATION_DEVICE",
     "ALGAN_RENDER_DEVICE",
@@ -44,6 +45,16 @@ _STARTUP_VARIABLES = (
     "ALGAN_TAICHI_WARMSTART",
     "ALGAN_TAICHI_FAST_LAUNCH",
 )
+
+#: The startup variables a warm daemon can take from a client after all,
+#: because the value they set at import is only the *default* of a runtime
+#: setting that owns it from then on. ``ALGAN_RENDER_DEVICE`` seeds
+#: ``SETTINGS.computing.render_device``; the daemon re-applies the client's
+#: value per run (``daemon._adopt_render_device``) and Taichi re-selects its
+#: arch at the start of every render, so the run renders where a cold one
+#: would. Anything listed here must have both halves -- a runtime setting, and
+#: a daemon that re-applies it -- or a mismatched run silently renders wrong.
+_DAEMON_ADOPTED_STARTUP_VARIABLES = ("ALGAN_RENDER_DEVICE",)
 
 #: Variables read by the test and benchmark harnesses rather than by the
 #: package. Declared so that a contributor who exports one -- as
@@ -254,6 +265,11 @@ _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 def startup_environment_variables() -> tuple[str, ...]:
     """The variables consumed while Torch and Taichi initialise, in report order."""
     return _STARTUP_VARIABLES
+
+
+def daemon_adopted_startup_variables() -> tuple[str, ...]:
+    """The startup variables a warm daemon applies per run instead of refusing."""
+    return _DAEMON_ADOPTED_STARTUP_VARIABLES
 
 
 def import_time_environment_variables() -> tuple[str, ...]:

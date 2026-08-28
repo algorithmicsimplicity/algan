@@ -11,10 +11,11 @@ Sections have **stable identity**: mutate them in place with
 ``SETTINGS.video.set(HD)``, never ``SETTINGS.video = HD``, so that code holding a
 reference to a section keeps seeing live values.
 
-Device selection is not here. ``ALGAN_RENDER_DEVICE`` and
-``ALGAN_ANIMATION_DEVICE`` are read while Torch and Taichi initialize, so they
-must be set in the environment before ``import algan`` and have no runtime object
-to assign to.
+The **render** device is here: ``SETTINGS.computing.render_device``, seeded from
+``ALGAN_RENDER_DEVICE`` and changeable between renders. The **animation** device
+is not -- ``ALGAN_ANIMATION_DEVICE`` decides where every Mob's authoring state is
+allocated, from the first one onward, so it must be set in the environment
+before ``import algan`` and has no runtime object to assign to.
 
 See :doc:`/advanced_user_tutorials/settings`.
 """

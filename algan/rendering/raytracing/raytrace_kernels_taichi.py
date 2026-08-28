@@ -83,7 +83,6 @@ from algan.rendering.raytracing.shading_taichi import (
     _vis_max_component,
 )
 from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
-from algan.rendering.taichi_runtime import init_taichi
 
 
 def rgb_shadow_tint():
@@ -109,7 +108,14 @@ def rgb_shadow_tint():
 
     return bool(rt_settings.RGB_SHADOW_TINT)
 
-init_taichi()
+# Taichi is NOT initialized here. The arch depends on
+# ``SETTINGS.computing.render_device``, which a script may still change at
+# this point, so the program is created at the start of a render by
+# ``taichi_runtime.ensure_taichi_for_render()``. Defining a kernel needs no
+# program -- ``@ti.kernel`` only registers it; materialization at first launch
+# is what needs one, and by then a render has selected the arch. Anything that
+# launches these kernels outside a render (a benchmark, a unit test) must call
+# ``init_taichi()`` itself.
 
 # Sibling-block traversal stack. The walk descends into one intersected
 # child at a time and pushes the sibling group's *remaining* mask; a complete

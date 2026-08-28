@@ -210,9 +210,11 @@ Two classes of setting cannot be adopted from a client, so a script that wants
 different values for them is refused and runs cold instead. That is deliberate:
 being served would silently render the wrong thing.
 
-* **Startup-only settings** -- ``ALGAN_RENDER_DEVICE``,
-  ``ALGAN_ANIMATION_DEVICE`` and friends are read while Torch and Taichi
-  initialize, which happened when the *daemon* started.
+* **Startup-only settings** -- ``ALGAN_ANIMATION_DEVICE`` and friends are read
+  while Torch and Taichi initialize, which happened when the *daemon* started.
+  ``ALGAN_RENDER_DEVICE`` is the exception: it only supplies the starting value
+  of ``SETTINGS.computing.render_device``, so the daemon adopts a client's
+  differing value for the run instead of refusing it, and says so in its log.
 * **Import-time settings** -- most renderer toggles become module-level defaults
   during ``import algan``, which in a daemon happened at its launch. A script
   that sets one *before* its own ``import algan`` -- which is how every A/B

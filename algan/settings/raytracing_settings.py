@@ -11,6 +11,18 @@ raises with a pointer to the experimental section rather than silently accepting
 it. The split is about the promise made, not the mechanism: engine code still
 reads every field off ``SETTINGS.raytracing`` directly, and only writes are gated.
 
+Every write is validated. A field's accepted type is derived from the value it
+ships with rather than declared in a table, because a 106-row table beside 106
+defaults is a second source of truth that drifts; :data:`_POLYMORPHIC_FIELDS`
+lists the three mode switches where that inference is wrong. Numeric fields
+additionally carry a lower bound taken from their own documented meaning
+(:data:`_MINIMUMS`) -- a count of rays cannot be below 1, a multiplier the
+memory model scales an estimate by cannot be 0 -- and floats must be finite.
+Before this, only the fields with a ``_SETTER_OVERRIDES`` entry were checked at
+all, and only as far as that setter's own ``bool()``/``float()`` coercion went:
+``max_bounces = 'x'`` stored the string and failed much later inside a kernel,
+with nothing pointing back at the setting.
+
 :class:`RayTracingPreset` captures a configuration for reuse. Like the video
 presets it is immutable, so ``set()`` on one returns a copy.
 
@@ -22,10 +34,11 @@ from __future__ import annotations
 
 import difflib
 import importlib
+import math
 from contextlib import contextmanager
 from copy import deepcopy
 
-from algan.errors import AlganConfigurationError
+from algan.errors import AlganConfigurationError, AlganError
 
 _FIELD_TO_LEGACY = {
     name.lower(): name
@@ -241,8 +254,150 @@ _SETTER_OVERRIDES = {
 }
 
 
+#: The type each field ships with, keyed by field name. Captured the first time
+#: the legacy module is resolved, which is before any ``set`` can have written
+#: to it -- so these are the shipped defaults rather than whatever the current
+#: configuration happens to hold. That matters for ``shadow_terminator``, whose
+#: default is a bool but which stores ``2`` once someone selects ``"relax"``.
+_DEFAULT_TYPES = {}
+
+
 def _module():
-    return importlib.import_module("algan.rendering.raytracing.settings")
+    module = importlib.import_module("algan.rendering.raytracing.settings")
+    if not _DEFAULT_TYPES:
+        _DEFAULT_TYPES.update(
+            (field, type(getattr(module, legacy)))
+            for field, legacy in _FIELD_TO_LEGACY.items()
+        )
+    return module
+
+
+#: Fields whose setter deliberately accepts a type other than the one the field
+#: ships with, so the derived type check has to stand aside for them. Each is a
+#: mode switch that spells one of its states as a bool and another as a string.
+_POLYMORPHIC_FIELDS = frozenset(
+    {
+        "shadow_terminator",  # bool, plus "relax" for the third state
+        "wavefront_sort_materials",  # str, plus True meaning "auto"
+        "wf_gen_fused",  # str "auto", plus True/False forcing the mode
+    }
+)
+
+#: ``field -> (bound, exclusive)`` lower bounds, each read off the field's own
+#: documented meaning in ``algan/rendering/raytracing/settings.py`` rather than
+#: guessed: a count of rays or levels cannot be below 1, a strength or a
+#: tolerance-as-a-fraction cannot be negative, and a multiplier the memory model
+#: divides its estimates by cannot be zero. No upper bounds -- nothing in those
+#: comments says where the top is, and inventing one would reject a legitimate
+#: value later.
+_MINIMUMS = {
+    # counts: 1 is the smallest meaningful one
+    "samples_per_pixel": (1, False),
+    "analytic_aa_secondary_samples": (1, False),
+    "glossy_prefilter_max_levels": (1, False),
+    "refract_initial_pool_ratio": (1, False),
+    "wavefront_tile_rays": (1, False),
+    "wavefront_tile_min": (1, False),
+    "wavefront_tile_max": (1, False),
+    # strengths, tolerances and fractions: 0 is a documented, meaningful value
+    "max_bounces": (0, False),
+    "ambient_light": (0, False),
+    "indirect_bounce_strength": (0, False),
+    "light_intensity": (0, False),
+    "tonemap_exposure": (0, False),
+    "shadow_eps_relative": (0, False),
+    "shadow_near_fraction": (0, False),
+    "analytic_aa_bez_min_half_width": (0, False),
+    "analytic_aa_secondary_min_energy": (0, False),
+    "wf_gen_fused_gain": (0, False),
+    "wf_gen_fused_min_win": (0, False),
+    "wf_textured_features": (0, False),
+    # multipliers the memory model scales an estimate by, and a flattening
+    # tolerance: zero is degenerate, not merely small -- it under-estimates a
+    # transient peak to nothing, or asks for infinite subdivision
+    "merge_gpu_peak_factor": (0, True),
+    "project_gpu_peak_factor": (0, True),
+    "sparse_discovery_safety": (0, True),
+    "wavefront_tile_safety": (0, True),
+    "analytic_aa_chord_tolerance": (0, True),
+}
+
+#: String fields whose accepted values are enumerated in the legacy module.
+#: Named by the tuple that holds them so the two cannot drift apart. The other
+#: four string fields validate inside their own setter.
+_CHOICES = {"analytic_aa_sliver": "ANALYTIC_AA_SLIVER_MODES"}
+
+
+def _check_value(field, value, module):
+    """Validate one field's value against what it ships with, and normalize it.
+
+    ``module`` is the resolved legacy module. Taking it as an argument is not
+    just convenience: resolving it is what populates :data:`_DEFAULT_TYPES`, so
+    a caller that validates before resolving it would find that dict empty and
+    check nothing at all.
+
+    Fields with a ``_SETTER_OVERRIDES`` entry used to be the only ones checked
+    at all, and only as far as their setter's own ``bool()``/``float()``
+    coercion went; every other field was written straight through, so
+    ``max_bounces = 'x'`` stored the string and failed much later inside a
+    kernel with nothing pointing back here.
+
+    The expected type is derived from the value the field ships with rather
+    than declared in a table, because a 106-row table beside 106 defaults is a
+    second source of truth that drifts. :data:`_POLYMORPHIC_FIELDS` is the
+    exemption list for the three fields where that inference is wrong.
+
+    ``bool`` is checked before ``int``: it is a subclass, so ``max_bounces =
+    True`` would otherwise pass as the integer 1.
+    """
+    if field in _POLYMORPHIC_FIELDS:
+        return value
+    expected = _DEFAULT_TYPES.get(field)
+    if expected is bool:
+        if not isinstance(value, bool):
+            raise AlganConfigurationError(
+                f"'{field}' must be True or False, got {value!r}"
+            )
+        return value
+    if expected is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise AlganConfigurationError(
+                f"'{field}' must be an integer, got {value!r}"
+            )
+    elif expected is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise AlganConfigurationError(f"'{field}' must be a number, got {value!r}")
+        value = float(value)
+        if not math.isfinite(value):
+            # A NaN tolerance propagates into a kernel and comes out as missing
+            # geometry, with nothing naming the setting that caused it.
+            raise AlganConfigurationError(
+                f"'{field}' must be a finite number, got {value!r}"
+            )
+    elif expected is str:
+        if not isinstance(value, str):
+            raise AlganConfigurationError(f"'{field}' must be a string, got {value!r}")
+        choices = _CHOICES.get(field)
+        if choices is not None:
+            allowed = getattr(module, choices)
+            if value not in allowed:
+                raise AlganConfigurationError(
+                    f"'{field}' must be one of {', '.join(map(repr, allowed))}, "
+                    f"got {value!r}"
+                )
+        return value
+    else:
+        return value
+
+    bound = _MINIMUMS.get(field)
+    if bound is not None:
+        minimum, exclusive = bound
+        if value <= minimum if exclusive else value < minimum:
+            comparison = "greater than" if exclusive else "at least"
+            raise AlganConfigurationError(
+                f"'{field}' must be {comparison} {minimum}, got {value!r}"
+            )
+    return value
 
 
 def _unknown(name: str):
@@ -435,6 +590,10 @@ class RayTracingSettings:
             if message is not None:
                 raise AlganConfigurationError(message)
 
+        # Resolved before the validation loop, not after: _DEFAULT_TYPES is
+        # populated as a side effect of this call, and _check_value reads it.
+        module = _module()
+
         normalized = []
         for name, value in values.items():
             field = _LEGACY_TO_FIELD.get(name, name)
@@ -446,10 +605,10 @@ class RayTracingSettings:
                     f"SETTINGS.raytracing.experimental.set({field}=...) if you "
                     "accept that its name and behaviour can change."
                 )
-            normalized.append((field, value))
+            normalized.append((field, _check_value(field, value, module)))
 
         previous = self.to_dict()
-        module = _module()
+        field = None
         try:
             for field, value in normalized:
                 setter_name = _SETTER_OVERRIDES.get(field)
@@ -459,6 +618,20 @@ class RayTracingSettings:
                     setattr(module, _FIELD_TO_LEGACY[field], value)
                     if field == "refract_initial_pool_ratio":
                         module.REFRACT_SPLIT_SLOTS = module.REFRACT_INITIAL_POOL_RATIO
+        except AlganError:
+            # Algan's own errors already say what is wrong and which setting;
+            # UnsupportedFeatureError in particular is a distinct type callers
+            # catch, so it must not be flattened into a configuration error.
+            # Listed first because AlganConfigurationError *is* a ValueError.
+            self._restore(previous)
+            raise
+        except (ValueError, TypeError) as exc:
+            # A setter rejecting its argument -- set_tonemap_method raises a
+            # bare ValueError, and a coercion like float(x) raises TypeError.
+            # Both are configuration mistakes and should arrive as one, naming
+            # the field, rather than as a raw builtin from two frames down.
+            self._restore(previous)
+            raise AlganConfigurationError(f"'{field}': {exc}") from exc
         except Exception:
             self._restore(previous)
             raise

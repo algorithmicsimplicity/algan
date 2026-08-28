@@ -36,9 +36,14 @@ geometry (within ``render_tolerance`` by construction), not just pixel rounding.
 
 import taichi as ti
 
-from algan.rendering.taichi_runtime import init_taichi
-
-init_taichi()
+# Taichi is NOT initialized here. The arch depends on
+# ``SETTINGS.computing.render_device``, which a script may still change at
+# this point, so the program is created at the start of a render by
+# ``taichi_runtime.ensure_taichi_for_render()``. Defining a kernel needs no
+# program -- ``@ti.kernel`` only registers it; materialization at first launch
+# is what needs one, and by then a render has selected the arch. Anything that
+# launches these kernels outside a render (a benchmark, a unit test) must call
+# ``init_taichi()`` itself.
 
 # Matches ``LogicalPNTrianglePrimitive._guarded_pixel_error``: a projected
 # sample at or behind the camera plane has no finite screen position and cannot

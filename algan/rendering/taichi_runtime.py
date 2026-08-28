@@ -38,7 +38,7 @@ import taichi as ti
 import torch
 
 from algan.environment import env_flag, env_int, env_str
-from algan.settings._startup import _RENDER_DEVICE, _TAICHI_CACHE_DIRECTORY
+from algan.settings._startup import _TAICHI_CACHE_DIRECTORY, render_device
 
 _COMPILE_LOG_LOCK = threading.Lock()
 _COMPILE_FRONTEND = {}
@@ -369,10 +369,38 @@ def _taichi_arch():
     has already probed the usable render device, so select the matching Taichi
     backend directly and never trigger that fallback chain.
     """
-    render_device = _RENDER_DEVICE
-    if render_device.type == "cpu":
+    if render_device().type == "cpu":
         return ti.cpu
     return ti.gpu
+
+
+def _live_arch():
+    """The arch of the running Taichi program, or ``None`` if there is none."""
+    if not _already_initialized():
+        return None
+    with contextlib.suppress(Exception):
+        return ti.lang.impl.get_runtime().prog.config().arch
+    return None
+
+
+def _arch_matches_render_device():
+    """Whether the live program's arch is the one the render device wants.
+
+    Compares against the **live** arch rather than against the last value
+    :func:`_taichi_arch` returned, because ``ti.gpu`` is a preference list:
+    Taichi resolves it to cuda, vulkan or metal at ``ti.init``, so on a machine
+    with more than one GPU backend two different render devices can both ask
+    for ``ti.gpu`` and get different programs. Asking the program what it
+    actually is, is the only comparison that answers "would a kernel launched
+    now run where the render device is".
+    """
+    live = _live_arch()
+    if live is None:
+        return False
+    wanted = _taichi_arch()
+    if wanted == ti.cpu:
+        return live == ti.cpu
+    return live != ti.cpu
 
 
 def taichi_arch_is_cpu():
@@ -410,10 +438,10 @@ def taichi_launch_is_local(device):
     load-bearing. A host tensor on a CUDA arch stages, and must take the torch
     path; a host tensor on a **CPU** arch does not stage, and a call site that
     tests for CUDA turns the kernel off in exactly the case where it is free.
-    The arch is chosen from ``_RENDER_DEVICE`` (see :func:`_taichi_arch`), so
+    The arch is chosen from the render device (see :func:`_taichi_arch`), so
     the arch's device is that device.
     """
-    return device.type == ("cpu" if taichi_arch_is_cpu() else _RENDER_DEVICE.type)
+    return device.type == ("cpu" if taichi_arch_is_cpu() else render_device().type)
 
 
 #: CPU batch-prep kernels that are dispatched by default.
@@ -513,9 +541,134 @@ def taichi_init_kwargs():
 
 
 def init_taichi():
-    """Initialize Taichi on Algan's selected backend, once."""
+    """Initialize Taichi on Algan's selected backend, once.
+
+    Never re-initializes: a second ``ti.init`` discards every kernel compiled so
+    far, so anything that just needs Taichi up (a kernel module at import, a
+    benchmark, a test) can say so without paying for it. The one caller that
+    *does* need the arch re-selected is :func:`ensure_taichi_for_render`.
+    """
     if _already_initialized():
         _install_taichi_compile_logger()
         return
     ti.init(**taichi_init_kwargs())
     _install_taichi_compile_logger()
+
+
+def ensure_taichi_for_render():
+    """Bring Taichi up on the arch the current render device needs.
+
+    Called once at the start of a render job, and the only place a running
+    Taichi program is ever replaced. Three cases:
+
+    * **No program** -- ordinary first init.
+    * **Program on the right arch** -- the overwhelmingly common case, and free.
+    * **Program on the wrong arch** -- ``SETTINGS.computing.render_device``
+      moved across the CPU/GPU line since the last render, so ``ti.init`` runs
+      again on the new arch.
+
+    The third case is not cheap and is not meant to be hidden. ``ti.init``
+    itself is ~0.2 s, but it calls ``impl.reset()``, which clears
+    ``compiled_kernels`` on every registered kernel -- so the next render
+    re-materializes each kernel it launches and re-reads them from the offline
+    cache. Measured on a trivial CPU scene that is ~4 s; on a real scene it is
+    the whole "Preparing render kernels" pass. That is why the device is a
+    top-of-script setting and why this compares arches instead of just calling
+    ``ti.init`` each time.
+
+    Safe because Algan holds no ``ti.field`` or ``ti.Ndarray`` anywhere -- every
+    kernel argument is a torch tensor. Reading a Taichi field created before a
+    re-init segfaults the process with no Python exception, so if that ever
+    stops being true, this function stops being safe.
+
+    Returns whether Taichi was re-initialized.
+    """
+    global _ARCH_READY_FOR
+    wanted = render_device()
+    if not _already_initialized():
+        init_taichi()
+        _ARCH_READY_FOR = wanted
+        return False
+    if _arch_matches_render_device():
+        _install_taichi_compile_logger()
+        _ARCH_READY_FOR = wanted
+        return False
+    ti.init(**taichi_init_kwargs())
+    _install_taichi_compile_logger()
+    _ARCH_READY_FOR = wanted
+    return True
+
+
+#: The device object :func:`ensure_taichi_for_render` last brought the runtime
+#: in line with. Compared by *identity*: ``SETTINGS.computing.set`` deep-copies
+#: every field, so any write to the section produces a new ``torch.device`` and
+#: re-arms the check even when the value is unchanged. That costs one extra
+#: arch comparison per ``set`` call and needs no notification protocol between
+#: the settings section and this module.
+_ARCH_READY_FOR = None
+
+
+#: How many render jobs are between :func:`ensure_taichi_for_render` and their
+#: last frame. A counter rather than a flag: ``save_frame`` inside a
+#: ``save_video`` post-process, or a nested preview, would otherwise clear it
+#: early.
+_RENDER_JOBS_ACTIVE = 0
+
+
+@contextlib.contextmanager
+def render_job_holding_the_arch():
+    """Mark the arch as in use for the duration of one render job.
+
+    A device change *during* a render is the one way this design can corrupt
+    something rather than merely be slow: the batch-prep worker launches kernels
+    on its own thread, and a change would arm the arch guard there, so the next
+    prep launch could run ``ti.init`` -- discarding every compiled kernel -- while
+    the render thread is inside one. ``SETTINGS.computing.set(render_device=...)``
+    consults :func:`render_is_active` and refuses instead.
+    """
+    global _RENDER_JOBS_ACTIVE
+    _RENDER_JOBS_ACTIVE += 1
+    try:
+        yield
+    finally:
+        _RENDER_JOBS_ACTIVE -= 1
+
+
+def render_is_active():
+    """Whether a render job currently depends on the live arch."""
+    return _RENDER_JOBS_ACTIVE > 0
+
+
+def install_render_arch_guard():
+    """Make every kernel launch check the arch before it reaches Taichi.
+
+    Kernels are launched from outside a render -- ``get_render_primitives()``
+    builds them, benchmarks and unit tests call them directly -- and since the
+    kernel modules no longer initialize Taichi at import, *something* has to.
+    Doing it at the launch is the only placement that cannot be forgotten by a
+    future call site, and it covers the second case too: a render device
+    changed with no render in between leaves already-compiled kernels bound to
+    the old arch, and this catches the next launch of one.
+
+    Costs one :func:`render_device` call and an identity compare per launch --
+    0.31 us measured, against ~72 us for the launch itself, and only on the
+    outermost wrapper, so a fast-launch hit pays it once too.
+
+    **Install this after** ``taichi_fast_launch.apply()``: that dispatcher goes
+    straight to the C++ launch on a cache hit without calling through to the
+    wrapper it replaced, so a guard installed *under* it would be skipped on
+    exactly the repeat launches that most need checking.
+    """
+    from taichi.lang.kernel_impl import Kernel
+
+    if getattr(Kernel, "_algan_arch_guard_installed", False):
+        return
+    previous_call = Kernel.__call__
+
+    def guarded_call(self, *args, **kwargs):
+        if _ARCH_READY_FOR is not render_device():
+            ensure_taichi_for_render()
+        return previous_call(self, *args, **kwargs)
+
+    Kernel.__call__ = guarded_call
+    Kernel._algan_arch_guard_installed = True
