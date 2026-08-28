@@ -17,9 +17,8 @@ Metal, and they do not survive the change of mechanism.
 measured.** Nothing here contradicts a number in it. Read §1 for what changes,
 §2 for what does not, §3 for the real cost, §4 for what the probe found.
 
-**§1 is now measured, not argued.** Probe run
-[33163279074](https://github.com/algorithmicsimplicity/algan/actions/runs/33163279074)
-on `macos-latest`, Q8 (`--section msl`), against this branch:
+**§1 is now measured, not argued.** Probe Q8 (`--section msl`) on
+`macos-latest`, against this branch:
 
 | question | answer |
 | --- | --- |
@@ -28,11 +27,15 @@ on `macos-latest`, Q8 (`--section msl`), against this branch:
 | a sliced view binds at its own `storage_offset` | **yes** (offset 256 honoured, storage 0 untouched) |
 | arena + offset table replaces 49 bindings with 2 | **yes**, `max_abs_error 0.0` |
 | widest MSL kernel that binds | **30 buffers** (31 is a clean compile error, not an abort) |
+| grid and threadgroup settable from Python | **yes** — `threads=`, `threads=`+`group_size=` |
 | f32 vs f64 host reference, sRGB encode | **0** channel delta, both `pow` flavours |
+| f32 atomic add | **yes**, exact (4096/4096) — a non-deterministic mode has its floor |
 | MSL 64-bit atomics | **no** — `no matching function for atomic_fetch_add_explicit` |
 
-§3's sizing is from the repo's own AST. Two items are still open and are being
-re-run; §4.1 says which and why.
+Rows 1–6 and 8 are from run 33163279074; the grid and f32-atomic rows from
+[33164064471](https://github.com/algorithmicsimplicity/algan/actions/runs/33164064471),
+which re-ran them after §4.1 found two faults in the harness. §3's sizing is from
+the repo's own AST. **Nothing in §4 is open.**
 
 ---
 
@@ -204,9 +207,10 @@ deterministic mode needs the accumulation restructured — segmented reduction
 over sorted keys, order-independent without needing a wide atomic — rather than
 an atomic.
 
-Whether **f32** atomics give a non-deterministic mode its floor is the one thing
-the first run did not actually establish, through a fault in the probe rather
-than in Metal (§4.1).
+**f32** atomics do give a non-deterministic mode its floor: 4096 concurrent
+`atomic_fetch_add_explicit` calls on a `device atomic_float*` summed to exactly
+4096. The first run appeared to say otherwise and was measuring the harness
+rather than Metal (§4.1).
 
 ### 2.3 The torch-side op gaps are unaffected
 
@@ -302,25 +306,32 @@ magnitude is unestablished. **Sizing the payoff needs real Apple hardware, and
 no CI runner substitutes for it.** This is a reason to keep the port's early
 stages cheap (§5) rather than a reason not to start.
 
-Run 33163279074 took the same Q5 measurement again and is the evidence for the
-caveat rather than an exception to it. Against the earlier run's 53x and 22x, it
-reported **39x** slower on the bandwidth arm and **20x** faster on the
-compute-bound one. The signs are stable across runs; the bandwidth multiplier
-moved by a third. Two readings of one quantity on the same runner class that
-disagree that much are not a quantity anyone should be planning against.
+Two further runs took the same Q5 measurement and are the evidence for the caveat
+rather than exceptions to it. Three readings now exist of each arm:
+
+| | bandwidth-bound (slower) | compute-bound (faster) |
+| --- | --- | --- |
+| earlier run (`DESIGN_mps_support.md`) | 53x | 22x |
+| 33163279074 | 39x | 20x |
+| 33164064471 | 39x | 30x |
+
+The signs never move. The multipliers move by up to half, on the same runner
+class, measuring the same thing. That is not a quantity anyone should plan
+against — but it is ample to say *which* stages an Apple GPU would help.
 
 ---
 
-## 4. What the probe found, and what is still open
+## 4. What the probe found
 
-Run [33163279074](https://github.com/algorithmicsimplicity/algan/actions/runs/33163279074),
-`macos-latest`, Q8 (`--section msl`), Linux control green. The five unknowns this
-section previously listed came back:
+Runs [33163279074](https://github.com/algorithmicsimplicity/algan/actions/runs/33163279074)
+and [33164064471](https://github.com/algorithmicsimplicity/algan/actions/runs/33164064471),
+`macos-latest`, Q8 (`--section msl`), Linux control green on both. The five
+unknowns this section previously listed came back:
 
 | unknown | answer |
 | --- | --- |
 | 1. Python binds an MPS tensor with no copy, at the index implied by argument order | **yes** (§1.1) |
-| 2. Grid and threadgroup reachable from Python, or C++-only | **partly open** — see §4.1 |
+| 2. Grid and threadgroup reachable from Python, or C++-only | **reachable** — `threads=`, `+group_size=` |
 | 3. The real buffer ceiling | **31 slots, indices 0–30** (§1.2) |
 | 4. Hand-written MSL 64-bit atomics | **no**, a compile error (§2.2) |
 | 5. f32 shader vs an f64 host reference | **0 channel delta**, both `pow` flavours |
@@ -340,9 +351,11 @@ answered the same questions with `SIGABRT` inside `bind_pipeline` and
 difference between "error at 9:5" and "the process died" is most of the
 debugging cost.
 
-### 4.1 Two things the first run did not settle, both my fault
+### 4.1 Two things the first run got wrong, both the harness's fault
 
-Neither is a Metal result. Both are fixed and re-running.
+Neither was a Metal result. Both are fixed, and run 33164064471 is where the
+table's grid and f32-atomic rows come from. They are recorded rather than
+quietly corrected, because each is a trap the port itself can fall into.
 
 * **The f32 atomic case under-dispatched.** It reported `total: 1.0` against an
   expected `4096.0`, which reads as a broken Metal atomic and is nothing of the
@@ -351,19 +364,23 @@ Neither is a Metal result. Both are fixed and re-running.
   accumulator in slot 0, so it ran on exactly one thread and added exactly once.
   The arrays are now ordered wide-first, and any case returning a `matches`
   verdict now reports `wrong_result` rather than `ok`, which is what let a wrong
-  answer through in the first place.
-* **The shim surface was printed truncated**, at 180 characters, so unknown 2 is
-  still open: the dump confirms a `_mps_MetalKernel` with something named
-  `max_threads_per_…` but is clipped before the rest. A `dispatch_control` case
+  answer through in the first place. Re-run: **4096.0 of an expected 4096.0**,
+  so f32 atomics are exact here and a non-deterministic mode has its floor.
+* **The shim surface was printed truncated**, at 180 characters, which left
+  unknown 2 unanswered for a whole run: the dump confirms a `_mps_MetalKernel`
+  with something named `max_threads_per_…` and is clipped before the rest. A `dispatch_control` case
   now tries the plausible call forms and records which the shim accepts, and the
-  section prints results untruncated.
+  section prints results untruncated. Re-run: **`threads=` and
+  `threads=`+`group_size=` are both accepted**; `grid_size=` and `threadgroup=`
+  are not.
 
-Unknown 2 matters more than its size suggests. If the grid is *always* argument
-0's element count, then under the arena convention argument 0 is the whole arena
-— millions of bytes — and every kernel would launch a thread per byte and retire
-almost all of them on a guard. `MetalKernelFunction::dispatch` takes an explicit
-grid and threadgroup at C++ level, so the fallback is a thin ObjC++ extension;
-whether one is needed is exactly what the re-run answers.
+That second answer is the one the port needed. Had the grid been *only* argument
+0's element count, the arena convention would have put the whole arena — millions
+of bytes — in slot 0 and launched a thread per byte, retiring almost all of them
+on a guard; the way out would have been a thin ObjC++ extension reaching
+`MetalKernelFunction::dispatch` directly. It is not needed. Thread count and
+threadgroup size are both reachable from Python, so **the port needs no C++ at
+all** — which was the last structural question hanging over it.
 
 ### 4.2 What no CI runner can answer
 
@@ -379,17 +396,19 @@ untimed for that reason rather than reporting a number that reads authoritative
 and is not — and the probe's existing Q5 timings, its module docstring, its
 printed verdict and the workflow header all carry the same caveat.
 
-This run illustrates why. Its Q5 says the compute-bound kernel ran **20x faster**
-than the CPU arch and the bandwidth-bound one **39x slower**. Both are the right
-*sign* and neither is a number to plan against.
+These runs illustrate why. Q5's compute-bound arm came back **22x**, **20x** and
+**30x** faster than the CPU arch across three readings, and the bandwidth arm
+**53x**, **39x** and **39x** slower. The signs never move; the multipliers move
+by half. Neither is a number to plan against.
 
 ## 5. Recommended shape, if it goes ahead
 
 Not one change. In dependency order, each stage independently useful:
 
-1. **Probe `compile_shader`** (§4) — **done**, run 33163279074. Four of the five
-   unknowns answered, three of them the way the port needs; the fifth
-   (§4.1, grid control) is re-running. Nothing here blocks stage 2.
+1. **Probe `compile_shader`** (§4) — **done**, runs 33163279074 and 33164064471.
+   All five unknowns answered, four of them the way the port needs; the fifth
+   (64-bit atomics) is a real constraint on §2.2 and nothing else. Stage 2 is
+   unblocked, and no ObjC++ extension is required anywhere.
 2. **Arena-offset calling convention**, on CUDA first. Bind one buffer plus an
    offsets struct. Testable and byte-identical on the current backend, where the
    full pixel-comparison suites exist to prove it — this is the single largest
