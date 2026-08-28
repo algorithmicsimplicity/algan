@@ -37,7 +37,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Skipped on a manual dispatch, which on this branch means the Taichi build
+  # below. The two are unrelated measurements and the probe arms cost most of an
+  # hour of macOS time, so a dispatch that wants the build should not drag them
+  # along. Pull-request runs are unaffected and still run the probe.
   probe:
+    if: github.event_name != 'workflow_dispatch'
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -122,5 +127,194 @@ jobs:
           path: |
             mps_probe_results.json
             probe-output.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Times a from-source build of Taichi on the free Apple-silicon runner, which
+  # is the cost of the zero-copy patch in `DESIGN_mps_zero_copy.md`: that patch
+  # has to be compiled into `taichi_python`, and the only Mac this project has
+  # is this runner. Two numbers matter and this job takes both -- a cold build,
+  # which is what a release costs per Python version, and a rebuild after one
+  # `.cpp` changes, which is what iterating on the patch costs.
+  #
+  # Stock v1.7.4, unpatched. The measurement is of the build, not of the patch,
+  # and a patch that failed to compile would only confuse the timing.
+  #
+  # Vulkan is off. Taichi's own release job builds it on (with MoltenVK from
+  # brew) but a Mac fork of Algan's would not need it: `_taichi_arch` resolves
+  # `ti.gpu` to Metal first, and Metal defaults on for macOS builds, which is
+  # why the shipped wheel carries the backend. That makes this reading a lower
+  # bound for a build that also wants the Vulkan fallback.
+  taichi_build:
+    if: github.event_name == 'workflow_dispatch'
+    name: Taichi from source (macOS arm64, cp311)
+    runs-on: macos-latest
+    # Generous on purpose: nobody has measured this, which is the point of the
+    # job. GitHub's own ceiling for a hosted job is 6 hours.
+    timeout-minutes: 300
+    env:
+      TAICHI_REF: v1.7.4
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_CUDA:BOOL=OFF
+        -DTI_WITH_OPENGL:BOOL=OFF
+        -DTI_WITH_VULKAN:BOOL=OFF
+        -DTI_BUILD_TESTS:BOOL=OFF
+
+    steps:
+      # Which machine produced the number. A build time is meaningless without
+      # the core count, and the free runner's is not the 8-10 of a laptop.
+      - name: Runner facts
+        run: |
+          sw_vers
+          uname -m
+          sysctl -n machdep.cpu.brand_string || true
+          echo "cores: $(sysctl -n hw.ncpu)  perf: $(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo '?')"
+          echo "memory: $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GiB"
+          xcodebuild -version || true
+          clang --version | head -1
+          cmake --version | head -1
+          df -h /
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clone Taichi
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          git clone --depth 1 --branch "$TAICHI_REF" --recurse-submodules \
+            --shallow-submodules https://github.com/taichi-dev/taichi.git taichi-src
+          echo "CLONE_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          du -sh taichi-src
+
+      # `build.py` is Taichi's documented entry point and downloads a prebuilt
+      # LLVM 15 itself, so this does not build LLVM. `--python=native` builds
+      # against the interpreter set up above rather than fetching one, which is
+      # what a fork's release job would do.
+      - name: Cold build
+        run: |
+          set -o pipefail
+          cd taichi-src
+          start=$(date +%s)
+          python3 build.py --python=native 2>&1 | tee ../build-cold.log
+          echo "COLD_BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          ls -la dist/
+          df -h /
+
+      # The number that decides whether developing the patch is bearable. One
+      # touched translation unit, then the same command: everything else is
+      # cached, so what is left is that compile plus relinking a ~100 MB module.
+      - name: Rebuild after touching one .cpp
+        run: |
+          set -o pipefail
+          cd taichi-src
+          touch taichi/program/program.cpp
+          start=$(date +%s)
+          python3 build.py --python=native 2>&1 | tee ../build-incremental.log
+          echo "INCREMENTAL_BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      # Confirms the build carries the Metal backend the patch would hook into,
+      # and re-takes on our own binary the symbol reading that ruled out
+      # patching from outside: `import_mtl_buffer` exists but is local, so no
+      # separate extension can link to it.
+      - name: Inspect the built module
+        if: always()
+        continue-on-error: true
+        run: |
+          so=$(find taichi-src -name 'taichi_python*.so' 2>/dev/null | head -1)
+          if [ -z "$so" ]; then
+            echo "(no module in the tree; unpacking the wheel instead)"
+            mkdir -p wheel-unpacked
+            unzip -q -o taichi-src/dist/*.whl -d wheel-unpacked || true
+            so=$(find wheel-unpacked -name 'taichi_python*.so' 2>/dev/null | head -1)
+          fi
+          echo "module: ${so:-(none found)}"
+          [ -n "$so" ] || exit 0
+          ls -la "$so"
+          echo "--- all symbols in namespace taichi::lang::metal: ---"
+          nm "$so" 2>/dev/null | grep -c '4lang5metal' || true
+          echo "--- global (external) symbols in that namespace: ---"
+          nm -g "$so" 2>/dev/null | grep -c '4lang5metal' || true
+          echo "--- import_mtl_buffer: ---"
+          nm "$so" 2>/dev/null | grep 'import_mtl_buffer' || echo "(absent)"
+
+      # Non-fatal extras. Whether Metal runs headless on this runner at all, and
+      # whether a kernel with more ndarray arguments than Metal's 31-entry
+      # buffer argument table can bind -- the wall that decides whether the
+      # zero-copy work is worth starting. Failure here is a finding, not a
+      # broken job, hence continue-on-error.
+      - name: Metal smoke test and 40-argument kernel
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 -m pip install --quiet taichi-src/dist/*.whl
+          python3 - <<'PY' 2>&1 | tee ../metal-smoke.log
+          import taichi as ti, numpy as np
+          ti.init(arch=ti.metal, advanced_optimization=False)
+          print("arch in use:", ti.lang.impl.get_runtime().prog.config().arch)
+
+          @ti.kernel
+          def tiny(x: ti.types.ndarray()):
+              for i in x:
+                  x[i] = x[i] * 2.0
+          a = np.ones(8, dtype=np.float32)
+          tiny(a)
+          print("tiny kernel ok:", a[:3])
+
+          N = 40
+          args = ", ".join(f"a{i}: ti.types.ndarray()" for i in range(N))
+          body = "\n".join(f"        a{i}[0] += 1.0" for i in range(N))
+          src = f"@ti.kernel\ndef many({args}):\n    for _ in range(1):\n{body}\n"
+          ns = {"ti": ti}
+          exec(src, ns)
+          arrs = [np.zeros(4, dtype=np.float32) for _ in range(N)]
+          try:
+              ns["many"](*arrs)
+              print(f"{N}-ndarray kernel: OK, first arg ->", arrs[0][0])
+          except Exception as e:
+              print(f"{N}-ndarray kernel: FAILED -> {type(e).__name__}: {e}")
+          PY
+
+      - name: Publish the timings to the job summary
+        if: always()
+        run: |
+          {
+            echo "## Taichi $TAICHI_REF from source -- macos-latest (arm64), cp311"
+            echo
+            echo "| phase | seconds | minutes |"
+            echo "| --- | ---: | ---: |"
+            for k in CLONE_SECONDS COLD_BUILD_SECONDS INCREMENTAL_BUILD_SECONDS; do
+              v=$(eval echo "\$$k")
+              if [ -n "$v" ]; then
+                echo "| $k | $v | $(python3 -c "print(f'{$v/60:.1f}')") |"
+              else
+                echo "| $k | (did not complete) | |"
+              fi
+            done
+            echo
+            echo '```'
+            echo "cores: $(sysctl -n hw.ncpu)   memory: $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GiB"
+            echo "cmake args: $TAICHI_CMAKE_ARGS"
+            ls -la taichi-src/dist/ 2>/dev/null || echo "(no wheel produced)"
+            echo '```'
+            echo
+            echo '### Metal smoke test'
+            echo '```'
+            cat metal-smoke.log 2>/dev/null || echo "(did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the wheel and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taichi-build-macos-arm64
+          path: |
+            taichi-src/dist/*.whl
+            build-cold.log
+            build-incremental.log
+            metal-smoke.log
           if-no-files-found: warn
           retention-days: 14
