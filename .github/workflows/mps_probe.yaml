@@ -296,15 +296,15 @@ jobs:
             unzip -q -o taichi-src/dist/*.whl -d wheel-unpacked || true
             so=$(find wheel-unpacked -name 'taichi_python*.so' 2>/dev/null | head -1)
           fi
-          echo "module: ${so:-(none found)}"
-          [ -n "$so" ] || exit 0
-          ls -la "$so"
-          echo "--- all symbols in namespace taichi::lang::metal: ---"
-          nm "$so" 2>/dev/null | grep -c '4lang5metal' || true
-          echo "--- global (external) symbols in that namespace: ---"
-          nm -g "$so" 2>/dev/null | grep -c '4lang5metal' || true
-          echo "--- import_mtl_buffer: ---"
-          nm "$so" 2>/dev/null | grep 'import_mtl_buffer' || echo "(absent)"
+          {
+            echo "module: ${so:-(none found)}"
+            [ -n "$so" ] || exit 0
+            ls -la "$so"
+            echo "symbols in namespace taichi::lang::metal (all): $(nm "$so" 2>/dev/null | grep -c '4lang5metal')"
+            echo "of those, global/external: $(nm -g "$so" 2>/dev/null | grep -c '4lang5metal')"
+            echo "import_mtl_buffer: $(nm "$so" 2>/dev/null | grep -c 'import_mtl_buffer') symbol(s)"
+            echo "Ndarray(DeviceAllocation&) external: $(nm -g "$so" 2>/dev/null | grep -c 'NdarrayC1ERNS0_16DeviceAllocation')"
+          } 2>&1 | tee module-symbols.txt
 
       # Non-fatal extras. Whether Metal runs headless on this runner at all, and
       # whether a kernel with more ndarray arguments than Metal's 31-entry
@@ -384,25 +384,35 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Deliberately the last step in the job. The Actions API serves a fixed
-      # window at the end of a job log regardless of what you ask for, and the
-      # artifact store is not reachable from where this is being driven, so
-      # anything that needs reading from outside has to be the final thing
-      # printed. Four attempts reported the same unhelpful window before this
-      # step existed.
-      - name: Diagnostics on failure
-        if: failure()
+      # Deliberately the last step in the job, and it reports on success too.
+      # The Actions API serves a fixed window at the end of a job log whatever
+      # tail length is asked for, and the artifact store is not reachable from
+      # where this is driven, so anything that has to be read from outside has
+      # to be the final thing printed. Four attempts reported the same
+      # unhelpful window, and a fifth built a wheel whose smoke-test output was
+      # then unreadable, before this step took its present shape.
+      - name: Report
+        if: always()
         run: |
-          echo "=== Xcode and SDKs ==="
-          ls /Applications | grep -i '^Xcode' | tr '\n' ' '; echo
-          xcodebuild -showsdks 2>/dev/null | grep -i macos || true
-          echo "=== clang identities ==="
-          /usr/bin/clang --version | head -1 || true
-          /opt/homebrew/opt/llvm@15/bin/clang --version | head -1 || true
-          echo "=== disk ==="
-          df -h / /System/Volumes/Data 2>/dev/null || df -h /
-          echo "=== compile errors in the build log ==="
-          grep -nE "error:|Error [0-9]|CMake Error|fatal error" build-cold.log 2>/dev/null | tail -25 \
-            || echo "(no lines matching an error pattern)"
-          echo "=== last 25 lines of the build log ==="
-          tail -25 build-cold.log 2>/dev/null || echo "(no build log)"
+          echo "=== timings (seconds) ==="
+          echo "clone=$CLONE_SECONDS brew_llvm=$BREW_LLVM_SECONDS cold_build=$COLD_BUILD_SECONDS incremental=$INCREMENTAL_BUILD_SECONDS"
+          echo "cores=$(sysctl -n hw.ncpu) memory=$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))GiB"
+          echo "=== wheel ==="
+          ls -la taichi-src/dist/ 2>/dev/null || echo "(no wheel produced)"
+          echo "=== built module ==="
+          cat module-symbols.txt 2>/dev/null || echo "(not inspected)"
+          echo "=== metal smoke test ==="
+          cat metal-smoke.log 2>/dev/null || echo "(did not run)"
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "=== Xcode, SDKs, clang, disk ==="
+            ls /Applications | grep -i '^Xcode' | tr '\n' ' '; echo
+            xcodebuild -showsdks 2>/dev/null | grep -i macos || true
+            /usr/bin/clang --version | head -1 || true
+            /opt/homebrew/opt/llvm@15/bin/clang --version | head -1 || true
+            df -h / 2>/dev/null || true
+            echo "=== compile errors ==="
+            grep -nE "error:|Error [0-9]|CMake Error|fatal error" build-cold.log 2>/dev/null | tail -20 \
+              || echo "(no lines matching an error pattern)"
+            echo "=== last 20 lines of the build log ==="
+            tail -20 build-cold.log 2>/dev/null || echo "(no build log)"
+          fi
