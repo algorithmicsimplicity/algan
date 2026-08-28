@@ -39,9 +39,11 @@ DeviceAllocation MetalDevice::import_mtl_buffer(MTLBuffer_id buffer);
 
 It is in `taichi/rhi/metal/metal_device.{h,mm}` upstream, it marks the allocation
 `dont_destroy()` so Taichi never frees a buffer it did not allocate, and it sets
-the memory's `can_map` from `[buffer contents]` — null for a private-storage
-buffer, which is what torch hands out, and which does not matter because nothing
-here needs host mapping. **It is compiled into the wheel Algan already installs**:
+the memory's `can_map` from `[buffer contents]`. That last one comes back false
+for a private-storage buffer, and torch's default tensor pool is the private one
+(`at::mps::getIMPSAllocator(sharedAllocator=false)`, `MPSAllocator.h:127-142`) —
+which does not matter here, because a kernel argument is bound on the GPU and
+nothing in this design maps one to the host. **It is compiled into the wheel Algan already installs**:
 `taichi_python.cpython-311-darwin.so` carries 365,655 symbols, 257 of them in
 namespace `taichi::lang::metal` — every one local, none external — including
 
