@@ -36,7 +36,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 
 from algan import PREVIEW, SETTINGS, Scene
 from algan.scene_manager import SceneManager
@@ -45,8 +44,28 @@ HERE = Path(__file__).resolve().parent
 SCENE_FILE = HERE / "scene.py"
 OUTPUT_DIR = HERE / "algan_outputs"
 CACHE_DIR = HERE / "algan_cache"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
+# The device the render will actually run on, which is not the same question as
+# ``torch.cuda.is_available()``: a CUDA machine with ``ALGAN_RENDER_DEVICE=cpu``
+# set renders on the CPU and belongs against the CPU baseline, and an Apple
+# Silicon Mac renders on MPS while reporting no CUDA at all. Read at import,
+# before any test can move it.
+DEVICE = SETTINGS.computing.render_device.type
+# macOS is keyed apart from the other platforms on the same device, and the
+# reason is measured rather than assumed: the x86-64 CPU baseline was copied
+# into ``expected_outputs_macos_cpu/`` and rendered against on an Apple Silicon
+# CI runner, and it missed by up to 45 channel values (worst at frame 36)
+# against a tolerance of 2. So this scene does *not* survive the change of
+# instruction set, even though it is the one that matched exactly across two
+# x86-64 machines -- fp32 arithmetic through a path tracer does not agree
+# across two libm implementations that closely.
+#
+# Nothing is committed under that name, so a Mac renders the scene and skips
+# the comparison below. That still covers kernel compilation, tessellation,
+# LaTeX, the fonts and the encoder -- just not the pixels. To gate pixels on a
+# Mac, render with ALGAN_UPDATE_FAST_BASELINE=1 there, look at the result, and
+# commit it; the comparison turns itself back on, for machines like that one.
+BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
+EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINE = os.getenv("ALGAN_UPDATE_FAST_BASELINE") == "1"
 LOG_FILE = HERE / "pytest.log"
 
@@ -200,7 +219,7 @@ def test_the_fast_scene_renders_and_matches_its_baseline(
         shutil.copy2(output_path, expected_path)
         pytest.skip(f"re-baselined {output_path.name}")
     if not EXPECTED_DIR.exists():
-        pytest.skip(f"no {DEVICE} fast-suite baseline is available")
+        pytest.skip(f"no {BASELINE_KEY} fast-suite baseline is available")
 
     assert expected_path.exists(), (
         "Missing the fast-suite baseline. Re-run with "

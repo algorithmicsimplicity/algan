@@ -23,10 +23,35 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      # One platform failing must not cancel the other. The point of a
+      # two-platform matrix is to learn whether a change is portable, and that
+      # answer only exists when both halves have reported.
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10"]
+
+    # Linux takes the ordinary automatic probe, which finds no accelerator and
+    # resolves to the CPU on its own.
+    #
+    # macos-latest is pinned, and the reason is measured rather than assumed:
+    # left on `auto` it resolves to MPS -- the runner really does offer one --
+    # and Algan does not run there. 88 tests failed on the first macOS run, in
+    # two families that are both the same fact. Torch: the raster pipeline
+    # allocates in float64 (raster_pipeline.py, `_one_mesh_pixel_caps`), and
+    # "the MPS framework doesn't support float64". Taichi: `ti.gpu` on a Mac
+    # resolves through Vulkan, whose SPIR-V builder answers "Type f64 not
+    # supported" to the same kernels. So this is not a CI-configuration
+    # problem -- Algan has never supported MPS, and supporting it means taking
+    # float64 out of the raster pipeline and the kernels, which moves rendered
+    # output and wants its own change. Until then the Mac job tests the CPU
+    # path, which is what makes it a portability check rather than a
+    # standing failure. Take the pin off the day MPS lands.
+    env:
+      ALGAN_RENDER_DEVICE: ${{ startsWith(matrix.os, 'macos') && 'cpu' || 'auto' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -36,12 +61,23 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install system dependencies for manimpango
+      - name: Install system dependencies for manimpango (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
 
-      - name: Install LaTeX dependencies
+      # The macOS ManimPango wheel bundles its own Pango, but the Pango stack
+      # still resolves family names through fontconfig, and tests/conftest.py
+      # registers the vendored test faces through it before any scene renders.
+      # Installing the Homebrew stack gives that a system configuration to
+      # read, and mirrors what the Linux job installs.
+      - name: Install system dependencies for manimpango (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pango cairo pkg-config
+
+      - name: Install LaTeX dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -50,6 +86,30 @@ jobs:
             texlive-fonts-recommended \
             latexmk # or full texlive-full if needed
 
+      # BasicTeX, not MacTeX: MacTeX is a multi-gigabyte download, and Algan
+      # needs only `latex`, `dvisvgm`, and the packages the default Tex
+      # template asks for. `standalone` and `preview` come from the
+      # documentclass line; `dvisvgm` is what turns the .dvi into the SVG the
+      # glyph circuits are built from, and -- unlike on Debian, where it
+      # arrives with texlive-latex-base -- scheme-basic does not carry it. Its
+      # absence is quiet and late: `latex` succeeds, `dvisvgm` raises
+      # FileNotFoundError, and every Tex, MathTex and NumericDisplay test
+      # fails several minutes into the run. The remaining two are named
+      # defensively, on the same reasoning.
+      #
+      # If `tlmgr` ever fails with "Local TeX Live is older than remote
+      # repository", the cask is lagging a TeX Live release -- point tlmgr at
+      # the matching historic repository (tug.org/historic/systems/texlive/
+      # <year>/tlnet-final) rather than waiting for Homebrew to catch up.
+      - name: Install LaTeX dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install \
+            standalone preview amsfonts xkeyval dvisvgm
+
       # apt supplies ffmpeg 6.1.1 on ubuntu-24.04, which is all moviepy and
       # opencv need. A second step ran federicocarboni/setup-ffmpeg@v3 straight
       # after this one; it fetched a static build by scraping an upstream readme
@@ -57,7 +117,15 @@ jobs:
       # with "AssertionError: Failed to read version from readme". Since apt has
       # already installed ffmpeg by this point the step was redundant as well as
       # broken, so it is gone rather than pinned.
-      - name: Install ffmpeg
+      #
+      # There is no macOS counterpart on purpose. moviepy encodes through the
+      # binary that `imageio-ffmpeg` ships -- a locked dependency, so `uv sync`
+      # has already put one on the machine -- and Algan only reaches for a
+      # system ffmpeg when hunting for an NVENC-capable build, which no Mac
+      # has. `brew install ffmpeg` is several minutes of dependency building
+      # for something nothing in the test run would call.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get install -y ffmpeg
 
       - name: Install uv
@@ -68,6 +136,16 @@ jobs:
 
       - name: Install the project
         run: uv sync --locked --all-extras --dev
+
+      # Cheap, and it answers in the log the two questions a cross-platform
+      # matrix raises: which accelerator the runner offers (the render device
+      # is `auto`, so CUDA, then MPS, then CPU -- and which one it lands on
+      # decides which baseline directory the render suites compare against),
+      # and whether the LaTeX and FFmpeg this job installed are actually on
+      # PATH. Without it, a Mac that quietly has no `latex` looks like a
+      # rendering bug several minutes later.
+      - name: Report the environment Algan resolved
+        run: uv run algan check
 
       # Scoped to the two suites whose baselines survive a change of machine.
       # tests/full_renders is left out deliberately: measured on this runner
@@ -80,15 +158,49 @@ jobs:
       # 191 hand-picked tests marked 'fast', while everything under these two
       # paths is portable and passes here. CI can afford the whole thing; the
       # fast suite is a development loop, not a CI scope.
+      #
+      # The render in tests/fast compares pixels on Linux and renders without
+      # comparing on macOS, because no baseline is committed for Apple Silicon
+      # and the x86-64 one does not transfer: copying it in and running it here
+      # missed by up to 45 channel values against a tolerance of 2. So what the
+      # Mac job proves about the renderer is that the pipeline works there --
+      # kernel compilation, tessellation, LaTeX, the fonts, the encoder -- not
+      # that the frames are right. See tests/fast/test_fast_render.py.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 
+      # What the fast render drew, and -- when the comparison failed -- the
+      # difference video the harness wrote beside it. A pixel failure reports
+      # one number ("differs by up to 45 channel values, worst at frame 36"),
+      # which says how far but not what moved: glyph edges, a silhouette and a
+      # tessellation flip all look the same in that sentence and want different
+      # fixes. Both are also worth having from a *green* macOS run, where the
+      # comparison skips for want of a baseline and the render itself is the
+      # only evidence the frames are sane -- hence `always()` rather than
+      # `failure()`.
+      #
+      # `output_errors/` exists only after a failed comparison, so
+      # `if-no-files-found: ignore` keeps a passing run quiet. The name carries
+      # the platform because artifact names have to be unique within a run.
+      - name: Upload the fast render and any difference video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-render-${{ matrix.os }}
+          path: |
+            tests/fast/algan_outputs/
+            tests/fast/output_errors/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # One upload, from one platform. Both jobs cover the same lines of the
+      # same source, so a second report adds nothing but a second chance for a
+      # Codecov outage to fail a green run -- and `fail_ci_if_error` is on.
       - name: Upload coverage to Codecov
+        if: runner.os == 'Linux'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           fail_ci_if_error: true
           verbose: true
-
-
