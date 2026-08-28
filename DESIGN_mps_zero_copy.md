@@ -10,9 +10,9 @@ would it cost?*
 **Evidence basis.** Source reading of Taichi 1.7.4 (installed wheel, and upstream
 `v1.7.3` where the wheel ships no source); the Mach-O symbol table of the shipped
 `taichi-1.7.4-cp311-cp311-macosx_11_0_arm64.whl`, parsed for the external/local
-split; torch 2.7.1's MPS headers as shipped; and one timed from-source build of
-Taichi on `macos-latest` (§4.1). No Algan render was run on Metal for this
-document — the numbers it reasons about are `DESIGN_mps_support.md`'s.
+split; torch 2.7.1's MPS headers as shipped; and timed from-source builds of
+Taichi on the free Apple-silicon runner (§4.1). No Algan render was run on Metal
+for this document — the numbers it reasons about are `DESIGN_mps_support.md`'s.
 
 **Answer in one line.** Yes, and every C++ piece already exists in Taichi — but it
 has to be compiled into `taichi_python`, which means shipping a forked wheel, and
@@ -193,11 +193,39 @@ wavefront loop.
 
 ### 4.1 What a build costs
 
-Measured by `.github/workflows/mps_probe.yaml`'s `taichi_build` job, stock v1.7.4,
-`macos-latest` (the free Apple-silicon runner), one Python version, Vulkan and
-CUDA off:
+Measured by `.github/workflows/mps_probe.yaml`'s `taichi_build` job on the free
+Apple-silicon runner (`macos-15`, 3 cores), stock v1.7.4, one Python version,
+Vulkan/CUDA/tests off:
 
-<!-- MEASUREMENT PENDING -->
+| phase | seconds | minutes |
+| --- | ---: | ---: |
+| clone, with submodules | 47 | 0.8 |
+| `brew install llvm@15` | 22 | 0.4 |
+| **cold build to a wheel** | **710** | **11.8** |
+| **rebuild after touching one `.cpp`** | **65** | **1.1** |
+
+The wheel is ~38 MB. `build.py` downloads a prebuilt LLVM 15, so no LLVM is
+built here, and it wires up `sccache` against `~/.cache/ti-build-cache`, which
+starts empty on a hosted runner — so 11.8 minutes is a genuinely cold build, and
+a fork's CI could cache that directory and do better.
+
+Twelve minutes is cheap. **The expensive part is the toolchain pin**, and that
+is the real finding: seven attempts were needed to get a wheel, and six of them
+failed on the environment rather than on anything to do with Taichi.
+
+| attempt | failure | fix |
+| --- | --- | --- |
+| 1 | `CMAKE_C_COMPILER /opt/homebrew/opt/llvm@15/bin/clang is not a full path to an existing compiler tool` | `ti_build` hard-wires Homebrew's llvm@15, which their self-hosted M1 has; `brew install llvm@15` |
+| 2 | `ld: library 'System' not found` | clang-15 cannot *link* against a current macOS SDK. Set `CC`/`CXX` to Xcode's clang; `ti_build` honours them and leaves `-DCLANG_EXECUTABLE` at 15, which is required because that is what emits bitcode LLVM 15 must load |
+| 3–5 | same, then unreadable logs | the Actions API serves a fixed window at the end of a job log, so diagnostics have to be the last step printed |
+| 6 | `error: identifier '_f' preceded by whitespace in a literal operator declaration is deprecated [-Werror,-Wdeprecated-literal-operator]` | `macos-latest` is macOS 26 with Apple clang 21 and **only** the 26.5 SDK. Taichi builds `-Werror`, so a diagnostic newer than the code is fatal. Pin `macos-15` (Xcode 16.4, macOS 15.5 SDK) |
+| 7 | `setup.py clean` killed by SIGBUS, after `clang: error: couldn't map cache file '$TMPDIR/xcrun_db' into memory` | the image ships a stale xcrun cache; delete it and re-select the developer directory |
+
+Taichi 1.7.4 builds on a **narrowing window of macOS images**. `macos-15` works
+today; `macos-latest` already does not, and when `macos-15` is retired the fork
+inherits the job of either patching Taichi's `-Werror` surface or rebasing it on
+a newer LLVM. That, not the twelve minutes, is what maintaining a forked wheel
+actually costs.
 
 ### 4.2 Release logistics
 
@@ -216,8 +244,11 @@ CUDA off:
 * One packaging caveat: the fork installs the same `taichi` import package, so a
   user with both installed gets colliding files. Gate it with an environment
   marker and say so.
+* Pin the runner image, the Xcode, and the LLVM explicitly, and expect to
+  revisit that pin (§4.1). Cache `~/.cache/ti-build-cache` so `sccache` is warm.
 * Upstream it in parallel. The change is small, additive and `#ifdef`-guarded,
-  and if it lands the fork goes away.
+  and if it lands the fork goes away — along with the toolchain problem, since
+  upstream's own CI would then be carrying it.
 
 ## 5. Recommendation
 
