@@ -173,6 +173,8 @@ jobs:
           xcodebuild -version || true
           clang --version | head -1
           cmake --version | head -1
+          echo "Xcodes present: $(ls /Applications | grep -i '^Xcode' | tr '\n' ' ')"
+          xcodebuild -showsdks 2>/dev/null | grep -i macos || true
           df -h /
 
       - name: Set up Python
@@ -212,7 +214,20 @@ jobs:
       # LLVM 15 itself, so this does not build LLVM. `--python=native` builds
       # against the interpreter set up above rather than fetching one, which is
       # what a fork's release job would do.
+      #
+      # CC/CXX are Xcode's clang, and that split is the point. Homebrew's
+      # clang-15 cannot *link* against this runner's macOS 26.5 SDK -- the
+      # second attempt at this job died on `ld: library 'System' not found`
+      # while compiling cmake's one-line test program. `ti_build` reads CC/CXX
+      # and then leaves CMAKE_C_COMPILER alone, so this takes the C++ build off
+      # the 2022 toolchain while leaving `-DCLANG_EXECUTABLE` pointing at
+      # clang-15, which is what compiles the runtime to bitcode that LLVM 15
+      # then has to be able to load. Newer clang would emit bitcode LLVM 15
+      # cannot read, so that half must stay at 15.
       - name: Cold build
+        env:
+          CC: /usr/bin/clang
+          CXX: /usr/bin/clang++
         run: |
           set -o pipefail
           cd taichi-src
@@ -226,6 +241,9 @@ jobs:
       # touched translation unit, then the same command: everything else is
       # cached, so what is left is that compile plus relinking a ~100 MB module.
       - name: Rebuild after touching one .cpp
+        env:
+          CC: /usr/bin/clang
+          CXX: /usr/bin/clang++
         run: |
           set -o pipefail
           cd taichi-src
