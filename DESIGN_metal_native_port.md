@@ -2,7 +2,7 @@
 
 Status: **Feasible, and the mechanism is materially better than
 `DESIGN_mps_support.md` concluded — but it is a rewrite of the kernel layer, not
-a port.** Sized below at ~9,000 lines of Taichi across 52 kernels and 178
+a port.** Sized below at ~9,000 lines of Taichi across 52 kernels and 169
 `@ti.func` helpers, whose cost is dominated by the 92 compile-time specialization
 gates rather than by the kernels themselves.
 
@@ -15,8 +15,12 @@ Metal, and they do not survive the change of mechanism.
 
 **`DESIGN_mps_support.md`'s verdict stands as written, for the path it
 measured.** Nothing here contradicts a number in it. Read §1 for what changes,
-§2 for what does not, §3 for the real cost, §4 for what is still unmeasured and
-how to measure it.
+§2 for what does not, §3 for the real cost, §4 for what is still unmeasured.
+
+**None of this has run on an Apple GPU.** The probe that would settle it is
+written and waiting for one macOS CI run (§4). Until it reports, this doc is an
+argument from the torch headers and the repo's own AST — not a measurement — and
+it should be read as one.
 
 ---
 
@@ -137,8 +141,8 @@ That measurement is of Taichi's SPIR-V path. MSL's own 64-bit atomic support is
 version- and GPU-family-dependent and has moved in recent Metal releases, so
 whether a *hand-written* `atomic_ulong` min/add compiles and runs on the target
 family is a separate question with a possibly different answer. **It is not
-established either way in this repo, and I could not test it from Linux.** §4
-says how to settle it.
+established either way in this repo**, and it cannot be from a Linux box. §4's
+`atomic_u64_add` / `atomic_u64_min` cases are what settle it.
 
 If it turns out MSL cannot do it either, the conclusion is the earlier doc's:
 f32 atomics give a non-deterministic mode a floor, and a deterministic mode
@@ -164,31 +168,32 @@ Comments and docstrings stripped, per module:
 
 | module | raw | code | kernels | `@ti.func` |
 | --- | --- | --- | --- | --- |
-| `raytrace_kernels_taichi.py` | 4020 | 2695 | 4 | 59 |
+| `raytrace_kernels_taichi.py` | 4020 | 2695 | 3 | 58 |
 | `wavefront_kernels_taichi.py` | 3720 | 2206 | 13 | 32 |
-| `raster_taichi.py` | 3059 | 1575 | 5 | 35 |
-| `shading_taichi.py` | 1752 | 691 | 0 | 39 |
+| `raster_taichi.py` | 3059 | 1575 | 5 | 34 |
+| `shading_taichi.py` | 1752 | 691 | 0 | 33 |
 | `sheet_resolve_taichi.py` | 1217 | 895 | 2 | 0 |
-| `sheet_compact_taichi.py` | 647 | 195 | 14 | 0 |
-| `logical_pn_taichi.py` | 498 | 297 | 4 | 6 |
+| `sheet_compact_taichi.py` | 647 | 195 | 13 | 0 |
+| `logical_pn_taichi.py` | 498 | 297 | 3 | 6 |
 | `glossy_prefilter_taichi.py` | 326 | 159 | 3 | 2 |
-| others (7 modules) | 681 | 311 | 7 | 5 |
-| **total** | **15,920** | **~9,024** | **52** | **178** |
+| others (7 modules) | 681 | 311 | 10 | 4 |
+| **total** | **15,920** | **~9,024** | **52** | **169** |
 
 MSL is more verbose than Taichi's Python surface — explicit types, no tuple
 returns, no Python-level metaprogramming, manual struct plumbing where Taichi
 infers. **Estimate 12,000–18,000 lines of MSL**, plus a Python dispatch and
 specialization layer to replace what the `@ti.kernel` decorator does today.
 
-Note that `shading_taichi.py` has **zero** kernels and 39 helpers: it is a
-library inlined into other kernels. The 178 helpers, not the 52 kernels, are the
+Note that `shading_taichi.py` has **zero** kernels and 33 helpers: it is a
+library inlined into other kernels. The 169 helpers, not the 52 kernels, are the
 bulk of the semantic content, and they are where numerical drift will hide.
 
 ### 3.2 The specialization layer is the load-bearing new component
 
-The kernel modules use `ti.template()` **464 times** and `ti.static` **449
-times** — 92 template gates on kernel signatures alone, 15 on
-`sheet_resolve_shade` and 19 on `wavefront_shade`. Taichi gives this away: each
+The kernel modules reference `ti.template` **590 times** and `ti.static` **428
+times** (AST node counts, so comments and docstrings are excluded) — of which 92
+are template gates on kernel signatures, 15 on `sheet_resolve_shade` and 19 on
+`wavefront_shade`. Taichi gives this away: each
 distinct combination of template arguments compiles to its own specialized
 kernel, and `ti.static` gates fold out at compile time.
 
@@ -264,12 +269,25 @@ reasoned, not measured:
    reproducing one of the small kernels matches the CPU arch's output within the
    suites' 2-value tolerance. Precision, not speed.
 
-All five are **capability** questions, and all five are answerable in one sitting
-on the **existing macOS CI runner**. `.github/workflows/mps_probe.yaml` already
-runs `macos-latest` (torch 2.7.1) on `workflow_dispatch`, with a Linux control
-arm, and `benchmarks/_mps_capability_probe.py` already has the section/arm
-structure to hang them on — it tests Taichi exclusively today, which is exactly
-the gap. A `compile_shader` section is the cheapest decisive next step.
+All five are **capability** questions, and all five are now asked by
+`benchmarks/_mps_capability_probe.py`'s **Q8 section** (`--section msl`), which
+runs on the existing `.github/workflows/mps_probe.yaml` macOS arm. Nine cases
+plus a buffer ladder, one subprocess each, no Taichi in the path:
+
+| case | settles |
+| --- | --- |
+| `available` | `compile_shader` compiles and dispatches; dumps the Python shim's surface, which is unknown 2 |
+| `zero_copy` | the shader wrote *through* the tensor whose `data_ptr` was taken beforehand — unknown 1 |
+| `view_offset` | whether a sliced view binds at its own offset or at storage 0 — decides how §1.2 passes offsets |
+| `arena` | the arena convention end to end: one `uchar` buffer + an offset table, in place of 49 bindings |
+| `grid` | how the dispatch grid is inferred, measured with an atomic rather than assumed |
+| `args_*` | the real binding ceiling, stepped finely around 31 — unknown 3 |
+| `atomic_f32`, `atomic_u64_*` | unknown 4, and with it whether a deterministic accumulator can exist in a shader |
+| `precision` | unknown 5: f32 sRGB encode against an f64 host reference, reported in u8 channel values against the suites' tolerance of 2, in both of MSL's `pow` flavours (fast-math is on by default, which is exactly what moves a rounded byte) |
+
+Every case guards on an element count passed in a tensor rather than as a bare
+scalar, so an unexpected answer to the grid or scalar-marshalling question shows
+up as a recorded result instead of an out-of-bounds write.
 
 **What that runner cannot answer is anything with a clock on it.** It is a
 virtualized-GPU instance (§3.3), so it establishes that a shader compiles, binds,
@@ -277,24 +295,28 @@ dispatches and returns the right bits — which is the whole of 1–5 above, and
 what has to be true before performance is even a question. Launch overhead per
 dispatch, and whether the many-small-kernel stages (`sheet_compact_taichi.py` has
 14 kernels averaging ~35 lines) want fusing on the way across, are real questions
-and they need a physical Mac. Keep them out of the probe rather than letting it
-report a number that reads authoritative and is not; the existing probe's timing
-sections carry the same caveat and should say so.
+and they need a physical Mac. Q8 is untimed for that reason, rather than
+reporting a number that reads authoritative and is not — and the probe's
+existing Q5 timings, its module docstring, its printed verdict and the workflow
+header now all carry the same caveat.
 
 ## 5. Recommended shape, if it goes ahead
 
 Not one change. In dependency order, each stage independently useful:
 
-1. **Probe `compile_shader`** (§4). Answers the five capability unknowns — not
-   the performance one, which CI cannot reach; ~150 lines in the existing
-   harness; one macOS CI run.
+1. **Probe `compile_shader`** (§4) — **written; needs one macOS run.** Answers
+   the five capability unknowns, not the performance one, which CI cannot reach.
+   Dispatch it from `.github/workflows/mps_probe.yaml`, or push this branch as a
+   PR (the probe path is in the workflow's `paths` trigger). Read §4's table
+   against what comes back before starting stage 2.
 2. **Arena-offset calling convention**, on CUDA first. Bind one buffer plus an
    offsets struct. Testable and byte-identical on the current backend, where the
    full pixel-comparison suites exist to prove it — this is the single largest
    piece of the port and it does not need a Mac to land.
-3. **A vertical slice**: `tonemap_to_u8` + the four `bloom_*` kernels. 2–3
-   ndarrays each, ~220 lines of code total, no BVH, no specialization beyond 3
-   gates, and a pixel-comparable output. This proves dispatch, precision and the
+3. **A vertical slice**: `tonemap_to_u8` + the three `bloom_*` kernels. 2–3
+   ndarrays each, ~130 lines of code across the two modules (207 raw), no BVH,
+   no specialization beyond `tonemap_to_u8`'s 3 gates, and a pixel-comparable
+   output. This proves dispatch, precision and the
    baseline story end to end at ~2% of the total size.
 4. **The specialization layer** (§3.2), designed against the slice's real gates.
 5. **The raster count/write kernels** — the four that already fit in 24 buffers.

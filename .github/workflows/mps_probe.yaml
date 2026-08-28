@@ -12,6 +12,15 @@ name: MPS capability probe
 # dispatches it by hand (which needs the file on the default branch first;
 # before then, pushing to a pull request is what triggers it).
 #
+# WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized-GPU macOS
+# instance. Capability results -- does this compile, does it bind, does it come
+# back with the right bits -- are sound, and they are what both design docs rest
+# on. Timings are not: read the probe's Q5 milliseconds as directional only, and
+# do not plan against them. Launch overhead per dispatch is a real question for
+# the many-small-kernel stages and it needs a physical Mac. The probe's Q8
+# section (hand-written MSL, no Taichi in the path -- see
+# DESIGN_metal_native_port.md) is deliberately untimed for this reason.
+#
 # The Linux arm is the control. It has no MPS, so every GPU section skips and
 # what it proves is that the harness itself works and what the numbers look like
 # on a backend whose capabilities are already known -- without it, a macOS arm
