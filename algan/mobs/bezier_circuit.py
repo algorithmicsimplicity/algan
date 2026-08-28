@@ -1565,7 +1565,7 @@ def build_render_primitives_batched(actors, scene):
     # whole contract is to be a byte-identical replacement for that
     # constructor: it stood at 1 against the per-actor path's 0.5, which the
     # default analytic-AA route hides (it clamps the tolerance to
-    # ANALYTIC_AA_CHORD_TOLERANCE = 0.25, so 0.5 and 1 both land on 0.25) and
+    # analytic_aa_chord_tolerance = 0.25, so 0.5 and 1 both land on 0.25) and
     # the classic supersampled route does not -- there every batched circuit
     # was flattened to twice the per-actor path's chord error. Harmless while
     # the batched build reached a fifth of a scene's circuits; not harmless now

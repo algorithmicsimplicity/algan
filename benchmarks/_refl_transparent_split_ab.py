@@ -6,7 +6,7 @@ Same scene twice, differing only in the PBR ball's opacity:
   B: opacity 0.99 -> has_refl_transparent True  -> split pool on
 
 B is the price of tracing both the reflection and the pass-through: the split
-pool costs slots per pixel (smaller tiles) and disables WF_GEN_FUSED. Runs
+pool costs slots per pixel (smaller tiles) and disables wf_gen_fused. Runs
 alternate in one process, since cross-process wall time swings with thermal
 throttling (see the `algan-render-benchmarking` notes).
 """

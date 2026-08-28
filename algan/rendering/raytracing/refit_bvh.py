@@ -57,7 +57,7 @@ unchanged; the kernels select the walk with a compile-time ``refit`` template.
 
 Everything here is vectorized PyTorch (level-synchronous: one batched binned-
 SAH split pass per binary level across every node of that level), so the
-build runs on the render device under ``MERGE_ON_GPU`` like the classic
+build runs on the render device under ``merge_on_gpu`` like the classic
 builders.
 """
 

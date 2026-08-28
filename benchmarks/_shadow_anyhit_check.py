@@ -1,4 +1,4 @@
-"""The purpose-built scene ss4.6 asks for: do the three SHADOW_ANYHIT modes agree?
+"""The purpose-built scene ss4.6 asks for: do the three shadow_anyhit modes agree?
 
 ``DESIGN_mesh_identity.md`` ss4.6 predicted that once mesh identity replaced the
 seam epsilon, the three ``ALGAN_SHADOW_ANYHIT`` modes -- the plain march (0), the
@@ -186,7 +186,7 @@ SCENES = {"tie": "build_tie_scene", "stack": "build_stack_scene"}
 def _render(scene_key, mode, quality_name, arg=None, tag="", shadows=True):
     """One render in a FRESH process.
 
-    ``SHADOW_ANYHIT`` is read at import into a module global, so switching modes
+    ``shadow_anyhit`` is read at import into a module global, so switching modes
     in-process would need a setter and a guarantee that nothing cached the old
     value. A subprocess per arm is slower and cannot be wrong.
 
@@ -237,7 +237,7 @@ def main():
             shas[mode], paths[mode] = _render(key, mode, quality)
         base = MODES[0]
         print(f"\n{key}: march sha {shas[base][:12]}")
-        # DOES THIS SCENE HAVE SHADOWS AT ALL? Asked first, and asked of every
+        # DOES THIS SCENE HAVE shadows AT ALL? Asked first, and asked of every
         # scene, because two revisions of this harness compared shadow modes on
         # scenes built from `Square` -- a bezier circuit, which does not enter
         # the shadow path -- and reported agreement three times. Rendering with

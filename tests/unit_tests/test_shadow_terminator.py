@@ -294,16 +294,16 @@ def test_the_setting_is_reachable_from_settings_and_round_trips():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt_settings
 
-    before = rt_settings.SHADOW_TERMINATOR
+    before = rt_settings.shadow_terminator
     try:
         SETTINGS.raytracing.experimental.set(shadow_terminator=True)
-        assert rt_settings.SHADOW_TERMINATOR is True
+        assert rt_settings.shadow_terminator is True
         assert rt_settings.shadow_terminator_mode() == 1
         SETTINGS.raytracing.experimental.set(shadow_terminator=False)
-        assert rt_settings.SHADOW_TERMINATOR is False
+        assert rt_settings.shadow_terminator is False
         assert rt_settings.shadow_terminator_mode() == 0
         SETTINGS.raytracing.experimental.set(shadow_terminator="relax")
-        assert rt_settings.SHADOW_TERMINATOR == 2
+        assert rt_settings.shadow_terminator == 2
         assert rt_settings.shadow_terminator_mode() == 2
     finally:
         rt_settings.set_shadow_terminator(before)
@@ -330,7 +330,7 @@ def test_only_an_exact_two_selects_the_diagnostic_arm():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    before = rt_settings.SHADOW_TERMINATOR
+    before = rt_settings.shadow_terminator
     try:
         for value in (2, 2.0, np.int32(2), np.float32(2.0), np.float64(2.0)):
             rt_settings.set_shadow_terminator(value)

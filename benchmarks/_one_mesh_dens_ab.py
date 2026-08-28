@@ -20,7 +20,7 @@ argued about.
 Hence the background arm below: the same solids over ``DARKER_GRAY`` and over
 ``WHITE``. A fix that is neutral on one and ugly on the other is not ready.
 
-Both arms hold ``ANALYTIC_AA_ONE_MESH`` ON, so this isolates ss6.6.2 from ss6.6.
+Both arms hold ``analytic_aa_one_mesh`` ON, so this isolates ss6.6.2 from ss6.6.
 Byte-identity is the wrong gate (the whole point is that the occlusion write
 moves), so the delta is reported as magnitude. The A/A arm is not decoration:
 the cap's ceiling had a reproducibility bug found exactly this way (ss6.6.4), and

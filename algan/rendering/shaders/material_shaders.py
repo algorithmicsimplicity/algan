@@ -50,8 +50,8 @@ SHADER_FIXED_PARAM_COUNT = 9
 def _ambient_strength():
     """The ambient coefficient for the active working space.
 
-    Both numbers live on ``rt_settings`` (``AMBIENT_STRENGTH`` /
-    ``AMBIENT_STRENGTH_LINEAR``) and are read through the module object at
+    Both numbers live on ``rt_settings`` (``ambient_strength`` /
+    ``ambient_strength_linear``) and are read through the module object at
     every call, exactly as :func:`_linear_color_space` reads its gate: this
     module and ``raytracing/shading_taichi`` each used to keep their own copy
     of the pair, so one look-defining constant had two sources of truth.
@@ -59,8 +59,8 @@ def _ambient_strength():
     from algan.rendering.raytracing import settings as rt_settings
 
     if _linear_color_space():
-        return float(rt_settings.AMBIENT_STRENGTH_LINEAR)
-    return float(rt_settings.AMBIENT_STRENGTH)
+        return float(rt_settings.ambient_strength_linear)
+    return float(rt_settings.ambient_strength)
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ def _linear_color_space():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    return bool(rt_settings.LINEAR_COLOR_SPACE)
+    return bool(rt_settings.linear_color_space)
 
 
 def _split_albedo(albedo_color):

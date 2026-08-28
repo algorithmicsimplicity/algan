@@ -2,9 +2,9 @@
 
 Three arms of one scene, rendered in one process with pinned batch windows:
 
-* ``legacy``  -- TEXTURE_OPACITY_IN_KERNEL=0, TEXTURE_U8_STORAGE=0: the host
+* ``legacy``  -- texture_opacity_in_kernel=0, texture_u8_storage=0: the host
   premultiply and f32 texel rows, byte for byte the pre-change pipeline.
-* ``opacity`` -- TEXTURE_OPACITY_IN_KERNEL=1, TEXTURE_U8_STORAGE=0.
+* ``opacity`` -- texture_opacity_in_kernel=1, texture_u8_storage=0.
 * ``u8``      -- both on (the defaults).
 
 Two comparisons, with different standards -- deliberately:

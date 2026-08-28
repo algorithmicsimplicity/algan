@@ -507,9 +507,9 @@ def test_the_public_and_experimental_namespaces_do_not_overlap():
 def test_a_write_reaches_the_module_globals_the_engine_reads_live():
     from algan.rendering.raytracing import settings as rt_settings
 
-    before = rt_settings.MAX_BOUNCES
+    before = rt_settings.max_bounces
     SETTINGS.raytracing.set(max_bounces=before + 1)
-    assert before + 1 == rt_settings.MAX_BOUNCES
+    assert before + 1 == rt_settings.max_bounces
 
 
 # --------------------------------------------------------------------------
@@ -558,87 +558,67 @@ def test_override_restores_even_when_the_body_raises():
 
 
 # --------------------------------------------------------------------------
-# Coverage of the legacy module
+# Coverage of the storage module
 # --------------------------------------------------------------------------
-
-#: Public module-level names in ``algan/rendering/raytracing/settings.py`` that
-#: are deliberately NOT settings, each with the reason. Anything else there is
-#: renderer configuration and belongs in ``_FIELD_TO_LEGACY``, so a switch that
-#: reaches the engine without a way to set it fails the test below.
-_NOT_SETTINGS = {
-    "REFRACT_SPLIT_SLOTS": "alias of REFRACT_INITIAL_POOL_RATIO, kept in sync by its setter",
-    "ANALYTIC_AA_SLIVER_MODES": "the values ANALYTIC_AA_SLIVER accepts, not a setting",
-    "ANALYTIC_AA_RUN_RULES": "the values ANALYTIC_AA_RUN_RULE accepts, not a setting",
-    "WF_TEX_BEZ": "bit value of the WF_TEXTURED_FEATURES mask",
-    "WF_TEX_SCATTER": "bit value of the WF_TEXTURED_FEATURES mask",
-    "WF_TEX_SHADOWS": "bit value of the WF_TEXTURED_FEATURES mask",
-    "WF_TEX_NORMALMAP": "bit value of the WF_TEXTURED_FEATURES mask",
-}
-
-
-def _module_level_constants(module_path):
-    """Public UPPER_CASE names assigned at the top level of ``module_path``."""
-    import ast
-
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    names = []
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            targets = [node.target.id]
-        else:
-            continue
-        names.extend(
-            name for name in targets if name.isupper() and not name.startswith("_")
-        )
-    return names
 
 
 def test_every_renderer_switch_is_reachable_through_SETTINGS():
     """No renderer configuration without a way to configure it.
 
-    ``algan/rendering/raytracing/settings.py`` is the renderer's configuration:
-    module globals with environment-variable defaults that engine code reads
-    live. ``SETTINGS.raytracing`` (and ``.experimental``) is the *only* public
-    way to write one, so a global added there and not wired into
-    ``_FIELD_TO_LEGACY`` is a switch a user can read, that changes the image,
-    and that nothing but an environment variable set before ``import algan``
-    can move. Nine had accumulated that way; this is what stops a tenth.
+    ``algan/rendering/raytracing/settings.py`` stores the renderer's
+    configuration: module-level values with environment-variable defaults that
+    engine code reads live. ``SETTINGS.raytracing`` (and ``.experimental``) is
+    the only public way to write one.
 
-    A global that genuinely is not a setting goes in :data:`_NOT_SETTINGS` with
-    its reason, rather than being left to look like an oversight.
+    This used to be a real gap. The two layers spelled each field twice --
+    ``hybrid_raster`` on the section, ``hybrid_raster`` in the module -- and a
+    hand-maintained 119-row table joined them, so a switch whose row nobody
+    added had a global, a setter, and no way to set it. Nine had accumulated.
+    There is one spelling now and the field set is derived from the module, so
+    the gap cannot reopen by omission; what this pins is that the derivation
+    still sees every declaration, which a non-scalar default or a shadowing
+    helper would break.
     """
-    from pathlib import Path
+    import ast
+    import inspect
 
-    from algan.settings.raytracing_settings import _FIELD_TO_LEGACY
+    from algan.rendering.raytracing import settings as storage
 
-    module_path = (
-        Path(__file__).parents[2] / "algan" / "rendering" / "raytracing" / "settings.py"
-    )
-    covered = set(_FIELD_TO_LEGACY.values())
-    unreachable = [
-        name
-        for name in _module_level_constants(module_path)
-        if name not in covered and name not in _NOT_SETTINGS
-    ]
+    declared = set()
+    for node in ast.parse(inspect.getsource(storage)).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            name = target.id if isinstance(target, ast.Name) else None
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            continue
+        if name and not name.startswith("_") and name == name.lower():
+            declared.add(name)
+
+    unreachable = sorted(declared - set(SETTINGS.raytracing.field_names()))
     assert not unreachable, (
-        "renderer switches with no SETTINGS field -- add them to "
-        "_FIELD_TO_LEGACY in algan/settings/raytracing_settings.py (and to "
-        "_SETTER_OVERRIDES if they have a setter), or to _NOT_SETTINGS here "
-        "with the reason they are not settings:\n  " + "\n  ".join(unreachable)
+        "declared in the storage module but not reachable through SETTINGS -- "
+        "either the default is not a scalar, or a helper of the same name "
+        "shadows it:\n  " + "\n  ".join(unreachable)
     )
 
 
-def test_the_not_settings_exemptions_are_all_still_real():
-    """A stale exemption would hide the next switch that lands under its name."""
-    from pathlib import Path
+def test_no_renderer_switch_is_shadowed_by_a_helper_of_the_same_name():
+    """A field and a function cannot share a name, and Python will not say so.
 
-    module_path = (
-        Path(__file__).parents[2] / "algan" / "rendering" / "raytracing" / "settings.py"
-    )
-    present = set(_module_level_constants(module_path))
-    assert not (set(_NOT_SETTINGS) - present), (
-        "these are exempted but no longer exist: "
-        f"{sorted(set(_NOT_SETTINGS) - present)}"
+    With one spelling for each setting, a ``def`` later in the storage module
+    than its field simply takes the name over: the field stops existing, drops
+    out of ``SETTINGS`` silently, and any accessor that read it becomes a
+    ``return`` of itself. Three did that the moment the two spellings merged.
+    Nothing about it raises, so it needs asserting.
+    """
+    from algan.rendering.raytracing import settings as storage
+    from algan.settings.raytracing_settings import _shadowed_fields
+
+    shadowed = _shadowed_fields(storage)
+    assert not shadowed, (
+        "these renderer settings are declared as fields but the name is bound "
+        "to a function by the time the module finishes -- rename the function "
+        "(the field owns the name):\n  " + "\n  ".join(shadowed)
     )

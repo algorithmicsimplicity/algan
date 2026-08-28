@@ -39,7 +39,7 @@ def texture_u8_provenance(texture):
     identically zero. Proved by the round trip itself --
     ``round(x * 255) / 255 == x`` elementwise in f32 -- so a map this
     accepts quantizes to u8 and back bit-identically, which is the admission
-    rule for TEXTURE_U8_STORAGE's packed colour-map layout.
+    rule for texture_u8_storage's packed colour-map layout.
 
     Checked ONCE at authoring (the ``color_texture`` setter, a mesh
     constructor) rather than at the merge: the merge runs on the prefetch

@@ -47,8 +47,8 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
     set_reflectivity,
+    set_shadows,
 )
 from algan.utils.algan_utils import render_to_file  # noqa: E402
 
@@ -121,7 +121,7 @@ def render_config(tag, pn):
         prev = RENDERER_SETTINGS.triangle_primitive
         RENDERER_SETTINGS.triangle_primitive = RayTracedPNTrianglePrimitive
     set_fragment_shading(True)
-    set_ray_traced_shadows(True)
+    set_shadows(True)
     build_and_animate()
     name = f"node_pack_{tag}"
     render_to_file(file_name=name, output_dir=OUT_DIR, render_settings=PREVIEW)

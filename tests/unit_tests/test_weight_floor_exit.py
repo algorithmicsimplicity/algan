@@ -64,9 +64,9 @@ def test_experimental_setting_surfaces_and_drives_the_legacy_global():
     previous = SETTINGS.raytracing.experimental.weight_floor_exit
     try:
         SETTINGS.raytracing.experimental.weight_floor_exit = False
-        assert rt_settings.WEIGHT_FLOOR_EXIT is False
+        assert rt_settings.weight_floor_exit is False
         SETTINGS.raytracing.experimental.weight_floor_exit = True
-        assert rt_settings.WEIGHT_FLOOR_EXIT is True
+        assert rt_settings.weight_floor_exit is True
     finally:
         SETTINGS.raytracing.experimental.weight_floor_exit = previous
 

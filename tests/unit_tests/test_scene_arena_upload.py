@@ -170,7 +170,7 @@ def test_prefill_background_copies_and_casts_directly_into_arena(linear):
     destination, a nonzero frame offset selects the right rows, and a missing
     channel is filled from the source's last one.
     """
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(linear)
     try:
         memory = _cpu_arena()

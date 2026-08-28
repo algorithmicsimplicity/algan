@@ -83,10 +83,10 @@ so it is order-reproducible run to run by construction; agreement with the
 torch arm is again by measurement, at 4K shapes, bitwise after the round.
 
 ``benchmarks/_sheet_kernel_check.py`` is the parity harness; every kernel is
-gated (``RASTER_FUSED_GATHER``, ``SHEET_MASK_KERNEL``, ``SHEET_RANK_KERNEL``,
-``RASTER_OPAQUE_TRUNC_KERNEL``, ``SHEET_ONE_MESH_KERNEL``,
-``SHEET_SAMPLE_DEPTH_KERNEL``, ``SHEET_SHELL_CEILING_KERNEL``,
-``SHEET_BAND_STATS_KERNEL``, ``RASTER_PAIR_EXPAND_KERNEL``) so the torch
+gated (``raster_fused_gather``, ``sheet_mask_kernel``, ``sheet_rank_kernel``,
+``raster_opaque_trunc_kernel``, ``sheet_one_mesh_kernel``,
+``sheet_sample_depth_kernel``, ``sheet_shell_ceiling_kernel``,
+``sheet_band_stats_kernel``, ``raster_pair_expand_kernel``) so the torch
 passes stay runnable as the A/B arm.
 """
 
@@ -386,7 +386,7 @@ def sheet_lane_first_owner(
 ):
     """One pass: per (sheet, sample lane), the earliest owner's sorted index.
 
-    The SHEET_SAMPLE_DEPTH lane loop asked, eight times over the stream, for
+    The sheet_sample_depth lane loop asked, eight times over the stream, for
     the minimum sorted position among the fragments of each sheet owning one
     sample lane -- an amin scatter per lane over a full-length ``where`` copy.
     Here one thread per fragment does all eight lanes' atomic mins into one
@@ -524,7 +524,7 @@ def band_stats_reduce(
     min_pos_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
     cmax: ti.types.ndarray(),  # [nb] f32 OUT, PRE-ZEROED
     nfrag: ti.types.ndarray(),  # [nb] i64 OUT, PRE-ZEROED
-    positioned: ti.template(),  # compile-time: SHEET_POSITIONED_DEPTH
+    positioned: ti.template(),  # compile-time: sheet_positioned_depth
 ):
     """One pass: the compaction's five per-band scatters, fused.
 

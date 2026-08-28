@@ -112,7 +112,7 @@ ARMS = {
     "kbuf1": ({"ALGAN_KBUF": "1"}, "moving", WINDOW_BIG),
     "kbuf8": ({"ALGAN_KBUF": "8"}, "moving", WINDOW_BIG),
     # The instance-ORDER arms must also turn the refit tree off, and are
-    # compared against ``refit_off`` rather than ``ref``. ``BVH_REFIT`` defaults
+    # compared against ``refit_off`` rather than ``ref``. ``bvh_refit`` defaults
     # ON, and ``_build_accel``'s refit branch ignores ``builder`` outright, so
     # with it on both order arms build the identical RefitBVH: the leg would
     # report byte-identity for a lever that never moved. (That is also why
@@ -292,7 +292,7 @@ def render_arm(tag, out_path, res, scene_kind, window):
     SETTINGS.computing.set(available_memory_override=int(window))
     if scene_kind == "tonemap":
         # The route gate reads _get_tonemap_t_val() == 3, which is
-        # POST_PROCESS_TONEMAP -- the public ``tonemapping`` flag does not
+        # post_process_tonemap -- the public ``tonemapping`` flag does not
         # change path selection, so this is the lever that actually forces the
         # in-kernel tonemap (and, today, the dense resolve).
         SETTINGS.raytracing.experimental.set(post_process_tonemap=False)

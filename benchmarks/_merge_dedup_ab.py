@@ -1,4 +1,4 @@
-"""Byte-parity A/B for MERGE_DEDUP_TIME + OPAQUE_BVH_SKIP_DEAD.
+"""Byte-parity A/B for merge_dedup_time + opaque_bvh_skip_dead.
 
 Both features change only how the merged scene is stored (collapsed
 time-constant tables; opaque trees aliased while no rollout walks them), so
@@ -48,11 +48,11 @@ def child(out_name):
     )
     from algan.rendering.raytracing import (  # noqa: E402
         set_fragment_shading,
-        set_ray_traced_shadows,
+        set_shadows,
     )
 
     set_fragment_shading(True)
-    set_ray_traced_shadows(True)
+    set_shadows(True)
     with Sync():
         SpotLight(
             location=UP * 4 + LEFT * 2,

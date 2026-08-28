@@ -1,6 +1,6 @@
 """The secondary continuation-tap tables: positions, ownership, and the clamp.
 
-``ANALYTIC_AA_SECONDARY_SAMPLES`` used to be snapped to ``8 / 4 / 2``, so a
+``analytic_aa_secondary_samples`` used to be snapped to ``8 / 4 / 2``, so a
 configured 16 or 32 rendered exactly as 8 and said nothing. Two things capped
 it: the position table had hand-written entries only at 1/2/4/8, and each of
 the eight coverage samples owned its single nearest position, so no fragment
@@ -172,8 +172,8 @@ def test_fully_covered_fragment_spawns_every_ray(resolved):
 @pytest.fixture
 def restore_secondary_setting():
     """Undo the analytic-AA state this module's settings tests write."""
-    aa_before = rt_settings.ANALYTIC_AA
-    samples_before = rt_settings.ANALYTIC_AA_SECONDARY_SAMPLES
+    aa_before = rt_settings.analytic_aa
+    samples_before = rt_settings.analytic_aa_secondary_samples
     warned_before = rt_settings._SECONDARY_CLAMP_WARNED
     try:
         yield
@@ -200,21 +200,21 @@ def test_setting_returns_configured_count_and_clamps_over_ceiling(
         rt_settings._SECONDARY_CLAMP_WARNED = False
 
         rt_settings.set_analytic_aa(False, secondary=64)
-        assert rt_settings.analytic_aa_secondary_samples() == 1
+        assert rt_settings.effective_analytic_aa_secondary_samples() == 1
 
         rt_settings.set_analytic_aa(True, secondary=16)
-        assert rt_settings.analytic_aa_secondary_samples() == 16
+        assert rt_settings.effective_analytic_aa_secondary_samples() == 16
         rt_settings.set_analytic_aa(True, secondary=32)
-        assert rt_settings.analytic_aa_secondary_samples() == 32
+        assert rt_settings.effective_analytic_aa_secondary_samples() == 32
         assert record.records == []
 
         rt_settings.set_analytic_aa(True, secondary=64)
-        assert rt_settings.analytic_aa_secondary_samples() == 32
+        assert rt_settings.effective_analytic_aa_secondary_samples() == 32
         assert len(record.records) == 1
         assert "clamped" in record.records[0].getMessage()
 
         # A second over-ceiling read does not repeat the warning.
-        assert rt_settings.analytic_aa_secondary_samples() == 32
+        assert rt_settings.effective_analytic_aa_secondary_samples() == 32
         assert len(record.records) == 1
     finally:
         logger.removeHandler(handler)
@@ -225,4 +225,4 @@ def test_setting_still_passes_small_counts_through(restore_secondary_setting):
     rt_settings._SECONDARY_CLAMP_WARNED = False
     for value in (1, 2, 3, 4, 5, 7, 9, 31):
         rt_settings.set_analytic_aa(True, secondary=value)
-        assert rt_settings.analytic_aa_secondary_samples() == value
+        assert rt_settings.effective_analytic_aa_secondary_samples() == value

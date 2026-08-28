@@ -43,7 +43,7 @@ from algan import (  # noqa: E402
 from algan.rendering.raytracing import (  # noqa: E402
     RayTracedTrianglePrimitive,
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
     set_samples_per_pixel,
 )
 from algan.settings.renderer_settings import RENDERER_SETTINGS  # noqa: E402
@@ -97,8 +97,8 @@ def render_once(optimized, tag):
     RENDERER_SETTINGS.triangle_primitive = RayTracedTrianglePrimitive
     set_samples_per_pixel(1)
     set_fragment_shading(True)
-    set_ray_traced_shadows(False)
-    rt_settings.WF_COMPACT_ACTIVE_ONLY = bool(optimized)
+    set_shadows(False)
+    rt_settings.wf_compact_active_only = bool(optimized)
     build()
     scene = SceneManager.instance()
     _wf_times.clear()

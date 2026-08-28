@@ -12,7 +12,7 @@ picks one owner when the ray lands exactly on the edge.
 The property that matters is therefore **exactly one hit per shared edge**: not
 zero (a crack), not two (a duplicate the seam rule has to clean up).
 
-``WATERTIGHT_TRI`` (``SETTINGS.raytracing.experimental.watertight_tri``, seeded
+``watertight_tri`` (``SETTINGS.raytracing.experimental.watertight_tri``, seeded
 from ``ALGAN_WATERTIGHT_TRI``) is a ``ti.static`` gate over the kernel body, so
 it is fixed for every kernel already compiled and one process can only exercise
 one arm. These tests assert whichever arm the environment selected, and say so.
@@ -39,6 +39,20 @@ def _hit_counts(origins):
     import taichi as ti
 
     from algan.rendering.raytracing import raytrace_kernels_taichi as k
+    from algan.rendering.taichi_runtime import init_taichi
+
+    # Algan's own init, never a bare ``ti.init``: that is process-global and
+    # takes Taichi's *defaults* for every kwarg it is not given, which would
+    # reconfigure Taichi for everything compiled afterwards in this process
+    # (see tests/unit_tests/test_taichi_runtime_config.py). Idempotent, so it
+    # neither reinitializes nor discards kernels when Taichi is already up.
+    #
+    # Needed because ``ti.field`` below requires a live program, and nothing in
+    # this file brings one up: importing a kernel module does not (kernels are
+    # only registered at import). Without it the file passed only when some
+    # earlier test in the same session happened to initialize Taichi, and
+    # failed outright when run on its own.
+    init_taichi()
 
     n = origins.shape[0]
     out = ti.field(ti.i32, shape=(n, 2))

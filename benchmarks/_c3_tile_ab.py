@@ -1,7 +1,7 @@
 """Does the covered-slice partition alone move shapes_and_timeline's fade-out?
 
 Arm OFF (shipped aa_grp 5, no exact-run lanes anywhere) rendered with a
-different WAVEFRONT_TILE_RAYS, then diffed against the arm-OFF reference from
+different wavefront_tile_rays, then diffed against the arm-OFF reference from
 _c3_fadeout_ab.py. Slice boundaries are logged for both this render and for
 reference. If the fade-out frames move here, the C.3 "arm" move is a
 pre-existing slice-partition dependence that the lanes' 8 B/fragment arena
@@ -37,8 +37,8 @@ def main():
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
 
-    rt_settings.WAVEFRONT_TILE_RAYS = int(rt_settings.WAVEFRONT_TILE_RAYS * scale)
-    print(f"WAVEFRONT_TILE_RAYS = {rt_settings.WAVEFRONT_TILE_RAYS}")
+    rt_settings.wavefront_tile_rays = int(rt_settings.wavefront_tile_rays * scale)
+    print(f"WAVEFRONT_TILE_RAYS = {rt_settings.wavefront_tile_rays}")
 
     real_shade = rp.shade_sparse_raster_coverage
 

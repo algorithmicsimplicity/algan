@@ -1,5 +1,5 @@
 """In-process A/B + parity for adaptive wavefront tile sizing
-(settings.WAVEFRONT_TILE_AUTO).
+(settings.wavefront_tile_auto).
 
 Tiles partition pixels and every per-pixel computation is independent of its
 tile, so ANY tile size must produce byte-identical frames. Part 1 verifies
@@ -58,16 +58,16 @@ os.makedirs(OUT_DIR, exist_ok=True)
 REPS = int(sys.argv[1]) if len(sys.argv) > 1 else 3
 _COLORS = [BLUE, RED, GREEN, YELLOW, WHITE, ORANGE, PURPLE, TEAL]
 
-_DEF_TILE = rt_settings.WAVEFRONT_TILE_RAYS
-_DEF_MIN = rt_settings.WAVEFRONT_TILE_MIN
-_DEF_MAX = rt_settings.WAVEFRONT_TILE_MAX
+_DEF_TILE = rt_settings.wavefront_tile_rays
+_DEF_MIN = rt_settings.wavefront_tile_min
+_DEF_MAX = rt_settings.wavefront_tile_max
 
 
 def _set_tiling(auto, tile=_DEF_TILE, tmin=_DEF_MIN, tmax=_DEF_MAX):
-    rt_settings.WAVEFRONT_TILE_AUTO = bool(auto)
-    rt_settings.WAVEFRONT_TILE_RAYS = int(tile)
-    rt_settings.WAVEFRONT_TILE_MIN = int(tmin)
-    rt_settings.WAVEFRONT_TILE_MAX = int(tmax)
+    rt_settings.wavefront_tile_auto = bool(auto)
+    rt_settings.wavefront_tile_rays = int(tile)
+    rt_settings.wavefront_tile_min = int(tmin)
+    rt_settings.wavefront_tile_max = int(tmax)
 
 
 # Record every tile size the orchestrators actually use.

@@ -142,7 +142,7 @@ def sheet_resolve_shade(
         env_in_composite: ti.template(),
         # Deliver the direct lights' share of the reflected specular lobe,
         # which the continuation this hit spawns cannot (rt_settings.
-        # DIRECT_SPECULAR_LOBE). 0 restores the previous weighting exactly.
+        # direct_specular_lobe). 0 restores the previous weighting exactly.
         direct_spec: ti.template(),
         # Shadow support (DESIGN_sheet_resolve.md §4.9). ``mode`` 0 is the
         # shadow-free resolve; 1 walks the IDENTICAL transport and writes one
@@ -162,7 +162,7 @@ def sheet_resolve_shade(
         # guard; 2 is the diagnostic relax-only arm and never reads
         # ``event_toff``).
         shadow_term: ti.template(),
-        # Cross-pass material memoization (rt_settings.SHEET_RESOLVE_MEMO,
+        # Cross-pass material memoization (rt_settings.sheet_resolve_memo,
         # RENDERER_WORK_QUEUE.md item 9). != 0 makes the mode-1 event walk
         # STORE each processed triangle sheet's fetched material into
         # ``sheet_memo`` and the mode-2 shading walk READ it back instead of
@@ -334,7 +334,7 @@ def sheet_resolve_shade(
             dens = 1.0
             nsm = _AA_NUM_SAMPLES
             slots = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
-            # SHEET_SAMPLE_DEPTH: the host ceded these samples to a strictly
+            # sheet_sample_depth: the host ceded these samples to a strictly
             # nearer other-surface sheet (sheets.compact_sheets), so claiming
             # them here painted an interpenetrating surface whole-pixel wrong.
             # Zeroing slots drops both the claim and this sheet's share of the

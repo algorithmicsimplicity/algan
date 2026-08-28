@@ -2,7 +2,7 @@
 shading-normal computation for UNLIT hits on the fragment-shading wavefront.
 
 The shade kernel's ``skip_unlit_normal`` template (``ALGAN_WF_SKIP_UNLIT_NORMAL``
-/ ``settings.WF_SKIP_UNLIT_NORMAL``) is toggled between renders. UNLIT hits pass
+/ ``settings.wf_skip_unlit_normal``) is toggled between renders. UNLIT hits pass
 their colour through unchanged and never consume the shading normal, so skipping
 ``_flat_triangle_normal`` for them is byte-identical -- this harness first proves
 that (identical PNG), then measures the speed effect.
@@ -57,7 +57,7 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -112,8 +112,8 @@ tracer_mod.raytrace_render_wavefront = _timed_wf
 def render_once(skip_on, regime, tag):
     SceneManager.reset()
     set_fragment_shading(True)
-    set_ray_traced_shadows(False)
-    rt_settings.WF_SKIP_UNLIT_NORMAL = bool(skip_on)
+    set_shadows(False)
+    rt_settings.wf_skip_unlit_normal = bool(skip_on)
     build(regime)
     scene = SceneManager.instance()
     _wf_times.clear()

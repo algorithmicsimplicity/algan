@@ -5,10 +5,10 @@ it, and historically they were not all in the same language: kernels tested it
 through ``_aa_run_full``, and the host's **emission truncation** has to apply
 the relaxed gate's mitigation whenever a reader takes the relaxed gate.
 
-They drifted, which is why this file exists. ``ANALYTIC_AA_ONE_MESH`` sets
+They drifted, which is why this file exists. ``analytic_aa_one_mesh`` sets
 ``aa_grp = 3``, and ``_aa_run_full`` treats 3 as the relaxed gate (the one-mesh
 rule needs it: the near sheet's exact area is only worth reading once the gate
-lets it be read). But the truncation tested ``ANALYTIC_AA_RUN_FULL`` alone, so
+lets it be read). But the truncation tested ``analytic_aa_run_full`` alone, so
 with ONE_MESH on and RUN_FULL off the relaxed semantics ran over fragment
 lists whose empty-mask **area donors had already been discarded** -- the exact
 configuration ``DESIGN_mesh_identity.md`` ss6.3.2 measured as an interior notch,
@@ -42,10 +42,10 @@ AA_BEZ, AA_TRI = 0, 4
 def restore_aa():
     """Undo the analytic-AA settings this module writes."""
     before = (
-        rt_settings.ANALYTIC_AA,
-        rt_settings.ANALYTIC_AA_SEAM,
-        rt_settings.ANALYTIC_AA_RUN_FULL,
-        rt_settings.ANALYTIC_AA_ONE_MESH,
+        rt_settings.analytic_aa,
+        rt_settings.analytic_aa_seam,
+        rt_settings.analytic_aa_run_full,
+        rt_settings.analytic_aa_one_mesh,
     )
     try:
         yield
@@ -115,7 +115,7 @@ def test_only_aa_group_reads_the_run_full_setting():
 
     The invariant test above passed *before* the fix too: ``_aa_run_full(3)`` was
     always true: the bug was that the truncation site never asked it, testing
-    ``ANALYTIC_AA_RUN_FULL`` directly instead and so missing the ONE_MESH-implies-2
+    ``analytic_aa_run_full`` directly instead and so missing the ONE_MESH-implies-2
     case. What has to hold is therefore structural -- ``aa_grp`` is the single
     answer, so exactly one function may read the raw setting, and every other
     reader must go through ``_aa_group`` / ``_aa_run_full``.
@@ -135,7 +135,7 @@ def test_only_aa_group_reads_the_run_full_setting():
         for inner in ast.walk(node):
             if (
                 isinstance(inner, ast.Attribute)
-                and inner.attr == "ANALYTIC_AA_RUN_FULL"
+                and inner.attr == "analytic_aa_run_full"
                 and node.name != "_aa_group"
             ):
                 offenders.append(f"{node.name}:{inner.lineno}")

@@ -77,7 +77,7 @@ from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_rt2_out")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# ``--dense`` forces the dense tile path (RASTER_SPARSE_COVERAGE off), which is
+# ``--dense`` forces the dense tile path (raster_sparse_coverage off), which is
 # what an environment-mapped or in-composite-tonemap render uses.
 DENSE = "--dense" in sys.argv
 
@@ -92,7 +92,7 @@ TRI_CONFIGS = ("seam", "tri", "trans", "thin")
 # own _ss_pixel variant, so the first sweep of a cleared cache is slow.
 SWEEP = "--sweep" in sys.argv
 
-# ``--box`` measures the pre-exact box filter (ANALYTIC_AA_EXACT off) instead of
+# ``--box`` measures the pre-exact box filter (analytic_aa_exact off) instead of
 # the shipped exact angle-aware area; ``--exact-ab`` reports both against the
 # same aa=4 reference, which is the measurement that decides whether the exact
 # form is worth its cost (DESIGN_analytic_aa.md ss21).
@@ -145,7 +145,7 @@ def _probe_raster(key, orig):
 
 # The tracer imports both entry points from the module inside the render call,
 # so rebinding the module attributes intercepts every use (either path engages
-# depending on RASTER_SPARSE_COVERAGE).
+# depending on raster_sparse_coverage).
 rp.raster_iteration_zero = _probe_raster("dense", rp.raster_iteration_zero)
 rp.prepare_sparse_raster_coverage = _probe_raster(
     "sparse", rp.prepare_sparse_raster_coverage

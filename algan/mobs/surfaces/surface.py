@@ -356,7 +356,7 @@ def surface_weld_flags(grid):
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    if not rt_settings.WELD_SURFACE_SEAMS or grid.dim() < 3:
+    if not rt_settings.weld_surface_seams or grid.dim() < 3:
         return (False, False, False)
     tol = _WELD_TOLERANCE
     wrap_x = bool((grid[..., 0, :, :] - grid[..., -1, :, :]).abs().lt(tol).all().item())
@@ -1590,7 +1590,7 @@ class Surface(Mob):
         self.texture_height = int(texture_height)
         self.texture_width = int(texture_width)
         # u8 provenance, proved here at authoring where a full-image pass is
-        # cheap and sync-free, and trusted by the merge (TEXTURE_U8_STORAGE
+        # cheap and sync-free, and trusted by the merge (texture_u8_storage
         # must not probe texels on the prefetch worker). Any later assignment
         # re-runs the proof, so arithmetic on the texels (``tex * 0.5``)
         # clears it exactly when it stops holding.
@@ -1610,7 +1610,7 @@ class Surface(Mob):
         )
         self.register_attrs_as_animatable([attr])
         # Opt the attribute into the timeline's segment-window description
-        # (TEXTURE_TIME_LERP): an animated reassignment's frame window then
+        # (texture_time_lerp): an animated reassignment's frame window then
         # reaches get_render_primitives as endpoint images plus per-frame
         # weights instead of one materialized image per frame.
         self.scene.timeline_manager.enable_segment_windows(attr)
@@ -1632,8 +1632,8 @@ class Surface(Mob):
             # Stamp the AUTHORED map on the edit the assignment just
             # recorded: the stored state is ``pre + (map - pre)``, an ulp
             # off per texel, which is enough to void k/255 provenance for
-            # the segment-window endpoint stack (TEXTURE_TIME_LERP +
-            # TEXTURE_U8_STORAGE). The description uses this as its lerp
+            # the segment-window endpoint stack (texture_time_lerp +
+            # texture_u8_storage). The description uses this as its lerp
             # TARGET only; the stored states stay what constant frames read.
             event = self.scene.timeline_manager.last_recorded_event
             if event is not None and len(event.recorded_edit_records) == 1:
@@ -3145,7 +3145,7 @@ class Surface(Mob):
         is the whole flattened image (``H * W * 5``), so the timeline
         materializes a full copy of it for every frame of a batch, and the
         legacy premultiply arm of :meth:`get_render_primitives` keeps one more
-        copy of the same width (under TEXTURE_OPACITY_IN_KERNEL, the default,
+        copy of the same width (under texture_opacity_in_kernel, the default,
         the opacity rides the primitive as scalars and that copy does not
         exist). Every other term in
         :meth:`_get_memory_used_per_timestep` is per grid point or per triangle,
@@ -3185,7 +3185,7 @@ class Surface(Mob):
         from algan.rendering.raytracing import settings as _rts
 
         if _rts.texture_opacity_in_kernel_active():
-            # No premultiply copy on this path (TEXTURE_OPACITY_IN_KERNEL):
+            # No premultiply copy on this path (texture_opacity_in_kernel):
             # per frame the animation device holds the materialized window
             # plus, on a closed surface, the wrap pad's copy of it.
             copies = 2 if getattr(self, "_texture_is_wrap_padded", False) else 1
@@ -3195,16 +3195,16 @@ class Surface(Mob):
             self, "_texture_window_lerp", False
         ):
             # The previous build proved the window constant and collapsed it
-            # (TEXTURE_WINDOW_COLLAPSE), so the premultiply/pad copies are per
+            # (texture_window_collapse), so the premultiply/pad copies are per
             # batch rather than per frame; only the materialized window itself
             # still scales with the frame count. Priced off the previous
             # build, like ``_texture_is_wrap_padded`` above -- a texture that
             # STARTS animating re-prices dense one batch late, covered by the
-            # out-of-render-memory retry. Under TEXTURE_OPACITY_IN_KERNEL the
+            # out-of-render-memory retry. Under texture_opacity_in_kernel the
             # collapse fires on texel constancy alone, so a FADE of a static
             # image prices at the window too -- which is what lets its batch
             # windows lengthen (the point of the in-sampler multiply). A
-            # segment-described window (TEXTURE_TIME_LERP) never materializes
+            # segment-described window (texture_time_lerp) never materializes
             # at all and its endpoint/pad/merge copies are per batch, so it
             # prices the same envelope.
             copies = 1
@@ -3236,22 +3236,22 @@ class Surface(Mob):
         from algan.rendering.raytracing import settings as _rts
 
         # One image of the six-image chain is the host premultiply, absent
-        # under TEXTURE_OPACITY_IN_KERNEL (the opacity rides the bank as
+        # under texture_opacity_in_kernel (the opacity rides the bank as
         # per-frame scalars instead).
         factor = 5 if _rts.texture_opacity_in_kernel_active() else 6
         if getattr(self, "_texture_window_collapsed", False):
             # The previous build collapsed the window's downstream copies to
-            # one frame (TEXTURE_WINDOW_COLLAPSE): the per-frame residue is
+            # one frame (texture_window_collapse): the per-frame residue is
             # the materialized window itself, plus margin for the handful of
             # per-batch images (premultiplied map, decode, merge concat,
             # arena copy) the collapse amortizes. Same read-off-the-previous-
             # build contract as the animation-device estimate. Under
-            # TEXTURE_OPACITY_IN_KERNEL a fade of a static image lands here
+            # texture_opacity_in_kernel a fade of a static image lands here
             # too (the collapse keys on texel constancy alone), which is what
             # lengthens its batch windows.
             factor = 2
         if getattr(self, "_texture_window_lerp", False):
-            # A segment-described window (TEXTURE_TIME_LERP): its rows are
+            # A segment-described window (texture_time_lerp): its rows are
             # excluded from materialization, so the render device holds NO
             # per-frame image at all -- only the per-batch endpoint stack and
             # its decode/concat/arena copies, priced as the same one-image
@@ -3446,7 +3446,7 @@ class Surface(Mob):
         if has_color_texture:
             from algan.rendering.raytracing import settings as _rts
 
-            # A window described as segments (TEXTURE_TIME_LERP): K endpoint
+            # A window described as segments (texture_time_lerp): K endpoint
             # images plus per-frame (i0, i1, w) stand in for the dense
             # window, which the timeline then never materialized. Keyed on
             # the DESCRIPTION's presence, not the setting, so a mid-batch
@@ -3495,18 +3495,18 @@ class Surface(Mob):
                 # When the window and the opacity are byte-identical across
                 # the batch, one frame carries it: every consumer reads
                 # texture time as ``f % shape[0]``
-                # (rt_settings.TEXTURE_WINDOW_COLLAPSE kills this for
+                # (rt_settings.texture_window_collapse kills this for
                 # byte-level A/B). Opacity first -- it is a handful of floats
                 # against a full image pass.
                 #
                 # With the in-sampler multiply the opacity never touches the
                 # texels, so the collapse keys on texel constancy ALONE -- a
                 # fade of a static image keeps its one-frame map, which is
-                # the point of TEXTURE_OPACITY_IN_KERNEL (the premultiply
+                # the point of texture_opacity_in_kernel (the premultiply
                 # welded the fade into the widest attribute in the engine).
                 op_in_kernel = _rts.texture_opacity_in_kernel_active()
                 collapsed = (
-                    _rts.TEXTURE_WINDOW_COLLAPSE
+                    _rts.texture_window_collapse
                     and texels.shape[0] > 1
                     and (
                         op_in_kernel
@@ -3525,10 +3525,10 @@ class Surface(Mob):
                 # premultiply / pad / decode / merge copies are per batch, not
                 # per frame, so the texture prices at roughly the materialized
                 # window alone. Gated on the toggle so
-                # TEXTURE_WINDOW_COLLAPSE=0 restores the legacy per-frame
+                # texture_window_collapse=0 restores the legacy per-frame
                 # pricing along with the legacy copies.
                 self._texture_window_collapsed = bool(
-                    _rts.TEXTURE_WINDOW_COLLAPSE
+                    _rts.texture_window_collapse
                 ) and (collapsed or texels.shape[0] == 1)
             # Observed by the batch sizer, like _texture_window_collapsed: a
             # described window prices at its endpoints, not at one image per
@@ -3554,7 +3554,7 @@ class Surface(Mob):
                 # The opacity rides the primitive as per-frame scalars (the
                 # merge appends them as a tiny bank region the sampler
                 # reads); the map itself stays the authored texels, which is
-                # also what keeps them k/255 for TEXTURE_U8_STORAGE.
+                # also what keeps them k/255 for texture_u8_storage.
                 # mult_opacity's out-of-place copy used to decouple the
                 # primitive from the timeline window; without it a collapsed
                 # frame would be a VIEW pinning the whole T-frame window past

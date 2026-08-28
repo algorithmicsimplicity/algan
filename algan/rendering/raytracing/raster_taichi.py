@@ -24,7 +24,7 @@ Important implementation properties:
   the fragment's alpha, so circuit silhouettes resolve continuously at
   ``anti_alias_level = 1`` instead of all-or-nothing.  The coverage lane is
   host-pre-filled to 1.0 and written by the circuit kernels and -- under
-  ``ANALYTIC_AA_TRI`` -- by ``raster_tri_write`` too, which carries each
+  ``analytic_aa_tri`` -- by ``raster_tri_write`` too, which carries each
   triangle fragment's exact clipped area for the sheet claims.
 * :func:`raster_shadow_trace` traces the sheet resolve's sparse any-hit event
   queue and stores one visibility value per event/light, with no fixed
@@ -135,7 +135,7 @@ _AA_BACKFACE_BIT = 1 << _AA_FLAG_SHIFT
 # sample it actually contains: an AREAL fraction of the pixel with no position in
 # it, so it attenuates every sample uniformly rather than a subset exactly (the
 # same treatment a circuit's SDF coverage gets). Only reachable when
-# ANALYTIC_AA_SLIVER is not the default ``drop``.
+# analytic_aa_sliver is not the default ``drop``.
 _AA_SLIVER_BIT = 2 << _AA_FLAG_SHIFT
 
 # Marks every fragment of a pixel whose fragments are ALL opaque triangles of
@@ -148,14 +148,14 @@ _AA_ONE_MESH_BIT = 4 << _AA_FLAG_SHIFT
 
 # Marks a fragment of a MATERIAL-opaque triangle (the one-mesh rule's sense of
 # opaque, before the coverage adjustment narrows it) -- set per fragment by
-# prepare_sparse_raster_coverage under SHEET_SAMPLE_DEPTH. The sheet compaction
+# prepare_sparse_raster_coverage under sheet_sample_depth. The sheet compaction
 # folds it into a band's mask word so the per-sample depth gate can tell an
 # enforcer sheet (may floor a strictly farther interpenetrating surface) from a
 # translucent one. Every reader either masks with _AA_MASK_ALL or tests named
 # flag bits, so the bit is inert where it is not read.
 _AA_MAT_OPAQUE_BIT = 8 << _AA_FLAG_SHIFT  # bit 19, set per fragment
 
-# SHEET_SAMPLE_DEPTH: the per-sheet "this sample was ceded to a strictly nearer
+# sheet_sample_depth: the per-sheet "this sample was ceded to a strictly nearer
 # other-surface enforcer" bits, computed on the host at compaction
 # (sheets.compact_sheets) and applied to ``slots`` in the resolve's pre-eff
 # block. Bits 20..27 of the mask word, one per sub-pixel sample; frag_msk /
@@ -703,7 +703,7 @@ def _two_halfplane_area(n1x, n1y, d1, n2x, n2y, d2, a1, a2):
 def _boundary_coverage(nx, ny, d, aa: ti.template()):
     """Pixel coverage by the drawn side of one boundary, at signed distance ``d``.
 
-    ``aa == 2`` (``ANALYTIC_AA_EXACT``) takes the exact angle-aware area;
+    ``aa == 2`` (``analytic_aa_exact``) takes the exact angle-aware area;
     anything else keeps the box filter ``clamp(d + 0.5, 0, 1)``, which IS that
     area for an axis-aligned boundary and an approximation at every other angle
     (see :func:`_halfplane_clip_area`).  The choice is a compile-time template
@@ -1475,7 +1475,7 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                 # fragment) while dropping it is a crack.
                 #
                 # _tri_hit answers it without needing to choose. Under
-                # WATERTIGHT_TRI the shared edge's function is computed from the
+                # watertight_tri the shared edge's function is computed from the
                 # same two projected vertices in both triangles and comes out as
                 # the exact negative, so exactly one neighbour accepts: no
                 # dilation, no duplicate, no crack. With the gate off this is
@@ -2185,7 +2185,7 @@ _AA_SEC_JITTER_HANDWRITTEN = {
         (0.4375, 0.9375), (0.9375, 0.0625)),
 }
 
-# Ceiling on the configured tap count (ANALYTIC_AA_SECONDARY_SAMPLES). The
+# Ceiling on the configured tap count (analytic_aa_secondary_samples). The
 # position mask ``_sec_positions`` returns is an i32 bitfield, one bit per
 # position, so bit 32 would be unreadable; and each distinct count reaches the
 # resolve as its own template value whose ``ti.static(range(sec_aa))`` unrolls
@@ -2677,7 +2677,7 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
 
     Overflow is not an error and not a per-pixel cap: the host retries the whole
     tile with half as many primary rays, which doubles the continuation headroom
-    (``REFRACT_INITIAL_POOL_RATIO``). A dropped slot silently loses that
+    (``refract_initial_pool_ratio``). A dropped slot silently loses that
     branch's contribution, which is why the caller must not have already
     committed throughput to it.
 
@@ -2798,10 +2798,10 @@ def raster_shadow_trace(
     its samples inside that cell, in the light's own plane: the per-row
     visibility integrates the cell instead of testing its centre point, so
     summing the rows gives a continuous penumbra rather than a stack of hard
-    ones (gated host-side by AREA_LIGHT_SOFT_SHADOWS -- with it off these
+    ones (gated host-side by area_light_soft_shadows -- with it off these
     rows pack zeros and take today's single hard ray).
 
-    ``shadow_identity`` (``SHADOW_IDENTITY_REJECT``, DESIGN_mesh_identity_open.md
+    ``shadow_identity`` (``shadow_identity_reject``, DESIGN_mesh_identity_open.md
     ssI) engages identity-aware rejection. ``event_src_prim`` carries each
     event's SOURCE triangle (-1 for a bezier-sourced event, which keeps the
     old absolute epsilon), ``tri_obj`` answers "which mesh is this hit on"
@@ -2813,7 +2813,7 @@ def raster_shadow_trace(
     :func:`_shadow_identity_t_min` for the tiers. With
     ``shadow_identity == 0`` every event keeps exactly the old epsilon.
 
-    ``sec_aa`` (``ANALYTIC_AA_SECONDARY_SAMPLES``): visibility is a BINARY query,
+    ``sec_aa`` (``analytic_aa_secondary_samples``): visibility is a BINARY query,
     so analytic coverage cannot antialias a shadow edge however exact the
     geometry is -- the stair steps just move from the silhouette to the shadow
     (ss7). With it on, the query point moves over the pixel instead: four

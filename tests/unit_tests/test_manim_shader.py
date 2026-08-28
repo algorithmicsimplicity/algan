@@ -48,7 +48,7 @@ def _display_output(out):
     from algan.rendering.raytracing import settings as rt_settings
 
     rgb = out[..., :3]
-    return linear_to_srgb(rgb) if rt_settings.LINEAR_COLOR_SPACE else rgb
+    return linear_to_srgb(rgb) if rt_settings.linear_color_space else rgb
 
 
 def _run_shader(light_color):
@@ -63,7 +63,7 @@ def _run_shader(light_color):
     vloc = torch.zeros(n, 1, 3)
     vnrm = torch.tensor(_NORMALS, dtype=torch.float32).view(n, 1, 3)
     rgb = torch.tensor(_ALBEDO, dtype=torch.float32)
-    if rt_settings.LINEAR_COLOR_SPACE:
+    if rt_settings.linear_color_space:
         rgb = srgb_to_linear(rgb)
     rgb = rgb.expand(n, 3)
     alb = torch.cat([rgb, torch.zeros(n, 1)], dim=-1).view(n, 1, 4)

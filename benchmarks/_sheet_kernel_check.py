@@ -1,8 +1,8 @@
 """A/B parity for the compaction/emission kernels
-(RASTER_FUSED_GATHER, SHEET_MASK_KERNEL, SHEET_RANK_KERNEL,
-RASTER_OPAQUE_TRUNC_KERNEL, SHEET_ONE_MESH_KERNEL, SHEET_SAMPLE_DEPTH_KERNEL,
-SHEET_SHELL_CEILING_KERNEL, SHEET_BAND_STATS_KERNEL,
-RASTER_PAIR_EXPAND_KERNEL).
+(raster_fused_gather, sheet_mask_kernel, sheet_rank_kernel,
+raster_opaque_trunc_kernel, sheet_one_mesh_kernel, sheet_sample_depth_kernel,
+sheet_shell_ceiling_kernel, sheet_band_stats_kernel,
+raster_pair_expand_kernel).
 
 The kernels replace multi-pass torch loops with one pass, and all are meant to
 be BIT-IDENTICAL to the arm they replace: the gather copies bits, the mask

@@ -99,7 +99,7 @@ def test_deterministic_shadows_accumulate_every_blocker_opacity(
     #
     # Selected relative to the darkest pixel in the centre rather than against
     # an absolute byte. A fully shadowed surface sits at the ambient floor, and
-    # where that floor lands depends on the working space: AMBIENT_STRENGTH is
+    # where that floor lands depends on the working space: ambient_strength is
     # 0.1 either way, but 0.1 of linear light encodes to byte 89 where 0.1 of
     # an encoded value is byte 26. An absolute "< 80" silently selected nothing
     # at all under the linear space.

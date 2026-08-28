@@ -202,7 +202,7 @@ def _finalize_on_device(
     )
     output = memory.get_tensor((*frame.shape[:-1], output_channels), torch.uint8)
 
-    # Standalone Taichi tonemap (POST_TONEMAP_KERNEL): under post-process
+    # Standalone Taichi tonemap (post_tonemap_kernel): under post-process
     # tonemapping the frame arrives as a linear-HDR float buffer bloom has
     # already run on. Tonemap + quantize in one f32 Taichi pass (reusing the
     # in-composite tonemap ti.funcs) instead of the ~20-op/pixel torch
@@ -375,9 +375,9 @@ def post_process_frames(
         num_channels,
         self,
         tonemap_enabled=rt_settings.is_post_process_tonemap_enabled(),
-        tonemapping=rt_settings.TONEMAPPING,
-        tonemap_method=rt_settings.TONEMAP_METHOD,
-        exposure=rt_settings.TONEMAP_EXPOSURE,
+        tonemapping=rt_settings.tonemapping,
+        tonemap_method=rt_settings.tonemap_method,
+        exposure=rt_settings.tonemap_exposure,
     )
 
     return _frames_to_host(frame_out)

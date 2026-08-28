@@ -59,7 +59,7 @@ before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
 block of a custom pipeline keeps its historical look slot by slot.
 
 The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
-terms, ``AMBIENT_STRENGTH``, ``light_intensity == ambient == 1``) and reproduces
+terms, ``ambient_strength``, ``light_intensity == ambient == 1``) and reproduces
 its multi-light behaviour: each light is applied in sequence with the running
 colour as the albedo (the renderer's vertex path overwrites the colour per
 light), which is identical to a single light -- the common case.
@@ -145,8 +145,8 @@ def _ambient_strength():
     different numbers for the same result; call it inside ``ti.static`` so the
     value is folded in when the kernel compiles.
 
-    Both numbers live on ``rt_settings`` (``AMBIENT_STRENGTH`` /
-    ``AMBIENT_STRENGTH_LINEAR``) and are read through the module object at
+    Both numbers live on ``rt_settings`` (``ambient_strength`` /
+    ``ambient_strength_linear``) and are read through the module object at
     every call, for the same two reasons as :func:`_linear_color_space`: a
     module-level import back would be circular, and a copy here would freeze
     the value before user code could set it. This module and
@@ -155,8 +155,8 @@ def _ambient_strength():
     from algan.rendering.raytracing import settings as rt_settings
 
     if _linear_color_space():
-        return float(rt_settings.AMBIENT_STRENGTH_LINEAR)
-    return float(rt_settings.AMBIENT_STRENGTH)
+        return float(rt_settings.ambient_strength_linear)
+    return float(rt_settings.ambient_strength)
 
 
 def _linear_color_space():
@@ -176,7 +176,7 @@ def _linear_color_space():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    return bool(rt_settings.LINEAR_COLOR_SPACE)
+    return bool(rt_settings.linear_color_space)
 
 
 @ti.func
@@ -1445,7 +1445,7 @@ def make_pipeline_func(stages, offsets):
 # covered part passes, ``reflectivity`` packed metalness (negative = non-PBR)
 # and ``ior`` an unsigned magnitude.
 #
-# With the nested-IOR media stack on (``NESTED_IOR``, DESIGN_mesh_identity_
+# With the nested-IOR media stack on (``nested_ior``, DESIGN_mesh_identity_
 # open.md §H), a custom scatter's transmitted ray continues in the PARENT
 # medium: the renderer copies the calling ray's media stack onto the split
 # branch unchanged and passes the material's own index as ``ior``, because a

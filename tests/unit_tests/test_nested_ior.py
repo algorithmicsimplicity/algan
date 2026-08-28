@@ -219,13 +219,13 @@ def test_the_setting_is_reachable_from_settings_and_round_trips():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt_settings
 
-    before = rt_settings.NESTED_IOR
+    before = rt_settings.nested_ior
     try:
         SETTINGS.raytracing.experimental.set(nested_ior=True)
-        assert rt_settings.NESTED_IOR is True
+        assert rt_settings.nested_ior is True
         assert rt_settings.nested_ior_mode() == 1
         SETTINGS.raytracing.experimental.set(nested_ior=False)
-        assert rt_settings.NESTED_IOR is False
+        assert rt_settings.nested_ior is False
         assert rt_settings.nested_ior_mode() == 0
     finally:
         rt_settings.set_nested_ior(before)

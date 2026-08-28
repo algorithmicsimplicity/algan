@@ -690,12 +690,12 @@ def report_routes(video_settings):
         return mob.spawn()
 
     def with_shadows(scene):
-        rt_settings.set_ray_traced_shadows(True)
+        rt_settings.set_shadows(True)
         sphere(scene)
         Square(side_length=6, color=WHITE, scene=scene).spawn()
 
     def with_spp(scene):
-        rt_settings.SAMPLES_PER_PIXEL = 4
+        rt_settings.samples_per_pixel = 4
         sphere(scene)
 
     cases = [
@@ -708,7 +708,7 @@ def report_routes(video_settings):
         (
             "ray-traced shadows on",
             with_shadows,
-            lambda: rt_settings.set_ray_traced_shadows(False),
+            lambda: rt_settings.set_shadows(False),
         ),
         (
             "polished metal",
@@ -727,7 +727,7 @@ def report_routes(video_settings):
         (
             "samples_per_pixel = 4 (path tracer)",
             with_spp,
-            lambda: setattr(rt_settings, "SAMPLES_PER_PIXEL", 1),
+            lambda: setattr(rt_settings, "samples_per_pixel", 1),
         ),
     ]
 
@@ -800,7 +800,7 @@ def main(argv=None):
     print(f"resolution   {video_settings.resolution}")
     print(f"anti_alias   {video_settings.anti_alias_level} (requested)")
     print(
-        f"analytic AA  master={rt_settings.ANALYTIC_AA} "
+        f"analytic AA  master={rt_settings.analytic_aa} "
         f"bez={rt_settings.analytic_aa_bez_active()} "
         f"tri={rt_settings.analytic_aa_tri_active()}"
     )

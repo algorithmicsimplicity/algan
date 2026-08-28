@@ -71,7 +71,7 @@ def _circuit_z_index(primitive):
 #: fewer, longer chords -- and trades edge memory and flatten work against
 #: silhouette fidelity, so it takes an environment default rather than being a
 #: bare literal. (Under analytic AA the tighter
-#: ``rt_settings.ANALYTIC_AA_CHORD_TOLERANCE`` overrides it.)
+#: ``rt_settings.analytic_aa_chord_tolerance`` overrides it.)
 DEFAULT_CHORD_TOLERANCE_PIXELS = env_float("ALGAN_CHORD_TOLERANCE_PIXELS", 0.5)
 
 

@@ -106,7 +106,7 @@ def rgb_shadow_tint():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    return bool(rt_settings.RGB_SHADOW_TINT)
+    return bool(rt_settings.rgb_shadow_tint)
 
 # Taichi is NOT initialized here. The arch depends on
 # ``SETTINGS.computing.render_device``, which a script may still change at
@@ -193,9 +193,9 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # read its docstring before touching the arithmetic. A 64x64 render of a lit
 # plane showed 16 crack pixels on CUDA and none on CPU before it.
 #
-# The switch itself lives on ``rt_settings`` as ``WATERTIGHT_TRI`` (reachable
+# The switch itself lives on ``rt_settings`` as ``watertight_tri`` (reachable
 # as ``SETTINGS.raytracing.experimental.watertight_tri``) and is read here
-# through :func:`watertight_tri`, exactly as ``RGB_SHADOW_TINT`` is: both are
+# through :func:`watertight_tri`, exactly as ``rgb_shadow_tint`` is: both are
 # ``ti.static`` gates over a kernel body and there is no reason for one to be a
 # setting and the other not.
 #
@@ -235,7 +235,7 @@ def watertight_tri():
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    return bool(rt_settings.WATERTIGHT_TRI)
+    return bool(rt_settings.watertight_tri)
 
 
 @ti.func
@@ -289,7 +289,7 @@ def _tri_hit(ro, rd, v0, v1, v2):
 
     ``w1``/``w2`` are the barycentric weights of ``v1``/``v2`` (so
     ``w0 = 1 - w1 - w2``) and ``t`` the ray parameter, matching what the three
-    call sites used to compute inline. Under ``WATERTIGHT_TRI`` this is
+    call sites used to compute inline. Under ``watertight_tri`` this is
     Woop-Benthin-Wald; otherwise it is the shipped dilated Moller-Trumbore,
     unchanged and bit-for-bit.
     """
@@ -1056,7 +1056,7 @@ def _shadow_identity_t_min(f, prim, src_sid, src_prim, eps_self, eps_near,
     primitive is the narrowest test that still covers the artifact.
 
     Both epsilons arrive already scaled to the batch's scene size (see
-    ``SHADOW_EPS_RELATIVE``), which is what retires the absolute
+    ``shadow_eps_relative``), which is what retires the absolute
     ``MIN_HIT_DISTANCE`` from this path.
 
     ``src_prim < 0`` (per-ray runtime) disables the test for that ray:
@@ -1560,7 +1560,7 @@ def _color_map_texel(tc, base_row, lut_base, texel_idx, num_points,
 
     ``lut_base < 0`` is a plain f32 map (five channels at row ``base_row +
     texel_idx``, the historical layout, byte for byte). ``lut_base >= 0`` is a
-    u8-packed map (TEXTURE_U8_STORAGE): one RGBA texel bit-packed into ONE f32
+    u8-packed map (texture_u8_storage): one RGBA texel bit-packed into ONE f32
     lane of the shared bank -- lane ``base_row * 5 + texel_idx``, bytes
     little-endian r|g<<8|b<<16|a<<24 -- decoded through the per-map 256-entry
     LUT at rows ``lut_base..lut_base+255`` (col 0 = the value the f32 path
@@ -1599,7 +1599,7 @@ def _color_map_texel(tc, base_row, lut_base, texel_idx, num_points,
 @ti.func
 def _authored_texel(tc, offset, frame_texel_base, u8_packed, texel_idx,
                     num_points, textures: ti.template()):
-    """One texel of an ENDPOINT stack, in authored space (TEXTURE_TIME_LERP).
+    """One texel of an ENDPOINT stack, in authored space (texture_time_lerp).
 
     Endpoint stacks are stored pre-decode so the time lerp runs on authored
     values -- the order the dense path applies them (the timeline lerps
@@ -1639,7 +1639,7 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     offset = tri_tex_meta[prim_uv_index, 0]
     width = tri_tex_meta[prim_uv_index, 1]
     height = tri_tex_meta[prim_uv_index, 2]
-    # Per-map time length (meta col 10): under TEXTURE_TIME_FLAT a map's
+    # Per-map time length (meta col 10): under texture_time_flat a map's
     # frames sit consecutively along the texel axis, so frame f of the map
     # starts at ``offset + (f % t) * w * h`` while the buffer's own time axis
     # stays at length 1. With the legacy shared axis t == 1 and this is the
@@ -1648,11 +1648,11 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     # u8-packed storage marker (meta col 15, -1 = plain f32 rows); see
     # ``_color_map_texel``.
     lut_base = tri_tex_meta[prim_uv_index, 15]
-    # Endpoint-interpolation region (meta cols 16-17, TEXTURE_TIME_LERP):
+    # Endpoint-interpolation region (meta cols 16-17, texture_time_lerp):
     # the map is a stack of authored endpoint images and frame f blends
     # endpoints i0 and i1 by w, all read from one tiny bank row. Column 3 of
     # the row says whether the blended rgb still needs the linear-light
-    # decode the merge skipped (LINEAR_COLOR_SPACE).
+    # decode the merge skipped (linear_color_space).
     lerp_off = tri_tex_meta[prim_uv_index, 16]
     lerp_i0 = 0
     lerp_i1 = 0
@@ -1729,7 +1729,7 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
 
     color /= ti.max(sum_w, 1e-6)
     alpha /= ti.max(sum_w, 1e-6)
-    # In-sampler opacity multiply (TEXTURE_OPACITY_IN_KERNEL): the mob's
+    # In-sampler opacity multiply (texture_opacity_in_kernel): the mob's
     # animated opacity rides the bank as a tiny per-map region (meta col 13 =
     # its base row, col 14 = its frame count) instead of being premultiplied
     # into the map's coverage channel on the host -- which is what lets a fade

@@ -6,7 +6,7 @@ by per-ray state in global memory, driven by a host-side iteration loop
 
 * :func:`wavefront_generate_rays` -- initialise per-ray state with primary
   rays (skipped when fused generation folds this into the first traverse; see
-  ``settings.WF_GEN_FUSED``).
+  ``settings.wf_gen_fused``).
 * :func:`wavefront_traverse_events` -- for each *active* ray, gather the
   KBUF nearest hits (reusing the unchanged ``_collect_hits``) into a transient
   compact event batch indexed by active-queue ordinal.
@@ -291,7 +291,7 @@ def _sample_tex_vec5(f, u, v, offset, width_i, height_i, tmap_i,
     shared flat texel buffer (same filtering as ``_sample_texture``, but
     addressed by an explicit (offset, w, h) triplet so material and normal
     maps can share the buffer with the color maps). ``tmap_i`` is the map's
-    own time length (meta cols 10-12): under TEXTURE_TIME_FLAT frame f of
+    own time length (meta cols 10-12): under texture_time_flat frame f of
     the map starts at ``offset + (f % tmap_i) * w * h`` while the buffer's
     time axis stays at length 1; with the legacy shared axis ``tmap_i == 1``
     and the addressing is the old one exactly.
@@ -976,7 +976,7 @@ def _mirror_share(roughness):
     ``MeshStandardMaterial(roughness=0.35)`` draw a razor-sharp, full-strength
     mirror image: minified 10x or more by the reflection's own geometry, that
     image aliases into hard bright chunks that no amount of sub-pixel sampling
-    of the SAME direction can fix (``ANALYTIC_AA_SECONDARY_SAMPLES`` moves the
+    of the SAME direction can fix (``analytic_aa_secondary_samples`` moves the
     ray's origin, not its direction, so on a flat face all four taps agree).
 
     So the ray carries only the share of the lobe that sits within a cone it
@@ -996,7 +996,7 @@ def _mirror_share(roughness):
     rather than as a mirror with an aliased picture painted on it.
 
     This is the stand-in for a properly sampled glossy lobe, not a rival to it:
-    with ``GLOSSY_REFLECTION`` on, the raster resolve's continuations spread
+    with ``glossy_reflection`` on, the raster resolve's continuations spread
     over the real GGX lobe (``raster_taichi._glossy_reflect``) and skip this
     entirely, because the lobe is then being integrated rather than
     approximated by its peak.
@@ -1232,8 +1232,8 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     ray, and one deterministic sample of a glossy lobe is not a blur -- it is a
     mirror pointing the wrong way. Blurring needs several rays, so it lives
     where several already exist: the raster resolve's primary hit spreads its
-    ``ANALYTIC_AA_SECONDARY_SAMPLES`` continuations over the material's GGX lobe
-    (``raster_taichi._glossy_reflect``, ``GLOSSY_REFLECTION``). The split happens
+    ``analytic_aa_secondary_samples`` continuations over the material's GGX lobe
+    (``raster_taichi._glossy_reflect``, ``glossy_reflection``). The split happens
     once, at that primary hit, so the deeper bounces this func drives stay
     specular-perfect and the cost stays N x the secondary traversal rather than
     N^depth. The Monte Carlo megakernel jitters every bounce, by a wider
@@ -1542,7 +1542,7 @@ def wf_composite_accum(
 
     ``empty`` (compile-time): the raster front-end pre-fills ``pix_accum`` with
     the retired-empty constant ``[0,0,0,0, 1,1,1]`` and, when a whole tile has
-    no candidate geometry, leaves it untouched (RASTER_EMPTY_SKIP). For that
+    no candidate geometry, leaves it untouched (raster_empty_skip). For that
     tile the accumulator is *known* to be that constant, so the 28-byte-per-
     pixel ``pix_accum`` read -- the kernel's dominant memory traffic -- is
     dropped: ``acc == 0`` and ``weight == 1`` collapse the blend to the bare
@@ -1860,7 +1860,7 @@ def wavefront_traverse(
         rs_kp: ti.types.ndarray(),
         rs_kf: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(),
-        # Fused primary-ray generation (compile-time; see WF_GEN_FUSED). When
+        # Fused primary-ray generation (compile-time; see wf_gen_fused). When
         # ``gen_first`` is on this launch IS the tile's first iteration on a
         # split-free, near-clip-free render: every ray is primary and owns
         # pixel ``r``, so the ray is generated here (writing only ro/rd back)
@@ -2045,7 +2045,7 @@ def wavefront_traverse_events(
         rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
         hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(),
-        # Fused primary-ray generation (compile-time; see WF_GEN_FUSED). When
+        # Fused primary-ray generation (compile-time; see wf_gen_fused). When
         # ``gen_first`` is on this launch IS the tile's first iteration on a
         # split-free, near-clip-free render: every ray is primary and owns
         # pixel ``r``, so the ray is generated here (writing only ro/rd back)
@@ -2437,7 +2437,7 @@ def wavefront_shade(
         # Deliver the direct lights' share of the reflected specular lobe,
         # which the continuation this hit spawns cannot: a ray only finds
         # light that has geometry, and a delta light has none
-        # (rt_settings.DIRECT_SPECULAR_LOBE). A ti.template(), not a runtime
+        # (rt_settings.direct_specular_lobe). A ti.template(), not a runtime
         # arg, so it costs this kernel nothing against the CUDA argument
         # ceiling noted below. 0 restores the previous weighting exactly.
         direct_spec: ti.template(),
@@ -2460,7 +2460,7 @@ def wavefront_shade(
         # ndarray shape it probed before, a template is actually a compile-time
         # constant (``ti.static`` rejects an ndarray ``.shape`` expression).
         compact: ti.template(),
-        # Post-loop significance-floor exit (rt_settings.WEIGHT_FLOOR_EXIT,
+        # Post-loop significance-floor exit (rt_settings.weight_floor_exit,
         # read live per batch like the other template gates): a ray whose
         # throughput fell under MIN_WEIGHT retires even if its last act was an
         # in-place bounce -- every reflect branch ``break``s past the in-loop

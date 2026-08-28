@@ -1,6 +1,6 @@
 """The shadow acceptance floor scales with the scene, not with a constant.
 
-Identity-aware shadow rejection (``SHADOW_IDENTITY_REJECT``,
+Identity-aware shadow rejection (``shadow_identity_reject``,
 DESIGN_mesh_identity_open.md ssI) replaces the absolute ``MIN_HIT_DISTANCE``
 = 1e-4 on the shadow path with a floor proportional to the batch's own scene
 scale. That constant is only ever right for a scene about ten units across:
@@ -99,7 +99,7 @@ def test_same_mesh_floor_is_never_negative(fraction, monkeypatch, restore_settin
     the only way in.
     """
     rt.experimental.set(shadow_eps_relative=1e-5, shadow_near_fraction=0.0)
-    monkeypatch.setattr(rt_settings, "SHADOW_NEAR_FRACTION", fraction)
+    monkeypatch.setattr(rt_settings, "shadow_near_fraction", fraction)
     eps_self, eps_near = _shadow_identity_epsilons(_merged(7.0))
     assert eps_self > 0.0
     assert eps_near == 0.0

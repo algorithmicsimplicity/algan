@@ -75,9 +75,9 @@ def _aa_group(aa_bez, aa_tri):
 
     One definition, because the emission truncation below and the historical
     kernel readers had to agree about it, and they drifted once --
-    ``ANALYTIC_AA_ONE_MESH`` set ``aa_grp = 3``, which ``_aa_run_full`` treats
+    ``analytic_aa_one_mesh`` set ``aa_grp = 3``, which ``_aa_run_full`` treats
     as the relaxed gate, while the truncation still tested
-    ``ANALYTIC_AA_RUN_FULL`` alone and therefore withheld the mitigation. That
+    ``analytic_aa_run_full`` alone and therefore withheld the mitigation. That
     combination truncates fragment lists whose area donors the relaxed
     semantics require, which is exactly the interior notch ss6.3.2 documents;
     measured on CUDA, it cost a flat quad -8% of ink wobble where wiring both
@@ -93,10 +93,10 @@ def _aa_group(aa_bez, aa_tri):
     per-sheet claim arithmetic subsumes them (DESIGN_sheet_resolve.md ss7),
     and its only emission-side dependency is the truncation gate here.
     """
-    aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
-    if aa_grp and rt_settings.ANALYTIC_AA_RUN_FULL:
+    aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.analytic_aa_seam) else 0
+    if aa_grp and rt_settings.analytic_aa_run_full:
         aa_grp = 2
-    if aa_grp and rt_settings.ANALYTIC_AA_ONE_MESH:
+    if aa_grp and rt_settings.analytic_aa_one_mesh:
         aa_grp = 3
     return aa_grp
 
@@ -415,7 +415,7 @@ def _straddle_clip_wanted(straddles):
     outright.  One host transfer per call, next to the one
     ``_class_any_flags`` already makes.
     """
-    return rt_settings.RASTER_STRADDLE_CLIP and bool(straddles.any().item())
+    return rt_settings.raster_straddle_clip and bool(straddles.any().item())
 
 
 def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
@@ -921,10 +921,10 @@ def _class_any_flags(pre_m):
     frame whose flag is False provably yields an empty mask for every tile
     and ``_window_pairs`` can skip its tensor work -- most importantly the
     synchronizing ``.nonzero()`` in ``_class_pairs_flat`` -- outright.  One
-    host transfer per window (RASTER_PAIR_FLAGS kill-switch), instead of
+    host transfer per window (raster_pair_flags kill-switch), instead of
     per-tile syncs.
     """
-    if not rt_settings.RASTER_PAIR_FLAGS:
+    if not rt_settings.raster_pair_flags:
         return None
     reach_base = pre_m[..., 1] | pre_m[..., 2]
     return (
@@ -938,7 +938,7 @@ def _class_any_flags(pre_m):
 
 
 def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
-    """The kernel arm of ``_class_pairs_flat`` (``RASTER_PAIR_EXPAND_KERNEL``).
+    """The kernel arm of ``_class_pairs_flat`` (``raster_pair_expand_kernel``).
 
     One pass counts each candidate's chunks, the host keeps only the prefix
     sum it kept anyway, and one pass writes each row -- binary-searching the
@@ -992,7 +992,7 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     """
     ncirc = mask.shape[1]
     if (
-        rt_settings.RASTER_PAIR_EXPAND_KERNEL
+        rt_settings.raster_pair_expand_kernel
         and mask.numel()
         and f_abs.numel() * ncirc == mask.numel()
     ):
@@ -1152,7 +1152,7 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     """The six-array fragment gather ``idx`` drives, as one pass.
 
     Returns the same six tensors ``index_select`` would. One kernel launch
-    reads ``idx`` once instead of six times (``RASTER_FUSED_GATHER``,
+    reads ``idx`` once instead of six times (``raster_fused_gather``,
     DESIGN_optimization_targets.md T5); a gather copies bits, so the two arms
     are bit-identical and the flag is there for the A/B rather than for a
     choice.
@@ -1165,7 +1165,7 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     is +53 MB of peak for 4 ms of gather, so that site stays sequential.
     """
     m = int(idx.shape[0])
-    if not rt_settings.RASTER_FUSED_GATHER or m == 0:
+    if not rt_settings.raster_fused_gather or m == 0:
         return tuple(t.index_select(0, idx) for t in (key, ref, ab, cov, msk, opq))
     from algan.rendering.raytracing.sheet_compact_taichi import (
         gather_fragment_arrays,
@@ -1201,7 +1201,7 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     """The opaque-prefix truncation's keep mask: ``keep[j]`` holds exactly when
     fragment j precedes its pixel's first proven-opaque hit, inclusive.
 
-    Under ``RASTER_OPAQUE_TRUNC_KERNEL`` one kernel walks each covered pixel's
+    Under ``raster_opaque_trunc_kernel`` one kernel walks each covered pixel's
     CSR run (``sheet_compact_taichi.opaque_prefix_keep``); the torch arm below
     is what it replaced and stays as the A/B arm. That arm built a whole-stream
     segment map with ``repeat_interleave`` to route an amin scatter per opaque
@@ -1210,7 +1210,7 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     flag comparisons over identical ranges, so they agree by construction.
     """
     device = opaque_s.device
-    if not rt_settings.RASTER_OPAQUE_TRUNC_KERNEL or num_frags == 0:
+    if not rt_settings.raster_opaque_trunc_kernel or num_frags == 0:
         positions = torch.arange(num_frags, dtype=torch.int64, device=device)
         segments = torch.repeat_interleave(
             torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
@@ -1256,7 +1256,7 @@ def _one_mesh_pixel_caps(
     the per-fragment ceiling -- the larger of that surface's two sheets' exact
     areas, 2.0 (the no-ceiling sentinel) everywhere else.
 
-    Under ``SHEET_ONE_MESH_KERNEL`` two kernels walk each covered pixel's CSR
+    Under ``sheet_one_mesh_kernel`` two kernels walk each covered pixel's CSR
     run instead of scattering through a whole-stream segment map:
     ``sheet_compact_taichi.one_mesh_pixel_reduce`` keeps the id spread and the
     two facing-split coverage sums in registers, and
@@ -1271,7 +1271,7 @@ def _one_mesh_pixel_caps(
     """
     device = key_s.device
     num_covered = int(counts.numel())
-    if rt_settings.SHEET_ONE_MESH_KERNEL:
+    if rt_settings.sheet_one_mesh_kernel:
         from algan.rendering.raytracing.sheet_compact_taichi import (
             one_mesh_pixel_apply,
             one_mesh_pixel_reduce,
@@ -1414,7 +1414,7 @@ def _tri_obj_row(pix, ppf, time_start, rows):
 def _shadow_identity_epsilons(merged):
     """The shadow acceptance floors for this batch, in world units.
 
-    Identity-aware rejection (``SHADOW_IDENTITY_REJECT``,
+    Identity-aware rejection (``shadow_identity_reject``,
     DESIGN_mesh_identity_open.md ssI) replaces the absolute
     ``MIN_HIT_DISTANCE`` on the shadow path with a floor proportional to the
     batch's own scene scale -- the diagonal of the merged triangle bounding
@@ -1448,14 +1448,14 @@ def _shadow_identity_epsilons(merged):
             if math.isfinite(diag):
                 scale = diag
         merged["_shadow_scene_diag"] = scale
-    eps_self = float(rt_settings.SHADOW_EPS_RELATIVE) * scale
+    eps_self = float(rt_settings.shadow_eps_relative) * scale
     if not (eps_self > 0.0) or not math.isfinite(eps_self):
         eps_self = float(MIN_HIT_DISTANCE)
     # Clamped, not merely scaled: a negative fraction would make the same-mesh
     # floor negative, and `t > eps_near` would then accept hits at t <= 0 --
     # geometry BEHIND the ray origin occluding the light. NaN fails the
     # comparison and lands on 0.0 too.
-    eps_near = eps_self * float(rt_settings.SHADOW_NEAR_FRACTION)
+    eps_near = eps_self * float(rt_settings.shadow_near_fraction)
     if not (eps_near > 0.0):
         eps_near = 0.0
     return eps_self, eps_near
@@ -1591,9 +1591,9 @@ def prepare_sparse_raster_coverage(
     if not specs:
         return None
 
-    ss = 1 if rt_settings.RASTER_SS else 0
+    ss = 1 if rt_settings.raster_ss else 0
     aa_bez = rt_settings.analytic_aa_bez_mode()
-    aa_hw = float(rt_settings.ANALYTIC_AA_BEZ_MIN_HALF_WIDTH)
+    aa_hw = float(rt_settings.analytic_aa_bez_min_half_width)
     # Triangle coverage needs the edge-length columns the projection table only
     # carries when the host built it wide. Gate on the width actually produced,
     # never on the live toggle: a flip between the per-batch precompute and here
@@ -1606,8 +1606,8 @@ def prepare_sparse_raster_coverage(
     # the same emission representation (raster_taichi._tri_repr == 2); the
     # rule itself now lives in the sheet resolve's per-sheet redistribution.
     # Value 2 belonged to the deleted cells accounting.
-    if aa_tri and rt_settings.ANALYTIC_AA_RUN:
-        aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
+    if aa_tri and rt_settings.analytic_aa_run:
+        aa_tri = 4 if rt_settings.analytic_aa_run_rule == "redistribute" else 3
     # The sample-less-triangle policy rides along in the value the GEOMETRY
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
     # resolve and the shadow-event build keep the plain mode value: the policy
@@ -1888,7 +1888,7 @@ def prepare_sparse_raster_coverage(
         # re-claims the corr residue and wobble regresses 2-4x (0.015 ->
         # 0.060; the exact-fit angles go 0.000 -> 0.032). Only the §6.7 run
         # lanes are truly subsumed (compaction has no budget to truncate).
-        if rt_settings.ANALYTIC_AA_ONE_MESH and num_frags:
+        if rt_settings.analytic_aa_one_mesh and num_frags:
             msk_s, cap_s = _one_mesh_pixel_caps(
                 key_s,
                 ref_s,
@@ -1906,14 +1906,14 @@ def prepare_sparse_raster_coverage(
             # keeps.
             cap_s = torch.full_like(cov_s, 2.0)
 
-        # SHEET_SAMPLE_DEPTH: mark MATERIAL-opaque triangles so the compaction
+        # sheet_sample_depth: mark MATERIAL-opaque triangles so the compaction
         # can tell a depth-gate enforcer sheet (material-opaque, full sample
         # union, full exact coverage) from a translucent one. Classification is
         # uniform within a surface -- the bit comes from the material, and one
         # band never spans two meshes -- so per-fragment is per-band. Rides the
         # mask word as data; every reader masks with AA_MASK_ALL or tests named
         # flag bits, so it is inert where unread.
-        if rt_settings.SHEET_SAMPLE_DEPTH and num_frags:
+        if rt_settings.sheet_sample_depth and num_frags:
             msk_s = msk_s | torch.where(
                 mat_opaque_s & (ref_s >= 0),
                 torch.full_like(msk_s, AA_MAT_OPAQUE_BIT),
@@ -1974,9 +1974,9 @@ def prepare_sparse_raster_coverage(
             band_rule="prim",
             band_c=2.0,
             tri_screen=tri_screen,
-            shade_split=bool(rt_settings.SHEET_SHADE_SPLIT),
-            positioned_depth=bool(rt_settings.SHEET_POSITIONED_DEPTH),
-            sample_depth=bool(rt_settings.SHEET_SAMPLE_DEPTH),
+            shade_split=bool(rt_settings.sheet_shade_split),
+            positioned_depth=bool(rt_settings.sheet_positioned_depth),
+            sample_depth=bool(rt_settings.sheet_sample_depth),
         )
         ns = int(stream["num_sheets"])
         sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
@@ -2194,10 +2194,10 @@ def shade_sparse_raster_coverage(
         int(skip_unlit_normal),
         1 if int(merged.get("num_circuits", 0)) > 0 else 0,
         sec_aa,
-        float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
+        float(rt_settings.analytic_aa_secondary_min_energy),
         int(rt_settings.glossy_reflection_mode()),
         1 if coverage.get("env_in_composite") else 0,
-        int(rt_settings.DIRECT_SPECULAR_LOBE),
+        int(rt_settings.direct_specular_lobe),
     )
     post_args = (
         covered_idx,
@@ -2256,7 +2256,7 @@ def shade_sparse_raster_coverage(
         # into the next chunk's length.
         memo_on = (
             1
-            if rt_settings.SHEET_RESOLVE_MEMO
+            if rt_settings.sheet_resolve_memo
             and int(merged.get("num_triangles", 0)) > 0
             else 0
         )
@@ -2301,13 +2301,13 @@ def shade_sparse_raster_coverage(
             ev_fnrm = event_fnrm.index_select(0, acc_idx)
             ev_frame = event_frame.index_select(0, acc_idx)
             ev_msk = event_msk.index_select(0, acc_idx)
-            # Identity-aware shadow rejection (SHADOW_IDENTITY_REJECT): hand
+            # Identity-aware shadow rejection (shadow_identity_reject): hand
             # the trace each accepted event's SOURCE triangle, so it can tell
             # a hit on the surface the ray left from a hit on a different one
             # and spare the latter the acceptance floor entirely. The sheet
             # ref IS that triangle (-1 for a bezier-sourced event, which the
             # kernel reads as "no identity" and traces with the old epsilon).
-            identity_on = bool(rt_settings.SHADOW_IDENTITY_REJECT)
+            identity_on = bool(rt_settings.shadow_identity_reject)
             if identity_on:
                 ev_src_prim = (
                     coverage["sheet_ref"][s_start:s_end]

@@ -1,10 +1,10 @@
 """The in-sampler texture opacity multiply and u8 colour-map storage.
 
-TEXTURE_OPACITY_IN_KERNEL moves the mob-opacity premultiply off the colour
+texture_opacity_in_kernel moves the mob-opacity premultiply off the colour
 map: the primitive carries per-frame scalars (``texture_opacity``) and the
 map keeps its authored texels, so a fade of a static image collapses to a
 one-frame map (the premultiply used to weld the fade into the widest
-attribute in the engine, voiding TEXTURE_WINDOW_COLLAPSE). TEXTURE_U8_STORAGE
+attribute in the engine, voiding texture_window_collapse). texture_u8_storage
 then stores maps whose texels are provably ``k / 255`` (``texture_u8_ok``,
 checked once at authoring) as RGBA bytes bit-packed into f32 lanes of the
 shared bank, decoded in-kernel through a per-map LUT scattered from the
@@ -229,13 +229,13 @@ def test_u8_lane_packing_round_trips():
 def test_wf_textured_forces_the_legacy_premultiply():
     # The setter rejects enabling the removed legacy renderer outright, so
     # poke the module global the way only old pickled configs could.
-    rt_settings.WF_TEXTURED = True
+    rt_settings.wf_textured = True
     try:
         assert not rt_settings.texture_opacity_in_kernel_active(), (
             "WF_TEXTURED's legacy bank builder consumes premultiplied maps"
         )
     finally:
-        rt_settings.WF_TEXTURED = False
+        rt_settings.wf_textured = False
 
 
 def test_u8_flip_is_byte_identical_end_to_end(tmp_path):

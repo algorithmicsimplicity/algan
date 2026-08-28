@@ -183,7 +183,7 @@ class TriangleMesh(Mob):
                 texture = image_to_texture_map(texture)
             self.texture_map = texture.to(device).as_subclass(Color)
             # u8 provenance, proved once here at construction (the map is
-            # immutable afterwards) and consumed by TEXTURE_U8_STORAGE; see
+            # immutable afterwards) and consumed by texture_u8_storage; see
             # texture_u8_provenance.
             self._texture_u8_ok = texture_u8_provenance(self.texture_map)
         self.material_texture_map = (
@@ -441,7 +441,7 @@ class TriangleMesh(Mob):
         if self.texture_map is not None:
             # The mob's (per-frame) opacity drives textured meshes through the
             # standard spawn/despawn fade -- the same contract Surface/ImageMob
-            # use. In-sampler by default (TEXTURE_OPACITY_IN_KERNEL): the
+            # use. In-sampler by default (texture_opacity_in_kernel): the
             # primitive carries the opacity as per-frame scalars and the map
             # stays the authored (u8-provenance-preserving) texels; the legacy
             # arm premultiplies the map's coverage channel per frame.

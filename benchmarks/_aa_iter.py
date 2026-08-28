@@ -20,7 +20,7 @@ silhouette gradation, sub-pixel rods). Metrics per scene:
     maxdev   max |arm - ref| over the frame
 
 MEASUREMENT TRAP (ss21.2): the aa=4 reference dilates filled circuits by 0.15
-output px while the analytic default is ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = 0.3.
+output px while the analytic default is analytic_aa_bez_min_half_width = 0.3.
 A sharper filter amplifies that fixed offset, so exact-coverage arms score
 WORSE for being MORE faithful unless measured at a matched 0.15:
 
@@ -172,8 +172,8 @@ def render_frame(name, path, aa_level, analytic):
     """One frame of ``name`` at ``aa_level``; analytic AA forced on or off."""
     SceneManager.reset()
     prev = (
-        rt_settings.ANALYTIC_AA,
-        rt_settings.ANALYTIC_AA_TRI,
+        rt_settings.analytic_aa,
+        rt_settings.analytic_aa_tri,
     )
     rt_settings.set_analytic_aa(analytic, triangles=analytic and prev[1])
     settings = VideoSettings((W, H), frames_per_second=4, anti_alias_level=aa_level)

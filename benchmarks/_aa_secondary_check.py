@@ -3,7 +3,7 @@
 Analytic coverage resolves a mirror's own OUTLINE exactly, but the image seen
 inside it is sampled by the continuation ray, and one continuation per pixel
 aliases no matter how good the primary coverage is
-(``DESIGN_analytic_aa.md`` ss7, ss17). ``ANALYTIC_AA_SECONDARY_SAMPLES = N``
+(``DESIGN_analytic_aa.md`` ss7, ss17). ``analytic_aa_secondary_samples = N``
 spawns N continuations from N sub-pixel positions instead.
 
 The scenes put the high-frequency detail INSIDE the reflection/refraction, and
