@@ -194,23 +194,32 @@ wavefront loop.
 ### 4.1 What a build costs
 
 Measured by `.github/workflows/mps_probe.yaml`'s `taichi_build` job on the free
-Apple-silicon runner (`macos-15`, 3 cores), stock v1.7.4, one Python version,
-Vulkan/CUDA/tests off:
+Apple-silicon runner (`macos-15`, **3 cores, 7 GiB**), stock v1.7.4, one Python
+version, Vulkan/CUDA/tests off. Two runs:
 
-| phase | seconds | minutes |
-| --- | ---: | ---: |
-| clone, with submodules | 47 | 0.8 |
-| `brew install llvm@15` | 22 | 0.4 |
-| **cold build to a wheel** | **710** | **11.8** |
-| **rebuild after touching one `.cpp`** | **65** | **1.1** |
+| phase | run A (s) | run B (s) | ≈ |
+| --- | ---: | ---: | ---: |
+| clone, with submodules | 47 | 52 | 0.8 min |
+| `brew install llvm@15` | 22 | 21 | 0.4 min |
+| **cold build to a wheel** | **710** | **681** | **11–12 min** |
+| **rebuild after touching one `.cpp`** | **65** | **67** | **1.1 min** |
 
-The wheel is ~38 MB. `build.py` downloads a prebuilt LLVM 15, so no LLVM is
+Output: `taichi-1.7.4-cp311-cp311-macosx_15_0_arm64.whl`, 37 MB, around a 98 MB
+`taichi_python` module. `build.py` downloads a prebuilt LLVM 15, so no LLVM is
 built here, and it wires up `sccache` against `~/.cache/ti-build-cache`, which
-starts empty on a hosted runner — so 11.8 minutes is a genuinely cold build, and
-a fork's CI could cache that directory and do better.
+starts empty on a hosted runner — so this is a genuinely cold build, and a
+fork's CI could cache that directory and do better.
 
-Twelve minutes is cheap. **The expensive part is the toolchain pin**, and that
-is the real finding: seven attempts were needed to get a wheel, and six of them
+Our own build reproduces §2's symbol split, which matters because it shows the
+split is a property of the code rather than of how upstream happens to package
+its wheel — a fork inherits it: **247 symbols in `taichi::lang::metal`, of them
+0 external**, `import_mtl_buffer` present as exactly one local symbol, and the
+two `Ndarray(DeviceAllocation&, …)` constructors external.
+
+Twelve minutes is cheap, and the incremental number means developing the patch
+is not painful — an edit-to-wheel cycle is about a minute on three cores, less
+on a real machine. **The expensive part is the toolchain pin**, and that is the
+real finding: seven attempts were needed to get the first wheel, and six of them
 failed on the environment rather than on anything to do with Taichi.
 
 | attempt | failure | fix |

@@ -145,6 +145,7 @@ jobs:
   # `ti.gpu` to Metal first, and Metal defaults on for macOS builds, which is
   # why the shipped wheel carries the backend. That makes this reading a lower
   # bound for a build that also wants the Vulkan fallback.
+  #
   # Pinned to macos-15, not macos-latest, and that pin is a finding rather than
   # a preference. `macos-latest` is macOS 26 carrying only Xcode 26.x and only
   # the macOS 26.5 SDK, and its Apple clang 21 refuses to compile Taichi 1.7.4:
@@ -306,48 +307,18 @@ jobs:
             echo "Ndarray(DeviceAllocation&) external: $(nm -g "$so" 2>/dev/null | grep -c 'NdarrayC1ERNS0_16DeviceAllocation')"
           } 2>&1 | tee module-symbols.txt
 
-      # Non-fatal extras. Whether Metal runs headless on this runner at all, and
-      # whether a kernel with more ndarray arguments than Metal's 31-entry
-      # buffer argument table can bind -- the wall that decides whether the
-      # zero-copy work is worth starting. Failure here is a finding, not a
-      # broken job, hence continue-on-error.
-      - name: Metal smoke test and 40-argument kernel
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          python3 -m pip install --quiet taichi-src/dist/*.whl
-          python3 - <<'PY' 2>&1 | tee ../metal-smoke.log
-          import taichi as ti, numpy as np
-          ti.init(arch=ti.metal, advanced_optimization=False)
-          print("arch in use:", ti.lang.impl.get_runtime().prog.config().arch)
-
-          @ti.kernel
-          def tiny(x: ti.types.ndarray()):
-              for i in x:
-                  x[i] = x[i] * 2.0
-          a = np.ones(8, dtype=np.float32)
-          tiny(a)
-          print("tiny kernel ok:", a[:3])
-
-          N = 40
-          args = ", ".join(f"a{i}: ti.types.ndarray()" for i in range(N))
-          body = "\n".join(f"        a{i}[0] += 1.0" for i in range(N))
-          src = f"@ti.kernel\ndef many({args}):\n    for _ in range(1):\n{body}\n"
-          ns = {"ti": ti}
-          exec(src, ns)
-          arrs = [np.zeros(4, dtype=np.float32) for _ in range(N)]
-          try:
-              ns["many"](*arrs)
-              print(f"{N}-ndarray kernel: OK, first arg ->", arrs[0][0])
-          except Exception as e:
-              print(f"{N}-ndarray kernel: FAILED -> {type(e).__name__}: {e}")
-          PY
-
+      # There was a Metal smoke test here that also asked whether a kernel with
+      # 40 ndarray arguments can bind. It is gone on purpose:
+      # `benchmarks/_mps_capability_probe.py` asks both questions properly and
+      # has already answered them on this hardware (`DESIGN_mps_support.md`
+      # §1.1: 24 arguments run, 31 aborts the process), and the ad-hoc copy here
+      # wrote its log to the wrong directory and reported nothing. This job
+      # measures the build; the probe measures the GPU.
       - name: Publish the timings to the job summary
         if: always()
         run: |
           {
-            echo "## Taichi $TAICHI_REF from source -- macos-latest (arm64), cp311"
+            echo "## Taichi $TAICHI_REF from source -- ${{ runner.os }} arm64, cp311"
             echo
             echo "| phase | seconds | minutes |"
             echo "| --- | ---: | ---: |"
@@ -365,11 +336,6 @@ jobs:
             echo "cmake args: $TAICHI_CMAKE_ARGS"
             ls -la taichi-src/dist/ 2>/dev/null || echo "(no wheel produced)"
             echo '```'
-            echo
-            echo '### Metal smoke test'
-            echo '```'
-            cat metal-smoke.log 2>/dev/null || echo "(did not run)"
-            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the wheel and build logs
@@ -380,7 +346,6 @@ jobs:
           path: |
             taichi-src/dist/*.whl
             build-incremental.log
-            metal-smoke.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -401,8 +366,6 @@ jobs:
           ls -la taichi-src/dist/ 2>/dev/null || echo "(no wheel produced)"
           echo "=== built module ==="
           cat module-symbols.txt 2>/dev/null || echo "(not inspected)"
-          echo "=== metal smoke test ==="
-          cat metal-smoke.log 2>/dev/null || echo "(did not run)"
           if [ "${{ job.status }}" != "success" ]; then
             echo "=== Xcode, SDKs, clang, disk ==="
             ls /Applications | grep -i '^Xcode' | tr '\n' ' '; echo
