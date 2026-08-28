@@ -361,9 +361,9 @@ class ThreeDModelMob(Mob):
                 transmission=max(0.0, 1.0 - float(material.base_color[3])),
             )
         mat = material_cls(**material_kwargs)
-        # Suppress the "textures not sampled" parity warning: this renderer does
-        # sample maps (they are wired through TriangleMesh, not the Material).
-        mat._textures = {}
+        # No map slots are passed: the model's own maps are already wired
+        # through TriangleMesh above, and re-forwarding them through the
+        # material would only resample what the loader has decoded.
         mob.set_material(mat)
         return mob
 

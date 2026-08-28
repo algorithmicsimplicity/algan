@@ -214,6 +214,19 @@ class MobMaterialsMixin:
         refraction. This mirrors the Three.js material workflow; there are no
         separate mob-level reflectivity, roughness, or refractive-index setters.
 
+        Its texture maps are forwarded onto the geometry, which is what samples
+        them: ``map``, ``normal_map``, ``roughness_map`` and ``metalness_map``
+        each take a file path or an ``[H, W, C]`` image and are sampled
+        bilinearly per fragment. That needs per-vertex UVs, so it reaches a
+        :class:`~algan.mobs.surfaces.surface.Surface` (a
+        :class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.ImageMob`, ...) or a
+        :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with
+        ``uvs``; on anything else the maps are ignored, with a warning. A
+        forwarded map is **static** -- unlike the scalar properties above it is
+        not an animatable attribute -- except ``map`` on a Surface, which lands
+        on the animatable
+        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`.
+
         Every built-in material class shades per fragment in the render kernel,
         so it sees every light type, receives shadows, and its look no longer
         depends on the mesh's tessellation. Only a *custom* per-vertex shader
@@ -308,10 +321,104 @@ class MobMaterialsMixin:
             d.opacity = cast_to_tensor(material.opacity)
             d.material = material
 
-        material.emit_warnings()
+        material.emit_warnings(self._forward_material_textures(material))
         self._warn_lighting_beyond_vertex_bake(material)
 
         return self
+
+    def _forward_material_textures(self, material):
+        """Hand ``material``'s image slots to whichever descendants can sample
+        them, and report back what landed.
+
+        Returns ``{slot_name: is_animatable}`` over every descendant that took
+        something -- what :meth:`Material.emit_warnings` needs to tell a map
+        that is sampled from one that is dropped. A slot counts as animatable
+        only where *every* geometry that took it made it animatable, so the
+        caution is never understated.
+
+        Run after the loop above, so a forwarded ``map`` wins over the
+        material's flat ``color``: the kernel's colour sampler replaces the
+        per-vertex colour rather than modulating it.
+        """
+        from algan.rendering.shaders.materials import _normalize_forwarded_maps
+
+        if not material._textures:
+            return {}
+        targets, uncovered = self._texture_forwarding_targets()
+        # All-or-nothing, because a partial application is the confusing case:
+        # a Cube's body is TriangleVertices, which cannot be textured, while
+        # the decorative Dot3D at each of its corners is a Sphere, which can.
+        # Painting the corner dots and calling the map delivered would be worse
+        # than saying it went nowhere.
+        if uncovered or not targets:
+            return {}
+        # Decoded once here rather than inside each target: a Group of ten
+        # Spheres would otherwise re-read the same file ten times.
+        maps = _normalize_forwarded_maps(material._textures)
+        if not maps:
+            return {}
+        forwarded = {}
+        for d in targets:
+            for slot, animatable in d._accept_material_textures(maps).items():
+                forwarded[slot] = forwarded.get(slot, True) and animatable
+        return forwarded
+
+    def _texture_forwarding_targets(self):
+        """The Mobs under this one that a material's texture maps should go to.
+
+        Returns ``(targets, uncovered)``. A Mob that can take the maps owns its
+        whole subtree, so the walk stops there -- a Surface's own grid child
+        renders but is never a target of its own. ``uncovered`` is True when
+        the walk passed a Mob that *renders* (``is_primitive``) and cannot take
+        them, which is what separates a Group of Spheres (every rendering part
+        textured) from a Cube (its faces cannot be, whatever its corner dots
+        can do).
+        """
+        targets, uncovered, stack = [], False, [self]
+        while stack:
+            mob = stack.pop()
+            if mob._can_accept_material_textures():
+                targets.append(mob)
+                continue
+            if getattr(mob, "is_primitive", False):
+                uncovered = True
+            stack.extend(mob.children or ())
+        return targets, uncovered
+
+    def _can_accept_material_textures(self):
+        """Whether :meth:`_accept_material_textures` would take anything.
+
+        Asked before any image is loaded, so the decision costs nothing on the
+        Mobs that cannot be textured -- which is most of them.
+        """
+        return False
+
+    def _accept_material_textures(self, maps):
+        """Take the texture maps of a material being applied to this Mob.
+
+        The geometry, not the material, owns Algan's texture pipeline: the maps
+        are sampled against per-vertex UVs in the trace kernel, and only a Mob
+        that carries UVs can serve them. Overridden by
+        :class:`~algan.mobs.surfaces.surface.Surface` and
+        :class:`~algan.mobs.three_d_models.mesh.TriangleMesh`; every other Mob
+        takes nothing, which is what makes ``set_material`` warn that the maps
+        are ignored.
+
+        Parameters
+        ----------
+        maps
+            The forwardable slots, already decoded into the engine's texture
+            layout by
+            :func:`~algan.rendering.shaders.materials._normalize_forwarded_maps`.
+            One dict is shared by every target, so treat the tensors as
+            read-only.
+
+        Returns
+        -------
+        dict
+            ``{slot_name: is_animatable}`` for the slots this Mob took.
+        """
+        return {}
 
     def _warn_lighting_beyond_vertex_bake(self, material):
         """Warn when ``material`` can only be baked into vertex colours and the

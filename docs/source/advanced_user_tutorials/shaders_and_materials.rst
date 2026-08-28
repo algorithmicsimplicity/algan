@@ -203,17 +203,54 @@ dramatically slower; see :doc:`performance_and_quality`.
 Texture maps
 ------------
 
-The material classes accept Three.js's image-based property slots (``map``,
-``normalMap``, ``roughnessMap``, ``envMap``, ``matcap``, ``gradientMap``, ...) for
-API parity, but **do not sample them** -- a warning is emitted when one is set.
-``wireframe``, ``vertexColors`` and non-default ``side`` are likewise unsupported,
-and the matcap, normal and depth materials use documented approximations (matcap
-has no image; normals are world-space rather than view-space).
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+forwards the four image slots the renderer has a sampler for -- ``map``,
+``normal_map``, ``roughness_map`` and ``metalness_map`` -- onto the geometry,
+which is where Algan's texture pipeline lives. Each takes a file path or an
+``[H, W, C]`` image, and is sampled bilinearly per fragment in the ray tracing
+kernel:
 
-Texturing in Algan goes through :class:`~.Surface` instead, which takes
+.. code-block:: python
+
+    Sphere().set_material(MeshStandardMaterial(map="earth.png",
+                                               roughness_map="ocean_gloss.png"))
+
+Following Three.js, ``roughness_map`` is read from the image's **green** channel
+and ``metalness_map`` from its **blue** one, so a single packed
+occlusion/roughness/metalness image drives both; a single-channel image is used
+as-is.
+
+.. important::
+
+    A forwarded map is **static**. Unlike the scalar properties a material
+    installs -- ``mob.roughness``, ``mob.metalness`` and the rest, which are
+    animatable attributes -- a material property map is fixed once the Mob
+    spawns, and setting one warns to that effect. The exception is ``map`` on a
+    :class:`~.Surface`, which lands on the animatable
+    :attr:`~algan.mobs.surfaces.surface.Surface.color_texture` and so warns not
+    at all.
+
+Sampling needs per-vertex UVs, which means a :class:`~.Surface` (and its
+subclasses -- :class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.Torus`,
+:class:`~.ImageMob`, ...) or a
+:class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with ``uvs``. On
+anything else -- a :class:`~.Cube`, a :class:`~.Polyhedron` -- the maps are
+ignored with a warning, and ignored *wholesale*: a Cube's faces cannot be
+textured even though the decorative dot at each of its corners is a Sphere that
+could be, and texturing the corners instead would be worse than refusing.
+
+The remaining image slots (``env_map``, ``matcap``, ``gradient_map``,
+``ao_map``, ``transmission_map``, ...) have no channel in the renderer. They are
+still accepted so a Three.js material transcribes without edits, then dropped
+with a warning naming them. ``wireframe``, ``vertexColors`` and non-default
+``side`` are likewise unsupported, and the matcap, normal and depth materials use
+documented approximations (matcap has no image; normals are world-space rather
+than view-space).
+
+Going through the geometry directly gives you more: :class:`~.Surface` takes
 ``color_texture``, ``roughness_texture``, ``reflectivity_texture``,
-``refractive_index_texture``, ``normal_texture`` and ``glow_texture`` and samples
-them bilinearly per fragment inside the ray tracing kernel. See
+``refractive_index_texture``, ``normal_texture`` and ``glow_texture``, in the
+``[W, H, C]`` ``(u, v)`` layout rather than as images. See
 :doc:`images_and_textures`.
 
 Vertex Shaders

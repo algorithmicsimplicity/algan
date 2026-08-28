@@ -22,13 +22,38 @@ the per-vertex shader parameters that ``set_material`` registers as animatable
 attributes on the mob. So after applying
 a material you can animate e.g. ``mob.roughness = 0.1`` or ``mob.emissive_intensity = 3``.
 
+Texture maps
+------------
+``set_material`` forwards the image slots the renderer has a sampler for --
+``map``, ``normal_map``, ``roughness_map`` and ``metalness_map`` -- onto the
+geometry, which is where Algan's texture pipeline lives. Each one takes a path
+or an ``[H, W, C]`` image and is sampled bilinearly per fragment in the trace
+kernel::
+
+    Sphere().set_material(
+        MeshStandardMaterial(map="earth.png", roughness_map="ocean_gloss.png")
+    )
+
+Sampling needs per-vertex UVs, so this reaches a
+:class:`~algan.mobs.surfaces.surface.Surface` (and its subclasses --
+:class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.Torus`, :class:`~.ImageMob`,
+...) or a :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with
+``uvs``. On any other Mob -- a :class:`~.Polyhedron`, a
+:class:`~.Cube` -- the maps are ignored, with a warning saying so.
+
+A forwarded map is **static**: unlike the scalar properties a material installs
+(``mob.roughness`` and the rest), it is not an animatable attribute, and
+setting one warns to that effect. The one exception is ``map`` on a Surface,
+which lands on the animatable
+:attr:`~algan.mobs.surfaces.surface.Surface.color_texture` and so warns not at
+all.
+
 Limitations
 -----------
-Algan shades per vertex when no in-kernel port exists and has no UV /
-image-sampling pipeline, so every texture / image-based property (``map``,
-``normalMap``, ``roughnessMap``, ``envMap``, ``matcap``, ``gradientMap``, ...)
-is accepted for API parity but not sampled; a one-time warning is emitted when
-such a slot is set. ``wireframe``, ``vertexColors`` and non-default ``side``
+The image slots with no channel in the renderer (``env_map``, ``matcap``,
+``gradient_map``, ``ao_map``, ``transmission_map``, ...) are still accepted for
+API parity and dropped, with a warning naming them. ``wireframe``,
+``vertexColors`` and non-default ``side``
 are likewise unsupported. The matcap, normal and depth materials use documented
 approximations (see :mod:`algan.rendering.shaders.material_shaders`). Every
 built-in material class shades per fragment in the render kernel; only a
@@ -75,19 +100,36 @@ FrontSide = 0
 BackSide = 1
 DoubleSide = 2
 
-# Image-based property names accepted for API parity but never sampled.
-_TEXTURE_SLOTS = frozenset(
+# Image slots the renderer has a sampler for. ``set_material`` forwards these
+# onto the geometry (``Mob._accept_material_textures``), which is where Algan's
+# texture pipeline lives: a Surface or a TriangleMesh carries the UVs, and the
+# maps are then sampled bilinearly per fragment inside the trace kernel. The
+# value each one drives is named beside it.
+#
+# Three.js reads ``roughnessMap`` from an image's GREEN channel and
+# ``metalnessMap`` from its BLUE one, so one packed occlusion/roughness/
+# metalness image drives both; a single-channel image is used as-is. Algan's
+# "reflectivity" is the same quantity Three.js calls metalness (see
+# ThreeDModelMob._apply_pbr_material, which already reads a glTF
+# metallic-roughness map that way).
+_MAP_SLOT_PROPERTIES = {
+    "roughness_map": ("roughness", 1),
+    "metalness_map": ("reflectivity", 2),
+}
+_FORWARDED_TEXTURE_SLOTS = frozenset({"map", "normal_map"} | set(_MAP_SLOT_PROPERTIES))
+
+# Image slots with no channel anywhere in the renderer. Accepted so a Three.js
+# material transcribes without edits, then dropped -- there is nothing to
+# forward them to. (The kernel does have an unused transmission channel, but no
+# geometry exposes a way to author one, so ``transmission_map`` stays here.)
+_UNSUPPORTED_TEXTURE_SLOTS = frozenset(
     {
-        "map",
         "alpha_map",
         "ao_map",
         "env_map",
         "light_map",
         "bump_map",
-        "normal_map",
         "displacement_map",
-        "roughness_map",
-        "metalness_map",
         "emissive_map",
         "specular_map",
         "gradient_map",
@@ -103,11 +145,150 @@ _TEXTURE_SLOTS = frozenset(
         "iridescence_thickness_map",
         "specular_intensity_map",
         "specular_color_map",
-        "normal_scale",
-        "displacement_scale",
-        "displacement_bias",
     }
 )
+
+# Scalars that ride in the same ``**texture_kwargs`` bag because Three.js
+# groups them with the maps they modify. ``normal_scale`` is honoured (it
+# scales a forwarded normal map's tangential components); the displacement
+# pair is not -- no map moves a vertex in Algan.
+_UNSUPPORTED_SCALAR_SLOTS = frozenset({"displacement_scale", "displacement_bias"})
+
+_TEXTURE_SLOTS = (
+    _FORWARDED_TEXTURE_SLOTS
+    | _UNSUPPORTED_TEXTURE_SLOTS
+    | _UNSUPPORTED_SCALAR_SLOTS
+    | {"normal_scale"}
+)
+
+
+#: Channel each per-texel material property occupies in the packed material
+#: texture the trace kernel samples, and the bit that marks it texture-driven
+#: (``material_texture_flags``; an unset bit keeps the per-vertex value, see
+#: ``_flat_triangle_material`` in ``wavefront_kernels_taichi``). Channel 3 is
+#: transmission, which the kernel reads but no geometry authors yet.
+_MATERIAL_TEXTURE_CHANNELS = {"reflectivity": 0, "roughness": 1, "refractive_index": 2}
+
+
+def _as_texture_stack(tex, channels):
+    """Normalize a user-supplied texture to ``[T, W, H, channels]``.
+
+    Accepts ``[W, H]`` (single-channel maps only), ``[W, H, channels]`` or
+    ``[T, W, H, channels]``; ``W`` is the ``u`` axis, ``H`` the ``v`` axis of
+    the surface's intrinsic coordinates.
+    """
+    import torch
+
+    tex = torch.as_tensor(tex).float()
+    if tex.dim() == 2:
+        if channels != 1:
+            raise ValueError(
+                f"a 2-D texture is only valid for single-channel "
+                f"properties, expected {channels} channels"
+            )
+        tex = tex.unsqueeze(-1)
+    if tex.dim() == 3:
+        tex = tex.unsqueeze(0)
+    if tex.dim() != 4 or tex.shape[-1] != channels:
+        raise ValueError(
+            f"texture must have shape [W, H, {channels}] or "
+            f"[T, W, H, {channels}], got {tuple(tex.shape)}"
+        )
+    return tex
+
+
+def _pack_material_texture(properties, device):
+    """Combine per-property maps into one ``[T, W, H, 5]`` material texture at
+    the finest common resolution, plus the bitmask of which channels are
+    texture-driven.
+
+    ``properties`` maps the names of :data:`_MATERIAL_TEXTURE_CHANNELS` to
+    ``[W, H, 1]`` (or ``[T, W, H, 1]``) maps. Returns ``(texture, flags)``;
+    channels without a map keep their per-vertex value in-kernel.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    texs = {k: _as_texture_stack(v, 1).to(device) for k, v in properties.items()}
+    T = max(t.shape[0] for t in texs.values())
+    W = max(t.shape[1] for t in texs.values())
+    H = max(t.shape[2] for t in texs.values())
+    combined = torch.zeros((T, W, H, 5), device=device)
+    flags = 0
+    for name, t in texs.items():
+        if t.shape[1:3] != (W, H):
+            t = F.interpolate(
+                t.permute(0, 3, 1, 2),
+                size=(W, H),
+                mode="bilinear",
+                align_corners=True,
+            ).permute(0, 2, 3, 1)
+        slot = _MATERIAL_TEXTURE_CHANNELS[name]
+        combined[..., slot] = t.expand(T, W, H, 1)[..., 0]
+        flags |= 1 << slot
+    return combined, flags
+
+
+def _load_material_image(value, slot):
+    """A Material image slot as a float ``[H, W, C]`` image, rows top-down.
+
+    Takes what every other image entry point in Algan takes -- a path (resolved
+    against the working directory and then the main script's directory), a
+    numpy array, or a tensor -- so ``MeshStandardMaterial(map="brick.png")``
+    works. This is deliberately the *image* convention, not the ``[W, H, C]``
+    ``(u, v)`` layout :class:`~algan.mobs.surfaces.surface.Surface`'s
+    ``color_texture`` and friends take: a material slot holds a picture, and
+    ``[H, W]`` and ``[W, H]`` are indistinguishable once handed over.
+    """
+    from algan.utils.file_utils import get_image
+
+    image = get_image(value)
+    if image.dim() != 3:
+        raise ValueError(
+            f"{slot} must be an image [H, W, C] (or a path to one), got shape "
+            f"{tuple(image.shape)}"
+        )
+    return image
+
+
+def _normalize_forwarded_maps(textures):
+    """The forwardable image slots of ``textures``, in the engine's texture
+    layout, ready to hand to a geometry's ``_accept_material_textures``.
+
+    Returns ``{slot_name: tensor}`` holding ``map`` as ``[W, H, 5]``
+    (RGB + glow + alpha), ``normal_map`` as ``[W, H, 3]`` with components in
+    ``[-1, 1]``, and each entry of :data:`_MAP_SLOT_PROPERTIES` as
+    ``[W, H, 1]``. Slots that are absent stay absent, and unsupported ones are
+    dropped here rather than reported -- :meth:`Material.emit_warnings` is what
+    speaks about them.
+    """
+    from algan.mobs.three_d_models.mesh import image_to_normal_map, image_to_texture_map
+
+    maps = {}
+    if "map" in textures:
+        maps["map"] = image_to_texture_map(_load_material_image(textures["map"], "map"))
+    if "normal_map" in textures:
+        normal = image_to_normal_map(
+            _load_material_image(textures["normal_map"], "normal_map")
+        )
+        # Three.js's normalScale scales the tangential (x, y) components; the
+        # z component is what is left of a unit normal, so the kernel's own
+        # normalization finishes the job.
+        scale = textures.get("normal_scale")
+        if scale is not None and float(scale) != 1.0:
+            normal = normal.clone()
+            normal[..., :2] *= float(scale)
+        maps["normal_map"] = normal
+    for slot, (_, channel) in _MAP_SLOT_PROPERTIES.items():
+        if slot not in textures:
+            continue
+        image = _load_material_image(textures[slot], slot)
+        if image.shape[-1] > 1:
+            image = image[..., channel : channel + 1]
+        # Same spatial transform image_to_texture_map applies, so every map a
+        # material forwards lines up with the same (v-flipped) UVs.
+        maps[slot] = image.transpose(-3, -2).flip(-2).contiguous()
+    return maps
 
 
 # -- lighting a vertex bake cannot answer -----------------------------------
@@ -286,7 +467,8 @@ class Material:
         self.vertex_colors = vertex_colors
         self.wireframe = wireframe
         self.tone_mapped = tone_mapped
-        # Stash any texture / unsupported slots so set_material can warn about them.
+        # Stash the image slots so set_material can forward the ones the
+        # renderer samples onto the geometry, and warn about the rest.
         self._textures = {k: v for k, v in texture_kwargs.items() if v is not None}
         unexpected = set(texture_kwargs) - _TEXTURE_SLOTS
         if unexpected:
@@ -305,13 +487,54 @@ class Material:
         return 1.0 if self.flat_shading else 0.0
 
     # -- warnings ---------------------------------------------------------
-    def emit_warnings(self):
-        """Warn (once per call) about properties Algan's renderer cannot honour."""
+    def emit_warnings(self, forwarded=None):
+        """Warn (once per call) about properties Algan's renderer cannot honour.
+
+        Parameters
+        ----------
+        forwarded
+            What ``set_material`` managed to hand to the geometry, as
+            ``{slot_name: is_animatable}`` (the union over the Mobs it was
+            applied to). A slot that reached a geometry is sampled, so it is
+            reported as *static* rather than ignored -- or not reported at all
+            when the geometry it landed on made it animatable. ``None`` means
+            nothing was forwarded, which is what a bare
+            ``Material(...).emit_warnings()`` describes.
+        """
+        forwarded = {} if forwarded is None else forwarded
         msgs = []
-        if self._textures:
+        static = sorted(k for k, animatable in forwarded.items() if not animatable)
+        if static:
             msgs.append(
-                f"texture/image properties {sorted(self._textures)} are not "
-                "sampled by Algan's per-vertex renderer and are ignored"
+                f"texture maps {static} are sampled per fragment, but they are "
+                "static: unlike the material's scalar properties (mob.roughness "
+                "and the rest) they are not animatable attributes, so the image "
+                "the Mob spawns with is the image it keeps"
+            )
+        dropped = sorted(
+            (set(self._textures) & _FORWARDED_TEXTURE_SLOTS) - set(forwarded)
+        )
+        if dropped:
+            msgs.append(
+                f"texture maps {dropped} are ignored: they are sampled against "
+                "per-vertex UVs, which only a Surface (Sphere, Cylinder, "
+                "Torus, ImageMob, ...) or a TriangleMesh built with `uvs` "
+                "carries. Not every part of this Mob that renders is one, so "
+                "the maps are dropped rather than applied to some of it"
+            )
+        unsupported = sorted(set(self._textures) & _UNSUPPORTED_TEXTURE_SLOTS)
+        if unsupported:
+            msgs.append(
+                f"image properties {unsupported} have no channel in Algan's "
+                "renderer and are ignored"
+            )
+        scalars = sorted(set(self._textures) & _UNSUPPORTED_SCALAR_SLOTS)
+        if scalars:
+            msgs.append(f"{scalars} are not supported and are ignored")
+        if "normal_scale" in self._textures and "normal_map" not in forwarded:
+            msgs.append(
+                "normal_scale scales a normal map's tangential components, and "
+                "no normal_map reached the geometry, so it does nothing"
             )
         if self.wireframe:
             msgs.append("wireframe is not supported and is ignored")
