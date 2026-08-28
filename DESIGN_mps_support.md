@@ -190,18 +190,36 @@ supported. `auto` currently selects a device that fails 88 tests.
 * Then the `test.yaml` macOS pin is redundant — the runner resolves to CPU on its
   own — and that 15-line comment becomes a pointer here.
 
-### 3.2 Two engine bugs this turned up, both real today
+### 3.2 Two engine bugs this turned up — **fixed**
 
-* **`taichi_launch_is_local` is wrong for MPS.** It compares device *types*
-  (`taichi_runtime.py:444`), so it answers `True` for an MPS tensor on a Metal
-  arch — confirmed live by the probe — while Taichi copies through the host. Every
-  gate that enables a kernel because "this launch is free" decides wrong there. It
-  is a statement about interop, not about device equality.
-* **`ensure_taichi_for_render` cannot switch between two GPU backends.** It
-  compares `live != ti.cpu` (`taichi_runtime.py:403`), so Metal and Vulkan are
-  interchangeable to it and no re-init happens between them. The docstring at
-  `:390-397` anticipates exactly this case. Harmless while no machine offers two,
-  and it silently defeated this probe's first attempt to force Vulkan.
+Both are corrected in `taichi_runtime.py`, with the truth tables pinned by
+`tests/unit_tests/test_taichi_launch_pairing.py`. Neither fix moves CPU or CUDA
+behaviour: on those the new answers are the old ones for every reachable
+pairing, and they differ only where the old rule was wrong.
+
+* **`taichi_launch_is_local` was wrong for MPS.** It compared device *types*, so
+  it answered `True` for an MPS tensor on a Metal arch — confirmed live by the
+  probe — while Taichi copied through the host, and the gate it feeds turns the
+  PN criterion kernels on precisely when a launch is free. The rule is not about
+  device equality: Taichi implements `Device::import_memory` for `CpuDevice` and
+  `CudaDevice` and for nothing else, so a torch allocation binds without copying
+  only as a host tensor on a CPU arch or a CUDA tensor on a CUDA arch. Every
+  other pairing stages, including one whose two halves name the same physical
+  GPU. A `taichi_arch_is_cuda` companion to `taichi_arch_is_cpu` carries the
+  second half of that.
+* **`_arch_matches_render_device` could not switch between two GPU backends.**
+  It compared `live != ti.cpu`, making every GPU backend interchangeable, so a
+  render device moving between two of them kept whichever program was already up
+  and launched every kernel on the wrong device with no re-init and no error —
+  its docstring claimed to rule that case out while the code was what allowed
+  it. It now compares against the backends that actually serve the device, from
+  a written-out mapping rather than through `adaptive_arch_select`: resolving
+  `ti.gpu` means probing Vulkan and OpenGL, which is the fallback chain
+  `_taichi_arch` exists to avoid and which some headless configurations crash
+  inside rather than declining.
+
+The second is also what silently defeated this probe's own first attempt to
+force Vulkan, which is how it was found.
 
 ### 3.3 If Apple GPU support is ever a priority, this is its shape
 
