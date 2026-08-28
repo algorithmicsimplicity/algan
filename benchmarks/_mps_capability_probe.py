@@ -77,9 +77,23 @@ _REPO = Path(__file__).resolve().parents[1]
 _MARKER = "ALGAN_PROBE_JSON "
 
 
+#: Written *before* an arm does the thing that might abort the process, so the
+#: orchestrator learns which backend a crashed arm was on. Without it a crash
+#: reports only that it crashed, and "Metal refused this" is indistinguishable
+#: from "the arch was never moved off the CPU" -- which is exactly the ambiguity
+#: the first run of this probe came back with.
+_PRE_MARKER = "ALGAN_PROBE_PRE "
+
+
 def _emit(payload):
     """Hand one section's result back to the orchestrator."""
     sys.stdout.write(_MARKER + json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+def _emit_pre(payload):
+    """Report what is already known, before anything that can abort."""
+    sys.stdout.write(_PRE_MARKER + json.dumps(payload) + "\n")
     sys.stdout.flush()
 
 
@@ -246,23 +260,95 @@ def with_suppressed(out, key, fn):
 def _bring_up(device):
     """Point Algan's render device at ``device`` and start Taichi from it.
 
-    Goes through ``SETTINGS`` and ``init_taichi`` rather than calling ``ti.init``
-    with an arch, because *which arch Algan selects* is question 1. Forcing a
-    backend is done from the outside with ``TI_ARCH``, which ``ti.init`` honours
-    over its own argument.
+    Goes through ``SETTINGS`` and the engine's own entry point rather than
+    calling ``ti.init`` with an arch, because *which arch Algan selects* is
+    question 1. Forcing a backend is done from the outside with ``TI_ARCH``,
+    which ``ti.init`` honours over its own argument.
+
+    ``ensure_taichi_for_render``, not ``init_taichi``, and the difference is
+    load-bearing: ``init_taichi`` is a no-op when a program already exists, so
+    if anything brought Taichi up before this call -- on whatever
+    ``ALGAN_RENDER_DEVICE`` said at import -- the arch would silently stay
+    there and every arm would report the wrong backend while claiming the right
+    device. ``ensure_taichi_for_render`` re-runs ``ti.init`` when the live arch
+    no longer matches the device, which is the behaviour a render gets.
+
+    Returns the diagnostics needed to tell those two cases apart afterwards.
     """
-    from algan.rendering.taichi_runtime import init_taichi
+    from algan.rendering import taichi_runtime
     from algan.settings import SETTINGS
 
+    already_up = taichi_runtime._already_initialized()
     SETTINGS.computing.set(render_device=device)
-    init_taichi()
+    reinitialized = taichi_runtime.ensure_taichi_for_render()
+    return {
+        "taichi_was_up_before_bring_up": already_up,
+        "taichi_reinitialized": reinitialized,
+    }
 
 
 def _live_arch_name():
+    """The running program's arch.
+
+    Read after a launch has materialized a kernel wherever possible: asking
+    before anything has been compiled is what made the first run of this probe
+    report ``arm64`` for arms whose timings prove they ran on the GPU.
+    """
     from taichi._lib import core as _ti_core
 
     prog = ti.lang.impl.get_runtime().prog
     return _ti_core.arch_name(prog.config().arch)
+
+
+def _arch_report():
+    """Every reading of the arch this process can take, so they can disagree.
+
+    ``prog.config()`` and ``impl.current_cfg()`` are two different paths to the
+    same fact, and ``can_use_bloom_taichi`` in the engine trusts the second. A
+    probe that reports one number cannot notice them diverging; this one can.
+    """
+    from taichi._lib import core as _ti_core
+
+    report = {}
+    try:
+        report["prog_arch"] = _live_arch_name()
+    except Exception as exc:  # pragma: no cover - probe
+        report["prog_arch"] = "error: " + repr(exc)
+    try:
+        report["current_cfg_arch"] = _ti_core.arch_name(ti.lang.impl.current_cfg().arch)
+    except Exception as exc:  # pragma: no cover - probe
+        report["current_cfg_arch"] = "error: " + repr(exc)
+    return report
+
+
+def _warm_up_arch():
+    """Launch one trivial kernel so the arch reading is taken from a live
+    program rather than from one that has compiled nothing yet.
+    """
+    import torch
+
+    src = torch.zeros(4, dtype=torch.float32)
+    dst = torch.zeros(4, dtype=torch.float32)
+    _k_f32_basic(src, dst, 4)
+    ti.sync()
+
+
+def _settled_arch():
+    """The arch, read once a kernel has actually been compiled on it.
+
+    Every arm calls this before the launch it exists to test, so the backend is
+    known even for an arm that then aborts the process. ``_k_f32_basic`` is the
+    warm-up because it is the one kernel already measured to run everywhere.
+    """
+    out = {"arch_before_launch": _arch_report()}
+    try:
+        _warm_up_arch()
+        out["warm_up"] = "ok"
+    except Exception as exc:
+        out["warm_up"] = "error: " + repr(exc)[:500]
+    out["arch"] = _arch_report()
+    out["live_arch"] = out["arch"].get("prog_arch")
+    return out
 
 
 def _section_arch(device):
@@ -271,13 +357,22 @@ def _section_arch(device):
     from algan.rendering import taichi_runtime
     from algan.settings import SETTINGS
 
-    _bring_up(device)
-    out = {
-        "render_device": str(SETTINGS.computing.render_device),
-        "ti_arch_env_override": os.environ.get("TI_ARCH"),
-        "live_arch": _live_arch_name(),
-        "taichi_arch_is_cpu": taichi_runtime.taichi_arch_is_cpu(),
-    }
+    out = dict(_bring_up(device))
+    out.update(
+        {
+            "render_device": str(SETTINGS.computing.render_device),
+            "ti_arch_env_override": os.environ.get("TI_ARCH"),
+            "arch_before_launch": _arch_report(),
+        }
+    )
+    try:
+        _warm_up_arch()
+        out["warm_up"] = "ok"
+    except Exception as exc:
+        out["warm_up"] = "error: " + repr(exc)[:500]
+    out["arch_after_launch"] = _arch_report()
+    out["live_arch"] = out["arch_after_launch"].get("prog_arch")
+    out["taichi_arch_is_cpu"] = taichi_runtime.taichi_arch_is_cpu()
     # ``taichi_launch_is_local`` is the engine's own answer to "does this launch
     # avoid a staging copy". It compares device *types*, so on MPS it says yes
     # while Taichi copies through the host -- record what it claims here so the
@@ -385,9 +480,11 @@ def _feature_cases():
 
 
 def _section_feature(device, feature):
-    _bring_up(device)
+    brought_up = _bring_up(device)
     case = _feature_cases()[feature]
-    out = {"feature": feature, "device": device, "live_arch": _live_arch_name()}
+    out = {"feature": feature, "device": device, **brought_up}
+    out.update(_settled_arch())
+    _emit_pre(out)
     started = time.perf_counter()
     try:
         correct = case(device)
@@ -443,8 +540,10 @@ def _build_wide_kernel(nargs):
 def _section_args(device, nargs):
     import torch
 
-    _bring_up(device)
-    out = {"nargs": nargs, "device": device, "live_arch": _live_arch_name()}
+    brought_up = _bring_up(device)
+    out = {"nargs": nargs, "device": device, **brought_up}
+    out.update(_settled_arch())
+    _emit_pre(out)
     started = time.perf_counter()
     try:
         kernel = _build_wide_kernel(nargs)
@@ -508,12 +607,12 @@ def _time_launches(fn, device):
 def _section_staging(device, tensor_device, workload):
     import torch
 
-    _bring_up(device)
+    brought_up = _bring_up(device)
     out = {
         "render_device": device,
         "tensor_device": tensor_device,
         "workload": workload,
-        "live_arch": _live_arch_name(),
+        **brought_up,
     }
     try:
         if workload == "bandwidth":
@@ -548,6 +647,12 @@ def _section_staging(device, tensor_device, workload):
         out["status"] = "error"
         out["error_type"] = type(exc).__name__
         out["error"] = str(exc)[:2000]
+    # Read AFTER the launches. The torch_only arm compiles nothing, so its arch
+    # reading is the one to distrust, and it is labelled as such rather than
+    # quietly reported beside the others.
+    out["arch"] = _arch_report()
+    out["live_arch"] = out["arch"].get("prog_arch")
+    out["arch_reading_is_post_launch"] = workload != "torch_only"
     return out
 
 
@@ -801,19 +906,32 @@ def _run_arm(args, extra_env=None, timeout=900):
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "argv": args}
     payload = None
+    pre = None
     for line in completed.stdout.splitlines():
         if line.startswith(_MARKER):
             payload = json.loads(line[len(_MARKER) :])
+        elif line.startswith(_PRE_MARKER):
+            pre = json.loads(line[len(_PRE_MARKER) :])
     if payload is None:
         # An arm that produced no result crashed the interpreter, which is a
-        # result: a backend rejecting a kernel does not always raise.
-        return {
+        # result: a backend rejecting a kernel does not always raise. What it
+        # was running when it died comes from the pre-launch line, which is
+        # written before the risky launch for exactly this case.
+        crashed = {
             "status": "crashed",
             "argv": args,
             "returncode": completed.returncode,
             "stderr_tail": completed.stderr.strip().splitlines()[-25:],
-            "stdout_tail": completed.stdout.strip().splitlines()[-10:],
+            "stdout_tail": [
+                line
+                for line in completed.stdout.strip().splitlines()[-10:]
+                if not line.startswith(_PRE_MARKER)
+            ],
         }
+        if pre:
+            crashed["pre_launch"] = pre
+            crashed["live_arch"] = pre.get("live_arch")
+        return crashed
     payload.setdefault("status", "ok")
     payload["returncode"] = completed.returncode
     # Taichi logs its device capabilities at trace level and nowhere else -- the
@@ -826,6 +944,33 @@ def _run_arm(args, extra_env=None, timeout=900):
     if caps:
         payload["device_capabilities"] = caps
     return payload
+
+
+def _why(record):
+    """One line saying why an arm did not come back ``ok``.
+
+    A bare "crashed" is the least useful thing this script can print: a Metal
+    capability rejection, a binding-limit abort and a broken harness all look
+    identical under it. The reason lives in the exception or in the last lines
+    the dying process wrote, so put it on the summary line.
+    """
+    status = record.get("status")
+    if status == "ok":
+        return ""
+    if status == "error":
+        return "{}: {}".format(
+            record.get("error_type", "?"),
+            " ".join(str(record.get("error", "")).split())[:160],
+        )
+    if status == "crashed":
+        interesting = [
+            line
+            for line in record.get("stderr_tail", [])
+            if line.strip() and "Taichi] version" not in line
+        ]
+        detail = interesting[-1] if interesting else ""
+        return "rc={} {}".format(record.get("returncode", "?"), detail[:160])
+    return str(status)
 
 
 def _devices_to_probe():
@@ -907,7 +1052,13 @@ def _orchestrate(args):
             )
             sections["features"][device][feature] = record
             print(
-                "  {:>6}  {:<20} {}".format(device, feature, record["status"]),
+                "  {:>6}  {:<20} {:<6} {:<9} {}".format(
+                    device,
+                    feature,
+                    record.get("live_arch", "?"),
+                    record["status"],
+                    _why(record),
+                ),
                 flush=True,
             )
 
@@ -921,7 +1072,13 @@ def _orchestrate(args):
             )
             sections["args"][device][str(nargs)] = record
             print(
-                "  {:>6}  {:>3} args  {}".format(device, nargs, record["status"]),
+                "  {:>6}  {:>3} args  {:<6} {:<9} {}".format(
+                    device,
+                    nargs,
+                    record.get("live_arch", "?"),
+                    record["status"],
+                    _why(record),
+                ),
                 flush=True,
             )
             if record["status"] not in ("ok",):
@@ -954,12 +1111,15 @@ def _orchestrate(args):
             )
             sections["staging"][key] = record
             print(
-                "  {:<12} arch={:<4} tensors={:<4} {:<9} median {} ms".format(
+                "  {:<11} device={:<4} tensors={:<4} arch={:<6} {:<7}"
+                " median {} ms  {}".format(
                     workload,
-                    record.get("live_arch", "?"),
+                    render_device,
                     tensor_device,
+                    record.get("live_arch", "?"),
                     record.get("status", "?"),
                     record.get("median_ms", "-"),
+                    _why(record),
                 ),
                 flush=True,
             )
