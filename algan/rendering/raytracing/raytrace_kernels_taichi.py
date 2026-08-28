@@ -58,7 +58,7 @@ primitive index breaking ties within the type.
 
 import taichi as ti
 
-from algan.environment import env_flag, env_float, env_int
+from algan.environment import env_float, env_int
 from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_ACCEL_HEADER_SIZE,
     BEZIER_GRID_INV_U,
@@ -193,9 +193,19 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # read its docstring before touching the arithmetic. A 64x64 render of a lit
 # plane showed 16 crack pixels on CUDA and none on CPU before it.
 #
-# Import-time, not a live setting: it changes the compiled kernel body, so a
-# runtime toggle would silently reuse a cached kernel (the _AA_SAMPLES
-# cache-trap rule). Clear the Taichi cache when flipping it.
+# The switch itself lives on ``rt_settings`` as ``WATERTIGHT_TRI`` (reachable
+# as ``SETTINGS.raytracing.experimental.watertight_tri``) and is read here
+# through :func:`watertight_tri`, exactly as ``RGB_SHADOW_TINT`` is: both are
+# ``ti.static`` gates over a kernel body and there is no reason for one to be a
+# setting and the other not.
+#
+# This comment used to say a runtime toggle "would silently reuse a cached
+# kernel". The offline half of that is not true on Taichi 1.7.4 -- a folded
+# gate reaches the IR the cache key is computed from, so each arm gets its own
+# entry (see the corrected note at ``raster_taichi._GLOSSY_MIN_ROUGHNESS``).
+# The in-process half is true and is what the setter documents: the branch is
+# resolved when the kernel COMPILES, so a flip takes effect only for kernels
+# compiled after it, and an A/B needs one process per arm.
 #
 # DEFAULT ON. Correctness was qualified on CUDA (ss3.2/ss4.7): zero enclosed
 # background pixels leaked on two scenes built to provoke a crack, no double
@@ -215,7 +225,17 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # triangle is tested slightly WIDER than it is, so a ray that should miss can
 # hit. Trading an unmeasurable cost against a real defect is the trade taken
 # here.
-WATERTIGHT_TRI = env_flag("ALGAN_WATERTIGHT_TRI", True)
+def watertight_tri():
+    """Whether ``_tri_hit`` uses the watertight (Woop-Benthin-Wald) test.
+
+    Read live through the module object -- never import the value by value --
+    for the same reason as :func:`rgb_shadow_tint`: the use is behind
+    ``ti.static``, so whatever the setting holds when a kernel compiles is what
+    that kernel keeps.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+
+    return bool(rt_settings.WATERTIGHT_TRI)
 
 
 @ti.func
@@ -277,7 +297,7 @@ def _tri_hit(ro, rd, v0, v1, v2):
     w1 = 0.0
     w2 = 0.0
     t = 0.0
-    if ti.static(WATERTIGHT_TRI):
+    if ti.static(watertight_tri()):
         a = v0 - ro
         b = v1 - ro
         c = v2 - ro

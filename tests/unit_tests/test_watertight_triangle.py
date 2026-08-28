@@ -12,9 +12,11 @@ picks one owner when the ray lands exactly on the edge.
 The property that matters is therefore **exactly one hit per shared edge**: not
 zero (a crack), not two (a duplicate the seam rule has to clean up).
 
-``WATERTIGHT_TRI`` is read at import because it changes the compiled kernel body
-(the ``_AA_SAMPLES`` cache-trap rule), so one process can only exercise one arm.
-These tests assert whichever arm the environment selected, and say so. The
+``WATERTIGHT_TRI`` (``SETTINGS.raytracing.experimental.watertight_tri``, seeded
+from ``ALGAN_WATERTIGHT_TRI``) is a ``ti.static`` gate over the kernel body, so
+it is fixed for every kernel already compiled and one process can only exercise
+one arm. These tests assert whichever arm the environment selected, and say so.
+The
 end-to-end evidence is separate and lives in the commit: with the hybrid raster
 disabled so all visibility goes through the ray path, a Sphere/Cube/plane scene
 moves 11 of 419904 pixels by at most 1 channel value across the flag.
@@ -68,7 +70,7 @@ def _hit_counts(origins):
 def _watertight():
     from algan.rendering.raytracing import raytrace_kernels_taichi as k
 
-    return bool(k.WATERTIGHT_TRI)
+    return k.watertight_tri()
 
 
 def test_a_ray_exactly_on_a_shared_edge_hits_exactly_one_neighbour():

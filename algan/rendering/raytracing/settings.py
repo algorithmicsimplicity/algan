@@ -901,6 +901,30 @@ def set_shadow_anyhit(enabled):
 RGB_SHADOW_TINT = env_flag("ALGAN_RGB_SHADOW_TINT", True)
 
 
+# Watertight (Woop-Benthin-Wald) ray/triangle intersection, replacing the
+# dilated Moller-Trumbore test and the matched epsilon pair that patches its
+# cracks. The full derivation, the CUDA FMA hazard it had to survive, and the
+# measurements live beside the kernel it gates
+# (``raytrace_kernels_taichi._tri_hit``); this is only its storage, so that the
+# switch is reachable as SETTINGS.raytracing.experimental.watertight_tri
+# instead of an environment variable that has to precede the import.
+# DEFAULT ON.
+WATERTIGHT_TRI = env_flag("ALGAN_WATERTIGHT_TRI", True)
+
+
+def set_watertight_tri(enabled):
+    """Toggle the watertight ray/triangle intersection (see ``WATERTIGHT_TRI``).
+
+    The gate compiles into the kernels, so this takes effect for kernels
+    compiled AFTER the call -- existing variants are reused unchanged. For a
+    guaranteed switch, set ``ALGAN_WATERTIGHT_TRI`` before importing algan, or
+    run each arm in its own process. (The Taichi *offline* cache is not a
+    hazard here: it keys on the compiled IR, so each arm has its own entry.)
+    """
+    global WATERTIGHT_TRI
+    WATERTIGHT_TRI = bool(enabled)
+
+
 def set_rgb_shadow_tint(enabled):
     """Toggle coloured shadow tinting/absorption (see ``RGB_SHADOW_TINT``).
 

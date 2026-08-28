@@ -2361,10 +2361,20 @@ def _sec_positions(msk, n: ti.template()):
 # alpha = 1e-8, i.e. a deflection of ~1e-8 radians -- far below a pixel at any
 # resolution -- so nothing visible is being gated away.
 #
-# Deliberately a module constant rather than a setting: it is baked into the
-# compiled kernel and is NOT part of any template argument, so an env knob would
-# let the offline cache serve a kernel built for a different threshold (the same
-# trap ``_AA_SAMPLES`` carries).
+# Deliberately a module constant rather than a setting, because there is
+# nothing here to configure: the threshold is derived from what it protects
+# (byte-identical mirrors) and sits eight orders of magnitude below a visible
+# deflection, so every value that is not this one is either indistinguishable
+# from it or breaks the guarantee.
+#
+# Not, as this comment used to say, because the offline cache would serve a
+# kernel built for another threshold. That is measurably untrue on Taichi
+# 1.7.4: a constant folded into a ``@ti.func`` reaches the compiled IR the
+# cache key is computed from, so each value gets its own entry and two
+# processes sharing a cache dir each get their own arithmetic back. The real
+# hazard is in-process and applies to every ``ti.static`` gate here: the branch
+# is resolved when the kernel COMPILES, so a value changed afterwards does
+# nothing for kernels already compiled and an A/B needs one process per arm.
 _GLOSSY_MIN_ROUGHNESS = 1e-4
 _GLOSSY_INV_16 = 1.0 / 16.0
 

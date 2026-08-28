@@ -951,8 +951,16 @@ def _reserve_continuation_slot(rs_alloc: ti.template(), capacity):
 # hard-edged chunks this replaced.
 #
 # A module constant for the same reason as ``_GLOSSY_MIN_ROUGHNESS``: it is
-# baked into the compiled kernel and is not a template argument, so an env knob
-# would let the offline cache serve a kernel built for a different value.
+# derived rather than chosen. The number is read off the GGX lobe's own
+# geometry above -- the roughness at which a single ray stops being a fair
+# stand-in for an integral -- so it moves only if that derivation does.
+#
+# Not, as this comment used to say, because an env knob would let the offline
+# cache serve a kernel built for a different value; see the corrected note at
+# ``_GLOSSY_MIN_ROUGHNESS``. Taichi 1.7.4 keys its cache on the compiled IR, so
+# a folded constant gets its own entry. What is true is the in-process
+# ``ti.static`` rule: the gate resolves at compile time, so an A/B between two
+# values must run one process per arm.
 _MIRROR_SHARE_ALPHA = 0.15 * 0.15
 _MIRROR_SHARE_A2 = _MIRROR_SHARE_ALPHA * _MIRROR_SHARE_ALPHA
 

@@ -233,7 +233,7 @@ def main():
 
     from algan.rendering.raytracing import raytrace_kernels_taichi as k
 
-    watertight = bool(k.WATERTIGHT_TRI)
+    watertight = k.watertight_tri()
     print(f"arm={arm}  WATERTIGHT_TRI={watertight}  quality={quality.resolution}")
     print(f"hybrid raster: OFF (ray path)  analytic AA: {rt_settings.ANALYTIC_AA}")
     print()
