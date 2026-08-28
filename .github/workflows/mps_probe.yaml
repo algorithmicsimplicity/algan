@@ -12,14 +12,22 @@ name: MPS capability probe
 # dispatches it by hand (which needs the file on the default branch first;
 # before then, pushing to a pull request is what triggers it).
 #
-# WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized-GPU macOS
-# instance. Capability results -- does this compile, does it bind, does it come
-# back with the right bits -- are sound, and they are what both design docs rest
-# on. Timings are not: read the probe's Q5 milliseconds as directional only, and
-# do not plan against them. Launch overhead per dispatch is a real question for
-# the many-small-kernel stages and it needs a physical Mac. The probe's Q8
-# section (hand-written MSL, no Taichi in the path -- see
-# DESIGN_metal_native_port.md) is deliberately untimed for this reason.
+# WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized Apple-silicon
+# instance -- `hw.model VirtualMac2,1`, `Apple M1 (Virtual)`, 3 CPUs, 7 GB --
+# and the GPU behind it is REAL HARDWARE, not a software Metal path. The `speed`
+# job below measured that in run 33178820377: 1538 GFLOP/s f32 on MPS against
+# the CPU arm's 422-485 sustained, 3.6x at a 2048 matmul and 11.6x on a conv2d,
+# with every result checksum-identical to the CPU's and MPS fallback off. So
+# compute-bound timings here are worth something after all.
+#
+# What is NOT worth anything here is anything with a per-launch cost in it. The
+# same run put one synchronized dispatch at 432 us median on MPS against 2.0 us
+# on the CPU, and host<->device copies at 6.0 / 3.2 GB/s over unified memory --
+# a virtualization tax on submission and mapping that no Apple laptop pays. That
+# is the half of the Q5 milliseconds to keep reading as directional only, and it
+# is why launch overhead for the many-small-kernel stages still needs a physical
+# Mac. The probe's Q8 section (hand-written MSL, no Taichi in the path -- see
+# DESIGN_metal_native_port.md) stays deliberately untimed for the same reason.
 #
 # The Linux arm is the control. It has no MPS, so every GPU section skips and
 # what it proves is that the harness itself works and what the numbers look like
