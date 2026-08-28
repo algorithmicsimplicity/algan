@@ -222,6 +222,23 @@ jobs:
           echo "BREW_LLVM_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
           /opt/homebrew/opt/llvm@15/bin/clang --version
 
+      # The macos-15 image ships a stale xcrun cache that clang cannot mmap:
+      #
+      #   clang: error: couldn't map cache file '$TMPDIR/xcrun_db' into memory
+      #   (errno=Value too large to be stored in data type)
+      #
+      # On the sixth attempt that took `setup.py clean` down with SIGBUS before
+      # a single file was compiled. Removing the cache and re-selecting the
+      # developer directory rebuilds it.
+      - name: Repair the xcrun cache
+        run: |
+          rm -f "${TMPDIR:-/tmp}/xcrun_db" || true
+          sudo xcode-select -s /Applications/Xcode_16.4.app || true
+          xcode-select -p
+          xcrun --find clang
+          xcrun clang --version | head -1
+          df -h / /System/Volumes/Data 2>/dev/null || df -h /
+
       # `build.py` is Taichi's documented entry point and downloads a prebuilt
       # LLVM 15 itself, so this does not build LLVM. `--python=native` builds
       # against the interpreter set up above rather than fetching one, which is
@@ -382,6 +399,8 @@ jobs:
           echo "=== clang identities ==="
           /usr/bin/clang --version | head -1 || true
           /opt/homebrew/opt/llvm@15/bin/clang --version | head -1 || true
+          echo "=== disk ==="
+          df -h / /System/Volumes/Data 2>/dev/null || df -h /
           echo "=== compile errors in the build log ==="
           grep -nE "error:|Error [0-9]|CMake Error|fatal error" build-cold.log 2>/dev/null | tail -25 \
             || echo "(no lines matching an error pattern)"
