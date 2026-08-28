@@ -10,8 +10,9 @@ would it cost?*
 **Evidence basis.** Source reading of Taichi 1.7.4 (installed wheel, and upstream
 `v1.7.3` where the wheel ships no source); the Mach-O symbol table of the shipped
 `taichi-1.7.4-cp311-cp311-macosx_11_0_arm64.whl`, parsed for the external/local
-split; torch 2.7.1's MPS headers as shipped; and timed from-source builds of
-Taichi on the free Apple-silicon runner (§4.1). No Algan render was run on Metal
+split; torch 2.7.1's MPS headers as shipped; and two timed from-source builds of
+Taichi on the free Apple-silicon runner, by
+`.github/workflows/taichi_build.yaml` (§4.1). No Algan render was run on Metal
 for this document — the numbers it reasons about are `DESIGN_mps_support.md`'s.
 
 **Answer in one line.** Yes, and every C++ piece already exists in Taichi — but it
@@ -193,9 +194,44 @@ wavefront loop.
 
 ### 4.1 What a build costs
 
-Measured by `.github/workflows/mps_probe.yaml`'s `taichi_build` job on the free
-Apple-silicon runner (`macos-15`, **3 cores, 7 GiB**), stock v1.7.4, one Python
-version, Vulkan/CUDA/tests off. Two runs:
+`.github/workflows/taichi_build.yaml` is the job that took these numbers, and it
+is the recipe as well as the measurement — it is the seventh attempt, and the
+six before it all failed on the environment. Start from it rather than from
+Taichi's `dev_install` docs, which describe a machine nobody has.
+
+**The recipe that works**, on GitHub's free Apple-silicon runner:
+
+```yaml
+runs-on: macos-15                     # NOT macos-latest -- see the table below
+env:
+  TAICHI_CMAKE_ARGS: >-
+    -DTI_WITH_CUDA:BOOL=OFF -DTI_WITH_OPENGL:BOOL=OFF
+    -DTI_WITH_VULKAN:BOOL=OFF -DTI_BUILD_TESTS:BOOL=OFF
+steps:
+  git clone --depth 1 --branch v1.7.4 --recurse-submodules --shallow-submodules
+  brew install --force-bottle llvm@15          # ti_build hard-wires this path
+  rm -f "$TMPDIR/xcrun_db"                     # stale cache, SIGBUSes the build
+  sudo xcode-select -s /Applications/Xcode_16.4.app
+  CC=/usr/bin/clang CXX=/usr/bin/clang++ python3 build.py --python=native
+```
+
+`build.py` at the repository root and `.github/workflows/scripts/build.py`, which
+Taichi's own release job calls, are the same three-line wrapper around
+`ti_build.entry.main()`; with no action argument it builds a wheel. The explicit
+`xcode-select` does double duty: it rebuilds the xcrun cache *and* pins the
+toolchain, on an image that carries Xcode 26.x alongside the default 16.4 — take
+the newer one and you are back to the clang-21 failure below.
+
+Metal is not in `TAICHI_CMAKE_ARGS` because it defaults on for macOS builds —
+the resulting binary carries the backend, which is the whole point. Everything
+else is off: a Mac fork would not need Vulkan (`_taichi_arch` resolves `ti.gpu`
+to Metal first), so this reading is a lower bound for a build that also wants
+the MoltenVK fallback. `--force-bottle` matters: without it, a missing bottle
+would make brew build LLVM from source and eat hours instead of failing in
+seconds.
+
+Measured on that runner (`macos-15`, **3 cores, 7 GiB**), stock v1.7.4, one
+Python version. Two runs:
 
 | phase | run A (s) | run B (s) | ≈ |
 | --- | ---: | ---: | ---: |
@@ -236,6 +272,31 @@ inherits the job of either patching Taichi's `-Werror` surface or rebasing it on
 a newer LLVM. That, not the twelve minutes, is what maintaining a forked wheel
 actually costs.
 
+Four more things this turned up, none of them obvious and all of them things a
+release job has to get right:
+
+* **The wheel that comes out is `macosx_15_0_arm64`, and upstream's is
+  `macosx_11_0_arm64`.** The platform tag follows the machine and SDK the build
+  ran on, so a fork built this way installs on macOS 15 and later *and pip
+  refuses it everywhere else* — a much narrower audience than the wheel it
+  replaces. Setting `MACOSX_DEPLOYMENT_TARGET=11.0` is the standard way to widen
+  it back; that was not exercised here, and it needs an SDK that can still
+  target 11.0, which is exactly the thing the image window above is taking away.
+* **`--python=native` is not the interpreter you think it is.** With
+  `actions/setup-python` having put 3.11.9 on `PATH`, `ti_build` still chose the
+  image's framework Python at `/Library/Frameworks/Python.framework/Versions/3.11`.
+  Both are 3.11 so the wheel came out `cp311` and nothing was wrong, but the ABI
+  tag follows whichever interpreter it picks. A release job should pass the
+  version explicitly and assert the tag on the wheel it produced.
+* **Two submodules are unreachable and the build does not care.** The clone
+  reports `Could not access submodule 'assets'` and
+  `Could not access submodule 'benchmarks/baseline'` and exits 0; the wheel
+  builds regardless. Do not "fix" this by making the clone strict.
+* **`sccache` is already wired up** by `ti_build`, against
+  `~/.cache/ti-build-cache`, and starts empty on a hosted runner — which is why
+  11–12 minutes is a true cold number, and why caching that directory is the
+  first thing to try if the per-Python-version cost ever matters.
+
 ### 4.2 Release logistics
 
 * A Mac is needed to compile — `metal_device.mm` is Objective-C++ against the
@@ -248,8 +309,14 @@ actually costs.
 * Make it an extra (`pip install algan[mps]`) and detect it at runtime. Then the
   default install stays on the stock wheel, a wheel build never blocks an Algan
   release, and the fallback in §3.3 is what runs when it is absent.
-* The matrix is macOS-arm64 × cp310–cp313; Taichi publishes no cp39 arm64 wheel,
-  so Algan's `>=3.9` floor is already unreachable on a Mac.
+* The matrix is macOS-arm64 × cp310–cp313 — four full builds, since the module
+  is a CPython extension, so roughly 45–50 minutes of free CI per Taichi bump.
+  Taichi publishes no cp39 arm64 wheel, so Algan's `>=3.9` floor is already
+  unreachable on a Mac.
+* Set `MACOSX_DEPLOYMENT_TARGET` and check the platform tag on what comes out
+  (§4.1). Left alone, the fork's wheel installs on macOS 15+ only, against the
+  macOS 11+ of the wheel it is replacing, and that regression is invisible until
+  a user on an older Mac reports that pip cannot find a version.
 * One packaging caveat: the fork installs the same `taichi` import package, so a
   user with both installed gets colliding files. Gate it with an environment
   marker and say so.
