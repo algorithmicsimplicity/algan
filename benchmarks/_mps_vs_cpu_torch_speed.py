@@ -127,6 +127,12 @@ def _machine():
         "mps_available": bool(torch.backends.mps.is_available()),
         "cuda_available": bool(torch.cuda.is_available()),
         "mps_fallback_env": os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK"),
+        # Which BLAS serves the cpu arm decides how to read the whole
+        # comparison. On Apple silicon, Accelerate reaches the AMX matrix
+        # coprocessor and a NEON-only GEMM does not -- a factor of several,
+        # in the denominator of every speedup on this page.
+        "blas": _blas_identity(),
+        "parallel_info": _parallel_info(),
     }
 
     if sys.platform == "darwin":
@@ -152,6 +158,45 @@ def _machine():
             facts["mps_recommended_max_memory_error"] = str(exc)[:200]
 
     return facts
+
+
+def _blas_identity():
+    """The BLAS/LAPACK lines out of ``torch.__config__.show()``, if any."""
+    import torch
+
+    try:
+        text = torch.__config__.show()
+    except Exception as exc:  # informational only
+        return f"unavailable: {type(exc).__name__}: {exc}"[:200]
+    # Pulled out of the one enormous "Build settings:" line as key=value pairs,
+    # rather than printed whole: the line is ~2 kB of compiler flags and the two
+    # tokens that matter here are BLAS_INFO and LAPACK_INFO.
+    wanted = ("BLAS_INFO", "LAPACK_INFO", "USE_MKL", "USE_MKLDNN")
+    found = {}
+    for token in text.replace("\n", ",").split(","):
+        key, _, value = token.strip().partition("=")
+        # The first pair on the line carries the "- Build settings: " prefix.
+        key = key.rsplit(" ", 1)[-1]
+        if key in wanted:
+            found[key] = value
+    if not found:
+        # Accelerate builds name it in prose rather than in BLAS_INFO.
+        if "Accelerate" in text:
+            return "Accelerate (named in torch.__config__.show(), no BLAS_INFO)"
+        return "(no BLAS token in torch.__config__.show())"
+    return " | ".join(f"{k}={v}" for k, v in found.items())[:400]
+
+
+def _parallel_info():
+    import torch
+
+    try:
+        text = torch.__config__.parallel_info()
+    except Exception as exc:  # informational only
+        return f"unavailable: {type(exc).__name__}: {exc}"[:200]
+    keep = ("ATen parallel backend", "OpenMP", "Intra-op", "Inter-op", "thread")
+    lines = [ln.strip() for ln in text.splitlines() if any(k in ln for k in keep)]
+    return " | ".join(lines)[:400]
 
 
 def _mac_gpu():
@@ -466,6 +511,61 @@ def _transfer_bandwidth(device, megabytes=64):
     }
 
 
+#: Sizes for the ceiling sweep. The comparison table stops at 4096 because a
+#: bigger matmul costs the cpu arm seconds per iteration for a row whose ratio
+#: is already established; the ceiling sweep is asking a different question and
+#: needs the sizes where each device stops being launch- or cache-limited.
+_CEILING_SIZES = (2048, 4096, 6144, 8192)
+
+
+def _ceiling(device):
+    """The best sustained matmul rate this device reaches, at its best size.
+
+    The comparison table answers "which is faster here". This answers "is either
+    number near what the hardware can do", which is what says whether a modest
+    ratio means a weak GPU or a strong CPU baseline. f16 is swept on the GPU
+    only: torch has no native f16 GEMM on either machine's CPU, so a CPU f16 row
+    measures a fallback loop rather than a ceiling.
+    """
+    import torch
+
+    dtypes = ["float32"] if device == "cpu" else ["float32", "float16"]
+    rows = []
+    for dtype_name in dtypes:
+        for n in _CEILING_SIZES:
+            try:
+                case = _matmul_case(n, dtype_name)(device)
+                measured = _time_case(case, device)
+            except Exception as exc:
+                rows.append(
+                    {
+                        "n": n,
+                        "dtype": dtype_name,
+                        "status": "error",
+                        "error": f"{type(exc).__name__}: {exc}"[:200],
+                    }
+                )
+                continue
+            rows.append(
+                {
+                    "n": n,
+                    "dtype": dtype_name,
+                    "status": "ok",
+                    "seconds_median": measured["seconds_median"],
+                    "gflop_s": case["work"] / measured["seconds_median"] / 1e9,
+                }
+            )
+            del case
+            if device == "mps":
+                torch.mps.empty_cache()
+            print(
+                f"  [{device}] ceiling {dtype_name} {n}: {rows[-1].get('gflop_s', 0):.1f}"
+                f" GFLOP/s",
+                flush=True,
+            )
+    return rows
+
+
 def _dispatch_latency(device, reps=200):
     """Cost of getting one trivial op to the device, synchronized every time.
 
@@ -569,6 +669,11 @@ def _run_arm(device):
     except Exception as exc:
         payload["dispatch_error"] = f"{type(exc).__name__}: {exc}"[:400]
 
+    try:
+        payload["ceiling"] = _ceiling(device)
+    except Exception as exc:
+        payload["ceiling_error"] = f"{type(exc).__name__}: {exc}"[:400]
+
     _emit(payload)
     return 0
 
@@ -663,6 +768,8 @@ def _report(results):
         "mps_available",
         "mps_fallback_env",
         "mps_recommended_max_memory",
+        "blas",
+        "parallel_info",
     ):
         if key in machine:
             print(f"  {key:28s} {machine[key]}")
@@ -716,6 +823,7 @@ def _report(results):
     _report_checksums(cpu, mps)
     _report_transfer(mps)
     _report_dispatch(cpu, mps)
+    _report_ceiling(cpu, mps)
     _verdict(cpu, mps, ratios)
 
 
@@ -767,6 +875,37 @@ def _report_dispatch(cpu, mps):
                 f"  {label}  median {arm['seconds_median'] * 1e6:9.2f} us"
                 f"   min {arm['seconds_min'] * 1e6:9.2f} us"
             )
+
+
+def _report_ceiling(cpu, mps):
+    """Each device's best sustained matmul rate, at the size that reaches it."""
+    rows = {"cpu": cpu.get("ceiling"), "mps": mps.get("ceiling")}
+    if not any(rows.values()):
+        return
+    print("\n== sustained matmul ceiling (GFLOP/s by size) ==")
+    header = f"  {'device':6s} {'dtype':8s}" + "".join(
+        f"{n:>10d}" for n in _CEILING_SIZES
+    )
+    print(header)
+    for device, sweep in rows.items():
+        if not sweep:
+            continue
+        by_dtype = {}
+        for row in sweep:
+            by_dtype.setdefault(row["dtype"], {})[row["n"]] = row
+        for dtype_name, sizes in by_dtype.items():
+            cells = ""
+            for n in _CEILING_SIZES:
+                row = sizes.get(n)
+                if row and row.get("status") == "ok":
+                    cells += f"{row['gflop_s']:10.1f}"
+                else:
+                    cells += f"{'-':>10s}"
+            print(f"  {device:6s} {dtype_name:8s}{cells}")
+    print(
+        "  (the comparison table's ratio is only as impressive as its denominator:\n"
+        "   read the cpu row before reading the speedup)"
+    )
 
 
 def _verdict(cpu, mps, ratios):
