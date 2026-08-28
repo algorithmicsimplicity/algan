@@ -104,8 +104,7 @@ linear_color_space = env_flag("ALGAN_LINEAR_COLOR", True)
 #
 # Folded into the kernels inside ``ti.static``, so a change takes effect for
 # kernels compiled after it (CLAUDE.md's ti.static hazard); set the environment
-# variable for a guaranteed one. Distinct from ``ambient_light``, which belongs
-# to the unwired physical-mode Monte Carlo kernel and is inert.
+# variable for a guaranteed one.
 ambient_strength = env_float("ALGAN_AMBIENT_STRENGTH", 0.1)
 ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 
@@ -137,12 +136,6 @@ post_process_tonemap = env_flag("ALGAN_POST_PROCESS_TONEMAP", True)
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
 # with throughput ``albedo * strength`` for color bleeding.
 indirect_bounce_strength = 0.0
-
-# Radiance scale of explicit point lights in physical mode. The default of
-# pi makes a white light produce roughly albedo-level Lambertian brightness.
-light_intensity = 3.141592653589793
-# Constant ambient term added per diffuse interaction in physical mode.
-ambient_light = 0.0
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set
@@ -3061,18 +3054,6 @@ def set_shadows(enabled):
     """
     global shadows
     shadows = bool(enabled)
-
-
-def set_light_intensity(intensity):
-    """Radiance scale applied to explicit point lights in physical mode."""
-    global light_intensity
-    light_intensity = float(intensity)
-
-
-def set_ambient_light(intensity):
-    """Constant ambient lighting term used in physical mode."""
-    global ambient_light
-    ambient_light = float(intensity)
 
 
 def set_samples_per_pixel(samples):

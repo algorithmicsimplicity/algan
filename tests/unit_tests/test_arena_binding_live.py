@@ -59,7 +59,6 @@ WIDE_KERNELS = {
         "raster_bez_write",
     ),
     "algan.rendering.raytracing.raytrace_kernels_taichi": (
-        "path_trace_physical_stbvh",
         "path_trace_scene_stbvh",
     ),
 }

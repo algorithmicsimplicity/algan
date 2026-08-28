@@ -364,7 +364,6 @@ KERNEL_RAY_EXTRACTORS = {
     "render_triangles_knots_stbvh": _det_extractor,
     "render_no_pn_stbvh": _det_extractor,
     "path_trace_scene_stbvh": _mc_extractor,
-    "path_trace_physical_stbvh": _mc_extractor,
 }
 
 

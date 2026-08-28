@@ -103,7 +103,6 @@ Measured afresh from the AST:
 | `raster_shadow_trace` | 30 | 7 | 10 | 300 |
 | `wavefront_traverse_events` | 30 | 6 | 14 | 183 |
 | `wavefront_shadow` | 29 | 4 | 12 | 173 |
-| `path_trace_physical_stbvh` | 27 | 1 | 18 | 292 |
 | `path_trace_scene_stbvh` | 25 | 1 | 16 | 224 |
 
 The doc's read is that clearing this means splitting the megakernels — cutting
