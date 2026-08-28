@@ -21,9 +21,6 @@ name: Taichi from source (macOS)
 # because six of the seven attempts it took to get a wheel failed on the
 # toolchain rather than on Taichi.
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/taichi_build.yaml"
   workflow_dispatch:
 
 # Queue behind an in-flight run rather than cancelling it, for the same reason
