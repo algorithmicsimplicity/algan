@@ -117,9 +117,18 @@ non-deterministic mode has a floor; a deterministic one does not, in a kernel.
 
 `kernel_impl.py` copies any ndarray argument that is neither a host tensor nor a
 CUDA tensor on a CUDA arch to the host before the launch and back after. The only
-`import_memory` implementations in Taichi's core are `CpuDevice` and
-`CudaDevice` — there is none on the gfx device that serves Metal and Vulkan, so
-no externally allocated buffer can be adopted by either.
+generic `Device::import_memory` implementations in Taichi's core are `CpuDevice`
+and `CudaDevice` — there is none on the gfx device that serves Metal and Vulkan,
+which is what makes `taichi_launch_is_local`'s rule (§3.2) right as written.
+
+> **Amended.** The conclusion drawn here — that no externally allocated buffer
+> can be adopted by either backend — is too strong for Metal. The Metal RHI
+> carries its own non-virtual `MetalDevice::import_mtl_buffer`, and it is
+> compiled into the wheel Algan already installs, though only reachable from
+> C++. What blocks adoption is the Python frontend, not the backend.
+> `DESIGN_mps_zero_copy.md` has the evidence and what a patch would cost. It
+> changes nothing about this section's measurements or about §1.1 being the
+> blocker.
 
 Measured, 32 MB per launch:
 
@@ -247,7 +256,10 @@ Not a port. In dependency order:
    still goes through the host: measured 6.48 ms in / 15.63 ms out for 16 MB on
    Metal. That relocates the copy from per-launch to per-crossing, which pays for
    a sub-pipeline that launches many times between handoffs — the wavefront
-   tracer, not the raster/sheet stages.
+   tracer, not the raster/sheet stages. (A patched Taichi would remove the
+   per-crossing copy too, by importing torch's own `MTLBuffer` — see
+   `DESIGN_mps_zero_copy.md`. It needs a forked wheel and it is worth doing
+   *after* step 2, not before: packing is what shrinks the patch.)
 2. **Kernel argument packing** so no kernel binds more than ~24 buffers. This is
    the large one and there is no way around it (§1.1).
 3. **f64 and i64 atomics out of the kernels**, replaced by f32 with a documented
@@ -257,11 +269,11 @@ Not a port. In dependency order:
 The payoff even then is compute-bound scenes only: 52x on the path tracer,
 53x *worse* on the bandwidth-bound raster stages unless step 1 lands first.
 
-**The right trigger to revisit** is upstream: Taichi gaining torch-MPS interop
-(an `import_memory` on the gfx device — Apple's unified memory makes
-`newBufferWithBytesNoCopy` a real possibility, so this is a software limit rather
-than a hardware one), or Metal's argument limit ceasing to bind through argument
-buffers. Re-running the probe answers both in about three minutes.
+**The right trigger to revisit** is upstream: Taichi exposing torch-MPS interop
+to the Python frontend (the backend primitive already exists — see
+`DESIGN_mps_zero_copy.md` — so this is a software limit rather than a hardware
+one), or Metal's argument limit ceasing to bind through argument buffers.
+Re-running the probe answers both in about three minutes.
 
 ### 3.4 What Mac users should be told meanwhile
 
