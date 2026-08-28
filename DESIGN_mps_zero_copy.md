@@ -199,9 +199,10 @@ is the recipe as well as the measurement — it is the seventh attempt, and the
 six before it all failed on the environment. Start from it rather than from
 Taichi's `dev_install` docs, which describe a machine nobody has.
 
-**The recipe that works**, on GitHub's free Apple-silicon runner:
+**The recipe that works**, on GitHub's free Apple-silicon runner (abbreviated —
+the workflow file is the executable version):
 
-```yaml
+```
 runs-on: macos-15                     # NOT macos-latest -- see the table below
 env:
   TAICHI_CMAKE_ARGS: >-
