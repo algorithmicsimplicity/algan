@@ -145,10 +145,22 @@ jobs:
   # `ti.gpu` to Metal first, and Metal defaults on for macOS builds, which is
   # why the shipped wheel carries the backend. That makes this reading a lower
   # bound for a build that also wants the Vulkan fallback.
+  # Pinned to macos-15, not macos-latest, and that pin is a finding rather than
+  # a preference. `macos-latest` is macOS 26 carrying only Xcode 26.x and only
+  # the macOS 26.5 SDK, and its Apple clang 21 refuses to compile Taichi 1.7.4:
+  #
+  #   taichi/common/core.h:170:27: error: identifier '_f' preceded by whitespace
+  #   in a literal operator declaration is deprecated
+  #   [-Werror,-Wdeprecated-literal-operator]
+  #
+  # Taichi builds with -Werror, so a diagnostic that did not exist when the code
+  # was written is fatal. macos-15 defaults to Xcode 16.4 with the macOS 15.5
+  # SDK, which is the toolchain vintage Taichi 1.7.4 was released against
+  # (July 2025). A fork would have to pin its image the same way.
   taichi_build:
     if: github.event_name == 'workflow_dispatch'
     name: Taichi from source (macOS arm64, cp311)
-    runs-on: macos-latest
+    runs-on: macos-15
     # Generous on purpose: nobody has measured this, which is the point of the
     # job. GitHub's own ceiling for a hosted job is 6 hours.
     timeout-minutes: 300
@@ -216,14 +228,14 @@ jobs:
       # what a fork's release job would do.
       #
       # CC/CXX are Xcode's clang, and that split is the point. Homebrew's
-      # clang-15 cannot *link* against this runner's macOS 26.5 SDK -- the
-      # second attempt at this job died on `ld: library 'System' not found`
-      # while compiling cmake's one-line test program. `ti_build` reads CC/CXX
-      # and then leaves CMAKE_C_COMPILER alone, so this takes the C++ build off
-      # the 2022 toolchain while leaving `-DCLANG_EXECUTABLE` pointing at
-      # clang-15, which is what compiles the runtime to bitcode that LLVM 15
-      # then has to be able to load. Newer clang would emit bitcode LLVM 15
-      # cannot read, so that half must stay at 15.
+      # clang-15 cannot *link* against a current macOS SDK -- the second attempt
+      # at this job died on `ld: library 'System' not found` while compiling
+      # cmake's one-line test program. `ti_build` reads CC/CXX and then leaves
+      # CMAKE_C_COMPILER alone, so this takes the C++ build off the 2022
+      # toolchain while leaving `-DCLANG_EXECUTABLE` pointing at clang-15, which
+      # is what compiles the runtime to bitcode that LLVM 15 then has to be able
+      # to load. Newer clang would emit bitcode LLVM 15 cannot read, so that
+      # half must stay at 15.
       - name: Cold build
         env:
           CC: /usr/bin/clang
