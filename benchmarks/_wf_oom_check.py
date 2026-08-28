@@ -3,7 +3,7 @@
 Renders one full-resolution frame of the neural_net scene (PN patches + a bezier
 text label + fragment shading) through the general wavefront at HD with AA=2 (so
 the frame is super-sampled to 3840x2160 = ~8.3M rays, which the new ray-offset
-tiling splits into several WAVEFRONT_TILE_RAYS tiles). Each tile's per-ray state
+tiling splits into several wavefront_tile_rays tiles). Each tile's per-ray state
 is pool-allocated and released, so the ~hundreds-of-MB no longer piles up.
 
 If this completes without OutOfRenderMemory / CUDA OOM, the fix holds.

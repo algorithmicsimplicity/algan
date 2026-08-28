@@ -143,11 +143,22 @@ import algan  # noqa: E402, F401  (the whole point: pay the import once, up fron
 from algan import SceneManager
 from algan import daemon_client as _dc
 from algan.environment import env_flag, env_int, env_str
+from algan.logging.logger import apply_environment_logging
 from algan.settings import SETTINGS
 from algan.settings.path_settings import output_filename_for, output_root_for
 from algan.utils.memory_utils import empty_cache
 
-DEFAULT_PORT = env_int("ALGAN_DAEMON_PORT", 46711)
+
+def default_port():
+    """The trigger socket's default port.
+
+    Read when the command line is parsed rather than at import: it configures
+    the client/daemon transport, not anything a script renders, so there is no
+    reason a warm process could not honour a value set after its own import.
+    """
+    return env_int("ALGAN_DAEMON_PORT", 46711)
+
+
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
 
 # The environment algan was imported with, captured immediately after that
@@ -955,11 +966,12 @@ def main(argv=None):
         action="store_true",
         help="also re-render when the script or its helper modules change on disk",
     )
+    port = default_port()
     parser.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
-        help=f"trigger socket port (default {DEFAULT_PORT})",
+        default=port,
+        help=f"trigger socket port (default {port})",
     )
     parser.add_argument(
         "--no-serve", action="store_true", help="do not open the trigger socket"
@@ -1074,6 +1086,14 @@ def main(argv=None):
             output_filename=output_filename_for(path),
         )
         _adopt_render_device()
+        # Same argument as the render device: the client's ALGAN_LOG_LEVEL /
+        # ALGAN_PROGRESS were read into a live logger at *this process's*
+        # import, so re-read them here and the run reports at the verbosity the
+        # script asked for instead of the daemon's. Neither is part of
+        # SETTINGS.snapshot(), so reset_state() cannot restore them; that is
+        # why the call resets an unset variable to its default rather than
+        # leaving it, and why one client's DEBUG does not follow the next.
+        apply_environment_logging()
         script_dirs.add(os.path.dirname(path))
         _add_to_path(os.path.dirname(path))
         _say(f"run #{run_count} ({reason}): {path}")

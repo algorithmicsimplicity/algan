@@ -4,7 +4,7 @@ The monolithic ``wavefront_shade`` now supports custom ray bouncing (scatter)
 and normal-mapped lighting, so it -- not the sorted Cycles-style pipeline -- is
 the default even for scenes that customise bouncing. This benchmark renders a
 material-heavy scene that *includes a custom-scatter mob* (so both paths run
-their scatter machinery) and alternates the monolith (``set_material_sorting
+their scatter machinery) and alternates the monolith (``set_wavefront_sort_materials
 (False)``) against the forced sorted pipeline (``True``), timing the wavefront
 render stage in isolation (CUDA-synced) plus end to end. Alternating in one
 process cancels thermal-throttle drift; the first pair is discarded as
@@ -46,10 +46,12 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
     set_reflectivity,
+    set_shadows,
 )
-from algan.rendering.raytracing.settings import set_material_sorting  # noqa: E402
+from algan.rendering.raytracing.settings import (
+    set_wavefront_sort_materials,  # noqa: E402
+)
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -110,8 +112,8 @@ tracer_mod.raytrace_render_wavefront = _timed_wf
 def render_once(sort_on, shadows, tag):
     SceneManager.reset()
     set_fragment_shading(True)
-    set_ray_traced_shadows(shadows)
-    set_material_sorting(sort_on)
+    set_shadows(shadows)
+    set_wavefront_sort_materials(sort_on)
     build()
     scene = SceneManager.instance()
     _wf_times.clear()

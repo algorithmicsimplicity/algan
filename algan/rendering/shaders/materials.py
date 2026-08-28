@@ -345,7 +345,7 @@ def _lighting_beyond_vertex_bake(lights=(), *, shadows=None, environment_map=Non
     from algan.rendering.raytracing import settings as rt_settings
 
     if shadows is None:
-        shadows = rt_settings.SHADOWS
+        shadows = rt_settings.shadows
 
     # Phrased so each entry reads correctly after both "a custom per-vertex
     # shader's shading is baked ..., so" and
@@ -405,7 +405,7 @@ def _attenuation_sigma(attenuation_color, attenuation_distance):
     from algan.rendering.raytracing import settings as rt_settings
     from algan.utils.color_space import srgb_to_linear
 
-    if rt_settings.LINEAR_COLOR_SPACE:
+    if rt_settings.linear_color_space:
         c = srgb_to_linear(c)
     return -torch.log(c.clamp(1e-6, 1.0)) / float(attenuation_distance)
 

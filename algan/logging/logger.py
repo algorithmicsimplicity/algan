@@ -5,8 +5,8 @@ logger. By default it prints bare messages to stderr at ``INFO`` level (so
 render-progress messages stay visible, as they always were). To quiet or
 raise verbosity, either:
 
-* set the ``ALGAN_LOG_LEVEL`` environment variable before importing algan
-  (e.g. ``ALGAN_LOG_LEVEL=WARNING`` silences progress output), or
+* set the ``ALGAN_LOG_LEVEL`` environment variable (e.g.
+  ``ALGAN_LOG_LEVEL=WARNING`` silences progress output), or
 * call :func:`set_log_level` at any time, or
 * attach your own handlers to ``logging.getLogger("algan")`` after calling
   ``logger.handlers.clear()``.
@@ -73,12 +73,20 @@ class _LiveStderrHandler(logging.StreamHandler):
         return sys.stderr
 
 
+#: What ``ALGAN_LOG_LEVEL`` and ``ALGAN_PROGRESS`` fall back to when unset.
+#: Named because :func:`apply_environment_logging` restores them, rather than
+#: skipping, when a variable is absent -- see the reasoning there.
+_DEFAULT_LOG_LEVEL = "INFO"
+_DEFAULT_PROGRESS_STYLE = "auto"
+
 logger = logging.getLogger("algan")
 if not logger.handlers:
     _handler = _LiveStderrHandler()
     _handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(_handler)
-    logger.setLevel(env_str("ALGAN_LOG_LEVEL", "INFO").upper())
+    # apply_environment_logging() below overrides this from ALGAN_LOG_LEVEL,
+    # and the daemon re-runs it per client.
+    logger.setLevel(_DEFAULT_LOG_LEVEL)
     # Don't double-print through the root logger if the application configured it.
     logger.propagate = False
 
@@ -150,7 +158,7 @@ _CAPTURED_ENV_VARS = ("CI", "PYTEST_CURRENT_TEST")
 #: pty instead and is caught by the terminal test.
 _BAR_CAPABLE_ENV_VARS = ("PYCHARM_HOSTED",)
 
-_progress_style = "auto"
+_progress_style = _DEFAULT_PROGRESS_STYLE
 
 
 def _env_flag(name):
@@ -271,13 +279,43 @@ def set_log_level(level):
     _quiet_third_party()
 
 
-# Applied after the logger exists so a bad value can be reported through it.
-# Unlike ALGAN_LOG_LEVEL this is not read at import for any technical reason --
-# set_progress_style works at any time -- it is read here only so the variable
-# behaves like every other ALGAN_ one.
-_ENV_PROGRESS = env_str("ALGAN_PROGRESS", None)
-if _ENV_PROGRESS:
+def apply_environment_logging():
+    """Apply ``ALGAN_LOG_LEVEL`` and ``ALGAN_PROGRESS`` to the live logger.
+
+    Called once as this module is imported, and again by the render daemon at
+    the start of each run (``algan.daemon.execute``) so a warm process reports
+    at the verbosity the *client* asked for. That second call is what makes
+    both variables honestly *live* rather than baked in at import: neither
+    configures anything a kernel or a module-level default could have frozen --
+    the level lives on a ``logging.Logger`` and the style in a module global,
+    and :func:`set_log_level` / :func:`set_progress_style` move both at any
+    time -- so refusing a warm run over a difference in one would be refusing
+    over nothing.
+
+    An **unset** variable resets its setting to the shipped default rather than
+    being skipped. That is what makes the daemon call safe: neither of these
+    lives in ``SETTINGS.snapshot()``, so ``reset_state()`` does not restore
+    them, and skipping the unset case would leave one client's
+    ``ALGAN_LOG_LEVEL=DEBUG`` running every later client's script.
+
+    A bad value is reported through the logger and otherwise ignored, on the
+    same principle as every other environment read: a mistyped diagnostic knob
+    must not abort a render.
+    """
+    level = env_str("ALGAN_LOG_LEVEL", None)
     try:
-        set_progress_style(_ENV_PROGRESS)
-    except ValueError as _exc:
-        logger.warning("ALGAN_PROGRESS ignored: %s", _exc)
+        set_log_level(level or _DEFAULT_LOG_LEVEL)
+    except ValueError as exc:
+        logger.warning("ALGAN_LOG_LEVEL ignored: %s", exc)
+        set_log_level(_DEFAULT_LOG_LEVEL)
+    style = env_str("ALGAN_PROGRESS", None)
+    try:
+        set_progress_style(style or _DEFAULT_PROGRESS_STYLE)
+    except ValueError as exc:
+        logger.warning("ALGAN_PROGRESS ignored: %s", exc)
+        set_progress_style(_DEFAULT_PROGRESS_STYLE)
+
+
+# Applied after the setters exist so a bad value can be reported through the
+# logger they configure.
+apply_environment_logging()

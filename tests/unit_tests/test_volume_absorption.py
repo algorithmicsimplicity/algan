@@ -173,11 +173,11 @@ def test_the_packed_block_carries_sigma_in_its_slots():
 
 def test_decoded_colour_matches_scene_builder_decode():
     """Sigma logs the colour in the same space the render boundary decodes to
-    (``scene_builder._decode_merged_colors`` under LINEAR_COLOR_SPACE), so the
+    (``scene_builder._decode_merged_colors`` under linear_color_space), so the
     identity above holds against the decode the kernels actually see.
     """
     from algan.rendering.raytracing import settings as rt_settings
 
-    assert rt_settings.LINEAR_COLOR_SPACE
+    assert rt_settings.linear_color_space
     expected = srgb_to_linear(torch.tensor(_ATTENUATION_COLOR))
     assert torch.allclose(_decoded_attenuation_color(), expected, atol=1e-6)

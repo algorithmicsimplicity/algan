@@ -212,14 +212,14 @@ def test_conflict_rank_kernel_agrees_with_torch_arm_through_compact_sheets():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt
 
-    old = rt.SHEET_RANK_KERNEL
+    old = rt.sheet_rank_kernel
     try:
         SETTINGS.raytracing.experimental.set(sheet_rank_kernel=False)
         torch_arm = _compact(frags, band_rule="facing")
         SETTINGS.raytracing.experimental.set(sheet_rank_kernel=True)
         kernel_arm = _compact(frags, band_rule="facing")
     finally:
-        rt.SHEET_RANK_KERNEL = old
+        rt.sheet_rank_kernel = old
     # The stream really is conflict-heavy: the ranks subdivide the band.
     assert torch_arm["num_sheets"] >= 3
     assert set(torch_arm) == set(kernel_arm)
@@ -244,14 +244,14 @@ def test_conflict_rank_kernel_matches_the_torch_arm_including_a_clear_first_flag
 
     def both_arms(band_start, order, msk):
         positions = torch.arange(msk.numel(), dtype=torch.int64)
-        old = rt.SHEET_RANK_KERNEL
+        old = rt.sheet_rank_kernel
         try:
             SETTINGS.raytracing.experimental.set(sheet_rank_kernel=False)
             want = _conflict_rank(band_start, order, msk, positions)
             SETTINGS.raytracing.experimental.set(sheet_rank_kernel=True)
             got = _conflict_rank(band_start, order, msk, positions)
         finally:
-            rt.SHEET_RANK_KERNEL = old
+            rt.sheet_rank_kernel = old
         return want, got
 
     gen = torch.Generator().manual_seed(19)
@@ -638,42 +638,42 @@ def test_sheet_shade_split_setting_reaches_the_live_module():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt
 
-    old = rt.SHEET_SHADE_SPLIT
+    old = rt.sheet_shade_split
     try:
         SETTINGS.raytracing.experimental.set(sheet_shade_split=True)
-        assert rt.SHEET_SHADE_SPLIT is True
+        assert rt.sheet_shade_split is True
         SETTINGS.raytracing.experimental.set(sheet_shade_split=False)
-        assert rt.SHEET_SHADE_SPLIT is False
+        assert rt.sheet_shade_split is False
     finally:
-        rt.SHEET_SHADE_SPLIT = old
+        rt.sheet_shade_split = old
 
 
 def test_sheet_resolve_setting_reaches_the_live_module():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt
 
-    old = rt.SHEET_RESOLVE
+    old = rt.sheet_resolve
     try:
         SETTINGS.raytracing.experimental.set(sheet_resolve=True)
-        assert rt.SHEET_RESOLVE is True
+        assert rt.sheet_resolve is True
         SETTINGS.raytracing.experimental.set(sheet_resolve=False)
-        assert rt.SHEET_RESOLVE is False
+        assert rt.sheet_resolve is False
     finally:
-        rt.SHEET_RESOLVE = old
+        rt.sheet_resolve = old
 
 
 def test_sheet_rank_kernel_setting_reaches_the_live_module():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt
 
-    old = rt.SHEET_RANK_KERNEL
+    old = rt.sheet_rank_kernel
     try:
         SETTINGS.raytracing.experimental.set(sheet_rank_kernel=True)
-        assert rt.SHEET_RANK_KERNEL is True
+        assert rt.sheet_rank_kernel is True
         SETTINGS.raytracing.experimental.set(sheet_rank_kernel=False)
-        assert rt.SHEET_RANK_KERNEL is False
+        assert rt.sheet_rank_kernel is False
     finally:
-        rt.SHEET_RANK_KERNEL = old
+        rt.sheet_rank_kernel = old
 
 
 def test_interleaved_fragments_keep_exact_key_depth():
@@ -690,7 +690,7 @@ def test_interleaved_fragments_keep_exact_key_depth():
 
 
 # ---------------------------------------------------------------------------
-# Positioned-fragment depth (rt_settings.SHEET_POSITIONED_DEPTH)
+# Positioned-fragment depth (rt_settings.sheet_positioned_depth)
 # ---------------------------------------------------------------------------
 #
 # Two surfaces crossing inside one pixel, in the shape the axis triad of
@@ -764,18 +764,18 @@ def test_sheet_positioned_depth_setting_reaches_the_live_module():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt
 
-    old = rt.SHEET_POSITIONED_DEPTH
+    old = rt.sheet_positioned_depth
     try:
         SETTINGS.raytracing.experimental.set(sheet_positioned_depth=False)
-        assert rt.SHEET_POSITIONED_DEPTH is False
+        assert rt.sheet_positioned_depth is False
         SETTINGS.raytracing.experimental.set(sheet_positioned_depth=True)
-        assert rt.SHEET_POSITIONED_DEPTH is True
+        assert rt.sheet_positioned_depth is True
     finally:
-        rt.SHEET_POSITIONED_DEPTH = old
+        rt.sheet_positioned_depth = old
 
 
 # ---------------------------------------------------------------------------
-# Per-sample depth gating (rt_settings.SHEET_SAMPLE_DEPTH)
+# Per-sample depth gating (rt_settings.sheet_sample_depth)
 # ---------------------------------------------------------------------------
 #
 # Two surfaces crossing inside one pixel, both claiming the whole sample
@@ -987,11 +987,11 @@ def test_sheet_sample_depth_setting_reaches_the_live_module():
     from algan import SETTINGS
     from algan.rendering.raytracing import settings as rt
 
-    old = rt.SHEET_SAMPLE_DEPTH
+    old = rt.sheet_sample_depth
     try:
         SETTINGS.raytracing.experimental.set(sheet_sample_depth=False)
-        assert rt.SHEET_SAMPLE_DEPTH is False
+        assert rt.sheet_sample_depth is False
         SETTINGS.raytracing.experimental.set(sheet_sample_depth=True)
-        assert rt.SHEET_SAMPLE_DEPTH is True
+        assert rt.sheet_sample_depth is True
     finally:
-        rt.SHEET_SAMPLE_DEPTH = old
+        rt.sheet_sample_depth = old

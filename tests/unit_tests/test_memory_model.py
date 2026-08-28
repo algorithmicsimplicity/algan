@@ -10,14 +10,14 @@ chunk over-commits.
 import pytest
 
 from algan.rendering.memory_model import (
-    DEFAULT_SAFETY,
-    HISTORY,
-    PROBE_GROWTH,
-    PROBE_SAFETY,
     AffineFrameCost,
     ChunkMemoryModel,
     PeakRatioModel,
     chunk_signature,
+    memory_model_history,
+    memory_probe_growth,
+    memory_probe_safety,
+    memory_safety,
 )
 
 SIG = ("sig",)
@@ -42,9 +42,9 @@ def test_growth_is_bounded_while_evidence_is_thin():
     model = ChunkMemoryModel()
     model.observe(SIG, 1, 1_000)
     # Memory is effectively unlimited, so only the growth ceiling constrains it.
-    assert model.plan(SIG, 10_000, 1 << 50) == PROBE_GROWTH
-    model.observe(SIG, PROBE_GROWTH, 1_000 * PROBE_GROWTH)
-    assert model.plan(SIG, 10_000, 1 << 50) == PROBE_GROWTH * PROBE_GROWTH
+    assert model.plan(SIG, 10_000, 1 << 50) == memory_probe_growth
+    model.observe(SIG, memory_probe_growth, 1_000 * memory_probe_growth)
+    assert model.plan(SIG, 10_000, 1 << 50) == memory_probe_growth * memory_probe_growth
 
 
 def test_single_sample_planning_uses_the_wider_margin():
@@ -55,7 +55,7 @@ def test_single_sample_planning_uses_the_wider_margin():
     paired = model.predict(SIG, 2)
     # Same line, but the one-sample case reserves more.
     assert lone > paired
-    assert PROBE_SAFETY > DEFAULT_SAFETY
+    assert memory_probe_safety > memory_safety
 
 
 def test_line_is_fitted_from_the_largest_chunks():
@@ -82,7 +82,7 @@ def test_a_dense_chunk_ages_out_instead_of_handicapping_the_render():
     # of the job. It raises the line while it is in the window and is forgotten
     # afterwards.
     model = ChunkMemoryModel()
-    for _ in range(HISTORY):
+    for _ in range(memory_model_history):
         model.observe(SIG, 10, 10_000_000)
     steady = model.predict(SIG, 10)
 
@@ -90,16 +90,16 @@ def test_a_dense_chunk_ages_out_instead_of_handicapping_the_render():
     assert model.predict(SIG, 10) > steady
 
     # Later chunks of ordinary weight push the spike out of the window.
-    for _ in range(HISTORY):
+    for _ in range(memory_model_history):
         model.observe(SIG, 10, 10_000_000)
     assert model.predict(SIG, 10) == steady
 
 
 def test_the_window_is_bounded():
     model = ChunkMemoryModel()
-    for index in range(HISTORY * 4):
+    for index in range(memory_model_history * 4):
         model.observe(SIG, 1 + index, 1_000)
-    assert len(model._by_signature[SIG]) == HISTORY
+    assert len(model._by_signature[SIG]) == memory_model_history
 
 
 def test_prediction_is_monotone_in_the_frame_count():
@@ -302,12 +302,12 @@ def test_peak_ratio_never_drops_below_the_inputs():
 
 def test_peak_ratio_forgets_a_heavy_build():
     ratio = PeakRatioModel(seed=2.0, safety=1.0)
-    for _ in range(HISTORY):
+    for _ in range(memory_model_history):
         ratio.observe(1_000, 1_000)
     steady = ratio.predict(10_000)
     ratio.observe(1_000, 9_000)
     assert ratio.predict(10_000) > steady
-    for _ in range(HISTORY):
+    for _ in range(memory_model_history):
         ratio.observe(1_000, 1_000)
     assert ratio.predict(10_000) == steady
 

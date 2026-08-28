@@ -4,7 +4,7 @@
 scores 0.057 px of ink wobble against 0.014 for a flat quad, and gets *worse* the
 more finely it is diced, because "its silhouette pixels are contended by several
 triangles and fall back to the 8-sub-pixel-sample masks". The run rule
-(``ANALYTIC_AA_RUN``, ``DESIGN_analytic_aa_v2.md`` §4) exists to give exactly
+(``analytic_aa_run``, ``DESIGN_analytic_aa_v2.md`` §4) exists to give exactly
 those pixels a continuous scalar instead of eighths, so the question is which of
 its gates closes.
 
@@ -145,7 +145,7 @@ not move. Nothing regresses and nothing gains beyond noise.
 THE SCORED COLUMN IS THE WRONG INSTRUMENT FOR A PACKED GRID, which is why
 ``--mesh-ab`` exists. ``_exact_coverage`` has to DROP a pixel whose facing group
 holds two sheets, and on a pack of spheres those drops are concentrated exactly
-where two spheres overlap -- the population MESH_ID is there to fix. So
+where two spheres overlap -- the population mesh_id is there to fix. So
 ``--mesh-ab`` differences painted coverage between the two settings per pixel
 instead: no reference, so it sees every covered pixel. Measured, ``--res md``:
 
@@ -160,16 +160,16 @@ instead: no reference, so it sees every covered pixel. Measured, ``--res md``:
     packed 4x4 (overlap)      36224      18    0.2002       +0.0539
 
 The packed prediction holds in sign and mechanism and is small in population:
-18 of 36224 pixels, with ``off - on`` POSITIVE -- MESH_ID=0 paints more, the
+18 of 36224 pixels, with ``off - on`` POSITIVE -- mesh_id=0 paints more, the
 over-claim that happens when one id for the whole pack lets a run carry across
 two spheres until their masks OR to a full union. The ``apart`` control moves
 ZERO pixels, which is what makes that reading sound: the effect is the packing,
 not the batching. The Icosahedron's 235 moved pixels are mostly the winding
-defect, not MESH_ID -- with ``ALGAN_POLYHEDRON_WINDING=1`` they fall to 11 at
+defect, not mesh_id -- with ``ALGAN_POLYHEDRON_WINDING=1`` they fall to 11 at
 mean |d| 0.024.
 
 Getting there needed a DEFECT fixed. Both packed cases were byte-identical
-across MESH_ID at first, because a packed grid is diced logical PN and
+across mesh_id at first, because a packed grid is diced logical PN and
 ``_dice_logical_pn`` built its patch->surface map from the per-member
 ``_obj_counts`` alone. A lone packed primitive is ONE member covering every
 sphere, so the pack diced to a single id and the ``mesh_ids``
@@ -179,7 +179,7 @@ thrown away. The dice now consults the declaration first, like the flat path.
 That is a CORRECTION of a number this docstring carried earlier, and the reason
 is worth keeping: an intermediate version of ``_exact_coverage`` accepted a
 mis-wound pixel whose two sheets had landed in ONE facing group, reporting
-double its true coverage. The Icosahedron's error read 0.0492 and MESH_ID
+double its true coverage. The Icosahedron's error read 0.0492 and mesh_id
 appeared to halve it. Neither survived a sound reference. The lesson is the
 plain one -- an arbiter needs its own validity check before its verdicts are
 worth anything, which is why the drop count is now printed beside every row.
@@ -194,7 +194,7 @@ pixels where that shows: 960 of the icosahedron's 46220 covered pixels have one
 facing group holding BOTH sheets, against 4 with ``ALGAN_POLYHEDRON_WINDING=1``
 -- which is the measurement that the orientation pass works. (The obvious follow-on guess, that the winding is why
 ``ALGAN_MESH_ID=1`` regressed an Icosahedron under the old per-fragment metric,
-is measured above and is WRONG: with the winding fixed, MESH_ID is still
+is measured above and is WRONG: with the winding fixed, mesh_id is still
 neutral.)
 
 Run:  <venv-python> benchmarks/_aa_run_gate_check.py [--res md|ld|hd]
@@ -250,8 +250,8 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_SLIVER_BIT,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
-    MIN_ALPHA,
-    MIN_WEIGHT,
+    min_alpha,
+    min_weight,
 )
 
 RESOLUTIONS = {"ld": LD, "md": MD, "hd": HD}
@@ -285,7 +285,7 @@ def _cases():
 
     def polyhedron():
         # A Polyhedron arrives as one collection member per TRIANGLE. With
-        # MESH_ID off every triangle is its own surface and no run can span a
+        # mesh_id off every triangle is its own surface and no run can span a
         # facet boundary, so 'corrected' collapses; with it on the solid is one
         # surface. Run with ALGAN_MESH_ID=0/1 to see the difference.
         #
@@ -322,7 +322,7 @@ def _cases():
         # packed grid, which reaches the renderer as a SINGLE
         # LogicalPNTrianglePrimitive -- one collection member covering every
         # sphere. That is the end DESIGN_mesh_identity.md ss2.2 fixes in the
-        # other direction: with MESH_ID off the whole pack is one surface, so
+        # other direction: with mesh_id off the whole pack is one surface, so
         # _aa_run_scan may carry a run ACROSS two spheres and sum coverage over
         # objects that merely overlap on screen; with it on, surface.py's
         # per-grid ``mesh_ids`` break the run at each sphere boundary.
@@ -391,7 +391,7 @@ def _cases():
         # The CONTROL for the packed pair: same construction, spaced so no two
         # footprints can touch (centres 0.75 apart, radii summing to 0.56). Every
         # pixel is covered by at most one sphere, so a cross-sphere run is
-        # geometrically impossible and MESH_ID has nothing to separate. It is
+        # geometrically impossible and mesh_id has nothing to separate. It is
         # what makes the overlapping row below readable: whatever moves there
         # and not here is the packing, not the batching.
         _pack(0.75, 0.0)
@@ -749,9 +749,9 @@ def _replay(
                 # ss6.6.2: the kernel scales the occlusion write by the same
                 # ratio, so the replay must too or --verify compares two rules.
                 if mesh_cap_dens:
-                    dens *= room / max(eff, MIN_ALPHA)
+                    dens *= room / max(eff, min_alpha)
                 eff = room
-        if eff <= MIN_ALPHA:
+        if eff <= min_alpha:
             effs.append(0.0)
             continue
         effs.append(eff)
@@ -775,7 +775,7 @@ def _replay(
             svis[s] *= fct
         if run_pd > 0.0:
             run_claimed += a_s * (1.0 - run_claimed)
-        if sum(svis) / N < MIN_WEIGHT:
+        if sum(svis) / N < min_weight:
             break
     if rule_b and run_pending:
         _host_redistribute(svis, run_U, run_resid)
@@ -963,7 +963,7 @@ class _Svis:
         # Reads sid, so it is only meaningful where sid names a SOLID:
         # ALGAN_MESH_ID=1 on the packed cases (with it off the whole pack is one
         # id and this cannot see the overlap), and it is noise on a Polyhedron
-        # with MESH_ID off, where every triangle is already its own id.
+        # with mesh_id off, where every triangle is already its own id.
         groups = {}
         for s, f in zip(sids, faces):
             groups.setdefault(f, set()).add(s)
@@ -1431,7 +1431,7 @@ def _verify(build, settings, silhouettes, limit):
         effs = captured[(px, py)][0]
         # Fragment rows only (q >= 0); the kernel emits one per fragment it
         # processes, an eff-skip included (note 1), which the replay records
-        # as a zero. It stops at the MIN_WEIGHT break, so compare the prefix.
+        # as a zero. It stops at the min_weight break, so compare the prefix.
         frag = [r for r in rows if r[0] >= 0]
         for r in frag:
             q = int(r[0])
@@ -1453,7 +1453,7 @@ def _mesh_ab(cases, settings):
     The ss6.3 table scores against ``_exact_coverage``, which has to DROP a
     pixel whose facing group holds two sheets -- and on a packed grid those
     drops are concentrated exactly where two spheres overlap, which is the
-    population MESH_ID is supposed to fix. Scoring only the survivors can
+    population mesh_id is supposed to fix. Scoring only the survivors can
     therefore report "neutral" while being blind to the effect.
 
     This compares the two settings against each OTHER instead: same scene, same
@@ -1483,7 +1483,7 @@ def _mesh_ab(cases, settings):
         mean_abs = sum(abs(d) for d in signed) / n_moved if n_moved else 0.0
         mean_signed = sum(signed) / n_moved if n_moved else 0.0
         worst = max((abs(off[k] - on[k]) for k in shared), default=0.0)
-        # A POSITIVE 'mean off-on' means MESH_ID=0 paints more than MESH_ID=1,
+        # A POSITIVE 'mean off-on' means mesh_id=0 paints more than mesh_id=1,
         # which is the signature the packed grid predicts: with one id for the
         # whole pack a run carries across two spheres and their masks OR to a
         # full union, so corr short-circuits to 1 and the pixel claims coverage

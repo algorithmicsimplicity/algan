@@ -22,7 +22,7 @@ that differ in how much of the frame is a one-mesh pixel:
 * ``diced``   -- Sphere/Cylinder/Torus, all diced logical PN. The population the
   rule is FOR: a closed solid's two sheets in every silhouette pixel.
 * ``flat``    -- Cube/Icosahedron/Octahedron, flat triangle meshes. One ``sid``
-  per solid under MESH_ID, so the rule engages, but there are far fewer
+  per solid under mesh_id, so the rule engages, but there are far fewer
   fragments per pixel.
 * ``mixed``   -- both, plus bezier circuits and a ground plane, with shadows on
   so ``raster_shadow_event_build`` carries the clamp too. The closest shape to

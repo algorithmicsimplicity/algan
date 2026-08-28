@@ -507,9 +507,9 @@ def test_the_public_and_experimental_namespaces_do_not_overlap():
 def test_a_write_reaches_the_module_globals_the_engine_reads_live():
     from algan.rendering.raytracing import settings as rt_settings
 
-    before = rt_settings.MAX_BOUNCES
+    before = rt_settings.max_bounces
     SETTINGS.raytracing.set(max_bounces=before + 1)
-    assert before + 1 == rt_settings.MAX_BOUNCES
+    assert before + 1 == rt_settings.max_bounces
 
 
 # --------------------------------------------------------------------------
@@ -555,3 +555,144 @@ def test_override_restores_even_when_the_body_raises():
     with pytest.raises(RuntimeError):
         _raise_inside_override(before + 5)
     assert SETTINGS.video.frames_per_second == before
+
+
+# --------------------------------------------------------------------------
+# Coverage of the storage module
+# --------------------------------------------------------------------------
+
+
+def test_every_renderer_switch_is_reachable_through_SETTINGS():
+    """No renderer configuration without a way to configure it.
+
+    ``algan/rendering/raytracing/settings.py`` stores the renderer's
+    configuration: module-level values with environment-variable defaults that
+    engine code reads live. ``SETTINGS.raytracing`` (and ``.experimental``) is
+    the only public way to write one.
+
+    This used to be a real gap. The two layers spelled each field twice --
+    ``hybrid_raster`` on the section, ``hybrid_raster`` in the module -- and a
+    hand-maintained 119-row table joined them, so a switch whose row nobody
+    added had a global, a setter, and no way to set it. Nine had accumulated.
+    There is one spelling now and the field set is derived from the module, so
+    the gap cannot reopen by omission; what this pins is that the derivation
+    still sees every declaration, which a non-scalar default or a shadowing
+    helper would break.
+    """
+    import ast
+    import inspect
+
+    from algan.rendering.raytracing import settings as storage
+
+    declared = set()
+    for node in ast.parse(inspect.getsource(storage)).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            name = target.id if isinstance(target, ast.Name) else None
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            continue
+        if name and not name.startswith("_") and name == name.lower():
+            declared.add(name)
+
+    unreachable = sorted(declared - set(SETTINGS.raytracing.field_names()))
+    assert not unreachable, (
+        "declared in the storage module but not reachable through SETTINGS -- "
+        "either the default is not a scalar, or a helper of the same name "
+        "shadows it:\n  " + "\n  ".join(unreachable)
+    )
+
+
+def test_every_env_backed_renderer_global_is_a_setting():
+    """Nothing in the renderer is configurable by environment variable alone.
+
+    A module-level value with an ``env_*`` default is renderer configuration by
+    definition. Before this, twenty-five of them lived outside the toggles
+    module -- BVH arity, the ray epsilons, the memory model's margins -- and
+    ``SETTINGS.raytracing`` derived from one module, so the only way to reach
+    any of them was to set an environment variable before ``import algan``.
+    They are fields now; this is what stops the next one from landing outside.
+
+    Exempted: the four in ``settings/_startup.py``, which are consumed while
+    Torch and Taichi initialise and so have no runtime object to own them.
+    """
+    import ast
+    from pathlib import Path
+
+    accessors = {"env_flag", "env_int", "env_float", "env_str", "env_is_set"}
+    fields = set(SETTINGS.raytracing.field_names())
+    root = Path(__file__).parents[2] / "algan"
+    stray = []
+    for path in sorted(root.rglob("*.py")):
+        if "external_libraries" in path.parts or path.name == "environment.py":
+            continue
+        if path.match("settings/_startup.py"):
+            continue
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                name = target.id if isinstance(target, ast.Name) else None
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                name = node.target.id
+            else:
+                continue
+            if name is None or node.value is None or name in fields:
+                continue
+            reads_env = any(
+                isinstance(c, ast.Call) and getattr(c.func, "id", None) in accessors
+                for c in ast.walk(node.value)
+            )
+            if reads_env:
+                stray.append(f"{path.relative_to(root.parent)}: {name}")
+    assert not stray, (
+        "environment-backed renderer configuration with no SETTINGS field -- "
+        "give it a lowercase field name in its module, and add that module to "
+        "_STORAGE_MODULES if it is not there yet:\n  " + "\n  ".join(stray)
+    )
+
+
+def test_an_import_frozen_field_is_readable_but_refuses_a_write():
+    """Reading one is the point of promoting it; writing one would render wrong.
+
+    ``bvh_arity`` is baked into the ndarray element type the traversal kernels
+    are annotated with, so a host that took a new value would build a tree the
+    kernels cannot read -- which does not fail, it renders wrong. A snapshot
+    still round-trips it, exactly as it does an inert field.
+    """
+    from algan.settings.raytracing_settings import _IMPORT_FROZEN_FIELDS
+
+    assert SETTINGS.raytracing.bvh_arity >= 2
+    for field in _IMPORT_FROZEN_FIELDS:
+        assert field in SETTINGS.raytracing.field_names()
+        with pytest.raises(AlganConfigurationError, match="before importing algan"):
+            SETTINGS.raytracing.experimental.set(
+                **{field: SETTINGS.raytracing.bvh_arity}
+            )
+    SETTINGS.restore(SETTINGS.snapshot())
+
+
+def test_no_renderer_switch_is_shadowed_by_a_helper_of_the_same_name():
+    """A field and a function cannot share a name, and Python will not say so.
+
+    With one spelling for each setting, a ``def`` later in the storage module
+    than its field simply takes the name over: the field stops existing, drops
+    out of ``SETTINGS`` silently, and any accessor that read it becomes a
+    ``return`` of itself. Three did that the moment the two spellings merged.
+    Nothing about it raises, so it needs asserting.
+    """
+    import importlib
+
+    from algan.settings.raytracing_settings import (
+        _STORAGE_MODULES,
+        _shadowed_fields,
+    )
+
+    shadowed = []
+    for name in _STORAGE_MODULES:
+        shadowed += _shadowed_fields(importlib.import_module(name))
+    assert not shadowed, (
+        "these renderer settings are declared as fields but the name is bound "
+        "to a function by the time the module finishes -- rename the function "
+        "(the field owns the name):\n  " + "\n  ".join(shadowed)
+    )

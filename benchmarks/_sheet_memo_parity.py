@@ -1,6 +1,6 @@
 """Frame-level A/B for the shadowed resolve's cross-pass material memo.
 
-``SHEET_RESOLVE_MEMO`` (RENDERER_WORK_QUEUE.md item 9) has mode 1 of
+``sheet_resolve_memo`` (RENDERER_WORK_QUEUE.md item 9) has mode 1 of
 ``sheet_resolve_shade`` store each processed triangle sheet's fetched
 material -- colour(4), alpha, reflectivity, roughness, IOR, transmission,
 surface point, twelve floats -- and mode 2 read it back instead of calling

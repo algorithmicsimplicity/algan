@@ -4,7 +4,7 @@ The level searches that decide how finely each logical PN patch and each bezier
 segment is diced are reductions written as ~30 elementwise torch passes over
 large scratch. ``algan/rendering/raytracing/logical_pn_taichi.py`` holds fused
 Taichi kernels for all three, and
-``rendering/raytracing/settings.py::PN_CRITERION_KERNEL`` documents them at
+``rendering/raytracing/settings.py::pn_criterion_kernel`` documents them at
 **67.9 s (8.5%)** and **18.4 s (2.3%)** of a reference ``save_video``.
 
 Until 2026-08-26 they ran only on a CUDA render device. The stated reason was

@@ -77,7 +77,7 @@ def _expect_byte(working_value, linear):
 def color_space(request):
     """Select the working space for one test, restoring it afterwards."""
     enabled = request.param
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(enabled)
     try:
         yield enabled
@@ -98,7 +98,7 @@ def encode(values, *, tonemapping, exposure=1.0, method="neutral", kernel=True):
         frame[0, 0, i, :3] = v
 
     memory = ManualMemory(0.0, device=render_device(), managed=False, num_bytes=1 << 22)
-    was_kernel = rt_settings.POST_TONEMAP_KERNEL
+    was_kernel = rt_settings.post_tonemap_kernel
     rt_settings.set_post_tonemap_kernel(kernel)
     try:
         out = _finalize_on_device(
@@ -220,7 +220,7 @@ def test_neutral_curve_transfer_is_unchanged():
     """
     values = [0.0, 0.08, 0.25, 0.5, 0.76, 1.0, 2.0, 4.0]
     expected = [0, 10, 54, 117, 184, 222, 245, 251]
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     # Pinned in the display-referred space, where the byte *is* the curve's
     # output: that keeps this a pin on the curve itself rather than on the
     # curve composed with the OETF. What the linear space does to these same
@@ -244,7 +244,7 @@ def test_neutral_curve_is_encoded_after_the_curve_under_the_linear_space():
     """
     values = [0.0, 0.08, 0.25, 0.5, 0.76, 1.0, 2.0, 4.0]
     curve_out = [0, 10, 54, 117, 184, 222, 245, 251]
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(True)
     try:
         got = [c[0] for c in encode(values, tonemapping=True)]
@@ -270,7 +270,7 @@ def test_curve_moves_values_that_were_already_in_range():
     # Compared within one working space, so this measures the curve rather
     # than the difference between the two spaces.
     white_cost = {True: 15, False: 33}
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     try:
         for linear in (True, False):
             rt_settings.set_linear_color_space(linear)
@@ -313,7 +313,7 @@ def test_over_range_lit_colour_keeps_its_hue():
     Display-referred only. Under the linear working space the bound is off by
     design -- see the test below.
     """
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(False)
     try:
         out = _lit_rgb([[2.0, 1.0, 0.4]])[0]
@@ -336,7 +336,7 @@ def test_linear_space_does_not_bound_the_lit_colour():
     adding, which is the thing the working space exists to fix. Values above
     1.0 pass through as radiance.
     """
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(True)
     try:
         out = _lit_rgb([[2.0, 1.0, 0.4]])[0]
@@ -391,7 +391,7 @@ def test_fully_lit_surface_reflects_its_albedo_and_no_more():
     lights stop adding, and the linear working space removes it deliberately --
     see the test below.
     """
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(False)
     try:
         assert _lambert(albedo=0.5).tolist() == pytest.approx([0.5, 0.5, 0.5], abs=1e-6)
@@ -414,7 +414,7 @@ def test_linear_space_lets_light_accumulate():
     over-exposure, and it is the author's to fix with intensities or exposure,
     not something to normalise away behind their back.
     """
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(True)
     try:
         lit = float(_lambert(albedo=0.5)[0])
@@ -435,9 +435,9 @@ def test_under_lit_surface_is_not_scaled():
 
     Display-referred: the budget only exists there, and so does the 0.1 ambient
     coefficient this arithmetic assumes -- in linear light the same fill is
-    0.01, because the units changed (AMBIENT_STRENGTH_LINEAR).
+    0.01, because the units changed (ambient_strength_linear).
     """
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(False)
     try:
         assert _lambert(albedo=0.5, light_intensity=0.5).tolist() == pytest.approx(
@@ -456,10 +456,8 @@ def test_budget_counts_radiance_not_light_count():
 
     Display-referred, for the same two reasons as the test above.
     """
-    from algan.rendering.raytracing.shading_taichi import AMBIENT_STRENGTH
-
-    assert AMBIENT_STRENGTH == 0.1
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    assert rt_settings.ambient_strength == 0.1
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(False)
     try:
         one_bright = _lambert(albedo=0.5, light_intensity=0.9)
@@ -477,7 +475,7 @@ def test_energy_scale_is_identity_below_unity():
     """
     from algan.rendering.shaders.material_shaders import _energy_scale
 
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(False)
     try:
         for w in (0.0, 0.25, 0.5, 1.0):
@@ -497,7 +495,7 @@ def test_energy_scale_is_identity_everywhere_under_the_linear_space():
     """
     from algan.rendering.shaders.material_shaders import _energy_scale
 
-    previous = rt_settings.LINEAR_COLOR_SPACE
+    previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(True)
     try:
         for w in (0.0, 0.25, 1.0, 2.0, 4.0, 100.0):

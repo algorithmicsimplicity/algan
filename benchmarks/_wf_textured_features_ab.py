@@ -4,7 +4,7 @@ lean textured wavefront shade kernel, one at a time.
 Renders the same all-Surface scene through: the current per-vertex monolith
 wavefront, then the textured kernel with features compiled in cumulatively --
 lean -> +beziers -> +scatter dispatch -> +shadows -> +normal maps (see
-settings.WF_TEXTURED_FEATURES). Reports the median wavefront render-stage time
+settings.wf_textured_features). Reports the median wavefront render-stage time
 (CUDA-synced around ``raytrace_render_wavefront``) at each stage, the marginal
 hit vs the previous stage, and the speed vs the monolith. Configs are
 interleaved within each rep to cancel thermal-throttle drift; the first rep is a
@@ -55,8 +55,8 @@ from algan.rendering.raytracing.settings import (  # noqa: E402
     WF_TEX_NORMALMAP,
     WF_TEX_SCATTER,
     WF_TEX_SHADOWS,
-    set_textured_features,
-    set_textured_wavefront,
+    set_wf_textured,
+    set_wf_textured_features,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -129,9 +129,9 @@ tracer_mod.raytrace_render_wavefront = _timed
 def render_stage(textured, feat, tag):
     SceneManager.reset()
     set_fragment_shading(True)
-    set_textured_wavefront(textured)
+    set_wf_textured(textured)
     if textured:
-        set_textured_features(feat)
+        set_wf_textured_features(feat)
     build()
     _wf_times.clear()
     SceneManager.instance().save_frame(os.path.join(OUT_DIR, f"feat_{tag}.png"))

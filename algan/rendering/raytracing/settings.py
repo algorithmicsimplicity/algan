@@ -1,12 +1,20 @@
-"""The renderer's feature toggles, as module globals with setter functions.
+"""The renderer's feature toggles: the storage behind ``SETTINGS.raytracing``.
 
-Every ray-tracing switch lives here as a module-level global with an environment
-variable default and a setter, and :data:`algan.SETTINGS`'s ``raytracing`` section
-is the public face of them. The ones that change what the image looks like are
-exposed directly; the kernel and performance switches are reachable through
-``SETTINGS.raytracing.experimental``.
+Every ray-tracing switch lives here as a module-level value with an environment
+variable default, under **the same name** ``SETTINGS.raytracing`` exposes it by.
+That section is the public, validated face of this module; the switches that
+change what the image looks like are exposed on it directly, and the kernel and
+performance switches through ``SETTINGS.raytracing.experimental``.
 
-**Read these live** -- ``rt_settings.X`` at call time, not ``from ... import X``
+One name, deliberately. These used to be UPPER_CASE here and lowercase there,
+joined by a hand-maintained table in ``algan/settings/raytracing_settings.py``,
+and nine switches reached the engine with no way to set them because nobody
+added their row. The field set is derived from this module now, so a switch
+declared here is reachable by construction. The corollary is that a helper
+function may not share a name with a field -- the later ``def`` would take the
+name over and the field would vanish silently (see ``_shadowed_fields``).
+
+**Read these live** -- ``rt_settings.x`` at call time, not ``from ... import X``
 at module import. Importing by value freezes a toggle at its import-time state,
 before user code has had a chance to set it. That bug has shipped before.
 
@@ -23,23 +31,23 @@ from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
 from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
-from algan.settings._startup import _HDR_BUFFER_F16, render_device
+from algan.settings._startup import render_device
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
-MAX_BOUNCES = 8
+max_bounces = 8
 # Rays averaged per pixel. 1 renders with the exact deterministic kernel;
 # > 1 switches to the Monte Carlo pathtracer (stochastic transparency,
 # glossy reflections, optional diffuse indirect lighting).
-SAMPLES_PER_PIXEL = 1
+samples_per_pixel = 1
 
 # Policy for renderer/backend combinations that cannot honor authored scene
 # features. "error" is the safe public default; "warn" and "ignore" are
 # available for controlled migration and benchmarking.
-UNSUPPORTED_FEATURE_POLICY = (
+unsupported_feature_policy = (
     env_str("ALGAN_UNSUPPORTED_FEATURE_POLICY", "error").strip().lower()
 )
-if UNSUPPORTED_FEATURE_POLICY not in {"error", "warn", "ignore"}:
-    UNSUPPORTED_FEATURE_POLICY = "error"
+if unsupported_feature_policy not in {"error", "warn", "ignore"}:
+    unsupported_feature_policy = "error"
 
 
 def set_unsupported_feature_policy(policy):
@@ -47,15 +55,15 @@ def set_unsupported_feature_policy(policy):
     normalized = str(policy).strip().lower()
     if normalized not in {"error", "warn", "ignore"}:
         raise UnsupportedFeatureError("policy must be 'error', 'warn', or 'ignore'")
-    global UNSUPPORTED_FEATURE_POLICY
-    UNSUPPORTED_FEATURE_POLICY = normalized
+    global unsupported_feature_policy
+    unsupported_feature_policy = normalized
 
 
 def report_unsupported_features(message):
     """Apply the configured policy to an unsupported render combination."""
-    if UNSUPPORTED_FEATURE_POLICY == "ignore":
+    if unsupported_feature_policy == "ignore":
         return
-    if UNSUPPORTED_FEATURE_POLICY == "warn":
+    if unsupported_feature_policy == "warn":
         warnings.warn(message, UnsupportedFeatureWarning, stacklevel=3)
         return
     raise UnsupportedFeatureError(message)
@@ -75,11 +83,35 @@ def report_unsupported_features(message):
 # between is the identity. Set ALGAN_LINEAR_COLOR=0 to restore the previous
 # display-referred pipeline for A/B; that arm is byte-identical to the tree
 # before the working space landed. See LINEAR_COLOR_WORK.md.
-LINEAR_COLOR_SPACE = env_flag("ALGAN_LINEAR_COLOR", True)
+linear_color_space = env_flag("ALGAN_LINEAR_COLOR", True)
+
+# Base ambient coefficient: the constant fill every lighting model adds on top
+# of its direct terms. The renderer always passes ``ambient_light_intensity``
+# as 1, so the scale lives here -- without it a single point light washes
+# surfaces out to white and unlit sides stop reading as unlit (the reference is
+# a Three.js scene lit by one point light with no AmbientLight).
+#
+# The two numbers are the SAME fill in two unit systems, not two settings.
+# 0.1 was chosen as a display-referred coefficient; carrying it unchanged into
+# the linear working space would make the ambient nearly nine times brighter,
+# because 0.1 of linear light encodes to byte 89 where 0.1 of an encoded value
+# is byte 26. srgb_to_linear(0.1) = 0.01003, so 0.01 delivers what the old
+# pipeline delivered -- the number changes because the units changed, not
+# because the look was retuned. ``_ambient_strength()`` in
+# ``shading_taichi`` and ``shaders/material_shaders`` picks the one that
+# matches linear_color_space; both used to hold their own copy of the pair,
+# which is two sources of truth for one look-defining constant.
+#
+# Folded into the kernels inside ``ti.static``, so a change takes effect for
+# kernels compiled after it (CLAUDE.md's ti.static hazard); set the environment
+# variable for a guaranteed one. Distinct from ``ambient_light``, which belongs
+# to the unwired physical-mode Monte Carlo kernel and is inert.
+ambient_strength = env_float("ALGAN_AMBIENT_STRENGTH", 0.1)
+ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 
 # Off by default: an authored colour lands on the pixel it names. That is now
 # true because the working space is linear and the OETF runs at the byte write
-# (see LINEAR_COLOR_SPACE above), so this default is the same choice three.js
+# (see linear_color_space above), so this default is the same choice three.js
 # makes with NoToneMapping rather than a workaround for a missing conversion.
 # The curve (Khronos PBR Neutral) reserves headroom by design: it maps linear
 # 1.0 to 0.869, so even with the OETF applied afterwards an authored white
@@ -88,9 +120,9 @@ LINEAR_COLOR_SPACE = env_flag("ALGAN_LINEAR_COLOR", True)
 # it. Bloom runs *before* the tonemap on the unclamped HDR buffer, so over-range
 # energy is a visible halo before anything clamps. Turn it on for a filmic look,
 # accepting that every SDR value shifts. See TONEMAP_FINDINGS.md.
-TONEMAPPING = False
-TONEMAP_EXPOSURE = 1.0
-TONEMAP_METHOD = "neutral"
+tonemapping = False
+tonemap_exposure = 1.0
+tonemap_method = "neutral"
 # Tonemap in post-processing (composite writes linear HDR float) rather than
 # in the composite kernel. This is the physically-correct order: bloom/glow
 # and the supersample downsample run in linear HDR and tonemapping is applied
@@ -99,41 +131,41 @@ TONEMAP_METHOD = "neutral"
 # that is identity for empty pixels (enabling the covered-pixel compaction).
 # Costs a float32 frame buffer (4x the uint8 one), so fewer frames per batch.
 # Env override for A/B and re-baselining.
-POST_PROCESS_TONEMAP = env_flag("ALGAN_POST_PROCESS_TONEMAP", True)
+post_process_tonemap = env_flag("ALGAN_POST_PROCESS_TONEMAP", True)
 
 # Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
 # with throughput ``albedo * strength`` for color bleeding.
-INDIRECT_BOUNCE_STRENGTH = 0.0
+indirect_bounce_strength = 0.0
 
 # Radiance scale of explicit point lights in physical mode. The default of
 # pi makes a white light produce roughly albedo-level Lambertian brightness.
-LIGHT_INTENSITY = 3.141592653589793
+light_intensity = 3.141592653589793
 # Constant ambient term added per diffuse interaction in physical mode.
-AMBIENT_LIGHT = 0.0
+ambient_light = 0.0
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set
 # False to force all three traversals -- used by the A/B benchmark to measure
 # the gain in isolation.
-GATE_EMPTY_TRAVERSALS = True
+gate_empty_traversals = True
 
 # Wavefront traversal rollouts. Changes to sibling revalidation and child
 # ordering are enabled by default after parity validation; the opaque paths
 # remain opt-in until their scene classification and shading gates are proven.
-WF_REVALIDATE_PENDING = env_flag("ALGAN_WF_REVALIDATE_PENDING", False)
-WF_NEAR_FIRST = env_flag("ALGAN_WF_NEAR_FIRST", False)
-WF_OPAQUE_CLOSEST = env_flag("ALGAN_WF_OPAQUE_CLOSEST", False)
-WF_OPAQUE_PREPASS = env_flag("ALGAN_WF_OPAQUE_PREPASS", False)
+wf_revalidate_pending = env_flag("ALGAN_WF_REVALIDATE_PENDING", False)
+wf_near_first = env_flag("ALGAN_WF_NEAR_FIRST", False)
+wf_opaque_closest = env_flag("ALGAN_WF_OPAQUE_CLOSEST", False)
+wf_opaque_prepass = env_flag("ALGAN_WF_OPAQUE_PREPASS", False)
 
-INPLACE_AA = env_flag("ALGAN_INPLACE_AA", False)
+inplace_aa = env_flag("ALGAN_INPLACE_AA", False)
 # Rays per wavefront screen tile. The wavefront holds per-ray state for every
-# ray it processes at once (~(18 + 6*KBUF) floats/ray); processing the chunk in
+# ray it processes at once (~(18 + 6*kbuf) floats/ray); processing the chunk in
 # tiles of this many rays bounds that state so it fits at any resolution / chunk
 # length (a single HD frame is ~2M rays). ~2M rays * ~168 B ~= 350 MB of state.
-WAVEFRONT_TILE_RAYS = env_int("ALGAN_WAVEFRONT_TILE", 1 << 21)
+wavefront_tile_rays = env_int("ALGAN_WAVEFRONT_TILE", 1 << 21)
 # Adaptive tile sizing: size wavefront tiles from the render pool's *actual*
-# free bytes instead of the fixed WAVEFRONT_TILE_RAYS. The static ~2M-ray
+# free bytes instead of the fixed wavefront_tile_rays. The static ~2M-ray
 # default keeps tiles small enough for any GPU, but every tile pays a fixed
 # host-side cost per kernel launch (the traverse/shade kernels marshal 60+
 # ndarray args per launch -- ~7-9 ms each on this project's hardware), so a
@@ -150,29 +182,29 @@ WAVEFRONT_TILE_RAYS = env_int("ALGAN_WAVEFRONT_TILE", 1 << 21)
 # buy nothing (the profiler's per-kernel syncs made launches look expensive).
 # Opt in for memory-constrained renders, where shrinking tiles beats the
 # window-halving OOM retry.
-WAVEFRONT_TILE_AUTO = env_flag("ALGAN_WAVEFRONT_TILE_AUTO", True) and not env_is_set(
+wavefront_tile_auto = env_flag("ALGAN_WAVEFRONT_TILE_AUTO", True) and not env_is_set(
     "ALGAN_WAVEFRONT_TILE"
 )
 # Fraction of the pool's free bytes the per-tile ray state may claim.  Every
 # built-in per-slot/fixed allocation and ManualMemory's initial alignment are
 # now accounted exactly, so the default can use the whole allowance.  Keep the
 # override as an opt-in diagnostic/performance headroom control.
-WAVEFRONT_TILE_SAFETY = env_float("ALGAN_WAVEFRONT_TILE_SAFETY", 1.0)
+wavefront_tile_safety = env_float("ALGAN_WAVEFRONT_TILE_SAFETY", 1.0)
 # Preferred lower bound and hard upper bound for auto tile size (rays). The
 # runtime honors the floor when it fits, but deliberately goes below it when
 # exact arena headroom requires a smaller tile; the cap bounds active-index
 # buffers and launch size on very large pools.
-WAVEFRONT_TILE_MIN = env_int("ALGAN_WAVEFRONT_TILE_MIN", 1 << 18)
-WAVEFRONT_TILE_MAX = env_int("ALGAN_WAVEFRONT_TILE_MAX", 1 << 25)
+wavefront_tile_min = env_int("ALGAN_WAVEFRONT_TILE_MIN", 1 << 18)
+wavefront_tile_max = env_int("ALGAN_WAVEFRONT_TILE_MAX", 1 << 25)
 
 
 def set_wavefront_tile_auto(enabled):
     """Toggle adaptive (pool-sized) wavefront tile sizing (see
-    ``WAVEFRONT_TILE_AUTO``). Off falls back to the fixed
-    ``WAVEFRONT_TILE_RAYS``.
+    ``wavefront_tile_auto``). Off falls back to the fixed
+    ``wavefront_tile_rays``.
     """
-    global WAVEFRONT_TILE_AUTO
-    WAVEFRONT_TILE_AUTO = bool(enabled)
+    global wavefront_tile_auto
+    wavefront_tile_auto = bool(enabled)
 
 
 # On the common non-splitting wavefront path (no refraction/custom scatter), a
@@ -183,7 +215,7 @@ def set_wavefront_tile_auto(enabled):
 # Splitting paths retain the full-pool scan because a shade pass may activate a
 # spare slot that was not in the previous active set.  Runtime-mutable for
 # in-process A/B checks; the env var selects the startup default.
-WF_COMPACT_ACTIVE_ONLY = env_flag("ALGAN_WF_COMPACT_ACTIVE_ONLY", True)
+wf_compact_active_only = env_flag("ALGAN_WF_COMPACT_ACTIVE_ONLY", True)
 # Initial ratio of total shared ray-pool slots to primary rays for a tile that
 # may split. This is only a launch-efficiency heuristic, not a per-pixel or
 # per-path split limit: all pixels append continuations into one shared pool.
@@ -194,7 +226,7 @@ WF_COMPACT_ACTIVE_ONLY = env_flag("ALGAN_WF_COMPACT_ACTIVE_ONLY", True)
 # old fixed eight-slots-per-pixel layout. The legacy environment variable is
 # accepted as an alias so existing tuning scripts remain valid; its value now
 # controls only the initial ratio, never a hard maximum number of splits.
-REFRACT_INITIAL_POOL_RATIO = max(
+refract_initial_pool_ratio = max(
     2,
     env_int(
         "ALGAN_WAVEFRONT_INITIAL_POOL_RATIO",
@@ -203,11 +235,11 @@ REFRACT_INITIAL_POOL_RATIO = max(
 )
 # Backwards-compatible name for code that imported the old setting. It now
 # denotes the initial shared-pool ratio; it is no longer a per-pixel slot cap.
-REFRACT_SPLIT_SLOTS = REFRACT_INITIAL_POOL_RATIO
-# When True, the *deterministic* raytracer (SAMPLES_PER_PIXEL == 1, non-physical)
+REFRACT_SPLIT_SLOTS = refract_initial_pool_ratio
+# When True, the *deterministic* raytracer (samples_per_pixel == 1, non-physical)
 # shades the core lit materials per fragment inside the trace kernel instead of
 # baking per-vertex colours (Gouraud). Ignored by the Monte Carlo pathtracer.
-FRAGMENT_SHADING = True
+fragment_shading = True
 # Promote a mob whose colour AND material params (reflectivity/roughness/index
 # of refraction) are constant across the whole surface to a 1x1 texture at merge
 # time, dropping its per-vertex ``tri_colors``/``tri_extra`` rows, instead of
@@ -223,7 +255,7 @@ FRAGMENT_SHADING = True
 # stored constant, so a promoted render matches the per-vertex one to <=1 ULP
 # (the barycentric sum ``w0+w1+w2`` is not exactly 1.0 in f32). Default on;
 # ALGAN_PROMOTE_CONSTANTS=0 disables it (for A/B and validation).
-PROMOTE_CONSTANTS = env_flag("ALGAN_PROMOTE_CONSTANTS", True)
+promote_constants = env_flag("ALGAN_PROMOTE_CONSTANTS", True)
 
 # Skip the up-front per-fragment shading-normal computation for UNLIT hits on
 # the fragment-shading wavefront. An UNLIT material passes its colour through
@@ -235,7 +267,7 @@ PROMOTE_CONSTANTS = env_flag("ALGAN_PROMOTE_CONSTANTS", True)
 # speed-relevant core of the "Family A" material-field trim (skipping the
 # normal work), decoupled from the memory-side array trimming.
 # ALGAN_WF_SKIP_UNLIT_NORMAL=0 disables it (for A/B and validation).
-WF_SKIP_UNLIT_NORMAL = env_flag("ALGAN_WF_SKIP_UNLIT_NORMAL", True)
+wf_skip_unlit_normal = env_flag("ALGAN_WF_SKIP_UNLIT_NORMAL", True)
 
 # Compile-time material-pipeline gating. The per-hit material dispatch
 # (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
@@ -257,15 +289,15 @@ WF_SKIP_UNLIT_NORMAL = env_flag("ALGAN_WF_SKIP_UNLIT_NORMAL", True)
 # sits close enough to its occupancy cliff for the dropped stages to matter.
 # Hence experimental and off by default rather than on: ALGAN_FRAG_PID_GATE=1
 # opts in.
-FRAG_PID_GATE = env_flag("ALGAN_FRAG_PID_GATE", False)
+frag_pid_gate = env_flag("ALGAN_FRAG_PID_GATE", False)
 
 
 def set_frag_pid_gate(enabled):
     """Toggle compile-time material-pipeline gating of the shade kernels (see
-    ``FRAG_PID_GATE``). Takes effect at the next render batch.
+    ``frag_pid_gate``). Takes effect at the next render batch.
     """
-    global FRAG_PID_GATE
-    FRAG_PID_GATE = bool(enabled)
+    global frag_pid_gate
+    frag_pid_gate = bool(enabled)
 
 
 # Fused primary-ray generation on the general wavefront. The classic pipeline
@@ -290,7 +322,7 @@ def set_frag_pid_gate(enabled):
 # offline-cache load; see utils/taichi_warmstart.py) -- to win ~8.2% of
 # steady-state wavefront time. Auto therefore starts every job unfused and
 # turns fusing on mid-render only once the measured per-frame render rate
-# forecasts a remaining-time saving above WF_GEN_FUSED_MIN_WIN (the decision
+# forecasts a remaining-time saving above wf_gen_fused_min_win (the decision
 # is sticky for the process: once the fused variants are compiled, later jobs
 # start fused for free). Byte-identical either way, so the switch cannot
 # change output. ALGAN_WF_GEN_FUSED=0/1 forces (for A/B and validation).
@@ -303,17 +335,17 @@ def _parse_gen_fused_mode(v):
     return "auto"
 
 
-WF_GEN_FUSED = _parse_gen_fused_mode(env_str("ALGAN_WF_GEN_FUSED", "auto"))
+wf_gen_fused = _parse_gen_fused_mode(env_str("ALGAN_WF_GEN_FUSED", "auto"))
 
 # Fraction of wavefront render time the fused generation saves (the measured
 # steady-state win; used only by the "auto" forecast).
-WF_GEN_FUSED_GAIN = env_float("ALGAN_WF_GEN_FUSED_GAIN", 0.082)
+wf_gen_fused_gain = env_float("ALGAN_WF_GEN_FUSED_GAIN", 0.082)
 # Minimum forecasted saving (seconds of remaining render time * GAIN) before
 # "auto" pays the fused variants' compile cost. The default covers the
 # worst case observed on this project's hardware -- a cold offline cache,
 # where the two extra instantiations cost ~25 s -- so a marginal render never
 # loses time to the switch.
-WF_GEN_FUSED_MIN_WIN = env_float("ALGAN_WF_GEN_FUSED_MIN_WIN", 30.0)
+wf_gen_fused_min_win = env_float("ALGAN_WF_GEN_FUSED_MIN_WIN", 30.0)
 
 # Adaptive state ("auto" mode only). The decision is process-sticky; the
 # batch counter restarts per render job so the forecast never uses the
@@ -335,7 +367,7 @@ _WF_GEN_FUSED_BATCHES = 0
 _SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
 # Safety multiplier on the learned footprint: absorbs the small per-pair count
 # arrays, arena alignment, and modest coverage growth between adjacent chunks.
-SPARSE_DISCOVERY_SAFETY = env_float("ALGAN_SPARSE_DISCOVERY_SAFETY", 1.25)
+sparse_discovery_safety = env_float("ALGAN_SPARSE_DISCOVERY_SAFETY", 1.25)
 
 
 def note_sparse_discovery_footprint(arena_bytes, num_frames):
@@ -355,29 +387,29 @@ def sparse_discovery_bytes_for_frames(num_frames):
     """
     return int(
         _SPARSE_DISCOVERY_BYTES_PER_FRAME
-        * SPARSE_DISCOVERY_SAFETY
+        * sparse_discovery_safety
         * max(1, int(num_frames))
     )
 
 
-def set_gen_fused(mode):
+def set_wf_gen_fused(mode):
     """Set fused primary-ray generation on the deterministic wavefront:
     ``True``/``False`` force it on/off; ``"auto"`` (default) starts unfused
     for fast startup and enables it mid-render when the forecasted remaining
     render time justifies compiling the fused kernel variants. All modes are
-    byte-identical (see ``WF_GEN_FUSED``).
+    byte-identical (see ``wf_gen_fused``).
     """
-    global WF_GEN_FUSED
-    WF_GEN_FUSED = _parse_gen_fused_mode(mode)
+    global wf_gen_fused
+    wf_gen_fused = _parse_gen_fused_mode(mode)
 
 
 def wf_gen_fused_active():
     """Live effective value of the fused-generation toggle (resolves
     ``"auto"`` to the adaptive decision).
     """
-    if WF_GEN_FUSED == "auto":
+    if wf_gen_fused == "auto":
         return _WF_GEN_FUSED_ON
-    return bool(WF_GEN_FUSED)
+    return bool(wf_gen_fused)
 
 
 def _begin_render_job():
@@ -399,7 +431,7 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
     global _WF_GEN_FUSED_ON, _WF_GEN_FUSED_BATCHES
     _WF_GEN_FUSED_BATCHES += 1
     if (
-        WF_GEN_FUSED != "auto"
+        wf_gen_fused != "auto"
         or _WF_GEN_FUSED_ON
         or _WF_GEN_FUSED_BATCHES < 2
         or frames <= 0
@@ -407,8 +439,8 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
         or frames_remaining <= 0
     ):
         return False
-    projected_win = frames_remaining * (seconds / frames) * WF_GEN_FUSED_GAIN
-    if projected_win <= WF_GEN_FUSED_MIN_WIN:
+    projected_win = frames_remaining * (seconds / frames) * wf_gen_fused_gain
+    if projected_win <= wf_gen_fused_min_win:
         return False
     _WF_GEN_FUSED_ON = True
     return True
@@ -425,7 +457,7 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # occupancy-bound kernel; see benchmarks/_wf_mem_trim_ab.py). Byte-identical to
 # the baseline. Opt-in; only engaged for a no-shadow, non-refractive,
 # scatter-free triangle path (the common case). Default OFF.
-WF_MEM_TRIM = env_flag("ALGAN_WF_MEM_TRIM", False)
+wf_mem_trim = env_flag("ALGAN_WF_MEM_TRIM", False)
 
 # Shared-topology binned-SAH refit BVH (raytracer-v2 design doc section 9;
 # refit_bvh.py). When on, the per-batch scene merge builds ONE binned-SAH
@@ -445,15 +477,15 @@ WF_MEM_TRIM = env_flag("ALGAN_WF_MEM_TRIM", False)
 # classic per-batch STBVH instance trees); note that while on, the triangle
 # ``builder`` selection (e.g. "split") applies only where the classic trees
 # are still built.
-BVH_REFIT = env_flag("ALGAN_BVH_REFIT", True)
+bvh_refit = env_flag("ALGAN_BVH_REFIT", True)
 
 
-def set_refit_bvh(enabled):
-    """Toggle the shared-topology binned-SAH refit BVH (see ``BVH_REFIT``).
+def set_bvh_refit(enabled):
+    """Toggle the shared-topology binned-SAH refit BVH (see ``bvh_refit``).
     Takes effect at the next batch's scene merge.
     """
-    global BVH_REFIT
-    BVH_REFIT = bool(enabled)
+    global bvh_refit
+    bvh_refit = bool(enabled)
 
 
 # Skip building the per-batch STBVHs when the batch provably never traverses
@@ -466,16 +498,16 @@ def set_refit_bvh(enabled):
 # ray, or the Monte Carlo path needs them -- so the rendered output is always
 # exactly what the eager build produces. ALGAN_BVH_DEFER=0 disables (for A/B
 # and validation).
-BVH_DEFER = env_flag("ALGAN_BVH_DEFER", True)
+bvh_defer = env_flag("ALGAN_BVH_DEFER", True)
 
 
 def set_bvh_defer(enabled):
     """Toggle deferred (on-demand) STBVH builds for batches that provably do
-    not traverse them (see ``BVH_DEFER``). Takes effect at the next batch's
+    not traverse them (see ``bvh_defer``). Takes effect at the next batch's
     scene merge.
     """
-    global BVH_DEFER
-    BVH_DEFER = bool(enabled)
+    global bvh_defer
+    bvh_defer = bool(enabled)
 
 
 # Collapse temporally-constant merged tables (materials, normals, colours,
@@ -487,7 +519,7 @@ def set_bvh_defer(enabled):
 # differs at the epsilon level, the same class as any window change).
 # ALGAN_MERGE_DEDUP_TIME=0 restores the full time bands (byte-level A/B
 # against pre-collapse baselines).
-MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
+merge_dedup_time = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 
 
 # Extend the merge-time collapse to the per-frame GEOMETRY the list above
@@ -500,17 +532,17 @@ MERGE_DEDUP_TIME = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
 # reach the BVH builders at ``Tc == 1``, waking their static branches (one
 # instance spanning all frames -- ``build_stbvh``/``build_refit_bvh`` both
 # accept it) instead of building per-frame structure over byte-identical
-# boxes. Requires MERGE_DEDUP_TIME; ALGAN_MERGE_DEDUP_GEOMETRY=0 restores
+# boxes. Requires merge_dedup_time; ALGAN_MERGE_DEDUP_GEOMETRY=0 restores
 # the dense tables (byte-level A/B).
-MERGE_DEDUP_GEOMETRY = env_flag("ALGAN_MERGE_DEDUP_GEOMETRY", True)
+merge_dedup_geometry = env_flag("ALGAN_MERGE_DEDUP_GEOMETRY", True)
 
 
 def set_merge_dedup_geometry(enabled):
     """Toggle the merge-time collapse of temporally-constant geometry tables
-    (see ``MERGE_DEDUP_GEOMETRY``). Takes effect at the next batch's merge.
+    (see ``merge_dedup_geometry``). Takes effect at the next batch's merge.
     """
-    global MERGE_DEDUP_GEOMETRY
-    MERGE_DEDUP_GEOMETRY = bool(enabled)
+    global merge_dedup_geometry
+    merge_dedup_geometry = bool(enabled)
 
 
 # Texture banks with a real per-map time length. The shared flat texel buffer
@@ -524,15 +556,15 @@ def set_merge_dedup_geometry(enabled):
 # 1 and every map keeps its own length. Byte-identical: the sampler reads the
 # same texel values through ``(f % t)`` that it read through the buffer's
 # ``f % shape[0]``. ALGAN_TEXTURE_TIME_FLAT=0 restores the shared time axis.
-TEXTURE_TIME_FLAT = env_flag("ALGAN_TEXTURE_TIME_FLAT", True)
+texture_time_flat = env_flag("ALGAN_TEXTURE_TIME_FLAT", True)
 
 
 def set_texture_time_flat(enabled):
-    """Toggle per-map texture time lengths (see ``TEXTURE_TIME_FLAT``).
+    """Toggle per-map texture time lengths (see ``texture_time_flat``).
     Takes effect at the next batch's scene merge.
     """
-    global TEXTURE_TIME_FLAT
-    TEXTURE_TIME_FLAT = bool(enabled)
+    global texture_time_flat
+    texture_time_flat = bool(enabled)
 
 
 # Content-deduplicate the shared texel buffer: a map whose processed texels
@@ -543,15 +575,15 @@ def set_texture_time_flat(enabled):
 # construction: equality is exact (``torch.equal`` after a shape prefilter),
 # and two prims reading one placement read the same texels they read from two.
 # ALGAN_TEXTURE_CONTENT_DEDUP=0 restores per-map appends.
-TEXTURE_CONTENT_DEDUP = env_flag("ALGAN_TEXTURE_CONTENT_DEDUP", True)
+texture_content_dedup = env_flag("ALGAN_TEXTURE_CONTENT_DEDUP", True)
 
 
 def set_texture_content_dedup(enabled):
-    """Toggle texture-bank content dedup (see ``TEXTURE_CONTENT_DEDUP``).
+    """Toggle texture-bank content dedup (see ``texture_content_dedup``).
     Takes effect at the next batch's scene merge.
     """
-    global TEXTURE_CONTENT_DEDUP
-    TEXTURE_CONTENT_DEDUP = bool(enabled)
+    global texture_content_dedup
+    texture_content_dedup = bool(enabled)
 
 
 # Collapse a temporally-constant colour-texture window before the premultiply
@@ -562,15 +594,15 @@ def set_texture_content_dedup(enabled):
 # byte-identical across the batch, one frame carries the batch (every consumer
 # reads texture time as ``f % shape[0]``). ALGAN_TEXTURE_WINDOW_COLLAPSE=0
 # restores the dense chain (byte-level A/B).
-TEXTURE_WINDOW_COLLAPSE = env_flag("ALGAN_TEXTURE_WINDOW_COLLAPSE", True)
+texture_window_collapse = env_flag("ALGAN_TEXTURE_WINDOW_COLLAPSE", True)
 
 
 def set_texture_window_collapse(enabled):
     """Toggle the static colour-texture window collapse (see
-    ``TEXTURE_WINDOW_COLLAPSE``). Takes effect at the next primitive build.
+    ``texture_window_collapse``). Takes effect at the next primitive build.
     """
-    global TEXTURE_WINDOW_COLLAPSE
-    TEXTURE_WINDOW_COLLAPSE = bool(enabled)
+    global texture_window_collapse
+    texture_window_collapse = bool(enabled)
 
 
 # Apply the mob's animated opacity to a colour texture IN THE SAMPLER instead
@@ -578,7 +610,7 @@ def set_texture_window_collapse(enabled):
 # (``Color.mult_opacity`` in ``Surface.get_render_primitives`` /
 # ``TriangleMesh.get_render_primitives``) scales only the map's coverage
 # channel, but it welds the (per-frame) opacity into the (usually static)
-# texels -- so a plain fade of a static image voids TEXTURE_WINDOW_COLLAPSE
+# texels -- so a plain fade of a static image voids texture_window_collapse
 # and rebuilds, re-decodes and re-uploads the full map once per frame
 # (DESIGN_renderer_structural_candidates.md item 5). With this on, the
 # primitive carries the opacity as per-frame scalars (``texture_opacity``),
@@ -593,19 +625,19 @@ def set_texture_window_collapse(enabled):
 # kernel), which reorders f32 rounding by up to an ulp -- the same class of
 # qualified exception as ALGAN_WIDE_ATTR_RENDER_DEVICE. With opacity == 1
 # (no fade anywhere) the multiply is exact and the flip IS byte-identical.
-# Requires TEXTURE_TIME_FLAT and is disabled under the legacy WF_TEXTURED
+# Requires texture_time_flat and is disabled under the legacy wf_textured
 # path (which consumes premultiplied maps); see
 # ``texture_opacity_in_kernel_active``. ALGAN_TEXTURE_OPACITY_IN_KERNEL=0
 # restores the host premultiply byte-identically.
-TEXTURE_OPACITY_IN_KERNEL = env_flag("ALGAN_TEXTURE_OPACITY_IN_KERNEL", True)
+texture_opacity_in_kernel = env_flag("ALGAN_TEXTURE_OPACITY_IN_KERNEL", True)
 
 
 def set_texture_opacity_in_kernel(enabled):
     """Toggle the in-sampler texture opacity multiply (see
-    ``TEXTURE_OPACITY_IN_KERNEL``). Takes effect at the next primitive build.
+    ``texture_opacity_in_kernel``). Takes effect at the next primitive build.
     """
-    global TEXTURE_OPACITY_IN_KERNEL
-    TEXTURE_OPACITY_IN_KERNEL = bool(enabled)
+    global texture_opacity_in_kernel
+    texture_opacity_in_kernel = bool(enabled)
 
 
 def texture_opacity_in_kernel_active():
@@ -614,12 +646,12 @@ def texture_opacity_in_kernel_active():
     One predicate for every decision point (Surface / TriangleMesh builds,
     the estimators) so a build cannot half-flip. The merge itself keys off
     the PRIMITIVE (``texture_opacity is not None``), so a setting change
-    between a build and its merge stays coherent. Requires TEXTURE_TIME_FLAT
+    between a build and its merge stays coherent. Requires texture_time_flat
     (the opacity region rides the flattened bank's row addressing) and is
-    off under WF_TEXTURED, whose legacy bank builder consumes premultiplied
+    off under wf_textured, whose legacy bank builder consumes premultiplied
     maps.
     """
-    return TEXTURE_OPACITY_IN_KERNEL and TEXTURE_TIME_FLAT and not WF_TEXTURED
+    return texture_opacity_in_kernel and texture_time_flat and not wf_textured
 
 
 # Store u8-provenance colour maps as RGBA bytes instead of five f32 channels:
@@ -641,15 +673,15 @@ def texture_opacity_in_kernel_active():
 # asserts frame bytes). Meta col 15 carries the LUT base row (-1 = plain f32
 # map). Requires the in-kernel opacity multiply (a premultiplied map is not
 # k/255). ALGAN_TEXTURE_U8_STORAGE=0 restores f32 storage.
-TEXTURE_U8_STORAGE = env_flag("ALGAN_TEXTURE_U8_STORAGE", True)
+texture_u8_storage = env_flag("ALGAN_TEXTURE_U8_STORAGE", True)
 
 
 def set_texture_u8_storage(enabled):
-    """Toggle u8 colour-map storage (see ``TEXTURE_U8_STORAGE``). Takes
+    """Toggle u8 colour-map storage (see ``texture_u8_storage``). Takes
     effect at the next batch's scene merge.
     """
-    global TEXTURE_U8_STORAGE
-    TEXTURE_U8_STORAGE = bool(enabled)
+    global texture_u8_storage
+    texture_u8_storage = bool(enabled)
 
 
 # Describe an animated colour texture's frame window as ENDPOINT maps plus
@@ -672,15 +704,15 @@ def set_texture_u8_storage(enabled):
 # not byte-identical (benchmarks/_texture_lerp_ab.py asserts the bound).
 # Requires the in-kernel opacity multiply (see ``texture_time_lerp_active``).
 # ALGAN_TEXTURE_TIME_LERP=0 restores dense windows.
-TEXTURE_TIME_LERP = env_flag("ALGAN_TEXTURE_TIME_LERP", True)
+texture_time_lerp = env_flag("ALGAN_TEXTURE_TIME_LERP", True)
 
 
 def set_texture_time_lerp(enabled):
     """Toggle in-kernel texture time interpolation (see
-    ``TEXTURE_TIME_LERP``). Takes effect at the next frame batch.
+    ``texture_time_lerp``). Takes effect at the next frame batch.
     """
-    global TEXTURE_TIME_LERP
-    TEXTURE_TIME_LERP = bool(enabled)
+    global texture_time_lerp
+    texture_time_lerp = bool(enabled)
 
 
 def texture_time_lerp_active():
@@ -694,7 +726,7 @@ def texture_time_lerp_active():
     legacy host premultiply folds the animated opacity into the texels,
     which endpoint maps cannot represent.
     """
-    return TEXTURE_TIME_LERP and texture_opacity_in_kernel_active()
+    return texture_time_lerp and texture_opacity_in_kernel_active()
 
 
 # Per-triangle SURFACE identity at the granularity the mob declares, rather than
@@ -738,14 +770,14 @@ def texture_time_lerp_active():
 # resolved and then discarded. With that fixed, the harness's reference-free A/B
 # (--mesh-ab, which unlike the scored column also sees the overlapping pixels
 # the exact reference has to drop) reports the predicted gain: 18 of 36224
-# pixels move on the overlapping pack and MESH_ID=0 is the side that paints
+# pixels move on the overlapping pack and mesh_id=0 is the side that paints
 # MORE, while the non-overlapping control moves zero. Small, but it is the win
 # this was said to be missing.
 #
 # Flipping also moves the fast-suite render by up to 49 channel values at solid
 # edges, so BOTH device baseline sets have to be regenerated and
 # expected_outputs_cuda/ needs a CUDA machine. DESIGN_mesh_identity.md 3.5, 4.5.
-MESH_ID = env_flag("ALGAN_MESH_ID", True)
+mesh_id = env_flag("ALGAN_MESH_ID", True)
 
 
 # Orient a closed ``Polyhedron``'s faces outward at construction
@@ -760,9 +792,9 @@ MESH_ID = env_flag("ALGAN_MESH_ID", True)
 #
 # DEFAULT ON since 2026-08. Measured, the fast-suite render (which draws a Cube,
 # an Icosahedron and an Octahedron) is BYTE-IDENTICAL across this flag while
-# MESH_ID is off --
+# mesh_id is off --
 # a per-triangle surface id makes every run one fragment, so the facing bit
-# groups nothing. With MESH_ID=1 it does change the render, which is the
+# groups nothing. With mesh_id=1 it does change the render, which is the
 # mechanism: one id per solid leaves facing as the only separator between the
 # near and far sheets. Read at Polyhedron construction, not at render time.
 # IT DOES MOVE A `become` MORPH, which the byte-identical static result above
@@ -774,33 +806,33 @@ MESH_ID = env_flag("ALGAN_MESH_ID", True)
 # is too (there the reordering cancels on both sides). The endpoints are the
 # correct solids either way; only the in-between path moves. That is what makes
 # tests/full_renders' complex_hierarchy_become move by 197, entirely from this
-# flag and not at all from MESH_ID.
+# flag and not at all from mesh_id.
 # DESIGN_mesh_identity.md 3.7 and 6.5.
-POLYHEDRON_WINDING = env_flag("ALGAN_POLYHEDRON_WINDING", True)
+polyhedron_winding = env_flag("ALGAN_POLYHEDRON_WINDING", True)
 
 
 def set_polyhedron_winding(enabled):
     """Toggle outward face orientation for closed polyhedra (see
-    ``POLYHEDRON_WINDING``). Takes effect for the next ``Polyhedron`` built.
+    ``polyhedron_winding``). Takes effect for the next ``Polyhedron`` built.
     """
-    global POLYHEDRON_WINDING
-    POLYHEDRON_WINDING = bool(enabled)
+    global polyhedron_winding
+    polyhedron_winding = bool(enabled)
 
 
 def set_mesh_id(enabled):
-    """Toggle mob-declared surface identity (see ``MESH_ID``). Takes effect at
+    """Toggle mob-declared surface identity (see ``mesh_id``). Takes effect at
     the next batch's primitive build.
     """
-    global MESH_ID
-    MESH_ID = bool(enabled)
+    global mesh_id
+    mesh_id = bool(enabled)
 
 
 def set_merge_dedup_time(enabled):
     """Toggle the merge-time collapse of temporally-constant tables (see
-    ``MERGE_DEDUP_TIME``). Takes effect at the next batch's scene merge.
+    ``merge_dedup_time``). Takes effect at the next batch's scene merge.
     """
-    global MERGE_DEDUP_TIME
-    MERGE_DEDUP_TIME = bool(enabled)
+    global merge_dedup_time
+    merge_dedup_time = bool(enabled)
 
 
 # Opaque any-hit shadow early-out. The deterministic shadow query is an
@@ -813,8 +845,8 @@ def set_merge_dedup_time(enabled):
 # that provably contain no translucent geometry skip the march entirely (a
 # miss then proves the ray lit). Not strictly byte-identical in two corner
 # cases the march itself gets wrong (an opaque edge hit seam-merged into a
-# coincident translucent edge within DEPTH_TIE_EPSILON, and an opaque
-# blocker past MAX_SURFACES_PER_RAY peels); the any-hit's answer is the
+# coincident translucent edge within depth_tie_epsilon, and an opaque
+# blocker past max_surfaces_per_ray peels); the any-hit's answer is the
 # physically correct one in both.
 #
 # QUALIFIED 2026-08-26, and deliberately NOT the default. Correctness: all
@@ -832,12 +864,12 @@ def set_merge_dedup_time(enabled):
 # any-hit only where mode 3 applies. ALGAN_SHADOW_ANYHIT=1 opts in.
 #
 # ALGAN_SHADOW_ANYHIT=gather selects the gather-march instead: the same
-# ordered shadow peel rebuilt on the KBUF gather (_collect_hits), so a
-# k-surface translucent stack costs ceil((k+1)/KBUF) traversals instead of
+# ordered shadow peel rebuilt on the kbuf gather (_collect_hits), so a
+# k-surface translucent stack costs ceil((k+1)/kbuf) traversals instead of
 # k+1 while all-opaque rays stay at one. Valid for any batch (the drain
 # evaluates translucent attenuation exactly like the march); shares the
 # march's output up to the seam-merge corner the camera peel also has.
-SHADOW_ANYHIT = (
+shadow_anyhit = (
     "gather"
     if env_str("ALGAN_SHADOW_ANYHIT", "0").strip().lower() == "gather"
     else env_flag("ALGAN_SHADOW_ANYHIT", False)
@@ -845,17 +877,17 @@ SHADOW_ANYHIT = (
 
 
 def set_shadow_anyhit(enabled):
-    """Select the shadow-query early-out mode (see ``SHADOW_ANYHIT``).
+    """Select the shadow-query early-out mode (see ``shadow_anyhit``).
 
     ``True`` enables the opaque any-hit walks, the string ``"gather"`` the
-    KBUF gather-march, ``False`` the classic ordered march. Takes effect at
+    kbuf gather-march, ``False`` the classic ordered march. Takes effect at
     the next render batch.
     """
-    global SHADOW_ANYHIT
+    global shadow_anyhit
     if isinstance(enabled, str) and enabled.strip().lower() == "gather":
-        SHADOW_ANYHIT = "gather"
+        shadow_anyhit = "gather"
     else:
-        SHADOW_ANYHIT = bool(enabled)
+        shadow_anyhit = bool(enabled)
 
 
 # Coloured shadow payloads. The deterministic shadow query's visibility value
@@ -874,31 +906,55 @@ def set_shadow_anyhit(enabled):
 # Declaring the variable import-time is what makes that honest: a warm daemon
 # refuses a client whose value differs rather than serving kernels compiled
 # for the other arm.
-RGB_SHADOW_TINT = env_flag("ALGAN_RGB_SHADOW_TINT", True)
+rgb_shadow_tint = env_flag("ALGAN_RGB_SHADOW_TINT", True)
+
+
+# Watertight (Woop-Benthin-Wald) ray/triangle intersection, replacing the
+# dilated Moller-Trumbore test and the matched epsilon pair that patches its
+# cracks. The full derivation, the CUDA FMA hazard it had to survive, and the
+# measurements live beside the kernel it gates
+# (``raytrace_kernels_taichi._tri_hit``); this is only its storage, so that the
+# switch is reachable as SETTINGS.raytracing.experimental.watertight_tri
+# instead of an environment variable that has to precede the import.
+# DEFAULT ON.
+watertight_tri = env_flag("ALGAN_WATERTIGHT_TRI", True)
+
+
+def set_watertight_tri(enabled):
+    """Toggle the watertight ray/triangle intersection (see ``watertight_tri``).
+
+    The gate compiles into the kernels, so this takes effect for kernels
+    compiled AFTER the call -- existing variants are reused unchanged. For a
+    guaranteed switch, set ``ALGAN_WATERTIGHT_TRI`` before importing algan, or
+    run each arm in its own process. (The Taichi *offline* cache is not a
+    hazard here: it keys on the compiled IR, so each arm has its own entry.)
+    """
+    global watertight_tri
+    watertight_tri = bool(enabled)
 
 
 def set_rgb_shadow_tint(enabled):
-    """Toggle coloured shadow tinting/absorption (see ``RGB_SHADOW_TINT``).
+    """Toggle coloured shadow tinting/absorption (see ``rgb_shadow_tint``).
 
     Because the gate compiles into the kernels, this takes effect for kernels
     compiled AFTER the call -- existing variants are reused. For a guaranteed
     switch, set ``ALGAN_RGB_SHADOW_TINT`` before importing algan or run the
     other arm in its own process.
     """
-    global RGB_SHADOW_TINT
-    RGB_SHADOW_TINT = bool(enabled)
+    global rgb_shadow_tint
+    rgb_shadow_tint = bool(enabled)
 
 
 # Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
-# shadow ray currently rejects its own surface with MIN_HIT_DISTANCE plus a
-# normal offset of 10 * MIN_HIT_DISTANCE -- absolute world-space constants
+# shadow ray currently rejects its own surface with min_hit_distance plus a
+# normal offset of 10 * min_hit_distance -- absolute world-space constants
 # applied to EVERY hit, so a small object resting on a plane loses its contact
 # shadow within 1e-3 of the contact and grazing light on small geometry
 # produces acne. On the sheet route's shadow queue the event's source surface
 # id is available (packed into ``event_msk`` above the material pipeline id),
 # so the acceptance test becomes
 #
-#     accept = (t < max_t) and (hit_mesh != src_mesh ? t > 0 : t > MIN_HIT_DISTANCE)
+#     accept = (t < max_t) and (hit_mesh != src_mesh ? t > 0 : t > min_hit_distance)
 #
 # and the cross-mesh threshold goes to zero while self-rejection stays exactly
 # as safe. The rejection is per hit -- "same mesh AND near-zero t", never
@@ -906,22 +962,22 @@ def set_rgb_shadow_tint(enabled):
 # usable source id (bezier-originated, or ids that do not fit the packing) and
 # every path outside the sheet route's shadow queue keep today's epsilon.
 # DEFAULT ON.
-SHADOW_IDENTITY_REJECT = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", True)
+shadow_identity_reject = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", True)
 
 
 def set_shadow_identity_reject(enabled):
     """Toggle self-shadow rejection by identity (see
-    ``SHADOW_IDENTITY_REJECT``). Takes effect at the next render batch.
+    ``shadow_identity_reject``). Takes effect at the next render batch.
     """
-    global SHADOW_IDENTITY_REJECT
-    SHADOW_IDENTITY_REJECT = bool(enabled)
+    global shadow_identity_reject
+    shadow_identity_reject = bool(enabled)
 
 
 # Shadow-terminator offset for diced / smooth-shaded surfaces (Hanika, "A
 # Microfacet-Based Shadow Terminator", Ray Tracing Gems II ch. 4). A PN patch
 # or any smooth-shaded mesh reaches the renderer as FLAT triangles carrying a
 # smooth per-vertex normal field, and every shadow ray starts from the FACE
-# normal's fixed lift (``10 * MIN_HIT_DISTANCE`` in ``raster_shadow_trace``).
+# normal's fixed lift (``10 * min_hit_distance`` in ``raster_shadow_trace``).
 # The facet is a chord BELOW the smooth surface it approximates, so
 # neighbouring facets rise above the plane the origin was lifted from: near
 # the terminator the shadow ray leaves almost tangentially and strikes a
@@ -950,7 +1006,7 @@ def set_shadow_identity_reject(enabled):
 # off the geometry, and once the origin sits on the smooth surface the face
 # normal's horizon is not the surface's.
 #
-# Tri-state, like SHADOW_ANYHIT's "gather" string; ``shadow_terminator_mode``
+# Tri-state, like shadow_anyhit's "gather" string; ``shadow_terminator_mode``
 # is the int the kernels see:
 #   0  off -- today's origin, today's guard. The A/B control.
 #   1  on (the default) -- Hanika offset AND the relaxed guard.
@@ -958,7 +1014,7 @@ def set_shadow_identity_reject(enabled):
 #      configuration: the guard is relaxed but the origin is NOT offset.
 #      This is the arm that makes the acne visible, and therefore the only
 #      thing that can prove the offset is what removes it.
-SHADOW_TERMINATOR = (
+shadow_terminator = (
     2
     if env_str("ALGAN_SHADOW_TERMINATOR", "1").strip().lower() in ("relax", "2")
     else env_flag("ALGAN_SHADOW_TERMINATOR", True)
@@ -966,7 +1022,7 @@ SHADOW_TERMINATOR = (
 
 
 def set_shadow_terminator(enabled):
-    """Toggle the shadow-terminator offset (see ``SHADOW_TERMINATOR``).
+    """Toggle the shadow-terminator offset (see ``shadow_terminator``).
 
     ``True``/``False`` switch it on/off; the string ``"relax"`` (or a value
     equal to ``2``) selects mode 2, the diagnostic guard-relaxation-only arm.
@@ -980,13 +1036,13 @@ def set_shadow_terminator(enabled):
     the same number in two dtypes -- to different arms, because only the
     latter passes ``isinstance(x, float)``. Comparing by value fixes both.
     """
-    global SHADOW_TERMINATOR
+    global shadow_terminator
     if isinstance(enabled, str):
-        SHADOW_TERMINATOR = 2 if enabled.strip().lower() == "relax" else bool(enabled)
+        shadow_terminator = 2 if enabled.strip().lower() == "relax" else bool(enabled)
     elif enabled is not None and enabled == 2 and not isinstance(enabled, bool):
-        SHADOW_TERMINATOR = 2
+        shadow_terminator = 2
     else:
-        SHADOW_TERMINATOR = bool(enabled)
+        shadow_terminator = bool(enabled)
 
 
 def shadow_terminator_mode():
@@ -998,15 +1054,15 @@ def shadow_terminator_mode():
     mode compiles its own kernel variant, so the offline cache cannot serve
     one mode's kernel for another (see ``glossy_reflection_mode``).
     """
-    if not SHADOW_TERMINATOR:
+    if not shadow_terminator:
         return 0
-    return 2 if SHADOW_TERMINATOR == 2 else 1
+    return 2 if shadow_terminator == 2 else 1
 
 
 # The acceptance floor a shadow ray keeps against its OWN primitive, as a
 # fraction of the batch's scene scale (the diagonal of the merged triangle
 # bounding box over every frame of the batch). This is what retires the last
-# absolute constant on the shadow path: `MIN_HIT_DISTANCE` = 1e-4 is only ever
+# absolute constant on the shadow path: `min_hit_distance` = 1e-4 is only ever
 # right for a scene about ten units across, which is where the default below
 # reproduces it exactly (1e-5 * 10). A scene authored at millimetre or
 # kilometre scale gets a floor in proportion instead of acne at one end and
@@ -1017,7 +1073,7 @@ def shadow_terminator_mode():
 # which is a property of the coordinates and the tessellation. Tying it to
 # pixels would shrink it as resolution rises and make a 4K render noisier than
 # a 720p one from the same geometry.
-SHADOW_EPS_RELATIVE = env_float("ALGAN_SHADOW_EPS_RELATIVE", 1e-5)
+shadow_eps_relative = env_float("ALGAN_SHADOW_EPS_RELATIVE", 1e-5)
 
 # What fraction of that floor a hit on the SAME mesh but a DIFFERENT primitive
 # keeps. 0.0 is primitive-precise: only the triangle the ray actually started
@@ -1027,50 +1083,50 @@ SHADOW_EPS_RELATIVE = env_float("ALGAN_SHADOW_EPS_RELATIVE", 1e-5)
 # in between buy back protection at mesh seams, where the reconstructed point
 # of one facet can land under its neighbour: raise this if a diced curved
 # surface shows seam speckle with the feature on.
-SHADOW_NEAR_FRACTION = env_float("ALGAN_SHADOW_NEAR_FRACTION", 0.0)
+shadow_near_fraction = env_float("ALGAN_SHADOW_NEAR_FRACTION", 0.0)
 
 
 def set_shadow_eps_relative(value):
     """Set the shadow acceptance floor as a fraction of scene scale (see
-    ``SHADOW_EPS_RELATIVE``). Takes effect at the next render batch.
+    ``shadow_eps_relative``). Takes effect at the next render batch.
     """
-    global SHADOW_EPS_RELATIVE
-    SHADOW_EPS_RELATIVE = float(value)
+    global shadow_eps_relative
+    shadow_eps_relative = float(value)
 
 
 def set_shadow_near_fraction(value):
     """Set the same-mesh share of the shadow acceptance floor (see
-    ``SHADOW_NEAR_FRACTION``). Takes effect at the next render batch.
+    ``shadow_near_fraction``). Takes effect at the next render batch.
     """
-    global SHADOW_NEAR_FRACTION
-    SHADOW_NEAR_FRACTION = float(value)
+    global shadow_near_fraction
+    shadow_near_fraction = float(value)
 
 
 # Build the dedicated opaque-only STBVHs only when a rollout that walks them
-# (WF_OPAQUE_CLOSEST / WF_OPAQUE_PREPASS) is live at build time; otherwise
+# (wf_opaque_closest / wf_opaque_prepass) is live at build time; otherwise
 # alias the main tree -- same kernel ABI, and the opaque-tree reads are
 # compiled out by the same templates that gate those rollouts. Saves the
 # second per-geometry build (~40% of per-batch BVH build time) and its
 # arena bytes. ALGAN_OPAQUE_BVH_SKIP_DEAD=0 restores the unconditional
 # builds (byte-level A/B: the skip also shrinks the merged scene the arena
 # planner measures).
-OPAQUE_BVH_SKIP_DEAD = env_flag("ALGAN_OPAQUE_BVH_SKIP_DEAD", True)
+opaque_bvh_skip_dead = env_flag("ALGAN_OPAQUE_BVH_SKIP_DEAD", True)
 
 
 def set_opaque_bvh_skip_dead(enabled):
     """Toggle skipping the dedicated opaque-only STBVH builds while no
-    rollout consumes them (see ``OPAQUE_BVH_SKIP_DEAD``). Takes effect at
+    rollout consumes them (see ``opaque_bvh_skip_dead``). Takes effect at
     the next batch's scene merge.
     """
-    global OPAQUE_BVH_SKIP_DEAD
-    OPAQUE_BVH_SKIP_DEAD = bool(enabled)
+    global opaque_bvh_skip_dead
+    opaque_bvh_skip_dead = bool(enabled)
 
 
 def refit_bvh_active():
     """Live effective value of the refit-BVH toggle: the legacy textured /
     sorted-material orchestrators walk the classic tree only.
     """
-    return BVH_REFIT and not WF_TEXTURED and WAVEFRONT_SORT_MATERIALS is not True
+    return bvh_refit and not wf_textured and wavefront_sort_materials is not True
 
 
 # Hybrid raster front-end for deterministic primary visibility.
@@ -1083,19 +1139,19 @@ def refit_bvh_active():
 # old per-slot K-buffers). Primary hard shadows and emitter-radius
 # soft shadows use a sparse any-hit event queue. PN geometry is preserved and
 # simply falls back to classic primary traversal. The straight-ray safety limit
-# is MAX_SURFACES_PER_RAY (currently 256), not literally unbounded. Custom
+# is max_surfaces_per_ray (currently 256), not literally unbounded. Custom
 # scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
 # back to classic. Default ON (ALGAN_HYBRID_RASTER=0 restores the classic
 # iteration-zero wavefront).
-HYBRID_RASTER = env_flag("ALGAN_HYBRID_RASTER", True)
+hybrid_raster = env_flag("ALGAN_HYBRID_RASTER", True)
 
 
 def set_hybrid_raster(enabled):
     """Toggle the hybrid raster primary-visibility front-end (see
-    ``HYBRID_RASTER``).
+    ``hybrid_raster``).
     """
-    global HYBRID_RASTER
-    HYBRID_RASTER = bool(enabled)
+    global hybrid_raster
+    hybrid_raster = bool(enabled)
 
 
 # Screen-space intersection mode inside the hybrid raster frontend. When on
@@ -1104,15 +1160,15 @@ def set_hybrid_raster(enabled):
 # Invalid/camera-plane-straddling projections fall back to exact per-pixel
 # Moller-Trumbore ray casting. ALGAN_RASTER_SS=0 forces ray casting for all
 # triangle candidates; the optimal policy may eventually be selected per pair.
-RASTER_SS = env_flag("ALGAN_RASTER_SS", True)
+raster_ss = env_flag("ALGAN_RASTER_SS", True)
 
 
-def set_raster_screen_space(enabled):
+def set_raster_ss(enabled):
     """Toggle screen-space rasterization in the hybrid raster front-end (see
-    ``RASTER_SS``).
+    ``raster_ss``).
     """
-    global RASTER_SS
-    RASTER_SS = bool(enabled)
+    global raster_ss
+    raster_ss = bool(enabled)
 
 
 # Once-per-window batched circuit screen-bounds precompute inside the hybrid
@@ -1123,30 +1179,30 @@ def set_raster_screen_space(enabled):
 # Byte-identical by construction -- identical elementwise arithmetic, batched
 # over the frame dimension; validated by benchmarks/_raster_bez_pre_parity.py.
 # The toggle is a kill-switch / A-B hook.
-RASTER_BEZ_PRECOMPUTE = env_flag("ALGAN_RASTER_BEZ_PRECOMPUTE", True)
+raster_bez_precompute = env_flag("ALGAN_RASTER_BEZ_PRECOMPUTE", True)
 
 
 def set_raster_bez_precompute(enabled):
     """Toggle the batched circuit screen-bounds precompute in the hybrid
-    raster front-end (see ``RASTER_BEZ_PRECOMPUTE``).
+    raster front-end (see ``raster_bez_precompute``).
     """
-    global RASTER_BEZ_PRECOMPUTE
-    RASTER_BEZ_PRECOMPUTE = bool(enabled)
+    global raster_bez_precompute
+    raster_bez_precompute = bool(enabled)
 
 
-# The flat-triangle companion of RASTER_BEZ_PRECOMPUTE: batches the bbox /
+# The flat-triangle companion of raster_bez_precompute: batches the bbox /
 # class-mask derivation and candidate pair emission that ``_frame_pairs``
 # performed per (tile, frame) on top of the per-batch projection table.
 # Byte-identical by construction; same parity script.
-RASTER_TRI_PRECOMPUTE = env_flag("ALGAN_RASTER_TRI_PRECOMPUTE", True)
+raster_tri_precompute = env_flag("ALGAN_RASTER_TRI_PRECOMPUTE", True)
 
 
 def set_raster_tri_precompute(enabled):
     """Toggle the batched triangle screen-bounds precompute in the hybrid
-    raster front-end (see ``RASTER_TRI_PRECOMPUTE``).
+    raster front-end (see ``raster_tri_precompute``).
     """
-    global RASTER_TRI_PRECOMPUTE
-    RASTER_TRI_PRECOMPUTE = bool(enabled)
+    global raster_tri_precompute
+    raster_tri_precompute = bool(enabled)
 
 
 # Camera-plane clip for candidate bboxes (raster_pipeline._clipped_screen_
@@ -1165,15 +1221,15 @@ def set_raster_tri_precompute(enabled):
 # full-window straddler bbox.  Parity: benchmarks/_raster_straddle_clip_parity.py;
 # the conservativeness proof is brute-forced by
 # benchmarks/_raster_clip_extents_check.py.
-RASTER_STRADDLE_CLIP = env_flag("ALGAN_RASTER_STRADDLE_CLIP", True)
+raster_straddle_clip = env_flag("ALGAN_RASTER_STRADDLE_CLIP", True)
 
 
 def set_raster_straddle_clip(enabled):
     """Toggle the camera-plane clip of hybrid-raster candidate bboxes (see
-    ``RASTER_STRADDLE_CLIP``).
+    ``raster_straddle_clip``).
     """
-    global RASTER_STRADDLE_CLIP
-    RASTER_STRADDLE_CLIP = bool(enabled)
+    global raster_straddle_clip
+    raster_straddle_clip = bool(enabled)
 
 
 # Empty-pixel fast path of the raster resolve: the prefilled frame buffer IS
@@ -1182,15 +1238,15 @@ def set_raster_straddle_clip(enabled):
 # built on that identity, so this flag is one of its preconditions
 # (analytic_raster_route_active): switching it off routes the batch to the
 # classic supersampled wavefront.  Kill-switch / A-B hook.
-RASTER_EMPTY_SKIP = env_flag("ALGAN_RASTER_EMPTY_SKIP", True)
+raster_empty_skip = env_flag("ALGAN_RASTER_EMPTY_SKIP", True)
 
 
 def set_raster_empty_skip(enabled):
     """Toggle the empty-pixel fast path of the hybrid raster resolve (see
-    ``RASTER_EMPTY_SKIP``).
+    ``raster_empty_skip``).
     """
-    global RASTER_EMPTY_SKIP
-    RASTER_EMPTY_SKIP = bool(enabled)
+    global raster_empty_skip
+    raster_empty_skip = bool(enabled)
 
 
 # Host-side per-frame candidate-class summary flags for the batched screen-
@@ -1201,16 +1257,16 @@ def set_raster_empty_skip(enabled):
 # -- for every (tile, class) whose covered frames provably have no
 # candidates.  Byte-identical: a skipped class is exactly one whose mask was
 # all-false, where ``_class_pairs_flat`` returned None anyway.  Same parity
-# script as RASTER_EMPTY_SKIP.
-RASTER_PAIR_FLAGS = env_flag("ALGAN_RASTER_PAIR_FLAGS", True)
+# script as raster_empty_skip.
+raster_pair_flags = env_flag("ALGAN_RASTER_PAIR_FLAGS", True)
 
 
 def set_raster_pair_flags(enabled):
     """Toggle the host-side per-frame candidate-class flags used to skip
-    empty per-tile pair emission (see ``RASTER_PAIR_FLAGS``).
+    empty per-tile pair emission (see ``raster_pair_flags``).
     """
-    global RASTER_PAIR_FLAGS
-    RASTER_PAIR_FLAGS = bool(enabled)
+    global raster_pair_flags
+    raster_pair_flags = bool(enabled)
 
 
 # Fused permutation gather in the sparse compaction
@@ -1228,15 +1284,15 @@ def set_raster_pair_flags(enabled):
 # allocator hand each one the block the previous stage just freed. This session
 # reached here from an out-of-memory failure on this very scene; 4 ms is not
 # worth 150 MB. Turn it on for a bandwidth-bound machine with VRAM to spare.
-RASTER_FUSED_GATHER = env_flag("ALGAN_RASTER_FUSED_GATHER", False)
+raster_fused_gather = env_flag("ALGAN_RASTER_FUSED_GATHER", False)
 
 
 def set_raster_fused_gather(enabled):
-    """Toggle the fused six-array fragment gather (see ``RASTER_FUSED_GATHER``).
+    """Toggle the fused six-array fragment gather (see ``raster_fused_gather``).
     Takes effect at the next batch's emission.
     """
-    global RASTER_FUSED_GATHER
-    RASTER_FUSED_GATHER = bool(enabled)
+    global raster_fused_gather
+    raster_fused_gather = bool(enabled)
 
 
 # Kernel opaque-prefix truncation in the sparse emission
@@ -1256,15 +1312,15 @@ def set_raster_fused_gather(enabled):
 # covered pixels): the keep mask itself goes 2.9 -> 0.4 ms per frame; of the
 # 15.3 ms the whole truncation block cost before, the remainder is the
 # any/sum/nonzero device syncs both arms still share.
-RASTER_OPAQUE_TRUNC_KERNEL = env_flag("ALGAN_RASTER_OPAQUE_TRUNC_KERNEL", True)
+raster_opaque_trunc_kernel = env_flag("ALGAN_RASTER_OPAQUE_TRUNC_KERNEL", True)
 
 
 def set_raster_opaque_trunc_kernel(enabled):
     """Toggle the kernel opaque-prefix truncation mask (see
-    ``RASTER_OPAQUE_TRUNC_KERNEL``). Takes effect at the next batch's emission.
+    ``raster_opaque_trunc_kernel``). Takes effect at the next batch's emission.
     """
-    global RASTER_OPAQUE_TRUNC_KERNEL
-    RASTER_OPAQUE_TRUNC_KERNEL = bool(enabled)
+    global raster_opaque_trunc_kernel
+    raster_opaque_trunc_kernel = bool(enabled)
 
 
 # Kernel pair expansion behind ``raster_pipeline._class_pairs_flat``
@@ -1285,53 +1341,53 @@ def set_raster_opaque_trunc_kernel(enabled):
 # row-major order, chunks ascending within a candidate -- is the order
 # ``nonzero`` + ``repeat_interleave`` produced, which downstream fragment
 # offsets (and through them the stable sort ties) inherit.
-RASTER_PAIR_EXPAND_KERNEL = env_flag("ALGAN_RASTER_PAIR_EXPAND_KERNEL", True)
+raster_pair_expand_kernel = env_flag("ALGAN_RASTER_PAIR_EXPAND_KERNEL", True)
 
 
 def set_raster_pair_expand_kernel(enabled):
-    """Toggle the kernel pair-row expansion (see ``RASTER_PAIR_EXPAND_KERNEL``).
+    """Toggle the kernel pair-row expansion (see ``raster_pair_expand_kernel``).
     Takes effect at the next batch's emission.
     """
-    global RASTER_PAIR_EXPAND_KERNEL
-    RASTER_PAIR_EXPAND_KERNEL = bool(enabled)
+    global raster_pair_expand_kernel
+    raster_pair_expand_kernel = bool(enabled)
 
 
 # Covered-pixel-compacted resolve: the emission already knows exactly which
 # pixels hold fragments, so the resolve launches one thread per COVERED pixel
 # instead of one per screen pixel that early-outs, turning the resolve from
 # O(screen pixels) into O(covered pixels).  Empty pixels keep the frame
-# buffer's prefill untouched (so this requires RASTER_EMPTY_SKIP; an
+# buffer's prefill untouched (so this requires raster_empty_skip; an
 # environment map is served by prefilling the map itself per pixel in
 # render_chunk).  A precondition of the sheet route
 # (analytic_raster_route_active): off routes the batch to the classic
 # supersampled wavefront.
-RASTER_COVERED_SHADE = env_flag("ALGAN_RASTER_COVERED_SHADE", True)
+raster_covered_shade = env_flag("ALGAN_RASTER_COVERED_SHADE", True)
 
 
 def set_raster_covered_shade(enabled):
     """Toggle the covered-pixel-compacted raster resolve (see
-    ``RASTER_COVERED_SHADE``).
+    ``raster_covered_shade``).
     """
-    global RASTER_COVERED_SHADE
-    RASTER_COVERED_SHADE = bool(enabled)
+    global raster_covered_shade
+    raster_covered_shade = bool(enabled)
 
 
 # Fully sparse primary-raster lifecycle: emit exact hit records for every
 # candidate, sort/cull them in sparse hit space, and allocate every downstream
 # structure for the unique covered pixels only.  It requires the
-# retired-empty/background identity used by RASTER_EMPTY_SKIP and the
+# retired-empty/background identity used by raster_empty_skip and the
 # covered-pixel resolve semantics; environment maps and in-kernel tonemapping
 # are served on this route by the env prefill and the composite/uncovered
 # finalize (DESIGN_sheet_resolve.md §5).  A precondition of the sheet route
 # (analytic_raster_route_active): off routes the batch to the classic
 # supersampled wavefront.
-RASTER_SPARSE_COVERAGE = env_flag("ALGAN_RASTER_SPARSE_COVERAGE", True)
+raster_sparse_coverage = env_flag("ALGAN_RASTER_SPARSE_COVERAGE", True)
 
 
 def set_raster_sparse_coverage(enabled):
     """Toggle the exact covered-pixel lifecycle of the hybrid raster path."""
-    global RASTER_SPARSE_COVERAGE
-    RASTER_SPARSE_COVERAGE = bool(enabled)
+    global raster_sparse_coverage
+    raster_sparse_coverage = bool(enabled)
 
 
 # The sheet resolve (DESIGN_sheet_resolve.md): the sparse emission's fragment
@@ -1349,13 +1405,13 @@ def set_raster_sparse_coverage(enabled):
 # shadows, env maps and non-default tonemaps included. A batch the route does
 # not accept, or this flag OFF, renders through the classic supersampled
 # wavefront (DESIGN_sheet_resolve.md §5's stated fallback).
-SHEET_RESOLVE = env_flag("ALGAN_SHEET_RESOLVE", True)
+sheet_resolve = env_flag("ALGAN_SHEET_RESOLVE", True)
 
 
 def set_sheet_resolve(enabled):
     """Toggle the sheet-compaction resolve (DESIGN_sheet_resolve.md)."""
-    global SHEET_RESOLVE
-    SHEET_RESOLVE = bool(enabled)
+    global sheet_resolve
+    sheet_resolve = bool(enabled)
 
 
 # Shading-discontinuity split in sheet compaction (sheets._shade_class). The
@@ -1381,7 +1437,7 @@ def set_sheet_resolve(enabled):
 # What a band's sheets COMMIT does not depend on the flag either way -- §4.4
 # gives the band one occlusion write -- so flipping it moves colour at crease
 # pixels, never coverage.
-SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
+sheet_shade_split = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 
 
 # Cross-pass material memoization in the shadowed sheet resolve
@@ -1431,23 +1487,23 @@ SHEET_SHADE_SPLIT = env_flag("ALGAN_SHEET_SHADE_SPLIT", True)
 # a CPU render spends a much larger share in this kernel -- so
 # ALGAN_SHEET_RESOLVE_MEMO=1 is worth trying there. It should not be flipped
 # on for a GPU render without a fresh unsynced profile of the target scene.
-SHEET_RESOLVE_MEMO = env_flag("ALGAN_SHEET_RESOLVE_MEMO", False)
+sheet_resolve_memo = env_flag("ALGAN_SHEET_RESOLVE_MEMO", False)
 
 
 def set_sheet_resolve_memo(enabled):
     """Toggle the shadowed resolve's cross-pass material memo (see
-    ``SHEET_RESOLVE_MEMO``). Takes effect at the next resolve launch.
+    ``sheet_resolve_memo``). Takes effect at the next resolve launch.
     """
-    global SHEET_RESOLVE_MEMO
-    SHEET_RESOLVE_MEMO = bool(enabled)
+    global sheet_resolve_memo
+    sheet_resolve_memo = bool(enabled)
 
 
 def set_sheet_shade_split(enabled):
     """Toggle the crease shading-class split in sheet compaction (see
-    ``SHEET_SHADE_SPLIT``). Takes effect at the next batch's emission.
+    ``sheet_shade_split``). Takes effect at the next batch's emission.
     """
-    global SHEET_SHADE_SPLIT
-    SHEET_SHADE_SPLIT = bool(enabled)
+    global sheet_shade_split
+    sheet_shade_split = bool(enabled)
 
 
 # Kernel band reductions in the compaction
@@ -1470,21 +1526,21 @@ def set_sheet_shade_split(enabled):
 # not -- and agrees with the torch scatter_add_ bitwise. See
 # sheet_compact_taichi's module docstring for both arguments and
 # benchmarks/_sheet_kernel_check.py for the checks.
-SHEET_MASK_KERNEL = env_flag("ALGAN_SHEET_MASK_KERNEL", True)
+sheet_mask_kernel = env_flag("ALGAN_SHEET_MASK_KERNEL", True)
 
 
 def set_sheet_mask_kernel(enabled):
     """Toggle the kernel sample-mask reductions in sheet compaction (see
-    ``SHEET_MASK_KERNEL``). Takes effect at the next batch's emission.
+    ``sheet_mask_kernel``). Takes effect at the next batch's emission.
     """
-    global SHEET_MASK_KERNEL
-    SHEET_MASK_KERNEL = bool(enabled)
+    global sheet_mask_kernel
+    sheet_mask_kernel = bool(enabled)
 
 
 # Kernel one-mesh reduction in the sparse emission
 # (sheet_compact_taichi.one_mesh_pixel_reduce / one_mesh_pixel_apply, behind
 # ``raster_pipeline._one_mesh_pixel_caps``). The per-pixel surface-id spread
-# and the two facing-split f64 coverage sums behind ANALYTIC_AA_ONE_MESH were
+# and the two facing-split f64 coverage sums behind analytic_aa_one_mesh were
 # four scatter reductions routed through a whole-stream repeat_interleave
 # segment map, plus two full-length f64 ``where`` temporaries; two kernels now
 # walk each covered pixel's CSR run with all four aggregates in registers, and
@@ -1500,15 +1556,15 @@ def set_sheet_mask_kernel(enabled):
 # Measured on the real nn-scene 3840x2160 stream (3.13 M fragments over 756 k
 # covered pixels): 8.5 -> 2.1 ms per frame, and the whole-stream
 # repeat_interleave segment map no longer exists.
-SHEET_ONE_MESH_KERNEL = env_flag("ALGAN_SHEET_ONE_MESH_KERNEL", True)
+sheet_one_mesh_kernel = env_flag("ALGAN_SHEET_ONE_MESH_KERNEL", True)
 
 
 def set_sheet_one_mesh_kernel(enabled):
     """Toggle the kernel one-mesh reduction in the sparse emission (see
-    ``SHEET_ONE_MESH_KERNEL``). Takes effect at the next batch's emission.
+    ``sheet_one_mesh_kernel``). Takes effect at the next batch's emission.
     """
-    global SHEET_ONE_MESH_KERNEL
-    SHEET_ONE_MESH_KERNEL = bool(enabled)
+    global sheet_one_mesh_kernel
+    sheet_one_mesh_kernel = bool(enabled)
 
 
 # Order a sheet by its nearest POSITIONED fragment -- one that owns at least
@@ -1561,22 +1617,22 @@ def set_sheet_one_mesh_kernel(enabled):
 # is repaired. Blending it needs per-sample depth in the resolve (a depth
 # plane per sheet), which is not built -- DESIGN_sheet_resolve.md §6.1.1 is
 # where that limit is declared.
-SHEET_POSITIONED_DEPTH = env_flag("ALGAN_SHEET_POSITIONED_DEPTH", True)
+sheet_positioned_depth = env_flag("ALGAN_SHEET_POSITIONED_DEPTH", True)
 
 
 def set_sheet_positioned_depth(enabled):
     """Toggle positioned-fragment sheet ordering (see
-    ``SHEET_POSITIONED_DEPTH``). Takes effect at the next batch's emission.
+    ``sheet_positioned_depth``). Takes effect at the next batch's emission.
     """
-    global SHEET_POSITIONED_DEPTH
-    SHEET_POSITIONED_DEPTH = bool(enabled)
+    global sheet_positioned_depth
+    sheet_positioned_depth = bool(enabled)
 
 
 # Per-sample depth gate for interpenetrating sheets (DESIGN_sheet_resolve.md
 # ss6.1.1, OX_SHEET_INTERPENETRATION_AUDIT.md ss6). At compaction the host
 # computes, per sub-pixel sample, each material-opaque full-coverage triangle
 # sheet's exact nearest depth at that sample, and a sheet cedes a sample when
-# another SURFACE's enforcer is strictly nearer there beyond DEPTH_TIE_EPSILON;
+# another SURFACE's enforcer is strictly nearer there beyond depth_tie_epsilon;
 # the resolve zeroes those samples' claim/occlusion slots, so two surfaces
 # crossing inside one pixel paint winner-per-sample instead of whole-pixel to
 # whichever sheet sorted first. Ties and near-ties keep today's walk order.
@@ -1585,18 +1641,18 @@ def set_sheet_positioned_depth(enabled):
 # one. Multi-sheet bands -- shade-class siblings and conflict-rank splits --
 # are exempt on BOTH sides: their band-pooled arithmetic writes occlusion once
 # and ignores slots, so gating a sibling would over-occlude.
-SHEET_SAMPLE_DEPTH = env_flag("ALGAN_SHEET_SAMPLE_DEPTH", True)
+sheet_sample_depth = env_flag("ALGAN_SHEET_SAMPLE_DEPTH", True)
 
 
 def set_sheet_sample_depth(enabled):
     """Toggle per-sample depth gating of interpenetrating sheets (see
-    ``SHEET_SAMPLE_DEPTH``). Takes effect at the next batch's compaction.
+    ``sheet_sample_depth``). Takes effect at the next batch's compaction.
     """
-    global SHEET_SAMPLE_DEPTH
-    SHEET_SAMPLE_DEPTH = bool(enabled)
+    global sheet_sample_depth
+    sheet_sample_depth = bool(enabled)
 
 
-# Kernel lane-owner scan behind SHEET_SAMPLE_DEPTH
+# Kernel lane-owner scan behind sheet_sample_depth
 # (sheet_compact_taichi.sheet_lane_first_owner, behind
 # ``sheets._lane_first_owners``). Building the per-sample nearest-owner depth
 # table asked, once per sample lane, "which sorted fragment of each sheet owns
@@ -1611,15 +1667,15 @@ def set_sheet_sample_depth(enabled):
 # 7.7 ms per call under a synthetic uniform band distribution, and most of the
 # 14.5 ms the lane loop measured on the stream's own (skewed, mostly
 # single-fragment) bands.
-SHEET_SAMPLE_DEPTH_KERNEL = env_flag("ALGAN_SHEET_SAMPLE_DEPTH_KERNEL", True)
+sheet_sample_depth_kernel = env_flag("ALGAN_SHEET_SAMPLE_DEPTH_KERNEL", True)
 
 
 def set_sheet_sample_depth_kernel(enabled):
-    """Toggle the kernel lane-owner scan of SHEET_SAMPLE_DEPTH (see
-    ``SHEET_SAMPLE_DEPTH_KERNEL``). Takes effect at the next batch's emission.
+    """Toggle the kernel lane-owner scan of sheet_sample_depth (see
+    ``sheet_sample_depth_kernel``). Takes effect at the next batch's emission.
     """
-    global SHEET_SAMPLE_DEPTH_KERNEL
-    SHEET_SAMPLE_DEPTH_KERNEL = bool(enabled)
+    global sheet_sample_depth_kernel
+    sheet_sample_depth_kernel = bool(enabled)
 
 
 # Kernel conflict-rank scan in the compaction
@@ -1636,18 +1692,18 @@ def set_sheet_sample_depth_kernel(enabled):
 #
 # Bit-identical, and trivially so: both arms are integer and visit the stream
 # in the SAME order -- the kernel's serial band walk reads fragments exactly
-# as the cumsums do -- so unlike SHEET_MASK_KERNEL above it needs no
+# as the cumsums do -- so unlike sheet_mask_kernel above it needs no
 # order-independence argument at all. The max=15 clamp stays in
 # compact_sheets in both arms.
-SHEET_RANK_KERNEL = env_flag("ALGAN_SHEET_RANK_KERNEL", True)
+sheet_rank_kernel = env_flag("ALGAN_SHEET_RANK_KERNEL", True)
 
 
 def set_sheet_rank_kernel(enabled):
     """Toggle the kernel conflict-rank scan in sheet compaction (see
-    ``SHEET_RANK_KERNEL``). Takes effect at the next batch's emission.
+    ``sheet_rank_kernel``). Takes effect at the next batch's emission.
     """
-    global SHEET_RANK_KERNEL
-    SHEET_RANK_KERNEL = bool(enabled)
+    global sheet_rank_kernel
+    sheet_rank_kernel = bool(enabled)
 
 
 # Kernel per-band order stats + dominant fragment behind ``compact_sheets``
@@ -1665,15 +1721,15 @@ def set_sheet_rank_kernel(enabled):
 # position among fragments AT the max) is the same amin over the same
 # candidates both arms compare. The caller's gathers off the filled tables are
 # unchanged.
-SHEET_BAND_STATS_KERNEL = env_flag("ALGAN_SHEET_BAND_STATS_KERNEL", True)
+sheet_band_stats_kernel = env_flag("ALGAN_SHEET_BAND_STATS_KERNEL", True)
 
 
 def set_sheet_band_stats_kernel(enabled):
     """Toggle the fused per-band order stats / dominant fragment scan (see
-    ``SHEET_BAND_STATS_KERNEL``). Takes effect at the next batch's compaction.
+    ``sheet_band_stats_kernel``). Takes effect at the next batch's compaction.
     """
-    global SHEET_BAND_STATS_KERNEL
-    SHEET_BAND_STATS_KERNEL = bool(enabled)
+    global sheet_band_stats_kernel
+    sheet_band_stats_kernel = bool(enabled)
 
 
 # Kernel application of the solid-shell opacity ceiling behind
@@ -1693,16 +1749,16 @@ def set_sheet_band_stats_kernel(enabled):
 # f64 registers serially in stream order (the atomic scatter_add_ had no
 # order), verified bitwise against the torch arm at 4K shapes and on the real
 # captured stream in benchmarks/_sheet_kernel_check.py rather than assumed.
-SHEET_SHELL_CEILING_KERNEL = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
+sheet_shell_ceiling_kernel = env_flag("ALGAN_SHEET_SHELL_CEILING_KERNEL", True)
 
 
 def set_sheet_shell_ceiling_kernel(enabled):
     """Toggle the kernel solid-shell ceiling application (see
-    ``SHEET_SHELL_CEILING_KERNEL``). Takes effect at the next batch's
+    ``sheet_shell_ceiling_kernel``). Takes effect at the next batch's
     compaction.
     """
-    global SHEET_SHELL_CEILING_KERNEL
-    SHEET_SHELL_CEILING_KERNEL = bool(enabled)
+    global sheet_shell_ceiling_kernel
+    sheet_shell_ceiling_kernel = bool(enabled)
 
 
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
@@ -1718,17 +1774,17 @@ def set_sheet_shell_ceiling_kernel(enabled):
 # Circuits also have no shared-edge seam problem (a glyph or shape is ONE closed
 # circuit), which is why they can ship ahead of triangles.
 #
-# Flat triangles are covered too (see ANALYTIC_AA_TRI below), and the quantities
+# Flat triangles are covered too (see analytic_aa_tri below), and the quantities
 # coverage cannot express analytically -- shadow-edge visibility and the image
 # seen inside a reflection or refraction -- are handled by taking N sub-pixel
-# samples of those specific queries (ANALYTIC_AA_SECONDARY_SAMPLES). Measured
+# samples of those specific queries (analytic_aa_secondary_samples). Measured
 # against the supersampled anti_alias_level=2 default across eleven
 # feature-specific scenes, analytic AA at aa=1 is better on eight and 7-9% short
 # on three (specular highlights, a flat mirror's reflected image, a lens's
 # refracted image), where the residual is the CONTENT of a minified secondary
 # image. Read DESIGN_analytic_aa.md ss19 before dropping ``anti_alias_level``
 # to 1; what is still untouched is texture minification (no mip chain).
-ANALYTIC_AA = env_flag("ALGAN_ANALYTIC_AA", True)
+analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space
 # edge functions ``_ss_pixel`` already evaluates, normalised by the edge lengths
@@ -1739,8 +1795,8 @@ ANALYTIC_AA = env_flag("ALGAN_ANALYTIC_AA", True)
 # tracks transmittance independently for the fixed sub-pixel samples; disjoint
 # masks partition the pixel without a source-object side table.
 #
-# Subordinate per-geometry switches (only meaningful while ANALYTIC_AA is on).
-ANALYTIC_AA_BEZ = env_flag("ALGAN_ANALYTIC_AA_BEZ", True)
+# Subordinate per-geometry switches (only meaningful while analytic_aa is on).
+analytic_aa_bez = env_flag("ALGAN_ANALYTIC_AA_BEZ", True)
 #
 # Triangle coverage: exact fixed-point rasterization (a 1/4096-pixel integer
 # lattice, int64 edge functions and a top-left fill rule) partitions eight
@@ -1751,14 +1807,14 @@ ANALYTIC_AA_BEZ = env_flag("ALGAN_ANALYTIC_AA_BEZ", True)
 # translucent one, sub-pixel rods, a slanted quad -- at 40-78% less error, with
 # essentially the reference's own edge gradation (588 distinct edge levels
 # against 608). See DESIGN_analytic_aa.md ss14-ss16.
-ANALYTIC_AA_TRI = env_flag("ALGAN_ANALYTIC_AA_TRI", True)
+analytic_aa_tri = env_flag("ALGAN_ANALYTIC_AA_TRI", True)
 
 # The seam rule itself. Off, coverage still scales alpha but consecutive
 # fragments of one object composite multiplicatively instead of unioning their
 # disjoint sub-areas -- which is the lattice this exists to remove. Kept as a
 # toggle purely so the parity script can measure the difference; there is no
 # reason to turn it off in a real render.
-ANALYTIC_AA_SEAM = env_flag("ALGAN_ANALYTIC_AA_SEAM", True)
+analytic_aa_seam = env_flag("ALGAN_ANALYTIC_AA_SEAM", True)
 
 # What to do with a triangle that CONTAINS NO SUB-PIXEL SAMPLE. The exact
 # fixed-point test answers "does this triangle contain this sample"; a triangle
@@ -1785,7 +1841,7 @@ ANALYTIC_AA_SEAM = env_flag("ALGAN_ANALYTIC_AA_SEAM", True)
 #
 # See DESIGN_analytic_aa.md ss15/ss16 for the measurements behind the default.
 ANALYTIC_AA_SLIVER_MODES = ("area", "exact", "drop", "exact_occ")
-ANALYTIC_AA_SLIVER = env_str("ALGAN_ANALYTIC_AA_SLIVER", "drop")
+analytic_aa_sliver = env_str("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 
 # Exact, angle-aware coverage for a circuit's boundary instead of a box filter
 # of its signed distance.
@@ -1803,7 +1859,7 @@ ANALYTIC_AA_SLIVER = env_str("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 # 2 exact) rather than as a constant, so each form gets its own compiled variant
 # and its own offline-cache entry -- the same trap the sliver policy avoids the
 # same way. See DESIGN_analytic_aa.md ss21.
-ANALYTIC_AA_EXACT = env_flag("ALGAN_ANALYTIC_AA_EXACT", True)
+analytic_aa_exact = env_flag("ALGAN_ANALYTIC_AA_EXACT", True)
 
 # Model a circuit's local boundary with the TWO nearest segments (a strip or a
 # corner) instead of one half-plane -- THE ORIENTED WEDGE
@@ -1817,11 +1873,11 @@ ANALYTIC_AA_EXACT = env_flag("ALGAN_ANALYTIC_AA_EXACT", True)
 # matched dilation the wedge beats both the box and the lone-exact arms on
 # stem/corner/glyph and improves slant -- the ss21.2 stem failure
 # (text -6.8% vs the box filter) is gone.
-ANALYTIC_AA_BEZ_WEDGE = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
+analytic_aa_bez_wedge = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
 
 # The ss21.3/21.8/21.9 exact-triangle formulations (single exact area vs the
 # mask, packed cells, scalar surface accounting) are DELETED, not parked:
-# DESIGN_analytic_aa_v2.md's run-corrected representation (ANALYTIC_AA_RUN)
+# DESIGN_analytic_aa_v2.md's run-corrected representation (analytic_aa_run)
 # supersedes them, and its ss8 Phase D note plus DESIGN_analytic_aa.md ss21
 # keep the record of what was measured and why they failed. The rule they all
 # broke: a fragment's CLAIM and its OCCLUSION must be the same quantity, and
@@ -1838,7 +1894,7 @@ ANALYTIC_AA_BEZ_WEDGE = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
 # uniform per-sample transmittance) by the single scalar ``E / Q``. Every
 # contended case falls back to the shipped per-sample behavior bit-for-bit --
 # the uniform-svis gate IS the "no overlap" predicate. Subordinate to
-# ANALYTIC_AA / ANALYTIC_AA_TRI; the sliver policy knob is inert under it
+# analytic_aa / analytic_aa_tri; the sliver policy knob is inert under it
 # (sliver behavior is fixed by the design, not configurable).
 # Default ON (2026-08-13) on the v2 ss7.2 ladder: static mesh L1
 # 0.0355 -> 0.0292 against the aa=4 reference, tri video 0.119 -> 0.107 at
@@ -1847,7 +1903,7 @@ ANALYTIC_AA_BEZ_WEDGE = env_flag("ALGAN_ANALYTIC_AA_BEZ_WEDGE", True)
 # was calibrated on the rejected cells accounting -- see the ss8 Phase D
 # note). Worst-case cost is +6.6% frame device on sub-pixel-diced meshes;
 # RUN=0 is byte-identical to the pre-v2 renderer.
-ANALYTIC_AA_RUN = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
+analytic_aa_run = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 
 # The corr > 1 accounting rule (v2 ss4.4), the design's one open empirical
 # question, decided by harness: "clamp" scales the run's per-sample writes by
@@ -1855,13 +1911,13 @@ ANALYTIC_AA_RUN = env_flag("ALGAN_ANALYTIC_AA_RUN", True)
 # of the shed error); "redistribute" additionally pushes the clamped residue
 # onto the run's unowned samples (leftover exact, weirder per-sample
 # semantics). Compile-time template value; both stay byte-identical while
-# ANALYTIC_AA_RUN is off.
+# analytic_aa_run is off.
 # Measured (v2 ss4.4, decided by harness as designed): redistribute wins --
 # tri L1 0.107 vs clamp's 0.110 with edge levels 620 against the aa=4
 # reference's own 621, seam notches 9 vs 12, trans/thin at parity. Exact
 # leftovers cost two registers and a run-end scale.
 ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
-ANALYTIC_AA_RUN_RULE = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
+analytic_aa_run_rule = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
 # Let the RUN rule see FULL-MASK fragments that do not cover the whole pixel
 # (DESIGN_mesh_identity.md ss6.3.2). v2 ss4.2 starts the run lookahead only when
@@ -1897,8 +1953,8 @@ ANALYTIC_AA_RUN_RULE = env_str("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 #
 # Carried as ``aa_grp = 2`` rather than a new kernel argument: every
 # ``ti.static(aa_grp)`` test in the kernels is a truthiness test. Subordinate to
-# ANALYTIC_AA_SEAM and to the run rule (aa_tri 3 or 4).
-ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
+# analytic_aa_seam and to the run rule (aa_tri 3 or 4).
+analytic_aa_run_full = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 
 
 # THE ONE-MESH RULE (DESIGN_mesh_identity.md ss6.6). Where every fragment in a
@@ -1916,7 +1972,7 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # sheet claims 0.2396 (exact, corr 0.9583), far sheet adds 0.0104, pixel lands
 # on 0.2500 = 2/8 against a true 0.2394.
 #
-# This is what mob-declared identity (MESH_ID) was built to enable and what no
+# This is what mob-declared identity (mesh_id) was built to enable and what no
 # consumer read until now: "these two sheets are ONE mesh" is not a geometric
 # question and cannot be answered by an epsilon.
 #
@@ -1934,7 +1990,7 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # relaxed run gate is worth only 19%, which is why it moved ink wobble by
 # nothing.
 #
-# IMPLIES ANALYTIC_AA_RUN_FULL, and that implication is wired in exactly one
+# IMPLIES analytic_aa_run_full, and that implication is wired in exactly one
 # place: raster_pipeline._aa_group returns aa_grp = 3, and every reader asks
 # _aa_run_full(), which accepts 2 or 3. It was once wired only on the kernel
 # side, so the relaxed semantics ran over fragment lists whose area donors the
@@ -1974,7 +2030,7 @@ ANALYTIC_AA_RUN_FULL = env_flag("ALGAN_ANALYTIC_AA_RUN_FULL", False)
 # comment at the reduction in raster_pipeline.prepare_sparse_raster_coverage and
 # ss6.6.4. If you change how the ceiling is computed, A/A the render (twice, same
 # settings, compare) before trusting any baseline.
-ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
+analytic_aa_one_mesh = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 
 
 # What ``Mob.opacity`` MEANS on a closed solid. ``opacity`` is documented as a
@@ -2027,7 +2083,7 @@ ANALYTIC_AA_ONE_MESH = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 # OFF restores today's behaviour exactly: the ceiling lives entirely in the
 # compaction, gated on this flag read at batch time, so no pixel, sheet or
 # kernel variant changes.
-SOLID_SHELL_ALPHA = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
+solid_shell_alpha = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 
 # Deliver the DIRECT LIGHTS' share of the reflected specular lobe, which the
 # traced continuation cannot: a ray only finds light that has geometry, and a
@@ -2061,16 +2117,16 @@ SOLID_SHELL_ALPHA = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 # and the classic wavefront bounce loop). A custom fragment scatter owns its
 # own transport and a bezier circuit is never material-shaded, so neither has
 # a GGX highlight to restore. OFF restores the previous weighting exactly.
-DIRECT_SPECULAR_LOBE = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
+direct_specular_lobe = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 
-# Retire a bounce-loop ray whose throughput fell under MIN_WEIGHT even when
+# Retire a bounce-loop ray whose throughput fell under min_weight even when
 # its last processed hit took an in-place reflection branch.
 #
 # The drain loop already retires any ray whose post-hit weight crosses the
 # significance floor (``wavefront_shade``'s in-loop test), but every reflect-
 # here branch ends in a ``break`` that jumps past that test, and the
 # post-loop peel-complete tests deliberately exclude bounced rays -- so a
-# reflecting sub-floor ray rides to ``MAX_BOUNCES``, several further
+# reflecting sub-floor ray rides to ``max_bounces``, several further
 # generations of pure waste (diagnosed in scratch_perf/r3/ox/
 # REPORT_immortal_rays.md: on the nn PREVIEW scene exactly 30 rays bounce at
 # 100% survival through bounces 5-7, all below the floor since their first
@@ -2101,7 +2157,7 @@ DIRECT_SPECULAR_LOBE = env_flag("ALGAN_DIRECT_SPECULAR_LOBE", True)
 # read live per batch at the call sites -- so flipping it mid-process
 # compiles the other variant rather than baking (CLAUDE.md's ti.static
 # hazard). OFF compiles today's kernel body exactly.
-WEIGHT_FLOOR_EXIT = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
+weight_floor_exit = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 
 
 # Per-mob shadow flags (``Mob.casts_shadows`` / ``Mob.receives_shadows``).
@@ -2114,15 +2170,15 @@ WEIGHT_FLOOR_EXIT = env_flag("ALGAN_WEIGHT_FLOOR_EXIT", True)
 # changes and there is no ti.static gate to go stale mid-process (CLAUDE.md's
 # hazard). The flags stay settable on a Mob with this off; they just do nothing,
 # which is the same thing ``SETTINGS.raytracing.shadows = False`` does to them.
-PER_MOB_SHADOW_FLAGS = env_flag("ALGAN_PER_MOB_SHADOW_FLAGS", True)
+per_mob_shadow_flags = env_flag("ALGAN_PER_MOB_SHADOW_FLAGS", True)
 
 
 def set_per_mob_shadow_flags(enabled):
-    """Toggle the per-mob shadow flags (see ``PER_MOB_SHADOW_FLAGS``).
+    """Toggle the per-mob shadow flags (see ``per_mob_shadow_flags``).
     Takes effect at the next batch's scene merge.
     """
-    global PER_MOB_SHADOW_FLAGS
-    PER_MOB_SHADOW_FLAGS = bool(enabled)
+    global per_mob_shadow_flags
+    per_mob_shadow_flags = bool(enabled)
 
 
 # Build the BEZIER-CIRCUIT STBVH with the median-split instance ordering the
@@ -2148,13 +2204,13 @@ def set_per_mob_shadow_flags(enabled):
 # already-known 25% (7.944 -> 5.960), which is what says the instrument is
 # measuring the tree rather than itself.
 #
-# READ THIS BEFORE CONCLUDING ANYTHING FROM THE FLAG. ``BVH_REFIT`` defaults
+# READ THIS BEFORE CONCLUDING ANYTHING FROM THE FLAG. ``bvh_refit`` defaults
 # ON, and ``_build_accel``'s refit branch ignores ``builder`` outright, so at
 # shipped defaults NO STBVH is built for any geometry type and this flag --
 # like ``ALGAN_BVH_BUILD`` -- changes nothing at all. It governs the tree you
 # get with ``ALGAN_BVH_REFIT=0``, and that is the only configuration in which
 # either the win above or any A/B of it exists.
-BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", True)
+bez_bvh_split = env_flag("ALGAN_BEZ_BVH_SPLIT", True)
 
 
 # Weld a closed surface grid's u-seam and its collapsed poles into SHARED
@@ -2210,25 +2266,25 @@ BEZ_BVH_SPLIT = env_flag("ALGAN_BEZ_BVH_SPLIT", True)
 # chosen per patch per frame from projected size, so a different triangle list can
 # land on a different level. Those baselines are regenerated (CUDA), the frames
 # reviewed, and the gate is on.
-WELD_SURFACE_SEAMS = env_flag("ALGAN_WELD_SURFACE_SEAMS", True)
+weld_surface_seams = env_flag("ALGAN_WELD_SURFACE_SEAMS", True)
 
 
 def set_weld_surface_seams(enabled):
-    """Toggle surface seam/pole welding (see ``WELD_SURFACE_SEAMS``).
+    """Toggle surface seam/pole welding (see ``weld_surface_seams``).
 
     Takes effect on the next primitive build.
     """
-    global WELD_SURFACE_SEAMS
-    WELD_SURFACE_SEAMS = bool(enabled)
+    global weld_surface_seams
+    weld_surface_seams = bool(enabled)
 
 
 def set_bez_bvh_split(enabled):
-    """Toggle median-split ordering for the bezier STBVH (see ``BEZ_BVH_SPLIT``).
+    """Toggle median-split ordering for the bezier STBVH (see ``bez_bvh_split``).
 
     Takes effect on the next scene build.
     """
-    global BEZ_BVH_SPLIT
-    BEZ_BVH_SPLIT = bool(enabled)
+    global bez_bvh_split
+    bez_bvh_split = bool(enabled)
 
 
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
@@ -2247,7 +2303,7 @@ def set_bez_bvh_split(enabled):
 # The split happens ONCE, at the primary hit; deeper bounces continue as single
 # rays, so the cost is N times the secondary traversal, not N^depth. Only the
 # reflective/refractive pixels pay it. 1 disables it, and is byte-identical.
-ANALYTIC_AA_SECONDARY_SAMPLES = env_int("ALGAN_ANALYTIC_AA_SECONDARY", 4)
+analytic_aa_secondary_samples = env_int("ALGAN_ANALYTIC_AA_SECONDARY", 4)
 
 # Minimum share of a pixel a REFLECTED or REFRACTED branch must carry before it
 # is worth spending N sub-pixel continuations on instead of one.
@@ -2257,11 +2313,11 @@ ANALYTIC_AA_SECONDARY_SAMPLES = env_int("ALGAN_ANALYTIC_AA_SECONDARY", 4)
 # pixel for a lobe contributing 4% of its colour, and measures both slower and
 # slightly worse than plain supersampling. The whole value of coverage is that
 # the expensive fallbacks fire only on the pixels that need them.
-ANALYTIC_AA_SECONDARY_MIN_ENERGY = env_float(
+analytic_aa_secondary_min_energy = env_float(
     "ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", 0.12
 )
 
-GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", True)
+glossy_reflection = env_flag("ALGAN_GLOSSY_REFLECTION", True)
 
 # Rotate each pixel's lobe fan by a 4x4 Bayer index (interleaved sampling), so
 # four taps read as a smear rather than four ghost copies of the reflected
@@ -2269,7 +2325,7 @@ GLOSSY_REFLECTION = env_flag("ALGAN_GLOSSY_REFLECTION", True)
 # integrates across them. Fixed in SCREEN space, hence still frame-independent
 # -- the pattern does not swim, twinkle or depend on time. Off restores the
 # plain per-fragment fan (kept so the parity script can measure the difference).
-GLOSSY_INTERLEAVE = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
+glossy_interleave = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 
 
 # SPLIT-SUM PREFILTERING for glossy reflections, the answer to why the tap fan
@@ -2288,11 +2344,11 @@ GLOSSY_INTERLEAVE = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 # more taps was never the lever, since the artefact the throttle exists to hide
 # is minification aliasing and no amount of point sampling fixes that.
 #
-# DEFAULT ON, gated behind ``GLOSSY_REFLECTION`` -- which is now default on too,
+# DEFAULT ON, gated behind ``glossy_reflection`` -- which is now default on too,
 # so this is the route a rough reflector takes unless something says otherwise.
 # The old tap fan is still reachable for comparison with
 # ``set_glossy_reflection(True, prefilter=False)``.
-GLOSSY_PREFILTER = env_flag("ALGAN_GLOSSY_PREFILTER", True)
+glossy_prefilter = env_flag("ALGAN_GLOSSY_PREFILTER", True)
 
 # How many mip levels the prefilter's reflection pyramid may have. Each level
 # doubles the blur radius it can represent, so 10 covers a sigma of ~148 px --
@@ -2300,26 +2356,26 @@ GLOSSY_PREFILTER = env_flag("ALGAN_GLOSSY_PREFILTER", True)
 # the frame reads as the average of everything glossy in it either way. Lower
 # it only to cap the pyramid's memory; the buffers are per FRAME, not per
 # batch, and the runtime memory model measures them like everything else.
-GLOSSY_PREFILTER_MAX_LEVELS = env_int("ALGAN_GLOSSY_PREFILTER_LEVELS", 10)
+glossy_prefilter_max_levels = env_int("ALGAN_GLOSSY_PREFILTER_LEVELS", 10)
 
 
 def set_glossy_reflection(enabled, *, interleave=None, prefilter=None):
-    """Toggle roughness-driven glossy reflections (see ``GLOSSY_REFLECTION``).
+    """Toggle roughness-driven glossy reflections (see ``glossy_reflection``).
 
     ``prefilter`` selects the split-sum route (default) over the tap fan;
     ``interleave`` only means anything to the fan.
     """
-    global GLOSSY_REFLECTION, GLOSSY_INTERLEAVE, GLOSSY_PREFILTER
-    GLOSSY_REFLECTION = bool(enabled)
+    global glossy_reflection, glossy_interleave, glossy_prefilter
+    glossy_reflection = bool(enabled)
     if interleave is not None:
-        GLOSSY_INTERLEAVE = bool(interleave)
+        glossy_interleave = bool(interleave)
     if prefilter is not None:
-        GLOSSY_PREFILTER = bool(prefilter)
+        glossy_prefilter = bool(prefilter)
 
 
 def glossy_reflection_mode():
     """Live glossy-lobe mode: 0 off, 1 fan only, 2 fan + per-pixel rotation,
-    3 split-sum prefilter (``GLOSSY_PREFILTER``, the default when glossy
+    3 split-sum prefilter (``glossy_prefilter``, the default when glossy
     reflections are on at all).
 
     Read at call time (never imported by value) and returned as an int, because
@@ -2328,11 +2384,11 @@ def glossy_reflection_mode():
     ``@ti.func`` edits, let alone on a Python constant -- cannot serve one
     mode's kernel for another.
     """
-    if not GLOSSY_REFLECTION:
+    if not glossy_reflection:
         return 0
-    if GLOSSY_PREFILTER:
+    if glossy_prefilter:
         return 3
-    return 2 if GLOSSY_INTERLEAVE else 1
+    return 2 if glossy_interleave else 1
 
 
 def glossy_blur_sigma_px(roughness, d_reflected, d_primary, theta_px):
@@ -2400,13 +2456,13 @@ def glossy_blur_sigma_px(roughness, d_reflected, d_primary, theta_px):
 # below 1 would silently zero. And a scene carrying a custom fragment scatter
 # gets no nesting at all. See DESIGN_mesh_identity_open.md §H for both, and
 # ``benchmarks/_nested_ior_ab.py`` for the four frames that bound this.
-NESTED_IOR = env_flag("ALGAN_NESTED_IOR", True)
+nested_ior = env_flag("ALGAN_NESTED_IOR", True)
 
 
 def set_nested_ior(enabled):
-    """Toggle the nested-dielectric IOR stack (see ``NESTED_IOR``)."""
-    global NESTED_IOR
-    NESTED_IOR = bool(enabled)
+    """Toggle the nested-dielectric IOR stack (see ``nested_ior``)."""
+    global nested_ior
+    nested_ior = bool(enabled)
 
 
 def nested_ior_mode():
@@ -2417,7 +2473,7 @@ def nested_ior_mode():
     mode compiles its own kernel variant, so the offline cache cannot serve
     one mode's kernel for another (see ``glossy_reflection_mode``).
     """
-    return 1 if NESTED_IOR else 0
+    return 1 if nested_ior else 0
 
 
 # Minimum half-width, in pixels, of a filled circuit's drawn region. This
@@ -2428,7 +2484,7 @@ def nested_ior_mode():
 # reference AA=2 it dilates by 0.3 output pixels, at AA=1 by 0.6. Analytic AA
 # runs at AA=1, so 0.3 reproduces the reference appearance rather than doubling
 # every stroke weight. Tune only against rendered Text/Tex.
-ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = env_float("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", 0.3)
+analytic_aa_bez_min_half_width = env_float("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", 0.3)
 
 # Maximum curve-to-chord flattening error, in pixels, for Bezier circuits under
 # analytic AA (overrides the primitive's own ``num_pixels_per_sample`` only when
@@ -2436,7 +2492,7 @@ ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = env_float("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH
 # at the AA=2 reference it is 0.25 output pixels; at AA=1 it would relax to 0.5
 # and a continuous coverage function would expose the flattening facets that box
 # filtering currently hides. Costs edges (memory + _bezier_point_metrics work).
-ANALYTIC_AA_CHORD_TOLERANCE = env_float("ALGAN_ANALYTIC_AA_CHORD_TOLERANCE", 0.25)
+analytic_aa_chord_tolerance = env_float("ALGAN_ANALYTIC_AA_CHORD_TOLERANCE", 0.25)
 
 
 def set_analytic_aa(
@@ -2448,44 +2504,47 @@ def set_analytic_aa(
     sliver=None,
     secondary=None,
     exact=None,
+    wedge=None,
     run=None,
     run_rule=None,
     run_full=None,
     one_mesh=None,
 ):
-    """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
-    global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
-    global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
-    global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
-    global ANALYTIC_AA_ONE_MESH
+    """Toggle analytic anti-aliasing (see ``analytic_aa``)."""
+    global analytic_aa, analytic_aa_bez, analytic_aa_tri, analytic_aa_seam
+    global analytic_aa_sliver, analytic_aa_secondary_samples, analytic_aa_exact
+    global analytic_aa_run, analytic_aa_run_rule, analytic_aa_run_full
+    global analytic_aa_one_mesh, analytic_aa_bez_wedge
     if secondary is not None:
-        ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
+        analytic_aa_secondary_samples = int(secondary)
     if exact is not None:
-        ANALYTIC_AA_EXACT = bool(exact)
+        analytic_aa_exact = bool(exact)
+    if wedge is not None:
+        analytic_aa_bez_wedge = bool(wedge)
     if run is not None:
-        ANALYTIC_AA_RUN = bool(run)
+        analytic_aa_run = bool(run)
     if run_full is not None:
-        ANALYTIC_AA_RUN_FULL = bool(run_full)
+        analytic_aa_run_full = bool(run_full)
     if one_mesh is not None:
-        ANALYTIC_AA_ONE_MESH = bool(one_mesh)
+        analytic_aa_one_mesh = bool(one_mesh)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
             raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")
-        ANALYTIC_AA_RUN_RULE = run_rule
-    ANALYTIC_AA = bool(enabled)
+        analytic_aa_run_rule = run_rule
+    analytic_aa = bool(enabled)
     if bezier is not None:
-        ANALYTIC_AA_BEZ = bool(bezier)
+        analytic_aa_bez = bool(bezier)
     if triangles is not None:
-        ANALYTIC_AA_TRI = bool(triangles)
+        analytic_aa_tri = bool(triangles)
     if seam is not None:
-        ANALYTIC_AA_SEAM = bool(seam)
+        analytic_aa_seam = bool(seam)
     if sliver is not None:
         if sliver not in ANALYTIC_AA_SLIVER_MODES:
             raise ValueError(f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}")
-        ANALYTIC_AA_SLIVER = sliver
+        analytic_aa_sliver = sliver
 
 
-def analytic_aa_secondary_samples():
+def effective_analytic_aa_secondary_samples():
     """Live continuation-ray tap count; 1 (off) unless analytic AA is on.
 
     Clamped to ``[1, _AA_SEC_MAX]`` and otherwise returned unchanged: every
@@ -2496,9 +2555,9 @@ def analytic_aa_secondary_samples():
     mask is an i32 bitfield, and each extra distinct tap count also pays a
     kernel compile of its own (see the warning text).
     """
-    if not ANALYTIC_AA:
+    if not analytic_aa:
         return 1
-    n = int(ANALYTIC_AA_SECONDARY_SAMPLES)
+    n = int(analytic_aa_secondary_samples)
     if n > _secondary_tap_ceiling():
         _warn_secondary_clamped(n)
         return _secondary_tap_ceiling()
@@ -2530,7 +2589,7 @@ def _warn_secondary_clamped(requested):
         return
     _SECONDARY_CLAMP_WARNED = True
     get_logger("raytracing").warning(
-        f"ANALYTIC_AA_SECONDARY_SAMPLES={requested} exceeds the ceiling of "
+        f"analytic_aa_secondary_samples={requested} exceeds the ceiling of "
         f"{_secondary_tap_ceiling()} and was clamped to it: the "
         f"continuation-position mask is a 32-bit field, one bit per tap, and "
         f"every extra distinct count is paid again in kernel compile time "
@@ -2548,7 +2607,7 @@ def analytic_aa_sliver_mode():
     offline cache cannot serve one policy's kernel for another.
     """
     try:
-        return ANALYTIC_AA_SLIVER_MODES.index(ANALYTIC_AA_SLIVER)
+        return ANALYTIC_AA_SLIVER_MODES.index(analytic_aa_sliver)
     except ValueError:
         return ANALYTIC_AA_SLIVER_MODES.index("drop")
 
@@ -2559,29 +2618,29 @@ def analytic_aa_bez_active():
     Read at call time, never imported by value: settings are module globals with
     env-var defaults and user code flips them after import.
     """
-    return ANALYTIC_AA and ANALYTIC_AA_BEZ
+    return analytic_aa and analytic_aa_bez
 
 
 def analytic_aa_bez_mode():
     """Circuit coverage as the kernels' ``aa_bez`` template value.
 
     0 off, 1 the box filter, 2 the exact angle-aware area
-    (``ANALYTIC_AA_EXACT``), 3 that plus the two-segment boundary model
-    (``ANALYTIC_AA_BEZ_WEDGE``, default on since 2026-08-13).
+    (``analytic_aa_exact``), 3 that plus the two-segment boundary model
+    (``analytic_aa_bez_wedge``, default on since 2026-08-13).
     The distinction rides in the template value so the two forms cannot share an
     offline-cache entry; everything downstream that only asks whether circuit
     coverage is on keeps testing it for truth.
     """
     if not analytic_aa_bez_active():
         return 0
-    if not ANALYTIC_AA_EXACT:
+    if not analytic_aa_exact:
         return 1
-    return 3 if ANALYTIC_AA_BEZ_WEDGE else 2
+    return 3 if analytic_aa_bez_wedge else 2
 
 
 def analytic_aa_tri_active():
     """Live effective value of flat-triangle analytic coverage."""
-    return ANALYTIC_AA and ANALYTIC_AA_TRI
+    return analytic_aa and analytic_aa_tri
 
 
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
@@ -2594,19 +2653,19 @@ def analytic_aa_tri_active():
 # scene_builder._build_textured_scene + wavefront_textured_kernels_taichi. It
 # was a proof-of-concept built to benchmark the texture-lookup shading
 # architecture, kept for reference only. Default OFF; do not enable.
-WF_TEXTURED = False
+wf_textured = False
 
 
-def set_textured_wavefront(enabled):
+def set_wf_textured(enabled):
     """Reject the removed legacy texture-lookup wavefront renderer."""
-    global WF_TEXTURED
+    global wf_textured
     if bool(enabled):
-        WF_TEXTURED = False
+        wf_textured = False
         raise UnsupportedFeatureError(
             "The legacy textured wavefront renderer is unsupported and cannot "
             "be enabled. Use the general deterministic wavefront renderer."
         )
-    WF_TEXTURED = False
+    wf_textured = False
 
 
 # --- Scene merge + STBVH build device --------------------------------------
@@ -2630,7 +2689,7 @@ def set_textured_wavefront(enabled):
 # headroom before the merge is attempted and (b) caught by the existing
 # OOM -> window-shrink retry if the estimate was low. Off falls back to the
 # byte-exact CPU build. ALGAN_MERGE_ON_GPU=0 disables.
-MERGE_ON_GPU = env_flag("ALGAN_MERGE_ON_GPU", True)
+merge_on_gpu = env_flag("ALGAN_MERGE_ON_GPU", True)
 
 # Multiplier turning a batch's packed ``_rt_*`` input bytes into a conservative
 # estimate of the GPU merge's transient peak (the out-of-place cat / argsort /
@@ -2644,40 +2703,35 @@ MERGE_ON_GPU = env_flag("ALGAN_MERGE_ON_GPU", True)
 # their packed inputs. It is deliberately generous: torch's allocator counters
 # cannot see Taichi's separate pool at all, and the out-of-memory handler is
 # the exact fallback when the estimate is low.
-MERGE_GPU_PEAK_FACTOR = env_float("ALGAN_MERGE_GPU_PEAK_FACTOR", 6.0)
-
-
-def merge_gpu_peak_factor():
-    """Live multiplier bounding the GPU merge's transient out-of-arena peak."""
-    return MERGE_GPU_PEAK_FACTOR
+merge_gpu_peak_factor = env_float("ALGAN_MERGE_GPU_PEAK_FACTOR", 6.0)
 
 
 # Exact measurement of the GPU merge's transient peak, which calibrates
-# ``MERGE_GPU_PEAK_FACTOR``. This used to default off because it called
+# ``merge_gpu_peak_factor``. This used to default off because it called
 # ``torch.cuda.reset_peak_memory_stats`` directly and so destroyed the
 # process-wide peak counter ``profiling_utils`` reports for the whole render.
 # It now goes through ``memory_utils.begin_cuda_peak``/``end_cuda_peak``, which
 # remember the displaced high-water mark, so measuring costs a pair of cheap
 # counter reads and nothing else -- hence on by default. The headroom bound
-# itself is still the ``MERGE_GPU_PEAK_FACTOR`` estimate.
-MERGE_TRACK_PEAK = env_flag("ALGAN_MERGE_TRACK_PEAK", True)
+# itself is still the ``merge_gpu_peak_factor`` estimate.
+merge_track_peak = env_flag("ALGAN_MERGE_TRACK_PEAK", True)
 
 
 def set_merge_on_gpu(enabled):
-    """Toggle GPU-side scene merge + STBVH build (see ``MERGE_ON_GPU``)."""
-    global MERGE_ON_GPU
-    MERGE_ON_GPU = bool(enabled)
+    """Toggle GPU-side scene merge + STBVH build (see ``merge_on_gpu``)."""
+    global merge_on_gpu
+    merge_on_gpu = bool(enabled)
 
 
 def merge_on_gpu_active():
     """True when the scene merge + STBVH build should run on the render device.
 
-    Requires ``MERGE_ON_GPU`` and a CUDA render device -- the offload only pays
+    Requires ``merge_on_gpu`` and a CUDA render device -- the offload only pays
     off on a real accelerator, and the transient-peak accounting uses the
     ``torch.cuda`` memory-stats API. A CPU (or MPS) render device keeps the
     merge on the CPU, byte-identically to the pre-toggle path.
     """
-    if not MERGE_ON_GPU:
+    if not merge_on_gpu:
         return False
 
     return render_device().type == "cuda"
@@ -2695,7 +2749,7 @@ def merge_on_gpu_active():
 # consume with no upload. The heavy Python-bound timeline materialization
 # (``set_state_to_times``) is what still rides the hidden worker. Off keeps
 # projection on the CPU source device. ALGAN_PROJECT_ON_GPU=0 disables.
-PROJECT_ON_GPU = env_flag("ALGAN_PROJECT_ON_GPU", True)
+project_on_gpu = env_flag("ALGAN_PROJECT_ON_GPU", True)
 
 # Conservative multiplier from a batch's pre-projection source-geometry bytes
 # to the projection's transient device peak (source + shading scratch + packed
@@ -2703,27 +2757,22 @@ PROJECT_ON_GPU = env_flag("ALGAN_PROJECT_ON_GPU", True)
 # its control points, hence a larger default than the merge factor). Bounds the
 # projection against the pool headroom before it is attempted; the OOM retry is
 # the exact fallback. Read live.
-PROJECT_GPU_PEAK_FACTOR = env_float("ALGAN_PROJECT_GPU_PEAK_FACTOR", 8.0)
-
-
-def project_gpu_peak_factor():
-    """Live multiplier bounding projection's transient out-of-arena peak."""
-    return PROJECT_GPU_PEAK_FACTOR
+project_gpu_peak_factor = env_float("ALGAN_PROJECT_GPU_PEAK_FACTOR", 8.0)
 
 
 def set_project_on_gpu(enabled):
-    """Toggle GPU-side ``project_to_screen`` (see ``PROJECT_ON_GPU``)."""
-    global PROJECT_ON_GPU
-    PROJECT_ON_GPU = bool(enabled)
+    """Toggle GPU-side ``project_to_screen`` (see ``project_on_gpu``)."""
+    global project_on_gpu
+    project_on_gpu = bool(enabled)
 
 
 def project_on_gpu_active():
     """True when ``project_to_screen`` should run on the render device.
 
-    Requires ``PROJECT_ON_GPU`` and a CUDA render device (see
+    Requires ``project_on_gpu`` and a CUDA render device (see
     ``merge_on_gpu_active`` for why CUDA specifically).
     """
-    if not PROJECT_ON_GPU:
+    if not project_on_gpu:
         return False
 
     return render_device().type == "cuda"
@@ -2764,15 +2813,15 @@ def project_on_gpu_active():
 # established that Python-side Taichi launches from that worker are safe
 # alongside main-thread launches, and the cpu_prep_kernel_enabled kernels
 # already launch from it on every CPU render.
-PN_CRITERION_KERNEL = env_flag("ALGAN_PN_CRITERION_KERNEL", True)
+pn_criterion_kernel = env_flag("ALGAN_PN_CRITERION_KERNEL", True)
 
 
 def set_pn_criterion_kernel(enabled):
     """Toggle the fused subdivision-level criterion kernels (see
-    ``PN_CRITERION_KERNEL``).
+    ``pn_criterion_kernel``).
     """
-    global PN_CRITERION_KERNEL
-    PN_CRITERION_KERNEL = bool(enabled)
+    global pn_criterion_kernel
+    pn_criterion_kernel = bool(enabled)
 
 
 def pn_criterion_kernel_active():
@@ -2790,7 +2839,7 @@ def pn_criterion_kernel_active():
     written turned the kernels off in the one case where they are free. The
     remaining tensor-by-tensor device check lives in the input builders.
     """
-    if not PN_CRITERION_KERNEL:
+    if not pn_criterion_kernel:
         return False
     if project_on_gpu_active():
         return True
@@ -2823,7 +2872,7 @@ def pn_criterion_kernel_active():
 #
 # Moves rendered output (coarser tessellation in close-ups).
 # ALGAN_PN_GEOMETRY_SLACK=0 restores the strict PN-patch criterion.
-PN_GEOMETRY_SLACK = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
+pn_geometry_slack = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
 
 # --- per-dimension dicing ---------------------------------------------------
 # A patch's dice is (level_along, level_across): 2**along rows fanning from one
@@ -2839,11 +2888,11 @@ PN_GEOMETRY_SLACK = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
 #
 # Moves rendered output (different microtriangles under the same tolerance).
 # ALGAN_PN_ANISOTROPIC_DICE=0 restores the uniform per-patch grid.
-PN_ANISOTROPIC_DICE = env_flag("ALGAN_PN_ANISOTROPIC_DICE", True)
+pn_anisotropic_dice = env_flag("ALGAN_PN_ANISOTROPIC_DICE", True)
 
 
 # Feature bitmask for the UNSUPPORTED legacy textured wavefront (see
-# WF_TEXTURED): each bit compiled one of the monolith's features back into the
+# wf_textured): each bit compiled one of the monolith's features back into the
 # (otherwise lean) textured shade kernel, so the marginal occupancy /
 # performance cost of each could be measured one at a time (see
 # benchmarks/_wf_textured_features_ab.py). The features are added in the order
@@ -2852,19 +2901,19 @@ WF_TEX_BEZ = 1  # bezier-circuit traversal + shading
 WF_TEX_SCATTER = 2  # per-material custom scatter dispatch (ray bouncing)
 WF_TEX_SHADOWS = 4  # binary hard shadow rays (triangle occluders)
 WF_TEX_NORMALMAP = 8  # tangent-space normal-map perturbation of the shading normal
-WF_TEXTURED_FEATURES = env_int("ALGAN_WF_TEXTURED_FEATURES", 0)
+wf_textured_features = env_int("ALGAN_WF_TEXTURED_FEATURES", 0)
 
 
-def set_textured_features(mask):
+def set_wf_textured_features(mask):
     """Reject feature configuration for the removed textured renderer."""
-    global WF_TEXTURED_FEATURES
+    global wf_textured_features
     if int(mask) != 0:
-        WF_TEXTURED_FEATURES = 0
+        wf_textured_features = 0
         raise UnsupportedFeatureError(
             "Textured-wavefront feature masks are unsupported because that "
             "legacy renderer has been removed from the public execution path."
         )
-    WF_TEXTURED_FEATURES = 0
+    wf_textured_features = 0
 
 
 # UNSUPPORTED legacy Cycles-style sorted material dispatch for the
@@ -2881,7 +2930,7 @@ def set_textured_features(mask):
 # Values: "auto" (default) and False/"0" both use the monolithic shade kernel,
 # which supports *everything* the sorted path did -- custom ray-bouncing
 # (scatter) and normal-mapped lighting -- while staying faster on the built-in
-# materials (it drains up to KBUF hits per launch, whereas sorting pays
+# materials (it drains up to kbuf hits per launch, whereas sorting pays
 # per-event kernel round trips + host syncs; see benchmarks/_wf_sorted_ab.py
 # and _wf_monolith_scatter_ab.py). True/"1" still routes to the sorted
 # pipeline, but that route is unsupported (kept for reference only). "auto" is
@@ -2896,20 +2945,20 @@ def _parse_sort_mode(v):
     return "auto"
 
 
-WAVEFRONT_SORT_MATERIALS = "0"  # auto"
+wavefront_sort_materials = "0"  # auto"
 
 
-def set_material_sorting(enabled):
+def set_wavefront_sort_materials(enabled):
     """Reject the removed legacy sorted-material renderer when forced on."""
-    global WAVEFRONT_SORT_MATERIALS
+    global wavefront_sort_materials
     parsed = _parse_sort_mode(enabled)
     if parsed is True:
-        WAVEFRONT_SORT_MATERIALS = "auto"
+        wavefront_sort_materials = "auto"
         raise UnsupportedFeatureError(
             "The legacy sorted-material wavefront renderer is unsupported. "
             "Use the monolithic deterministic shade kernel."
         )
-    WAVEFRONT_SORT_MATERIALS = parsed
+    wavefront_sort_materials = parsed
 
 
 def set_fragment_shading(enabled):
@@ -2927,8 +2976,8 @@ def set_fragment_shading(enabled):
     Only the deterministic renderer (``set_samples_per_pixel(1)``, non-physical)
     is affected. Set before rendering.
     """
-    global FRAGMENT_SHADING
-    FRAGMENT_SHADING = bool(enabled)
+    global fragment_shading
+    fragment_shading = bool(enabled)
 
 
 # What a RECT AREA LIGHT's shadow rays integrate. Each of its packed rows
@@ -2968,7 +3017,7 @@ def set_fragment_shading(enabled):
 # shade kernels into per-arm variants (and need one process per arm, since a
 # flipped template gate is resolved when the kernel compiles), while this
 # shape needs no recompile and one process can render both arms.
-AREA_LIGHT_SOFT_SHADOWS = env_flag("ALGAN_AREA_LIGHT_SOFT_SHADOWS", True)
+area_light_soft_shadows = env_flag("ALGAN_AREA_LIGHT_SOFT_SHADOWS", True)
 
 
 # When True, the deterministic ray tracer casts hard shadows: each shaded
@@ -2980,9 +3029,9 @@ AREA_LIGHT_SOFT_SHADOWS = env_flag("ALGAN_AREA_LIGHT_SOFT_SHADOWS", True)
 # of a single ray: point/spot lights with a non-zero ``shadow_radius`` spread
 # theirs over the emitter disk (directional: over ``shadow_angle``, radius =
 # tan(half-angle)), and a RectAreaLight's rows each integrate visibility over
-# their own cell of the emitter grid when AREA_LIGHT_SOFT_SHADOWS is on --
+# their own cell of the emitter grid when area_light_soft_shadows is on --
 # see that flag for the cost. Off by default.
-SHADOWS = False
+shadows = False
 
 # Number of shadow rays in the deterministic soft-shadow fan (per light with a
 # non-zero shadow radius, per shaded fragment). More = smoother penumbras,
@@ -2990,7 +3039,7 @@ SHADOWS = False
 # the env var ALGAN_SOFT_SHADOW_SAMPLES before the first render to change it.
 
 
-def set_ray_traced_shadows(enabled):
+def set_shadows(enabled):
     """Toggle hard shadows in the *deterministic* ray tracer.
 
     When enabled, every shaded triangle/PN fragment traces one shadow ray per
@@ -3003,26 +3052,26 @@ def set_ray_traced_shadows(enabled):
     ``shadow_radius`` / ``shadow_angle`` get *soft* shadows via a
     deterministic fan of ``SOFT_SHADOW_SAMPLES`` rays; a RectAreaLight's rows
     do too -- each integrating visibility over its own cell of the emitter
-    grid -- when ``AREA_LIGHT_SOFT_SHADOWS`` is on (the default). Refractive
+    grid -- when ``area_light_soft_shadows`` is on (the default). Refractive
     glass transport still needs the physical path tracer
     (``set_samples_per_pixel(n)`` with ``n > 1``). Only the deterministic
     renderer (``set_samples_per_pixel(1)``, non-physical) is affected. Set
     before rendering.
     """
-    global SHADOWS
-    SHADOWS = bool(enabled)
+    global shadows
+    shadows = bool(enabled)
 
 
 def set_light_intensity(intensity):
     """Radiance scale applied to explicit point lights in physical mode."""
-    global LIGHT_INTENSITY
-    LIGHT_INTENSITY = float(intensity)
+    global light_intensity
+    light_intensity = float(intensity)
 
 
 def set_ambient_light(intensity):
     """Constant ambient lighting term used in physical mode."""
-    global AMBIENT_LIGHT
-    AMBIENT_LIGHT = float(intensity)
+    global ambient_light
+    ambient_light = float(intensity)
 
 
 def set_samples_per_pixel(samples):
@@ -3030,16 +3079,16 @@ def set_samples_per_pixel(samples):
     exact deterministic renderer; larger values enable Monte Carlo path
     tracing with that many samples.
     """
-    global SAMPLES_PER_PIXEL
-    SAMPLES_PER_PIXEL = max(1, int(samples))
+    global samples_per_pixel
+    samples_per_pixel = max(1, int(samples))
 
 
 def set_indirect_bounce_strength(strength):
     """Set the diffuse indirect lighting strength of the Monte Carlo
     renderer (0 disables diffuse bounces).
     """
-    global INDIRECT_BOUNCE_STRENGTH
-    INDIRECT_BOUNCE_STRENGTH = float(strength)
+    global indirect_bounce_strength
+    indirect_bounce_strength = float(strength)
 
 
 def set_linear_color_space(enabled):
@@ -3064,8 +3113,8 @@ def set_linear_color_space(enabled):
     reproducing pre-change output; ``LINEAR_COLOR_WORK.md`` has the
     measurements.
     """
-    global LINEAR_COLOR_SPACE
-    LINEAR_COLOR_SPACE = bool(enabled)
+    global linear_color_space
+    linear_color_space = bool(enabled)
 
 
 def set_tonemapping(enabled):
@@ -3090,8 +3139,8 @@ def set_tonemapping(enabled):
     curve. There is no need to also disable ``post_process_tonemap``, and doing
     so costs HDR headroom (see :func:`set_post_process_tonemap`).
     """
-    global TONEMAPPING
-    TONEMAPPING = bool(enabled)
+    global tonemapping
+    tonemapping = bool(enabled)
 
 
 def set_tonemap_exposure(exposure):
@@ -3105,16 +3154,16 @@ def set_tonemap_exposure(exposure):
     This is the right control for "the whole scene is too dark". Reach for it
     before raising every light's intensity.
     """
-    global TONEMAP_EXPOSURE
-    TONEMAP_EXPOSURE = float(exposure)
+    global tonemap_exposure
+    tonemap_exposure = float(exposure)
 
 
 def set_tonemap_method(method):
     """Set the tonemapping method ("neutral" or "agx")."""
-    global TONEMAP_METHOD
+    global tonemap_method
     if method not in ("neutral", "agx"):
         raise ValueError("tonemap_method must be 'neutral' or 'agx'")
-    TONEMAP_METHOD = str(method)
+    tonemap_method = str(method)
 
 
 def set_post_process_tonemap(enabled):
@@ -3127,30 +3176,45 @@ def set_post_process_tonemap(enabled):
     against the legacy in-kernel tonemap; to get linear output, use
     :func:`set_tonemapping` alone, which keeps the HDR buffer.
     """
-    global POST_PROCESS_TONEMAP
-    POST_PROCESS_TONEMAP = bool(enabled)
+    global post_process_tonemap
+    post_process_tonemap = bool(enabled)
+
+
+# Store the linear-HDR frame buffer as float16 (RGBA16F) instead of float32.
+# Halves the frame buffer (so ~2x more frames per batch), but is off by default
+# because GPUs with poor FP16 throughput -- notably consumer Pascal (GTX
+# 10-series) at ~1/64 FP32 -- run the f16 torch post-processing (and f16 buffer
+# traffic) far slower than the memory saving is worth (measured ~80% slower end
+# to end on a GTX 1050). On Turing/Ampere+ (fast f16) it is a clear win, so
+# enable it there.
+#
+# Read at buffer allocation, never baked into a kernel: nothing specializes on
+# it, so a script may flip it between renders and the next batch allocates the
+# other dtype. That is why it is an ordinary setting rather than one of the
+# init-only environment variables it used to sit among -- the environment
+# variable only seeds this default.
+hdr_buffer_f16 = env_flag("ALGAN_HDR_BUFFER_F16", False)
+
+
+def set_hdr_buffer_f16(enabled):
+    """Toggle the float16 linear-HDR frame buffer (see ``hdr_buffer_f16``).
+
+    Takes effect at the next render batch's buffer allocation.
+    """
+    global hdr_buffer_f16
+    hdr_buffer_f16 = bool(enabled)
 
 
 def hdr_frame_dtype():
     """dtype of the linear-HDR frame buffer used under post-process
-    tonemapping.
-
-    Defaults to float32. float16 (RGBA16F) halves the frame-buffer memory
-    (so ~2x more frames per batch), but is opt-in via ``ALGAN_HDR_BUFFER_F16=1``
-    because GPUs with poor FP16 throughput -- notably consumer Pascal
-    (GTX 10-series) at ~1/64 FP32 -- run the f16 torch post-processing (and
-    f16 buffer traffic) far slower than the memory saving is worth (measured
-    ~80% slower end-to-end on a GTX 1050). On Turing/Ampere+ (fast f16) it is
-    a clear win, so enable it there.
+    tonemapping: float32, or float16 when ``hdr_buffer_f16`` is on.
     """
     import torch
 
-    if _HDR_BUFFER_F16:
-        return torch.float16
-    return torch.float32
+    return torch.float16 if hdr_buffer_f16 else torch.float32
 
 
-POST_TONEMAP_KERNEL = env_flag("ALGAN_POST_TONEMAP_KERNEL", True)
+post_tonemap_kernel = env_flag("ALGAN_POST_TONEMAP_KERNEL", True)
 
 
 def set_post_tonemap_kernel(enabled):
@@ -3160,25 +3224,25 @@ def set_post_tonemap_kernel(enabled):
     tonemapping added (the torch tonemap ran ~20 ops/pixel over every frame).
     Kill-switch / A-B hook.
     """
-    global POST_TONEMAP_KERNEL
-    POST_TONEMAP_KERNEL = bool(enabled)
+    global post_tonemap_kernel
+    post_tonemap_kernel = bool(enabled)
 
 
 def is_post_tonemap_kernel_enabled():
-    return POST_TONEMAP_KERNEL
+    return post_tonemap_kernel
 
 
 def is_post_process_tonemap_enabled():
     """Return whether post-process tonemapping is enabled."""
-    return POST_PROCESS_TONEMAP
+    return post_process_tonemap
 
 
 def _get_tonemap_t_val():
-    if POST_PROCESS_TONEMAP:
+    if post_process_tonemap:
         return 3
-    if not TONEMAPPING:
+    if not tonemapping:
         return 0
-    return 2 if TONEMAP_METHOD == "agx" else 1
+    return 2 if tonemap_method == "agx" else 1
 
 
 # --- Core lit material registry (shader function -> in-kernel material id) ----
@@ -3190,9 +3254,9 @@ def _build_core_shader_ids():
         basic_material_shader,
         depth_shader,
         lambert_shader,
+        manim_shader,
         matcap_shader,
         normal_shader,
-        manim_shader,
         phong_shader,
         physical_shader,
         standard_shader,
@@ -3330,7 +3394,7 @@ def _constant_promotion_active():
     the only kernel whose per-vertex reads are guarded for shrunk arrays).
     Every deterministic (samples <= 1) batch renders through that kernel.
     """
-    return PROMOTE_CONSTANTS and FRAGMENT_SHADING and SAMPLES_PER_PIXEL <= 1
+    return promote_constants and fragment_shading and samples_per_pixel <= 1
 
 
 def _scene_has_user_pipeline(merged):

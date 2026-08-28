@@ -69,7 +69,7 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
 )
 from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 
@@ -99,7 +99,7 @@ rp._frame_bez_pairs = _probe("bez_legacy", rp._frame_bez_pairs)
 rp._frame_pairs = _probe("tri_legacy", rp._frame_pairs)
 rp.raster_iteration_zero = _probe("raster", rp.raster_iteration_zero)
 # The default route is the sparse covered-pixel lifecycle
-# (RASTER_SPARSE_COVERAGE); raster_iteration_zero is the dense fallback. Either
+# (raster_sparse_coverage); raster_iteration_zero is the dense fallback. Either
 # one counts as the raster front-end having engaged.
 rp.prepare_sparse_raster_coverage = _probe("raster", rp.prepare_sparse_raster_coverage)
 
@@ -161,7 +161,7 @@ def build_scene(cfg):
 def render_once(cfg, precompute, tag):
     SceneManager.reset()
     set_fragment_shading(cfg == "shadow")
-    set_ray_traced_shadows(cfg == "shadow")
+    set_shadows(cfg == "shadow")
     rt_settings.set_raster_bez_precompute(precompute)
     rt_settings.set_raster_tri_precompute(precompute)
     build_scene(cfg)
@@ -193,7 +193,7 @@ def render_once(cfg, precompute, tag):
     rt_settings.set_raster_bez_precompute(True)
     rt_settings.set_raster_tri_precompute(True)
     set_fragment_shading(False)
-    set_ray_traced_shadows(False)
+    set_shadows(False)
     return os.path.join(OUT_DIR, name + ".mp4")
 
 

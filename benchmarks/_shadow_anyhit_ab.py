@@ -18,7 +18,7 @@ exact 1.0). Expected: max abs u8 delta <= 2 (the suite tolerance), and in
 practice 0 on clean scenes. Timed save_video runs report the win.
 
 The ON arm's mode is selectable: ``1`` runs the any-hit walks (modes 2/3
-chosen by the tracer), ``gather`` (the default) runs the KBUF gather-march
+chosen by the tracer), ``gather`` (the default) runs the kbuf gather-march
 (mode 4). Byte-identity is expected for both.
 
 Usage:

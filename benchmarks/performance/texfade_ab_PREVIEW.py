@@ -1,13 +1,13 @@
 """Warm in-process alternating A/B: the textured-fade cost of the premultiply.
 
-The scene is the case TEXTURE_OPACITY_IN_KERNEL exists for -- a large image
+The scene is the case texture_opacity_in_kernel exists for -- a large image
 texture whose mob opacity animates the whole time (so under the legacy
 premultiply EVERY batch rebuilds, re-decodes and re-uploads the full map per
 frame, and the batch sizer prices it per frame), beside a second static copy
 of the same image and a moving cube so this stays a general moving scene.
 
 Arms alternate in one process (new, legacy, new, legacy) after a discarded
-warm-up, flipping TEXTURE_OPACITY_IN_KERNEL + TEXTURE_U8_STORAGE through
+warm-up, flipping texture_opacity_in_kernel + texture_u8_storage through
 their setters -- host-side, data-driven reads, no ``ti.static`` gate, so the
 in-process flip is legal. Reported per render: wall seconds, the batch
 windows chosen, and the merged texture-bank rows (which prove the arm

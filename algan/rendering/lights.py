@@ -13,13 +13,13 @@ per-light constants.
 Soft (penumbra) shadows: point / spot lights take a ``shadow_radius`` (the
 world-space radius of the emitting disk) and directional lights a
 ``shadow_angle`` (angular size, degrees); when non-zero and ray-traced shadows
-are enabled (:func:`~algan.rendering.raytracing.settings.set_ray_traced_shadows`)
+are enabled (:func:`~algan.rendering.raytracing.settings.set_shadows`)
 the deterministic tracer fires a fixed fan of shadow rays across the emitter
 instead of a single ray, producing smooth penumbras. :class:`RectAreaLight` is
 sampled at a fixed grid of emitter points (``samples``), and each row's fan
 integrates visibility over its own cell of the rectangle rather than testing
 only the cell's centre, so its penumbra is continuous rather than a stack of
-hard shadows -- gated by ``AREA_LIGHT_SOFT_SHADOWS``, at the ray cost noted on
+hard shadows -- gated by ``area_light_soft_shadows``, at the ray cost noted on
 :class:`RectAreaLight`.
 
 Only the default plain :class:`PointLight` is supported by every render path;
@@ -510,7 +510,7 @@ class HemisphereLight(Light):
         # happens downstream at materialization
         # (RenderLoopMixin._materialize_render_state), never here.
         ground = gc.float().reshape(-1)[:3]
-        if rt_settings.LINEAR_COLOR_SPACE:
+        if rt_settings.linear_color_space:
             ground = srgb_to_linear(ground)
         aux[..., 9:12] = ground
         return aux
@@ -708,7 +708,7 @@ class RectAreaLight(_TargetedLight):
 
     def build_aux(self, location):
         """Internal: pack this light's falloff, range and surface normal, and
-        -- when ``AREA_LIGHT_SOFT_SHADOWS`` is on -- each emitter row's cell
+        -- when ``area_light_soft_shadows`` is on -- each emitter row's cell
         geometry for the soft-shadow fans: aux 6/7 the cell's half-extents
         along the rectangle's ``right``/``up``, aux 8 the cell's equal-area
         radius (the fans' gate and their isotropic fallback), aux 9-11 the
@@ -729,7 +729,7 @@ class RectAreaLight(_TargetedLight):
         aux[..., 1] = self.decay
         aux[..., 2] = self.distance
         aux[..., 3:6] = self._directions(location).unsqueeze(-2)
-        if rt_settings.AREA_LIGHT_SOFT_SHADOWS:
+        if rt_settings.area_light_soft_shadows:
             k = self._grid_side()
             right, _ = self._rect_axes(location)
             hu = self.width / (2.0 * k)

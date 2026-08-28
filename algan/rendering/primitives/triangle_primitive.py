@@ -143,17 +143,17 @@ class TrianglePrimitive(RenderPrimitive):
         self.uvs = None
         self.texture_map = None
         # Per-frame mob opacity for the colour map, applied in the sampler
-        # instead of premultiplied into the map (TEXTURE_OPACITY_IN_KERNEL);
+        # instead of premultiplied into the map (texture_opacity_in_kernel);
         # None = the map arrived premultiplied. Set post-construction by the
         # mob that builds the primitive, like ``mesh_ids``.
         self.texture_opacity = None
         # Authoring-side proof that every colour-map texel is exactly k/255
-        # with zero glow (TEXTURE_U8_STORAGE); the merge trusts this rather
+        # with zero glow (texture_u8_storage); the merge trusts this rather
         # than probing texels (a probe is a device sync on the prefetch
         # worker).
         self.texture_u8_ok = False
         # Per-frame endpoint interpolation for the colour map
-        # (TEXTURE_TIME_LERP): a ``[T, 3]`` float tensor of (endpoint index,
+        # (texture_time_lerp): a ``[T, 3]`` float tensor of (endpoint index,
         # endpoint index, weight) rows. When set, ``texture_map`` is a
         # ``[1, K, H, W, 5]`` stack of AUTHORED endpoint images (the leading
         # singleton keeps frame slicing away from the endpoint axis) and the

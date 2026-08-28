@@ -424,10 +424,10 @@ def part_b(roughs=(0.0, 0.1, 0.15, 0.2, 0.28, 0.35)):
         "glossy off": (False, True, 4),
     }.items():
         rt.set_glossy_reflection(on, interleave=il)
-        rt.ANALYTIC_AA_SECONDARY_SAMPLES = sec
+        rt.analytic_aa_secondary_samples = sec
         arms[name] = _arm(roughs, "gl_" + name.replace(" ", "").replace("=", ""), reuse)
     rt.set_glossy_reflection(True, interleave=True)
-    rt.ANALYTIC_AA_SECONDARY_SAMPLES = 4
+    rt.analytic_aa_secondary_samples = 4
 
     rr = np.array(roughs)
     m = rr > 1e-6

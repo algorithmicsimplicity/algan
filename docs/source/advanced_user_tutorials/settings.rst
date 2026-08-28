@@ -265,8 +265,9 @@ Supported initialization variables include:
 ``TI_OFFLINE_CACHE_FILE_PATH``
     Taichi offline kernel-cache location.
 
-``ALGAN_SOFT_SHADOW_SAMPLES`` and ``ALGAN_HDR_BUFFER_F16``
-    Values baked into renderer runtime layout or kernels.
+``ALGAN_SOFT_SHADOW_SAMPLES``
+    Length of the deterministic soft-shadow fan, baked into the shade kernels
+    when they compile.
 
 Example:
 
@@ -279,8 +280,12 @@ Example:
     from algan import *
 
 Changing these variables after ``import algan`` does not reinitialize the
-process. ``ALGAN_RENDER_DEVICE`` is not among them: it only supplies the
-starting value of ``SETTINGS.computing.render_device``, which is settable.
+process. Two variables that look like they belong here do not:
+``ALGAN_RENDER_DEVICE`` only supplies the starting value of
+``SETTINGS.computing.render_device``, and ``ALGAN_HDR_BUFFER_F16`` the starting
+value of ``SETTINGS.raytracing.experimental.hdr_buffer_f16`` (the frame buffer
+dtype is chosen when the buffer is allocated, so nothing bakes it in); both
+settings own their value from then on and are settable between renders.
 
 See Also
 ========

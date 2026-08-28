@@ -219,7 +219,7 @@ def test_constant_intensity_snapshot_matches_legacy_arithmetic():
         state = scene._materialize_render_state(0, n_frames)
 
         rgba = light.color
-        if rt_settings.LINEAR_COLOR_SPACE:
+        if rt_settings.linear_color_space:
             rgba = torch.cat(
                 (srgb_to_linear(rgba[..., :3]), rgba[..., 3:]),
                 -1,

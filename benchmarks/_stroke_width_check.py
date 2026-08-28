@@ -179,7 +179,7 @@ def main(argv=None):
         "Rectangle (filled bezier)",
         filled,
         focal_px,
-        2 * rt_settings.ANALYTIC_AA_BEZ_MIN_HALF_WIDTH,
+        2 * rt_settings.analytic_aa_bez_min_half_width,
     )
 
     scene = Scene(video_settings=video_settings)

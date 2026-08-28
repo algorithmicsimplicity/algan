@@ -318,7 +318,7 @@ def verify_oracle(res, n_probe):
     """
     from algan import LD, MD
     from algan.rendering.raytracing import raster_pipeline as rp
-    from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
+    from algan.rendering.raytracing.raytrace_kernels_taichi import min_alpha
     from algan.rendering.raytracing.sheets import resolve_pixel_reference
 
     quality = {"ld": LD, "md": MD}[res]
@@ -364,7 +364,7 @@ def verify_oracle(res, n_probe):
                 alphas[q] = float(r[11])
                 trans[q] = float(r[13])
         claims, _T = resolve_pixel_reference(
-            covs, msks, bez, alphas, trans, caps=caps, min_alpha=MIN_ALPHA
+            covs, msks, bez, alphas, trans, caps=caps, min_alpha=min_alpha
         )
         for r in frag_rows:
             q = int(r[0])

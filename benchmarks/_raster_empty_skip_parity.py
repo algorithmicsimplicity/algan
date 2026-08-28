@@ -88,7 +88,7 @@ from algan import (  # noqa: E402
 )
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
 )
 from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.rendering.shaders.materials import (  # noqa: E402
@@ -285,7 +285,7 @@ def build_scene(cfg):
 def render_once(cfg, enabled, tag):
     SceneManager.reset()
     set_fragment_shading(cfg in ("shadow", "refl"))
-    set_ray_traced_shadows(cfg == "shadow")
+    set_shadows(cfg == "shadow")
     # This harness isolates the older dense-tile empty/covered fast paths.
     # Exact sparse coverage has its own A/B in
     # ``_raster_sparse_coverage_parity.py`` and otherwise bypasses the probes
@@ -314,7 +314,7 @@ def render_once(cfg, enabled, tag):
     rt_settings.set_raster_covered_shade(True)
     rt_settings.set_raster_sparse_coverage(True)
     set_fragment_shading(False)
-    set_ray_traced_shadows(False)
+    set_shadows(False)
     print(
         f"  {cfg}/{tag}: tiles={counts['raster']} "
         f"first_shade={counts['first_shade']} "

@@ -80,14 +80,14 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     memory = ManualMemory(0, device="cpu", num_bytes=total)
     memory.get_tensor((1,), torch.uint8)
 
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_AUTO", True)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_auto", True)
     # Values above 1 are clamped: an environment override must never grant
     # permission to size beyond the actual arena.
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_SAFETY", 1.5)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_safety", 1.5)
     # Deliberately put the exact fit below the preferred floor: the floor must
     # not turn into an arena overcommit.
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MIN", 1 << 18)
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MAX", 1 << 25)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_min", 1 << 18)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_max", 1 << 25)
 
     got = tracer._auto_primary_per_tile(
         memory,
@@ -116,7 +116,7 @@ def test_state_charge_follows_sca_width_argument_not_nested_ior_setting(monkeypa
 
     This pins a defect the nested-IOR default flip exposed:
     ``_wavefront_state_coefficients`` used to charge the wider row whenever the
-    ``NESTED_IOR`` *setting* was on, but ``ior_stack_flag`` is the setting AND
+    ``nested_ior`` *setting* was on, but ``ior_stack_flag`` is the setting AND
     ``refraction_flag``, so a batch with no transmissive geometry keeps the
     classic ``SCA_WIDTH_PLAIN`` state and never allocates the charged words.
     That is not a wrong image -- every auto-sized wavefront tile in every
@@ -127,7 +127,7 @@ def test_state_charge_follows_sca_width_argument_not_nested_ior_setting(monkeypa
     plain_pool = tracer._WAVEFRONT_BYTES_PER_POOL_SLOT
     nested_extra = (SCA_WIDTH_NESTED - SCA_WIDTH_PLAIN) * torch.float32.itemsize
     for nested_ior in (False, True):
-        monkeypatch.setattr(rt_settings, "NESTED_IOR", nested_ior)
+        monkeypatch.setattr(rt_settings, "nested_ior", nested_ior)
         got = tracer._wavefront_state_coefficients(SCA_WIDTH_PLAIN)
         # A plain-width tile pays nothing for a setting it does not allocate.
         assert got["pool"] == plain_pool
@@ -142,7 +142,7 @@ def test_glossy_tile_charge_covers_its_widened_pix_accum(monkeypatch):
     The measured per-primary coefficient describes the plain route's single
     7-column row. The glossy route accumulates the reflection into a second row
     and widens both, so it allocates ``2 * GL_ROW_WIDTH`` columns per primary
-    instead -- and ``WAVEFRONT_TILE_SAFETY`` is 1.0, so a tile sized against the
+    instead -- and ``wavefront_tile_safety`` is 1.0, so a tile sized against the
     plain charge spends every free arena byte and then asks for nearly four
     times the ``pix_accum`` it budgeted. That overruns on the first attempt, and
     halving the primaries barely helps: a splitting batch keeps the pool (the
@@ -178,10 +178,10 @@ def test_glossy_tile_charge_covers_its_widened_pix_accum(monkeypatch):
     memory = ManualMemory(0, device="cpu", num_bytes=total)
     memory.get_tensor((1,), torch.uint8)
 
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_AUTO", True)
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_SAFETY", 1.0)
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MIN", 1 << 18)
-    monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MAX", 1 << 25)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_auto", True)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_safety", 1.0)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_min", 1 << 18)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_max", 1 << 25)
 
     got = tracer._auto_primary_per_tile(
         memory,

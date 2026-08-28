@@ -35,7 +35,15 @@ import logging
 import threading
 from collections import deque
 
+from algan.environment import env_float, env_int
+
 logger = logging.getLogger("algan.memory_model")
+
+# The five numbers below shape how conservatively a render sizes its batches.
+# They are the knobs to reach for when a scene keeps hitting the out-of-memory
+# retry (raise the margins) or when batches come out smaller than the card can
+# actually hold (lower them); each is read once here, so set its environment
+# variable before importing algan.
 
 # How many recent chunks inform the fit. The window exists so a single
 # unusually dense chunk does not handicap the rest of the render: it raises the
@@ -43,24 +51,24 @@ logger = logging.getLogger("algan.memory_model")
 # instead would let one heavy frame shrink every later batch for the whole job.
 # Long enough to stay stable across ordinary variation, short enough that a
 # transient spike is forgotten within a few chunks.
-HISTORY = 8
+memory_model_history = max(2, env_int("ALGAN_MEMORY_MODEL_HISTORY", 8))
 
 # Multiplier on the fitted line. Alignment makes the peak *almost* affine --
 # measurements land a few bytes either side -- and scene content can drift
 # within a batch. Under-reserving costs a re-rendered chunk and a job-lifetime
 # safety margin; over-reserving costs a slightly smaller batch. Hence a margin,
 # and a deliberately asymmetric one.
-DEFAULT_SAFETY = 1.15
+memory_safety = max(1.0, env_float("ALGAN_MEMORY_SAFETY", 1.15))
 
 # Margin while only one chunk has been measured. The first chunk of a job runs
 # before kernel and allocator state has settled and comes in around a third
 # cheaper per frame than steady state, so a line drawn through it alone
 # under-reads. Widened until a second, larger chunk confirms the slope.
-PROBE_SAFETY = 1.6
+memory_probe_safety = max(1.0, env_float("ALGAN_MEMORY_PROBE_SAFETY", 1.6))
 
 # Floor under the safety margin, for chunks small enough that a percentage is
 # not worth having.
-MINIMUM_PAD = 1 << 16
+memory_minimum_pad = max(0, env_int("ALGAN_MEMORY_MINIMUM_PAD", 1 << 16))
 
 # How far a chunk may exceed the largest one already measured. The first chunk
 # of a job is measurably cheaper than steady state -- kernel and allocator
@@ -68,7 +76,7 @@ MINIMUM_PAD = 1 << 16
 # batch under-reads the per-frame cost by around a third. Growing
 # geometrically instead reaches full size in a few chunks while never
 # extrapolating more than this far beyond evidence.
-PROBE_GROWTH = 8
+memory_probe_growth = max(1, env_int("ALGAN_MEMORY_PROBE_GROWTH", 8))
 
 
 class ChunkMemoryModel:
@@ -82,7 +90,7 @@ class ChunkMemoryModel:
 
     __slots__ = ("_by_signature", "safety")
 
-    def __init__(self, safety=DEFAULT_SAFETY):
+    def __init__(self, safety=memory_safety):
         self._by_signature = {}
         self.safety = float(safety)
 
@@ -92,7 +100,9 @@ class ChunkMemoryModel:
         """Record that ``num_frames`` frames peaked at ``peak_bytes``."""
         num_frames = max(1, int(num_frames))
         peak_bytes = max(0, int(peak_bytes))
-        window = self._by_signature.setdefault(signature, deque(maxlen=HISTORY))
+        window = self._by_signature.setdefault(
+            signature, deque(maxlen=memory_model_history)
+        )
         window.append((num_frames, peak_bytes))
 
     def _samples(self, signature):
@@ -173,7 +183,9 @@ class ChunkMemoryModel:
     # -- planning ----------------------------------------------------------
 
     def _safety_for(self, signature):
-        return self.safety if len(self._samples(signature)) >= 2 else PROBE_SAFETY
+        return (
+            self.safety if len(self._samples(signature)) >= 2 else memory_probe_safety
+        )
 
     def predict(self, signature, num_frames):
         """Bytes a chunk of ``num_frames`` is expected to need, with margin."""
@@ -182,7 +194,7 @@ class ChunkMemoryModel:
             return None
         intercept, slope = line
         raw = intercept + slope * max(1, int(num_frames))
-        return int(raw * self._safety_for(signature)) + MINIMUM_PAD
+        return int(raw * self._safety_for(signature)) + memory_minimum_pad
 
     def plan(self, signature, requested_frames, available_bytes):
         """Largest chunk expected to fit, or 1 while still probing.
@@ -196,11 +208,11 @@ class ChunkMemoryModel:
             return 1
         intercept, slope = self._line(signature)
         safety = self._safety_for(signature)
-        usable = float(available_bytes) / safety - MINIMUM_PAD - intercept
+        usable = float(available_bytes) / safety - memory_minimum_pad - intercept
         if usable <= 0 or slope <= 0:
             return 1
         planned = int(usable // slope)
-        ceiling = PROBE_GROWTH * max(self._samples(signature))
+        ceiling = memory_probe_growth * max(self._samples(signature))
         return max(1, min(requested_frames, planned, ceiling))
 
     def describe(self, signature):
@@ -341,7 +353,7 @@ class PeakRatioModel:
     projection). A ratio has no intercept, and these builds have a large one --
     kernel workspaces and allocator growth that a small build pays in full. A
     job's first merge is typically its smallest, so it measured ratios above
-    20x, and every batch for the next :data:`HISTORY` builds was then throttled
+    20x, and every batch for the next :data:`memory_model_history` builds was then throttled
     to a twentieth of the headroom it actually had. Hence the affine reading:
     the fixed part is charged once instead of to every byte.
 
@@ -365,7 +377,7 @@ class PeakRatioModel:
     def __init__(self, seed, safety=1.25):
         self.seed = float(seed)
         self.safety = float(safety)
-        self._samples = deque(maxlen=HISTORY)
+        self._samples = deque(maxlen=memory_model_history)
         self._lock = threading.Lock()
 
     def observe(self, input_bytes, peak_bytes):

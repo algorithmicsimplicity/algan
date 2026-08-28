@@ -1,4 +1,4 @@
-"""Acceptance harness for ``SHEET_SAMPLE_DEPTH`` (per-sample depth ceding).
+"""Acceptance harness for ``sheet_sample_depth`` (per-sample depth ceding).
 
 The feature arbitrates a pixel where two opaque surfaces cross INSIDE it, so
 the only reference that can judge it is one that resolves depth per sub-pixel
@@ -12,7 +12,7 @@ one depth decision per pixel. This renders the same frame three ways --
 -- and scores ``on`` and ``off`` against ``ref``, reporting how many pixels the
 gate moved and, of those, how many landed closer to the reference.
 
-**One process per arm is mandatory.** ``SHEET_SAMPLE_DEPTH`` is read at import
+**One process per arm is mandatory.** ``sheet_sample_depth`` is read at import
 into a module global, so flipping it in-process would leave the first arm's
 value compiled into everything downstream; this script therefore re-executes
 itself per arm rather than looping. That is the same discipline

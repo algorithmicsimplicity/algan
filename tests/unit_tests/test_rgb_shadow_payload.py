@@ -57,10 +57,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shadow_pass_through,
 )
 from algan.rendering.raytracing.shading_taichi import (
-    MAX_SHADOW_LIGHTS,
     SHADOW_VIS_CHANNELS,
     _light_vis,
     _vis_max_component,
+    max_shadow_lights,
 )
 from algan.rendering.shaders.materials import (
     MeshPhysicalMaterial,
@@ -257,8 +257,8 @@ def test_light_vis_reads_the_channel_major_layout():
     def probe(payload: ti.types.ndarray(), lights: int, out: ti.types.ndarray()):
         # The shade kernels hold ``vis`` as a fixed-length ti.Vector, so the
         # probe does too (that is the type _light_vis sees in production).
-        vec = ti.Vector([0.0] * (3 * MAX_SHADOW_LIGHTS))
-        for i in ti.static(range(3 * MAX_SHADOW_LIGHTS)):
+        vec = ti.Vector([0.0] * (3 * max_shadow_lights))
+        for i in ti.static(range(3 * max_shadow_lights)):
             vec[i] = payload[i]
         for li in range(lights):
             v = _light_vis(1, vec, li)
@@ -266,20 +266,20 @@ def test_light_vis_reads_the_channel_major_layout():
             out[li, 1] = v[1]
             out[li, 2] = v[2]
 
-    payload = torch.ones(3 * MAX_SHADOW_LIGHTS, dtype=torch.float32)
+    payload = torch.ones(3 * max_shadow_lights, dtype=torch.float32)
     payload[3 * 1 + 0] = 0.25
     payload[3 * 1 + 1] = 0.5
     payload[3 * 1 + 2] = 0.75
     for c in range(SHADOW_VIS_CHANNELS):
         payload[c] *= 0.9
     # One light PAST the cap keeps its all-lit default.
-    lights = MAX_SHADOW_LIGHTS + 1
+    lights = max_shadow_lights + 1
     out = torch.zeros((lights, 3), dtype=torch.float32)
     probe(payload, lights, out)
     assert out[0].tolist() == pytest.approx([0.9, 0.9, 0.9])
     assert out[1].tolist() == pytest.approx([0.25, 0.5, 0.75])
-    assert out[MAX_SHADOW_LIGHTS - 1].tolist() == pytest.approx([1.0, 1.0, 1.0])
-    assert out[MAX_SHADOW_LIGHTS].tolist() == pytest.approx([1.0, 1.0, 1.0])
+    assert out[max_shadow_lights - 1].tolist() == pytest.approx([1.0, 1.0, 1.0])
+    assert out[max_shadow_lights].tolist() == pytest.approx([1.0, 1.0, 1.0])
 
 
 def test_index_helper_is_channel_major():
@@ -287,7 +287,7 @@ def test_index_helper_is_channel_major():
     # light_vis_index is a @ti.func (kernel-only), so its formula is pinned
     # through the read side in test_light_vis_reads_the_channel_major_layout;
     # this pins the payload LENGTH convention the helper serves.
-    assert 3 * MAX_SHADOW_LIGHTS == SHADOW_VIS_CHANNELS * MAX_SHADOW_LIGHTS
+    assert 3 * max_shadow_lights == SHADOW_VIS_CHANNELS * max_shadow_lights
 
 
 def test_sigma_reaches_the_packed_extra_block():

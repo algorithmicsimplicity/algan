@@ -78,7 +78,7 @@ from algan.mobs.shapes_2d import QuadTriangulated  # noqa: E402
 from algan.rendering.lights import AmbientLight, PointLight  # noqa: E402
 from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
-    set_ray_traced_shadows,
+    set_shadows,
 )
 from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.rendering.shaders.materials import (  # noqa: E402
@@ -272,7 +272,7 @@ def render_once(cfg, aa_level, analytic, tag, reps=2):
     for _ in range(max(1, reps)):
         SceneManager.reset()
         set_fragment_shading(cfg in FRAG)
-        set_ray_traced_shadows(cfg in SHADOWED)
+        set_shadows(cfg in SHADOWED)
         rt_settings.set_analytic_aa(analytic, bezier=True, triangles=True, exact=EXACT)
         settings = VideoSettings(
             (BASE_W, BASE_H), frames_per_second=FPS, anti_alias_level=aa_level
@@ -291,7 +291,7 @@ def render_once(cfg, aa_level, analytic, tag, reps=2):
                 torch.cuda.synchronize()
             dt = time.perf_counter() - t0
         rt_settings.set_analytic_aa(False)
-        set_ray_traced_shadows(False)
+        set_shadows(False)
     return os.path.join(OUT_DIR, name + ".mp4"), dt
 
 

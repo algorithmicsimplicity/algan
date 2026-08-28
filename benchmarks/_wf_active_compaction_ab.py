@@ -24,8 +24,6 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from algan.settings.render_settings import RenderSettings  # noqa: E402
-
 import algan.rendering.raytracing.settings as rt_settings  # noqa: E402
 import algan.rendering.raytracing.tracer as tracer_mod  # noqa: E402
 from algan import (  # noqa: E402
@@ -43,9 +41,10 @@ from algan import (  # noqa: E402
 from algan.rendering.raytracing import (  # noqa: E402
     RayTracedTrianglePrimitive,
     set_fragment_shading,
-    set_ray_traced_shadows,
     set_samples_per_pixel,
+    set_shadows,
 )
+from algan.settings.render_settings import RenderSettings  # noqa: E402
 from algan.settings.renderer_settings import RENDERER_SETTINGS  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -97,8 +96,8 @@ def render_once(optimized, tag):
     RENDERER_SETTINGS.triangle_primitive = RayTracedTrianglePrimitive
     set_samples_per_pixel(1)
     set_fragment_shading(True)
-    set_ray_traced_shadows(False)
-    rt_settings.WF_COMPACT_ACTIVE_ONLY = bool(optimized)
+    set_shadows(False)
+    rt_settings.wf_compact_active_only = bool(optimized)
     build()
     scene = SceneManager.instance()
     _wf_times.clear()

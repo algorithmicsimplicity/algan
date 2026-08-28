@@ -1,5 +1,5 @@
 """In-process parity + A/B for fused primary-ray generation
-(settings.WF_GEN_FUSED).
+(settings.wf_gen_fused).
 
 The classic wavefront opens every tile with a standalone
 ``wavefront_generate_rays`` pass (~104 B/ray of initial state written, read
@@ -58,8 +58,8 @@ from algan import (  # noqa: E402
     Square,
 )
 from algan.rendering.raytracing import (  # noqa: E402
-    set_ray_traced_shadows,
     set_reflectivity,
+    set_shadows,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -118,8 +118,8 @@ def build(mirrors=False):
 def render_frame(tag, fused, mirrors=False, shadows=False):
     SceneManager.reset()
     _release_gpu()
-    set_ray_traced_shadows(bool(shadows))
-    rt_settings.WF_GEN_FUSED = bool(fused)
+    set_shadows(bool(shadows))
+    rt_settings.wf_gen_fused = bool(fused)
     build(mirrors=mirrors)
     scene = SceneManager.instance()
     path = os.path.join(OUT_DIR, f"gen_fused_{tag}.png")
@@ -149,7 +149,7 @@ def main():
                 flush=True,
             )
         print(f"gen-fused parity: {'PASS' if all_ok else 'FAIL'}", flush=True)
-        set_ray_traced_shadows(False)
+        set_shadows(False)
         if not all_ok:
             return
     if MODE == "parity":
@@ -158,13 +158,13 @@ def main():
     # ---- timing: ABBA on HD frames, merge-cached scene ----
     SceneManager.reset()
     _release_gpu()
-    rt_settings.WF_GEN_FUSED = False
+    rt_settings.wf_gen_fused = False
     build()
     scene = SceneManager.instance()
     scene.set_render_settings(HD)
 
     def frame(fused):
-        rt_settings.WF_GEN_FUSED = bool(fused)
+        rt_settings.wf_gen_fused = bool(fused)
         _wf_times.clear()
         scene.save_frame(os.path.join(OUT_DIR, "gen_fused_timing.png"))
         _release_gpu()
@@ -177,7 +177,7 @@ def main():
         order = (False, True) if rep % 2 == 0 else (True, False)
         for fused in order:
             (on_t if fused else off_t).append(frame(fused))
-    rt_settings.WF_GEN_FUSED = True
+    rt_settings.wf_gen_fused = True
     ow, nw = statistics.median(off_t), statistics.median(on_t)
     print(f"raw classic: {[f'{t:.3f}' for t in off_t]}", flush=True)
     print(f"raw fused:   {[f'{t:.3f}' for t in on_t]}", flush=True)

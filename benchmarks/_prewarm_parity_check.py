@@ -21,8 +21,6 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from algan.settings.defaults import COMPUTING_DEFAULTS  # noqa: E402
-
 import algan.render_loop as rl  # noqa: E402
 from algan import (  # noqa: E402
     BLUE,
@@ -45,6 +43,7 @@ from algan import (  # noqa: E402
     Sync,
     render_to_file,
 )
+from algan.settings.defaults import COMPUTING_DEFAULTS  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)

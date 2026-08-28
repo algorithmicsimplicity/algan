@@ -13,9 +13,9 @@ WHAT IS COUNTED
 Per ray, for one geometry type's STBVH:
 
     groups   sibling-block tests (``_group_test``) -- one aligned fetch that
-             tests all BVH_ARITY children of a node at once. This is the
+             tests all bvh_arity children of a node at once. This is the
              traversal step: it is what a tighter box removes.
-    leaves   leaf slots reached (LEAF_SIZE per leaf visited)
+    leaves   leaf slots reached (bvh_leaf_size per leaf visited)
     prims    primitive intersections actually performed -- slots holding a live
              instance for this frame. The second thing a tighter box removes.
 
@@ -67,10 +67,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
     _M_CENTER,
     _M_FILLED,
     _M_NORMAL,
-    BVH_ARITY,
-    DEPTH_TIE_EPSILON,
-    LEAF_SIZE,
-    MIN_HIT_DISTANCE,
     NODE_ARG,
     _bezier_point_metrics,
     _circuit_point_region,
@@ -82,6 +78,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
     _nearest_pending_child,
     _nearest_triangle_hit,
     _tri_hit,
+    bvh_arity,
+    bvh_leaf_size,
+    depth_tie_epsilon,
+    min_hit_distance,
 )
 from algan.scene_manager import SceneManager  # noqa: E402
 
@@ -135,8 +135,8 @@ def _steps_tri(
             f,
             ro,
             inv_rd,
-            t_prev - DEPTH_TIE_EPSILON,
-            ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+            t_prev - depth_tie_epsilon,
+            ti.min(best_t + depth_tie_epsilon, t_cap + depth_tie_epsilon),
             blocks,
         )
         n_grp += 1
@@ -146,7 +146,7 @@ def _steps_tri(
                     break
                 g_sp -= 1
                 saved = g_st[g_sp]
-                g_cur = saved >> BVH_ARITY
+                g_cur = saved >> bvh_arity
                 saved_mask = saved & _GROUP_MASK
                 fresh_mask, g_near = _group_test(
                     0,
@@ -155,8 +155,8 @@ def _steps_tri(
                     f,
                     ro,
                     inv_rd,
-                    t_prev - DEPTH_TIE_EPSILON,
-                    ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                    t_prev - depth_tie_epsilon,
+                    ti.min(best_t + depth_tie_epsilon, t_cap + depth_tie_epsilon),
                     blocks,
                 )
                 n_grp += 1
@@ -167,15 +167,15 @@ def _steps_tri(
                 descend = 0
                 child_blk = 0
                 l_base = 0
-                g_child = BVH_ARITY * g_cur + 1 + g_c
+                g_child = bvh_arity * g_cur + 1 + g_c
                 if g_child >= first_leaf:
-                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                    l_base = (g_child - first_leaf) * bvh_leaf_size
                 else:
                     descend = 1
                     child_blk = g_child
                 if descend == 0:
-                    n_leaf += LEAF_SIZE
-                    for j in ti.static(range(LEAF_SIZE)):
+                    n_leaf += bvh_leaf_size
+                    for j in ti.static(range(bvh_leaf_size)):
                         prim = -1
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
@@ -206,7 +206,7 @@ def _steps_tri(
                             if hit_ok != 0:
                                 layer = ti.cast(prim, ti.f32)
                                 if (
-                                    (t > MIN_HIT_DISTANCE)
+                                    (t > min_hit_distance)
                                     and _comes_after(t, layer, t_prev, layer_prev)
                                     and _comes_after(best_t, best_layer, t, layer)
                                 ):
@@ -215,7 +215,7 @@ def _steps_tri(
                                     best_prim = prim
                 else:
                     if g_pend != 0:
-                        g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                        g_st[g_sp] = (g_cur << bvh_arity) | g_pend
                         g_sp += 1
                     g_cur = child_blk
                     g_pend, g_near = _group_test(
@@ -225,8 +225,8 @@ def _steps_tri(
                         f,
                         ro,
                         inv_rd,
-                        t_prev - DEPTH_TIE_EPSILON,
-                        ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                        t_prev - depth_tie_epsilon,
+                        ti.min(best_t + depth_tie_epsilon, t_cap + depth_tie_epsilon),
                         blocks,
                     )
                     n_grp += 1
@@ -279,8 +279,8 @@ def _steps_bez(
             f,
             ro,
             inv_rd,
-            t_prev - DEPTH_TIE_EPSILON,
-            ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+            t_prev - depth_tie_epsilon,
+            ti.min(best_t + depth_tie_epsilon, t_cap + depth_tie_epsilon),
             blocks,
         )
         n_grp += 1
@@ -290,7 +290,7 @@ def _steps_bez(
                     break
                 g_sp -= 1
                 saved = g_st[g_sp]
-                g_cur = saved >> BVH_ARITY
+                g_cur = saved >> bvh_arity
                 saved_mask = saved & _GROUP_MASK
                 fresh_mask, g_near = _group_test(
                     0,
@@ -299,8 +299,8 @@ def _steps_bez(
                     f,
                     ro,
                     inv_rd,
-                    t_prev - DEPTH_TIE_EPSILON,
-                    ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                    t_prev - depth_tie_epsilon,
+                    ti.min(best_t + depth_tie_epsilon, t_cap + depth_tie_epsilon),
                     blocks,
                 )
                 n_grp += 1
@@ -311,15 +311,15 @@ def _steps_bez(
                 descend = 0
                 child_blk = 0
                 l_base = 0
-                g_child = BVH_ARITY * g_cur + 1 + g_c
+                g_child = bvh_arity * g_cur + 1 + g_c
                 if g_child >= first_leaf:
-                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                    l_base = (g_child - first_leaf) * bvh_leaf_size
                 else:
                     descend = 1
                     child_blk = g_child
                 if descend == 0:
-                    n_leaf += LEAF_SIZE
-                    for j in ti.static(range(LEAF_SIZE)):
+                    n_leaf += bvh_leaf_size
+                    for j in ti.static(range(bvh_leaf_size)):
                         circuit = -1
                         p0 = leaf_prim[l_base + j]
                         tspan = leaf_tspan[l_base + j]
@@ -347,7 +347,7 @@ def _steps_bez(
                                 )
                                 t = (center - ro).dot(nrm) / denom
                                 if (
-                                    (t > MIN_HIT_DISTANCE)
+                                    (t > min_hit_distance)
                                     and _comes_after(t, layer, t_prev, layer_prev)
                                     and _comes_after(best_t, best_layer, t, layer)
                                 ):
@@ -412,7 +412,7 @@ def _steps_bez(
                                         best_circuit = circuit
                 else:
                     if g_pend != 0:
-                        g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                        g_st[g_sp] = (g_cur << bvh_arity) | g_pend
                         g_sp += 1
                     g_cur = child_blk
                     g_pend, g_near = _group_test(
@@ -422,8 +422,8 @@ def _steps_bez(
                         f,
                         ro,
                         inv_rd,
-                        t_prev - DEPTH_TIE_EPSILON,
-                        ti.min(best_t + DEPTH_TIE_EPSILON, t_cap + DEPTH_TIE_EPSILON),
+                        t_prev - depth_tie_epsilon,
+                        ti.min(best_t + depth_tie_epsilon, t_cap + depth_tie_epsilon),
                         blocks,
                     )
                     n_grp += 1

@@ -28,7 +28,7 @@ os.environ.setdefault("CUDA_CACHE_MAXSIZE", "4294967296")
 
 import torch
 
-from algan.environment import env_flag, env_int, env_str
+from algan.environment import env_int, env_str
 from algan.errors import AlganConfigurationError
 
 #: Memoized answer of :func:`_cuda_is_usable`. The probe allocates on the
@@ -134,6 +134,7 @@ _TAICHI_CACHE_DIRECTORY = Path(
     env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / "taichi"
 ).expanduser()
 
-# These are baked into Taichi kernels or runtime layout at first materialisation.
+# Baked into the shade kernels at compile time (a ti.static fan length), so
+# there is no runtime object that could own it -- unlike the HDR buffer dtype,
+# which used to sit here and is now ``SETTINGS.raytracing.experimental``'s.
 _SOFT_SHADOW_SAMPLES = max(2, env_int("ALGAN_SOFT_SHADOW_SAMPLES", 8))
-_HDR_BUFFER_F16 = env_flag("ALGAN_HDR_BUFFER_F16", False)

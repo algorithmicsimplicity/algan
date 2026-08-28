@@ -233,9 +233,9 @@ def _projection_anti_alias_level(scene, primitives):
 
     if (
         not primitives
-        or int(rt_settings.SAMPLES_PER_PIXEL) > 1
-        or not rt_settings.HYBRID_RASTER
-        or not rt_settings.ANALYTIC_AA
+        or int(rt_settings.samples_per_pixel) > 1
+        or not rt_settings.hybrid_raster
+        or not rt_settings.analytic_aa
         or float(getattr(scene.camera, "near", 0.0) or 0.0) > 0.0
     ):
         return requested, False
@@ -500,7 +500,7 @@ class RenderLoopMixin:
 
         merged_host = _merge_scene(primitive_batch, track_peak=track_peak)
         env_map = getattr(self, "environment_map", None)
-        if env_map is not None and int(rt_settings.SAMPLES_PER_PIXEL) > 1:
+        if env_map is not None and int(rt_settings.samples_per_pixel) > 1:
             env_map = None
         first._rt_env_meta = None
         if env_map is not None:
@@ -525,7 +525,7 @@ class RenderLoopMixin:
 
     def _gpu_merge_headroom_bytes(self):
         """Device bytes available outside the render arena for the GPU merge's
-        transient out-of-place build scratch (see settings.MERGE_ON_GPU).
+        transient out-of-place build scratch (see settings.merge_on_gpu).
 
         The arena block was reserved from a fraction of the pool at
         ``get_frames`` start; what the device holds outside it is the headroom
@@ -561,7 +561,7 @@ class RenderLoopMixin:
         The prefix then carries actors that have not spawned by the time it
         ends. Their geometry is inert: materialization zeroes a mob's opacity
         outside its lifespan, and ``_pack_frame_visibility`` gives a primitive
-        empty per-frame bounds wherever its alpha is below ``MIN_ALPHA``, so it
+        empty per-frame bounds wherever its alpha is below ``min_alpha``, so it
         never enters the BVH on those frames -- nothing un-spawned is drawn.
 
         It is not byte-identical to re-fetching the prefix, though: carrying
@@ -684,12 +684,10 @@ class RenderLoopMixin:
             candidate, _ = self._slice_fetched_batch(
                 primitive_batch, render_state, duration, total_frames
             )
-            from algan.rendering.raytracing.settings import (
-                project_gpu_peak_factor,
-            )
+            from algan.rendering.raytracing import settings as rt_settings
 
             estimated_peak = int(
-                project_gpu_peak_factor() * gpu_project_input_bytes(candidate)
+                rt_settings.project_gpu_peak_factor * gpu_project_input_bytes(candidate)
             )
             return estimated_peak <= headroom
 
@@ -1139,7 +1137,7 @@ class RenderLoopMixin:
         frame_dtype = (
             hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
         )
-        samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
+        samples = max(1, int(rt_settings.samples_per_pixel))
         # What one frame costs on top of the scene is *measured*, not modelled.
         # Until this job has rendered a chunk there is nothing to measure, so
         # the preflight arbitrates on the scene alone -- which is the exact
@@ -1299,7 +1297,7 @@ class RenderLoopMixin:
             original_pointers = self.memory.get_pointers()
             # Projection builds out of place in pool headroom, so the arena
             # recorder cannot see it; measure it from torch's counters instead
-            # so PROJECT_GPU_PEAK_FACTOR can be a measurement rather than a
+            # so project_gpu_peak_factor can be a measurement rather than a
             # guess. The input size has to be read *now*: projecting releases
             # the source geometry it is computed from. Skipped entirely unless
             # a calibration run is recording.
@@ -1417,7 +1415,7 @@ class RenderLoopMixin:
             frame_dtype = (
                 hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
             )
-            samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
+            samples = max(1, int(rt_settings.samples_per_pixel))
             # Batches whose peak lies on the same line share a fit. Nothing
             # here describes *what* gets allocated -- only what would put a
             # batch on a different line.
@@ -2404,7 +2402,7 @@ class RenderLoopMixin:
         Called on the prefetch worker (from ``fetch_batch``) when projection is
         on the CPU, so the work stays hidden behind the previous batch's
         render; when projection is on the render device (default; see
-        settings.PROJECT_ON_GPU) it is deferred to the render thread instead
+        settings.project_on_gpu) it is deferred to the render thread instead
         (called from the arena preflight), so its transient device peak is
         measured/bounded without a concurrent render polluting the pool.
 
@@ -2440,7 +2438,7 @@ class RenderLoopMixin:
 
         aa, analytic_raster = _projection_anti_alias_level(self, primitives)
         # Projection runs on the render device by default (see
-        # settings.PROJECT_ON_GPU); the primitive source geometry and the
+        # settings.project_on_gpu); the primitive source geometry and the
         # camera/light snapshot are moved there so the packed _rt_* outputs are
         # built on it (ready for the GPU merge, no upload). Off keeps
         # projection on the snapshot's source (CPU) device.
@@ -2500,7 +2498,7 @@ class RenderLoopMixin:
                 primitive.memory = original_memory
         # The merge + STBVH build ride the prefetch worker only when they run
         # on the CPU. When they run on the render device (the default; see
-        # settings.MERGE_ON_GPU) they are deferred to the render thread so
+        # settings.merge_on_gpu) they are deferred to the render thread so
         # their transient device peak is measured/bounded without a concurrent
         # render polluting the pool -- unless overlap is enabled and its own
         # conditions hold, in which case _prepare_batch_on_worker below has
@@ -2719,7 +2717,7 @@ class RenderLoopMixin:
             # does too -- its Color is already linear by the time WebGLLights
             # multiplies in intensity.
             light_rgba = light.color
-            if rt_settings_module.LINEAR_COLOR_SPACE:
+            if rt_settings_module.linear_color_space:
                 light_rgba = torch.cat(
                     (
                         srgb_to_linear(light_rgba[..., :3]),
@@ -2891,13 +2889,13 @@ class RenderLoopMixin:
         # model cannot see them; their multipliers are measured from the builds
         # themselves, seeded by the previous guesses until one has run.
         self._merge_peak_ratio = PeakRatioModel(
-            rt_settings_module.MERGE_GPU_PEAK_FACTOR
+            rt_settings_module.merge_gpu_peak_factor
         )
         self._project_peak_ratio = PeakRatioModel(
-            rt_settings_module.PROJECT_GPU_PEAK_FACTOR
+            rt_settings_module.project_gpu_peak_factor
         )
 
-        # Adaptive gen-fused forecast (settings.WF_GEN_FUSED == "auto") is fed
+        # Adaptive gen-fused forecast (settings.wf_gen_fused == "auto") is fed
         # per-batch render timings below; a new job restarts its batch count.
         _rt_settings = SETTINGS.raytracing
 
@@ -2941,7 +2939,7 @@ class RenderLoopMixin:
                     # seconds of otherwise-serial render-thread CPU work into
                     # hidden time. ALGAN_PREFETCH_MERGE=0 falls back to
                     # projecting + merging on the render thread. When projection
-                    # runs on the render device (settings.PROJECT_ON_GPU) it is
+                    # runs on the render device (settings.project_on_gpu) it is
                     # deferred to the render thread entirely -- GPU work on this
                     # worker would contend with the in-flight render and pollute
                     # the transient-peak stats -- so only the CPU-projection

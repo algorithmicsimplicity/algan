@@ -93,9 +93,18 @@ from algan.environment import (
 #: which the daemon applies for the duration of the run.
 PROTOCOL_VERSION = 2
 
-#: Seconds to wait for the daemon's TCP accept. Short on purpose: a daemon
-#: that cannot answer promptly is not worth blocking a cold run for.
-CONNECT_TIMEOUT = env_float("ALGAN_DAEMON_TIMEOUT", 2.0)
+
+def connect_timeout():
+    """Seconds to wait for the daemon's TCP accept.
+
+    Short on purpose: a daemon that cannot answer promptly is not worth
+    blocking a cold run for. Read at the connect rather than at import so the
+    value a script sets is the value it gets -- this configures the transport,
+    not anything the script renders, so there is nothing an already-imported
+    process could have baked in.
+    """
+    return env_float("ALGAN_DAEMON_TIMEOUT", 2.0)
+
 
 # Frame kinds on the daemon -> client stream. Each frame is one kind byte, a
 # 4-byte big-endian length, then that many payload bytes.
@@ -133,11 +142,13 @@ STARTUP_ENV_ADOPTED = frozenset(daemon_adopted_startup_variables())
 #: process that reads the client's values (:func:`describe_import_env_mismatch`).
 IMPORT_TIME_ENV = import_time_environment_variables()
 
-#: The import-time variables a difference in is not worth refusing over. These
-#: two configure the client/daemon transport rather than anything the script
-#: renders, and by the time the daemon compares them the handoff they govern
-#: has already happened.
-IMPORT_TIME_ENV_EXEMPT = frozenset({"ALGAN_DAEMON_PORT", "ALGAN_DAEMON_TIMEOUT"})
+#: The two transport variables (``ALGAN_DAEMON_PORT``, ``ALGAN_DAEMON_TIMEOUT``)
+#: used to need an exemption here, because they were read at import and so
+#: appeared in :data:`IMPORT_TIME_ENV` even though a difference in one is
+#: harmless -- they configure the handoff, not what the script renders. Both are
+#: now read at the point of use (:func:`connect_timeout`,
+#: :func:`algan.daemon.default_port`), so they are declared live and never reach
+#: this comparison at all.
 
 
 class DaemonUnavailable(Exception):
@@ -216,8 +227,7 @@ def describe_import_env_mismatch(client_env, daemon_env):
         f"  {name}: this script wants {client_env.get(name, '') or '<unset>'!r}, "
         f"the daemon imported algan with {daemon_env.get(name, '') or '<unset>'!r}"
         for name in IMPORT_TIME_ENV
-        if name not in IMPORT_TIME_ENV_EXEMPT
-        and client_env.get(name, "") != daemon_env.get(name, "")
+        if client_env.get(name, "") != daemon_env.get(name, "")
     ]
     if not diffs:
         return None
@@ -442,7 +452,7 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
     }
     try:
         sock = socket.create_connection(
-            ("127.0.0.1", int(state["port"])), CONNECT_TIMEOUT
+            ("127.0.0.1", int(state["port"])), connect_timeout()
         )
     except OSError as exc:
         raise DaemonUnreachable(f"could not reach the daemon ({exc})") from exc
@@ -700,7 +710,7 @@ def _install_cancel_handler(state):
             raise KeyboardInterrupt
         try:
             with socket.create_connection(
-                ("127.0.0.1", int(state["port"])), CONNECT_TIMEOUT
+                ("127.0.0.1", int(state["port"])), connect_timeout()
             ) as sock:
                 sock.sendall(b"cancel " + state["token"].encode("ascii") + b"\n")
         except OSError:

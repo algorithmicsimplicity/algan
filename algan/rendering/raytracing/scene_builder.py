@@ -7,6 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from algan.environment import env_int
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
@@ -164,7 +165,7 @@ def gpu_merge_input_bytes(primitives):
 
     Feeds the GPU merge's transient-peak estimate used by the render-arena
     preflight to keep the build inside the pool's headroom (see
-    ``settings.MERGE_GPU_PEAK_FACTOR`` and ``RenderLoopMixin``).
+    ``settings.merge_gpu_peak_factor`` and ``RenderLoopMixin``).
     """
     total = 0
     for primitive in primitives:
@@ -229,7 +230,7 @@ def gpu_project_input_bytes(primitives):
     """Total bytes of a batch's pre-projection source geometry.
 
     Feeds the projection's transient-peak estimate used by the render-arena
-    preflight (see ``settings.PROJECT_GPU_PEAK_FACTOR`` and
+    preflight (see ``settings.project_gpu_peak_factor`` and
     ``RenderLoopMixin``). Already-projected primitives (source released) count
     zero.
     """
@@ -562,11 +563,11 @@ def _dedup_time_group(scene, keys):
 #: per-map TIME lengths (see ``_append_texture``; 1 when the buffer's own
 #: time axis carries the frames). Cols 13-14 are the colour map's opacity
 #: region (base row in the bank / frame count; -1 = premultiplied on the host,
-#: TEXTURE_OPACITY_IN_KERNEL), col 15 its u8-storage LUT base row (-1 =
+#: texture_opacity_in_kernel), col 15 its u8-storage LUT base row (-1 =
 #: plain f32 rows, -2 = u8-packed WITHOUT a LUT -- an endpoint stack decodes
-#: bytes as authored k/255 directly; TEXTURE_U8_STORAGE) and cols 16-17 its
+#: bytes as authored k/255 directly; texture_u8_storage) and cols 16-17 its
 #: endpoint-interpolation region (base row / frame count; -1 = the map's
-#: leading axis is time, TEXTURE_TIME_LERP) -- new capabilities travel as
+#: leading axis is time, texture_time_lerp) -- new capabilities travel as
 #: DATA in this table because the resolve kernel sits at Taichi's
 #: runtime-argument ceiling and cannot take new arrays.
 _TEX_META_W = 18
@@ -584,7 +585,9 @@ def _tex_meta_placeholder(device):
 #: Texel count below which texture content dedup is not attempted (see
 #: ``_append_texture``): each candidate match is a synchronizing
 #: ``torch.equal``, worth it for a shared image, not for a promoted 1x1 map.
-_CONTENT_DEDUP_MIN_TEXELS = 4096
+#: Output-neutral (dedup only ever shares identical texels), so this trades
+#: merge-time syncs against texture memory and is exposed for that.
+content_dedup_min_texels = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096))
 
 
 def _split_promotable(p, _append_texture, device, scene):
@@ -722,7 +725,7 @@ def _build_accel(
     casts=None,
 ):
     """Build one geometry type's acceleration structure: the classic
-    spatio-temporal instance tree, or -- under ``settings.BVH_REFIT`` -- the
+    spatio-temporal instance tree, or -- under ``settings.bvh_refit`` -- the
     shared-topology binned-SAH refit tree (refit_bvh.py; ``tightness`` /
     ``builder`` do not apply there). All trees of a batch dispatch through
     this one gate so every launch passes a single consistent ``refit``
@@ -799,11 +802,11 @@ def _bvh_deferral_eligible(scene):
     positive here costs a late build, never a wrong image.
     """
     _rts = SETTINGS.raytracing
-    if not (_rts.BVH_DEFER and _rts.HYBRID_RASTER):
+    if not (_rts.bvh_defer and _rts.hybrid_raster):
         return False
-    if int(_rts.SAMPLES_PER_PIXEL) > 1 or _rts.SHADOWS or _rts.INPLACE_AA:
+    if int(_rts.samples_per_pixel) > 1 or _rts.shadows or _rts.inplace_aa:
         return False
-    if _rts.WF_TEXTURED or scene.get("textured_active"):
+    if _rts.wf_textured or scene.get("textured_active"):
         return False
     if scene.get("mem_trim_active"):
         return False
@@ -827,16 +830,16 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
     that provably never traverse one (see ``_bvh_deferral_eligible``).
     """
     # The dedicated opaque-only trees are consumed solely under the
-    # WF_OPAQUE_CLOSEST / WF_OPAQUE_PREPASS rollouts (both default OFF): the
+    # wf_opaque_closest / wf_opaque_prepass rollouts (both default OFF): the
     # tracer's opaque_closest/opaque_prepass templates compile every read out
     # otherwise. With neither live (read at merge time), alias the main tree
     # instead of building a second one -- ~40% of the per-batch BVH build.
     # ``opaque_bvh_skipped`` lets the tracer keep those features off for a
     # batch merged without real opaque trees if a toggle flips mid-render.
     opq_live = (
-        not SETTINGS.raytracing.OPAQUE_BVH_SKIP_DEAD
-        or SETTINGS.raytracing.WF_OPAQUE_CLOSEST
-        or SETTINGS.raytracing.WF_OPAQUE_PREPASS
+        not SETTINGS.raytracing.opaque_bvh_skip_dead
+        or SETTINGS.raytracing.wf_opaque_closest
+        or SETTINGS.raytracing.wf_opaque_prepass
     )
     scene["opaque_bvh_skipped"] = not opq_live
     if _bvh_deferral_eligible(scene) and (
@@ -868,7 +871,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
         # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
         # extra build per batch; byte-identical for triangles (the depth-peel
         # is arrangement-invariant). PN/bezier BVHs stay Morton -- their
-        # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
+        # seam de-dup is discovery-order sensitive (see stbvh.bvh_build).
         scene["tri_bvh"] = _build_accel(
             lo,
             hi,
@@ -898,7 +901,7 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
         # was deleted). Split ordering is a pure reorder, but a circuit's seam
         # de-dup is discovery-order sensitive, so it moves output at the epsilon
         # level -- hence the gate rather than a straight flip.
-        bez_builder = "split" if SETTINGS.raytracing.BEZ_BVH_SPLIT else "morton"
+        bez_builder = "split" if SETTINGS.raytracing.bez_bvh_split else "morton"
         scene["bez_bvh"] = _build_accel(
             lo,
             hi,
@@ -939,9 +942,9 @@ def build_deferred_bvhs(merged):
     num_frames = int(merged["num_frames"])
     # Same opaque-tree skip as _finalize_bvhs (read live at this build).
     opq_live = (
-        not SETTINGS.raytracing.OPAQUE_BVH_SKIP_DEAD
-        or SETTINGS.raytracing.WF_OPAQUE_CLOSEST
-        or SETTINGS.raytracing.WF_OPAQUE_PREPASS
+        not SETTINGS.raytracing.opaque_bvh_skip_dead
+        or SETTINGS.raytracing.wf_opaque_closest
+        or SETTINGS.raytracing.wf_opaque_prepass
     )
     merged["opaque_bvh_skipped"] = not opq_live
     if merged.get("num_triangles", 0) > 0 and merged.get("tri_frame_lo") is not None:
@@ -1009,7 +1012,7 @@ def build_deferred_bvhs(merged):
 
 def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     """Build the 'Family A+B' memory-trim triangle arrays (see
-    settings.WF_MEM_TRIM). Reorders prims into material-class bands -- band 0
+    settings.wf_mem_trim). Reorders prims into material-class bands -- band 0
     ``needs_mat`` (lit), band 1 ``needs_norm`` only (reflective / normal-mapped /
     promoted), band 2 bare (unlit matte) -- so that ``tri_norm`` and ``tri_mat``
     become compacted PREFIXES (needs_mat subset needs_norm, so both nest under a
@@ -1121,7 +1124,7 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
 def _promote_property_group(cv, present, num_frames, device):
     """Promote one per-corner property group of a flat-triangle batch to a
     texture bank, for the UNSUPPORTED legacy textured wavefront (see
-    settings.WF_TEXTURED; kept for reference).
+    settings.wf_textured; kept for reference).
 
     ``cv`` is the per-corner value tensor ``[T, N, 3, C]`` (T frames, N
     triangles, 3 corners, C channels) and ``present`` a ``[N]`` bool mask of the
@@ -1205,7 +1208,7 @@ def _promote_property_group(cv, present, num_frames, device):
 
 def _build_textured_scene(scene, num_frames, device):
     """Build the three per-triangle texture banks the UNSUPPORTED legacy
-    textured wavefront shades from (see settings.WF_TEXTURED; kept for
+    textured wavefront shades from (see settings.wf_textured; kept for
     reference), from the full per-vertex merged arrays (constant-promotion is
     disabled for this path so they span every triangle).
 
@@ -1332,7 +1335,7 @@ def _merge_scene(primitives, *, track_peak=None):
     triangles and bezier circuits, each with a single STBVH
     over all frames -- cached for the batch.
 
-    ``track_peak`` overrides the ``MERGE_TRACK_PEAK`` setting for this one
+    ``track_peak`` overrides the ``merge_track_peak`` setting for this one
     build: ``False`` skips the measurement entirely. The overlapped batch
     prep passes that, because a peak measured beside a live render counts
     the render's own allocations -- and the counter reset it would need
@@ -1350,13 +1353,13 @@ def _merge_scene(primitives, *, track_peak=None):
     # (CPU) device. The transient out-of-place peak of this build -- inputs
     # relocated to the device plus all cat / sort / BVH-pyramid scratch plus
     # the merged output -- lives in the render pool's non-arena headroom and is
-    # bounded by the render-arena preflight's ``MERGE_GPU_PEAK_FACTOR``
-    # estimate. ``MERGE_TRACK_PEAK`` optionally measures the exact peak here to
+    # bounded by the render-arena preflight's ``merge_gpu_peak_factor``
+    # estimate. ``merge_track_peak`` optionally measures the exact peak here to
     # calibrate that factor (it resets the process peak counter, so it stays
     # opt-in and off during profiling runs).
     gpu_merge = _rts.merge_on_gpu_active()
     if track_peak is None:
-        track_peak = gpu_merge and _rts.MERGE_TRACK_PEAK
+        track_peak = gpu_merge and _rts.merge_track_peak
     else:
         track_peak = bool(track_peak) and gpu_merge
     peak_token = None
@@ -1415,14 +1418,14 @@ def _merge_scene(primitives, *, track_peak=None):
     # consuming geometry's metadata (offset -1 = no map), keyed by
     # tri_tex_meta (cols 0-2 / 3-5 / 6-8 hold the triplets, cols 10-12 the
     # per-map time lengths). Assembled into scene["textures"] once the
-    # geometry blocks below have appended. Under TEXTURE_TIME_FLAT a map's
+    # geometry blocks below have appended. Under texture_time_flat a map's
     # frames are flattened along the texel axis (frame f starts at
     # ``offset + (f % t) * w * h``), so the assembled buffer keeps time
     # length 1 and one animated map no longer re-expands every static one to
     # the batch maximum at assembly.
     _texture_tensors = []
     _texel_offset = [0]
-    # Content dedup (TEXTURE_CONTENT_DEDUP): processed maps already appended,
+    # Content dedup (texture_content_dedup): processed maps already appended,
     # bucketed by shape/placement for the cheap prefilter; matching is exact
     # (torch.equal), so a reused placement reads byte-identical texels.
     _texture_index = {}
@@ -1441,7 +1444,7 @@ def _merge_scene(primitives, *, track_peak=None):
         IEEE division. The transient full-map decode this costs is the same
         pass the f32 arm runs per batch on the (collapsed, one-frame) map.
         """
-        dec = srgb_to_linear(rgb) if rt_settings.LINEAR_COLOR_SPACE else rgb
+        dec = srgb_to_linear(rgb) if rt_settings.linear_color_space else rgb
         rows = torch.zeros((1, 256, 5), dtype=torch.float32, device=device)
         rows[0, :, 0].scatter_(0, q_rgb.reshape(-1).long(), dec.reshape(-1))
         rows[0, :, 1] = torch.arange(256, dtype=torch.float32, device=device) / 255.0
@@ -1456,7 +1459,7 @@ def _merge_scene(primitives, *, track_peak=None):
         The region is the mob's animated opacity as bank rows (value in col
         0), one row per frame of the batch window -- the sampler reads
         ``textures[tc, row + (f % frames), 0]`` (meta cols 13-14) and
-        multiplies the sampled coverage by it (TEXTURE_OPACITY_IN_KERNEL).
+        multiplies the sampled coverage by it (texture_opacity_in_kernel).
         ``(-1, 1)`` when the primitive premultiplied on the host. Tiny (20
         bytes x frames), so no dedup and no constancy probe: a probe is a
         device sync, and on the prefetch worker a sync waits out the whole
@@ -1477,7 +1480,7 @@ def _merge_scene(primitives, *, track_peak=None):
         frames)``.
 
         ``lerp`` is the primitive's ``[T, 3]`` (i0, i1, w) rows
-        (TEXTURE_TIME_LERP); the sampler reads row ``off + (f % frames)``
+        (texture_time_lerp); the sampler reads row ``off + (f % frames)``
         (meta cols 16-17), fetches endpoint texels i0 and i1 of the stack in
         AUTHORED space, lerps by w, and -- when col 3 of the row says so --
         decodes the lerped rgb into linear light, which is the merge-side
@@ -1490,7 +1493,7 @@ def _merge_scene(primitives, *, track_peak=None):
         vals = lerp.detach().reshape(-1, 3).float().to(device)
         rows = torch.zeros((1, vals.shape[0], 5), dtype=torch.float32, device=device)
         rows[0, :, :3] = vals
-        rows[0, :, 3] = 1.0 if rt_settings.LINEAR_COLOR_SPACE else 0.0
+        rows[0, :, 3] = 1.0 if rt_settings.linear_color_space else 0.0
         off = _texel_offset[0]
         _texture_tensors.append(rows)
         _texel_offset[0] += vals.shape[0]
@@ -1522,12 +1525,12 @@ def _merge_scene(primitives, *, track_peak=None):
         as RGBA bytes bit-packed one texel per f32 lane of this same bank and
         decoded in-kernel through ``_ensure_u8_lut``'s table: x5 fewer bytes
         on the widest array of a textured merge, byte-identical by the LUT's
-        construction (TEXTURE_U8_STORAGE; ``lut_base`` >= 0 marks the layout
+        construction (texture_u8_storage; ``lut_base`` >= 0 marks the layout
         in meta col 15). An interpolating window (t > 1) keeps f32 rows --
         its in-between texels are not ``k / 255``.
 
         ``authored_stack`` (colour maps only) says the tensor is a
-        ``[1, K, H, W, 5]`` endpoint stack (TEXTURE_TIME_LERP) whose texels
+        ``[1, K, H, W, 5]`` endpoint stack (texture_time_lerp) whose texels
         must stay in AUTHORED space: the sampler lerps two endpoint texels
         and THEN decodes, matching the dense path's order (timeline lerp,
         then this function's decode). So the linear-light decode is skipped
@@ -1552,8 +1555,8 @@ def _merge_scene(primitives, *, track_peak=None):
         as_u8 = (
             is_color
             and u8_ok
-            and SETTINGS.raytracing.TEXTURE_U8_STORAGE
-            and SETTINGS.raytracing.TEXTURE_TIME_FLAT
+            and SETTINGS.raytracing.texture_u8_storage
+            and SETTINGS.raytracing.texture_time_flat
             and tex.shape[0] == 1
             and tex.shape[-1] == 5
         )
@@ -1577,8 +1580,8 @@ def _merge_scene(primitives, *, track_peak=None):
                 packed = torch.cat((packed, packed.new_zeros(tail)))
             flat = packed.reshape(1, -1, 5)
             dedup = (
-                SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP
-                and w * h >= _CONTENT_DEDUP_MIN_TEXELS
+                SETTINGS.raytracing.texture_content_dedup
+                and w * h >= content_dedup_min_texels
             )
             if dedup:
                 key = ("u8a" if authored_stack else "u8", tuple(flat.shape), w, h)
@@ -1610,7 +1613,7 @@ def _merge_scene(primitives, *, track_peak=None):
         if (
             is_color
             and not authored_stack
-            and rt_settings.LINEAR_COLOR_SPACE
+            and rt_settings.linear_color_space
             and tex.shape[-1] >= 3
         ):
             tex = torch.cat(
@@ -1619,9 +1622,9 @@ def _merge_scene(primitives, *, track_peak=None):
         w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
         if c < 5:
             tex = torch.cat((tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
-        if SETTINGS.raytracing.TEXTURE_TIME_FLAT:
+        if SETTINGS.raytracing.texture_time_flat:
             # No equality probe here: a static colour window arrives already
-            # collapsed to one frame (TEXTURE_WINDOW_COLLAPSE, upstream of
+            # collapsed to one frame (texture_window_collapse, upstream of
             # the merge) and material/normal maps are single-frame tensors,
             # so a map still carrying T frames here is genuinely animated
             # and a probe would only cost a device sync -- which, on the
@@ -1639,8 +1642,8 @@ def _merge_scene(primitives, *, track_peak=None):
         # primitive, and each ``torch.equal`` is a device sync with the same
         # queue-drain cost as above, so small maps skip the index entirely.
         dedup = (
-            SETTINGS.raytracing.TEXTURE_CONTENT_DEDUP
-            and flat.shape[1] >= _CONTENT_DEDUP_MIN_TEXELS
+            SETTINGS.raytracing.texture_content_dedup
+            and flat.shape[1] >= content_dedup_min_texels
         )
         if dedup:
             # An authored stack's texels are pre-decode; keying it apart
@@ -1681,7 +1684,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # promotion from the full per-vertex arrays, so the built-in single-map
         # promotion is turned off for it (it would shrink tri_colors/tri_extra
         # out from under the texture builder).
-        promote = _constant_promotion_active() and not _rts.WF_TEXTURED
+        promote = _constant_promotion_active() and not _rts.wf_textured
         plain_triangles = [
             p for p in triangles if getattr(p, "_rt_tri_uvs", None) is None
         ]
@@ -1776,7 +1779,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # exemption at pack time (primitives._pack_projected_flat_geometry):
         # 1.0 where the surface may be coverage-ceilinged as a closed shell.
         # Read only by the sheet compaction, and only under
-        # ``SOLID_SHELL_ALPHA`` -- the field is built unconditionally because it
+        # ``solid_shell_alpha`` -- the field is built unconditionally because it
         # is one [T?, N] tensor against a whole batch, but consumed strictly
         # behind the toggle so disabling it changes nothing downstream.
         scene["tri_closed"] = _cat_collections(
@@ -1956,11 +1959,11 @@ def _merge_scene(primitives, *, track_peak=None):
         # is T-agnostic, so a batch whose materials/normals/colours do not
         # animate stores one row instead of T -- tri_mat alone is [T, N, 26],
         # tens of MB of identical frames on ordinary scenes. Under
-        # MERGE_DEDUP_GEOMETRY the same collapse covers ``tri_pos`` and the
+        # merge_dedup_geometry the same collapse covers ``tri_pos`` and the
         # per-frame id/flag tables it used to skip ("rigid motion lives in
         # tri_pos" forfeited the static case, where the probe is one pass and
         # the saving is (T-1)/T of the largest geometry array).
-        if SETTINGS.raytracing.MERGE_DEDUP_TIME:
+        if SETTINGS.raytracing.merge_dedup_time:
             keys = [
                 "tri_norm",
                 "tri_mat_id",
@@ -1969,7 +1972,7 @@ def _merge_scene(primitives, *, track_peak=None):
                 "tri_extra",
                 "tri_uvs",
             ]
-            if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
+            if SETTINGS.raytracing.merge_dedup_geometry:
                 keys += ["tri_pos", "tri_obj", "tri_closed"]
                 # The per-frame bounds feed the BVH builds (both builders
                 # accept ``Tc == 1`` -- one instance spanning all frames --
@@ -1984,7 +1987,7 @@ def _merge_scene(primitives, *, track_peak=None):
                 scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
                 keys += ["_probe_lo", "_probe_hi", "_probe_opaque", "_probe_casts"]
             _dedup_time_group(scene, keys)
-            if SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY:
+            if SETTINGS.raytracing.merge_dedup_geometry:
                 lo2, hi2 = scene.pop("_probe_lo"), scene.pop("_probe_hi")
                 if lo2.shape[0] == hi2.shape[0]:
                     lo, hi = lo2, hi2
@@ -1992,7 +1995,7 @@ def _merge_scene(primitives, *, track_peak=None):
                 casts = scene.pop("_probe_casts")
 
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
-        # front-end (settings.HYBRID_RASTER): candidate emission skips
+        # front-end (settings.hybrid_raster): candidate emission skips
         # invisible triangles and routes proven-opaque ones to the z-prepass.
         # Derived from the same bounds/opacity arrays the STBVH build uses.
         scene["tri_frame_valid"] = (hi >= lo).all(-1).contiguous()
@@ -2001,7 +2004,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # Triangle STBVHs are built (or deferred) in _finalize_bvhs once every
         # routing flag this batch needs is known.
         tri_bvh_inputs = (lo, hi, opaque, casts)
-        if _rts.WF_MEM_TRIM:
+        if _rts.wf_mem_trim:
             _build_mem_trim(scene, lo, hi, opaque, num_frames, device)
     else:
         scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
@@ -2168,7 +2171,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # tables for one frame instead of T (its header stride is
         # ``f % edges_2d.shape[0]``, so the two stay consistent by
         # construction).
-        if SETTINGS.raytracing.MERGE_DEDUP_TIME:
+        if SETTINGS.raytracing.merge_dedup_time:
             _dedup_time_group(
                 scene,
                 [
@@ -2207,8 +2210,8 @@ def _merge_scene(primitives, *, track_peak=None):
         # ``f % shape[0]``; lo/hi must collapse together. One grouped sync,
         # like the circuit tables above.
         if (
-            SETTINGS.raytracing.MERGE_DEDUP_TIME
-            and SETTINGS.raytracing.MERGE_DEDUP_GEOMETRY
+            SETTINGS.raytracing.merge_dedup_time
+            and SETTINGS.raytracing.merge_dedup_geometry
         ):
             scene["_probe_lo"], scene["_probe_hi"] = lo, hi
             scene["_probe_opaque"], scene["_probe_casts"] = opaque, casts
@@ -2296,12 +2299,12 @@ def _merge_scene(primitives, *, track_peak=None):
     )
 
     # UNSUPPORTED legacy texture-lookup shading (Surface / flat-triangle
-    # scenes only: no bezier circuits; opt-in via WF_TEXTURED,
+    # scenes only: no bezier circuits; opt-in via wf_textured,
     # kept for reference). Builds the three per-triangle texture banks +
     # indexes the textured wavefront kernel consumes.
     scene["textured_active"] = False
     _rts = SETTINGS.raytracing
-    if _rts.WF_TEXTURED and scene["num_triangles"] > 0 and scene["num_circuits"] == 0:
+    if _rts.wf_textured and scene["num_triangles"] > 0 and scene["num_circuits"] == 0:
         _build_textured_scene(scene, num_frames, device)
         scene["textured_active"] = True
 
@@ -2329,9 +2332,9 @@ def _merge_scene(primitives, *, track_peak=None):
     if device.type != "cpu":
         empty_cache(force_gc=False)
     # Measured transient device bytes the build allocated above the pre-merge
-    # baseline, when opt-in peak tracking is on (see settings.MERGE_TRACK_PEAK);
+    # baseline, when opt-in peak tracking is on (see settings.merge_track_peak);
     # -1 marks "not measured". Purely diagnostic -- the arena preflight bounds
-    # the build with the MERGE_GPU_PEAK_FACTOR estimate, not this value.
+    # the build with the merge_gpu_peak_factor estimate, not this value.
     if track_peak:
         scene["_gpu_merge_peak_bytes"] = int(end_cuda_peak(peak_token))
     else:
@@ -2388,7 +2391,7 @@ def _decode_merged_colors(scene):
       custom fragment pipeline's block is its own layout, so those slots are not
       colours there and are left alone.
     """
-    if not rt_settings.LINEAR_COLOR_SPACE:
+    if not rt_settings.linear_color_space:
         return
     for key in _MERGED_COLOR_KEYS:
         arr = scene.get(key)
@@ -2652,7 +2655,7 @@ def _prefill_background(
     # writing the arena-backed output. ``copy_`` below performs device and dtype
     # conversion directly into the reserved destination instead.
     bg = background_color
-    linear = rt_settings.LINEAR_COLOR_SPACE
+    linear = rt_settings.linear_color_space
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
         vals = bg.float().flatten()[:5]
         if linear:

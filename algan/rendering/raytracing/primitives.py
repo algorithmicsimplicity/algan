@@ -34,8 +34,8 @@ from algan.rendering.raytracing.logical_pn_taichi import (
     pn_patch_flatness_error,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    DEPTH_TIE_EPSILON,
-    MIN_ALPHA,
+    depth_tie_epsilon,
+    min_alpha,
 )
 from algan.rendering.raytracing.settings import (
     _MAT_DEFAULTS,
@@ -361,10 +361,10 @@ def shadow_cast_flag(no_shadow_cast, num_prims, device):
     ``None`` (nothing declared -- a primitive built before the flags, or one
     whose collection merge filled the column with the 0.0 default) is every
     primitive casting, which is what they all did before, and so is the whole
-    feature switched off (``PER_MOB_SHADOW_FLAGS``): with nothing to stamp, the
+    feature switched off (``per_mob_shadow_flags``): with nothing to stamp, the
     leaf words are what they were before the flags existed.
     """
-    if no_shadow_cast is None or not rt_settings.PER_MOB_SHADOW_FLAGS:
+    if no_shadow_cast is None or not rt_settings.per_mob_shadow_flags:
         return torch.ones((1, num_prims), dtype=torch.bool, device=device)
     v = no_shadow_cast.float()
     if v.dim() >= 4:  # [T?, N, 3, 1] -> per-primitive
@@ -377,7 +377,7 @@ def closed_shell_ceiling_flag(closed_shell, transmission):
     """Fold a closed-shell declaration with its transmission exemption.
 
     Returns a per-triangle float32 tensor: 1.0 where the surface's coverage may
-    be ceilinged as a closed shell (``SOLID_SHELL_ALPHA``), 0.0 anywhere the
+    be ceilinged as a closed shell (``solid_shell_alpha``), 0.0 anywhere the
     declaration is absent or the material transmits. Transmission exempts
     because refraction visits both shells as physical transport -- capping the
     second crossing would eat the refracted path -- and is taken amax over
@@ -733,10 +733,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         if getattr(shader, "_frag_pipeline_id", None) is not None:
             # A custom pipeline always shades in-kernel on the deterministic
             # renderer (fragment shading is forced on for such a scene).
-            return rt_settings.SAMPLES_PER_PIXEL <= 1
+            return rt_settings.samples_per_pixel <= 1
         return (
-            rt_settings.FRAGMENT_SHADING
-            and rt_settings.SAMPLES_PER_PIXEL <= 1
+            rt_settings.fragment_shading
+            and rt_settings.samples_per_pixel <= 1
             and _shader_is_core(shader)
         )
 
@@ -891,7 +891,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # that declaration is not here -- it never reaches a shading stage, only
         # the BVH leaf word (``_rt_frame_casts``).
         no_shadow_receive = getattr(self, "no_shadow_receive", None)
-        if no_shadow_receive is not None and rt_settings.PER_MOB_SHADOW_FLAGS:
+        if no_shadow_receive is not None and rt_settings.per_mob_shadow_flags:
             pairs.append((_MAT_NO_SHADOW_RECEIVE, per_triangle(no_shadow_receive)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
         mat = (
@@ -1039,7 +1039,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # Alpha is pure coverage, so it alone decides presence: a mob that is
         # un-spawned or faded out is absent, while clear glass keeps its
         # coverage and stays visible (see _derive_material_surface_params).
-        visible = alpha.amax(-1) > MIN_ALPHA
+        visible = alpha.amax(-1) > min_alpha
         # ...except where a colour texture, not the corner colours, is what
         # supplies coverage. Every cut-out image (a PNG sticker, an ImageMob)
         # has transparent corner texels, and a textured quad's corners ARE its
@@ -1051,7 +1051,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             lerp = getattr(self, "_rt_tex_lerp", None)
             if lerp is not None:
                 # The map is a [1, K, H, W, 5] endpoint stack
-                # (TEXTURE_TIME_LERP); frame f's coverage is a lerp of two
+                # (texture_time_lerp); frame f's coverage is a lerp of two
                 # endpoints, bounded by |1-w| * amax(E_i0) + |w| * amax(E_i1)
                 # (the absolute values cover overshooting rate functions).
                 # An upper bound, so a frame is only ever KEPT relative to
@@ -1074,12 +1074,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             top = getattr(self, "_rt_tex_opacity", None)
             if top is not None:
                 # The map's coverage no longer carries the mob's animated
-                # opacity (TEXTURE_OPACITY_IN_KERNEL), so fold it back in
+                # opacity (texture_opacity_in_kernel), so fold it back in
                 # before the threshold: a faded-out frame must leave the BVH
                 # exactly as it did when the premultiplied map's amax went to
                 # zero (a non-negative scalar multiply commutes with amax).
                 alpha_amax = alpha_amax * top.view(-1, 1).to(alpha_amax.device)
-            texture_visible = alpha_amax > MIN_ALPHA
+            texture_visible = alpha_amax > min_alpha
             (visible, texture_visible), _ = _unify_time(
                 [visible, texture_visible], error_context
             )
@@ -1148,7 +1148,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             else None
         )
         # In-sampler opacity + u8 provenance for the colour map
-        # (TEXTURE_OPACITY_IN_KERNEL / TEXTURE_U8_STORAGE). ``_rt_`` names on
+        # (texture_opacity_in_kernel / texture_u8_storage). ``_rt_`` names on
         # purpose: the slice-window copy drops them and this stash rebuilds
         # both from the (sliced) source attributes.
         top = getattr(self, "texture_opacity", None)
@@ -1158,7 +1158,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             else None
         )
         self._rt_texture_u8_ok = bool(getattr(self, "texture_u8_ok", False))
-        # Endpoint interpolation rows (TEXTURE_TIME_LERP): [T, 3] of
+        # Endpoint interpolation rows (texture_time_lerp): [T, 3] of
         # (i0, i1, w); present exactly when the colour map is a
         # [1, K, H, W, 5] endpoint stack.
         tlerp = getattr(self, "texture_lerp", None)
@@ -1238,11 +1238,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         pn_obj = getattr(self, "_logical_pn_tri_obj", None)
         obj_ids = getattr(self, "_obj_ids", None)
         counts = getattr(self, "_obj_counts", None)
-        if not rt_settings.MESH_ID:
+        if not rt_settings.mesh_id:
             obj_ids = None
         if pn_obj is not None:
             self._rt_tri_obj = pn_obj
-            # The dice records its own id count: with MESH_ID on it resolves the
+            # The dice records its own id count: with mesh_id on it resolves the
             # members' declaration rather than their counts, and the merge needs
             # the real number to offset this primitive's ids without colliding.
             self._rt_tri_obj_n = getattr(
@@ -1559,7 +1559,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         ``geometry_tolerance`` carried forward to render time. It is projected
         at each sample's own depth and subtracted from the deviation measured
         there, so neither search resolves detail the reference does not have
-        (see ``rt_settings.PN_GEOMETRY_SLACK``). ``None`` measures against the PN
+        (see ``rt_settings.pn_geometry_slack``). ``None`` measures against the PN
         patch exactly.
 
         The stopping criterion these errors feed is a *primary visibility* one:
@@ -1719,7 +1719,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         floor = edge_levels.gather(-1, edge_levels.argmin(-1, keepdim=True)).squeeze(-1)
         apex = _APEX_OF_EDGE.to(edge_levels.device)[edge_levels.argmin(-1)]
         across = levels.clone()
-        if not rt_settings.PN_ANISOTROPIC_DICE or not levels.numel():
+        if not rt_settings.pn_anisotropic_dice or not levels.numel():
             return apex, across
 
         max_level = int(self.max_subdivision_level)
@@ -2254,7 +2254,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # approximates, in world units, at the size it is being rendered at.
         # The level searches subtract its projection from what they measure.
         slack = None
-        if rt_settings.PN_GEOMETRY_SLACK and self.geometry_slack_ratio > 0:
+        if rt_settings.pn_geometry_slack and self.geometry_slack_ratio > 0:
             slack = _expand_frames(
                 mean_patch_edge_length(source_corners) * self.geometry_slack_ratio,
                 num_frames,
@@ -2300,7 +2300,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # are read by nothing. A logical-PN member's ``mesh_ids`` are per PATCH
         # (its ``corners`` are patch corners), which is the granularity wanted
         # here; the searchsorted below carries them to the diced rows.
-        obj_ids = getattr(self, "_obj_ids", None) if rt_settings.MESH_ID else None
+        obj_ids = getattr(self, "_obj_ids", None) if rt_settings.mesh_id else None
         if obj_ids is not None:
             patch_source = obj_ids.reshape(-1).to(device=device, dtype=torch.int32)
             self._logical_pn_tri_obj_n = int(self._obj_ids_n)
@@ -2910,7 +2910,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         Exactly coplanar circuits produce the same hit distance, so the resolve
         ranks them by an internal index that follows neither creation order nor
         hierarchy (see :attr:`~.BezierCircuitCubic.z_index`). Moving a circuit
-        ``z_index * DEPTH_TIE_EPSILON`` along the view axis puts it that many
+        ``z_index * depth_tie_epsilon`` along the view axis puts it that many
         depth bins nearer, which is the smallest displacement the ordering can
         see and far below anything the frame can show: at the default camera
         distance one bin is a relative depth change of ~1.4e-5.
@@ -2931,7 +2931,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             return corners
         # Unit view axis per frame: the screen centre as seen from the eye.
         forward = F.normalize((sp - cam_o).float(), p=2, dim=-1)  # [T, 3]
-        bias = self.z_index.to(corners.device).float() * DEPTH_TIE_EPSILON  # [1, C, 1]
+        bias = self.z_index.to(corners.device).float() * depth_tie_epsilon  # [1, C, 1]
         num_segments = self.num_segments_per_object.to(corners.device).view(-1).long()
         circuit_of_segment = torch.repeat_interleave(
             torch.arange(num_segments.shape[0], device=corners.device), num_segments
@@ -2982,7 +2982,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             # height, i.e. 0.25 output pixels at the AA=2 reference; analytic AA
             # runs at AA=1, where the same number would relax to 0.5. Tighten
             # (never loosen) to keep the reference smoothness.
-            tolerance = min(tolerance, float(rt_settings.ANALYTIC_AA_CHORD_TOLERANCE))
+            tolerance = min(tolerance, float(rt_settings.analytic_aa_chord_tolerance))
         tolerance_squared = tolerance * tolerance
 
         chord_counts = torch.full(
@@ -3380,8 +3380,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         border_on = self._rt_border_width > 1e-3
         glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
         visible = (
-            (fill_alpha > MIN_ALPHA)
-            | ((border_alpha > MIN_ALPHA) & border_on)
+            (fill_alpha > min_alpha)
+            | ((border_alpha > min_alpha) & border_on)
             | (glow_alpha > 0.0)
         )
         # Alpha is pure coverage, so it alone decides presence (see

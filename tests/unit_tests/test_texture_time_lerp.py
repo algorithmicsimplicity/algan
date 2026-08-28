@@ -1,4 +1,4 @@
-"""In-kernel texture time interpolation (TEXTURE_TIME_LERP).
+"""In-kernel texture time interpolation (texture_time_lerp).
 
 An animated colour-texture reassignment used to materialize one full image
 per frame of a batch. The timeline's segment-window gate

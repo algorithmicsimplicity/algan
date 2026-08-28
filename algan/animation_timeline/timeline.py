@@ -3806,7 +3806,7 @@ class AnimationTimeline:
         :func:`_wide_attr_materialize_device`) is a whole image per frame of
         the batch, and nothing reads it once the batch's primitives are built:
         the primitive holds its own copy (the legacy premultiply's clone, or
-        under TEXTURE_OPACITY_IN_KERNEL a one-frame clone of a collapsed
+        under texture_opacity_in_kernel a one-frame clone of a collapsed
         window -- an UNCOLLAPSED window is deliberately aliased there, so for
         an animating texture this release only drops the timeline's reference
         and the memory follows the primitive's lifetime instead), the merge

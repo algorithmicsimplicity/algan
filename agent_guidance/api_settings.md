@@ -95,7 +95,13 @@ Unknown field names are rejected with a close-match suggestion by both `set(...)
 
 `SETTINGS.raytracing` is split by stability. Directly on the section are the settings that describe what the renderer *produces*: `samples_per_pixel`, `max_bounces`, `shadows`, `ambient_light`, `light_intensity`, `indirect_bounce_strength`, `glossy_reflection`, `analytic_aa`, `tonemapping`, `tonemap_method`, `tonemap_exposure`, `unsupported_feature_policy`. Every other switch is a kernel/performance gate and lives on `SETTINGS.raytracing.experimental`; writing one through the parent raises an error naming the right location. **Reads are deliberately unrestricted** — engine modules bind `rt_settings = SETTINGS.raytracing` once and read experimental switches off it on the hot path — so only mutation is gated. `to_dict()`, `as_preset()`, `_restore()` and `SETTINGS.snapshot()` continue to cover every field.
 
-When adding a renderer toggle, add it to `_FIELD_TO_LEGACY` and leave it out of `_PUBLIC_FIELDS` unless it changes rendered output in a way users are meant to control.
+Adding a renderer toggle is one edit: declare it as a lowercase module-level value with an environment default, in whichever storage module owns that subsystem (`_STORAGE_MODULES` in `algan/settings/raytracing_settings.py` lists them — the toggles module plus the BVH builders, the kernels, the raster and sheet passes, the scene builder, the tracer and the memory model, each keeping its settings beside the code and the comment that explain them). `SETTINGS.raytracing` derives its field set from those modules, so the toggle is reachable with nothing else to register — leave it out of `_PUBLIC_FIELDS` unless it changes rendered output in a way users are meant to control, and it lands on `.experimental`. Two rules follow from the derivation: the value must be a scalar, and **no helper function may share a field's name** — the later `def` silently takes the name over and the field disappears (`test_settings_api.py` pins both).
+
+There is one spelling for each setting. The hand-maintained `_FIELD_TO_LEGACY` map from lowercase fields to UPPER_CASE globals, and the `_SETTER_OVERRIDES` map beside it, are **deleted**: they were a second source of truth that drifted, and the drift is what left nine switches with a global, a setter and no way to set them. Do not reintroduce a table that mirrors the module.
+
+Configuration that the renderer *freezes* when it is imported — an ndarray element type the kernels are annotated with, a reciprocal, a packed header layout, a `ti.static` payload width — is still a field, so it can be read, discovered and snapshotted. Writing one is refused by `_IMPORT_FROZEN_FIELDS`, naming the environment variable to set instead: a host that builds an arity-8 BVH for kernels annotated arity-4 does not fail, it renders wrong, so a refusal beats both a silent no-op and a silent corruption. `_INERT_FIELDS` and `_IMPORT_FROZEN_FIELDS` are both checked against the names a caller passed and never against a restored snapshot, so `set(source=...)` and `SETTINGS.restore()` still round-trip every field.
+
+`tests/unit_tests/test_settings_api.py` pins the whole arrangement: every `env_*`-backed module global in `algan/` is a field (except the four init-only ones in `settings/_startup.py`), no helper shadows a field's name, and every declaration the storage modules make is reachable.
 
 Use `SETTINGS.snapshot()`/`SETTINGS.restore()` for complete public-settings state capture, and `SETTINGS.override(...)` or section-level `override(...)` for temporary changes. Do not hand-roll partial restoration that leaves live settings leaked into later tests or daemon runs.
 
@@ -112,7 +118,9 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_CACHE_DIR`;
 - `TI_OFFLINE_CACHE_FILE_PATH`;
 - `ALGAN_SOFT_SHADOW_SAMPLES`;
-- `ALGAN_HDR_BUFFER_F16`.
+- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`.
+
+`ALGAN_HDR_BUFFER_F16` is **not** one of them any more either. It seeds `SETTINGS.raytracing.experimental.hdr_buffer_f16`, and `hdr_frame_dtype()` reads that when the frame buffer is allocated — no kernel specializes on it, so there was never anything for the import to bake in.
 
 `ALGAN_RENDER_DEVICE` is **not** one of them any more. It seeds `SETTINGS.computing.render_device`, which owns the value from then on and can be changed between renders; `taichi_runtime.ensure_taichi_for_render()` re-selects Taichi's arch at the start of each render job when the device has moved across the CPU/GPU line. Read it with `algan.settings._startup.render_device()` — never bind it at import, which is the mistake the old `_RENDER_DEVICE` constant made unavoidable. A change is refused while a render is running and once a wide attribute (a texture) has been placed on the render device.
 
@@ -199,7 +207,9 @@ Adding a knob is therefore two steps: put the name in the right tuple in `algan/
 
 ### Initialization-only settings
 
-These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
+These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
+
+The bar for adding to that tuple is that **no runtime object could own the value** — Taichi is already initialized, the device is already chosen, the constant is already folded into a compiled kernel. "It happens to be read at import" is not the bar: `ALGAN_HDR_BUFFER_F16` sat here for exactly that reason while the dtype it selects is read at buffer allocation, and it is now `SETTINGS.raytracing.experimental.hdr_buffer_f16` with the environment variable seeding the default. `ALGAN_LOG_LEVEL` and `ALGAN_PROGRESS` were import-time for the same non-reason and are now read live, re-applied per run by the daemon (`logger.apply_environment_logging`).
 
 `ALGAN_RENDER_DEVICE` is in that tuple too — it *is* read at startup — but it is also in `_DAEMON_ADOPTED_STARTUP_VARIABLES`, because all it does there is seed `SETTINGS.computing.render_device`. A warm daemon therefore re-applies the client's value per run (`daemon._adopt_render_device`) instead of refusing it, and the run renders where a cold one would. Anything added to that tuple needs both halves — a runtime setting that owns the value, and a daemon that re-applies it — or a mismatched run silently renders wrong.
 

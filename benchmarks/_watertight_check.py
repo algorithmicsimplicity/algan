@@ -37,7 +37,7 @@ the flag is byte-identical, because primary visibility never reaches this code -
 which is also why a default flip is lower-risk than it sounds, and why the
 front-end-off numbers are the ones that matter.
 
-``WATERTIGHT_TRI`` is read at **import** (it changes the compiled kernel body),
+``watertight_tri`` is read at **import** (it changes the compiled kernel body),
 so one process exercises one arm. Run it twice, and give each arm its own Taichi
 cache -- the offline cache does not invalidate on ``@ti.func`` edits, and both
 arms compile the same *kernel*::
@@ -233,9 +233,9 @@ def main():
 
     from algan.rendering.raytracing import raytrace_kernels_taichi as k
 
-    watertight = bool(k.WATERTIGHT_TRI)
+    watertight = k.watertight_tri()
     print(f"arm={arm}  WATERTIGHT_TRI={watertight}  quality={quality.resolution}")
-    print(f"hybrid raster: OFF (ray path)  analytic AA: {rt_settings.ANALYTIC_AA}")
+    print(f"hybrid raster: OFF (ray path)  analytic AA: {rt_settings.analytic_aa}")
     print()
 
     report = {"arm": arm, "watertight": watertight}

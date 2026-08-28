@@ -1,5 +1,5 @@
 """In-process A/B: current per-vertex wavefront vs the experimental
-texture-lookup wavefront (settings.WF_TEXTURED) on an all-Surface scene.
+texture-lookup wavefront (settings.wf_textured) on an all-Surface scene.
 
 Builds a scene of solid-colour lit spheres + cylinders (one reflective, one
 glass), renders it once with the textured shader OFF (the current per-vertex
@@ -50,7 +50,7 @@ from algan import (  # noqa: E402
     Sync,
 )
 from algan.rendering.raytracing import set_fragment_shading  # noqa: E402
-from algan.rendering.raytracing.settings import set_textured_wavefront  # noqa: E402
+from algan.rendering.raytracing.settings import set_wf_textured  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -115,7 +115,7 @@ tracer_mod.raytrace_render_wavefront = _timed_wf
 def render_once(textured, tag):
     SceneManager.reset()
     set_fragment_shading(True)
-    set_textured_wavefront(textured)
+    set_wf_textured(textured)
     build()
     scene = SceneManager.instance()
     _wf_times.clear()
