@@ -62,10 +62,25 @@ jobs:
       - name: Create venv
         run: uv venv
 
+      # pycairo publishes no manylinux wheel, so `uv sync` builds it from
+      # source on Linux and meson needs a system cairo to build against -- the
+      # first run of this workflow died here with `Dependency "cairo" not found
+      # (tried pkg-config and cmake)`. Pango comes along because manimpango
+      # links the same stack.
+      #
+      # There is deliberately no macOS counterpart. The wheel exists there, and
+      # the measurement says so: the same step installed the whole locked
+      # environment on macos-latest in 18 seconds, building nothing. LaTeX and
+      # ffmpeg are absent on both, because the probe renders nothing.
+      - name: Install cairo and pango headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
+
       # The full locked environment, matching the test job, so the torch and
       # taichi versions the probe reports are the ones Algan actually ships
-      # against. No Pango, LaTeX or ffmpeg here: the probe renders nothing, and
-      # those are minutes of Homebrew for code it never reaches.
+      # against.
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
