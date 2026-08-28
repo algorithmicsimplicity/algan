@@ -228,6 +228,16 @@ def _section_env():
         "mps_is_built": bool(backends_mps and backends_mps.is_built()),
         "mps_is_available": bool(backends_mps and backends_mps.is_available()),
     }
+    # Recorded because "put both torch and Taichi on Vulkan" is an obvious
+    # thing to try. Torch's Vulkan backend is an Android mobile-inference path,
+    # not a compute device: the dispatch key exists but the ops are not built,
+    # so a tensor cannot even be allocated on it.
+    with_suppressed(out, "torch_is_vulkan_available", torch.is_vulkan_available)
+    try:
+        torch.zeros(4, device="vulkan")
+        out["torch_vulkan_tensor"] = "ok"
+    except Exception as exc:
+        out["torch_vulkan_tensor"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     for name, arch in (("metal", ti.metal), ("vulkan", ti.vulkan), ("cuda", ti.cuda)):
         try:
             out["ti_supports_" + name] = bool(ti.lang.misc.is_arch_supported(arch))
@@ -657,6 +667,78 @@ def _section_staging(device, tensor_device, workload):
 
 
 # ---------------------------------------------------------------------------
+# Section: native -- would Taichi-OWNED ndarrays avoid the round trip?
+#
+# Algan already annotates every kernel argument ``ti.types.ndarray()`` and holds
+# no ``ti.field`` anywhere, so "switch to ndarrays" is not a change that can be
+# made -- it is the current state. The real question underneath it is different:
+# what a kernel gets today is a *torch tensor* (an external array), and Taichi
+# has two entirely separate binding paths for those.
+#
+#   * ``set_arg_ext_array`` (torch tensor): passes a raw pointer, and for
+#     anything that is neither a host tensor nor a CUDA tensor on a CUDA arch,
+#     copies to the host before the launch and back after
+#     (``kernel_impl.py``). Per launch, both directions, inputs included.
+#   * ``set_arg_ndarray`` (a Taichi-owned ``ti.ndarray``): binds the device
+#     allocation itself, and registers **no copy-back callback** at all.
+#
+# So Taichi-owned ndarrays do remove the per-launch copy. What they cannot
+# remove is the copy at the boundary: Taichi 1.7.4 gives ``ScalarNdarray`` only
+# ``from_numpy``/``to_numpy`` -- host memory, no ``to_torch``, no DLPack -- so
+# data arriving from torch still crosses once. That relocates the cost from
+# per-launch to per-crossing, which is a win exactly when a sub-pipeline runs
+# many launches between handoffs. This section measures both halves so the
+# break-even launch count can be computed rather than guessed.
+# ---------------------------------------------------------------------------
+
+
+def _section_native(device, workload):
+    import numpy as np
+    import torch
+
+    brought_up = _bring_up(device)
+    out = {"device": device, "workload": workload, **brought_up}
+    out.update(_settled_arch())
+    _emit_pre(out)
+    n = _BANDWIDTH_N
+    try:
+        if workload == "launch":
+            # The same kernel and the same element count as the Q5 bandwidth
+            # arm, so the two numbers are directly comparable.
+            src = ti.ndarray(ti.f32, shape=n)
+            dst = ti.ndarray(ti.f32, shape=n)
+            out["bytes_per_launch"] = 2 * 4 * n
+            out.update(_time_launches(lambda: _k_bandwidth(src, dst, n), "cpu"))
+        elif workload == "crossing":
+            # What one handoff costs: host array in, host array out. This is
+            # the price of every torch <-> Taichi boundary if the pipeline
+            # holds its buffers as Taichi ndarrays.
+            arr = ti.ndarray(ti.f32, shape=n)
+            host = np.zeros(n, dtype=np.float32)
+            out["bytes_per_crossing"] = 4 * n
+            out["from_numpy"] = _time_launches(lambda: arr.from_numpy(host), "cpu")
+            out["to_numpy"] = _time_launches(arr.to_numpy, "cpu")
+        elif workload == "crossing_from_torch":
+            # The realistic version of the same handoff: the data starts in a
+            # torch tensor on the render device, which is where the raster
+            # pipeline actually produces it.
+            arr = ti.ndarray(ti.f32, shape=n)
+            tensor = torch.zeros(n, dtype=torch.float32, device=device)
+            out["bytes_per_crossing"] = 4 * n
+            out.update(
+                _time_launches(
+                    lambda: arr.from_numpy(tensor.cpu().numpy()), tensor.device.type
+                )
+            )
+        out["status"] = "ok"
+    except Exception as exc:
+        out["status"] = "error"
+        out["error_type"] = type(exc).__name__
+        out["error"] = str(exc)[:2000]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Section: torchops -- Q6
 # ---------------------------------------------------------------------------
 
@@ -1015,6 +1097,8 @@ def _dispatch(args):
         return _section_staging(
             args.device, args.tensor_device or args.device, args.workload
         )
+    if section == "native":
+        return _section_native(args.device, args.workload)
     if section == "torchops":
         return _section_torchops(args.device)
     if section == "determinism":
@@ -1119,6 +1203,78 @@ def _orchestrate(args):
                     record.get("live_arch", "?"),
                     record.get("status", "?"),
                     record.get("median_ms", "-"),
+                    _why(record),
+                ),
+                flush=True,
+            )
+
+    # Vulkan is the other backend a Mac offers, and "run both halves on Vulkan"
+    # is the natural workaround to try. Forcing it here settles the Taichi half
+    # by measurement: if a Vulkan arm stages a torch tensor exactly as the Metal
+    # arm does, the backend was never what made the copy happen.
+    if "mps" in devices:
+        print("\n== workaround check: Taichi forced onto Vulkan ==", flush=True)
+        sections["vulkan"] = {}
+        sections["vulkan"]["arch"] = _run_arm(
+            ["--section", "arch", "--device", "mps"],
+            extra_env={"TI_ARCH": "vulkan", "TI_LOG_LEVEL": "trace"},
+        )
+        print(
+            "  arch arm -> {} ({})".format(
+                sections["vulkan"]["arch"].get("live_arch", "?"),
+                sections["vulkan"]["arch"].get("status", "?"),
+            ),
+            flush=True,
+        )
+        for tensor_device in ("mps", "cpu"):
+            record = _run_arm(
+                [
+                    "--section",
+                    "staging",
+                    "--device",
+                    "mps",
+                    "--tensor-device",
+                    tensor_device,
+                    "--workload",
+                    "bandwidth",
+                ],
+                extra_env={"TI_ARCH": "vulkan"},
+            )
+            sections["vulkan"][f"bandwidth|{tensor_device}"] = record
+            print(
+                "  bandwidth  tensors={:<4} arch={:<6} {:<7} median {} ms  {}".format(
+                    tensor_device,
+                    record.get("live_arch", "?"),
+                    record.get("status", "?"),
+                    record.get("median_ms", "-"),
+                    _why(record),
+                ),
+                flush=True,
+            )
+
+    print(
+        "\n== native ndarrays: does Taichi-owned memory dodge the copy? ==", flush=True
+    )
+    sections["native"] = {}
+    for device in devices:
+        for workload in ("launch", "crossing", "crossing_from_torch"):
+            record = _run_arm(
+                ["--section", "native", "--device", device, "--workload", workload]
+            )
+            sections["native"][f"{workload}|{device}"] = record
+            timing = record.get("median_ms")
+            if timing is None and "from_numpy" in record:
+                timing = "in {} / out {}".format(
+                    record["from_numpy"].get("median_ms"),
+                    record["to_numpy"].get("median_ms"),
+                )
+            print(
+                "  {:<20} device={:<4} arch={:<6} {:<7} median {} ms  {}".format(
+                    workload,
+                    device,
+                    record.get("live_arch", "?"),
+                    record.get("status", "?"),
+                    timing if timing is not None else "-",
                     _why(record),
                 ),
                 flush=True,
