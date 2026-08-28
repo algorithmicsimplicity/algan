@@ -34,17 +34,6 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10"]
 
-    env:
-      # Both runners are CPU-only in practice, but macos-latest is Apple
-      # Silicon, where the automatic device probe would resolve to MPS: Torch
-      # on Metal, and Taichi on its Metal backend. Neither the kernels nor the
-      # committed baselines have ever been validated there, so a Mac job that
-      # took the default would be testing an untested backend rather than the
-      # portability of the code the other job runs. Pinning the device makes
-      # the two jobs the same job on two platforms. MPS is its own piece of
-      # work; when it is done, give it its own matrix entry.
-      ALGAN_RENDER_DEVICE: cpu
-
     steps:
       - uses: actions/checkout@v4
 
@@ -125,6 +114,16 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
+      # Cheap, and it answers in the log the two questions a cross-platform
+      # matrix raises: which accelerator the runner offers (the render device
+      # is `auto`, so CUDA, then MPS, then CPU -- and which one it lands on
+      # decides which baseline directory the render suites compare against),
+      # and whether the LaTeX and FFmpeg this job installed are actually on
+      # PATH. Without it, a Mac that quietly has no `latex` looks like a
+      # rendering bug several minutes later.
+      - name: Report the environment Algan resolved
+        run: uv run algan check
+
       # Scoped to the two suites whose baselines survive a change of machine.
       # tests/full_renders is left out deliberately: measured on this runner
       # against baselines rendered elsewhere, five of its six scenes differed by
@@ -137,12 +136,12 @@ jobs:
       # paths is portable and passes here. CI can afford the whole thing; the
       # fast suite is a development loop, not a CI scope.
       #
-      # On macOS the render in tests/fast still runs, but its pixel comparison
-      # skips: the committed cpu baseline was rendered on x86-64 and Apple
-      # Silicon does not reproduce a path tracer's fp32 arithmetic to within
-      # the two-channel tolerance. What the Mac job proves is that the whole
-      # pipeline -- kernel compilation, tessellation, LaTeX, the fonts, the
-      # encoder -- works there. See tests/fast/test_fast_render.py.
+      # The render in tests/fast compares pixels on both platforms:
+      # tests/fast/expected_outputs_macos_cpu/ carries a copy of the x86-64 CPU
+      # baseline, on the proposition that this scene reproduces across
+      # instruction sets. If that turns out to be false the file comes out
+      # again and the Mac renders without comparing -- see
+      # tests/fast/test_fast_render.py.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 

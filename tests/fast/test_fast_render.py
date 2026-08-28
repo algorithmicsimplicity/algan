@@ -36,7 +36,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 
 from algan import PREVIEW, SETTINGS, Scene
 from algan.scene_manager import SceneManager
@@ -45,18 +44,21 @@ HERE = Path(__file__).resolve().parent
 SCENE_FILE = HERE / "scene.py"
 OUTPUT_DIR = HERE / "algan_outputs"
 CACHE_DIR = HERE / "algan_cache"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# Baselines are keyed by render device, and on macOS by platform as well. The
-# committed ``cpu`` baseline was rendered on x86-64; Apple Silicon is a
-# different instruction set with a different libm, and a path tracer's fp32
-# arithmetic does not agree across the two to within the two-channel tolerance
-# this suite asserts. Pointing a Mac at that baseline would fail every run
-# without ever having seen a regression, so a Mac looks for a baseline of its
-# own -- and, with none committed, renders the scene and skips the comparison
-# below. That still exercises the whole pipeline (kernel compilation,
-# tessellation, LaTeX, the fonts, the encoder); it just cannot see a
-# pixel-level regression. Render with ALGAN_UPDATE_FAST_BASELINE=1 on a Mac and
-# commit the directory it writes, and the comparison turns itself back on.
+# The device the render will actually run on, which is not the same question as
+# ``torch.cuda.is_available()``: a CUDA machine with ``ALGAN_RENDER_DEVICE=cpu``
+# set renders on the CPU and belongs against the CPU baseline, and an Apple
+# Silicon Mac renders on MPS while reporting no CUDA at all. Read at import,
+# before any test can move it.
+DEVICE = SETTINGS.computing.render_device.type
+# macOS is keyed apart from the other platforms on the same device, because
+# Apple Silicon is a different instruction set with a different libm and this
+# suite's tolerance is two channel values. ``expected_outputs_macos_cpu/``
+# holds a copy of the x86-64 CPU baseline, on the proposition that this scene
+# is reproducible across instruction sets -- take the file out again if that
+# proves false, and the harness falls back to rendering the scene and skipping
+# the comparison below (which still covers kernel compilation, tessellation,
+# LaTeX, the fonts and the encoder, just not the pixels). Re-baseline for the
+# machine you are on with ALGAN_UPDATE_FAST_BASELINE=1.
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
 EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINE = os.getenv("ALGAN_UPDATE_FAST_BASELINE") == "1"

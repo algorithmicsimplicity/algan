@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 
 from algan import PREVIEW, SETTINGS, Scene
 from algan.scene_manager import SceneManager
@@ -39,12 +38,11 @@ SCENES_DIR = HERE / "scenes"
 OUTPUT_DIR = HERE / "algan_outputs2"
 CACHE_DIR = HERE / "algan_cache"
 ERRORS_DIR = HERE / "output_errors"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# Keyed by render device, and on macOS by platform as well -- for the reason
-# spelled out in ``tests/fast/test_fast_render.py``: the committed ``cpu``
-# baselines were rendered on x86-64, and Apple Silicon does not reproduce a
-# path tracer's fp32 arithmetic to within the two-channel tolerance. A Mac with
-# no baseline of its own renders every scene and skips the comparisons.
+# The device the renders will actually run on, and -- on macOS -- the platform
+# too. Both choices are explained at the top of ``tests/fast/test_fast_render.py``.
+# Nothing is committed for macOS here, so a Mac renders all six scenes and
+# skips the comparisons.
+DEVICE = SETTINGS.computing.render_device.type
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
 EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"

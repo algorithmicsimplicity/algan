@@ -132,10 +132,11 @@ pixel-compared render test.
    ``expected_outputs_cuda/`` or ``expected_outputs_cpu/``. Because CPU and GPU
    rasterization differences are expected, baseline files are maintained
    separately for each backend. macOS is keyed separately again
-   (``expected_outputs_macos_cpu/``) and ships no baselines: the committed CPU
-   set was rendered on x86-64, and Apple Silicon does not reproduce a path
-   tracer's ``float32`` arithmetic closely enough to compare against it. On a
-   Mac the render still runs; only the pixel comparison is skipped.
+   (``expected_outputs_macos_cpu/``), because Apple Silicon is a different
+   instruction set: whether a path tracer's ``float32`` arithmetic reproduces
+   across the two closely enough for the two-channel tolerance is what the
+   macOS CI job is there to find out. If it does not, that directory is
+   emptied and a Mac renders without comparing.
 
 Updating Baseline Videos
 ------------------------

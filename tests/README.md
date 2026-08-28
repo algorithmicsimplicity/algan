@@ -88,11 +88,12 @@ and runs everything under them, `fast`-marked or not (see the comment in
 `.github/workflows/test.yaml`). The fast suite is a development loop; CI can
 afford twelve minutes and should keep spending them.
 
-It runs those paths twice, on `ubuntu-latest` and on `macos-latest`, both
-pinned to `ALGAN_RENDER_DEVICE=cpu`. The two jobs are the same job on two
-platforms with one exception: the render in `tests/fast` compares pixels on
-Linux and skips the comparison on macOS, for the reason under *Baselines are
-per device* below.
+It runs those paths twice, on `ubuntu-latest` and on `macos-latest`. Neither
+job pins a render device: `auto` resolves to CUDA, then MPS, then the CPU, so
+each runner tests whatever it actually offers, and the render suites key their
+baseline directory off the device that came out (see *Baselines are per
+device* below). The `algan check` step ahead of the tests prints which one
+that was.
 
 ## The full suite
 
@@ -207,16 +208,22 @@ directory for its device renders the scene and then skips the comparison, so
 **a suite that reports itself green on a new device may not have compared
 anything**; check for skips before believing it.
 
-**macOS is keyed separately** (`expected_outputs_macos_cpu/`), and nothing is
-checked in for it. The `cpu` baselines were rendered on x86-64, and Apple
-Silicon is a different instruction set with a different libm; a path tracer's
-fp32 arithmetic does not agree across the two to within the two-channel
-tolerance, so comparing against them would fail every run on a Mac without
-ever having seen a regression. So a Mac renders and skips — which is what the
-macOS CI job does, and why that job proves the pipeline works there (kernels,
-tessellation, LaTeX, fonts, the encoder) rather than that the pixels are
-right. Render with `ALGAN_UPDATE_FAST_BASELINE=1` on a Mac and commit the
-directory it writes to turn the comparison on.
+The device is the one the render will actually run on —
+`SETTINGS.computing.render_device`, so `ALGAN_RENDER_DEVICE=cpu` on a CUDA
+machine compares against the CPU baseline, and an Apple Silicon Mac (where the
+automatic probe resolves to MPS) does not silently compare a Metal render
+against a CPU one.
+
+**macOS is keyed separately** — `expected_outputs_macos_cpu/`, which the fast
+suite carries and the full-render suite does not. Apple Silicon is a different
+instruction set with a different libm and the tolerance here is two channel
+values, so whether the x86-64 baseline transfers is a question rather than an
+assumption; the file in there is a copy of the x86-64 one, and macOS CI is
+what tests the proposition. If it turns out not to transfer, delete the file:
+a Mac then renders and skips the comparison, which still covers kernel
+compilation, tessellation, LaTeX, the fonts and the encoder — just not the
+pixels. Render with `ALGAN_UPDATE_FAST_BASELINE=1` on a Mac to write a
+genuine one.
 
 Both sets are checked in. They are *not* interchangeable, and the differences
 between them are larger than the tolerance by design:
