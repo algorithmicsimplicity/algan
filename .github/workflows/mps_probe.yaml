@@ -189,6 +189,25 @@ jobs:
           echo "CLONE_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
           du -sh taichi-src
 
+      # `ti_build` hard-wires Homebrew's llvm@15 as the compiler -- it emits
+      # `-DCLANG_EXECUTABLE=/opt/homebrew/opt/llvm@15/bin/clang` whether or not
+      # that path exists, which their self-hosted M1 runner has and a hosted one
+      # does not. The first run of this job died on it in 100 seconds:
+      # `The CMAKE_C_COMPILER: /opt/homebrew/opt/llvm@15/bin/clang is not a full
+      # path to an existing compiler tool.` So install it, and time it
+      # separately: it is a real part of what a release costs but it is not
+      # compilation.
+      #
+      # `--force-bottle` on purpose. If the bottle is ever missing for the
+      # runner's macOS version, brew would build LLVM from source and eat hours;
+      # this way it fails in seconds and says so.
+      - name: Install LLVM 15 (the compiler ti_build expects)
+        run: |
+          start=$(date +%s)
+          brew install --force-bottle llvm@15
+          echo "BREW_LLVM_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          /opt/homebrew/opt/llvm@15/bin/clang --version
+
       # `build.py` is Taichi's documented entry point and downloads a prebuilt
       # LLVM 15 itself, so this does not build LLVM. `--python=native` builds
       # against the interpreter set up above rather than fetching one, which is
@@ -285,7 +304,7 @@ jobs:
             echo
             echo "| phase | seconds | minutes |"
             echo "| --- | ---: | ---: |"
-            for k in CLONE_SECONDS COLD_BUILD_SECONDS INCREMENTAL_BUILD_SECONDS; do
+            for k in CLONE_SECONDS BREW_LLVM_SECONDS COLD_BUILD_SECONDS INCREMENTAL_BUILD_SECONDS; do
               v=$(eval echo "\$$k")
               if [ -n "$v" ]; then
                 echo "| $k | $v | $(python3 -c "print(f'{$v/60:.1f}')") |"
