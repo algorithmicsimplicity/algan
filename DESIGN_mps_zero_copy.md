@@ -42,8 +42,8 @@ It is in `taichi/rhi/metal/metal_device.{h,mm}` upstream, it marks the allocatio
 the memory's `can_map` from `[buffer contents]` — null for a private-storage
 buffer, which is what torch hands out, and which does not matter because nothing
 here needs host mapping. **It is compiled into the wheel Algan already installs**:
-of 365,655 symbols in `taichi_python.cpython-311-darwin.so`, 257 are in namespace
-`taichi::lang::metal`, including
+`taichi_python.cpython-311-darwin.so` carries 365,655 symbols, 257 of them in
+namespace `taichi::lang::metal` — every one local, none external — including
 
 ```
 __ZN6taichi4lang5metal11MetalDevice17import_mtl_bufferEPU19objcproto9MTLBuffer11objc_object
@@ -146,7 +146,7 @@ Order of 150 lines. **The kernels do not change**: `ti.types.ndarray()` accepts 
 
 Row three is the only awkward one, and it exists because of how Algan allocates.
 `ManualMemory.get_tensor` hands kernels slices of one arena tensor
-(`algan/utils/memory_utils.py:741`, `self.data[pointer:new_pointer]`), so
+(`algan/utils/memory_utils.py:744`, `self.data[pointer:new_pointer]`), so
 `storage_offset() != 0` for essentially every kernel argument, while an imported
 `MTLBuffer` is the whole arena. The offset therefore has to travel from the
 launch context down to the bind — representable, since Metal takes it, but it is
