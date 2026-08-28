@@ -50,10 +50,19 @@ you texture something with data you computed rather than loaded.
 
     The per-material texture arguments on :class:`~algan.mobs.surfaces.surface.Surface`
     (``color_texture``, ``roughness_texture``, ``normal_texture`` and the rest)
-    take **tensors only**. Handing one a file path raises ``TypeError``. Load the
+    take **tensors only**, in the ``[W, H, C]`` ``(u, v)`` layout. Handing one a
+    file path raises ``TypeError``. Load the
     image yourself first, with :func:`~algan.utils.file_utils.get_image`, or use
     :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`, which takes a
     path and orients the image onto the surface's ``(u, v)`` axes for you.
+
+    The Three.js-style material slots are the other door and take the other
+    thing: ``MeshStandardMaterial(map=..., normal_map=..., roughness_map=...,
+    metalness_map=...)`` accepts a path or an ``[H, W, C]`` image and orients it
+    for you, and :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+    forwards it here. Its ``map`` lands on ``color_texture`` and animates like
+    any other assignment to it; the property maps it forwards are static. See
+    :doc:`shaders_and_materials`.
 
 Reshaping a textured surface
 ============================

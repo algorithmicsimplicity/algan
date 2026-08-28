@@ -1184,13 +1184,15 @@ class Surface(Mob):
             "roughness": roughness_texture,
             "refractive_index": refractive_index_texture,
         }
-        material_prop_textures = {
+        # Kept so a material applied later (set_material -> a roughness_map or
+        # metalness_map) merges into these rather than replacing them: the
+        # three share one packed texture, so a new channel means rebuilding it
+        # from every source map, not just the new one.
+        self._material_prop_textures = {
             k: v for k, v in material_prop_textures.items() if v is not None
         }
-        if material_prop_textures:
-            self.material_texture, self.material_texture_flags = (
-                self._build_material_texture(material_prop_textures)
-            )
+        if self._material_prop_textures:
+            self._rebuild_material_texture()
         if normal_texture is not None:
             self.normal_texture = self._normalize_texture_shape(normal_texture, 3).to(
                 self.location.device
@@ -2962,58 +2964,77 @@ class Surface(Mob):
 
     @staticmethod
     def _normalize_texture_shape(tex, channels):
-        """Normalize a user-supplied texture to ``[T, W, H, channels]``.
-        Accepts ``[W, H]`` (single-channel maps only), ``[W, H, channels]``
-        or ``[T, W, H, channels]``; ``W`` is the ``u`` axis, ``H`` the ``v``
-        axis of the surface's intrinsic coordinates.
+        """Normalize a user-supplied texture to ``[T, W, H, channels]``. See
+        :func:`~algan.rendering.shaders.materials._as_texture_stack`, which is
+        shared with the maps a material forwards.
         """
-        tex = torch.as_tensor(tex).float()
-        if tex.dim() == 2:
-            if channels != 1:
-                raise ValueError(
-                    f"a 2-D texture is only valid for single-channel "
-                    f"properties, expected {channels} channels"
-                )
-            tex = tex.unsqueeze(-1)
-        if tex.dim() == 3:
-            tex = tex.unsqueeze(0)
-        if tex.dim() != 4 or tex.shape[-1] != channels:
-            raise ValueError(
-                f"texture must have shape [W, H, {channels}] or "
-                f"[T, W, H, {channels}], got {tuple(tex.shape)}"
-            )
-        return tex
+        from algan.rendering.shaders.materials import _as_texture_stack
+
+        return _as_texture_stack(tex, channels)
 
     def _build_material_texture(self, textures_dict):
         """Combine per-property maps into one ``[T, W, H, 5]`` material
-        texture (channels: reflectivity, roughness, refractive index, and two
-        reserved) at the finest common resolution, plus the bitmask of which
-        channels are texture-driven (bit i = channel i has a map; unset
-        channels keep the per-vertex value in-kernel).
+        texture plus its channel bitmask, on this surface's device. See
+        :func:`~algan.rendering.shaders.materials._pack_material_texture`,
+        which is shared with the maps a material forwards.
         """
-        channel_slots = {"reflectivity": 0, "roughness": 1, "refractive_index": 2}
+        from algan.rendering.shaders.materials import _pack_material_texture
+
+        return _pack_material_texture(textures_dict, self.location.device)
+
+    def _rebuild_material_texture(self):
+        """Repack ``self._material_prop_textures`` into the material texture."""
+        self.material_texture, self.material_texture_flags = (
+            self._build_material_texture(self._material_prop_textures)
+        )
+
+    def _can_accept_material_textures(self):
+        """A surface generates UVs from its parameter grid, so it can always
+        sample a map.
+        """
+        return True
+
+    def _accept_material_textures(self, maps):
+        """Take a material's texture maps onto this surface's own map slots.
+
+        See
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin._accept_material_textures`.
+        A surface generates UVs from its parameter grid, so every map a
+        material can forward has a home here: ``map`` becomes
+        :attr:`color_texture`, ``normal_map`` becomes ``normal_texture``, and
+        the property maps join the packed material texture.
+        """
+        from algan.rendering.shaders.materials import _MAP_SLOT_PROPERTIES
+
         device = self.location.device
-        texs = {
-            k: self._normalize_texture_shape(v, 1).to(device)
-            for k, v in textures_dict.items()
+        # color_texture is a real animatable attribute; the other two are plain
+        # fields read at primitive build, hence the animatable flag per slot.
+        applied = {}
+        if "map" in maps:
+            self.color_texture = maps["map"].to(device)
+            applied["map"] = True
+        if "normal_map" in maps:
+            self.normal_texture = self._normalize_texture_shape(
+                maps["normal_map"], 3
+            ).to(device)
+            applied["normal_map"] = False
+        properties = {
+            name: maps[slot]
+            for slot, (name, _) in _MAP_SLOT_PROPERTIES.items()
+            if slot in maps
         }
-        T = max(t.shape[0] for t in texs.values())
-        W = max(t.shape[1] for t in texs.values())
-        H = max(t.shape[2] for t in texs.values())
-        combined = torch.zeros((T, W, H, 5), device=device)
-        flags = 0
-        for name, t in texs.items():
-            if t.shape[1:3] != (W, H):
-                t = F.interpolate(
-                    t.permute(0, 3, 1, 2),
-                    size=(W, H),
-                    mode="bilinear",
-                    align_corners=True,
-                ).permute(0, 2, 3, 1)
-            slot = channel_slots[name]
-            combined[..., slot] = t.expand(T, W, H, 1)[..., 0]
-            flags |= 1 << slot
-        return combined, flags
+        if properties:
+            # Rebound rather than mutated in place, so a subclass that never
+            # reached Surface.__init__ still merges correctly instead of
+            # raising (and never shares one dict between instances).
+            merged = dict(getattr(self, "_material_prop_textures", {}))
+            merged.update(properties)
+            self._material_prop_textures = merged
+            self._rebuild_material_texture()
+            applied.update(
+                {slot: False for slot in _MAP_SLOT_PROPERTIES if slot in maps}
+            )
+        return applied
 
     def _bake_texture_to_grid(self, tex, channels=1):
         """Resample a texture to the surface grid resolution and flatten it to

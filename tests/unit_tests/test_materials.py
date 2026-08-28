@@ -453,6 +453,147 @@ def test_texture_and_unsupported_warnings():
     print("ok: texture/unsupported-property warnings fire")
 
 
+def _checker_image(n=16):
+    """A small ``[H, W, 3]`` image, the layout a material's map slots take."""
+    yy, xx = torch.meshgrid(torch.arange(n), torch.arange(n), indexing="ij")
+    c = (((yy // 4) + (xx // 4)) % 2).float()
+    return torch.stack([c, c * 0, 1 - c], -1)
+
+
+def _set_material_warnings(mob, material):
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        mob.set_material(material)
+    return " ".join(str(w.message) for w in rec)
+
+
+def test_material_forwards_maps_to_surface():
+    """A Surface takes every map a material can forward, and the colour map
+    lands on the animatable ``color_texture`` attribute itself.
+    """
+    from algan.mobs.three_d_models.mesh import image_to_texture_map
+
+    image = _checker_image()
+    sphere = algan.Sphere()
+    text = _set_material_warnings(
+        sphere,
+        MeshStandardMaterial(map=image, roughness_map=image, normal_map=image),
+    )
+    assert sphere._has_color_texture
+    assert torch.equal(sphere.color_texture, image_to_texture_map(image))
+    assert sphere.normal_texture is not None
+    # bit 1 = roughness (see _MATERIAL_TEXTURE_CHANNELS); metalness was not set.
+    assert sphere.material_texture is not None
+    assert sphere.material_texture_flags == 0b10
+    # The property and normal maps are static, so they warn; ``map`` becomes an
+    # ordinary animatable attribute, so it must not.
+    assert "roughness_map" in text
+    assert "normal_map" in text
+    assert "static" in text
+    assert "'map'" not in text
+    print("ok: a material's texture maps reach a Surface")
+
+
+def test_material_maps_merge_with_constructor_maps():
+    """A forwarded property map joins the ones the Surface was built with
+    rather than replacing them -- the three share one packed texture.
+    """
+    image = _checker_image()
+    sphere = algan.Sphere(refractive_index_texture=torch.rand(8, 8, 1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sphere.set_material(MeshStandardMaterial(metalness_map=image))
+    # bit 0 = reflectivity (metalness), bit 2 = refractive index.
+    assert sphere.material_texture_flags == 0b101
+    print("ok: forwarded property maps merge with constructor ones")
+
+
+def test_material_maps_need_uvs():
+    """A Mob whose rendered body carries no UVs takes nothing, and says so.
+
+    A Cube is the case worth pinning: its faces cannot be textured, but the
+    decorative Dot3D at each corner is a Sphere and could be. Texturing those
+    instead would be worse than refusing.
+    """
+    cube = algan.Cube()
+    text = _set_material_warnings(cube, MeshStandardMaterial(map=_checker_image()))
+    assert "ignored" in text
+    assert "uvs" in text.lower()
+    assert not any(
+        getattr(d, "_has_color_texture", False) for d in cube.get_descendants()
+    )
+    print("ok: texture maps are refused, not half-applied, without UVs")
+
+
+def test_material_forwards_maps_to_triangle_mesh():
+    """A TriangleMesh takes the maps when it was built with ``uvs``, and
+    refuses them (rather than sampling an undefined coordinate) when it wasn't.
+    """
+    from algan.mobs.three_d_models.mesh import TriangleMesh
+
+    vertices = torch.tensor([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    faces = torch.tensor([[0, 1, 2]])
+    uvs = torch.tensor([[0.0, 0], [1, 0], [0, 1]])
+    image = _checker_image()
+
+    mesh = TriangleMesh(vertices=vertices, faces=faces, uvs=uvs)
+    text = _set_material_warnings(mesh, MeshStandardMaterial(map=image))
+    assert mesh.texture_map is not None
+    # The UVs were only stashed at construction (nothing sampled them yet);
+    # accepting a map is what builds the per-corner ones the primitive needs.
+    assert mesh.corner_uvs is not None
+    assert "static" in text
+
+    bare = TriangleMesh(vertices=vertices, faces=faces)
+    text = _set_material_warnings(bare, MeshStandardMaterial(map=image))
+    assert bare.texture_map is None
+    assert "ignored" in text
+    print("ok: a material's texture maps reach a TriangleMesh built with uvs")
+
+
+def test_mesh_material_maps_keep_existing_channels():
+    """A mesh is built with an already-packed material map, so a forwarded
+    property map must repack alongside its channels rather than replace them.
+    """
+    from algan.mobs.three_d_models.mesh import TriangleMesh
+    from algan.rendering.shaders.materials import _pack_material_texture
+
+    vertices = torch.tensor([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    faces = torch.tensor([[0, 1, 2]])
+    uvs = torch.tensor([[0.0, 0], [1, 0], [0, 1]])
+    packed, flags = _pack_material_texture(
+        {"refractive_index": torch.rand(8, 8, 1)}, torch.device("cpu")
+    )
+    mesh = TriangleMesh(
+        vertices=vertices,
+        faces=faces,
+        uvs=uvs,
+        material_texture_map=packed,
+        material_texture_flags=flags,
+    )
+    assert mesh.material_texture_flags == 0b100
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        mesh.set_material(MeshStandardMaterial(roughness_map=_checker_image()))
+    # bit 2 (refractive index) survives; bit 1 (roughness) is added.
+    assert mesh.material_texture_flags == 0b110
+    print("ok: a forwarded property map repacks beside a mesh's existing ones")
+
+
+def test_unsupported_image_slots_are_still_dropped():
+    """Slots with no channel in the renderer are reported as ignored, not as
+    static -- the distinction the warning exists to draw.
+    """
+    sphere = algan.Sphere()
+    text = _set_material_warnings(
+        sphere, MeshStandardMaterial(env_map=_checker_image())
+    )
+    assert "env_map" in text
+    assert "ignored" in text
+    assert "static" not in text
+    print("ok: unsupported image slots are reported as ignored")
+
+
 # ---------------------------------------------------------------------------
 # Warnings for lighting a vertex bake cannot answer
 #
