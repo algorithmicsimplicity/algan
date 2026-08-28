@@ -219,16 +219,18 @@ machine compares against the CPU baseline, and an Apple Silicon Mac (where the
 automatic probe resolves to MPS) does not silently compare a Metal render
 against a CPU one.
 
-**macOS is keyed separately** — `expected_outputs_macos_cpu/`, which the fast
-suite carries and the full-render suite does not. Apple Silicon is a different
-instruction set with a different libm and the tolerance here is two channel
-values, so whether the x86-64 baseline transfers is a question rather than an
-assumption; the file in there is a copy of the x86-64 one, and macOS CI is
-what tests the proposition. If it turns out not to transfer, delete the file:
-a Mac then renders and skips the comparison, which still covers kernel
-compilation, tessellation, LaTeX, the fonts and the encoder — just not the
-pixels. Render with `ALGAN_UPDATE_FAST_BASELINE=1` on a Mac to write a
-genuine one.
+**macOS is keyed separately** (`expected_outputs_macos_cpu/`), and nothing is
+committed under that name, so a Mac renders and skips the comparison. That is
+measured, not assumed: the x86-64 CPU baseline was copied in and run on an
+Apple Silicon CI runner, and it missed by **up to 45 channel values** (worst at
+frame 36) against a tolerance of 2. This is the scene that matched *exactly*
+across two x86-64 machines when five of the six full-render scenes did not — so
+the change of instruction set is its own axis, separate from the per-machine
+spread below, and fp32 arithmetic through a path tracer does not survive it.
+
+A Mac therefore covers kernel compilation, tessellation, LaTeX, the fonts and
+the encoder, but not the pixels. To gate pixels there, render with
+`ALGAN_UPDATE_FAST_BASELINE=1` on the Mac, look at the result, and commit it.
 
 Both sets are checked in. They are *not* interchangeable, and the differences
 between them are larger than the tolerance by design:

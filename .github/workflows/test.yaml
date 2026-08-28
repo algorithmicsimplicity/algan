@@ -159,12 +159,13 @@ jobs:
       # paths is portable and passes here. CI can afford the whole thing; the
       # fast suite is a development loop, not a CI scope.
       #
-      # The render in tests/fast compares pixels on both platforms:
-      # tests/fast/expected_outputs_macos_cpu/ carries a copy of the x86-64 CPU
-      # baseline, on the proposition that this scene reproduces across
-      # instruction sets. If that turns out to be false the file comes out
-      # again and the Mac renders without comparing -- see
-      # tests/fast/test_fast_render.py.
+      # The render in tests/fast compares pixels on Linux and renders without
+      # comparing on macOS, because no baseline is committed for Apple Silicon
+      # and the x86-64 one does not transfer: copying it in and running it here
+      # missed by up to 45 channel values against a tolerance of 2. So what the
+      # Mac job proves about the renderer is that the pipeline works there --
+      # kernel compilation, tessellation, LaTeX, the fonts, the encoder -- not
+      # that the frames are right. See tests/fast/test_fast_render.py.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 
