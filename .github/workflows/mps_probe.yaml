@@ -28,6 +28,15 @@ name: MPS capability probe
 # broken".
 on:
   workflow_dispatch:
+    inputs:
+      sections:
+        description: "Which measurement to take"
+        type: choice
+        default: all
+        options:
+          - all
+          - capability
+          - speed
 
 # Queue behind an in-flight run rather than cancelling it, which is where this
 # differs from the test and code-quality workflows and why. Those cancel because
@@ -44,6 +53,10 @@ concurrency:
 jobs:
   probe:
     name: ${{ matrix.os }}
+    # The two jobs answer different questions and cost very different amounts,
+    # so a dispatch can ask for one of them. An empty value is treated as `all`
+    # so that a run triggered without inputs still does everything.
+    if: ${{ inputs.sections == '' || inputs.sections == 'all' || inputs.sections == 'capability' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -127,5 +140,89 @@ jobs:
           path: |
             mps_probe_results.json
             probe-output.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  speed:
+    name: torch cpu vs mps -- ${{ matrix.os }}
+    # Cheap next to the capability probe: no Taichi, no kernel compilation, and
+    # the whole measurement is a few minutes of tensor work.
+    if: ${{ inputs.sections == '' || inputs.sections == 'all' || inputs.sections == 'speed' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      # Same reason as the probe job: this is a comparison, and half a
+      # comparison is not one. Linux is the control -- it has no MPS, so its
+      # mps arm skips and what it shows is that the harness runs and what the
+      # cpu numbers look like on a machine nobody is asking questions about.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+
+    # Nothing here imports algan, so no render device is selected and no Taichi
+    # program is brought up. The variable is pinned anyway, for the same reason
+    # the probe job pins it: so that an accidental import cannot quietly change
+    # what is being measured.
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+      # A silent fallback would run an unimplemented op on the CPU and time it
+      # as the GPU, which is the one answer this job must not be able to give.
+      # The script clears it too; belt and braces, because it is the difference
+      # between a measurement and a misreading.
+      PYTORCH_ENABLE_MPS_FALLBACK: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: ./.github/actions/install-uv
+
+      - name: Create venv
+        run: uv venv
+
+      # Same reason as in the probe job: pycairo has no manylinux wheel and
+      # builds from source against a system cairo. macOS needs nothing.
+      - name: Install cairo and pango headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
+
+      # The locked environment rather than a bare `uv pip install torch`, so the
+      # torch version measured is the one Algan actually ships against.
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run the CPU vs MPS speed comparison
+        # -u so the per-case lines reach the log as they happen; through a
+        # pipe python block-buffers stdout, and a job that hits its timeout
+        # would otherwise show nothing at all.
+        run: uv run python -u benchmarks/_mps_vs_cpu_torch_speed.py | tee speed-output.txt
+
+      - name: Publish the report to the job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## torch CPU vs MPS -- ${{ matrix.os }}"
+            echo
+            echo '```'
+            cat speed-output.txt 2>/dev/null || echo "(the benchmark produced no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mps-speed-${{ matrix.os }}
+          path: |
+            benchmarks/mps_vs_cpu_speed.json
+            speed-output.txt
           if-no-files-found: warn
           retention-days: 14
