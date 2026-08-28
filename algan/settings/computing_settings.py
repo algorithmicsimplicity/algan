@@ -127,23 +127,6 @@ class ComputingSettings(Settings):
                 )
         super()._check_keys(kwargs)
 
-    def __setattr__(self, name, value):
-        # Direct assignment reaches ``object.__setattr__`` for every other
-        # field, which is tolerable for a number and not for this: an
-        # unvalidated device, or one changed after a texture pinned it, renders
-        # on the wrong hardware or crashes deep inside a batch. Route it
-        # through ``set`` so assignment and ``set(render_device=...)`` are the
-        # same operation. ``set`` writes with ``object.__setattr__``, so this
-        # cannot recurse, and the ``hasattr`` guard lets construction through.
-        if (
-            name == "render_device"
-            and not getattr(self, "_is_preset", False)
-            and hasattr(self, "render_device")
-        ):
-            self.set(render_device=value)
-            return
-        super().__setattr__(name, value)
-
     def set(self, source=None, **kwargs):
         """Apply settings, refusing a render-device change that is too late.
 

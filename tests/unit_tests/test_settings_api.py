@@ -16,6 +16,7 @@ from algan import (
     PREVIEW,
     SETTINGS,
     AlganConfigurationError,
+    ComputingSettings,
     RayTracingSettings,
     VideoSettings,
 )
@@ -90,6 +91,98 @@ def test_available_memory_override_replaces_the_measured_device_figure():
             == SETTINGS.computing.max_cpu_memory_used
         )
     assert SETTINGS.computing.available_memory_override is None
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "bad"),
+    [
+        ("video", "frames_per_second", 0),
+        ("style", "buffer", -1),
+        ("computing", "max_animation_batch_size", -5),
+        ("paths", "output_directory", 123),
+    ],
+)
+def test_assigning_a_field_validates_exactly_as_set_does(section, field, bad):
+    """The short spelling must not be the one that skips the checks.
+
+    ``SETTINGS.video.frames_per_second = 0`` used to store the zero and fail
+    much later, somewhere inside a render, while
+    ``SETTINGS.video.set(frames_per_second=0)`` refused it on the spot.
+
+    Every dataclass section is listed, deliberately: the routing stands down
+    until each declared field is present in ``__dict__``, so a section that
+    stopped storing its fields there would quietly revert to unvalidated
+    assignment. That is a silent regression, and this is what catches it.
+    """
+    settings_section = getattr(SETTINGS, section)
+    before = getattr(settings_section, field)
+
+    with pytest.raises(AlganConfigurationError):
+        setattr(settings_section, field, bad)
+
+    assert getattr(settings_section, field) == before, (
+        "a refused assignment must leave the field exactly as it was"
+    )
+
+
+def test_assigning_a_field_normalizes_it_the_way_set_does():
+    """``__post_init__`` coercions have to run on assignment too."""
+    SETTINGS.style.buffer = 1
+    assert isinstance(SETTINGS.style.buffer, float)
+    assert SETTINGS.style.buffer == 1.0
+
+
+def test_a_write_leaves_the_fields_it_did_not_change_alone():
+    """Identity, not just equality: callers hold these objects.
+
+    ``set`` used to write a deepcopy of *every* field, so changing ``buffer``
+    swapped ``background_color`` for an equal stranger and anything holding the
+    old Color stopped tracking the setting.
+    """
+    background = SETTINGS.style.background_color
+    text = SETTINGS.style.text_color
+
+    SETTINGS.style.set(buffer=0.7)
+    assert SETTINGS.style.background_color is background
+    assert SETTINGS.style.text_color is text
+
+    SETTINGS.style.buffer = 0.8
+    assert SETTINGS.style.background_color is background
+    assert SETTINGS.style.text_color is text
+
+
+def test_a_changed_field_is_still_applied_and_still_copied():
+    """The narrowing must not skip a real change, or alias the caller's object.
+
+    Copying is what stops a caller mutating their own value afterwards and
+    silently reconfiguring the renderer.
+    """
+    original = SETTINGS.style.background_color
+    replacement = original.clone()
+
+    SETTINGS.style.set(background_color=replacement)
+
+    assert SETTINGS.style.background_color is not original, "the change was skipped"
+    assert SETTINGS.style.background_color is not replacement, "aliased the argument"
+    assert bool((SETTINGS.style.background_color == replacement).all())
+
+
+def test_a_section_can_still_be_constructed_directly():
+    """Construction assigns fields one at a time, before ``set`` could work.
+
+    The routing has to stand down until every declared field exists, or
+    building a section from scratch would try to replace a half-built object.
+    """
+    section = ComputingSettings(max_animation_batch_size=42)
+    assert section.max_animation_batch_size == 42
+    # And it is a real, independent section, not a view on the live one.
+    assert section is not SETTINGS.computing
+    assert SETTINGS.computing.max_animation_batch_size != 42
+
+    section.max_animation_batch_size = 43
+    assert section.max_animation_batch_size == 43
+    with pytest.raises(AlganConfigurationError):
+        ComputingSettings(max_animation_batch_size=0)
 
 
 def test_available_memory_override_rejects_values_that_cannot_size_an_arena():

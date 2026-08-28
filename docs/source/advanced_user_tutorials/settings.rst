@@ -27,13 +27,20 @@ Mutating live settings
 ======================
 
 Section objects keep stable identity. Modify them in place with ``set`` rather
-than assigning a replacement object:
+than assigning a replacement *object*:
 
 .. code-block:: python
 
     SETTINGS.video.set(frames_per_second=60)
     SETTINGS.paths.set(output_directory="renders")
     SETTINGS.raytracing.set(samples_per_pixel=4)
+
+Assigning a single *field* is the same operation, so use whichever reads better
+-- both validate the value and reject a bad one on the spot:
+
+.. code-block:: python
+
+    SETTINGS.video.frames_per_second = 60      # identical to the above
 
 This is valid:
 
