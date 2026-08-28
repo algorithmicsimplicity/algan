@@ -383,24 +383,52 @@ def _live_arch():
     return None
 
 
+#: Which Taichi backends actually serve each render-device type.
+#:
+#: Written out rather than resolved through ``adaptive_arch_select`` on purpose.
+#: Resolving ``ti.gpu`` means probing every backend in the list, which is the
+#: fallback chain :func:`_taichi_arch` exists to avoid -- it reaches Vulkan and
+#: OpenGL, and some headless configurations crash inside Taichi rather than
+#: reporting that they are unavailable. This comparison runs once per render
+#: job and must not be able to take the process down.
+#:
+#: ``mps`` lists both SPIR-V backends because either really does serve an Apple
+#: GPU: ``ti.gpu`` selects metal, ``TI_ARCH=vulkan`` selects vulkan, and both
+#: run on the same physical device.
+_ARCHS_SERVING_DEVICE = {
+    "cpu": (ti.cpu,),
+    "cuda": (ti.cuda,),
+    "mps": (ti.metal, ti.vulkan),
+}
+
+
 def _arch_matches_render_device():
-    """Whether the live program's arch is the one the render device wants.
+    """Whether the live program's arch is one that serves the render device.
 
     Compares against the **live** arch rather than against the last value
     :func:`_taichi_arch` returned, because ``ti.gpu`` is a preference list:
-    Taichi resolves it to cuda, vulkan or metal at ``ti.init``, so on a machine
-    with more than one GPU backend two different render devices can both ask
-    for ``ti.gpu`` and get different programs. Asking the program what it
-    actually is, is the only comparison that answers "would a kernel launched
-    now run where the render device is".
+    Taichi resolves it to cuda, metal or vulkan at ``ti.init``, so two different
+    render devices can both ask for ``ti.gpu`` and get different programs.
+
+    And it compares against the arch that serves *this* device, not merely
+    against "some GPU". Testing ``live != ti.cpu`` made every GPU backend
+    interchangeable, so a render device moving between two of them -- cuda to
+    mps, or back -- kept whichever program was already up and launched every
+    kernel on the wrong device with no re-init and no error. The docstring here
+    claimed to rule that out while the code was what allowed it; this is the
+    comparison it described.
+
+    An unrecognised device type keeps the old, coarse rule. It is the honest
+    answer for a backend this mapping has never seen, and it does not force a
+    re-initialization on every render of a device that may well be fine.
     """
     live = _live_arch()
     if live is None:
         return False
-    wanted = _taichi_arch()
-    if wanted == ti.cpu:
-        return live == ti.cpu
-    return live != ti.cpu
+    serving = _ARCHS_SERVING_DEVICE.get(render_device().type)
+    if serving is None:
+        return live != ti.cpu
+    return live in serving
 
 
 def taichi_arch_is_cpu():
@@ -419,29 +447,61 @@ def taichi_arch_is_cpu():
     Reads the live program's arch when Taichi is already up and Algan's selected
     backend otherwise, so asking never forces initialization.
     """
-    if _already_initialized():
-        with contextlib.suppress(Exception):
-            return ti.lang.impl.get_runtime().prog.config().arch == ti.cpu
+    live = _live_arch()
+    if live is not None:
+        return live == ti.cpu
     return _taichi_arch() == ti.cpu
+
+
+def taichi_arch_is_cuda():
+    """Whether Taichi runs kernels on CUDA.
+
+    The companion to :func:`taichi_arch_is_cpu`, and read for the same reason:
+    CUDA is the only GPU backend that can adopt a torch allocation instead of
+    copying it (see :func:`taichi_launch_is_local`).
+
+    Reads the live program's arch when Taichi is already up. Otherwise it
+    answers from the render device, because :func:`_taichi_arch` returns the
+    ``ti.gpu`` *preference list* off the CPU and that list is headed by cuda --
+    so a CUDA render device is exactly the case where the arch will come up
+    cuda. Asking never forces initialization.
+    """
+    live = _live_arch()
+    if live is not None:
+        return live == ti.cuda
+    return render_device().type == "cuda"
 
 
 def taichi_launch_is_local(device):
     """Whether a kernel launched against a tensor on ``device`` avoids staging.
 
-    The inverse of the hazard :func:`taichi_arch_is_cpu` describes. Taichi
-    stages any argument that is not already on its arch's device, so a launch is
-    free of that copy exactly when the tensor's device *is* the arch's: host
-    tensors on a CPU arch, render-device tensors otherwise.
+    The inverse of the hazard :func:`taichi_arch_is_cpu` describes. A launch is
+    free of the copy exactly when Taichi can bind the torch allocation itself,
+    and only two pairings can:
+
+    * a **host** tensor on a **CPU** arch, and
+    * a **CUDA** tensor on a **CUDA** arch.
+
+    Everything else stages, including a pairing whose two halves name the same
+    physical device. That is not obvious and it is the whole reason this is not
+    ``device.type == render_device().type``: Taichi implements
+    ``Device::import_memory`` for ``CpuDevice`` and ``CudaDevice`` and for
+    nothing else, so its Metal and Vulkan backends cannot take a pointer they
+    did not allocate. An MPS tensor on a Metal arch is therefore copied to the
+    host before the launch and copied back after (``kernel_impl.py``), even
+    though both sides are the same Apple GPU -- measured at 53x the cost of the
+    same kernel on the CPU arch, against a device-equality test that called it
+    free (``DESIGN_mps_support.md`` §1.3).
 
     Phrased as a property of the pairing rather than as ``device.type ==
-    "cuda"``, because those are not the same question and the difference is
-    load-bearing. A host tensor on a CUDA arch stages, and must take the torch
-    path; a host tensor on a **CPU** arch does not stage, and a call site that
-    tests for CUDA turns the kernel off in exactly the case where it is free.
-    The arch is chosen from the render device (see :func:`_taichi_arch`), so
-    the arch's device is that device.
+    "cuda"``, because those are not the same question either. A host tensor on
+    a CUDA arch stages, and must take the torch path; a host tensor on a **CPU**
+    arch does not stage, and a call site that tests for CUDA turns the kernel
+    off in exactly the case where it is free.
     """
-    return device.type == ("cpu" if taichi_arch_is_cpu() else render_device().type)
+    if taichi_arch_is_cpu():
+        return device.type == "cpu"
+    return device.type == "cuda" and taichi_arch_is_cuda()
 
 
 #: CPU batch-prep kernels that are dispatched by default.
