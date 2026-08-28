@@ -231,10 +231,15 @@ def _projection_anti_alias_level(scene, primitives):
         RayTracedTrianglePrimitive,
     )
 
+    if not primitives:
+        return requested, False
+    if int(rt_settings.samples_per_pixel) > 1:
+        # The path tracer renders at output resolution (jittered sub-pixel
+        # samples are its anti-aliasing), so projection tessellates for the
+        # output pixel grid.
+        return 1, False
     if (
-        not primitives
-        or int(rt_settings.samples_per_pixel) > 1
-        or not rt_settings.hybrid_raster
+        not rt_settings.hybrid_raster
         or not rt_settings.analytic_aa
         or float(getattr(scene.camera, "near", 0.0) or 0.0) > 0.0
     ):

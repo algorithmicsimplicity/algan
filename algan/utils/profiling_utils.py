@@ -99,8 +99,6 @@ REPORT_PATH = "algan_profile_report.txt"
 
 # Set True once the Taichi kernel profiler has been successfully enabled.
 KERNEL_PROFILER = False
-# Samples per pixel; > 1 selects the Monte Carlo kernels. Set from profile_scene.
-SPP = 1
 
 
 # ---------------------------------------------------------------------------
@@ -354,8 +352,10 @@ def _det_extractor(args, kwargs):
     return _rays_from_last_out(args, spp=1)
 
 
-def _mc_extractor(args, kwargs):
-    return _rays_from_last_out(args, spp=max(1, int(SPP)))
+def _pt_extractor(args, kwargs):
+    # pt_generate and pt_shade both take (queue, count, ...): the count is the
+    # number of paths this launch touches.
+    return max(0, int(args[1]))
 
 
 KERNEL_RAY_EXTRACTORS = {
@@ -363,7 +363,8 @@ KERNEL_RAY_EXTRACTORS = {
     "render_triangles_stbvh": _det_extractor,
     "render_triangles_knots_stbvh": _det_extractor,
     "render_no_pn_stbvh": _det_extractor,
-    "path_trace_scene_stbvh": _mc_extractor,
+    "pt_generate": _pt_extractor,
+    "pt_shade": _pt_extractor,
 }
 
 
@@ -1514,7 +1515,6 @@ def profile_scene(
     kernel_profiler=None,
     telemetry=None,
     nvprof=None,
-    samples_per_pixel=1,
     save_video_kwargs=None,
 ):
     """Profile ``scene_func`` end-to-end and write a report.
@@ -1543,8 +1543,6 @@ def profile_scene(
     nvprof : bool | None
         Re-run the script under nvprof for registers/occupancy (slow, opt-in).
         Default auto (env ``ALGAN_PROFILE_NVPROF``, off).
-    samples_per_pixel : int
-        Reported for ray-throughput sizing on the Monte Carlo kernels.
     save_video_kwargs : dict | None
         Extra keyword arguments for ``Scene.save_video`` (``codec``,
         ``ffmpeg_params``, ...). The encoder is part of what a run measures --
@@ -1553,9 +1551,6 @@ def profile_scene(
         a faster software preset (``ffmpeg_params=["-preset", "ultrafast"]``)
         to keep the rest of the profile representative.
     """
-    global SPP
-    SPP = max(1, int(samples_per_pixel))
-
     # When launched as an nvprof child, do a single lean render (no re-init, no
     # telemetry, no nested nvprof) so nvprof profiles clean kernels.
     if under_nvprof():

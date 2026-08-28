@@ -132,10 +132,18 @@ tonemap_method = "neutral"
 # Env override for A/B and re-baselining.
 post_process_tonemap = env_flag("ALGAN_POST_PROCESS_TONEMAP", True)
 
-# Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
-# surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
-# with throughput ``albedo * strength`` for color bleeding.
-indirect_bounce_strength = 0.0
+# Deterministic seed of the path tracer's Sobol-Owen sampler
+# (path_tracer_taichi): every sample is a pure function of
+# (pt_seed, frame, pixel, dimension pair, sample index), so a render
+# reproduces exactly and changing the seed decorrelates every sequence at
+# once.
+pt_seed = env_int("ALGAN_PT_SEED", 0)
+# Wave size of the path tracer's sample loop: how many of a pixel's samples
+# are in flight per tile pass. 0 sizes the wave from the arena's free bytes
+# (path_tracer._pt_tile_shape); a fixed value pins the accumulation grouping,
+# which pins byte-level reproducibility across machines with different
+# memory budgets.
+pt_wave_samples = env_int("ALGAN_PT_WAVE", 0)
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set
@@ -3063,14 +3071,6 @@ def set_samples_per_pixel(samples):
     """
     global samples_per_pixel
     samples_per_pixel = max(1, int(samples))
-
-
-def set_indirect_bounce_strength(strength):
-    """Set the diffuse indirect lighting strength of the Monte Carlo
-    renderer (0 disables diffuse bounces).
-    """
-    global indirect_bounce_strength
-    indirect_bounce_strength = float(strength)
 
 
 def set_linear_color_space(enabled):

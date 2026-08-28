@@ -28,16 +28,14 @@ import pytest
 import torch
 
 # The deterministic megakernel ``render_scene_stbvh`` was removed in the
-# raytracing "MAJOR CLEAN UP" (commit ceaf3c4): deterministic (samples-per-pixel
-# == 1) rendering is now the multi-stage wavefront tracer, and only the Monte
-# Carlo path-tracer megakernel (``path_trace_scene_stbvh``) remains here. The
-# tests that drove the deterministic megakernel directly are skipped below (see
-# ``_run_kernel``); the Monte Carlo / Morton / STBVH-structure tests still
-# exercise live code.
+# raytracing "MAJOR CLEAN UP" (commit ceaf3c4) and the Monte Carlo megakernel
+# ``path_trace_scene_stbvh`` was replaced by the wavefront path tracer
+# (``path_tracer_taichi``, exercised by ``test_path_tracer.py``). The tests
+# that drove the deterministic megakernel directly are skipped below (see
+# ``_run_kernel``); the Morton / STBVH-structure tests still exercise live
+# code.
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    finalize_samples,
     min_alpha,
-    path_trace_scene_stbvh,
 )
 from algan.rendering.raytracing.scene_builder import _cat_circuit_color_grids
 from algan.rendering.raytracing.stbvh import (
@@ -180,11 +178,10 @@ def _run_kernel(
     H,
     bg=20,
     max_bounces=0,
-    samples_per_pixel=0,
-    indirect=0.0,
 ):
-    """Launch the deterministic kernel or the Monte Carlo kernel
-    (``samples_per_pixel > 0``).
+    """Launch the (deleted) deterministic megakernel -- kept as the shared
+    harness of the brute-force comparison tests below, which skip until they
+    are ported to a driveable renderer (see the skip message).
     """
     bez_bvh, meta, ccolors, bcolors, edges, offsets = _dummy_bezier_parts()
     out = torch.full((T, W * H, 4), bg, dtype=torch.uint8, device=DEVICE)
@@ -237,30 +234,20 @@ def _run_kernel(
         max_bounces,
         0,
     )
-    if samples_per_pixel > 0:
-        accum = torch.zeros((T, W * H, 5), device=DEVICE)
-        path_trace_scene_stbvh(0, *shared, samples_per_pixel, indirect, out, accum)
-        finalize_samples(samples_per_pixel, 0, 0, 1.0, accum, out)
-    else:
-        # Deterministic (samples-per-pixel == 1) rendering used the standalone
-        # ``render_scene_stbvh`` megakernel, which was removed in the raytracing
-        # "MAJOR CLEAN UP" (commit ceaf3c4) in favour of the multi-stage
-        # wavefront tracer (pool-allocated per-ray state + ray-offset tiling +
-        # generate/traverse/shade). Driving that pipeline from these raw-tensor
-        # unit tests would duplicate ~150 lines of ``tracer.py`` orchestration,
-        # so the deterministic-path tests are skipped rather than ported; the
-        # wavefront path is covered end-to-end by ``benchmarks/_wf_parity_check``
-        # and the pixel-comparison suite in ``tests/run_test.py``.
-        pytest.skip(
-            "deterministic render_scene_stbvh megakernel was removed "
-            "(commit ceaf3c4); deterministic rendering is now the wavefront "
-            "tracer, which these raw-tensor unit tests do not drive"
-        )
-    # Only CUDA needs an explicit barrier before the kernel's writes are read
-    # back through torch; calling it unconditionally raises "Found no NVIDIA
-    # driver" on a CPU-only machine, where DEVICE is already cpu.
-    if DEVICE.type == "cuda":
-        torch.cuda.synchronize()
+    # Deterministic (samples-per-pixel == 1) rendering used the standalone
+    # ``render_scene_stbvh`` megakernel, which was removed in the raytracing
+    # "MAJOR CLEAN UP" (commit ceaf3c4) in favour of the multi-stage
+    # wavefront tracer (pool-allocated per-ray state + ray-offset tiling +
+    # generate/traverse/shade). Driving that pipeline from these raw-tensor
+    # unit tests would duplicate ~150 lines of ``tracer.py`` orchestration,
+    # so the deterministic-path tests are skipped rather than ported; the
+    # wavefront path is covered end-to-end by ``benchmarks/_wf_parity_check``
+    # and the pixel-comparison suite in ``tests/run_test.py``.
+    pytest.skip(
+        "deterministic render_scene_stbvh megakernel was removed "
+        "(commit ceaf3c4); deterministic rendering is now the wavefront "
+        "tracer, which these raw-tensor unit tests do not drive"
+    )
     return out
 
 
@@ -431,221 +418,4 @@ def test_deep_translucent_stack():
     print(
         f"ok: 12-deep translucent stack (opaque sheet mid-stack) blends "
         f"exactly (max err {err.max():.0f})"
-    )
-
-
-def test_monte_carlo_converges_to_blend():
-    """At many samples per pixel, stochastic transparency (random
-    pass-through by opacity) must converge to exact alpha blending.
-    Edge pixels are excluded: the Monte Carlo kernel jitters sub-pixel ray
-    positions (anti-aliasing), so they legitimately differ from the
-    deterministic center samples.
-    """
-    T, W, H = 7, 64, 48
-    bvh, tri_verts, colors, cam, sp, pbx, pby = _random_triangle_scene(T)
-    det = (
-        _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H)
-        .view(T, H, W, 4)
-        .float()
-    )
-    mc = (
-        _run_kernel(
-            bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H, samples_per_pixel=256
-        )
-        .view(T, H, W, 4)
-        .float()
-    )
-    pooled_max = torch.nn.functional.max_pool2d(
-        det.permute(0, 3, 1, 2), 3, stride=1, padding=1
-    )
-    pooled_min = -torch.nn.functional.max_pool2d(
-        -det.permute(0, 3, 1, 2), 3, stride=1, padding=1
-    )
-    flat = (pooled_max - pooled_min).amax(1) < 6  # locally uniform pixels
-    err = (det - mc).abs().amax(-1)
-    flat_err = err[flat].mean()
-    assert flat_err < 3, (
-        f"Monte Carlo did not converge to the blend (flat-region mean err "
-        f"{flat_err:.2f})"
-    )
-    print(
-        f"ok: 256-spp Monte Carlo converges to exact blending "
-        f"(flat-region mean err {flat_err:.2f}/255 over "
-        f"{int(flat.sum())} pixels)"
-    )
-
-
-def test_mirror_reflection():
-    # A reflective floor (z=0, normal +z) seen from above; a red panel
-    # *behind* the camera (z=9) is visible only via the reflection.
-    T, W, H = 1, 48, 48
-    floor = torch.tensor([[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]], device=DEVICE)
-    panel = torch.tensor([[[-30.0, -30, 9], [30, -30, 9], [0, 60, 9]]], device=DEVICE)
-    corners = torch.stack((floor[0], panel[0])).unsqueeze(0)  # [1, 2, 3, 3]
-    normals = torch.zeros(1, 2, 3, 3, device=DEVICE)
-    normals[0, 0, :, 2] = 1.0
-    reflectivity = torch.zeros(1, 2, 3, 1, device=DEVICE)
-    reflectivity[0, 0] = 1.0  # the floor is a perfect mirror
-    roughness = torch.zeros(1, 2, 3, 1, device=DEVICE)
-    tri_verts = torch.cat((corners, normals, reflectivity, roughness), -1)
-    colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
-    colors[0, 0] = torch.tensor([0.0, 0.0, 1.0, 0.0, 1.0], device=DEVICE)
-    colors[0, 1] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0], device=DEVICE)
-
-    cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
-    sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
-    pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
-    pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-
-    lo = corners.amin(-2)
-    hi = corners.amax(-2)
-    bvh = build_stbvh(lo.contiguous(), hi.contiguous(), num_frames=T)
-
-    with_bounce = _run_kernel(
-        bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H, max_bounces=2
-    )
-    no_bounce = _run_kernel(
-        bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H, max_bounces=0
-    )
-    center = with_bounce.view(T, H, W, 4)[0, H // 2, W // 2]
-    assert center[0] > 200, f"mirror should reflect red, got {center.tolist()}"
-    assert center[2] < 50, f"mirror should not show blue, got {center.tolist()}"
-    center_flat = no_bounce.view(T, H, W, 4)[0, H // 2, W // 2]
-    assert center_flat[2] > 200, (
-        "with bounces disabled the mirror should show its own blue color, "
-        f"got {center_flat.tolist()}"
-    )
-    print("ok: mirror reflection (red panel behind the camera is visible in the floor)")
-
-
-def _mirror_floor_scene(panel_half_width, floor_roughness):
-    """Mirror floor at z=0 seen from above; a red panel *behind* the camera
-    (z=9) covers reflected directions with |x| < panel_half_width.
-    """
-    s = panel_half_width
-    floor = torch.tensor([[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]], device=DEVICE)
-    panel = torch.tensor(
-        [[[-s, -30.0, 9], [s, -30.0, 9], [0.0, 60.0, 9]]], device=DEVICE
-    )
-    corners = torch.stack((floor[0], panel[0])).unsqueeze(0)
-    normals = torch.zeros(1, 2, 3, 3, device=DEVICE)
-    normals[0, 0, :, 2] = 1.0
-    reflectivity = torch.zeros(1, 2, 3, 1, device=DEVICE)
-    reflectivity[0, 0] = 1.0
-    roughness = torch.zeros(1, 2, 3, 1, device=DEVICE)
-    roughness[0, 0] = floor_roughness
-    tri_verts = torch.cat((corners, normals, reflectivity, roughness), -1)
-    colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
-    colors[0, 0] = torch.tensor([0.0, 0.0, 1.0, 0.0, 1.0], device=DEVICE)
-    colors[0, 1] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0], device=DEVICE)
-    cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
-    sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
-    pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
-    pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-    bvh = build_stbvh(
-        corners.amin(-2).contiguous(), corners.amax(-2).contiguous(), num_frames=1
-    )
-    return bvh, tri_verts, colors, cam, sp, pbx, pby
-
-
-def test_glossy_reflection_blurs():
-    """A rough mirror must blur the edge of a reflected panel: with a sharp
-    mirror almost every floor pixel is purely red (panel) or purely blue
-    (no specular contribution? -- with reflectivity 1 the floor shows the
-    background), while a glossy lobe produces many intermediate pixels.
-    """
-    W = H = 48
-
-    def intermediate_count(roughness):
-        bvh, tv, tc, cam, sp, pbx, pby = _mirror_floor_scene(8.0, roughness)
-        img = (
-            _run_kernel(
-                bvh,
-                tv,
-                tc,
-                cam,
-                sp,
-                pbx,
-                pby,
-                1,
-                W,
-                H,
-                max_bounces=2,
-                samples_per_pixel=128,
-            )
-            .view(H, W, 4)
-            .float()
-        )
-        red = img[..., 0]
-        return int(((red > 60) & (red < 195)).sum())
-
-    sharp = intermediate_count(0.0)
-    rough = intermediate_count(0.5)
-    assert rough > sharp * 2 + 20, (
-        f"glossy mirror did not blur the reflection "
-        f"(intermediate pixels sharp={sharp} rough={rough})"
-    )
-    print(
-        f"ok: glossy roughness blurs reflections "
-        f"(edge pixels sharp={sharp} -> rough={rough})"
-    )
-
-
-def test_indirect_color_bleed():
-    """With indirect bounces enabled, a white floor next to an (edge-on,
-    directly invisible) red wall must pick up red near the wall.
-    """
-    W = H = 48
-    floor = torch.tensor([[[-3.0, -3, 0], [3, -3, 0], [0, 4, 0]]], device=DEVICE)
-    wall = torch.tensor(
-        [[[1.5, -3.0, 0.0], [1.5, 3.0, 0.0], [1.5, 0.0, 4.0]]], device=DEVICE
-    )
-    corners = torch.stack((floor[0], wall[0])).unsqueeze(0)
-    tri_verts = torch.cat((corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
-    colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
-    colors[0, 0] = torch.tensor([0.7, 0.7, 0.7, 0.0, 1.0], device=DEVICE)
-    colors[0, 1] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0], device=DEVICE)
-    cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
-    sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
-    pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
-    pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-    bvh = build_stbvh(
-        corners.amin(-2).contiguous(), corners.amax(-2).contiguous(), num_frames=1
-    )
-
-    def render(indirect):
-        return (
-            _run_kernel(
-                bvh,
-                tri_verts,
-                colors,
-                cam,
-                sp,
-                pbx,
-                pby,
-                1,
-                W,
-                H,
-                max_bounces=3,
-                samples_per_pixel=512,
-                indirect=indirect,
-            )
-            .view(H, W, 4)
-            .float()
-        )
-
-    flat = render(0.0)
-    lit = render(0.8)
-    # Floor pixels just left of the wall (world x in ~[0.6, 1.4]).
-    near = slice(int(0.26 * (H // 2) + W // 2), int(0.5 * (H // 2) + W // 2))
-    rows = slice(H // 3, 2 * H // 3)
-    bleed_on = (lit[rows, near, 0] - lit[rows, near, 1]).mean()
-    bleed_off = (flat[rows, near, 0] - flat[rows, near, 1]).mean()
-    assert bleed_on > bleed_off + 8, (
-        f"no red color bleed from indirect bounces "
-        f"(R-G near wall: off={bleed_off:.1f} on={bleed_on:.1f})"
-    )
-    print(
-        f"ok: indirect bounces bleed red onto the white floor "
-        f"(R-G near wall {bleed_off:.1f} -> {bleed_on:.1f})"
     )

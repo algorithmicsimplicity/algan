@@ -948,10 +948,10 @@ Neither renderer does any of these, at any setting:
 * **Temporal anti-aliasing**, temporal accumulation or denoising of any kind.
 * **A "physical" light-transport mode.** The unwired physical-mode Monte Carlo
   kernel and the two settings only it read (``light_intensity`` and
-  ``ambient_light``) have been deleted. Scale a light with its own
-  ``intensity=`` and add an :class:`~algan.rendering.lights.AmbientLight` for
-  ambient. ``SETTINGS.raytracing.indirect_bounce_strength`` is read only when
-  ``samples_per_pixel > 1``.
+  ``ambient_light``) have been deleted, as has ``indirect_bounce_strength``,
+  whose color-bleed hack belonged to the replaced Monte Carlo megakernel.
+  Scale a light with its own ``intensity=`` and add an
+  :class:`~algan.rendering.lights.AmbientLight` for ambient.
 
 
 Determinism and reproducibility
