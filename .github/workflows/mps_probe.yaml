@@ -24,9 +24,17 @@ on:
       - ".github/workflows/mps_probe.yaml"
   workflow_dispatch:
 
+# Queue behind an in-flight run rather than cancelling it, which is where this
+# differs from the test and code-quality workflows and why. Those cancel because
+# a superseded run answers a question about a commit nobody cares about any
+# more. This one is not a check, it is a measurement, and a half-finished
+# measurement on macOS has already spent the minutes it costs -- most of a run
+# here is the probe itself, on the arm that bills at ten times the Linux rate.
+# Every run is pinned to its own commit, so an older one finishing later is
+# still a valid reading rather than a stale verdict.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   probe:
