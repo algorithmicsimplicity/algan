@@ -475,6 +475,62 @@ def _feature_cases():
         _k_bit_cast(src, dst, 64)
         return bool(torch.equal(dst.cpu(), src.cpu()))
 
+    # The torch-tensor cases above cannot answer what the *backend* supports
+    # once torch refuses the dtype first: `f64_ndarray` comes back as torch's
+    # "Cannot convert a MPS Tensor to float64", which says nothing about
+    # whether Metal would have taken the kernel. These allocate the buffer
+    # through Taichi instead, so the only thing left in the way is the backend.
+    def native_f64(_dev):
+        import numpy as np
+
+        src = ti.ndarray(ti.f32, shape=64)
+        dst = ti.ndarray(ti.f64, shape=64)
+        src.from_numpy(np.arange(64, dtype=np.float32))
+        _k_f64_ndarray(src, dst, 64)
+        ti.sync()
+        return bool(np.allclose(dst.to_numpy(), np.arange(64) * 2))
+
+    def native_f64_atomic_add(_dev):
+        import numpy as np
+
+        src = ti.ndarray(ti.f32, shape=1024)
+        acc = ti.ndarray(ti.f64, shape=1)
+        src.from_numpy(np.ones(1024, dtype=np.float32))
+        _k_f64_atomic_add(src, acc, 1024)
+        ti.sync()
+        return abs(float(acc.to_numpy()[0]) - 1024.0) < 1e-9
+
+    def native_i64_atomic_add(_dev):
+        import numpy as np
+
+        src = ti.ndarray(ti.i64, shape=4096)
+        acc = ti.ndarray(ti.i64, shape=1)
+        src.from_numpy(np.full(4096, 3, dtype=np.int64))
+        _k_i64_atomic_add(src, acc, 4096)
+        ti.sync()
+        return int(acc.to_numpy()[0]) == 3 * 4096
+
+    def native_i64_atomic_min(_dev):
+        import numpy as np
+
+        src = ti.ndarray(ti.i64, shape=1000)
+        out = ti.ndarray(ti.i64, shape=1)
+        src.from_numpy(np.arange(1000, 2000, dtype=np.int64))
+        out.from_numpy(np.array([1 << 40], dtype=np.int64))
+        _k_i64_atomic_min(src, out, 1000)
+        ti.sync()
+        return int(out.to_numpy()[0]) == 1000
+
+    def native_i64_fixed_point(_dev):
+        import numpy as np
+
+        cov = ti.ndarray(ti.f32, shape=1024)
+        acc = ti.ndarray(ti.i64, shape=1)
+        cov.from_numpy(np.full(1024, 0.25, dtype=np.float32))
+        _k_i64_fixed_point(cov, acc, 1024)
+        ti.sync()
+        return int(acc.to_numpy()[0]) == 1024 * (1 << 30)
+
     return {
         "f32_basic": f32_basic,
         "f32_atomic_add": f32_atomic_add,
@@ -486,6 +542,11 @@ def _feature_cases():
         "f64_ndarray": f64_ndarray,
         "f64_atomic_add": f64_atomic_add,
         "bit_cast": bit_cast,
+        "native_f64": native_f64,
+        "native_f64_atomic_add": native_f64_atomic_add,
+        "native_i64_atomic_add": native_i64_atomic_add,
+        "native_i64_atomic_min": native_i64_atomic_min,
+        "native_i64_fixed_point": native_i64_fixed_point,
     }
 
 
@@ -958,6 +1019,11 @@ _FEATURES = [
     "f64_ndarray",
     "f64_atomic_add",
     "bit_cast",
+    "native_f64",
+    "native_f64_atomic_add",
+    "native_i64_atomic_add",
+    "native_i64_atomic_min",
+    "native_i64_fixed_point",
 ]
 
 #: 31 is Metal's classic per-stage buffer limit and 49 is what
@@ -973,6 +1039,14 @@ def _run_arm(args, extra_env=None, timeout=900):
     """Run one section in a fresh interpreter and return its JSON result."""
     env = dict(os.environ)
     env.setdefault("ALGAN_RENDER_DEVICE", "cpu")
+    # Every arm must be its own plain process. Handed to a warm daemon instead,
+    # an arm that dies inside Metal comes back as "the algan daemon stopped
+    # responding mid-run" with the real error left in the daemon -- which is
+    # what the first two runs reported for every crash, masking the one thing
+    # those arms exist to find out. It also explains their
+    # ``taichi_was_up_before_bring_up``: the daemon had Taichi up already.
+    env["ALGAN_USE_DAEMON"] = "0"
+    env["ALGAN_AUTO_DAEMON"] = "0"
     if extra_env:
         env.update(extra_env)
     command = [sys.executable, str(Path(__file__).resolve()), *args]
@@ -1045,13 +1119,32 @@ def _why(record):
             " ".join(str(record.get("error", "")).split())[:160],
         )
     if status == "crashed":
-        interesting = [
-            line
+        lines = [
+            line.strip()
             for line in record.get("stderr_tail", [])
             if line.strip() and "Taichi] version" not in line
         ]
-        detail = interesting[-1] if interesting else ""
-        return "rc={} {}".format(record.get("returncode", "?"), detail[:160])
+        # Prefer a line that names a cause over the last line printed. A dying
+        # process often signs off with something generic -- a wrapper's summary,
+        # a "re-run it deliberately" -- while the sentence that says *why* is
+        # several lines above it.
+        keys = (
+            "not supported",
+            "Error",
+            "error",
+            "Assertion",
+            "abort",
+            "Metal",
+            "metal",
+            "SPIR-V",
+            "spirv",
+            "Exception",
+            "failed",
+            "Fatal",
+        )
+        named = [line for line in lines if any(key in line for key in keys)]
+        detail = named[-1] if named else (lines[-1] if lines else "")
+        return "rc={} {}".format(record.get("returncode", "?"), detail[:200])
     return str(status)
 
 
