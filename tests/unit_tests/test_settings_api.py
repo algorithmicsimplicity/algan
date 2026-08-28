@@ -696,3 +696,79 @@ def test_no_renderer_switch_is_shadowed_by_a_helper_of_the_same_name():
         "to a function by the time the module finishes -- rename the function "
         "(the field owns the name):\n  " + "\n  ".join(shadowed)
     )
+
+
+def test_every_qualified_read_of_the_storage_module_resolves():
+    """A stale ``rt_settings.<name>`` is an AttributeError nobody sees.
+
+    The toggles are read live -- ``rt_settings.x`` at call time, never imported
+    by value -- so a renamed or deleted switch leaves call sites that parse,
+    import and collect perfectly well and raise only on the line that runs.
+    Much of what reads them is CUDA-only, so on a CPU box a green suite says
+    nothing about those lines at all.
+
+    That is how master broke on 2026-08-28: a branch written before the rename
+    to one spelling per setting added four reads of ``TEXTURE_TIME_LERP`` and
+    friends, the merge took both sides cleanly, and the tests failed for the
+    first time in CI. One of the four sat in a ``skipif`` expression, which is
+    evaluated at collection -- had it not, the CUDA-only ones would have sailed
+    through Linux and macOS untouched.
+
+    Resolving the names against the module is static and costs nothing.
+    ``benchmarks/`` is deliberately not scanned: those scripts are run by hand,
+    and ``_exact_aa_quality_matrix.py`` reads two switches that have never
+    existed in any revision, which is its own bug to fix and not this one.
+    """
+    import ast
+    import importlib
+    from pathlib import Path
+
+    module_name = "algan.rendering.raytracing.settings"
+    storage = importlib.import_module(module_name)
+    root = Path(__file__).parents[2]
+
+    def aliases_of_the_storage_module(tree):
+        """The local names this file binds the toggles module to."""
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == module_name and alias.asname:
+                        names.add(alias.asname)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    imported = f"{node.module}.{alias.name}" if node.module else ""
+                    if imported == module_name:
+                        names.add(alias.asname or alias.name)
+        return names
+
+    stale = []
+    for directory in ("algan", "tests"):
+        for path in sorted((root / directory).rglob("*.py")):
+            if "external_libraries" in path.parts:
+                continue
+            source = path.read_text(encoding="utf-8")
+            # Both import spellings name the package, so this skips the ~250
+            # files that cannot bind the module without parsing them.
+            if module_name.rpartition(".")[0] not in source:
+                continue
+            tree = ast.parse(source)
+            aliases = aliases_of_the_storage_module(tree)
+            if not aliases:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute):
+                    continue
+                if not isinstance(node.value, ast.Name) or node.value.id not in aliases:
+                    continue
+                if hasattr(storage, node.attr):
+                    continue
+                stale.append(
+                    f"{path.relative_to(root)}:{node.lineno}: "
+                    f"{node.value.id}.{node.attr}"
+                )
+    assert not stale, (
+        "these read a name the renderer's storage module does not define -- "
+        "the setting was renamed or deleted and the call site was not:\n  "
+        + "\n  ".join(stale)
+    )

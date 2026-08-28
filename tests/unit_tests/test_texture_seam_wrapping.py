@@ -224,7 +224,7 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
         "the build observed a constant window, so the pad copy is per batch "
         "and only the window itself scales with the frame count"
     )
-    previous_collapse = rt_settings.TEXTURE_WINDOW_COLLAPSE
+    previous_collapse = rt_settings.texture_window_collapse
     rt_settings.set_texture_window_collapse(False)
     try:
         sphere.get_render_primitives()
@@ -235,7 +235,7 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
         rt_settings.set_texture_window_collapse(previous_collapse)
 
     # Legacy arm: the premultiply clone rejoins the per-frame chain.
-    previous_op = rt_settings.TEXTURE_OPACITY_IN_KERNEL
+    previous_op = rt_settings.texture_opacity_in_kernel
     rt_settings.set_texture_opacity_in_kernel(False)
     try:
         sphere.get_render_primitives()
