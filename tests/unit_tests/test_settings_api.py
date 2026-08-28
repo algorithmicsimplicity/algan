@@ -8,6 +8,10 @@ wrong thing, which is exactly the failure mode these tests exist to prevent.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 import torch
 
@@ -353,6 +357,141 @@ def test_experimental_switches_round_trip_through_the_experimental_view():
     assert SETTINGS.raytracing.experimental.bvh_refit is (not before)
     SETTINGS.raytracing.experimental.set(bvh_refit=before)
     assert SETTINGS.raytracing.experimental.bvh_refit is before
+
+
+# --------------------------------------------------------------------------
+# Ray-tracing values. Every field here writes through to a module-level global
+# the kernels read, and the ones without a setter used to be written raw -- so
+# a wrong type or a negative count arrived as a Taichi failure or a wrong image
+# with nothing naming the setting behind it.
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("max_bounces", -1),  # a count cannot be negative
+        ("max_bounces", "x"),  # nor a string
+        ("max_bounces", True),  # nor a bool, which is an int subclass
+        ("samples_per_pixel", 0),  # silently clamped to 1 before
+        ("shadows", 1),  # a flag is True or False, not 1
+        ("tonemap_exposure", "bright"),
+        ("tonemap_method", "sepia"),  # its setter's own rejection
+    ],
+)
+def test_a_bad_raytracing_value_is_refused_and_changes_nothing(field, bad):
+    before = getattr(SETTINGS.raytracing, field)
+    with pytest.raises(AlganConfigurationError) as excinfo:
+        SETTINGS.raytracing.set(**{field: bad})
+    assert field in str(excinfo.value), "the message must name the setting"
+    assert getattr(SETTINGS.raytracing, field) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("wavefront_tile_rays", 0),  # rays per tile; 0 is degenerate
+        ("merge_gpu_peak_factor", 0),  # a multiplier the memory model scales by
+        ("analytic_aa_chord_tolerance", 0),  # 0 asks for infinite subdivision
+        ("shadow_eps_relative", float("nan")),  # NaN reaches a kernel silently
+        ("analytic_aa_sliver", "nonsense"),  # an enumerated mode
+        ("bvh_refit", "yes"),  # a flag, written raw before
+    ],
+)
+def test_a_bad_experimental_value_is_refused_too(field, bad):
+    before = getattr(SETTINGS.raytracing, field)
+    with pytest.raises(AlganConfigurationError):
+        SETTINGS.raytracing.experimental.set(**{field: bad})
+    assert getattr(SETTINGS.raytracing, field) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("max_bounces", 0, 0),  # documented: 0 means no bounces
+        ("max_bounces", 4, 4),
+        ("shadows", True, True),
+        ("tonemap_exposure", 2, 2.0),  # an int for a float field normalizes
+        ("tonemap_method", "agx", "agx"),
+        ("indirect_bounce_strength", 0, 0.0),
+    ],
+)
+def test_legitimate_raytracing_values_still_go_through(field, value, expected):
+    SETTINGS.raytracing.set(**{field: value})
+    stored = getattr(SETTINGS.raytracing, field)
+    assert stored == expected
+    assert type(stored) is type(expected)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("wf_gen_fused", True),  # bool forces the mode
+        ("wf_gen_fused", "auto"),  # str selects the adaptive one
+        ("shadow_terminator", "relax"),  # bool default, third state is a str
+    ],
+)
+def test_a_mode_switch_may_be_spelled_as_a_bool_or_a_string(field, value):
+    """The three fields the derived type check has to stand aside for.
+
+    Their type is inferred from the value they ship with, which for these is
+    only one of the two spellings their setter accepts.
+    """
+    SETTINGS.raytracing.experimental.set(**{field: value})
+
+
+def test_an_unsupported_feature_is_not_flattened_into_a_configuration_error():
+    """``UnsupportedFeatureError`` is a distinct type callers catch.
+
+    It is also a subclass of ``AlganConfigurationError``, so the conversion of
+    a setter's bare ``ValueError`` has to let Algan's own errors past first.
+    """
+    from algan.errors import UnsupportedFeatureError
+
+    with pytest.raises(UnsupportedFeatureError):
+        SETTINGS.raytracing.experimental.set(wf_textured=True)
+
+
+def test_the_very_first_write_in_a_process_is_validated_too():
+    """The checks must not depend on something having read a setting first.
+
+    The accepted types are derived from the shipped defaults, and that table is
+    populated as a side effect of resolving the legacy module. An earlier draft
+    validated before resolving it, so the table was empty on the first write in
+    a process and every value went through unchecked -- invisible to any test
+    that read a field first, which is most of them. Run in a subprocess because
+    by the time this module is imported the table is long since populated.
+    """
+    probe = """
+import algan.settings.raytracing_settings as rs
+from algan import SETTINGS
+from algan.errors import AlganConfigurationError
+
+assert not rs._DEFAULT_TYPES, "something resolved the module before the write"
+try:
+    SETTINGS.raytracing.set(max_bounces="x")
+except AlganConfigurationError:
+    print("VALIDATED")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, ALGAN_USE_DAEMON="0"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "VALIDATED" in result.stdout, result.stdout
+
+
+def test_a_captured_raytracing_configuration_still_round_trips():
+    """Validation must not reject a snapshot of the live values.
+
+    ``set(source=...)`` replays all 106 fields, experimental and inert
+    included, so a rule that is too strict for a value the renderer itself
+    produced would break ``SETTINGS.restore``.
+    """
+    preset = SETTINGS.raytracing.as_preset()
+    SETTINGS.raytracing.set(max_bounces=3)
+    SETTINGS.raytracing.set(preset)
+    assert SETTINGS.raytracing.max_bounces == preset.to_dict()["max_bounces"]
 
 
 def test_the_public_and_experimental_namespaces_do_not_overlap():

@@ -99,6 +99,8 @@ When adding a renderer toggle, add it to `_FIELD_TO_LEGACY` and leave it out of 
 
 Use `SETTINGS.snapshot()`/`SETTINGS.restore()` for complete public-settings state capture, and `SETTINGS.override(...)` or section-level `override(...)` for temporary changes. Do not hand-roll partial restoration that leaves live settings leaked into later tests or daemon runs.
 
+`SETTINGS.raytracing` validates every write: the accepted type of each of its ~106 fields is derived from the value it ships with (three polymorphic mode switches are exempted by name), numeric fields carry a lower bound taken from their documented meaning, and floats must be finite. A setter's own `ValueError` is re-raised as an `AlganConfigurationError` naming the field; `UnsupportedFeatureError` passes through unflattened, because it is a distinct type callers catch and *is* a subclass of `AlganConfigurationError`.
+
 Writing a section is one operation with one set of rules: `SETTINGS.video.frames_per_second = 60` routes through `set()`, so assignment validates and normalizes exactly as `set(frames_per_second=60)` does, and `set()` writes back only the fields that actually changed (identity comparison) so an unrelated field keeps its object identity. Assigning a whole *section* (`SETTINGS.video = HD`) is still refused — sections have stable identity.
 
 Engine modules must read mutable settings live through `SETTINGS`. Never import a mutable ray-tracing setting by value at module import time; doing so freezes the old value and makes public setters ineffective. Immutable constants may be imported by value.
