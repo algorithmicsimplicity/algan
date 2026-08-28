@@ -6,19 +6,34 @@ name: MPS capability probe
 # port is worth starting, because the deciding facts are properties of the Metal
 # backend and of Taichi's torch interop.
 #
-# This is deliberately NOT part of the ordinary test matrix. macOS minutes bill
-# at ten times the Linux rate and nothing here guards a regression -- it takes a
-# measurement. So it runs only when the probe itself changes, or when someone
-# dispatches it by hand (which needs the file on the default branch first;
-# before then, pushing to a pull request is what triggers it).
+# This is deliberately NOT part of the ordinary test matrix, because nothing
+# here guards a regression -- it takes a measurement. So it runs only when the
+# probe itself changes, or when someone dispatches it by hand (which needs the
+# file on the default branch first; before then, pushing to a pull request is
+# what triggers it).
+#
+# The reason is NOT cost. This repository is public, and GitHub's docs are
+# explicit that "use of the standard GitHub-hosted runners is free and unlimited
+# on public repositories" -- the 10x macOS minute multiplier this file used to
+# cite applies to private repositories, and never applied here. What is finite
+# is concurrency: 5 concurrent macOS jobs on the Free plan, shared across every
+# workflow in the account, which is the real reason not to leave a two-arm macOS
+# matrix on every push.
 #
 # WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized Apple-silicon
 # instance -- `hw.model VirtualMac2,1`, `Apple M1 (Virtual)`, 3 CPUs, 7 GB --
 # and the GPU behind it is REAL HARDWARE, not a software Metal path. The `speed`
-# job below measured that in run 33178820377: 1538 GFLOP/s f32 on MPS against
-# the CPU arm's 422-485 sustained, 3.6x at a 2048 matmul and 11.6x on a conv2d,
+# job below measured that in runs 33178820377 and 33179777864: ~1.3 TFLOP/s f32
+# sustained and ~2.3 TFLOP/s f16 on MPS, against ~450 GFLOP/s on the CPU arm,
 # with every result checksum-identical to the CPU's and MPS fallback off. So
 # compute-bound timings here are worth something after all.
+#
+# Read the RATIO carefully, though: it is only 3-4x, and that is the
+# denominator's doing rather than the GPU's. torch on this runner links
+# Accelerate (BLAS_INFO=accelerate), so the CPU arm's matmul is a vendor SGEMM
+# reaching the AMX coprocessor. Taichi's cpu arch compiles no such thing, which
+# is why the probe's Q5 puts the same GPU at 20-30x. An M1 iGPU is ~2.6 TFLOP/s
+# f32 at peak, so this VM gets close to a whole one, not a slice.
 #
 # What is NOT worth anything here is anything with a per-launch cost in it. The
 # same run put one synchronized dispatch at 432 us median on MPS against 2.0 us
@@ -49,11 +64,11 @@ on:
 # Queue behind an in-flight run rather than cancelling it, which is where this
 # differs from the test and code-quality workflows and why. Those cancel because
 # a superseded run answers a question about a commit nobody cares about any
-# more. This one is not a check, it is a measurement, and a half-finished
-# measurement on macOS has already spent the minutes it costs -- most of a run
-# here is the probe itself, on the arm that bills at ten times the Linux rate.
-# Every run is pinned to its own commit, so an older one finishing later is
-# still a valid reading rather than a stale verdict.
+# more. This one is not a check, it is a measurement, and a cancelled
+# measurement returns nothing while still having occupied one of the account's
+# five concurrent macOS slots for as long as it ran. Every run is pinned to its
+# own commit, so an older one finishing later is still a valid reading rather
+# than a stale verdict.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: false

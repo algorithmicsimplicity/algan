@@ -405,6 +405,46 @@ worth reading; anything with a per-launch term in it is not.** The crossover her
 sits somewhere between a 512 and a 1024 matmul — around a third of a millisecond
 of arithmetic — which is a bound on this runner and not on hardware.
 
+#### Why 3.6x and not 30x: the denominator
+
+A follow-up run,
+[33179777864](https://github.com/algorithmicsimplicity/algan/actions/runs/33179777864),
+asked whether that modest ratio meant a GPU on a small virtualized slice or a cpu
+arm that is not the weak baseline Q5's 20-30x was taken against. It is the
+second, and both halves are now measured rather than inferred.
+
+**The cpu arm runs Apple's own BLAS.** `torch.__config__.show()` on the runner
+reports `BLAS_INFO=accelerate | LAPACK_INFO=accelerate`, so a torch matmul there
+is an Accelerate SGEMM — a vendor kernel that reaches the AMX matrix
+coprocessor, not the NEON loop three cores would otherwise give. Taichi's `cpu`
+arch compiles neither: it emits an LLVM kernel over the arithmetic as written.
+That is the whole difference between the two denominators, and it is why 22x and
+3.6x are both correct measurements of the same GPU.
+
+**Neither device has much headroom left.** The ceiling sweep runs the same matmul
+at four sizes per device, past where launch cost and cache effects matter:
+
+| device | dtype | 2048 | 4096 | 6144 | 8192 |
+| --- | --- | --- | --- | --- | --- |
+| cpu | f32 | 350.4 | 443.5 | 424.2 | 452.2 |
+| mps | f32 | 1564.6 | 1237.3 | 1327.0 | 1293.4 |
+| mps | f16 | 2086.4 | 2267.0 | 2262.8 | 2284.8 |
+
+Both curves are flat: ~450 GFLOP/s sustained on three cores, ~1.3 TFLOP/s f32 and
+~2.3 TFLOP/s f16 on the GPU. An M1's integrated GPU is worth roughly 2.6 TFLOP/s
+f32 at peak, so this VM is being handed something close to a whole one at
+ordinary SGEMM efficiency rather than a throttled slice. **The GPU here is not
+small. The CPU it is being compared against is unusually good**, and a ratio
+against a scalar baseline — which is what the renderer's kernels are — is the
+one Q5 reports.
+
+One row in the comparison table above should be read with this in mind and
+otherwise discarded: `matmul_f16_1024` at 376x is not a GPU result. torch has no
+native f16 GEMM on the CPU side, so that arm runs at 1.9 GFLOP/s against its own
+525 in f32. The f16 row worth keeping is the ceiling sweep's, and what it says is
+that the GPU's f16 path is a further 1.75x over its own f32 — real, and nothing
+like 376.
+
 ---
 
 ## 4. What the probe found
