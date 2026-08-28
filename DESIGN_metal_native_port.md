@@ -1,10 +1,12 @@
 # Native Metal shaders for Algan's kernels: feasibility
 
-Status: **Feasible, and the mechanism is materially better than
-`DESIGN_mps_support.md` concluded — but it is a rewrite of the kernel layer, not
-a port.** Sized below at ~9,000 lines of Taichi across 52 kernels and 169
-`@ti.func` helpers, whose cost is dominated by the 92 compile-time specialization
-gates rather than by the kernels themselves.
+Status: **Feasible, measured, and started.** Stage 1 (the capability probe) and
+stage 2 (the arena-offset marshalling layer) are landed; §5 has the rest. The
+mechanism is materially better than `DESIGN_mps_support.md` concluded — but what
+remains is a rewrite of the kernel layer, not a port — sized below at ~9,000
+lines of Taichi across 52 kernels and 169 `@ti.func` helpers, whose cost is
+dominated by the 92 compile-time specialization gates rather than by the kernels
+themselves.
 
 This doc answers a question `DESIGN_mps_support.md` never asked. That one
 measured **Taichi on the Metal backend** and reached a defensible NO-GO. This one
@@ -135,7 +137,46 @@ already handled — the arena aligns each allocation to its element size — but
 shader that writes through two offset pointers into one buffer is the compiler's
 worst aliasing case, and `device` qualifiers alone will not fix it.
 
-**Measured, and the limit is real.** The MSL ladder binds 30 buffers and stops:
+**Measured on both sides, and the packing works.** Taking the arena side
+first: every wide kernel's bindings, planned from the arguments it was actually
+handed during a render. What §1.2 asserted from reading the allocator now comes
+from launches —
+
+| kernel | ndarray args | arena-backed | passthrough | bindings | seen in |
+| --- | --- | --- | --- | --- | --- |
+| `sheet_resolve_shade` | 49 | 48 | 1 | **3** | guard |
+| `wavefront_shade` | 40 | 40 | 0 | **2** | fast scene |
+| `wavefront_traverse_events` | 34 | 34 | 0 | **2** | fast scene |
+| `raster_shadow_trace` | 32 | 24 | 8 | **10** | `materials_and_lighting` |
+| `raster_tri_write` | 20 | 18 | 2 | **4** | guard |
+| `raster_tri_count` | 15 | 14 | 1 | **3** | guard |
+| `raster_bez_write` | 18 | 16 | 2 | **4** | guard |
+| `raster_bez_count` | 14 | 13 | 1 | **3** | guard |
+
+"guard" is `test_arena_binding_live.py`, whose small two-shape scene is what CI
+re-checks on every run. The other three rows come from running the same
+instrumentation over `tests/fast/scene.py` and
+`tests/full_renders/scenes/materials_and_lighting.py`, which reach kernels that
+scene does not; the guard skips a kernel it never launches rather than
+pretending to cover it. `wavefront_traverse`, `wavefront_shadow` and the two
+path tracers remain unobserved — no scene run so far reaches them.
+
+The number that decides this is not how many arguments a kernel takes but how
+many are **not** arena-backed, because those keep their own binding however well
+the arena works. `sheet_resolve_shade` has one. The margin is not narrow.
+
+`raster_shadow_trace` is the interesting row — a quarter of its arguments are
+outside the arena — and it still lands at 10. Nothing observed comes close to
+31.
+
+Two properties the same test pins, because on Metal either would be wrong
+pixels rather than a crash: every packed argument is **contiguous** (a shader
+reconstitutes an array from a base pointer and a length; it has no stride
+vector) and every offset is a whole number of elements. The second turns out to
+be guaranteed twice over — torch refuses to build a misaligned reinterpreting
+view at all, independently of the arena's own alignment.
+
+Now the Metal side. The MSL ladder binds 30 buffers and stops:
 
 ```
 30 buffers  ok
@@ -409,10 +450,18 @@ Not one change. In dependency order, each stage independently useful:
    All five unknowns answered, four of them the way the port needs; the fifth
    (64-bit atomics) is a real constraint on §2.2 and nothing else. Stage 2 is
    unblocked, and no ObjC++ extension is required anywhere.
-2. **Arena-offset calling convention**, on CUDA first. Bind one buffer plus an
-   offsets struct. Testable and byte-identical on the current backend, where the
-   full pixel-comparison suites exist to prove it — this is the single largest
-   piece of the port and it does not need a Mac to land.
+2. **Arena-offset calling convention** — **done for the marshalling half**
+   (`algan/rendering/arena_binding.py`), which is the half that survives.
+   Scoped down from "convert the kernels" once §1.2 was measured, and the
+   reason is worth stating: **the Taichi kernel bodies do not carry forward.**
+   MSL replaces them, it does not translate them, so rewriting 9,000 lines of
+   Taichi into offset indexing would buy the port nothing while costing the
+   shipped CUDA and CPU renderers real indirection for a limit neither has.
+   What both backends genuinely share is the marshalling — which arguments are
+   arena-backed, at what offset, and whether what is left still fits in 31
+   slots — and that is now a library with a live regression guard, imported by
+   nothing on a render path, so it costs a shipped frame nothing. The kernel
+   bodies belong with the shaders, in stages 3 and 6.
 3. **A vertical slice**: `tonemap_to_u8` + the three `bloom_*` kernels. 2–3
    ndarrays each, ~130 lines of code across the two modules (207 raw), no BVH,
    no specialization beyond `tonemap_to_u8`'s 3 gates, and a pixel-comparable
@@ -422,8 +471,8 @@ Not one change. In dependency order, each stage independently useful:
 5. **The raster count/write kernels** — the four that already fit in 24 buffers.
 6. **The megakernels**, largest last, on the convention stage 2 established.
 
-Stages 1–3 are perhaps a week. They answer whether the remaining 90% is
-*possible* — dispatch, precision, specialization, baselines — and CI can carry
+Stages 1 and 2 are done. Stages 1–3 are perhaps a week in total. They answer
+whether the remaining 90% is *possible* — dispatch, precision, specialization, baselines — and CI can carry
 all of it. They do **not** answer whether it is worth it: that is the magnitude
 question of §3.3, and the first honest reading of it comes from running stage 3's
 slice on a physical Apple GPU. That is a cheap thing to ask of one machine once,
