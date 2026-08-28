@@ -165,7 +165,7 @@ def main() -> int:
     import torch
 
     from algan.rendering.taichi_runtime import init_taichi
-    from algan.settings._startup import _RENDER_DEVICE
+    from algan.settings._startup import render_device
 
     print("=" * 78)
     print("Phase 0 probe: C-API x64 runtime beside the live Python Program")
@@ -178,7 +178,7 @@ def main() -> int:
     pairing = (
         "cuda-against-x64 (this is §8.1)" if is_cuda else "x64-against-x64 (this is §4)"
     )
-    print(f"\nrender device : {_RENDER_DEVICE}")
+    print(f"\nrender device : {render_device()}")
     print(f"live arch     : {live_arch}")
     print(f"pairing       : {pairing}")
     print(f"torch cuda    : {torch.cuda.is_available()}")
@@ -338,7 +338,7 @@ def main() -> int:
 
     # --- 5. Interleave with Python-side launches, both orders (§4 step 5) ----
     print("\n[5] interleave C-API and Python-side launches in one process")
-    live_grid = grid_cpu.to(_RENDER_DEVICE) if is_cuda else grid_cpu
+    live_grid = grid_cpu.to(render_device()) if is_cuda else grid_cpu
     live_out = torch.zeros_like(live_grid)
 
     python_kernel(live_grid, live_out)
@@ -375,7 +375,7 @@ def main() -> int:
 
     small = torch.randn(*SMALL_SHAPE, dtype=torch.float32)
     small_out = torch.zeros_like(small)
-    small_live = small.to(_RENDER_DEVICE) if is_cuda else small
+    small_live = small.to(render_device()) if is_cuda else small
     small_live_out = torch.zeros_like(small_live)
 
     kernel_handle = runtime.kernel(KERNEL)

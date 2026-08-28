@@ -72,11 +72,11 @@ def build(out_dir: Path, explicit=None) -> dict:
     import taichi as ti
 
     from algan.rendering.taichi_runtime import init_taichi
-    from algan.settings._startup import _RENDER_DEVICE
+    from algan.settings._startup import render_device
 
-    if _RENDER_DEVICE.type != "cpu":
+    if render_device().type != "cpu":
         raise SystemExit(
-            f"render device is {_RENDER_DEVICE}; this build must run with "
+            f"render device is {render_device()}; this build must run with "
             "ALGAN_RENDER_DEVICE=cpu so the arch is x64 (§3.3)"
         )
 

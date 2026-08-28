@@ -50,9 +50,13 @@ from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.truncation import reset_truncations
+from algan.rendering.taichi_runtime import (
+    ensure_taichi_for_render,
+    render_job_holding_the_arch,
+)
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.settings import SETTINGS
-from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
+from algan.settings._startup import _ANIMATION_DEVICE, render_device
 from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
@@ -608,7 +612,7 @@ class RenderLoopMixin:
 
         if not rt_settings.project_on_gpu_active():
             return False
-        render_device = torch.device(_RENDER_DEVICE)
+        target_device = render_device()
         for primitive in primitive_batch:
             if getattr(primitive, "_rt_projected", False):
                 return False
@@ -618,7 +622,7 @@ class RenderLoopMixin:
                 # The base method is intentionally inert until a primitive
                 # declares its time-bearing source tensors.
                 return False
-            if _primitive_source_device(primitive) == render_device:
+            if _primitive_source_device(primitive) == target_device:
                 return False
         return True
 
@@ -1467,7 +1471,7 @@ class RenderLoopMixin:
                     frames_per_second=(
                         self.frames_per_second if callable(background_source) else 1
                     ),
-                    device=_RENDER_DEVICE,
+                    device=render_device(),
                 )
                 # Pressure-gated gc (like every other steady-state call site):
                 # a forced full collection here cost ~150 ms per frame window
@@ -1627,7 +1631,7 @@ class RenderLoopMixin:
                 frames_per_second=(
                     self.frames_per_second if callable(background_source) else 1
                 ),
-                device=_RENDER_DEVICE,
+                device=render_device(),
             )
             # In-place AA samples the background once per output pixel, so a
             # super-sampled image background must be averaged down first
@@ -2045,7 +2049,7 @@ class RenderLoopMixin:
         falls back on the render's out-of-memory retry, as the animation
         budget does.
         """
-        device = _RENDER_DEVICE
+        device = render_device()
         if device.type != "cuda":
             return float("inf")
         override = SETTINGS.computing.available_memory_override
@@ -2441,7 +2445,7 @@ class RenderLoopMixin:
         # built on it (ready for the GPU merge, no upload). Off keeps
         # projection on the snapshot's source (CPU) device.
         gpu_project = rt_settings.project_on_gpu_active()
-        project_device = _RENDER_DEVICE if gpu_project else None
+        project_device = render_device() if gpu_project else None
 
         def _to_device(value):
             if gpu_project and torch.is_tensor(value):
@@ -2800,6 +2804,14 @@ class RenderLoopMixin:
         close the generator before consuming every frame.
         """
         _check_post_processes(post_processes)
+        # The one place Taichi's arch is chosen. Every path that produces a
+        # frame comes through here, and nothing below is allowed to launch a
+        # kernel before it: a render device changed since the last job needs a
+        # different arch, and a kernel materialized against the old one would
+        # stage every argument through the wrong device (see
+        # ``taichi_arch_is_cpu``). Free when the arch already matches, which is
+        # every render that did not change the device.
+        ensure_taichi_for_render()
         original_background = self.background_frame
         original_memory = self.memory
         # A render job is the scope of the truncation instrument: its counters
@@ -2814,7 +2826,11 @@ class RenderLoopMixin:
             # the per-batch reclaim only ever needs to find the cycles this
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
-            with torch.inference_mode(), scene_excluded_from_gc():
+            with (
+                torch.inference_mode(),
+                scene_excluded_from_gc(),
+                render_job_holding_the_arch(),
+            ):
                 yield from self._get_frames_impl(
                     start_time_ind,
                     end_time_ind,

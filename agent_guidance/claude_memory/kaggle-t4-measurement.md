@@ -49,7 +49,9 @@ to <x>` in each arm's log, or the generator's guard** — and the guard has to a
 ALGAN, not torch: `torch.cuda.is_available()` returns **True** on that P100 (it
 reports the device and only rejects the arch later), so the obvious probe
 sails straight through. `make_notebook.py` now aborts the run unless
-`algan.settings._startup._RENDER_DEVICE.type` is `cuda`.
+`algan.settings._startup.render_device().type` is `cuda`. (It was
+`_RENDER_DEVICE` until the render device became a runtime setting; the
+accessor is the only correct way to ask now, because a script can change it.)
 
 Confirm the shape took by reading `machine_shape` back from
 `get_notebook_info` — it echoes the whole source, so do it once, deliberately.

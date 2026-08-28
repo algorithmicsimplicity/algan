@@ -19,6 +19,7 @@ from algan import (
     RayTracingSettings,
     VideoSettings,
 )
+from algan.settings._startup import render_device
 
 # In the fast suite: engine modules read ``SETTINGS`` live off section objects
 # they captured at import, so a change to how a section is written or restored
@@ -97,13 +98,117 @@ def test_available_memory_override_rejects_values_that_cannot_size_an_arena():
             SETTINGS.computing.set(available_memory_override=value)
 
 
-def test_device_selection_answers_with_the_environment_variable_to_set():
-    for name, variable in (
-        ("render_device", "ALGAN_RENDER_DEVICE"),
-        ("animation_device", "ALGAN_ANIMATION_DEVICE"),
-    ):
-        with pytest.raises(AlganConfigurationError, match=variable):
-            SETTINGS.computing.set(**{name: "cpu"})
+def test_the_animation_device_answers_with_the_environment_variable_to_set():
+    """It is still initialization-only, and says so instead of "unknown".
+
+    Every Mob's authoring state is allocated on it from the first ``Square()``
+    onward, so there is no moment at which changing it would mean anything.
+    """
+    with pytest.raises(AlganConfigurationError, match="ALGAN_ANIMATION_DEVICE"):
+        SETTINGS.computing.set(animation_device="cpu")
+
+
+def test_render_on_cpu_points_at_the_field_that_replaced_it():
+    with pytest.raises(AlganConfigurationError, match="render_device"):
+        SETTINGS.computing.set(render_on_cpu=True)
+
+
+def test_the_render_device_is_settable_and_normalizes_to_a_torch_device():
+    original = SETTINGS.computing.render_device
+    try:
+        SETTINGS.computing.set(render_device="cpu")
+        assert SETTINGS.computing.render_device == torch.device("cpu")
+        assert isinstance(SETTINGS.computing.render_device, torch.device)
+        # Direct assignment goes through the same validation as ``set``, which
+        # it does not for any other field: an unvalidated device renders on the
+        # wrong hardware rather than merely holding a silly number.
+        SETTINGS.computing.render_device = torch.device("cpu")
+        assert SETTINGS.computing.render_device == torch.device("cpu")
+        # ``render_device`` is what the engine reads, never a bound copy.
+        assert render_device() == SETTINGS.computing.render_device
+    finally:
+        SETTINGS.computing.set(render_device=original)
+
+
+def test_the_render_device_rejects_what_it_cannot_render_on():
+    with pytest.raises(AlganConfigurationError, match="render_device"):
+        SETTINGS.computing.set(render_device="not-a-device")
+    if not torch.cuda.is_available():
+        with pytest.raises(AlganConfigurationError, match="CUDA"):
+            SETTINGS.computing.set(render_device="cuda")
+
+
+def test_the_render_device_cannot_change_mid_render():
+    """The one path that could corrupt rather than merely be slow.
+
+    Batch prep launches kernels from a worker thread, so a change while a job is
+    running could have that thread re-initialize Taichi -- dropping every
+    compiled kernel -- while the render thread is inside one.
+    """
+    from algan.rendering.taichi_runtime import render_job_holding_the_arch
+
+    original = SETTINGS.computing.render_device
+    other = "cpu" if original.type != "cpu" else "meta"
+    try:
+        with (
+            render_job_holding_the_arch(),
+            pytest.raises(AlganConfigurationError, match="render is in progress"),
+        ):
+            SETTINGS.computing.set(render_device=other)
+        # And the counter unwinds, so the next render can still change it.
+        SETTINGS.computing.set(render_device=original)
+    finally:
+        SETTINGS.computing.set(render_device=original)
+
+
+def test_a_wide_attribute_freezes_the_render_device():
+    """A texture's frame window is placed when the Mob is created.
+
+    Nothing downstream re-asks, so the device must not move under it. The pin
+    only arms when the wide attribute actually lands on the render device --
+    on a CPU render device it does not, and there is nothing to protect.
+    """
+    from algan.animation_timeline.timeline import (
+        WIDE_ATTR_MIN_CHANNELS,
+        AttributeTimeline,
+        clear_wide_attribute_device_pin,
+        wide_attribute_device_pin,
+    )
+
+    original = SETTINGS.computing.render_device
+    try:
+        clear_wide_attribute_device_pin()
+        AttributeTimeline(WIDE_ATTR_MIN_CHANNELS, buffer_size=2)
+        pin = wide_attribute_device_pin()
+        if pin is None:
+            # CPU render device: no wide attribute is placed on it, so the
+            # device stays free to change.
+            SETTINGS.computing.set(render_device="cpu")
+            return
+        with pytest.raises(AlganConfigurationError, match="wide attribute"):
+            SETTINGS.computing.set(render_device="cpu")
+    finally:
+        clear_wide_attribute_device_pin()
+        SETTINGS.computing.set(render_device=original)
+
+
+def test_resetting_the_scenes_releases_the_wide_attribute_pin():
+    """The pin dies with the timelines holding it, which is what reset kills."""
+    from algan.animation_timeline.timeline import (
+        WIDE_ATTR_MIN_CHANNELS,
+        AttributeTimeline,
+        clear_wide_attribute_device_pin,
+        wide_attribute_device_pin,
+    )
+    from algan.scene_manager import SceneManager
+
+    try:
+        clear_wide_attribute_device_pin()
+        AttributeTimeline(WIDE_ATTR_MIN_CHANNELS, buffer_size=2)
+        SceneManager.reset()
+        assert wide_attribute_device_pin() is None
+    finally:
+        clear_wide_attribute_device_pin()
 
 
 # --------------------------------------------------------------------------

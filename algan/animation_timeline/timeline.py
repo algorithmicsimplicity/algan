@@ -39,7 +39,7 @@ from algan.errors import (
     UnsupportedFeatureError,
     _user_stacklevel,
 )
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 from algan.utils.tensor_utils import cast_to_tensor
 
 #: Torch -> numpy dtypes for :func:`_sparsely_written_zeros`. Only the dtypes an
@@ -843,11 +843,47 @@ def _wide_attr_materialize_device(channels):
     """
     if channels < WIDE_ATTR_MIN_CHANNELS:
         return None
-    if _RENDER_DEVICE.type not in ("cuda", "mps"):
+    device = render_device()
+    if device.type not in ("cuda", "mps"):
         return None
     if not env_flag("ALGAN_WIDE_ATTR_RENDER_DEVICE", True):
         return None
-    return _RENDER_DEVICE
+    return device
+
+
+#: The render device a wide attribute has already been placed on, or ``None``
+#: while no such attribute exists. A texture's ``[T, rows, channels]`` window is
+#: allocated where :func:`_wide_attr_materialize_device` said at construction
+#: time, so once one exists the render device can no longer move under it;
+#: ``SETTINGS.computing.set(render_device=...)`` reads this and refuses.
+#:
+#: Process-global rather than Scene-owned because the device it guards is:
+#: attribute timelines belong to Scenes, but a change would invalidate the wide
+#: ones in *every* live Scene, not just the active one.
+_WIDE_ATTR_DEVICE_PIN = None
+
+
+def wide_attribute_device_pin():
+    """The render device a wide attribute is pinned to, or ``None``."""
+    return _WIDE_ATTR_DEVICE_PIN
+
+
+def _note_wide_attribute(device):
+    """Record that an attribute timeline placed a window on ``device``."""
+    global _WIDE_ATTR_DEVICE_PIN
+    if device is not None:
+        _WIDE_ATTR_DEVICE_PIN = device
+
+
+def clear_wide_attribute_device_pin():
+    """Forget the pin, because the timelines holding it are gone.
+
+    Called from :meth:`SceneManager.reset`, which is what tears every Scene --
+    and so every ``AttributeTimeline`` -- down. The daemon runs it between
+    scripts, so one script's texture cannot freeze the next one's device.
+    """
+    global _WIDE_ATTR_DEVICE_PIN
+    _WIDE_ATTR_DEVICE_PIN = None
 
 
 def _initial_buffer_rows(channels, requested):
@@ -883,6 +919,7 @@ class AttributeTimeline:
         # Where a materialized frame window lives; None = wherever the query
         # built it (the animation device). See _wide_attr_materialize_device.
         self.materialize_device = _wide_attr_materialize_device(channels)
+        _note_wide_attribute(self.materialize_device)
         self.current_state = torch.empty(
             (1, _initial_buffer_rows(channels, buffer_size), channels)
         )  # latest state after all edits.

@@ -25,7 +25,7 @@ import algan.animation_timeline.timeline as timeline_module
 from algan import ImageMob, Off, Sync
 from algan.animation_timeline.timeline import WIDE_ATTR_MIN_CHANNELS
 from algan.scene_manager import SceneManager
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 
 # 128x128x5 = 81920 channels: over the threshold, and small enough that the
 # CPU arm of this test costs nothing.
@@ -69,7 +69,7 @@ def test_texture_timeline_is_wide():
     assert timeline.pointer == 1
 
 
-@pytest.mark.skipif(_RENDER_DEVICE.type != "cuda", reason="needs a CUDA render device")
+@pytest.mark.skipif(render_device().type != "cuda", reason="needs a CUDA render device")
 def test_window_materializes_on_the_render_device_bit_identically(monkeypatch):
     scene, mob = _build_scene()
     timeline, device_window = _materialize(scene, mob)
@@ -93,7 +93,7 @@ def test_window_materializes_on_the_render_device_bit_identically(monkeypatch):
     assert _window_hash(device_window) == _window_hash(host_window)
 
 
-@pytest.mark.skipif(_RENDER_DEVICE.type != "cuda", reason="needs a CUDA render device")
+@pytest.mark.skipif(render_device().type != "cuda", reason="needs a CUDA render device")
 def test_texture_is_priced_against_the_render_device_budget():
     scene, mob = _build_scene()
     texels = _SIDE * _SIDE * 5
@@ -106,7 +106,7 @@ def test_texture_is_priced_against_the_render_device_budget():
     assert mob._color_texture_bytes_per_timestep() == texels * 4 * 2
 
 
-@pytest.mark.skipif(_RENDER_DEVICE.type != "cuda", reason="needs a CUDA render device")
+@pytest.mark.skipif(render_device().type != "cuda", reason="needs a CUDA render device")
 def test_batch_preparation_releases_the_window():
     scene, mob = _build_scene()
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]

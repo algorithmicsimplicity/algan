@@ -23,7 +23,7 @@ from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
 from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
-from algan.settings._startup import _HDR_BUFFER_F16, _RENDER_DEVICE
+from algan.settings._startup import _HDR_BUFFER_F16, render_device
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
 MAX_BOUNCES = 8
@@ -2680,7 +2680,7 @@ def merge_on_gpu_active():
     if not MERGE_ON_GPU:
         return False
 
-    return _RENDER_DEVICE.type == "cuda"
+    return render_device().type == "cuda"
 
 
 # --- project_to_screen device ----------------------------------------------
@@ -2726,7 +2726,7 @@ def project_on_gpu_active():
     if not PROJECT_ON_GPU:
         return False
 
-    return _RENDER_DEVICE.type == "cuda"
+    return render_device().type == "cuda"
 
 
 # --- logical PN / bezier subdivision-level criteria -------------------------

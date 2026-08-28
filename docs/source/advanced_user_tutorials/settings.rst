@@ -208,6 +208,36 @@ fields are the ones you set once at the top of a script:
 
     SETTINGS.style.set(background_color=Color([0.05, 0.05, 0.15]), buffer=0.3)
 
+Choosing the render device
+==========================
+
+``SETTINGS.computing.render_device`` is where a render's primitives are built
+and the ray tracer runs. It accepts a device string, a ``torch.device``, or
+``'auto'`` (CUDA, then MPS, then CPU), and it starts at whatever
+``ALGAN_RENDER_DEVICE`` said -- also ``auto`` by default.
+
+.. code-block:: python
+
+    from algan import *
+
+    SETTINGS.computing.set(render_device="cpu")   # or "cuda", "cuda:1", "auto"
+
+    Square(color=RED).spawn()
+    Scene.save_video("on_the_cpu")
+
+Set it **at the top of the script**, before creating any Mob. It can be changed
+between renders, but the change is not free: Taichi's compute backend is chosen
+from it, so crossing the CPU/GPU line discards every kernel compiled so far and
+the next render pays a fresh kernel-preparation pass.
+
+Two changes are refused rather than silently mishandled:
+
+* **While a render is running.** Batch preparation launches kernels on a worker
+  thread, so a change mid-render could pull the backend out from under it.
+* **Once a textured Mob exists.** A texture is wide enough that its per-frame
+  window is allocated on the render device when the Mob is created, and nothing
+  re-asks afterwards. Choose the device before creating one.
+
 Initialization-only configuration
 =================================
 
@@ -219,9 +249,8 @@ Supported initialization variables include:
 
 ``ALGAN_ANIMATION_DEVICE``
     Torch device used for animation materialization. The default is ``cpu``.
-
-``ALGAN_RENDER_DEVICE``
-    Render device, or ``auto`` to select CUDA, MPS, then CPU.
+    Unlike the render device this one cannot change: every Mob's authoring
+    state is allocated on it from the first one onward.
 
 ``ALGAN_HOME`` and ``ALGAN_CACHE_DIR``
     Base and content-cache locations.
@@ -238,13 +267,13 @@ Example:
 
     import os
 
-    os.environ["ALGAN_RENDER_DEVICE"] = "cuda"
     os.environ["ALGAN_ANIMATION_DEVICE"] = "cpu"
 
     from algan import *
 
 Changing these variables after ``import algan`` does not reinitialize the
-process.
+process. ``ALGAN_RENDER_DEVICE`` is not among them: it only supplies the
+starting value of ``SETTINGS.computing.render_device``, which is settable.
 
 See Also
 ========

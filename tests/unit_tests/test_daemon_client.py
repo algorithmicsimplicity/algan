@@ -234,7 +234,8 @@ def test_malformed_state_file_is_treated_as_no_daemon(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Startup env: the daemon cannot adopt these, so a mismatch must be caught
+# Startup env: the daemon cannot adopt these, so a mismatch must be caught --
+# except for STARTUP_ENV_ADOPTED, which it applies per run instead
 # --------------------------------------------------------------------------
 
 
@@ -247,15 +248,42 @@ def test_unset_and_empty_are_the_same_value():
     assert dc.describe_env_mismatch({}, dict.fromkeys(dc.STARTUP_ENV, "")) is None
 
 
-def test_render_device_mismatch_is_reported():
+def test_animation_device_mismatch_is_reported():
     report = dc.describe_env_mismatch(
-        {"ALGAN_RENDER_DEVICE": "cpu"}, {"ALGAN_RENDER_DEVICE": "cuda"}
+        {"ALGAN_ANIMATION_DEVICE": "cpu"}, {"ALGAN_ANIMATION_DEVICE": "cuda"}
     )
     assert report is not None
-    assert "ALGAN_RENDER_DEVICE" in report
+    assert "ALGAN_ANIMATION_DEVICE" in report
     assert "'cpu'" in report
     assert "'cuda'" in report
     assert "ALGAN_USE_DAEMON=0" in report, "the report must say how to proceed"
+
+
+def test_a_render_device_mismatch_is_adopted_rather_than_refused():
+    """The one startup variable a warm daemon takes from its client.
+
+    It only seeds ``SETTINGS.computing.render_device``, which the daemon
+    re-applies per run (``algan.daemon._adopt_render_device``) and which every
+    render re-reads when it selects Taichi's arch. Refusing it would send the
+    script to a cold process to reach a device the warm one can just switch to.
+    """
+    assert "ALGAN_RENDER_DEVICE" in dc.STARTUP_ENV_ADOPTED
+    assert (
+        dc.describe_env_mismatch(
+            {"ALGAN_RENDER_DEVICE": "cpu"}, {"ALGAN_RENDER_DEVICE": "cuda"}
+        )
+        is None
+    )
+
+
+def test_an_adopted_variable_does_not_mask_a_real_mismatch():
+    report = dc.describe_env_mismatch(
+        {"ALGAN_RENDER_DEVICE": "cpu", "ALGAN_ANIMATION_DEVICE": "cpu"},
+        {"ALGAN_RENDER_DEVICE": "cuda", "ALGAN_ANIMATION_DEVICE": "cuda"},
+    )
+    assert report is not None
+    assert "ALGAN_ANIMATION_DEVICE" in report
+    assert "ALGAN_RENDER_DEVICE" not in report
 
 
 # --------------------------------------------------------------------------

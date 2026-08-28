@@ -36,7 +36,7 @@ from algan.rendering.raytracing.utils import (
     _flat_frames,
 )
 from algan.settings import SETTINGS
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
@@ -1361,7 +1361,7 @@ def _merge_scene(primitives, *, track_peak=None):
         track_peak = bool(track_peak) and gpu_merge
     peak_token = None
     if gpu_merge:
-        device = _RENDER_DEVICE
+        device = render_device()
         if track_peak:
             peak_token = begin_cuda_peak(device)
         _upload_primitive_inputs(primitives, device)

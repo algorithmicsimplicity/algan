@@ -23,7 +23,7 @@ import torch
 from algan import SETTINGS
 from algan.rendering.post_processing.post_process import _finalize_on_device
 from algan.rendering.raytracing import settings as rt_settings
-from algan.settings._startup import _RENDER_DEVICE
+from algan.settings._startup import render_device
 from algan.utils.memory_utils import ManualMemory
 
 # Both implementations, as (id, use_taichi_kernel).
@@ -92,12 +92,12 @@ def encode(values, *, tonemapping, exposure=1.0, method="neutral", kernel=True):
     would land on in the encoded frame.
     """
     frame = torch.zeros(
-        (1, 1, len(values), 4), dtype=torch.float32, device=_RENDER_DEVICE
+        (1, 1, len(values), 4), dtype=torch.float32, device=render_device()
     )
     for i, v in enumerate(values):
         frame[0, 0, i, :3] = v
 
-    memory = ManualMemory(0.0, device=_RENDER_DEVICE, managed=False, num_bytes=1 << 22)
+    memory = ManualMemory(0.0, device=render_device(), managed=False, num_bytes=1 << 22)
     was_kernel = rt_settings.POST_TONEMAP_KERNEL
     rt_settings.set_post_tonemap_kernel(kernel)
     try:

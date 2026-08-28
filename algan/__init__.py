@@ -60,7 +60,7 @@ c = torch.inference_mode()
 c.__enter__()
 
 from algan.settings import *
-from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
+from algan.settings._startup import _ANIMATION_DEVICE, render_device
 
 if _ANIMATION_DEVICE.type != "cpu":
     torch.set_default_device(_ANIMATION_DEVICE)
@@ -68,11 +68,14 @@ torch.set_default_dtype(torch.float32)
 from algan.errors import *
 from algan.logging.logger import get_logger, set_log_level, set_progress_style
 
-get_logger().info(f"Rendering device set to {_RENDER_DEVICE}")
+get_logger().info(f"Rendering device set to {render_device()}")
 
 from algan.constants.color import *
 from algan.constants.math import *
 from algan.constants.spatial import *
+from algan.rendering.taichi_runtime import (
+    install_render_arch_guard as _install_render_arch_guard,
+)
 from algan.scene_manager import SceneManager
 from algan.settings.video_settings import *
 from algan.utils.memory_utils import ManualMemory
@@ -87,6 +90,12 @@ from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
 
 _apply_taichi_warmstart()
 _apply_taichi_fast_launch()
+# Last, so it is the outermost wrapper on Kernel.__call__: the fast launcher
+# bypasses whatever it wrapped on a plan hit, and the arch guard must see those
+# launches too. It is what brings Taichi up, since no kernel module does that
+# at import any more -- the arch depends on SETTINGS.computing.render_device,
+# which a script can still change at this point.
+_install_render_arch_guard()
 
 from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
@@ -293,6 +302,9 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         # service registries: not user settings
         "KERNEL_REGISTRY",
         "RENDERER_REGISTRY",
+        # the render device's public face is SETTINGS.computing.render_device;
+        # this accessor is how engine code reads it without binding it
+        "render_device",
         # internal rate-func/animation steps
         "draw_step",
         "undraw_step",

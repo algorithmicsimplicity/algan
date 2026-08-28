@@ -218,8 +218,8 @@ probe = subprocess.run(
      "ok = torch.cuda.is_available();"
      "cap = torch.cuda.get_device_capability(0) if ok else None;"
      "name = torch.cuda.get_device_name(0) if ok else 'none';"
-     "from algan.settings._startup import _RENDER_DEVICE as D;"
-     "print('ALGAN_RENDER_DEVICE=' + D.type);"
+     "from algan.settings._startup import render_device;"
+     "print('ALGAN_RENDER_DEVICE=' + render_device().type);"
      "print(f'{{name}} cap={{cap}} torch_cuda_available={{ok}}')"],
     capture_output=True, text=True)
 say(f"algan render-device probe: {{probe.stdout.strip()!r}} "
