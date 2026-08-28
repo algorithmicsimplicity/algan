@@ -1117,11 +1117,17 @@ kernel void grid_probe(device const float* arg0 [[buffer(0)]],
 )
 
 #: A non-deterministic mode's floor, asked of MSL directly.
+#: ``src`` is argument 0 on purpose, and the ordering is load-bearing: the grid
+#: case established that the shim dispatches over argument 0's element count, so
+#: an accumulator in that slot (one element) runs the kernel on exactly ONE
+#: thread. The first run of this section did precisely that and reported a total
+#: of 1.0 against an expected 4096 -- which reads like a broken Metal atomic and
+#: is nothing of the kind. Keep the wide array first.
 _MSL_ATOMIC_F32 = (
     _MSL_PROLOGUE
     + """
-kernel void atomic_add_f32(device atomic_float* acc [[buffer(0)]],
-                           device const float* src [[buffer(1)]],
+kernel void atomic_add_f32(device const float* src [[buffer(0)]],
+                           device atomic_float* acc [[buffer(1)]],
                            device const int* meta [[buffer(2)]],
                            uint idx [[thread_position_in_grid]]) {
     if (idx >= uint(meta[0])) { return; }
@@ -1138,8 +1144,8 @@ kernel void atomic_add_f32(device atomic_float* acc [[buffer(0)]],
 _MSL_ATOMIC_U64_ADD = (
     _MSL_PROLOGUE
     + """
-kernel void atomic_add_u64(device atomic_ulong* acc [[buffer(0)]],
-                           device const long* src [[buffer(1)]],
+kernel void atomic_add_u64(device const long* src [[buffer(0)]],
+                           device atomic_ulong* acc [[buffer(1)]],
                            device const int* meta [[buffer(2)]],
                            uint idx [[thread_position_in_grid]]) {
     if (idx >= uint(meta[0])) { return; }
@@ -1151,8 +1157,8 @@ kernel void atomic_add_u64(device atomic_ulong* acc [[buffer(0)]],
 _MSL_ATOMIC_U64_MIN = (
     _MSL_PROLOGUE
     + """
-kernel void atomic_min_u64(device atomic_ulong* acc [[buffer(0)]],
-                           device const long* src [[buffer(1)]],
+kernel void atomic_min_u64(device const long* src [[buffer(0)]],
+                           device atomic_ulong* acc [[buffer(1)]],
                            device const int* meta [[buffer(2)]],
                            uint idx [[thread_position_in_grid]]) {
     if (idx >= uint(meta[0])) { return; }
@@ -1366,27 +1372,68 @@ def _msl_cases():
         n = 4096
         src = torch.ones(n, dtype=torch.float32, device=device)
         acc = torch.zeros(1, dtype=torch.float32, device=device)
-        lib.atomic_add_f32(acc, src, _meta(n, device))
+        lib.atomic_add_f32(src, acc, _meta(n, device))
         torch.mps.synchronize()
-        return {"total": float(acc.cpu()[0]), "expected": float(n)}
+        total = float(acc.cpu()[0])
+        return {"total": total, "expected": float(n), "matches": total == float(n)}
 
     def atomic_u64_add(device):
         lib = _msl_compile(_MSL_ATOMIC_U64_ADD)
         n = 4096
         src = torch.ones(n, dtype=torch.int64, device=device)
         acc = torch.zeros(1, dtype=torch.int64, device=device)
-        lib.atomic_add_u64(acc, src, _meta(n, device))
+        lib.atomic_add_u64(src, acc, _meta(n, device))
         torch.mps.synchronize()
-        return {"total": int(acc.cpu()[0]), "expected": n}
+        total = int(acc.cpu()[0])
+        return {"total": total, "expected": n, "matches": total == n}
 
     def atomic_u64_min(device):
         lib = _msl_compile(_MSL_ATOMIC_U64_MIN)
         n = 4096
         src = torch.arange(1, n + 1, dtype=torch.int64, device=device)
         acc = torch.full((1,), (1 << 62), dtype=torch.int64, device=device)
-        lib.atomic_min_u64(acc, src, _meta(n, device))
+        lib.atomic_min_u64(src, acc, _meta(n, device))
         torch.mps.synchronize()
-        return {"minimum": int(acc.cpu()[0]), "expected": 1}
+        got = int(acc.cpu()[0])
+        return {"minimum": got, "expected": 1, "matches": got == 1}
+
+    def dispatch_control(device):
+        """Can the grid be set from Python, or is argument 0's size the grid?
+
+        Unknown 2 of DESIGN_metal_native_port.md §4, and the first run left it
+        open: the shim's surface was printed but truncated. It matters more than
+        it looks. ``grid`` established that the dispatch covers argument 0's
+        element count, and under the arena convention argument 0 is the whole
+        arena -- millions of bytes -- so without explicit control every arena
+        kernel would launch a thread per *byte* and rely on a guard to retire
+        almost all of them. Call forms are tried rather than assumed, because
+        ``MetalKernelFunction::dispatch`` takes a grid and a threadgroup size at
+        C++ level and the question is only whether Python reaches them.
+        """
+        lib = _msl_compile(_MSL_GRID)
+        n = 64
+        arg0 = torch.zeros(n, dtype=torch.float32, device=device)
+        attempts = {}
+        for label, kwargs in (
+            ("threads", {"threads": 8}),
+            ("threads+group_size", {"threads": 8, "group_size": 4}),
+            ("grid_size", {"grid_size": 8}),
+            ("threadgroup", {"threads": 8, "threadgroup": 4}),
+        ):
+            counter = torch.zeros(2, dtype=torch.int32, device=device)
+            try:
+                lib.grid_probe(arg0, counter, **kwargs)
+                torch.mps.synchronize()
+                attempts[label] = {
+                    "accepted": True,
+                    "invocations": int(counter.cpu()[0]),
+                }
+            except Exception as exc:
+                attempts[label] = {
+                    "accepted": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
+        return attempts
 
     def precision(device):
         """Does an f32 shader land on the same byte the CPU path does?
@@ -1434,6 +1481,7 @@ def _msl_cases():
         "view_offset": view_offset,
         "arena": arena,
         "grid": grid,
+        "dispatch_control": dispatch_control,
         "atomic_f32": atomic_f32,
         "atomic_u64_add": atomic_u64_add,
         "atomic_u64_min": atomic_u64_min,
@@ -1470,8 +1518,15 @@ def _section_msl(device, case):
             out["result"] = {"bound": got == [float(i) for i in range(nargs)]}
             out["status"] = "ok" if out["result"]["bound"] else "wrong_result"
         else:
-            out["result"] = _msl_cases()[case](device)
-            out["status"] = "ok"
+            result = _msl_cases()[case](device)
+            out["result"] = result
+            # A case that returns a ``matches`` verdict decides its own status.
+            # Without this the atomic cases reported ``ok`` while returning a
+            # total of 1.0 against an expected 4096 -- the status said the arm
+            # ran, which is not the same as the answer being right, and only the
+            # raw numbers in the payload gave it away.
+            matches = result.get("matches") if isinstance(result, dict) else None
+            out["status"] = "wrong_result" if matches is False else "ok"
     except Exception as exc:
         out["status"] = "error"
         out["error_type"] = type(exc).__name__
@@ -1515,6 +1570,7 @@ _MSL_CASES = [
     "view_offset",
     "arena",
     "grid",
+    "dispatch_control",
     "atomic_f32",
     "atomic_u64_add",
     "atomic_u64_min",
@@ -1919,14 +1975,15 @@ def _orchestrate(args):
         for case in _MSL_CASES:
             record = _run_arm(["--section", "msl", "--device", "mps", "--case", case])
             sections["msl"][case] = record
-            print(
-                "  {:<16} {:<11} {}".format(
-                    case,
-                    record.get("status", "?"),
-                    _why(record) or json.dumps(record.get("result", {}))[:180],
-                ),
-                flush=True,
-            )
+            # Not truncated to one line. ``available`` carries the shim's whole
+            # surface and ``dispatch_control`` every call form it accepted, and
+            # both are answers rather than colour -- the first run clipped the
+            # shim dump at 180 characters and left the question it exists to
+            # settle open for a second macOS run.
+            detail = _why(record) or json.dumps(record.get("result", {}), indent=2)
+            print("  {:<17} {:<12}".format(case, record.get("status", "?")), flush=True)
+            for line in detail.splitlines():
+                print("      " + line, flush=True)
         for nargs in _MSL_ARG_LADDER:
             case = f"args_{nargs}"
             record = _run_arm(["--section", "msl", "--device", "mps", "--case", case])
@@ -2048,6 +2105,25 @@ def _print_verdict(results):
         print(
             "     widest MSL kernel that bound: {} buffers".format(
                 max(ok) if ok else "none"
+            ),
+            flush=True,
+        )
+        forms = msl.get("dispatch_control", {}).get("result")
+        if isinstance(forms, dict) and forms:
+            accepted = [k for k, v in forms.items() if v.get("accepted")]
+            print(
+                "     grid reachable from Python:   {}".format(
+                    ", ".join(accepted) if accepted else "no call form accepted"
+                ),
+                flush=True,
+            )
+        else:
+            print("     grid reachable from Python:   n/a", flush=True)
+        print(
+            "     f32 atomic add (non-deterministic mode's floor): {} ({}/{})".format(
+                msl.get("atomic_f32", {}).get("status", "n/a"),
+                _res("atomic_f32", "total"),
+                _res("atomic_f32", "expected"),
             ),
             flush=True,
         )

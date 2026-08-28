@@ -15,12 +15,24 @@ Metal, and they do not survive the change of mechanism.
 
 **`DESIGN_mps_support.md`'s verdict stands as written, for the path it
 measured.** Nothing here contradicts a number in it. Read §1 for what changes,
-§2 for what does not, §3 for the real cost, §4 for what is still unmeasured.
+§2 for what does not, §3 for the real cost, §4 for what the probe found.
 
-**None of this has run on an Apple GPU.** The probe that would settle it is
-written and waiting for one macOS CI run (§4). Until it reports, this doc is an
-argument from the torch headers and the repo's own AST — not a measurement — and
-it should be read as one.
+**§1 is now measured, not argued.** Probe run
+[33163279074](https://github.com/algorithmicsimplicity/algan/actions/runs/33163279074)
+on `macos-latest`, Q8 (`--section msl`), against this branch:
+
+| question | answer |
+| --- | --- |
+| `compile_shader` compiles and dispatches hand-written MSL | **yes** |
+| shader writes *through* the torch allocation (`data_ptr` unchanged) | **yes** — §1.1 confirmed |
+| a sliced view binds at its own `storage_offset` | **yes** (offset 256 honoured, storage 0 untouched) |
+| arena + offset table replaces 49 bindings with 2 | **yes**, `max_abs_error 0.0` |
+| widest MSL kernel that binds | **30 buffers** (31 is a clean compile error, not an abort) |
+| f32 vs f64 host reference, sRGB encode | **0** channel delta, both `pow` flavours |
+| MSL 64-bit atomics | **no** — `no matching function for atomic_fetch_add_explicit` |
+
+§3's sizing is from the repo's own AST. Two items are still open and are being
+re-run; §4.1 says which and why.
 
 ---
 
@@ -59,6 +71,13 @@ exposes exactly what a dispatch layer needs:
 nothing to adopt — which is precisely the operation Taichi's gfx device cannot
 perform. This removes §1.3 entirely rather than mitigating it, and it does so
 without the ObjC++ extension such a port would otherwise need.
+
+**Measured.** The `zero_copy` case takes a tensor's `data_ptr`, launches a
+shader that writes to it, and checks both that the pointer is unchanged and that
+the values arrived: `data_ptr_stable: true, written_in_place: true`. The
+allocation Algan already holds is the one the shader wrote to. For contrast, the
+same run's Q1 reports `engine believes launch is staging-free: False` for the
+Taichi path on the same machine — the two mechanisms, one GPU, opposite answers.
 
 The last row matters as much as the first: `getLibrary(params)` is a
 source-parameterized compile with a library cache keyed on the parameters. That
@@ -113,6 +132,31 @@ already handled — the arena aligns each allocation to its element size — but
 shader that writes through two offset pointers into one buffer is the compiler's
 worst aliasing case, and `device` qualifiers alone will not fix it.
 
+**Measured, and the limit is real.** The MSL ladder binds 30 buffers and stops:
+
+```
+30 buffers  ok
+31 buffers  error  'buffer' attribute parameter is out of bounds: must be between 0 and 30
+```
+
+So the ceiling is 31 slots, indices 0–30 — six more than Taichi managed on the
+same machine (Q4: 24), because Taichi spends slots on its own context and root
+buffers. It is nowhere near 49, which settles that the arena convention is
+*necessary* and not merely tidy.
+
+Two things about that failure are worth keeping. It is a **compile error with a
+line and a column**, where Taichi's equivalent was a `SIGABRT` inside
+`setComputeFunction` — the hand-written path fails legibly. And the `arena` case
+proves the way around it end to end: one `uchar` buffer, an offset table, three
+float arrays packed into it, `max_abs_error: 0.0`.
+
+The `view_offset` case answered better than the plan required: a slice taken at
+`storage_offset 256` was written **at its own offset**, with storage zero
+untouched. Torch's shim honours `storage_offset`, so arena views can be passed
+as ordinary tensor arguments where a kernel stays under 31 bindings, and the
+explicit offset table is needed only to get *under* that count — not to address
+the memory correctly.
+
 ---
 
 ## 2. What does not change
@@ -137,17 +181,32 @@ is the same decision on Metal as the earlier doc reached.
 *aborting* on Metal, and correctly concluded that the deterministic
 fixed-point accumulator cannot run in a Taichi Metal kernel.
 
-That measurement is of Taichi's SPIR-V path. MSL's own 64-bit atomic support is
-version- and GPU-family-dependent and has moved in recent Metal releases, so
-whether a *hand-written* `atomic_ulong` min/add compiles and runs on the target
-family is a separate question with a possibly different answer. **It is not
-established either way in this repo**, and it cannot be from a Linux box. §4's
-`atomic_u64_add` / `atomic_u64_min` cases are what settle it.
+That measurement is of Taichi's SPIR-V path, so it was worth re-asking of
+hand-written MSL. **Asked, and the answer is the same: no.**
 
-If it turns out MSL cannot do it either, the conclusion is the earlier doc's:
-f32 atomics give a non-deterministic mode a floor, and a deterministic mode
-needs the accumulation restructured (segmented reduction over sorted keys, which
-is order-independent without needing a wide atomic) rather than an atomic.
+```
+atomic_u64_add   error   program_source:9:5: error: no matching function for call to
+                         'atomic_fetch_add_explicit'
+atomic_u64_min   error   program_source:9:5: error: no matching function for call to
+                         'atomic_fetch_min_explicit'
+```
+
+`atomic_ulong` names a type the MSL standard library will not give an
+`atomic_fetch_*` overload for on this toolchain. Note what kind of failure this
+is: a **compile** error out of the MSL front end, not a device rejection at
+pipeline build. That points at the language/stdlib level rather than at the
+runner's virtualized GPU, which makes it unlikely — though not proven — that
+real Apple silicon answers differently. If that distinction ever matters, the
+case is one line to re-run on a physical Mac.
+
+So the conclusion is the earlier doc's, now established for both mechanisms: a
+deterministic mode needs the accumulation restructured — segmented reduction
+over sorted keys, order-independent without needing a wide atomic — rather than
+an atomic.
+
+Whether **f32** atomics give a non-deterministic mode its floor is the one thing
+the first run did not actually establish, through a fault in the probe rather
+than in Metal (§4.1).
 
 ### 2.3 The torch-side op gaps are unaffected
 
@@ -243,72 +302,94 @@ magnitude is unestablished. **Sizing the payoff needs real Apple hardware, and
 no CI runner substitutes for it.** This is a reason to keep the port's early
 stages cheap (§5) rather than a reason not to start.
 
+Run 33163279074 took the same Q5 measurement again and is the evidence for the
+caveat rather than an exception to it. Against the earlier run's 53x and 22x, it
+reported **39x** slower on the bandwidth arm and **20x** faster on the
+compute-bound one. The signs are stable across runs; the bandwidth multiplier
+moved by a third. Two readings of one quantity on the same runner class that
+disagree that much are not a quantity anyone should be planning against.
+
 ---
 
-## 4. What is unmeasured, and how to settle it
+## 4. What the probe found, and what is still open
 
-Everything in §1 is established from the torch 2.7.1 headers and Python source
-in this checkout, and everything in §3 from the AST of this repo's kernel
-modules. **Nothing here was run on an Apple GPU** — this checkout is Linux
-x86_64 with a CPU-only torch (`mps.is_built()` is False), so the following are
-reasoned, not measured:
+Run [33163279074](https://github.com/algorithmicsimplicity/algan/actions/runs/33163279074),
+`macos-latest`, Q8 (`--section msl`), Linux control green. The five unknowns this
+section previously listed came back:
 
-1. That `lib.kernel(...)` from Python binds an MPS tensor with no copy, at the
-   buffer index implied by argument order. (The C++ API does; the Python shim's
-   exact surface is unverified.)
-2. Whether the Python shim exposes **grid and threadgroup size**, or only the
-   inferred 1-D length in the docstring's example. `MetalKernelFunction::dispatch`
-   takes both at C++ level, so a thin ObjC++ extension recovers it if the shim
-   does not — but which of those two it is changes the plumbing.
-3. The **actual** buffer-binding ceiling under this API, against the 31/stage
-   assumed here.
-4. Whether hand-written MSL **64-bit atomics** compile and run on the runner's
-   GPU family (§2.2) — the one fact that decides whether a deterministic
-   accumulator is possible at all in a shader.
-5. Whether a **numerically identical** result comes back — that an f32 shader
-   reproducing one of the small kernels matches the CPU arch's output within the
-   suites' 2-value tolerance. Precision, not speed.
-
-All five are **capability** questions, and all five are now asked by
-`benchmarks/_mps_capability_probe.py`'s **Q8 section** (`--section msl`), which
-runs on the existing `.github/workflows/mps_probe.yaml` macOS arm. Nine cases
-plus a buffer ladder, one subprocess each, no Taichi in the path:
-
-| case | settles |
+| unknown | answer |
 | --- | --- |
-| `available` | `compile_shader` compiles and dispatches; dumps the Python shim's surface, which is unknown 2 |
-| `zero_copy` | the shader wrote *through* the tensor whose `data_ptr` was taken beforehand — unknown 1 |
-| `view_offset` | whether a sliced view binds at its own offset or at storage 0 — decides how §1.2 passes offsets |
-| `arena` | the arena convention end to end: one `uchar` buffer + an offset table, in place of 49 bindings |
-| `grid` | how the dispatch grid is inferred, measured with an atomic rather than assumed |
-| `args_*` | the real binding ceiling, stepped finely around 31 — unknown 3 |
-| `atomic_f32`, `atomic_u64_*` | unknown 4, and with it whether a deterministic accumulator can exist in a shader |
-| `precision` | unknown 5: f32 sRGB encode against an f64 host reference, reported in u8 channel values against the suites' tolerance of 2, in both of MSL's `pow` flavours (fast-math is on by default, which is exactly what moves a rounded byte) |
+| 1. Python binds an MPS tensor with no copy, at the index implied by argument order | **yes** (§1.1) |
+| 2. Grid and threadgroup reachable from Python, or C++-only | **partly open** — see §4.1 |
+| 3. The real buffer ceiling | **31 slots, indices 0–30** (§1.2) |
+| 4. Hand-written MSL 64-bit atomics | **no**, a compile error (§2.2) |
+| 5. f32 shader vs an f64 host reference | **0 channel delta**, both `pow` flavours |
 
-Every case guards on an element count passed in a tensor rather than as a bare
-scalar, so an unexpected answer to the grid or scalar-marshalling question shows
-up as a recorded result instead of an out-of-bounds write.
+Unknown 5 is worth dwelling on, because it was the one most likely to sink the
+port quietly. Max float error `2.04e-07`, and after rounding to u8 the shader and
+the f64 host reference **agree on every channel** — with fast-math on, which is
+MSL's default and the thing that was expected to bite. `precise::pow` was not
+needed for sRGB. That does not license every kernel (a path tracer accumulates
+differently from a tone curve), but it removes the fear that MSL arithmetic is
+categorically off the CPU path.
 
-**What that runner cannot answer is anything with a clock on it.** It is a
-virtualized-GPU instance (§3.3), so it establishes that a shader compiles, binds,
-dispatches and returns the right bits — which is the whole of 1–5 above, and is
-what has to be true before performance is even a question. Launch overhead per
-dispatch, and whether the many-small-kernel stages (`sheet_compact_taichi.py` has
-14 kernels averaging ~35 lines) want fusing on the way across, are real questions
-and they need a physical Mac. Q8 is untimed for that reason, rather than
-reporting a number that reads authoritative and is not — and the probe's
-existing Q5 timings, its module docstring, its printed verdict and the workflow
-header now all carry the same caveat.
+The failure modes are also better than Taichi's on the same machine. Every
+negative here is a **compile error naming a line and a column**; the Taichi arms
+answered the same questions with `SIGABRT` inside `bind_pipeline` and
+`setComputeFunction`. For a port measured in thousands of shader lines, the
+difference between "error at 9:5" and "the process died" is most of the
+debugging cost.
+
+### 4.1 Two things the first run did not settle, both my fault
+
+Neither is a Metal result. Both are fixed and re-running.
+
+* **The f32 atomic case under-dispatched.** It reported `total: 1.0` against an
+  expected `4096.0`, which reads as a broken Metal atomic and is nothing of the
+  kind. The `grid` case established in the same run that the shim dispatches
+  over **argument 0's element count** — and that kernel had the one-element
+  accumulator in slot 0, so it ran on exactly one thread and added exactly once.
+  The arrays are now ordered wide-first, and any case returning a `matches`
+  verdict now reports `wrong_result` rather than `ok`, which is what let a wrong
+  answer through in the first place.
+* **The shim surface was printed truncated**, at 180 characters, so unknown 2 is
+  still open: the dump confirms a `_mps_MetalKernel` with something named
+  `max_threads_per_…` but is clipped before the rest. A `dispatch_control` case
+  now tries the plausible call forms and records which the shim accepts, and the
+  section prints results untruncated.
+
+Unknown 2 matters more than its size suggests. If the grid is *always* argument
+0's element count, then under the arena convention argument 0 is the whole arena
+— millions of bytes — and every kernel would launch a thread per byte and retire
+almost all of them on a guard. `MetalKernelFunction::dispatch` takes an explicit
+grid and threadgroup at C++ level, so the fallback is a thin ObjC++ extension;
+whether one is needed is exactly what the re-run answers.
+
+### 4.2 What no CI runner can answer
+
+Anything with a clock on it. `macos-latest` is a virtualized-GPU instance
+(§3.3), so it establishes that a shader compiles, binds, dispatches and returns
+the right bits — the whole of §4's table, and what has to be true before
+performance is even a question. It cannot say how fast any of it is.
+
+Launch overhead per dispatch, and whether the many-small-kernel stages
+(`sheet_compact_taichi.py` has 13 kernels averaging ~15 lines of code) want
+fusing on the way across, are real questions that need a physical Mac. Q8 is
+untimed for that reason rather than reporting a number that reads authoritative
+and is not — and the probe's existing Q5 timings, its module docstring, its
+printed verdict and the workflow header all carry the same caveat.
+
+This run illustrates why. Its Q5 says the compute-bound kernel ran **20x faster**
+than the CPU arch and the bandwidth-bound one **39x slower**. Both are the right
+*sign* and neither is a number to plan against.
 
 ## 5. Recommended shape, if it goes ahead
 
 Not one change. In dependency order, each stage independently useful:
 
-1. **Probe `compile_shader`** (§4) — **written; needs one macOS run.** Answers
-   the five capability unknowns, not the performance one, which CI cannot reach.
-   Dispatch it from `.github/workflows/mps_probe.yaml`, or push this branch as a
-   PR (the probe path is in the workflow's `paths` trigger). Read §4's table
-   against what comes back before starting stage 2.
+1. **Probe `compile_shader`** (§4) — **done**, run 33163279074. Four of the five
+   unknowns answered, three of them the way the port needs; the fifth
+   (§4.1, grid control) is re-running. Nothing here blocks stage 2.
 2. **Arena-offset calling convention**, on CUDA first. Bind one buffer plus an
    offsets struct. Testable and byte-identical on the current backend, where the
    full pixel-comparison suites exist to prove it — this is the single largest
