@@ -35,7 +35,15 @@ import logging
 import threading
 from collections import deque
 
+from algan.environment import env_float, env_int
+
 logger = logging.getLogger("algan.memory_model")
+
+# The five numbers below shape how conservatively a render sizes its batches.
+# They are the knobs to reach for when a scene keeps hitting the out-of-memory
+# retry (raise the margins) or when batches come out smaller than the card can
+# actually hold (lower them); each is read once here, so set its environment
+# variable before importing algan.
 
 # How many recent chunks inform the fit. The window exists so a single
 # unusually dense chunk does not handicap the rest of the render: it raises the
@@ -43,24 +51,24 @@ logger = logging.getLogger("algan.memory_model")
 # instead would let one heavy frame shrink every later batch for the whole job.
 # Long enough to stay stable across ordinary variation, short enough that a
 # transient spike is forgotten within a few chunks.
-HISTORY = 8
+HISTORY = max(2, env_int("ALGAN_MEMORY_MODEL_HISTORY", 8))
 
 # Multiplier on the fitted line. Alignment makes the peak *almost* affine --
 # measurements land a few bytes either side -- and scene content can drift
 # within a batch. Under-reserving costs a re-rendered chunk and a job-lifetime
 # safety margin; over-reserving costs a slightly smaller batch. Hence a margin,
 # and a deliberately asymmetric one.
-DEFAULT_SAFETY = 1.15
+DEFAULT_SAFETY = max(1.0, env_float("ALGAN_MEMORY_SAFETY", 1.15))
 
 # Margin while only one chunk has been measured. The first chunk of a job runs
 # before kernel and allocator state has settled and comes in around a third
 # cheaper per frame than steady state, so a line drawn through it alone
 # under-reads. Widened until a second, larger chunk confirms the slope.
-PROBE_SAFETY = 1.6
+PROBE_SAFETY = max(1.0, env_float("ALGAN_MEMORY_PROBE_SAFETY", 1.6))
 
 # Floor under the safety margin, for chunks small enough that a percentage is
 # not worth having.
-MINIMUM_PAD = 1 << 16
+MINIMUM_PAD = max(0, env_int("ALGAN_MEMORY_MINIMUM_PAD", 1 << 16))
 
 # How far a chunk may exceed the largest one already measured. The first chunk
 # of a job is measurably cheaper than steady state -- kernel and allocator
@@ -68,7 +76,7 @@ MINIMUM_PAD = 1 << 16
 # batch under-reads the per-frame cost by around a third. Growing
 # geometrically instead reaches full size in a few chunks while never
 # extrapolating more than this far beyond evidence.
-PROBE_GROWTH = 8
+PROBE_GROWTH = max(1, env_int("ALGAN_MEMORY_PROBE_GROWTH", 8))
 
 
 class ChunkMemoryModel:

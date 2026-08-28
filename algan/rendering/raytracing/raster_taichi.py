@@ -40,6 +40,7 @@ without changing geometry construction.
 """
 import taichi as ti
 
+from algan.environment import env_int
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_BASIS_U,
     _M_BASIS_V,
@@ -84,8 +85,10 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
-# most this many pixels, bounding load imbalance for large bboxes.
-RASTER_CHUNK = 32
+# most this many pixels, bounding load imbalance for large bboxes. Purely a
+# work-partitioning knob -- every candidate is exact-tested either way, so the
+# image does not depend on it -- exposed for tuning against a card's occupancy.
+RASTER_CHUNK = max(1, env_int("ALGAN_RASTER_CHUNK", 32))
 
 # Empty typed visibility-buffer entry. Real hits pack the same strict ordering
 # used by the classic deterministic tracer:

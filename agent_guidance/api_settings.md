@@ -112,7 +112,9 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_CACHE_DIR`;
 - `TI_OFFLINE_CACHE_FILE_PATH`;
 - `ALGAN_SOFT_SHADOW_SAMPLES`;
-- `ALGAN_HDR_BUFFER_F16`.
+- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`.
+
+`ALGAN_HDR_BUFFER_F16` is **not** one of them any more either. It seeds `SETTINGS.raytracing.experimental.hdr_buffer_f16`, and `hdr_frame_dtype()` reads that when the frame buffer is allocated — no kernel specializes on it, so there was never anything for the import to bake in.
 
 `ALGAN_RENDER_DEVICE` is **not** one of them any more. It seeds `SETTINGS.computing.render_device`, which owns the value from then on and can be changed between renders; `taichi_runtime.ensure_taichi_for_render()` re-selects Taichi's arch at the start of each render job when the device has moved across the CPU/GPU line. Read it with `algan.settings._startup.render_device()` — never bind it at import, which is the mistake the old `_RENDER_DEVICE` constant made unavoidable. A change is refused while a render is running and once a wide attribute (a texture) has been placed on the render device.
 
@@ -199,7 +201,9 @@ Adding a knob is therefore two steps: put the name in the right tuple in `algan/
 
 ### Initialization-only settings
 
-These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
+These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES` and the Taichi/warm-start trio. `_STARTUP_VARIABLES` in `algan/environment.py` is the list of record, and the daemon derives its `STARTUP_ENV` from it.
+
+The bar for adding to that tuple is that **no runtime object could own the value** — Taichi is already initialized, the device is already chosen, the constant is already folded into a compiled kernel. "It happens to be read at import" is not the bar: `ALGAN_HDR_BUFFER_F16` sat here for exactly that reason while the dtype it selects is read at buffer allocation, and it is now `SETTINGS.raytracing.experimental.hdr_buffer_f16` with the environment variable seeding the default. `ALGAN_LOG_LEVEL` and `ALGAN_PROGRESS` were import-time for the same non-reason and are now read live, re-applied per run by the daemon (`logger.apply_environment_logging`).
 
 `ALGAN_RENDER_DEVICE` is in that tuple too — it *is* read at startup — but it is also in `_DAEMON_ADOPTED_STARTUP_VARIABLES`, because all it does there is seed `SETTINGS.computing.render_device`. A warm daemon therefore re-applies the client's value per run (`daemon._adopt_render_device`) instead of refusing it, and the run renders where a cold one would. Anything added to that tuple needs both halves — a runtime setting that owns the value, and a daemon that re-applies it — or a mismatched run silently renders wrong.
 

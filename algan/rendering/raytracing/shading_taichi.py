@@ -138,27 +138,25 @@ _MID_DEPTH = 9
 # (``frag_pipelines``): user pipeline k has id ``_USER_PIPELINE_BASE + k``.
 _USER_PIPELINE_BASE = 10
 
-# Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
-AMBIENT_STRENGTH = 0.1
-
-# The same fill, expressed in linear light. 0.1 was chosen as a display-referred
-# coefficient, and moving the working space without moving it would have made
-# the ambient nearly nine times brighter: 0.1 of linear light encodes to byte
-# 89, where 0.1 of an encoded value is byte 26, so every shadowed and unlit
-# region would have lifted. srgb_to_linear(0.1) = 0.01003, so 0.01 is the same
-# fill the old pipeline delivered -- the constant changes because the units
-# changed, not because the look was retuned.
-AMBIENT_STRENGTH_LINEAR = 0.01
-
-
 def _ambient_strength():
     """The ambient coefficient for the active working space.
 
     A Python-level function rather than a constant because the two spaces need
     different numbers for the same result; call it inside ``ti.static`` so the
     value is folded in when the kernel compiles.
+
+    Both numbers live on ``rt_settings`` (``AMBIENT_STRENGTH`` /
+    ``AMBIENT_STRENGTH_LINEAR``) and are read through the module object at
+    every call, for the same two reasons as :func:`_linear_color_space`: a
+    module-level import back would be circular, and a copy here would freeze
+    the value before user code could set it. This module and
+    ``shaders/material_shaders`` each used to hold their own copy of the pair.
     """
-    return AMBIENT_STRENGTH_LINEAR if _linear_color_space() else AMBIENT_STRENGTH
+    from algan.rendering.raytracing import settings as rt_settings
+
+    if _linear_color_space():
+        return float(rt_settings.AMBIENT_STRENGTH_LINEAR)
+    return float(rt_settings.AMBIENT_STRENGTH)
 
 
 def _linear_color_space():

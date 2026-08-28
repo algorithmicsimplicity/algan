@@ -67,6 +67,7 @@ import warnings
 
 import torch
 
+from algan.environment import env_int
 from algan.rendering.raytracing.stbvh import (
     BLOCK_F16,
     BVH_ARITY,
@@ -78,8 +79,10 @@ from algan.rendering.raytracing.stbvh import (
 
 # Number of centroid bins per axis for the SAH split search. 16 is the
 # standard sweet spot: finer binning stops improving tree quality while the
-# histogram/prefix cost grows linearly.
-SAH_BINS = 16
+# histogram/prefix cost grows linearly. Purely a build-quality/build-cost knob
+# -- the traversal is arrangement-invariant -- so it is exposed for tuning
+# rather than fixed.
+SAH_BINS = max(2, env_int("ALGAN_SAH_BINS", 16))
 
 # Depth budget of the emitted ARITY-ary tree. Must not exceed the traversal
 # kernels' fixed sibling-stack depth (raytrace_kernels_taichi._GROUP_STACK,

@@ -456,9 +456,7 @@ def test_budget_counts_radiance_not_light_count():
 
     Display-referred, for the same two reasons as the test above.
     """
-    from algan.rendering.raytracing.shading_taichi import AMBIENT_STRENGTH
-
-    assert AMBIENT_STRENGTH == 0.1
+    assert rt_settings.AMBIENT_STRENGTH == 0.1
     previous = rt_settings.LINEAR_COLOR_SPACE
     rt_settings.set_linear_color_space(False)
     try:

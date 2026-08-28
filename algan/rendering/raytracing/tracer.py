@@ -38,6 +38,7 @@ from typing import Literal
 
 import torch
 
+from algan.environment import env_float
 from algan.errors import UnsupportedFeatureError
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
@@ -479,8 +480,10 @@ def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_ra
 # Fraction of the exactly-measured fit to actually retry with (see
 # ``_overflow_retry_primary``). A second overflow costs another discarded
 # resolve, so the margin is deliberately generous relative to the ~10% spread
-# in per-pixel demand that a coverage partition produces.
-_POOL_RETRY_SAFETY = 0.85
+# in per-pixel demand that a coverage partition produces. Lower it on a scene
+# that still overflows its retry; raise it towards 1 to trade retry risk for
+# tile efficiency.
+_POOL_RETRY_SAFETY = min(1.0, max(0.0, env_float("ALGAN_POOL_RETRY_SAFETY", 0.85)))
 
 # Bounce iterations that get their own profile label
 # (``wavefront:   - bounce <i> <phase>``); iterations past this share the one

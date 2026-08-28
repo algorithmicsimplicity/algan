@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import torch
 
+from algan.environment import env_float
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
@@ -123,8 +124,12 @@ FULL_DUST = 1e-3
 #: wins, which measured WORSE (two pixels of the reference frame regressed by
 #: 110 and 55 channel values). At 0.25 the reference frame's eight artifact
 #: pixels all improve and none regresses; 0.5 keeps three of the eight and
-#: 0.0 (cede whatever is lost) reinstates both regressions.
-_SAMPLE_DEPTH_CEDE_FRACTION = 0.25
+#: 0.0 (cede whatever is lost) reinstates both regressions. Tuned against that
+#: reference frame rather than derived, so it is exposed for re-tuning; it
+#: moves rendered output.
+_SAMPLE_DEPTH_CEDE_FRACTION = min(
+    1.0, max(0.0, env_float("ALGAN_SHEET_SAMPLE_DEPTH_CEDE", 0.25))
+)
 
 
 def resolve_pixel_reference(

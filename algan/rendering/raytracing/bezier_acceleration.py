@@ -19,8 +19,17 @@ from __future__ import annotations
 
 import torch
 
-BEZIER_SCAN_BINS = 16
-BEZIER_SPATIAL_GRID = 8
+from algan.environment import env_int
+
+# Resolution of the two indices. Both are pure acceleration: a query that a
+# coarser index sends more edges to still exact-tests every one of them, so
+# neither moves rendered output. Finer bins prune harder and cost header
+# memory per (edge frame, circuit) record -- the header below is sized from
+# them -- so they are exposed for tuning against glyph-heavy scenes. Read once
+# here, and the kernels read the derived offsets, so host and device always
+# agree on one layout.
+BEZIER_SCAN_BINS = max(1, env_int("ALGAN_BEZIER_SCAN_BINS", 16))
+BEZIER_SPATIAL_GRID = max(1, env_int("ALGAN_BEZIER_SPATIAL_GRID", 8))
 BEZIER_SPATIAL_CELLS = BEZIER_SPATIAL_GRID * BEZIER_SPATIAL_GRID
 
 # Fixed header layout for each (edge frame, circuit) record.

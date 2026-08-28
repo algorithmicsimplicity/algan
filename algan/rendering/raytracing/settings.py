@@ -23,7 +23,7 @@ from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
 from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
-from algan.settings._startup import _HDR_BUFFER_F16, render_device
+from algan.settings._startup import render_device
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
 MAX_BOUNCES = 8
@@ -76,6 +76,30 @@ def report_unsupported_features(message):
 # display-referred pipeline for A/B; that arm is byte-identical to the tree
 # before the working space landed. See LINEAR_COLOR_WORK.md.
 LINEAR_COLOR_SPACE = env_flag("ALGAN_LINEAR_COLOR", True)
+
+# Base ambient coefficient: the constant fill every lighting model adds on top
+# of its direct terms. The renderer always passes ``ambient_light_intensity``
+# as 1, so the scale lives here -- without it a single point light washes
+# surfaces out to white and unlit sides stop reading as unlit (the reference is
+# a Three.js scene lit by one point light with no AmbientLight).
+#
+# The two numbers are the SAME fill in two unit systems, not two settings.
+# 0.1 was chosen as a display-referred coefficient; carrying it unchanged into
+# the linear working space would make the ambient nearly nine times brighter,
+# because 0.1 of linear light encodes to byte 89 where 0.1 of an encoded value
+# is byte 26. srgb_to_linear(0.1) = 0.01003, so 0.01 delivers what the old
+# pipeline delivered -- the number changes because the units changed, not
+# because the look was retuned. ``_ambient_strength()`` in
+# ``shading_taichi`` and ``shaders/material_shaders`` picks the one that
+# matches LINEAR_COLOR_SPACE; both used to hold their own copy of the pair,
+# which is two sources of truth for one look-defining constant.
+#
+# Folded into the kernels inside ``ti.static``, so a change takes effect for
+# kernels compiled after it (CLAUDE.md's ti.static hazard); set the environment
+# variable for a guaranteed one. Distinct from ``AMBIENT_LIGHT``, which belongs
+# to the unwired physical-mode Monte Carlo kernel and is inert.
+AMBIENT_STRENGTH = env_float("ALGAN_AMBIENT_STRENGTH", 0.1)
+AMBIENT_STRENGTH_LINEAR = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 
 # Off by default: an authored colour lands on the pixel it names. That is now
 # true because the working space is linear and the OETF runs at the byte write
@@ -2448,6 +2472,7 @@ def set_analytic_aa(
     sliver=None,
     secondary=None,
     exact=None,
+    wedge=None,
     run=None,
     run_rule=None,
     run_full=None,
@@ -2457,11 +2482,13 @@ def set_analytic_aa(
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
     global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE, ANALYTIC_AA_RUN_FULL
-    global ANALYTIC_AA_ONE_MESH
+    global ANALYTIC_AA_ONE_MESH, ANALYTIC_AA_BEZ_WEDGE
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
         ANALYTIC_AA_EXACT = bool(exact)
+    if wedge is not None:
+        ANALYTIC_AA_BEZ_WEDGE = bool(wedge)
     if run is not None:
         ANALYTIC_AA_RUN = bool(run)
     if run_full is not None:
@@ -3131,23 +3158,38 @@ def set_post_process_tonemap(enabled):
     POST_PROCESS_TONEMAP = bool(enabled)
 
 
+# Store the linear-HDR frame buffer as float16 (RGBA16F) instead of float32.
+# Halves the frame buffer (so ~2x more frames per batch), but is off by default
+# because GPUs with poor FP16 throughput -- notably consumer Pascal (GTX
+# 10-series) at ~1/64 FP32 -- run the f16 torch post-processing (and f16 buffer
+# traffic) far slower than the memory saving is worth (measured ~80% slower end
+# to end on a GTX 1050). On Turing/Ampere+ (fast f16) it is a clear win, so
+# enable it there.
+#
+# Read at buffer allocation, never baked into a kernel: nothing specializes on
+# it, so a script may flip it between renders and the next batch allocates the
+# other dtype. That is why it is an ordinary setting rather than one of the
+# init-only environment variables it used to sit among -- the environment
+# variable only seeds this default.
+HDR_BUFFER_F16 = env_flag("ALGAN_HDR_BUFFER_F16", False)
+
+
+def set_hdr_buffer_f16(enabled):
+    """Toggle the float16 linear-HDR frame buffer (see ``HDR_BUFFER_F16``).
+
+    Takes effect at the next render batch's buffer allocation.
+    """
+    global HDR_BUFFER_F16
+    HDR_BUFFER_F16 = bool(enabled)
+
+
 def hdr_frame_dtype():
     """dtype of the linear-HDR frame buffer used under post-process
-    tonemapping.
-
-    Defaults to float32. float16 (RGBA16F) halves the frame-buffer memory
-    (so ~2x more frames per batch), but is opt-in via ``ALGAN_HDR_BUFFER_F16=1``
-    because GPUs with poor FP16 throughput -- notably consumer Pascal
-    (GTX 10-series) at ~1/64 FP32 -- run the f16 torch post-processing (and
-    f16 buffer traffic) far slower than the memory saving is worth (measured
-    ~80% slower end-to-end on a GTX 1050). On Turing/Ampere+ (fast f16) it is
-    a clear win, so enable it there.
+    tonemapping: float32, or float16 when ``HDR_BUFFER_F16`` is on.
     """
     import torch
 
-    if _HDR_BUFFER_F16:
-        return torch.float16
-    return torch.float32
+    return torch.float16 if HDR_BUFFER_F16 else torch.float32
 
 
 POST_TONEMAP_KERNEL = env_flag("ALGAN_POST_TONEMAP_KERNEL", True)

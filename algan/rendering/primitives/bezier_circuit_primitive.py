@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from algan.constants.color import BLUE
+from algan.environment import env_float
 from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.utils.tensor_utils import broadcast_all
 
@@ -66,8 +67,12 @@ def _circuit_z_index(primitive):
 #: be a byte-identical replacement for that constructor -- has to set the same
 #: value on the mega-primitive it assembles by hand. It once did not, and the
 #: default analytic-AA route hid the difference (see ``num_pixels_per_sample``
-#: there).
-DEFAULT_CHORD_TOLERANCE_PIXELS = 0.5
+#: there). It moves rendered output -- a looser tolerance flattens a curve to
+#: fewer, longer chords -- and trades edge memory and flatten work against
+#: silhouette fidelity, so it takes an environment default rather than being a
+#: bare literal. (Under analytic AA the tighter
+#: ``rt_settings.ANALYTIC_AA_CHORD_TOLERANCE`` overrides it.)
+DEFAULT_CHORD_TOLERANCE_PIXELS = env_float("ALGAN_CHORD_TOLERANCE_PIXELS", 0.5)
 
 
 class BezierCircuitPrimitive(RenderPrimitive):

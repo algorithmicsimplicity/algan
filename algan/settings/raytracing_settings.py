@@ -47,10 +47,13 @@ _FIELD_TO_LEGACY = {
         "SAMPLES_PER_PIXEL",
         "UNSUPPORTED_FEATURE_POLICY",
         "LINEAR_COLOR_SPACE",
+        "AMBIENT_STRENGTH",
+        "AMBIENT_STRENGTH_LINEAR",
         "TONEMAPPING",
         "TONEMAP_EXPOSURE",
         "TONEMAP_METHOD",
         "POST_PROCESS_TONEMAP",
+        "HDR_BUFFER_F16",
         "INDIRECT_BOUNCE_STRENGTH",
         "LIGHT_INTENSITY",
         "AMBIENT_LIGHT",
@@ -68,6 +71,7 @@ _FIELD_TO_LEGACY = {
         "WF_COMPACT_ACTIVE_ONLY",
         "REFRACT_INITIAL_POOL_RATIO",
         "FRAGMENT_SHADING",
+        "FRAG_PID_GATE",
         "PROMOTE_CONSTANTS",
         "WF_SKIP_UNLIT_NORMAL",
         "WF_GEN_FUSED",
@@ -77,6 +81,7 @@ _FIELD_TO_LEGACY = {
         "WF_MEM_TRIM",
         "BVH_REFIT",
         "BVH_DEFER",
+        "OPAQUE_BVH_SKIP_DEAD",
         "HYBRID_RASTER",
         "RASTER_SS",
         "RASTER_BEZ_PRECOMPUTE",
@@ -88,6 +93,7 @@ _FIELD_TO_LEGACY = {
         "RASTER_PAIR_FLAGS",
         "RASTER_COVERED_SHADE",
         "RASTER_SPARSE_COVERAGE",
+        "RASTER_STRADDLE_CLIP",
         "SHEET_BAND_STATS_KERNEL",
         "SHEET_MASK_KERNEL",
         "SHEET_ONE_MESH_KERNEL",
@@ -103,6 +109,10 @@ _FIELD_TO_LEGACY = {
         "ANALYTIC_AA_BEZ",
         "ANALYTIC_AA_TRI",
         "ANALYTIC_AA_SEAM",
+        "ANALYTIC_AA_EXACT",
+        "ANALYTIC_AA_BEZ_WEDGE",
+        "ANALYTIC_AA_RUN",
+        "ANALYTIC_AA_RUN_RULE",
         "ANALYTIC_AA_RUN_FULL",
         "ANALYTIC_AA_ONE_MESH",
         "AREA_LIGHT_SOFT_SHADOWS",
@@ -140,10 +150,12 @@ _FIELD_TO_LEGACY = {
         "MESH_ID",
         "NESTED_IOR",
         "POLYHEDRON_WINDING",
+        "SHADOW_ANYHIT",
         "SHADOW_EPS_RELATIVE",
         "SHADOW_IDENTITY_REJECT",
         "SHADOW_NEAR_FRACTION",
         "SHADOW_TERMINATOR",
+        "PER_MOB_SHADOW_FLAGS",
         "RGB_SHADOW_TINT",
         "WF_TEXTURED_FEATURES",
         "WAVEFRONT_SORT_MATERIALS",
@@ -208,6 +220,8 @@ _SETTER_OVERRIDES = {
     "wf_gen_fused": "set_gen_fused",
     "bvh_refit": "set_refit_bvh",
     "bvh_defer": "set_bvh_defer",
+    "opaque_bvh_skip_dead": "set_opaque_bvh_skip_dead",
+    "frag_pid_gate": "set_frag_pid_gate",
     "hybrid_raster": "set_hybrid_raster",
     "raster_ss": "set_raster_screen_space",
     "raster_bez_precompute": "set_raster_bez_precompute",
@@ -219,6 +233,7 @@ _SETTER_OVERRIDES = {
     "raster_pair_flags": "set_raster_pair_flags",
     "raster_covered_shade": "set_raster_covered_shade",
     "raster_sparse_coverage": "set_raster_sparse_coverage",
+    "raster_straddle_clip": "set_raster_straddle_clip",
     "sheet_band_stats_kernel": "set_sheet_band_stats_kernel",
     "sheet_mask_kernel": "set_sheet_mask_kernel",
     "sheet_one_mesh_kernel": "set_sheet_one_mesh_kernel",
@@ -238,7 +253,9 @@ _SETTER_OVERRIDES = {
     "pn_criterion_kernel": "set_pn_criterion_kernel",
     "wf_textured_features": "set_textured_features",
     "wavefront_sort_materials": "set_material_sorting",
+    "shadow_anyhit": "set_shadow_anyhit",
     "shadow_terminator": "set_shadow_terminator",
+    "per_mob_shadow_flags": "set_per_mob_shadow_flags",
     "fragment_shading": "set_fragment_shading",
     "shadows": "set_ray_traced_shadows",
     "light_intensity": "set_light_intensity",
@@ -251,6 +268,7 @@ _SETTER_OVERRIDES = {
     "tonemap_method": "set_tonemap_method",
     "post_process_tonemap": "set_post_process_tonemap",
     "post_tonemap_kernel": "set_post_tonemap_kernel",
+    "hdr_buffer_f16": "set_hdr_buffer_f16",
 }
 
 
@@ -278,6 +296,7 @@ def _module():
 _POLYMORPHIC_FIELDS = frozenset(
     {
         "shadow_terminator",  # bool, plus "relax" for the third state
+        "shadow_anyhit",  # bool, plus "gather" for the KBUF gather-march
         "wavefront_sort_materials",  # str, plus True meaning "auto"
         "wf_gen_fused",  # str "auto", plus True/False forcing the mode
     }
@@ -302,6 +321,8 @@ _MINIMUMS = {
     # strengths, tolerances and fractions: 0 is a documented, meaningful value
     "max_bounces": (0, False),
     "ambient_light": (0, False),
+    "ambient_strength": (0, False),
+    "ambient_strength_linear": (0, False),
     "indirect_bounce_strength": (0, False),
     "light_intensity": (0, False),
     "tonemap_exposure": (0, False),
@@ -325,7 +346,10 @@ _MINIMUMS = {
 #: String fields whose accepted values are enumerated in the legacy module.
 #: Named by the tuple that holds them so the two cannot drift apart. The other
 #: four string fields validate inside their own setter.
-_CHOICES = {"analytic_aa_sliver": "ANALYTIC_AA_SLIVER_MODES"}
+_CHOICES = {
+    "analytic_aa_sliver": "ANALYTIC_AA_SLIVER_MODES",
+    "analytic_aa_run_rule": "ANALYTIC_AA_RUN_RULES",
+}
 
 
 def _check_value(field, value, module):

@@ -555,3 +555,90 @@ def test_override_restores_even_when_the_body_raises():
     with pytest.raises(RuntimeError):
         _raise_inside_override(before + 5)
     assert SETTINGS.video.frames_per_second == before
+
+
+# --------------------------------------------------------------------------
+# Coverage of the legacy module
+# --------------------------------------------------------------------------
+
+#: Public module-level names in ``algan/rendering/raytracing/settings.py`` that
+#: are deliberately NOT settings, each with the reason. Anything else there is
+#: renderer configuration and belongs in ``_FIELD_TO_LEGACY``, so a switch that
+#: reaches the engine without a way to set it fails the test below.
+_NOT_SETTINGS = {
+    "REFRACT_SPLIT_SLOTS": "alias of REFRACT_INITIAL_POOL_RATIO, kept in sync by its setter",
+    "ANALYTIC_AA_SLIVER_MODES": "the values ANALYTIC_AA_SLIVER accepts, not a setting",
+    "ANALYTIC_AA_RUN_RULES": "the values ANALYTIC_AA_RUN_RULE accepts, not a setting",
+    "WF_TEX_BEZ": "bit value of the WF_TEXTURED_FEATURES mask",
+    "WF_TEX_SCATTER": "bit value of the WF_TEXTURED_FEATURES mask",
+    "WF_TEX_SHADOWS": "bit value of the WF_TEXTURED_FEATURES mask",
+    "WF_TEX_NORMALMAP": "bit value of the WF_TEXTURED_FEATURES mask",
+}
+
+
+def _module_level_constants(module_path):
+    """Public UPPER_CASE names assigned at the top level of ``module_path``."""
+    import ast
+
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    names = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target.id]
+        else:
+            continue
+        names.extend(
+            name for name in targets if name.isupper() and not name.startswith("_")
+        )
+    return names
+
+
+def test_every_renderer_switch_is_reachable_through_SETTINGS():
+    """No renderer configuration without a way to configure it.
+
+    ``algan/rendering/raytracing/settings.py`` is the renderer's configuration:
+    module globals with environment-variable defaults that engine code reads
+    live. ``SETTINGS.raytracing`` (and ``.experimental``) is the *only* public
+    way to write one, so a global added there and not wired into
+    ``_FIELD_TO_LEGACY`` is a switch a user can read, that changes the image,
+    and that nothing but an environment variable set before ``import algan``
+    can move. Nine had accumulated that way; this is what stops a tenth.
+
+    A global that genuinely is not a setting goes in :data:`_NOT_SETTINGS` with
+    its reason, rather than being left to look like an oversight.
+    """
+    from pathlib import Path
+
+    from algan.settings.raytracing_settings import _FIELD_TO_LEGACY
+
+    module_path = (
+        Path(__file__).parents[2] / "algan" / "rendering" / "raytracing" / "settings.py"
+    )
+    covered = set(_FIELD_TO_LEGACY.values())
+    unreachable = [
+        name
+        for name in _module_level_constants(module_path)
+        if name not in covered and name not in _NOT_SETTINGS
+    ]
+    assert not unreachable, (
+        "renderer switches with no SETTINGS field -- add them to "
+        "_FIELD_TO_LEGACY in algan/settings/raytracing_settings.py (and to "
+        "_SETTER_OVERRIDES if they have a setter), or to _NOT_SETTINGS here "
+        "with the reason they are not settings:\n  " + "\n  ".join(unreachable)
+    )
+
+
+def test_the_not_settings_exemptions_are_all_still_real():
+    """A stale exemption would hide the next switch that lands under its name."""
+    from pathlib import Path
+
+    module_path = (
+        Path(__file__).parents[2] / "algan" / "rendering" / "raytracing" / "settings.py"
+    )
+    present = set(_module_level_constants(module_path))
+    assert not (set(_NOT_SETTINGS) - present), (
+        "these are exempted but no longer exist: "
+        f"{sorted(set(_NOT_SETTINGS) - present)}"
+    )

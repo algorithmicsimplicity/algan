@@ -7,6 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from algan.environment import env_int
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
@@ -584,7 +585,9 @@ def _tex_meta_placeholder(device):
 #: Texel count below which texture content dedup is not attempted (see
 #: ``_append_texture``): each candidate match is a synchronizing
 #: ``torch.equal``, worth it for a shared image, not for a promoted 1x1 map.
-_CONTENT_DEDUP_MIN_TEXELS = 4096
+#: Output-neutral (dedup only ever shares identical texels), so this trades
+#: merge-time syncs against texture memory and is exposed for that.
+_CONTENT_DEDUP_MIN_TEXELS = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096))
 
 
 def _split_promotable(p, _append_texture, device, scene):

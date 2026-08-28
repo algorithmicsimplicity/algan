@@ -58,7 +58,7 @@ primitive index breaking ties within the type.
 
 import taichi as ti
 
-from algan.environment import env_flag, env_int
+from algan.environment import env_flag, env_float, env_int
 from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_ACCEL_HEADER_SIZE,
     BEZIER_GRID_INV_U,
@@ -125,20 +125,33 @@ def rgb_shadow_tint():
 _GROUP_STACK = 16
 _GROUP_MASK = (1 << BVH_ARITY) - 1
 
+# The five numbers below are absolute WORLD-SPACE quantities, so unlike the
+# barycentric pair further down they are only right for scenes built at
+# Algan's own scale (a unit Square is 1 unit across). A scene authored at, say,
+# 1000x that scale wants them scaled with it, which is why each takes an
+# environment default rather than being a bare literal. Each is folded into the
+# trace kernels when they compile, so set the variable before importing algan.
+
 # Minimum hit distance along a ray (also the self-intersection guard for
 # reflected rays, together with a normal offset at the bounce origin).
-MIN_HIT_DISTANCE = 1e-4
+MIN_HIT_DISTANCE = env_float("ALGAN_MIN_HIT_DISTANCE", 1e-4)
 # Hits closer together than this along a ray are considered coplanar and are
-# ordered by layer index instead of by distance.
-DEPTH_TIE_EPSILON = 1e-4
+# ordered by layer index instead of by distance. Also the quantum of the
+# raster route's packed depth key (``floor(t / DEPTH_TIE_EPSILON)`` in the high
+# 32 bits of ``raster_taichi.Z_SENTINEL``'s layout), so shrinking it narrows
+# the ray depth that key can address.
+DEPTH_TIE_EPSILON = env_float("ALGAN_DEPTH_TIE_EPSILON", 1e-4)
 # Reciprocal, used to bin distances into coplanarity buckets in _comes_after.
 INV_DEPTH_TIE_EPSILON = 1.0 / DEPTH_TIE_EPSILON
 # Surfaces more transparent than this neither reflect nor terminate peeling.
-MIN_ALPHA = 1e-3
+MIN_ALPHA = env_float("ALGAN_MIN_ALPHA", 1e-3)
 # Marching stops once the remaining transmittance drops below this.
-MIN_WEIGHT = 1e-3
+MIN_WEIGHT = env_float("ALGAN_MIN_WEIGHT", 1e-3)
 # Hard cap on blended surfaces per ray, to bound worst-case stacked geometry.
-MAX_SURFACES_PER_RAY = 256
+# Raising it is what a deep translucent stack needs: the cap is one of the four
+# ceilings ``truncation.py`` counts, and hitting it drops the surfaces past it
+# out of the composite, which moves the image.
+MAX_SURFACES_PER_RAY = max(1, env_int("ALGAN_MAX_SURFACES_PER_RAY", 256))
 # Tolerance of the point-in-triangle test, in barycentric units. Adjacent
 # triangles sharing an edge (e.g. the diagonals of a triangulated image
 # grid) must overlap slightly rather than exclude each other: with exact

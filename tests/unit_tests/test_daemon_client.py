@@ -330,9 +330,15 @@ def test_a_live_variable_is_not_grounds_for_refusal():
     )
 
 
-def test_the_transport_variables_are_exempt():
-    """They configure the handoff that has already happened by this point."""
-    for name in dc.IMPORT_TIME_ENV_EXEMPT:
+def test_the_transport_variables_are_not_grounds_for_refusal():
+    """They configure the handoff that has already happened by this point.
+
+    They used to need a named exemption from the import-time comparison; both
+    are now read at the point of use, so they are declared live and never
+    reach it.
+    """
+    for name in ("ALGAN_DAEMON_PORT", "ALGAN_DAEMON_TIMEOUT"):
+        assert name not in dc.IMPORT_TIME_ENV
         assert dc.describe_import_env_mismatch({name: "1"}, {name: "2"}) is None
 
 
