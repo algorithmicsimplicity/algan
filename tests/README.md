@@ -88,12 +88,17 @@ and runs everything under them, `fast`-marked or not (see the comment in
 `.github/workflows/test.yaml`). The fast suite is a development loop; CI can
 afford twelve minutes and should keep spending them.
 
-It runs those paths twice, on `ubuntu-latest` and on `macos-latest`. Neither
-job pins a render device: `auto` resolves to CUDA, then MPS, then the CPU, so
-each runner tests whatever it actually offers, and the render suites key their
-baseline directory off the device that came out (see *Baselines are per
-device* below). The `algan check` step ahead of the tests prints which one
-that was.
+It runs those paths twice, on `ubuntu-latest` and on `macos-latest`. Linux
+takes the ordinary `auto` probe and lands on the CPU. **macOS is pinned to
+`ALGAN_RENDER_DEVICE=cpu`**, because `auto` there resolves to MPS — the runner
+does offer one — and Algan does not run on MPS: the raster pipeline allocates
+in `float64`, which MPS refuses, and `ti.gpu` on a Mac resolves through Vulkan,
+whose SPIR-V builder refuses `f64` in the same kernels. 88 tests failed that
+way on the first macOS CI run. Supporting MPS means taking `float64` out of the
+raster pipeline and the kernels; until that happens the Mac job tests the CPU
+path, which is what makes it a portability check rather than a standing
+failure. The `algan check` step ahead of the tests prints the device that came
+out, along with whether LaTeX and FFmpeg are on `PATH`.
 
 ## The full suite
 

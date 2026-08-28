@@ -34,6 +34,25 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10"]
 
+    # Linux takes the ordinary automatic probe, which finds no accelerator and
+    # resolves to the CPU on its own.
+    #
+    # macos-latest is pinned, and the reason is measured rather than assumed:
+    # left on `auto` it resolves to MPS -- the runner really does offer one --
+    # and Algan does not run there. 88 tests failed on the first macOS run, in
+    # two families that are both the same fact. Torch: the raster pipeline
+    # allocates in float64 (raster_pipeline.py, `_one_mesh_pixel_caps`), and
+    # "the MPS framework doesn't support float64". Taichi: `ti.gpu` on a Mac
+    # resolves through Vulkan, whose SPIR-V builder answers "Type f64 not
+    # supported" to the same kernels. So this is not a CI-configuration
+    # problem -- Algan has never supported MPS, and supporting it means taking
+    # float64 out of the raster pipeline and the kernels, which moves rendered
+    # output and wants its own change. Until then the Mac job tests the CPU
+    # path, which is what makes it a portability check rather than a
+    # standing failure. Take the pin off the day MPS lands.
+    env:
+      ALGAN_RENDER_DEVICE: ${{ startsWith(matrix.os, 'macos') && 'cpu' || 'auto' }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -68,12 +87,15 @@ jobs:
             latexmk # or full texlive-full if needed
 
       # BasicTeX, not MacTeX: MacTeX is a multi-gigabyte download, and Algan
-      # needs only `latex`, `dvisvgm` (both in the base install) and the
-      # packages the default Tex template asks for. `standalone` and `preview`
-      # come from the documentclass line, and are the two that scheme-basic
-      # does not already carry; the other two are named because a missing
-      # transitive dependency here shows up as a silent LaTeX failure rather
-      # than as an error anyone can read.
+      # needs only `latex`, `dvisvgm`, and the packages the default Tex
+      # template asks for. `standalone` and `preview` come from the
+      # documentclass line; `dvisvgm` is what turns the .dvi into the SVG the
+      # glyph circuits are built from, and -- unlike on Debian, where it
+      # arrives with texlive-latex-base -- scheme-basic does not carry it. Its
+      # absence is quiet and late: `latex` succeeds, `dvisvgm` raises
+      # FileNotFoundError, and every Tex, MathTex and NumericDisplay test
+      # fails several minutes into the run. The remaining two are named
+      # defensively, on the same reasoning.
       #
       # If `tlmgr` ever fails with "Local TeX Live is older than remote
       # repository", the cask is lagging a TeX Live release -- point tlmgr at
@@ -85,7 +107,8 @@ jobs:
           brew install --cask basictex
           echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
           sudo /Library/TeX/texbin/tlmgr update --self
-          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval
+          sudo /Library/TeX/texbin/tlmgr install \
+            standalone preview amsfonts xkeyval dvisvgm
 
       # apt supplies ffmpeg 6.1.1 on ubuntu-24.04, which is all moviepy and
       # opencv need. A second step ran federicocarboni/setup-ffmpeg@v3 straight
