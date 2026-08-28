@@ -109,6 +109,7 @@ def test_fade_of_a_static_image_keeps_a_one_frame_map():
 
 
 def test_kill_switch_restores_the_premultiplied_map():
+    previous_op = rt_settings.TEXTURE_OPACITY_IN_KERNEL
     rt_settings.set_texture_opacity_in_kernel(False)
     try:
         scene = SceneManager.reset()
@@ -125,7 +126,7 @@ def test_kill_switch_restores_the_premultiplied_map():
         )
         assert float(primitive.texture_map[-1, ..., 4].amax()) < 0.01
     finally:
-        rt_settings.set_texture_opacity_in_kernel(True)
+        rt_settings.set_texture_opacity_in_kernel(previous_op)
 
 
 def test_estimator_prices_a_fade_at_the_collapsed_window():
@@ -143,11 +144,12 @@ def test_estimator_prices_a_fade_at_the_collapsed_window():
     # the collapse voided; the flag is read off the previous build, so mimic
     # that build having run dense.
     surface._texture_window_collapsed = False
+    previous_op = rt_settings.TEXTURE_OPACITY_IN_KERNEL
     rt_settings.set_texture_opacity_in_kernel(False)
     try:
         dense_estimate = surface._color_texture_bytes_per_timestep()
     finally:
-        rt_settings.set_texture_opacity_in_kernel(True)
+        rt_settings.set_texture_opacity_in_kernel(previous_op)
     assert collapsed_estimate * 2 <= dense_estimate, (
         f"fade priced at {collapsed_estimate} vs {dense_estimate} -- windows "
         f"will not lengthen"
@@ -243,13 +245,14 @@ def test_u8_flip_is_byte_identical_end_to_end(tmp_path):
     import cv2
 
     def frame(u8, name):
+        previous_u8 = rt_settings.TEXTURE_U8_STORAGE
         rt_settings.set_texture_u8_storage(u8)
         try:
             SceneManager.reset()
             ImageMob(_u8_texture(16, 16)[..., :4].contiguous()).spawn()
             result = Scene.save_frame(str(tmp_path / name), overwrite=True)
         finally:
-            rt_settings.set_texture_u8_storage(True)
+            rt_settings.set_texture_u8_storage(previous_u8)
         assert result.rendered
         return torch.from_numpy(cv2.imread(str(result.output_path)))
 

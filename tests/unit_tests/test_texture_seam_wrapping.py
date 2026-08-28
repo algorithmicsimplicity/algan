@@ -224,6 +224,7 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
         "the build observed a constant window, so the pad copy is per batch "
         "and only the window itself scales with the frame count"
     )
+    previous_collapse = rt_settings.TEXTURE_WINDOW_COLLAPSE
     rt_settings.set_texture_window_collapse(False)
     try:
         sphere.get_render_primitives()
@@ -231,9 +232,10 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
             "an uncollapsed wrapped window is the window plus the pad copy"
         )
     finally:
-        rt_settings.set_texture_window_collapse(True)
+        rt_settings.set_texture_window_collapse(previous_collapse)
 
     # Legacy arm: the premultiply clone rejoins the per-frame chain.
+    previous_op = rt_settings.TEXTURE_OPACITY_IN_KERNEL
     rt_settings.set_texture_opacity_in_kernel(False)
     try:
         sphere.get_render_primitives()
@@ -246,5 +248,5 @@ def test_a_wrapped_surface_prices_its_extra_copy_into_the_batch_sizer():
             "dense legacy pricing is window + premultiply + pad"
         )
     finally:
-        rt_settings.set_texture_window_collapse(True)
-        rt_settings.set_texture_opacity_in_kernel(True)
+        rt_settings.set_texture_window_collapse(previous_collapse)
+        rt_settings.set_texture_opacity_in_kernel(previous_op)

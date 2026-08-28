@@ -294,35 +294,77 @@ The one path here that could corrupt rather than merely be slow: batch prep
 launches kernels from a worker thread, so a change *during* a job could have
 that thread run `ti.init` -- dropping every compiled kernel -- while the render
 thread is inside one. `tests/unit_tests/test_settings_api.py` covers the
-refusal synthetically; this is the real arrangement, and it only has a second
-thread to race with when there is real prep work to overlap.
+refusal synthetically; this is the real arrangement.
+
+**Do not drive this from an updater.** An earlier draft of this section did, and
+the probe could not reach its own corner case -- on 2026-08-28 it reported a
+spurious `FAIL`. Two reasons, either one alone fatal:
+
+* `add_updater` applies the function **once immediately**, at zero elapsed time
+  and *before* `save_video`. No render is active then, so that first change is
+  correctly allowed -- and the probe printed it as a failure.
+* After it the device already **is** `cpu`, and `ComputingSettings.set` only
+  consults the guard when `requested != self.render_device`. Every later call
+  asks for the value it already holds, so the guard is never reached and nothing
+  is refused. The probe then read `refused: 0` as "the guard is broken".
+
+Measured separately, with the device restored to `cuda` before `save_video`, the
+count depends entirely on **where the updater is attached** -- which is the third
+reason not to drive the check this way:
+
+* attached *after* the animation is recorded (as the original probe did), it gets
+  **zero** calls with `render_is_active()` true. There are no frames after it, so
+  the probe cannot reach its case at all and reports a green-looking `refused: 0`.
+* attached *before* `sphere.rotate(360, OUT)`, it does run inside the job -- but
+  only **once** on this scene, and that one call was correctly refused.
+
+One sample is a thin basis for a guard against a data race, and whether you get
+it at all depends on authoring order. Use a real second thread instead -- which
+is also what the guard actually defends against:
 
 ```bash
 ALGAN_USE_DAEMON=0 uv run python - <<'PY'
+import threading, time
 from algan import *
+from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
+from algan.rendering.taichi_runtime import render_is_active
 
-# A scene with enough frames that batch prep actually overlaps the render.
+# A scene with enough frames that the render job stays open for a while.
 sphere = Sphere(radius=1.0, color=BLUE).spawn()
 sphere.rotate(360, OUT)
 
-def switch(mob, t):
-    try:
-        SETTINGS.computing.set(render_device="cpu")
-        print("FAIL: a mid-render change was allowed")
-    except AlganConfigurationError as exc:
-        print("refused mid-render:", str(exc)[:60])
-    return mob
+tally = {"refused": 0, "allowed": 0, "saw_active": 0}
+stop = threading.Event()
 
-sphere.add_updater(switch)
+def watcher():
+    while not stop.is_set():
+        if render_is_active():
+            tally["saw_active"] += 1
+            try:
+                SETTINGS.computing.set(render_device="cpu")
+                tally["allowed"] += 1
+                print("FAIL: a mid-render change was allowed")
+                SETTINGS.computing.set(render_device="cuda")
+            except AlganConfigurationError:
+                tally["refused"] += 1
+        time.sleep(0.01)
+
+t = threading.Thread(target=watcher, daemon=True)
+t.start()
 Scene.save_video("mid_render_switch", SMOKE_TEST)
+stop.set(); t.join(timeout=2)
+print("tally:", tally)
 print("device after the render:", SETTINGS.computing.render_device)  # expect: cuda
+print("REACHED the corner case:", tally["saw_active"] > 0)           # expect: True
 PY
 ```
 
-**Expect** every attempt refused and the render to finish on CUDA. A crash, a
-second `Starting on arch=` line, or a device that came out as `cpu` all mean the
-job counter is not covering the whole render.
+**Expect** `saw_active > 0` -- a green result from a check that never reached its
+case is not evidence -- plus `allowed == 0` and the render finishing on CUDA. A
+crash, a second `Starting on arch=` line, or a device that came out as `cpu` all
+mean the job counter is not covering the whole render. Measured on 2026-08-28:
+786 attempts while the job was open, 786 refused, 0 allowed.
 
 ### 3.7 The daemon adopts a differing render device
 
@@ -375,6 +417,61 @@ criterion). So establish the baseline behaviour **on the base branch first**,
 on the same machine, and compare the two runs -- not the run against the
 committed files.
 
+#### Measured 2026-08-28, master `234223b9`, GTX 1050 box
+
+`uv run -m pytest -q --fast`: **385 passed**, 2084 deselected, three consecutive
+runs (150 s, 91 s, 114 s). All three are over the suite's own 75 s budget and it
+says so; that is about which tests carry the `fast` marker on this hardware, not
+about this change, which adds neither a test nor a kernel. Per `CLAUDE.md` the
+first run's figure is not usable anyway -- the 150 -> 91 s drop is the cold
+kernel-variant compile being charged to run 1.
+`uv run -m pytest -q`: **3 failed, 2316 passed, 150 skipped** (54:10) before the
+fixes below; green afterwards. Note
+`testpaths` already includes `tests/full_renders`, so the third command is
+covered by the second -- **all six render scenes passed**, no pixel moved.
+
+All three failures were **pre-existing and unrelated to this change**, and have
+since been **fixed** (see below). The two `test_wide_attr_device` ones were
+proven pre-existing by re-running that file on the base commit `da1b08c2` on
+this same machine, where they failed identically; the README one is a different
+case -- its test id does not exist on `da1b08c2` at all, because the example it
+parameterizes over was rewritten after it, so the proof there is ancestry
+rather than a re-run:
+
+| failure | evidence it is not this change |
+| --- | --- |
+| `test_wide_attr_device.py::test_texture_is_priced_against_the_render_device_budget` | identical on `da1b08c2`: `assert 1638400 == ((81920 * 4) * 6)`. The code prices the texture at `texels * 4 * 5`; the test expects `* 6`. |
+| `test_wide_attr_device.py::test_batch_preparation_releases_the_window` | identical on `da1b08c2`: `assert 'cpu' == 'cuda'` on `texture_map.device.type`. |
+| `test_doc_examples.py::...[README.md:56]` | `TypeError: rotate() got an unexpected keyword argument 'about'`. The README quickstart says `rotate(180, OUT, about=ORIGIN)`; the parameter is `about_point`. Introduced by `ede696a8 Updated README.md`, which is **not** on PR #68's branch. |
+
+The first two matter for this document specifically: they are
+`skipif(render_device().type != "cuda")`, so they **never ran** on the CPU-only
+box this change was prototyped on -- which is how they went stale unnoticed.
+
+**All three are now fixed, and in every case the test was wrong, not the code.**
+Both `test_wide_attr_device` assertions were written on 2026-08-25 (`e1ccef92`)
+and invalidated by two rounds landed on 2026-08-27:
+
+* `f8b89fd1` (texture opacity in the sampler) removed the host premultiply from
+  both estimators' image chains: the render-device count went 6 images -> **5**
+  and the animation-device count 2 copies -> **1**. The test pinned the old
+  numbers. It now parameterizes over `TEXTURE_OPACITY_IN_KERNEL` and pins
+  **both** arms of the documented split, so a default flip cannot silently
+  invalidate it again.
+* `57376bfc` (in-kernel texture time interpolation) stopped materializing an
+  animated reassignment frame by frame. The window is now described by K
+  endpoint images stacked out of the **edit log**, which lives on the animation
+  device -- so `texture_map` is legitimately a small host tensor. Verified
+  directly: the primitive carries `[1, 2, 128, 128, 5]` plus a `texture_lerp`,
+  i.e. 2 endpoints for a 4-frame batch, against the 4 dense images the old
+  assertion demanded. Asserting `cuda` there was asserting the optimization had
+  not happened. The test is now split: a dense arm (`TEXTURE_TIME_LERP` off)
+  keeps the original CUDA-placement assertion, and a segment arm pins the
+  endpoint stack and the `K < frames` inequality that is the point of the path.
+
+The README fix is `about=` -> **`about_point=`**, the actual parameter name of
+`MobOrientationMixin.rotate`.
+
 ---
 
 ## 4. What a failure looks like, and where to look
@@ -397,15 +494,26 @@ The CPU column is measured; fill in the CUDA one and keep both, because the
 argument for "switch at the top of a script, not between renders" rests on the
 gap between a re-init and a normal render.
 
-| | CPU (measured) | CUDA |
+Measured on the CUDA box on 2026-08-28, at master `234223b9`: Windows 10,
+GTX 1050 (4096 MiB), torch 2.7.1+cu128, taichi 1.7.4, warm offline cache. The
+trivial scene is a single `Square`, rendered with `save_frame`.
+
+| | CPU (measured) | CUDA (measured) |
 | --- | --- | --- |
-| `ti.init` alone | 0.19 s | |
-| next render after a re-init, minus a steady-state render | +4.0 s (trivial scene, warm offline cache) | |
-| steady-state render, same scene | 0.13 s | |
-| compiled specializations dropped by the re-init | 22 -> 0 | |
-| VRAM held after `import algan` with `ALGAN_RENDER_DEVICE=cpu` | n/a | |
-| `tests/fast` | pass | |
-| `tests/full_renders` deviation vs the same machine on the base branch | unchanged | |
+| `ti.init` alone | 0.19 s | 0.84 s |
+| next render after a re-init, minus a steady-state render | +4.0 s (trivial scene, warm offline cache) | +24.7 s (same scene, warm offline cache) |
+| steady-state render, same scene | 0.13 s | 0.28 s |
+| compiled specializations dropped by the re-init | 22 -> 0 | 22 -> 0 |
+| VRAM held after `import algan` with `ALGAN_RENDER_DEVICE=cpu` | n/a | 0.0 MB (and 0.0 MB after the render) |
+| `tests/fast` | pass | pass (`--fast`: 385 passed, 2084 deselected) |
+| `tests/full_renders` deviation vs the same machine on the base branch | unchanged | unchanged -- all six scenes pass against `expected_outputs_cuda/` |
+
+The three timings were taken twice, in separate processes, and agree to within
+run-to-run noise: `ti.init` 0.84 / 0.89 s, re-init penalty +24.7 / +24.3 s,
+steady-state render 0.28 / 0.27 s. A cold first render of the same scene (no
+live program at all) was 27.2 s, so **the re-init penalty is very nearly the
+full cold-start cost** -- dropping the compiled kernels is the whole expense,
+and `ti.init` itself is under a second of it.
 
 A CUDA re-init will be much more expensive than the CPU's +4.0 s: the scenes
 compile more kernel variants and the megakernels are the expensive ones. That

@@ -568,13 +568,16 @@ def ensure_taichi_for_render():
       again on the new arch.
 
     The third case is not cheap and is not meant to be hidden. ``ti.init``
-    itself is ~0.2 s, but it calls ``impl.reset()``, which clears
-    ``compiled_kernels`` on every registered kernel -- so the next render
-    re-materializes each kernel it launches and re-reads them from the offline
-    cache. Measured on a trivial CPU scene that is ~4 s; on a real scene it is
-    the whole "Preparing render kernels" pass. That is why the device is a
-    top-of-script setting and why this compares arches instead of just calling
-    ``ti.init`` each time.
+    itself is 0.2 s on the CPU and ~0.9 s on CUDA, but it calls ``impl.reset()``,
+    which clears ``compiled_kernels`` on every registered kernel -- so the next
+    render re-materializes each kernel it launches and re-reads them from the
+    offline cache. On a trivial scene (one ``Square``, warm offline cache) that
+    costs the next render **+4 s on the CPU and +24 s on CUDA**, against a
+    steady-state render of 0.13 s and 0.27 s respectively; on CUDA that is
+    within ~10% of a full cold start, so essentially the whole
+    "Preparing render kernels" pass is paid again. On a real scene it is that
+    pass in full. That is why the device is a top-of-script setting and why this
+    compares arches instead of just calling ``ti.init`` each time.
 
     Safe because Algan holds no ``ti.field`` or ``ti.Ndarray`` anywhere -- every
     kernel argument is a torch tensor. Reading a Taichi field created before a
