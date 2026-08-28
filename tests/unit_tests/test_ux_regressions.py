@@ -1215,24 +1215,72 @@ def test_internal_helpers_are_importable_but_not_star_exported():
     ("feature", "expected"),
     [
         ("environment_map", "environment maps"),
-        ("refraction", "refractive materials"),
-        ("fragment_pipeline", "custom fragment-shader pipelines"),
-        ("extended_light", "extended lights"),
+        ("custom_scatter", "custom scatter overrides"),
     ],
 )
-def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
+def test_an_authored_scene_reaches_the_path_tracer_capability_check(
     feature, expected, tmp_path
 ):
     """The preflight is only worth having if real authoring actually trips it.
 
     ``_validate_render_capabilities`` is unit-tested above against hand-built
     ``merged`` dicts, which proves the message but not the wiring: that
-    ``set_material(MeshPhysicalMaterial(transmission=...))` really sets
-    ``has_refractive``, that ``set_environment_map`` reaches the check at all,
-    and so on. Authoring each feature the way a user would and asserting the
-    render refuses is what closes that gap -- and it needs no GPU, because the
+    ``set_environment_map`` reaches the check at all, and that a fragment
+    pipeline carrying a custom scatter registers as one. Authoring each
+    still-unsupported feature the way a user would and asserting the render
+    refuses is what closes that gap -- and it needs no GPU, because the
     check runs on host metadata before any arena reservation or kernel
     compilation.
+    """
+    import taichi as ti
+
+    from algan.constants.color import BLUE
+    from algan.mobs.shapes_3d import Sphere
+    from algan.rendering.shaders.fragment_shaders import (
+        STAGE_STANDARD,
+        FragmentStage,
+    )
+    from algan.settings.video_settings import SMOKE_TEST
+
+    rt_settings.set_unsupported_feature_policy("error")
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(SMOKE_TEST)
+
+    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
+        if feature == "environment_map":
+            scene.set_environment_map(torch.rand((4, 8, 3)))
+            Sphere(radius=0.6, color=BLUE).spawn()
+        elif feature == "custom_scatter":
+
+            @ti.func
+            def _test_scatter_noop():
+                pass
+
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_fragment_shader(
+                [
+                    FragmentStage(
+                        STAGE_STANDARD.ti_func,
+                        STAGE_STANDARD.param_specs,
+                        scatter=_test_scatter_noop,
+                    )
+                ]
+            )
+            sphere.spawn()
+
+        scene.wait(0.2)
+
+        with pytest.raises(UnsupportedFeatureError, match=expected):
+            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)
+
+
+@pytest.mark.parametrize(
+    "feature", ["refraction", "fragment_pipeline", "extended_light"]
+)
+def test_lifted_path_tracer_features_render(feature, tmp_path):
+    """Features the path tracer gained (refraction, fragment pipelines and
+    extended lights were Monte Carlo rejections before it) pass preflight and
+    render one small frame end-to-end.
     """
     from algan.constants.color import BLUE, WHITE
     from algan.constants.spatial import OUT, UP
@@ -1246,10 +1294,7 @@ def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
     scene.set_video_settings(SMOKE_TEST)
 
     with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
-        if feature == "environment_map":
-            scene.set_environment_map(torch.rand((4, 8, 3)))
-            Sphere(radius=0.6, color=BLUE).spawn()
-        elif feature == "refraction":
+        if feature == "refraction":
             sphere = Sphere(radius=0.6, color=BLUE)
             sphere.set_material(
                 MeshPhysicalMaterial(transmission=1.0, ior=1.5, thickness=0.5)
@@ -1267,10 +1312,9 @@ def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
                 ).spawn()
             Sphere(radius=0.6, color=BLUE).spawn()
 
-        scene.wait(0.2)
-
-        with pytest.raises(UnsupportedFeatureError, match=expected):
-            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)
+        result = scene.save_frame(tmp_path / f"pt_{feature}.png", overwrite=True)
+        assert result.render_plan.backend == "path_tracer"
+        assert not result.render_plan.unsupported_features
 
 
 def test_arrow3d_endpoints_follow_the_arrow():

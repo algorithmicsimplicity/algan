@@ -981,24 +981,32 @@ def _build_render_plan(
     samples_requested = max(1, int(samples_per_pixel))
     backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
+    unsupported = []
     if scene_environment_map is not None:
         requested.append("environment maps")
+        if samples_requested > 1:
+            # Lifted when the path tracer gains environment sampling.
+            unsupported.append("environment maps")
     if bool(merged.get("has_refractive")):
         requested.append("refractive materials")
     if _scene_has_user_pipeline(merged):
         requested.append("custom fragment-shader pipelines")
+        if samples_requested > 1 and _scene_has_custom_scatter(merged):
+            # Pipelines are evaluated at hits under the path tracer exactly
+            # as the deterministic renderer evaluates them, but a custom
+            # SCATTER override redefines ray continuation with no sampling
+            # density, which stochastic transport cannot honor.
+            unsupported.append("custom scatter overrides")
     if any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
     ):
         requested.append("extended lights")
-
-    unsupported = tuple(requested) if samples_requested > 1 else ()
     return RenderPlan(
         backend=backend,
         samples_per_pixel=samples_requested,
         requested_features=tuple(requested),
-        unsupported_features=unsupported,
+        unsupported_features=tuple(unsupported),
     )
 
 
@@ -1007,11 +1015,13 @@ def _validate_render_capabilities(
 ):
     """Validate that the selected renderer can honor the authored scene.
 
-    ``samples_per_pixel > 1`` selects the Monte Carlo megakernel. Several
-    features currently exist only in the deterministic wavefront renderer;
-    silently discarding them is more dangerous than failing early. The global
-    unsupported-feature policy permits an explicit warning/ignore migration
-    mode for benchmarks and legacy projects.
+    ``samples_per_pixel > 1`` selects the path tracer, which supports the
+    deterministic renderer's feature set except environment maps (until it
+    gains environment sampling) and custom scatter overrides (arbitrary
+    user continuation code has no sampling density for stochastic
+    transport); silently discarding a feature is more dangerous than failing
+    early. The global unsupported-feature policy permits an explicit
+    warning/ignore migration mode for benchmarks and legacy projects.
     """
     plan = _build_render_plan(
         samples_per_pixel,
@@ -1022,7 +1032,7 @@ def _validate_render_capabilities(
     if plan.unsupported_features:
         feature_list = ", ".join(plan.unsupported_features)
         rt_settings.report_unsupported_features(
-            "The Monte Carlo renderer selected by samples_per_pixel > 1 "
+            "The path tracer selected by samples_per_pixel > 1 "
             f"cannot honor: {feature_list}. Set samples_per_pixel to 1 to use "
             "the deterministic wavefront renderer, remove those features, or "
             "set_unsupported_feature_policy('warn'/'ignore') explicitly."
@@ -1424,7 +1434,7 @@ def render_batch_raytraced(
     # bounce block to per-material scatter dispatch (custom ray bouncing); it is
     # only assembled when a pipeline in *this* scene overrides bouncing, so an
     # ordinary scene keeps the byte-identical built-in bounce block (empty ()).
-    if det_frag:
+    if det_frag or samples > 1:
         from algan.rendering.shaders.fragment_shaders import (
             build_frag_pipelines,
             build_frag_scatters,
@@ -1435,11 +1445,15 @@ def render_batch_raytraced(
         # it would specialize this render's shade kernel on every pipeline the
         # process ever registered -- a scene with no custom shader at all would
         # compile its own uncached kernel variant just because some earlier
-        # scene had one.
+        # scene had one. The path tracer evaluates the same pipelines at its
+        # hits; custom SCATTER overrides stay deterministic-only (rejected in
+        # _build_render_plan), so its tuple stays empty there.
         batch_pids = _batch_user_pipeline_ids(merged)
         frag_pipelines = build_frag_pipelines(batch_pids)
         frag_scatters = (
-            build_frag_scatters(batch_pids) if _scene_has_custom_scatter(merged) else ()
+            build_frag_scatters(batch_pids)
+            if (samples <= 1 and _scene_has_custom_scatter(merged))
+            else ()
         )
     else:
         frag_pipelines = ()
@@ -1476,7 +1490,13 @@ def render_batch_raytraced(
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
-    if det_frag:
+    if det_frag or samples > 1:
+        # The path tracer packs lights exactly as the deterministic
+        # per-fragment route does: its next-event estimation reads the same
+        # rows through the same ``_light_eval`` radiometry. (The env-SH
+        # append below is deterministic-only by construction -- ``env_map``
+        # is None under the path tracer until it gains environment
+        # sampling, which will integrate the map for real.)
         light_device = torch.device("cpu")
         light_pos_host, light_col_host, num_lights = _pack_lights(
             light_sources, num_frames, light_device
@@ -1497,9 +1517,6 @@ def render_batch_raytraced(
         ):
             light_pos = _arena_copy(memory, light_pos_host)
             light_col = _arena_copy(memory, light_col_host)
-    elif samples > 1:
-        light_pos = light_col = None
-        num_lights = 0
     else:
         # Deterministic, fragment shading off: tiny placeholders for the
         # (compiled-out) material/light kernel args.
@@ -1685,6 +1702,12 @@ def render_batch_raytraced(
                         layer_offset_triangles=layer_offset_triangles,
                         has_tri=has_tri,
                         has_bez=has_bez,
+                        light_pos=light_pos,
+                        light_col=light_col,
+                        num_lights=num_lights,
+                        frag_pipelines=frag_pipelines,
+                        shadows=1 if bool(shadows) else 0,
+                        max_bounces=int(max_bounces),
                         transparent=transparent_background,
                         samples=samples_eff,
                         out=out,

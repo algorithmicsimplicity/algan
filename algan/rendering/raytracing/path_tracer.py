@@ -53,20 +53,23 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     max_surfaces_per_ray,
 )
 from algan.rendering.raytracing.refit_bvh import RefitBVH
+from algan.rendering.raytracing.shading_taichi import ALL_PIDS
 from algan.rendering.raytracing.truncation import record_truncation
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
+    SCA_WIDTH_NESTED,
     wavefront_traverse_events,
 )
 from algan.utils.memory_utils import InsufficientMemoryException
 
-# Bytes of arena state per path slot: rs_ro/rs_rd (12 + 12), rs_sca (7 f32),
+# Bytes of arena state per path slot: rs_ro/rs_rd (12 + 12), rs_sca (the
+# nested-IOR width -- the path tracer always carries the media stack),
 # rs_int (5 i32), rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32),
 # the compactor's ping-pong index pair (2 i32), and the transient
 # per-iteration hit-event batch at worst case num_active == pool
 # (kbuf * (4 f32 + 2 i32)).
 _PT_BYTES_PER_SLOT = (
-    12 + 12 + 7 * 4 + 5 * 4 + 4 + 4 * 4 + PT_ACC_WIDTH * 4 + 2 * 4
-    + kbuf * (4 * 4 + 2 * 4)
+    12 + 12 + SCA_WIDTH_NESTED * 4 + 5 * 4 + 4 + 4 * 4 + PT_ACC_WIDTH * 4
+    + 2 * 4 + kbuf * (4 * 4 + 2 * 4)
 )
 # Per-tile fixed words: the compactor's counter, the stats tallies, alignment.
 _PT_FIXED_BYTES = 64
@@ -133,6 +136,12 @@ def path_trace_render(
     layer_offset_triangles,
     has_tri,
     has_bez,
+    light_pos,
+    light_col,
+    num_lights,
+    frag_pipelines,
+    shadows,
+    max_bounces,
     transparent,
     samples,
     out,
@@ -171,11 +180,21 @@ def path_trace_render(
 
     tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
-    # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0, 0, 0];
-    # rs_int all-zero = [bounces used=0, processed=0, _ACTIVE, no hits, spare].
+    # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0, 0, 0]
+    # plus the zeroed nested-IOR stack columns (air outside); rs_int =
+    # [bounces_left=max_bounces, processed=0, _ACTIVE, no hits,
+    # max_bounces (the bounce ordinal's reference)].
     sca_init = torch.tensor(
-        [1.0, 0.0, 1e30, -1e30, 0.0, 0.0, 0.0], dtype=f32, device=device
+        [1.0, 0.0, 1e30, -1e30, 0.0, 0.0, 0.0]
+        + [0.0] * (SCA_WIDTH_NESTED - 7),
+        dtype=f32,
+        device=device,
     )
+    int_init = torch.tensor(
+        [int(max_bounces), 0, 0, 0, int(max_bounces)], dtype=i32, device=device
+    )
+    rr_start = max(0, int(rt_settings.pt_rr_start_bounce))
+    firefly_clamp = float(rt_settings.pt_firefly_clamp)
 
     tile_start = 0
     while tile_start < n:
@@ -186,7 +205,7 @@ def path_trace_render(
             with memory.scope("pt_state", slots=pool):
                 rs_ro = memory.get_tensor((pool, 3), f32)
                 rs_rd = memory.get_tensor((pool, 3), f32)
-                rs_sca = memory.get_tensor((pool, 7), f32)
+                rs_sca = memory.get_tensor((pool, SCA_WIDTH_NESTED), f32)
                 rs_int = memory.get_tensor((pool, 5), i32)
                 rs_pix = memory.get_tensor((pool,), i32)
                 pt_thru = memory.get_tensor((pool, 4), f32)
@@ -199,7 +218,7 @@ def path_trace_render(
                 sw = min(wave_samples, samples - sample_base)
                 slots = tp * sw
                 rs_sca[:slots].copy_(sca_init)
-                rs_int[:slots].zero_()
+                rs_int[:slots].copy_(int_init)
                 pt_thru[:slots].fill_(1.0)
                 pt_acc[:slots].zero_()
                 pt_generate(
@@ -284,18 +303,54 @@ def path_trace_render(
                         pt_shade(
                             active,
                             na,
+                            tri_bvh.blocks,
+                            tri_bvh.node_miss,
+                            tri_bvh.leaf_prim,
+                            tri_bvh.leaf_tspan,
+                            int(tri_bvh.first_leaf),
+                            merged["tri_pos"],
+                            merged["tri_norm"],
+                            merged["tri_extra"],
                             merged["tri_colors"],
                             merged["tri_uvs"],
                             merged["tri_tex_meta"],
                             merged["textures"],
                             int(merged["num_colored_triangles"]),
+                            bez_bvh.blocks,
+                            bez_bvh.node_miss,
+                            bez_bvh.leaf_prim,
+                            bez_bvh.leaf_tspan,
+                            int(bez_bvh.first_leaf),
                             merged["circuit_meta"],
                             merged["circuit_colors"],
                             merged["circuit_border_colors"],
+                            merged["edges_2d"],
+                            merged["edge_accel"],
+                            merged["tri_mat_id"],
+                            merged["tri_mat"],
+                            light_pos,
+                            light_col,
+                            int(num_lights),
+                            pixel_world_scale,
+                            float(layer_offset_triangles),
+                            cam_origin,
+                            bvh_refit,
+                            int(has_tri),
+                            int(has_bez),
+                            int(shadows),
+                            frag_pipelines,
+                            ALL_PIDS,
+                            seed_root,
+                            int(sample_base),
+                            int(tp),
+                            rr_start,
+                            firefly_clamp,
                             int(time_start),
                             int(width),
                             int(height),
                             int(tile_start),
+                            rs_ro,
+                            rs_rd,
                             rs_sca,
                             rs_int,
                             rs_pix,

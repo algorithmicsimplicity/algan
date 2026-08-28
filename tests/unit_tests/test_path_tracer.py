@@ -25,14 +25,25 @@ import pytest
 import torch
 
 from algan import (
+    BLACK,
     BLUE,
     GREEN,
+    ORIGIN,
+    OUT,
     RED,
+    RIGHT,
     SETTINGS,
     SMOKE_TEST,
+    UP,
+    WHITE,
+    MeshLambertMaterial,
+    MeshStandardMaterial,
     Off,
+    PointLight,
+    Prism,
     Scene,
     SceneManager,
+    Sphere,
     Square,
 )
 
@@ -220,6 +231,214 @@ def test_seed_changes_the_noise_but_not_the_flat_interior(tmp_path):
     flat = (pooled_max - pooled_min).squeeze(0).amax(0) < 2
     err = (a - b).abs().amax(-1)
     assert err[flat].max() <= 1, "the seed disturbed interior pixels"
+
+
+# ---------------------------------------------------------------------------
+# Transport (Stage 2: NEE + BSDF sampling)
+# ---------------------------------------------------------------------------
+
+
+def _render_scene(tmp_path, name, build, samples_per_pixel, video=None,
+                  **rt_kwargs):
+    """Render one frame of ``build()``'s scene under the given settings."""
+    settings = video if video is not None else STACK_SETTINGS
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        for key, value in rt_kwargs.items():
+            SETTINGS.raytracing.set(**{key: value})
+        with Scene(video_settings=settings) as scene:
+            with Off():
+                build(scene)
+            result = scene.save_frame(
+                tmp_path / name, video_settings=settings, overwrite=True
+            )
+    finally:
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+    return _read(result)
+
+
+def test_lambert_furnace_is_lossless(tmp_path):
+    """White furnace, diffuse: a pure-white Lambert sphere in front of a
+    pure-white background with no lights must render white everywhere -- the
+    diffuse continuation carries exactly the albedo (no ambient fill, no
+    hidden loss), and the leftover throughput picks up the background.
+    """
+
+    def build(scene):
+        scene.set_background(WHITE)
+        Scene.clear_light_sources()
+        sphere = Sphere(radius=1.0)
+        sphere.set_material(MeshLambertMaterial(color=WHITE))
+        sphere.spawn(animate=False)
+
+    img = _render_scene(tmp_path, "furnace_lambert.png", build, 16)
+    lo = int(img.amin())
+    assert lo >= 254, (
+        f"diffuse furnace lost energy: darkest channel {lo} (expected white "
+        "everywhere)"
+    )
+
+
+def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
+    """White furnace, specular: a white metallic sphere (roughness 0.5) under
+    a white background must stay near-white -- VNDF sampling with the Turquin
+    compensation recovers the multiple-scattering energy single-scatter GGX
+    loses (uncompensated, rough metal renders visibly dark).
+    """
+
+    def build(scene):
+        scene.set_background(WHITE)
+        Scene.clear_light_sources()
+        sphere = Sphere(radius=1.0)
+        sphere.set_material(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5)
+        )
+        sphere.spawn(animate=False)
+
+    img = _render_scene(tmp_path, "furnace_ggx.png", build, 64).float()
+    h, w = img.shape[0], img.shape[1]
+    # The sphere covers the frame centre; sample its disc.
+    disc = img[h // 2 - 8 : h // 2 + 8, w // 2 - 8 : w // 2 + 8]
+    mean = float(disc.mean())
+    assert mean > 0.93 * 255, (
+        f"GGX furnace lost energy: sphere disc mean {mean:.1f}/255"
+    )
+    assert mean <= 256, f"GGX furnace GAINED energy: {mean:.1f}/255"
+
+
+def test_nee_direct_lighting_matches_deterministic(tmp_path):
+    """A Lambert plane under one point light, no shadows: the path tracer's
+    NEE uses the same ``_light_eval`` radiometry and stage formulas as the
+    deterministic renderer, so flat interiors agree up to the deterministic
+    renderer's small ambient fill (which real GI replaces) -- nothing here
+    for GI to add (black background, single surface).
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(
+            animate=False
+        )
+        plane = Prism(dimensions=(7.0, 7.0, 0.1))
+        plane.set_material(MeshLambertMaterial(color=RED))
+        plane.spawn(animate=False)
+
+    det = _render_scene(tmp_path, "nee_det.png", build, 1)
+    pt = _render_scene(tmp_path, "nee_pt.png", build, 32)
+    det_f = det.float().permute(2, 0, 1).unsqueeze(0)
+    pooled_max = torch.nn.functional.max_pool2d(det_f, 3, stride=1, padding=1)
+    pooled_min = -torch.nn.functional.max_pool2d(-det_f, 3, stride=1, padding=1)
+    flat = (pooled_max - pooled_min).squeeze(0).amax(0) < 2
+    err = (det - pt).abs().amax(-1)
+    assert flat.sum() > 500, "not enough flat pixels to compare"
+    max_err = int(err[flat].max())
+    assert max_err <= 5, (
+        f"path-traced direct lighting deviates from the deterministic stage "
+        f"by {max_err} (expected within the ambient-fill difference); "
+        f"{int((err[flat] > 5).sum())} of {int(flat.sum())} flat pixels off"
+    )
+
+
+def test_point_light_shadow_under_path_tracing(tmp_path):
+    """With ``shadows`` on, NEE visibility rays darken occluded geometry."""
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(
+            animate=False
+        )
+        floor = Prism(dimensions=(7.0, 7.0, 0.1))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        blocker = Square(side_length=2.0, color=BLUE)
+        blocker.move(OUT * 2.0)
+        blocker.spawn(animate=False)
+
+    lit = _render_scene(tmp_path, "shadow_off.png", build, 24, shadows=False)
+    shadowed = _render_scene(tmp_path, "shadow_on.png", build, 24, shadows=True)
+    h, w = lit.shape[0], lit.shape[1]
+    # Just outside the blocker's straight-down projection the floor stays lit
+    # in both renders; inside it only the shadowed render darkens. The
+    # blocker itself is unlit 2-D and draws on top, so probe the floor next
+    # to the frame centre... the blocker covers the centre, so probe under
+    # its edge shadow: a point light above the centre projects the blocker's
+    # shadow around the centre; the blocker occludes the view there too.
+    # Probe a ring between the blocker's silhouette and the shadow edge.
+    centre_bright_lit = float(lit[h // 2 + 12, w // 2, :3].float().mean())
+    centre_bright_shadowed = float(
+        shadowed[h // 2 + 12, w // 2, :3].float().mean()
+    )
+    assert centre_bright_shadowed < 0.75 * centre_bright_lit, (
+        f"no shadow: lit {centre_bright_lit:.0f} vs shadowed "
+        f"{centre_bright_shadowed:.0f}"
+    )
+
+
+def test_indirect_light_bleeds_color(tmp_path):
+    """Global illumination: a red wall beside a white floor bleeds red onto
+    it (the deterministic renderer cannot; the old Monte Carlo kernel needed
+    an opt-in hack). Compared against its own far side rather than an
+    absolute value so the test tracks lighting, not tonemapping.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        PointLight(location=(UP * 2.0 + OUT * 5.0), color=WHITE,
+                   intensity=1.2).spawn(animate=False)
+        floor = Prism(dimensions=(8.0, 8.0, 0.1))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        wall = Prism(dimensions=(0.1, 8.0, 3.0))
+        wall.set_material(MeshLambertMaterial(color=RED))
+        wall.move(RIGHT * 2.5 + OUT * 1.5)
+        wall.spawn(animate=False)
+
+    img = _render_scene(tmp_path, "bleed.png", build, 48).float()
+    h, w = img.shape[0], img.shape[1]
+    # OpenCV loads BGR: channel 2 is red, 0 is blue.
+    near = img[h // 2, w // 2 + 6]
+    far = img[h // 2, w // 2 - 20]
+    near_redness = float(near[2] - near[0])
+    far_redness = float(far[2] - far[0])
+    assert near_redness > far_redness + 6, (
+        f"no red bleed: near {near.tolist()} far {far.tolist()}"
+    )
+
+
+def test_lit_scene_render_is_reproducible(tmp_path):
+    """The full Stage-2 transport (NEE jitter, lobe choices, RR) draws every
+    random number from pure functions of the path identity, so a lit GI
+    render reproduces byte-for-byte, exactly like the unlit stack.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(
+            animate=False
+        )
+        floor = Prism(dimensions=(6.0, 6.0, 0.1))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        ball = Sphere(radius=0.7)
+        ball.set_material(
+            MeshStandardMaterial(color=GREEN, metalness=0.8, roughness=0.3)
+        )
+        ball.move(OUT * 1.0)
+        ball.spawn(animate=False)
+
+    a = _render_scene(tmp_path, "lit_a.png", build, 12, shadows=True)
+    b = _render_scene(tmp_path, "lit_b.png", build, 12, shadows=True)
+    assert torch.equal(a, b), (
+        f"lit path-traced output changed between identical runs "
+        f"(max diff {int((a - b).abs().max())})"
+    )
 
 
 if __name__ == "__main__":

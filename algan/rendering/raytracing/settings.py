@@ -144,6 +144,16 @@ pt_seed = env_int("ALGAN_PT_SEED", 0)
 # which pins byte-level reproducibility across machines with different
 # memory budgets.
 pt_wave_samples = env_int("ALGAN_PT_WAVE", 0)
+# Bounce ordinal at which the path tracer starts Russian roulette: earlier
+# bounces always continue (low-order transport carries most of the image),
+# later ones survive with probability proportional to their throughput.
+pt_rr_start_bounce = env_int("ALGAN_PT_RR_START", 3)
+# Per-channel cap on an indirect path's contribution, in display-white units
+# (1.0 = an authored white); 0 disables. Clamping trades a little darkening
+# of very bright indirect paths for the fireflies they would otherwise
+# leave -- the production-standard bias (see the module docstring of
+# path_tracer_taichi for where it applies).
+pt_firefly_clamp = env_float("ALGAN_PT_FIREFLY_CLAMP", 10.0)
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set

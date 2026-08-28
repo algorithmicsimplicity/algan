@@ -341,6 +341,8 @@ _MINIMUMS = {
     "max_bounces": (0, False),
     "ambient_strength": (0, False),
     "ambient_strength_linear": (0, False),
+    "pt_firefly_clamp": (0, False),
+    "pt_rr_start_bounce": (0, False),
     "pt_wave_samples": (0, False),
     "tonemap_exposure": (0, False),
     "shadow_eps_relative": (0, False),
