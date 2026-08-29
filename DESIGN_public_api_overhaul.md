@@ -17,12 +17,16 @@ The phases are ordered so that structural decisions land before the mechanical r
 depend on them. Two dependencies are load-bearing:
 
 - **Phase 1 before Phase 6.** `border_width` cannot become `stroke_width` while `stroke_width`
-  is still a live Manim-compat kwarg meaning *twice* `border_width` (see Phase 6).
+  is still a live Manim-compat kwarg meaning *twice* `border_width` (see Phase 6). Phase 1b
+  builds the convention-adapter helper that Phase 6 then reuses for the stroke-width boundary.
+- **Phase 1b before Phase 5.** Phase 5 renames native `NumericDisplay` → `DecimalNumber`, which
+  is only free once Phase 1b has settled that the compat `DecimalNumber` stays `mn.`-only.
 - **Phase 0 before everything.** Without a snapshot test, a 471-name export surface silently
   drifts under this much churn.
 
-Phases 2–5 are independent of each other and can be done in any order or in parallel.
-Phase 7 is mechanical and should go last, when no more names are moving.
+Phases 2–5 are independent of each other and can be done in any order or in parallel, subject to
+the 1b→5 dependency above. Phase 7 is mechanical and should go last, when no more names are
+moving.
 
 Each phase is one PR. Run `uv run -m pytest -q --fast` after every change and the full suite
 before pushing each phase.
@@ -107,27 +111,113 @@ arc = mn.Arc(angle=PI / 2)  # Manim, radians — and it says so
 
 ### Consequences to resolve during the work
 
-- **Compat-only classes leave the root namespace with nothing behind them.** Step 3 gives every
-  *native* class a Manim twin, but the reverse gap stays: `Axes`, `NumberLine`, `Graph`,
-  `Table`, `Matrix`, `Brace`, `Vector`, `Arrow`, `Angle`, `Sector`, `Annulus` and the rest have
-  no native equivalent, so after this phase `from algan import *` has no axes, no graph, no
-  table and no arrow. For an explanatory-maths engine that is a real hole. Either users write
-  `mn.Axes()` for these, or Algan grows native versions — decide before this phase ships, and
-  record it here either way. Writing native replacements is out of scope for this plan.
 - **The text family stops being split.** `Text`, `Tex` and `Code` are native and now get Manim
-  twins; `MathTexPart`, `SingleStringMathTex`, `Paragraph`, `MarkupText`, `Title` and
-  `BulletedList` are compat-only and fall under the gap above.
+  twins. `MathTexPart`, `SingleStringMathTex`, `Paragraph`, `MarkupText`, `Title` and
+  `BulletedList` are compat-only and are handled by Phase 1b below.
 - `docs/source/` examples using compat classes need the `import algan.manim as mn` line.
 
-### Explicitly NOT doing
+---
+
+## Phase 1b — Native adapters for the curated root subset
+
+Step 3 gives every native class a Manim twin. This step closes the reverse gap: 99 compat-only
+classes have no native equivalent, so without it `from algan import *` would have no `Axes`, no
+`Graph`, no `Table` and no `Arrow` — a real hole for an explanatory-maths engine.
+
+### The shape
+
+For a curated subset, add a **native Algan class that adapts Manim's conventions to Algan's and
+delegates to the compat wrapper**. Same class, same parameters, converted units:
+
+```python
+# algan/mobs/shapes_2d.py -- native, degrees
+class Arc(_ManimAdapter, angle_params=("angle", "start_angle")):
+    """..."""            # mn.Arc is the same geometry, in radians
+
+Arc(angle=90)            # native Algan: degrees
+mn.Arc(angle=PI / 2)     # Manim: radians
+```
+
+Both spellings exist and mean the same shape; they differ only in convention, and the namespace
+says which is which. This is not an alias in the sense `CLAUDE.md` forbids — `Arc` and `mn.Arc`
+take different units and are genuinely different call surfaces.
+
+### Build it declaratively, not by hand
+
+There are two conventions to convert and both are mechanical:
+
+| Convention | Conversion | Affected parameters |
+| :--- | :--- | :--- |
+| Angles | radians → degrees | `angle`, `start_angle`, `other_angle`, `rotation` |
+| Stroke width | Manim's unit is half Algan's (Phase 6) | `stroke_width` |
+
+Write **one** `_ManimAdapter` base that takes the parameter names to convert as class-creation
+keywords, rather than 60 hand-written constructors that will drift apart. The same helper is what
+Phase 6 uses for the stroke-width boundary — they are the same mechanism, so build it once here
+and have Phase 6 reuse it.
+
+Verified conflict set (checked against the vendored Manim signatures): `Arc`, `ArcBetweenPoints`,
+`AnnularSector`, `Sector`, `Angle`, `ArcPolygon`, `Elbow` carry angle parameters; `AnnularSector`,
+`Annulus`, `Arrow`, `NumberLine`, `Brace`, `Circumscribe` carry `stroke_width`. Everything else
+in the subset delegates unchanged. (`Table` and `Matrix` match an `angle` substring search only
+through `background_rectangle` — they have no angle parameter.)
+
+### Inclusion principle
+
+A compat class earns a native adapter when it (a) has no native equivalent, (b) is something an
+author reaches for directly, and (c) is not a Manim architecture or renderer construct.
+
+**In** — geometry: `Arc`, `ArcBetweenPoints`, `Sector`, `AnnularSector`, `Annulus`, `Ellipse`,
+`Angle`, `RightAngle`, `Elbow`, `Polygram`, `RegularPolygram`, `RoundedRectangle`, `Star`,
+`Cross`, `CubicBezier`, `TangentLine`, `DashedLine`, `ConvexHull`; boolean ops `Union`,
+`Difference`, `Intersection`, `Exclusion`, `Cutout`; arrows `Arrow`, `DoubleArrow`,
+`CurvedArrow`, `CurvedDoubleArrow`, `Vector`; plots `Axes`, `ThreeDAxes`, `NumberLine`,
+`NumberPlane`, `ComplexPlane`, `PolarPlane`, `FunctionGraph`, `ParametricFunction`,
+`ImplicitFunction`, `BarChart`; graphs `Graph`, `DiGraph`; tables `Table`, `MathTable`,
+`IntegerTable`, `DecimalTable`, `MobjectTable`, `Matrix`, `IntegerMatrix`, `DecimalMatrix`,
+`MobjectMatrix`; braces and labels `Brace`, `BraceBetweenPoints`, `BraceLabel`, `BraceText`,
+`Label`, `LabeledDot`, `LabeledArrow`, `LabeledLine`, `LabeledPolygram`; text `MathTex`,
+`Title`, `Underline`, `BulletedList`, `SVGMobject`; values `Integer`, `Variable`.
+
+**Out** (`mn.`-only) — Manim architecture: `VMobject`, `VGroup`, `VDict`, `TipableVMobject`,
+`ThreeDVMobject`, `DashedVMobject`, `CurvesAsSubmobjects`, `VectorizedPoint`,
+`VMobjectFromSVGPath`, `SingleStringMathTex`, the `Arrow*Tip` family, `StealthTip`; and the
+niche: `ManimBanner`, `SampleSpace`, `StreamLines`, `VectorField`, `ArrowVectorField`,
+`ScreenRectangle`, `FullScreenRectangle`, `BackgroundRectangle`, `ArcBrace`,
+`ArcPolygonFromArcs`, `ValueTracker`, `ComplexValueTracker`.
+
+### Two collisions to respect
+
+- **`DecimalNumber` is not in the subset.** Phase 5 renames native `NumericDisplay` →
+  `DecimalNumber`, which claims the root name. Manim's stays `mn.DecimalNumber`. Re-exporting
+  the compat one would put the two back in collision — the exact problem Phase 1 exists to fix.
+- **`SurroundingRectangle` is already native** (`shapes_2d`), so it is not part of this step;
+  only `BackgroundRectangle` is compat, and it is out.
+
+### Known cost, accepted
+
+An adapter converts the conventions it *declares* and nothing else. Manim behaviour beyond those
+parameters still shows through — `Title` positions against Manim's 8-unit frame, not Algan's, as
+its existing docstring already warns. That is a known leak, not a surprise: document it per class
+rather than trying to intercept every difference.
+
+### Explicitly NOT doing (Phases 1 and 1b both)
 
 Per the API policy, nothing in the compat layer is deleted or renamed. `ValueTracker`,
 `ComplexValueTracker`, `TrueDot`, `PointCloudDot`, `VGroup`, `VDict`, `PGroup`, the `OpenGL*`
 family and the Manim `DecimalNumber`/`Integer` all survive unchanged inside `algan.manim`.
 The review's proposals to consolidate or deprecate them are withdrawn.
 
-**Verification**: full suite. `from algan import *` no longer binds `Arc`; `import algan.manim as
-mn; mn.Arc` works. Snapshot test shows only compat names leaving.
+**Verification**:
+
+- **Phase 1** — full suite. `import algan.manim as mn` gives `mn.Arc` (radians) *and* `mn.Sphere`
+  (Manim's, wrapped). At the end of Phase 1 alone, `from algan import *` no longer binds `Arc`;
+  the snapshot diff is compat names leaving.
+- **Phase 1b** — full suite. `from algan import *` binds `Arc` again, now the native adapter:
+  `Arc(angle=90)` and `mn.Arc(angle=PI/2)` must produce the same geometry. Assert that
+  equivalence for at least one class per conversion kind (an angle one and a `stroke_width` one)
+  rather than trusting the adapter table by eye. The snapshot diff is the curated subset
+  returning.
 
 ---
 
@@ -233,6 +323,12 @@ Add `.x` / `.y` / `.z` / `.xy` properties. Then **delete** the six methods they 
 
 Leaving both spellings is exactly the duplication this overhaul exists to remove.
 
+**Assignment is a recorded animation**, consistent with every other Mob attribute. No new
+machinery is needed: the setter builds the updated 3-D coordinate and assigns
+`self.location = new_location`, and `location` is already animatable, so `mob.x = 3` slides the
+Mob over the context duration and `with Off(): mob.x = 3` teleports it — the same as
+`set_x_coord` does today. The properties are a spelling change, not a semantics change.
+
 ### 3f. Unify the four `move_inline_with_*` methods
 
 `move_inline_with_boundary`, `move_inline_with_center`, `move_inline_with_edge`,
@@ -270,15 +366,26 @@ the look direction — the review claimed the opposite. This is a naming change 
 | `render_audio_to_file(file_path, frames_per_second=44100, ...)` | `save_audio(file_path, sample_rate=44100, ...)` |
 | `length_to_num_pixels` / `num_pixels_to_length` | `length_to_pixels` / `pixels_to_length` |
 
-Lifecycle consolidation — five methods to two:
+Lifecycle consolidation — **five methods to two, each with a flag**:
 
-- `clear()` and `clear_scene()` are aliases of each other. Keep one.
-- `despawn_scene()` → **`despawn_mobs()`**: despawns every spawned Mob, animated.
-- `clear_scene()` folds into `despawn_mobs()` as a parameter (it is `despawn_mobs` over 0.5s
-  followed by dropping actors with no renderable history) — or stays as a distinct method if the
-  actor-retention behaviour does not fit a flag. Decide during implementation; do not ship both.
-- `reset_scene()` → merge into **`reset()`**. `reset()` already calls `reset_scene()` as its last
-  step; the difference is only whether the timeline is rebuilt. One method, one flag.
+```python
+Scene.despawn_mobs(retain_history=False, duration=None, **kwargs)
+Scene.reset(rebuild_timeline=True)
+```
+
+- `despawn_scene()` becomes `despawn_mobs()` with the defaults: despawn every spawned Mob,
+  animated over the current context's duration.
+- `clear()` and `clear_scene()` (aliases of each other) become
+  `despawn_mobs(retain_history=True, duration=0.5)` — despawn, then keep the fully despawned
+  actors whose earlier lifespan still has to render and discard the rest.
+- `reset_scene()` becomes `reset(rebuild_timeline=False)`; today's `reset()` is
+  `reset(rebuild_timeline=True)`, which is the default.
+
+**Check the internal callers before picking the defaults.** `despawn_scene` is called by
+`clear_scene`, and `reset` calls `reset_scene` as its last step; both are also reached from
+`save_video`'s `animate_fade_out` path. A default that flips either behaviour silently changes
+what a render does. The `--fast` suite covers scene containment, so a wrong default should fail
+there rather than in a baseline diff — confirm that it does before relying on it.
 
 **`Scene.terminate()` is not part of this.** It pops the scene off the `SceneManager` active
 stack — a different concept that the review wrongly grouped with the reset family. Leave it.
@@ -474,12 +581,16 @@ Last, when no more names are moving. Two sweeps, each its own commit:
    `DEFAULT_RUN_TIME` → `DEFAULT_DURATION`. The `_reject_fixed_lag_ratio` and
    `_CONTEXT_ONLY_PARAMS` strings mention these names in user-visible error text.
 2. **`rate_func` → `easing`** (83 / 110 / 30) and `rate_func_compose` → `composed_easing`;
-   `ComposeRateFunc` → `ComposedEasing`. The `rate_funcs` module is already spelled `ease_*`
-   throughout, so this makes it self-consistent. `DEFAULT_RATE_FUNC` → `DEFAULT_EASING`.
+   `ComposeRateFunc` → `ComposedEasing`; `DEFAULT_RATE_FUNC` → `DEFAULT_EASING`. **The module
+   `algan/constants/rate_funcs.py` is renamed to `easings.py`** and exported as `easings`, so
+   the call reads `easing=easings.ease_in_cubic`. Its contents are already spelled `ease_*`
+   throughout, so this makes the whole concept self-consistent in one pass. The `__all__` added
+   in Phase 2 moves with it.
 
-Do these with review, not blind `sed`: `run_time` appears inside docstring prose and inside
-`animation_contexts.py`'s parameter-owner table, and `rate_func` appears as a substring of
-`rate_funcs` (the module) which is **not** being renamed to `easings` — decide that explicitly.
+Do these with review, not blind `sed`. `run_time` appears inside docstring prose and inside
+`_CONTEXT_ONLY_PARAMS` (`animation_contexts.py:57`), whose values are user-visible error text.
+`rate_func` is a substring of `rate_funcs`, so order the replacements longest-first — module
+name before parameter name — or the module rename will be half-applied.
 
 **Verification**: full suite. Grep for the old names across `algan/`, `tests/`, `docs/`,
 `benchmarks/` and `README.md` to confirm zero survivors.
@@ -516,7 +627,7 @@ Recorded so they are not re-proposed. Each was checked against the source.
 | `NumericDisplay(number=)` → `value` | Already `value`. |
 | Camera `screen_distance`/`screen_scale` → `focal_distance`/`fov` | `fov` already exists. `screen_scale` is frame half-height, not focal distance; collapsing loses a degree of freedom. |
 | `Scene.terminate` in the reset family | Pops the `SceneManager` active-scene stack. Unrelated concept. |
-| `Arc(angle=90, degrees=True)` | `Arc` is a Manim compat class. Radians is Manim's contract; Phase 1 makes that explicit instead. |
+| `Arc(angle=90, degrees=True)` | Superseded, not withdrawn. A `degrees=` toggle on one shared class is the wrong fix; Phase 1b gives `Arc` (native, degrees) and `mn.Arc` (Manim, radians) instead, so neither needs a flag. |
 | Consolidate `TrueDot`/`PointCloudDot`/`DotCloud`; deprecate `ValueTracker`; drop `VGroup`/`VDict`/`OpenGL*` | All compat-layer classes. Policy forbids deleting a Manim name for duplicating an Algan one. |
 | `DirectionalLight(direction=)` | Shares `_TargetedLight` with `SpotLight`/`RectAreaLight`; forking it for one subclass costs more than it buys. |
 | `to_color(value)` → `Color(value)` | `to_color` passes tensors through untouched by design; `Color(tensor)` returning the tensor is surprising. Stays internal. |
