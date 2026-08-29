@@ -219,36 +219,33 @@ Recorded here and in the design doc, so the two do not drift.
   execute at build time and would otherwise fail. That is a spot fix on the renamed symbols
   only; the Phase 8 sweep still owes the prose (the positioning tutorial's method tables now
   describe `align_with` three times over, for instance) and a real doc build.
-- **`tests/full_renders` is red, and it was red before Phase 3. Phase 1/1b moved rendered
-  output.** This was the open question above; it is now answered, and the answer is the one the
-  plan said must not happen. Run on this branch (CPU, `expected_outputs_cpu`) it is
-  **4 failed, 3 passed**, and run on `faf4dae` — the commit before Phase 3 — it is the same four
-  scenes with byte-identical deltas:
+- **`tests/full_renders`: three of its four failures are older than this branch, and the CPU
+  baselines are stale on `master`.** Run three ways on CPU:
 
-  | Scene | Deviation | Worst frame |
-  | :--- | :--- | :--- |
-  | `manim_compat_and_plots` | 192 channel values | 119 |
-  | `solids_and_camera` | 200 channel values | 179 |
-  | `materials_and_lighting` | 14 channel values | 21 |
-  | `shapes_and_timeline` | `NameError: DotCloud` — the scene never rendered | — |
+  | Scene | This branch | Before Phase 3 (`faf4dae`) | Pre-overhaul `master` (`0b482bf`) |
+  | :--- | :--- | :--- | :--- |
+  | `materials_and_lighting` | 14 @ frame 21 | 14 @ 21 | **14 @ 21** |
+  | `shapes_and_timeline` | 26 @ frame 293 | (never rendered) | **26 @ 293** |
+  | `solids_and_camera` | 200 @ frame 179 | 200 @ 179 | **200 @ 179** |
+  | `manim_compat_and_plots` | 192 @ frame 119 | 192 @ 119 | **passes** |
 
-  Identical numbers on both sides is what establishes that **Phase 3 moved nothing**; it is also
-  what establishes that Phase 1 or 1b did. The tolerance is 2, so 192 and 200 are not rounding.
-  Diffs are in `tests/full_renders/output_errors/`.
+  (Deviations are channel values; the tolerance is 2.) The first three fail identically on
+  pre-overhaul `master`, so they are nothing to do with this work — the committed
+  `expected_outputs_cpu` set does not match what this renderer produces on this machine, and
+  re-baselining them is a separate job for someone who can look at the frames. **This means
+  `tests/full_renders` cannot be used as a pass/fail gate on CPU as things stand; compare
+  scene-by-scene against `master` instead.**
 
-  **Diagnosing and fixing this belongs to whoever picks up next, before Phase 8.** Phase 8's
-  "no re-baselining should be needed -- a baseline that shifts is a bug, find it before
-  regenerating" is exactly this situation. The obvious suspect is Phase 1b's degrees-to-radians
-  adapter: `manim_compat_and_plots` is the scene made of compat classes, and the known-follow-up
-  above already records that the docs contain an `Arc(angle=3.14)` that now means 3.14 degrees.
-  That does not explain `solids_and_camera` or `materials_and_lighting`, which use native
-  geometry, so expect more than one cause.
+  `manim_compat_and_plots` was the one real regression, and it is Phase 1b's, exactly as the
+  `Arc(angle=3.14)` follow-up above predicted: the scene builds
+  `ArcBetweenPoints(start=..., end=..., angle=1.6)`, which meant 1.6 *radians* until 1b gave the
+  name a native, degrees-taking adapter, after which the same line draws a 1.6-degree arc — an
+  almost straight line. Fixed by reaching that one class through `mn.`, which is the same object
+  the scene used before, so the frames go back to the baseline.
 
-  The `DotCloud` `NameError` is fixed here, since it is a one-line consequence of Phase 1 that
-  was hiding a whole scene from comparison: the point-cloud family (`DotCloud`, `PointCloudDot`,
-  `TrueDot`, `PGroup`) left the root namespace, and the scene now reaches it through
-  `import algan.manim as mn` — the same move Phase 1 made in `test_point_cloud_rendering` and
-  missed here because this suite was never run.
+  Two lessons, both the same shape as the Phase 2 one already recorded here: **a phase is not
+  verified until the pixel suites have run**, and **`--fast` cannot see any of this** — it has no
+  compat geometry and no PN geometry.
 
 - **`tests/path_traced` has still not been run** on this branch. Note also that this is a
   CPU-only session, so the CUDA baselines cannot be spoken for either way.

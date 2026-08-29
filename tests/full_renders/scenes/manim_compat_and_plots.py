@@ -16,6 +16,11 @@ through a parent ``Group``: a parent-driven transform leaves their backing
 Manim object behind, which the accompanying unit test pins as a known defect.
 """
 
+# ``ArcBetweenPoints`` below is reached through ``mn`` on purpose: Phase 1b of
+# the API overhaul gave it a native root spelling that takes its angle in
+# degrees, so the bare name would read this 1.6 as 1.6 degrees rather than the
+# 1.6 radians Manim means by it.
+import algan.manim as mn
 from algan import *
 
 # Pinned so the render does not depend on the host's fonts;
@@ -141,7 +146,7 @@ with Off():
     annulus = Annulus(inner_radius=0.3, outer_radius=0.7, color=PURPLE).move(
         LEFT * 2.2 + UP * 1.3
     )
-    arc = ArcBetweenPoints(
+    arc = mn.ArcBetweenPoints(
         start=LEFT * 0.7, end=RIGHT * 0.7, angle=1.6, color=GREEN_A, stroke_width=6
     ).move(UP * 1.3)
     compat_arrow = Arrow(
