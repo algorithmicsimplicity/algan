@@ -804,5 +804,224 @@ def test_env_cdf_sampling_is_consistent_and_normalized():
     assert abs(total - 1.0) < 0.02, f"env pdf integrates to {total:.4f}"
 
 
+# ---------------------------------------------------------------------------
+# Closed shells + author order (Stage 4: 2D/parity polish)
+# ---------------------------------------------------------------------------
+
+
+def _render_scene_result(
+    tmp_path, name, build, samples_per_pixel, video=None, experimental=None, **rt_kwargs
+):
+    """``_render_scene_exp`` that also returns the ``RenderResult`` (for the
+    truncation counters riding ``render_plan``).
+    """
+    settings = video if video is not None else STACK_SETTINGS
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        for key, value in rt_kwargs.items():
+            SETTINGS.raytracing.set(**{key: value})
+        for key, value in (experimental or {}).items():
+            SETTINGS.raytracing.experimental.set(**{key: value})
+        with Scene(video_settings=settings) as scene:
+            with Off():
+                build(scene)
+            result = scene.save_frame(
+                tmp_path / name, video_settings=settings, overwrite=True
+            )
+    finally:
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+    return _read(result), result
+
+
+# Raw byte output (no colour management), so composites read off directly:
+# the public fields, passed as rt_kwargs, plus the experimental HDR switch.
+_RAW_KW = {"linear_color_space": False, "tonemapping": False}
+_RAW_EXP = {"post_process_tonemap": False}
+
+
+def _emissive_shell_cube(dimensions=(2.0, 2.0, 2.0), opacity=0.6):
+    """A translucent closed-shell cube whose only radiance is its emission.
+
+    Black albedo kills the diffuse lobe (and every NEE response), emission is
+    exact, and the continuation is a pure pass-through -- so the composite is
+    deterministic per sample and the authored-opacity oracle is sharp: the
+    interior reads ``opacity * emissive`` if the shell attenuates once and
+    ``opacity * emissive * (2 - opacity)`` if both crossings composite.
+    Rotated off-axis because exactly axis-aligned coincident edges lose
+    occasional seam hits per sample (pre-existing, ring-independent), which
+    would blur the doubled arm.
+    """
+    cube = Prism(dimensions=dimensions)
+    cube.set_material(
+        MeshLambertMaterial(color=BLACK, emissive=WHITE, emissive_intensity=1.0)
+    )
+    cube.set_opacity(opacity)
+    cube.rotate(17, UP).rotate(9, RIGHT)
+    return cube
+
+
+def test_closed_shell_attenuates_once_at_authored_opacity(tmp_path):
+    """The opacity oracle. A declared closed shell at ``opacity=0.6`` must
+    render its interior at exactly ``0.6 * emissive`` under the path tracer
+    -- one attenuation per entry/exit pair, the per-ray form of the sheet
+    route's ``solid_shell_alpha`` coverage ceiling -- and must agree with the
+    deterministic route's ceilinged composite pixel-for-pixel.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        _emissive_shell_cube().spawn(animate=False)
+
+    pt, result = _render_scene_result(
+        tmp_path, "shell_pt.png", build, 8, experimental=_RAW_EXP, **_RAW_KW
+    )
+    det, _ = _render_scene_result(
+        tmp_path, "shell_det.png", build, 1, experimental=_RAW_EXP, **_RAW_KW
+    )
+    expected = 0.6 * 255.0
+    h, w = pt.shape[0], pt.shape[1]
+    core = pt[h // 2 - 6 : h // 2 + 6, w // 2 - 6 : w // 2 + 6, :3].float()
+    assert abs(float(core.mean()) - expected) <= 2.0, (
+        f"closed shell composited at {float(core.mean()):.1f}, expected "
+        f"{expected:.1f} (authored opacity once); doubled would read "
+        f"{0.6 * 255 * 1.4:.1f}"
+    )
+    assert float((core - expected).abs().max()) <= 2.0, (
+        "the interior is not uniform at the authored opacity"
+    )
+    err = (pt[..., :3] - det[..., :3]).abs().amax(-1).float()
+    interior = err[h // 2 - 6 : h // 2 + 6, w // 2 - 6 : w // 2 + 6]
+    assert float(interior.max()) <= 2.0, (
+        f"path-traced closed shell deviates from the deterministic ceiling "
+        f"by {float(interior.max()):.0f} on the interior"
+    )
+    assert result.render_plan.truncations.closed_shell_ring == 0
+
+
+def test_closed_shell_ceiling_off_restores_per_crossing_attenuation(tmp_path):
+    """``solid_shell_alpha=False`` must disable the ring entirely: both shell
+    crossings composite, the pre-ceiling behaviour (an interior near
+    ``a * (2 - a) * emissive``). This is the byte-parity escape hatch, and it
+    proves the oracle above is measuring the ring rather than an accident of
+    the scene.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        _emissive_shell_cube().spawn(animate=False)
+
+    pt, _ = _render_scene_result(
+        tmp_path,
+        "shell_off.png",
+        build,
+        8,
+        experimental=dict(_RAW_EXP, solid_shell_alpha=False),
+        **_RAW_KW,
+    )
+    h, w = pt.shape[0], pt.shape[1]
+    core = pt[h // 2 - 6 : h // 2 + 6, w // 2 - 6 : w // 2 + 6, :3].float()
+    once = 0.6 * 255.0
+    doubled = 0.6 * 255.0 * 1.4
+    mean = float(core.mean())
+    assert mean > (once + doubled) / 2.0, (
+        f"with solid_shell_alpha off the interior reads {mean:.1f}; expected "
+        f"near the doubled composite {doubled:.1f}, not the ceiling {once:.1f}"
+    )
+
+
+def test_shell_ring_overflow_is_counted_not_silent(tmp_path):
+    """Five nested closed shells overflow the four-slot ring; the surplus
+    crossings must be tallied on the render plan (an instrument that reports
+    zero may not be looking), never dropped silently.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        for k in range(5):
+            _emissive_shell_cube(dimensions=(0.6 + 0.4 * k,) * 3, opacity=0.3).spawn(
+                animate=False
+            )
+
+    _pt, result = _render_scene_result(
+        tmp_path,
+        "shell_overflow.png",
+        build,
+        4,
+        experimental=_RAW_EXP,
+        **_RAW_KW,
+    )
+    assert result.render_plan.truncations.closed_shell_ring > 0, (
+        "five nested closed shells did not report the ring ceiling"
+    )
+
+
+def test_author_order_and_depth_compose_like_the_deterministic_route(tmp_path):
+    """Author-order edge cases: two translucent squares at the SAME depth
+    composite in spawn order (the layer / ``_comes_after`` tie-break both
+    routes share), and a third square spawned LAST but placed behind them
+    composites underneath -- depth beats author order. Flat interiors of the
+    path-traced frame must match the deterministic route exactly (up to
+    rounding) for BOTH spawn orders, and the two orders must produce
+    different composites in the overlap -- proof the scene actually
+    exercises the tie-break rather than being order-blind.
+    """
+
+    def _order_scene(first, second):
+        def build(scene):
+            scene.set_background(BLACK)
+            a = Square(side_length=3.0, color=first).set_opacity(0.5)
+            a.spawn(animate=False)
+            b = Square(side_length=3.0, color=second).set_opacity(0.5)
+            b.move(RIGHT * 1.0 + UP * 1.0)
+            b.spawn(animate=False)
+            back = Square(side_length=5.0, color=BLUE).set_opacity(0.5)
+            back.move(-OUT * 2.0)  # OUT is toward the camera; behind is -OUT
+            back.spawn(animate=False)
+
+        return build
+
+    frames = {}
+    for tag, build in (
+        ("rg", _order_scene(RED, GREEN)),
+        ("gr", _order_scene(GREEN, RED)),
+    ):
+        det, _ = _render_scene_result(tmp_path, f"order_det_{tag}.png", build, 1)
+        pt, _ = _render_scene_result(tmp_path, f"order_pt_{tag}.png", build, 8)
+        det_f = det.float().permute(2, 0, 1).unsqueeze(0)
+        pooled_max = torch.nn.functional.max_pool2d(det_f, 3, stride=1, padding=1)
+        pooled_min = -torch.nn.functional.max_pool2d(-det_f, 3, stride=1, padding=1)
+        flat = (pooled_max - pooled_min).squeeze(0).amax(0) < 2
+        assert flat.sum() > det.shape[0] * det.shape[1] // 4
+        err = (det - pt).abs().amax(-1)
+        assert int(err[flat].max()) <= 1, (
+            f"author-order composite ({tag}) deviates from the deterministic "
+            f"route by {int(err[flat].max())} on flat interiors"
+        )
+        frames[tag] = pt
+
+    # The overlap of the two same-depth squares (world x, y in [-0.5, 1.5]^2,
+    # ~8 px per world unit at this framing) must depend on spawn order: with
+    # the second square offset toward the corner, only author order separates
+    # the two composites there.
+    h, w = frames["rg"].shape[0], frames["rg"].shape[1]
+    patch = (slice(h // 2 - 8, h // 2 - 4), slice(w // 2 + 4, w // 2 + 8))
+    delta = (
+        (frames["rg"][patch][..., :3].float() - frames["gr"][patch][..., :3].float())
+        .abs()
+        .amax(-1)
+    )
+    assert float(delta.mean()) > 5.0, (
+        f"swapping the spawn order did not change the overlap composite "
+        f"(mean channel delta {float(delta.mean()):.1f}) -- the scene cannot "
+        f"see the author-order tie-break"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

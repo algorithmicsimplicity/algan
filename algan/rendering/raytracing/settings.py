@@ -2093,16 +2093,23 @@ analytic_aa_one_mesh = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 # to key one on (the comment at wavefront_kernels_taichi.py says so in as many
 # words). A half-transparent solid therefore composites at its authored opacity
 # when the camera looks at it directly, and at the old doubled opacity in a
-# MIRROR's image of it. The same gap applies to the Monte Carlo megakernel
-# (``samples_per_pixel > 1``), whose stochastic transparency gives each shell an
-# independent interaction chance and so reproduces ``(1 - a)^2`` in
-# expectation, and to any batch the sheet route rejects and the classic
-# wavefront serves instead (``analytic_raster_route_active``). Measured before
-# this rule existed, the two primary routes agreed: sphere 0.55 delivered 0.679
-# on the sheet route and 0.677 on the wavefront one, so what the fallback still
-# does is exactly the old behaviour rather than some third thing. Closing
-# either needs surface identity plumbed into ray or path state, which is a
-# wider change than this one and is not attempted here.
+# MIRROR's image of it. The same gap applies to any batch the sheet route
+# rejects and the classic wavefront serves instead
+# (``analytic_raster_route_active``). Measured before this rule existed, the
+# two primary routes agreed: sphere 0.55 delivered 0.679 on the sheet route
+# and 0.677 on the wavefront one, so what the fallback still does is exactly
+# the old behaviour rather than some third thing. Closing either needs
+# surface identity plumbed into ray or path state, which is a wider change
+# than this one and is not attempted here.
+#
+# The path tracer (``samples_per_pixel > 1``) DID plumb that identity into
+# path state: its camera segment carries a four-slot ring of entered shell
+# ids (``pt_shade``; per-triangle ids from the merged ``tri_obj`` /
+# ``tri_closed`` pair, gated on this same flag), suppressing the exit
+# crossing of each entry/exit pair -- the per-ray limit of this rule's
+# coverage ceiling, agreeing with it pixel-for-pixel on flat interiors. Its
+# post-scatter segments keep the mirror-image gap above, deliberately
+# matching the deterministic wavefront's bounce loop.
 #
 # OFF restores today's behaviour exactly: the ceiling lives entirely in the
 # compaction, gated on this flag read at batch time, so no pixel, sheet or

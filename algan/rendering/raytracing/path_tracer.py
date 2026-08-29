@@ -55,8 +55,11 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_ENV_SHARE,
     _NM_ENV_W,
     _NM_LIGHT_SAMPLES,
+    _SHELL_RING_SLOTS,
     NEE_META_WIDTH,
     PT_ACC_WIDTH,
+    PT_INT_WIDTH,
+    PT_STAT_SHELL_RING,
     PT_STAT_TRUNC_SURFACES,
     PT_STATS_WIDTH,
     pt_generate,
@@ -86,7 +89,8 @@ from algan.utils.memory_utils import InsufficientMemoryException
 
 # Bytes of arena state per path slot: rs_ro/rs_rd (12 + 12), rs_sca (the
 # nested-IOR width -- the path tracer always carries the media stack),
-# rs_int (5 i32), rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32),
+# rs_int (PT_INT_WIDTH i32: the shared 5 plus the closed-shell ring),
+# rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32),
 # the compactor's ping-pong index pair (2 i32), and the transient
 # per-iteration hit-event batch at worst case num_active == pool
 # (kbuf * (4 f32 + 2 i32)).
@@ -94,7 +98,7 @@ _PT_BYTES_PER_SLOT = (
     12
     + 12
     + SCA_WIDTH_NESTED * 4
-    + 5 * 4
+    + PT_INT_WIDTH * 4
     + 4
     + 4 * 4
     + PT_ACC_WIDTH * 4
@@ -317,6 +321,40 @@ def _build_nee_tables(memory, merged, light_pos, light_col, num_lights, env_meta
     return nee_cdf, nee_ref, nee_meta, emit_prob, env_cdf
 
 
+def _build_shell_table(memory, merged):
+    """Per-triangle closed-shell ids for the camera-segment opacity ring.
+
+    ``tri_shell[f % rows, n]`` is the triangle's ``tri_obj`` surface id where
+    it belongs to a declared closed shell whose coverage may be ceilinged
+    (``tri_closed``, already folded with the transmission exemption at pack
+    time), and -1 everywhere else -- one gather per crossing in the kernel
+    instead of two.  ``tri_obj`` and ``tri_closed`` collapse independently
+    under ``merge_dedup_time``, so the two are broadcast against each other;
+    a collapsed row means "the same every frame", which ``f % rows`` indexing
+    preserves.  Scenes with nothing declared -- ``solid_shell_alpha`` off, a
+    triangle-free merge (which builds no ``tri_closed`` at all), or no
+    declaring mob -- share a ``[1, 1]`` placeholder of -1, which the kernel's
+    ``>= 0`` gate never acts on.
+    """
+    from algan.rendering.raytracing.tracer import _arena_copy
+
+    tri_closed = merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
+    if tri_closed is not None:
+        closed = tri_closed > 0.5
+        if bool(closed.any()):
+            shell = torch.where(
+                closed,
+                merged["tri_obj"].to(torch.int32),
+                torch.full((1, 1), -1, dtype=torch.int32, device=tri_closed.device),
+            )
+            with memory.scope("pt_shell_table", rows=int(shell.shape[0])):
+                return _arena_copy(memory, shell.contiguous())
+    with memory.scope("pt_shell_table", rows=1):
+        placeholder = memory.get_tensor((1, 1), torch.int32)
+    placeholder.fill_(-1)
+    return placeholder
+
+
 def path_trace_render(
     *,
     memory,
@@ -384,6 +422,7 @@ def path_trace_render(
     nee_cdf, nee_ref, nee_meta, tri_emit_prob, env_cdf = _build_nee_tables(
         memory, merged, light_pos, light_col, int(num_lights), env_meta
     )
+    tri_shell = _build_shell_table(memory, merged)
 
     tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
@@ -391,14 +430,17 @@ def path_trace_render(
     # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), 0] plus the zeroed
     # nested-IOR stack columns (air outside); rs_int =
     # [bounces_left=max_bounces, processed=0, _ACTIVE, no hits,
-    # max_bounces (the bounce ordinal's reference)].
+    # max_bounces (the bounce ordinal's reference)] plus the empty (-1)
+    # closed-shell ring.
     sca_init = torch.tensor(
         [1.0, 0.0, 1e30, -1e30, 0.0, -1.0, 0.0] + [0.0] * (SCA_WIDTH_NESTED - 7),
         dtype=f32,
         device=device,
     )
     int_init = torch.tensor(
-        [int(max_bounces), 0, 0, 0, int(max_bounces)], dtype=i32, device=device
+        [int(max_bounces), 0, 0, 0, int(max_bounces)] + [-1] * (PT_INT_WIDTH - 5),
+        dtype=i32,
+        device=device,
     )
     rr_start = max(0, int(rt_settings.pt_rr_start_bounce))
     firefly_clamp = float(rt_settings.pt_firefly_clamp)
@@ -413,7 +455,7 @@ def path_trace_render(
                 rs_ro = memory.get_tensor((pool, 3), f32)
                 rs_rd = memory.get_tensor((pool, 3), f32)
                 rs_sca = memory.get_tensor((pool, SCA_WIDTH_NESTED), f32)
-                rs_int = memory.get_tensor((pool, 5), i32)
+                rs_int = memory.get_tensor((pool, PT_INT_WIDTH), i32)
                 rs_pix = memory.get_tensor((pool,), i32)
                 pt_thru = memory.get_tensor((pool, 4), f32)
                 pt_acc = memory.get_tensor((pool, PT_ACC_WIDTH), f32)
@@ -571,6 +613,7 @@ def path_trace_render(
                             nee_meta,
                             tri_emit_prob,
                             env_cdf,
+                            tri_shell,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1
@@ -591,6 +634,9 @@ def path_trace_render(
                 record_truncation(
                     "surfaces_per_ray", truncated, cap=max_surfaces_per_ray
                 )
+            ring_over = int(pt_stats[PT_STAT_SHELL_RING].item())
+            if ring_over:
+                record_truncation("closed_shell_ring", ring_over, cap=_SHELL_RING_SLOTS)
         except (InsufficientMemoryException, RuntimeError):
             # Release the tile's state before the chunk-halving retry in
             # render_chunk sees the exception (mirrors run_tile).

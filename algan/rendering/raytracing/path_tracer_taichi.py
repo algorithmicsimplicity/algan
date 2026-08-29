@@ -164,6 +164,7 @@ _PT_ACC_ALPHA = 8
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
 PT_STATS_WIDTH = 4
 PT_STAT_TRUNC_SURFACES = 0
+PT_STAT_SHELL_RING = 1
 
 # Russian-roulette survival floor: a path is never continued with less than
 # this probability, bounding the throughput amplification at 1/floor.
@@ -184,6 +185,25 @@ _INV_PI = 0.3183098861837907
 # Pass-through crossings keep the value (the ray, and with it the pdf at its
 # origin vertex, continues unchanged).
 _SCA_PREV_PDF = 5
+
+# rs_int columns.  The shared traverse kernel touches only columns 0-4
+# (bounces_left, processed, status, num_hits, max_bounces); the four columns
+# after them belong to ``pt_shade`` alone: the closed-shell opacity ring --
+# the ``tri_shell`` surface ids the camera segment is currently INSIDE of,
+# -1 marking an empty slot.  Entering a declared closed shell composites the
+# crossing and stores the id; the matching exit crossing finds the id,
+# removes it, and composites nothing.  That is the per-ray limit of the
+# sheet route's coverage ceiling (``solid_shell_alpha``, sheets.py), which
+# spends ``max(front, back)`` coverage per (pixel, surface) in depth order
+# -- and like it the ring counts CROSSINGS, not containment: a ray crossing
+# one shell four times (a torus hole) attenuates twice.  A camera ray inside
+# more than four declared shells at once overflows the ring: the surplus
+# crossing composites normally (erring toward the doubled attenuation every
+# crossing produced before the ceiling existed) and is tallied in
+# ``pt_stats[PT_STAT_SHELL_RING]``.
+PT_INT_WIDTH = 9
+_INT_RING0 = 5
+_SHELL_RING_SLOTS = 4
 
 # Next-event table entry kinds (column 0 of ``nee_ref``; the table is built
 # per render call by ``path_tracer._build_nee_tables``).
@@ -994,7 +1014,8 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
              nee_cdf: ti.types.ndarray(), nee_ref: ti.types.ndarray(),
              nee_meta: ti.types.ndarray(),
              tri_emit_prob: ti.types.ndarray(),
-             env_cdf: ti.types.ndarray()):
+             env_cdf: ti.types.ndarray(),
+             tri_shell: ti.types.ndarray()):
     """Consume one traverse's hit-event batch (see the module docstring).
 
     Deterministic alpha compositing carries every crossed surface's local
@@ -1003,7 +1024,11 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
     material's importance-sampled lobes, with proper reweighting, so an
     unlit-only stack keeps the zero-variance composite while lit content
     gets full transport. The camera-segment alpha transparency
-    (``rs_sca[r, 0]``) freezes at the first scatter.
+    (``rs_sca[r, 0]``) freezes at the first scatter. On that segment a
+    declared closed shell (``tri_shell``: its surface id, or -1) attenuates
+    once per entry/exit pair -- the exiting crossing contributes nothing --
+    via the per-ray ring in ``rs_int`` (see ``_INT_RING0``), matching the
+    deterministic route's ``solid_shell_alpha`` coverage ceiling.
 
     Direct lighting at a lit vertex is the sum of a deterministic fill from
     the direction-less rows (ambient / hemisphere) and ``pt_light_samples``
@@ -1057,6 +1082,9 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
             # value written by the host is max_bounces, so the ordinal is
             # the difference.
             max_b = rs_int[r, 4]
+            ring = ti.Vector([-1, -1, -1, -1])
+            for q in ti.static(range(_SHELL_RING_SLOTS)):
+                ring[q] = rs_int[r, _INT_RING0 + q]
 
             kb_t = ti.Vector([0.0] * kbuf)
             kb_layer = ti.Vector([0.0] * kbuf)
@@ -1142,6 +1170,41 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                     metalness = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
+
+                # Closed-shell opacity ring (``solid_shell_alpha``).  On the
+                # camera segment a declared closed shell attenuates ONCE per
+                # entry/exit pair: the entering crossing composites and
+                # remembers the surface id, the exiting crossing finds the
+                # id, removes it, and contributes nothing (alpha 0 makes it
+                # a weight-1 pass-through with zero radiance below).  This
+                # is the per-ray limit of the sheet route's coverage
+                # ceiling; see ``_INT_RING0``.  A post-scatter segment is
+                # physical transport and never suppresses; a seam-skipped
+                # duplicate never reaches this point, so a shared edge
+                # toggles once.
+                suppressed = 0
+                if (htype == 1) and (bounces_left >= max_b):
+                    sid_cs = ti.cast(
+                        tri_shell[f % tri_shell.shape[0], prim], ti.i32)
+                    if sid_cs >= 0:
+                        removed = 0
+                        for q in ti.static(range(_SHELL_RING_SLOTS)):
+                            if (removed == 0) and (ring[q] == sid_cs):
+                                ring[q] = -1
+                                removed = 1
+                        if removed == 1:
+                            suppressed = 1
+                        else:
+                            inserted = 0
+                            for q in ti.static(range(_SHELL_RING_SLOTS)):
+                                if (inserted == 0) and (ring[q] < 0):
+                                    ring[q] = sid_cs
+                                    inserted = 1
+                            if inserted == 0:
+                                ti.atomic_add(
+                                    pt_stats[PT_STAT_SHELL_RING], 1)
+                if suppressed == 1:
+                    alpha = 0.0
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
 
                 lit = (htype == 1) and (pid >= _MID_LAMBERT) \
@@ -1234,7 +1297,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                 wl_diff = 0.0
                 wl_spec = 0.0
                 wl_trans = 0.0
-                if lit:
+                if lit and (suppressed == 0):
                     e_diff_l, e_spec_l, e_trans_l, f0_l = _pt_lit_lobes(
                         pid, tri_mat, f, prim, albedo3, metalness, rough,
                         ior, T, shade_n, rd)
@@ -1252,7 +1315,10 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                 # Local radiance of this crossing (emission semantics).
                 # ----------------------------------------------------------
                 local = ti.math.vec4(color[0], color[1], color[2], color[3])
-                if lit:
+                # A suppressed crossing contributes nothing: skip its NEE /
+                # frag-pipeline work outright (its ``local`` would be
+                # multiplied by the zeroed alpha anyway).
+                if lit and (suppressed == 0):
                     tm = f % tri_mat.shape[0]
                     emissive = ti.math.vec3(tri_mat[tm, prim, 0],
                                             tri_mat[tm, prim, 1],
@@ -1457,7 +1523,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                 direct += contrib * vis3
                     local = ti.math.vec4(direct[0], direct[1], direct[2],
                                          color[3])
-                elif authored:
+                elif authored and (suppressed == 0):
                     vis = ti.Vector([1.0] * (3 * max_shadow_lights))
                     if ti.static(shadows != 0):
                         recv_a = 1
@@ -1738,6 +1804,8 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
+            for q in ti.static(range(_SHELL_RING_SLOTS)):
+                rs_int[r, _INT_RING0 + q] = ring[q]
             if done:
                 leftover = thru
                 if absorbed:
