@@ -40,6 +40,7 @@ from algan import (
     Off,
     PointLight,
     Prism,
+    RectAreaLight,
     Scene,
     SceneManager,
     Sphere,
@@ -237,8 +238,7 @@ def test_seed_changes_the_noise_but_not_the_flat_interior(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _render_scene(tmp_path, name, build, samples_per_pixel, video=None,
-                  **rt_kwargs):
+def _render_scene(tmp_path, name, build, samples_per_pixel, video=None, **rt_kwargs):
     """Render one frame of ``build()``'s scene under the given settings."""
     settings = video if video is not None else STACK_SETTINGS
     snapshot = SETTINGS.snapshot()
@@ -276,8 +276,7 @@ def test_lambert_furnace_is_lossless(tmp_path):
     img = _render_scene(tmp_path, "furnace_lambert.png", build, 16)
     lo = int(img.amin())
     assert lo >= 254, (
-        f"diffuse furnace lost energy: darkest channel {lo} (expected white "
-        "everywhere)"
+        f"diffuse furnace lost energy: darkest channel {lo} (expected white everywhere)"
     )
 
 
@@ -319,9 +318,7 @@ def test_nee_direct_lighting_matches_deterministic(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_light_sources()
-        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(
-            animate=False
-        )
+        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(animate=False)
         plane = Prism(dimensions=(7.0, 7.0, 0.1))
         plane.set_material(MeshLambertMaterial(color=RED))
         plane.spawn(animate=False)
@@ -353,9 +350,7 @@ def test_point_light_shadow_under_path_tracing(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_light_sources()
-        PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(
-            animate=False
-        )
+        PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(animate=False)
         floor = Prism(dimensions=(7.0, 7.0, 0.1))
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
@@ -393,8 +388,9 @@ def test_indirect_light_bleeds_color(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_light_sources()
-        PointLight(location=(UP * 2.0 + OUT * 5.0), color=WHITE,
-                   intensity=1.2).spawn(animate=False)
+        PointLight(location=(UP * 2.0 + OUT * 5.0), color=WHITE, intensity=1.2).spawn(
+            animate=False
+        )
         floor = Prism(dimensions=(8.0, 8.0, 0.1))
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
@@ -403,8 +399,7 @@ def test_indirect_light_bleeds_color(tmp_path):
         wall.move(RIGHT * 2.5 + OUT * 1.5)
         wall.spawn(animate=False)
 
-    direct = _render_scene(tmp_path, "bleed_off.png", build, 48,
-                           max_bounces=0).float()
+    direct = _render_scene(tmp_path, "bleed_off.png", build, 48, max_bounces=0).float()
     gi = _render_scene(tmp_path, "bleed_on.png", build, 48).float()
     # OpenCV loads BGR: channel 2 is red, 0 is blue.
     gained = gi - direct
@@ -429,9 +424,7 @@ def test_lit_scene_render_is_reproducible(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_light_sources()
-        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(
-            animate=False
-        )
+        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(animate=False)
         floor = Prism(dimensions=(6.0, 6.0, 0.1))
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
@@ -448,6 +441,367 @@ def test_lit_scene_render_is_reproducible(tmp_path):
         f"lit path-traced output changed between identical runs "
         f"(max diff {int((a - b).abs().max())})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Lights (Stage 3: the power-weighted next-event table -- area radiometry,
+# emissive triangles with MIS, environment sampling)
+# ---------------------------------------------------------------------------
+
+
+def _render_scene_exp(
+    tmp_path, name, build, samples_per_pixel, video=None, experimental=None, **rt_kwargs
+):
+    """``_render_scene`` plus experimental raytracing overrides (the parent
+    section refuses experimental fields by design).
+    """
+    settings = video if video is not None else STACK_SETTINGS
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        for key, value in rt_kwargs.items():
+            SETTINGS.raytracing.set(**{key: value})
+        for key, value in (experimental or {}).items():
+            SETTINGS.raytracing.experimental.set(**{key: value})
+        with Scene(video_settings=settings) as scene:
+            with Off():
+                build(scene)
+            result = scene.save_frame(
+                tmp_path / name, video_settings=settings, overwrite=True
+            )
+    finally:
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+    return _read(result)
+
+
+def _center_patch_mean(img, half=2):
+    """Mean over the RGB channels of the ``2 half x 2 half`` pixel patch at
+    the image centre (BGR/BGRA tensors from ``_read``).
+    """
+    h, w = img.shape[0], img.shape[1]
+    patch = img[h // 2 - half : h // 2 + half, w // 2 - half : w // 2 + half]
+    return float(patch[..., :3].double().mean())
+
+
+def test_area_light_matches_the_deterministic_grid_limit(tmp_path):
+    """A RectAreaLight under the path tracer samples a uniform point inside
+    the selected row's cell and evaluates the falloff and one-sided cosine
+    AT that point, so its expectation is the continuous area integral -- the
+    limit the deterministic K-cell grid approximates. With a fine grid the
+    two must agree on flat interior pixels. Runs with pt_light_samples = 2,
+    so the 1/N weighting of multi-sample NEE is under test too.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        RectAreaLight(
+            location=OUT * 3.0,
+            width=3.0,
+            height=3.0,
+            samples=64,
+            color=WHITE,
+            intensity=1.0,
+        ).spawn(animate=False)
+        floor = Prism(dimensions=(7.0, 7.0, 0.1))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+
+    det = _render_scene(tmp_path, "area_det.png", build, 1, shadows=False)
+    pt = _render_scene_exp(
+        tmp_path,
+        "area_pt.png",
+        build,
+        96,
+        shadows=False,
+        experimental={"pt_light_samples": 2},
+    )
+    # The lit floor is a smooth gradient (per-cell cosines), so a flatness
+    # mask has nothing to grab; compare per-pixel over the floor's interior
+    # (the central region sits well inside the 7x7 floor at this framing).
+    h, w = det.shape[0], det.shape[1]
+    core = (slice(h // 2 - 20, h // 2 + 20), slice(w // 2 - 20, w // 2 + 20))
+    err = (det[..., :3] - pt[..., :3]).abs().amax(-1).float()[core]
+    assert float(det[core][..., :3].float().mean()) > 40.0, (
+        "the area light did not light the floor at all"
+    )
+    assert float(err.mean()) <= 4.0, (
+        f"area-light radiometry drifted from the deterministic grid limit "
+        f"(mean interior error {float(err.mean()):.2f})"
+    )
+    assert float(err.max()) <= 30.0, (
+        f"area-light sampling left an outlier on the floor interior "
+        f"(max interior error {float(err.max()):.1f})"
+    )
+
+
+def test_emissive_quad_matches_the_reference_integral(tmp_path):
+    """An emissive quad lighting a diffuse floor, against the closed-form
+    direct integral evaluated by torch quadrature.
+
+    This is the MIS correctness test: the quad's light reaches the floor
+    through BOTH strategies (next-event samples toward the quad, and
+    diffuse-sampled rays that hit it), each carrying a power-heuristic
+    weight. Double counting reads ~2x the reference and a lost strategy
+    reads low, either far outside the tolerance, while correct weights land
+    on the integral with only sampling noise. Tonemapping is disabled so
+    pixel values are raw linear radiance times 255.
+    """
+    quad_center = torch.tensor([2.0, 0.0, 1.6], dtype=torch.float64)
+    quad_half = 1.0
+    emissive_intensity = 6.0
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        floor = Prism(dimensions=(8.0, 8.0, 0.2))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        # A thin prism, not a Square: the emitter must be triangle geometry
+        # with a material block (a 2-D Square is a bezier circuit).
+        quad = Prism(dimensions=(2.0 * quad_half, 2.0 * quad_half, 0.02))
+        quad.set_material(
+            MeshLambertMaterial(
+                color=BLACK,
+                emissive=WHITE,
+                emissive_intensity=emissive_intensity,
+            )
+        )
+        quad.move(RIGHT * float(quad_center[0]) + OUT * float(quad_center[2]))
+        quad.spawn(animate=False)
+
+    img = _render_scene_exp(
+        tmp_path,
+        "emissive_quad.png",
+        build,
+        96,
+        shadows=True,
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False, "pt_light_samples": 2},
+    )
+
+    # Torch quadrature of L = (albedo / pi) Le \int cos_p cos_q / r^2 dA over
+    # the quad, averaged over a small neighbourhood of the floor point the
+    # centre pixel sees (the camera looks at the origin; the floor's top face
+    # is at z = 0.1).
+    n = 128
+    cell = 2.0 * quad_half / n
+    axis = torch.arange(n, dtype=torch.float64) * cell - quad_half + cell / 2
+    qx = quad_center[0] + axis.view(-1, 1)
+    qy = quad_center[1] + axis.view(1, -1)
+    refs = []
+    for px in (-0.2, 0.0, 0.2):
+        for py in (-0.2, 0.0, 0.2):
+            dx = qx - px
+            dy = qy - py
+            dz = float(quad_center[2]) - 0.1
+            r2 = dx * dx + dy * dy + dz * dz
+            cos_pq = (dz * dz) / r2  # cos_p * cos_q, both against +-z
+            integral = float((cos_pq / r2).sum()) * cell * cell
+            refs.append(emissive_intensity * integral / np.pi)
+    reference = 255.0 * float(np.mean(refs))
+    measured = _center_patch_mean(img, half=2)
+    assert abs(measured - reference) <= max(8.0, 0.12 * reference), (
+        f"emissive direct lighting off the reference integral: measured "
+        f"{measured:.1f}, reference {reference:.1f} (a ~2x error here means "
+        f"MIS double counting; ~0.5x a lost strategy)"
+    )
+
+
+def _sun_env_map():
+    """A dim sky with one bright rectangular sun centred on the camera side
+    of the scene (``OUT`` is -z: phi = -pi/2 -> u = 0.25, theta = pi/2 ->
+    v = 0.5), so it shines onto the camera-facing floor surface.
+    """
+    env = torch.full((64, 128, 3), 0.05)
+    env[26:38, 28:36] = 6.0
+    return env
+
+
+def _env_irradiance_on_floor(env, intensity):
+    """Torch quadrature of the irradiance the map sends onto the floor's
+    camera-facing (-z) surface, per the kernel's equirect convention
+    (y = cos theta up, phi = atan2(z, x)).
+    """
+    e = env.double()
+    h, w = e.shape[0], e.shape[1]
+    v = (torch.arange(h, dtype=torch.float64) + 0.5) / h
+    u = (torch.arange(w, dtype=torch.float64) + 0.5) / w
+    theta = np.pi * v
+    phi = 2.0 * np.pi * (u - 0.5)
+    sin_t = torch.sin(theta).view(-1, 1)
+    dir_z = torch.sin(phi).view(1, -1) * sin_t
+    weight = (-dir_z).clamp_min(0.0) * sin_t * (np.pi / h) * (2.0 * np.pi / w)
+    return float((e.mean(-1) * weight).sum()) * intensity
+
+
+def test_env_map_lighting_matches_the_reference_integral(tmp_path):
+    """Environment lighting under the path tracer, against the torch
+    irradiance integral: with env NEE on, the CDF-sampled sun converges to
+    the reference at modest sample counts; with ``pt_env_nee`` off the
+    BSDF-escape arm alone must land on the SAME value (the two strategies
+    bracket the MIS estimate -- both are unbiased or one of them is wrong).
+    A sky pixel checks the camera-escape fold against the map itself.
+    """
+    env = _sun_env_map()
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        scene.set_environment_map(env, ambient=False)
+        floor = Prism(dimensions=(5.0, 5.0, 0.2))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+
+    reference = 255.0 * _env_irradiance_on_floor(env, 1.0) / np.pi
+    assert 60.0 < reference < 240.0, "test scene poorly scaled"
+
+    nee = _render_scene_exp(
+        tmp_path,
+        "env_nee.png",
+        build,
+        32,
+        shadows=True,
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False},
+    )
+    measured = _center_patch_mean(nee, half=2)
+    assert abs(measured - reference) <= max(8.0, 0.12 * reference), (
+        f"env NEE off the irradiance reference: measured {measured:.1f}, "
+        f"reference {reference:.1f}"
+    )
+    # The sky shows the map itself through the camera-escape fold.
+    sky = float(nee[2, 2, :3].double().mean())
+    assert abs(sky - 255.0 * 0.05) <= 6.0, (
+        f"sky pixel {sky:.1f} does not show the environment base radiance"
+    )
+
+    bsdf_only = _render_scene_exp(
+        tmp_path,
+        "env_bsdf.png",
+        build,
+        128,
+        shadows=True,
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False, "pt_env_nee": False},
+    )
+    measured_b = _center_patch_mean(bsdf_only, half=2)
+    assert abs(measured_b - reference) <= max(12.0, 0.2 * reference), (
+        f"BSDF-only env arm off the irradiance reference: measured "
+        f"{measured_b:.1f}, reference {reference:.1f} -- the two strategies "
+        f"no longer estimate the same integral"
+    )
+
+
+def test_env_map_render_is_reproducible(tmp_path):
+    """Environment sampling (CDF draws, escape folds, MIS weights) stays a
+    pure function of the path identity.
+    """
+    env = _sun_env_map()
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        scene.set_environment_map(env, ambient=False)
+        floor = Prism(dimensions=(5.0, 5.0, 0.2))
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+
+    a = _render_scene(tmp_path, "env_repro_a.png", build, 8, shadows=True)
+    b = _render_scene(tmp_path, "env_repro_b.png", build, 8, shadows=True)
+    assert torch.equal(a, b), (
+        f"env-lit path-traced output changed between identical runs "
+        f"(max diff {int((a - b).abs().max())})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage-3 probes (table search + environment CDF, no render pipeline)
+# ---------------------------------------------------------------------------
+
+
+def test_nee_table_search_probe():
+    """The CDF binary search returns the bracketing entry and its exact
+    selection probability, boundaries included.
+    """
+    from algan.rendering.raytracing.path_tracer_taichi import pt_nee_pick_probe
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    cdf = torch.tensor([0.1, 0.3, 1.0], dtype=torch.float32, device=DEVICE)
+    u = torch.tensor(
+        [0.0, 0.05, 0.1, 0.15, 0.3, 0.9999], dtype=torch.float32, device=DEVICE
+    )
+    out = torch.zeros((u.shape[0], 2), dtype=torch.float32, device=DEVICE)
+    pt_nee_pick_probe(cdf, 3, u, out)
+    out = out.cpu()
+    assert out[:, 0].tolist() == [0.0, 0.0, 1.0, 1.0, 2.0, 2.0]
+    expected_p = [0.1, 0.1, 0.2, 0.2, 0.7, 0.7]
+    assert torch.allclose(out[:, 1], torch.tensor(expected_p), atol=1e-6)
+
+
+def test_env_cdf_sampling_is_consistent_and_normalized():
+    """Three properties the escape-MIS weight rests on: the pdf returned by
+    the sampler equals the pdf re-evaluated from the sampled direction, the
+    pdf integrates to one over the sphere, and the sampler concentrates its
+    draws on the bright region.
+    """
+    from algan.rendering.raytracing.path_tracer import _build_env_cdf
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        pt_env_pdf_probe,
+        pt_env_sample_probe,
+    )
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    env = _sun_env_map()
+    env_cdf, power = _build_env_cdf(env)
+    assert power > 0
+    ch, cw = int(env_cdf.shape[0]), int(env_cdf.shape[1]) - 1
+    # CDF sanity: monotone, ending exactly at 1.
+    assert float(env_cdf[:, cw].diff().min()) >= 0.0
+    assert float(env_cdf[:, cw][-1]) == 1.0
+    assert float(env_cdf[:, :cw].diff(dim=1).min()) >= 0.0
+
+    env_cdf_dev = env_cdf.to(DEVICE)
+    gen = torch.Generator().manual_seed(7)
+    u = torch.rand((4096, 2), generator=gen).float().to(DEVICE)
+    out = torch.zeros((4096, 5), dtype=torch.float32, device=DEVICE)
+    pt_env_sample_probe(env_cdf_dev, ch, cw, u, out)
+    out = out.cpu()
+    dirs = out[:, :3]
+    assert torch.allclose(dirs.norm(dim=-1), torch.ones(4096), atol=1e-4)
+    # Sampled pdf == evaluated pdf for the same direction.
+    rel = (out[:, 3] - out[:, 4]).abs() / out[:, 3].clamp_min(1e-9)
+    assert float(rel.max()) < 1e-3
+    # Importance: the sun (on the -z camera side; see _sun_env_map) subtends
+    # far less than half the sphere, but with luminance 120x the sky it must
+    # draw the majority of the samples.
+    in_sun = dirs[:, 2] < -0.85
+    assert float(in_sun.float().mean()) > 0.5
+
+    # The pdf integrates to one over the sphere (quadrature on a (u, v)
+    # grid mapped through the equirect parameterisation).
+    gh, gw = 128, 256
+    v = (torch.arange(gh, dtype=torch.float64) + 0.5) / gh
+    ug = (torch.arange(gw, dtype=torch.float64) + 0.5) / gw
+    theta = np.pi * v
+    phi = 2.0 * np.pi * (ug - 0.5)
+    sin_t = torch.sin(theta).view(-1, 1).expand(gh, gw)
+    dx = torch.cos(phi).view(1, -1) * sin_t
+    dy = torch.cos(theta).view(-1, 1).expand(gh, gw)
+    dz = torch.sin(phi).view(1, -1) * sin_t
+    grid = torch.stack((dx, dy, dz), -1).reshape(-1, 3).float().to(DEVICE)
+    pdf = torch.zeros((grid.shape[0],), dtype=torch.float32, device=DEVICE)
+    pt_env_pdf_probe(env_cdf_dev, ch, cw, grid, pdf)
+    dw = sin_t.reshape(-1).double() * (np.pi / gh) * (2.0 * np.pi / gw)
+    total = float((pdf.cpu().double() * dw).sum())
+    assert abs(total - 1.0) < 0.02, f"env pdf integrates to {total:.4f}"
 
 
 if __name__ == "__main__":

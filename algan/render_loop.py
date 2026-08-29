@@ -500,13 +500,10 @@ class RenderLoopMixin:
         if cached is not None:
             return cached
 
-        rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import _merge_scene
 
         merged_host = _merge_scene(primitive_batch, track_peak=track_peak)
         env_map = getattr(self, "environment_map", None)
-        if env_map is not None and int(rt_settings.samples_per_pixel) > 1:
-            env_map = None
         first._rt_env_meta = None
         if env_map is not None:
             # Environment resampling/packing is source-device scene prep too;

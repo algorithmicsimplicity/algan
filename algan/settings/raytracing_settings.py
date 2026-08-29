@@ -334,6 +334,7 @@ _MINIMUMS = {
     "analytic_aa_secondary_samples": (1, False),
     "glossy_prefilter_max_levels": (1, False),
     "refract_initial_pool_ratio": (1, False),
+    "pt_light_samples": (1, False),
     "wavefront_tile_rays": (1, False),
     "wavefront_tile_min": (1, False),
     "wavefront_tile_max": (1, False),

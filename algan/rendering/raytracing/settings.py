@@ -154,6 +154,18 @@ pt_rr_start_bounce = env_int("ALGAN_PT_RR_START", 3)
 # leave -- the production-standard bias (see the module docstring of
 # path_tracer_taichi for where it applies).
 pt_firefly_clamp = env_float("ALGAN_PT_FIREFLY_CLAMP", 10.0)
+# Next-event-estimation samples the path tracer draws per lit path vertex,
+# each picked from the power-weighted light table (delta/area light rows,
+# emissive triangles, the environment map). 1 is the production default;
+# raising it spends more shadow rays per vertex for less direct-light noise
+# at the same samples_per_pixel.
+pt_light_samples = env_int("ALGAN_PT_LIGHT_SAMPLES", 1)
+# When True (default) the path tracer importance-samples the environment map
+# through a luminance CDF at every lit vertex and MIS-weights escaping BSDF
+# rays against it. False keeps env lighting purely through BSDF-sampled
+# escapes -- the A/B arm for the sampler, still unbiased, just noisier for
+# concentrated maps (a sun disc).
+pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set
@@ -3013,14 +3025,15 @@ def set_fragment_shading(enabled):
 # light has K rows, so its shadow cost goes from K rays to K * 8.
 # ``samples`` stays the user's dial for both quality and cost.
 #
-# KNOWN LIMITS, both deliberate exclusions. The deferred shadow prepass
+# KNOWN LIMIT, a deliberate exclusion. The deferred shadow prepass
 # (``wavefront_shadow``) reads neither light type nor radius and treats every
 # row as a hard point light; it is dead code today (the tracer always
 # compiles ``deferred_shadows == 0``) and must learn these columns before it
-# is ever revived. And the Monte Carlo megakernel's next-event estimation
-# reads packed columns 0-2 only, with extended lights rejected at preflight
-# when ``samples_per_pixel > 1`` anyway, so an area row never reaches it:
-# SPP > 1 keeps hard per-row rays.
+# is ever revived. The path tracer (``samples_per_pixel > 1``) reads the same
+# packed cells but does NOT read this flag at render time: it takes the cell
+# extents as the emitter geometry for its own next-event estimation (one
+# random point per sample instead of the fan), so with the flag off its rows
+# fall back to the packed cell centres exactly as the fans do.
 #
 # OFF restores today's row bit-for-bit. The flag is read host-side ONLY, in
 # build_aux, which packs zeros to the extra columns when it is off -- the

@@ -984,9 +984,6 @@ def _build_render_plan(
     unsupported = []
     if scene_environment_map is not None:
         requested.append("environment maps")
-        if samples_requested > 1:
-            # Lifted when the path tracer gains environment sampling.
-            unsupported.append("environment maps")
     if bool(merged.get("has_refractive")):
         requested.append("refractive materials")
     if _scene_has_user_pipeline(merged):
@@ -1016,9 +1013,8 @@ def _validate_render_capabilities(
     """Validate that the selected renderer can honor the authored scene.
 
     ``samples_per_pixel > 1`` selects the path tracer, which supports the
-    deterministic renderer's feature set except environment maps (until it
-    gains environment sampling) and custom scatter overrides (arbitrary
-    user continuation code has no sampling density for stochastic
+    deterministic renderer's feature set except custom scatter overrides
+    (arbitrary user continuation code has no sampling density for stochastic
     transport); silently discarding a feature is more dangerous than failing
     early. The global unsupported-feature policy permits an explicit
     warning/ignore migration mode for benchmarks and legacy projects.
@@ -1163,7 +1159,7 @@ def render_batch_raytraced(
     max_bounces = rt_settings.max_bounces
     tonemap_exposure = rt_settings.tonemap_exposure
     scene_env_map = getattr(scene, "environment_map", None)
-    env_map = scene_env_map if int(samples_per_pixel) <= 1 else None
+    env_map = scene_env_map
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
     merged = getattr(primitives[0], "_rt_device_scene", None)
@@ -1197,10 +1193,10 @@ def render_batch_raytraced(
         )
     scene.last_render_plan = plan
 
-    # Refraction is only implemented by the general wavefront tracer, which is
-    # already where every deterministic (samples <= 1) batch goes -- so this
-    # only gates the refraction template, not routing. The Monte Carlo
-    # megakernel (samples > 1) ignores the refractive index.
+    # These flags gate the deterministic wavefront's refraction template and
+    # split pool only; the path tracer (samples > 1) always carries the
+    # nested-IOR media stack and refracts through its own stochastic
+    # transmission lobe instead.
     refractive_det = bool(merged.get("has_refractive")) and int(samples_per_pixel) <= 1
     # Semi-transparent PBR surfaces split off a reflection branch, so they need
     # the same pool + split code the refraction path compiles in. No routing
@@ -1493,15 +1489,20 @@ def render_batch_raytraced(
     if det_frag or samples > 1:
         # The path tracer packs lights exactly as the deterministic
         # per-fragment route does: its next-event estimation reads the same
-        # rows through the same ``_light_eval`` radiometry. (The env-SH
-        # append below is deterministic-only by construction -- ``env_map``
-        # is None under the path tracer until it gains environment
-        # sampling, which will integrate the map for real.)
+        # rows through the same ``_light_eval`` radiometry. The env-SH row
+        # stays deterministic-only on purpose: the path tracer integrates
+        # the map for real (CDF next-event estimation + escaping rays), and
+        # the SH irradiance row would light every diffuse vertex a second
+        # time.
         light_device = torch.device("cpu")
         light_pos_host, light_col_host, num_lights = _pack_lights(
             light_sources, num_frames, light_device
         )
-        if env_map is not None and getattr(scene, "environment_ambient", True):
+        if (
+            env_map is not None
+            and samples <= 1
+            and getattr(scene, "environment_ambient", True)
+        ):
             light_pos_host, light_col_host, num_lights = _append_env_sh_light(
                 light_pos_host,
                 light_col_host,
@@ -1710,6 +1711,7 @@ def render_batch_raytraced(
                         max_bounces=int(max_bounces),
                         transparent=transparent_background,
                         samples=samples_eff,
+                        env_meta=env_meta,
                         out=out,
                         accum=accum,
                     )

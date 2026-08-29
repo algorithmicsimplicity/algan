@@ -37,10 +37,25 @@ no overflow retry, and compaction may always scan just the active list.
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.path_tracer_taichi import (
+    _NEE_EMISSIVE_TRI,
+    _NEE_ENV,
+    _NEE_LIGHT_ROW,
+    _NM_COUNT,
+    _NM_ENV_CDF_H,
+    _NM_ENV_CDF_W,
+    _NM_ENV_H,
+    _NM_ENV_INTENSITY,
+    _NM_ENV_OFF,
+    _NM_ENV_SHARE,
+    _NM_ENV_W,
+    _NM_LIGHT_SAMPLES,
+    NEE_META_WIDTH,
     PT_ACC_WIDTH,
     PT_STAT_TRUNC_SURFACES,
     PT_STATS_WIDTH,
@@ -53,7 +68,15 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     max_surfaces_per_ray,
 )
 from algan.rendering.raytracing.refit_bvh import RefitBVH
-from algan.rendering.raytracing.shading_taichi import ALL_PIDS
+from algan.rendering.raytracing.shading_taichi import (
+    _LT_AREA_SAMPLE,
+    _LT_DIRECTIONAL,
+    _LT_POINT,
+    _LT_SPOT,
+    _MID_LAMBERT,
+    _MID_PHYSICAL,
+    ALL_PIDS,
+)
 from algan.rendering.raytracing.truncation import record_truncation
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     SCA_WIDTH_NESTED,
@@ -68,8 +91,15 @@ from algan.utils.memory_utils import InsufficientMemoryException
 # per-iteration hit-event batch at worst case num_active == pool
 # (kbuf * (4 f32 + 2 i32)).
 _PT_BYTES_PER_SLOT = (
-    12 + 12 + SCA_WIDTH_NESTED * 4 + 5 * 4 + 4 + 4 * 4 + PT_ACC_WIDTH * 4
-    + 2 * 4 + kbuf * (4 * 4 + 2 * 4)
+    12
+    + 12
+    + SCA_WIDTH_NESTED * 4
+    + 5 * 4
+    + 4
+    + 4 * 4
+    + PT_ACC_WIDTH * 4
+    + 2 * 4
+    + kbuf * (4 * 4 + 2 * 4)
 )
 # Per-tile fixed words: the compactor's counter, the stats tallies, alignment.
 _PT_FIXED_BYTES = 64
@@ -116,6 +146,177 @@ def _pt_tile_shape(memory, num_pixels, samples):
     return max(1, budget), 1
 
 
+def _build_env_cdf(env_rgb, max_h=128, max_w=256):
+    """2D sampling distribution of an equirect environment map.
+
+    Bins the map's peak-channel luminance (the codebase's colour-to-scalar
+    convention) times sin(theta) into at most ``max_h x max_w`` cells, with a
+    1% uniform floor so the pdf is positive wherever bilinear filtering can
+    leak radiance out of a bright texel's cell -- what keeps the estimator
+    unbiased rather than merely well-aimed. Returns ``(env_cdf, power)``:
+    the ``[H, W + 1]`` float32 tensor the kernels binary-search (row
+    conditionals in columns ``0..W-1``, the row marginal in column ``W``)
+    and the map's total luminance integral (before ``environment_intensity``)
+    for the selection-table power weight.
+    """
+    h = int(env_rgb.shape[0])
+    w = int(env_rgb.shape[1])
+    ch = max(1, min(int(max_h), h))
+    cw = max(1, min(int(max_w), w))
+    lum = env_rgb.amax(-1).clamp_min(0).double()
+    if (h, w) != (ch, cw):
+        lum = torch.nn.functional.adaptive_avg_pool2d(
+            lum.unsqueeze(0).unsqueeze(0), (ch, cw)
+        )[0, 0]
+    v = (torch.arange(ch, dtype=torch.float64, device=lum.device) + 0.5) / ch
+    sin_t = torch.sin(math.pi * v).unsqueeze(1)
+    w_bin = (lum + 0.01 * lum.mean() + 1e-12) * sin_t
+    row = w_bin.sum(1)
+    cond = w_bin.cumsum(1) / row.unsqueeze(1)
+    cond[:, -1] = 1.0
+    marg = row.cumsum(0) / row.sum()
+    marg[-1] = 1.0
+    env_cdf = torch.empty((ch, cw + 1), dtype=torch.float64, device=lum.device)
+    env_cdf[:, :cw] = cond
+    env_cdf[:, cw] = marg
+    power = float((lum * sin_t).sum() * (math.pi / ch) * (2.0 * math.pi / cw))
+    return env_cdf.float(), power
+
+
+def _build_nee_tables(memory, merged, light_pos, light_col, num_lights, env_meta):
+    """Build one render call's power-weighted next-event table.
+
+    One flat CDF over everything a shadow ray can aim at -- delta and
+    area-cell light rows (ambient-like rows are the kernel's deterministic
+    fill and never enter), emissive lit triangles (frame-0 peak luminance
+    times area; an emitter dark at frame 0 is simply never NEE-sampled and
+    reaches the image through BSDF hits at weight 1, which stays unbiased),
+    and one environment entry when a map is present and ``pt_env_nee`` is
+    on. Light-row weights take the max over frames so a light dark at frame
+    0 but lit later is still sampled (rows have no MIS backstop).
+
+    Returns arena tensors ``(nee_cdf [E], nee_ref [E, 2], nee_meta
+    [NEE_META_WIDTH], tri_emit_prob [N], env_cdf [H, W + 1])`` -- every
+    selection probability the kernels divide by or MIS against comes from
+    these, so both ends of each MIS pair see identical numbers.
+    """
+    from algan.rendering.raytracing.tracer import _arena_copy, _arena_values
+
+    device = memory.data.device
+    i64 = torch.int64
+    powers = []
+    kinds = []
+    refs = []
+    if num_lights > 0:
+        row_power = light_col[..., :3].amax(0).amax(-1).double()
+        if light_col.shape[2] > 3:
+            ltypes = (light_col[0, :, 3] + 0.5).to(i64)
+        else:
+            ltypes = torch.zeros(num_lights, dtype=i64, device=device)
+        sampled = (
+            (ltypes == _LT_POINT)
+            | (ltypes == _LT_DIRECTIONAL)
+            | (ltypes == _LT_SPOT)
+            | (ltypes == _LT_AREA_SAMPLE)
+        ) & (row_power > 0)
+        idx = sampled.nonzero(as_tuple=False).flatten()
+        if idx.numel():
+            powers.append(row_power[idx])
+            kinds.append(torch.full_like(idx, _NEE_LIGHT_ROW))
+            refs.append(idx)
+
+    tri_mat = merged["tri_mat"]
+    n_tri = int(merged.get("num_triangles") or 0)
+    if n_tri > 0 and int(tri_mat.shape[2]) > 3:
+        pid = merged["tri_mat_id"][0].to(i64)
+        lit = (pid >= _MID_LAMBERT) & (pid <= _MID_PHYSICAL)
+        em = tri_mat[0, :, 0:3].amax(-1).clamp_min(0) * tri_mat[0, :, 3].clamp_min(0)
+        p9 = merged["tri_pos"][0].double()
+        area = 0.5 * torch.linalg.cross(
+            p9[:, 3:6] - p9[:, 0:3], p9[:, 6:9] - p9[:, 0:3], dim=-1
+        ).norm(dim=-1)
+        p_e = torch.where(lit, em.double() * area * math.pi, torch.zeros_like(area))
+        e_idx = (p_e > 0).nonzero(as_tuple=False).flatten()
+        if e_idx.numel():
+            powers.append(p_e[e_idx])
+            kinds.append(torch.full_like(e_idx, _NEE_EMISSIVE_TRI))
+            refs.append(e_idx)
+
+    # Environment geometry rides the meta vector whenever a map is packed
+    # (the escape fold needs it with or without env NEE); the CDF and the
+    # selection entry exist only under ``pt_env_nee``.
+    env_off = env_w = env_h = 0
+    env_intensity = 0.0
+    env_cdf_host = None
+    if env_meta is not None:
+        env_off = int(env_meta[0])
+        env_w = int(env_meta[1])
+        env_h = int(env_meta[2])
+        env_intensity = float(env_meta[3])
+    if env_w > 0 and env_h > 0 and rt_settings.pt_env_nee:
+        texels = merged["textures"][0, env_off : env_off + env_w * env_h, 0:3]
+        env_rgb = texels.float().reshape(env_w, env_h, 3).permute(1, 0, 2)
+        env_cdf_host, env_power = _build_env_cdf(env_rgb)
+        env_power *= max(env_intensity, 0.0)
+        if env_power > 0:
+            powers.append(torch.tensor([env_power], dtype=torch.float64, device=device))
+            kinds.append(torch.tensor([_NEE_ENV], dtype=i64, device=device))
+            refs.append(torch.tensor([0], dtype=i64, device=device))
+
+    env_share = 0.0
+    if powers:
+        power = torch.cat(powers)
+        prob = power / power.sum()
+        cdf = prob.cumsum(0)
+        cdf[-1] = 1.0
+        kind = torch.cat(kinds)
+        ref = torch.cat(refs)
+        num_entries = int(cdf.numel())
+        if bool((kind[-1] == _NEE_ENV).item()):
+            env_share = float(prob[-1].item())
+    else:
+        num_entries = 0
+
+    with memory.scope(
+        "pt_nee_tables", entries=max(num_entries, 1), emitters=max(n_tri, 1)
+    ):
+        emit_prob = memory.get_tensor((max(n_tri, 1),), torch.float32)
+        emit_prob.zero_()
+        if num_entries > 0:
+            nee_cdf = _arena_copy(memory, cdf.float())
+            nee_ref = _arena_copy(
+                memory,
+                torch.stack((kind, ref), -1).to(torch.int32),
+            )
+            emissive_rows = kind == _NEE_EMISSIVE_TRI
+            if bool(emissive_rows.any().item()):
+                emit_prob[ref[emissive_rows]] = prob[emissive_rows].float()
+        else:
+            nee_cdf = memory.get_tensor((1,), torch.float32)
+            nee_cdf.zero_()
+            nee_ref = memory.get_tensor((1, 2), torch.int32)
+            nee_ref.zero_()
+        if env_cdf_host is not None:
+            env_cdf = _arena_copy(memory, env_cdf_host)
+            cdf_h, cdf_w = int(env_cdf.shape[0]), int(env_cdf.shape[1]) - 1
+        else:
+            env_cdf = memory.get_tensor((1, 2), torch.float32)
+            env_cdf.zero_()
+            cdf_h = cdf_w = 1
+        meta = [0.0] * NEE_META_WIDTH
+        meta[_NM_COUNT] = float(num_entries)
+        meta[_NM_ENV_SHARE] = env_share
+        meta[_NM_LIGHT_SAMPLES] = float(max(1, int(rt_settings.pt_light_samples)))
+        meta[_NM_ENV_OFF] = float(env_off)
+        meta[_NM_ENV_W] = float(env_w)
+        meta[_NM_ENV_H] = float(env_h)
+        meta[_NM_ENV_INTENSITY] = env_intensity
+        meta[_NM_ENV_CDF_H] = float(cdf_h)
+        meta[_NM_ENV_CDF_W] = float(cdf_w)
+        nee_meta = _arena_values(memory, meta, torch.float32)
+    return nee_cdf, nee_ref, nee_meta, emit_prob, env_cdf
+
+
 def path_trace_render(
     *,
     memory,
@@ -144,6 +345,7 @@ def path_trace_render(
     max_bounces,
     transparent,
     samples,
+    env_meta=None,
     out,
     accum,
 ):
@@ -177,16 +379,21 @@ def path_trace_render(
         gen_meta = _arena_values(
             memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
         )
+    # The power-weighted next-event table + environment CDF for this call
+    # (before the tile budget is taken, so their bytes are accounted).
+    nee_cdf, nee_ref, nee_meta, tri_emit_prob, env_cdf = _build_nee_tables(
+        memory, merged, light_pos, light_col, int(num_lights), env_meta
+    )
 
     tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
-    # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0, 0, 0]
-    # plus the zeroed nested-IOR stack columns (air outside); rs_int =
+    # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0,
+    # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), 0] plus the zeroed
+    # nested-IOR stack columns (air outside); rs_int =
     # [bounces_left=max_bounces, processed=0, _ACTIVE, no hits,
     # max_bounces (the bounce ordinal's reference)].
     sca_init = torch.tensor(
-        [1.0, 0.0, 1e30, -1e30, 0.0, 0.0, 0.0]
-        + [0.0] * (SCA_WIDTH_NESTED - 7),
+        [1.0, 0.0, 1e30, -1e30, 0.0, -1.0, 0.0] + [0.0] * (SCA_WIDTH_NESTED - 7),
         dtype=f32,
         device=device,
     )
@@ -359,6 +566,11 @@ def path_trace_render(
                             pt_thru,
                             pt_acc,
                             pt_stats,
+                            nee_cdf,
+                            nee_ref,
+                            nee_meta,
+                            tri_emit_prob,
+                            env_cdf,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1

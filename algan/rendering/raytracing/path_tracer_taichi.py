@@ -63,7 +63,11 @@ splits, and of thread scheduling. Decisions whose count per path is unbounded
 jitter) draw from a hash RNG keyed on the same inputs plus the peel step, so
 they stay reproducible without consuming Sobol dimensions.
 
-Dimension-pair allocation (a fixed table; keep in sync with ``pt_shade``):
+Dimension-pair allocation (a fixed table; keep in sync with ``pt_shade``).
+``B`` is the render's ``max_bounces`` and ``L`` is ``pt_light_samples``; the
+next-event block sits after every bounce pair because it draws per surface
+CROSSING ``c`` (a translucent stack visits several lit surfaces per bounce
+ordinal), not per bounce:
 
 ===========================  ==================================================
 pair                         use
@@ -72,9 +76,10 @@ pair                         use
 1                            lens (2D) -- reserved for depth of field
 2 + 6b + 0                   bounce ``b``: x lobe select, y Russian roulette
 2 + 6b + 1                   bounce ``b``: BSDF direction (2D)
-2 + 6b + 2                   bounce ``b``: x light select, y spare
-2 + 6b + 3                   bounce ``b``: light point (2D)
+2 + 6b + 2, 3                bounce ``b``: reserved (legacy light slots)
 2 + 6b + 4, 5                bounce ``b``: reserved for volumes
+2 + 6B + 2(cL + s) + 0       crossing ``c``, NEE sample ``s``: x entry select
+2 + 6B + 2(cL + s) + 1       crossing ``c``, NEE sample ``s``: light point (2D)
 ===========================  ==================================================
 """
 
@@ -100,6 +105,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
     _MAT_NO_SHADOW_RECEIVE,
+    _MAT_ONE_SIDED,
     _MID_LAMBERT,
     _MID_PHONG,
     _MID_PHYSICAL,
@@ -125,11 +131,13 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _LT_DIRECTIONAL,
     _LT_ENV_SH,
     _LT_HEMISPHERE,
+    _PI,
     _env_brdf_approx,
     _material_reflectance,
     _offset_transmitted_origin,
     _refract_ray,
     _relative_ior,
+    _sample_env_map,
     _tri_color_g,
     _tri_extra_g,
     _tri_ior_transmission_g,
@@ -160,6 +168,41 @@ PT_STAT_TRUNC_SURFACES = 0
 # Russian-roulette survival floor: a path is never continued with less than
 # this probability, bounding the throughput amplification at 1/floor.
 _PT_RR_FLOOR = 0.05
+
+_INV_PI = 0.3183098861837907
+
+# rs_sca column 5 (unused by the shared traverse kernel, which reads only
+# columns 1/2/4): the solid-angle pdf of the last scatter direction, for the
+# power-heuristic MIS weight applied when a BSDF-sampled path finds an
+# emitter (an emissive triangle, or the environment map at escape).
+#   < 0   camera segment -- the path has never scattered; emission weight 1.
+#   == 0  the last scatter was a delta lobe (refraction, a tinted pane) or a
+#         vertex that runs no surface NEE (authored appearance, a circuit):
+#         emission weight 1 -- next-event estimation never covered it.
+#   > 0   the lobe-mixture pdf of the sampled direction at a lit vertex that
+#         ran the NEE block: emission there is MIS-weighted against it.
+# Pass-through crossings keep the value (the ray, and with it the pdf at its
+# origin vertex, continues unchanged).
+_SCA_PREV_PDF = 5
+
+# Next-event table entry kinds (column 0 of ``nee_ref``; the table is built
+# per render call by ``path_tracer._build_nee_tables``).
+_NEE_LIGHT_ROW = 0
+_NEE_EMISSIVE_TRI = 1
+_NEE_ENV = 2
+
+# Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
+# exact small ints; decoded with ``+ 0.5`` casts).
+NEE_META_WIDTH = 9
+_NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
+_NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
+_NM_LIGHT_SAMPLES = 2  # pt_light_samples
+_NM_ENV_OFF = 3  # env map placement in the shared texel buffer ...
+_NM_ENV_W = 4  # ... and its dimensions (0 = no environment map)
+_NM_ENV_H = 5
+_NM_ENV_INTENSITY = 6
+_NM_ENV_CDF_H = 7  # env CDF bin-grid dimensions
+_NM_ENV_CDF_W = 8
 
 
 def _sobol_dim1_directions():
@@ -343,6 +386,293 @@ def _pt_ggx_energy(f0, n_dot_v, roughness):
                   ti.math.vec3(1.0, 1.0, 1.0))
 
 
+@ti.func
+def _pt_pick_nee_entry(nee_cdf: ti.template(), n, u):
+    """Binary-search the combined light table's CDF: returns the entry index
+    whose cumulative bracket contains ``u`` and that entry's selection
+    probability (the CDF difference).
+    """
+    lo = 0
+    hi = n - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if u < nee_cdf[mid]:
+            hi = mid
+        else:
+            lo = mid + 1
+    prev = 0.0
+    if lo > 0:
+        prev = nee_cdf[lo - 1]
+    return lo, nee_cdf[lo] - prev
+
+
+@ti.func
+def _pt_ggx_ndf(n_dot_h, alpha):
+    """Isotropic GGX normal distribution with ``alpha`` = roughness^2 -- the
+    same parameterisation the VNDF sampler and ``_pt_smith_lambda`` use, so
+    an evaluated pdf matches the sampled one exactly (``_smith_geometry``'s
+    direct-lighting remap deliberately does not).
+    """
+    a2 = alpha * alpha
+    d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0
+    return a2 / ti.max(_PI * d * d, 1e-12)
+
+
+@ti.func
+def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
+                  rough, ior, T, shade_n, rd):
+    """Continuation-lobe energies of a physically-integrated (lit) hit:
+    ``(e_diff, e_spec, e_trans, f0)``. The single source for both the
+    sampled continuation and the NEE-side BSDF evaluation -- MIS is only
+    correct while the two agree term for term.
+    """
+    one3 = ti.math.vec3(1.0, 1.0, 1.0)
+    e_diff = ti.math.vec3(0.0, 0.0, 0.0)
+    e_spec = ti.math.vec3(0.0, 0.0, 0.0)
+    e_trans = ti.math.vec3(0.0, 0.0, 0.0)
+    f0 = ti.math.vec3(0.0, 0.0, 0.0)
+    n_dot_v = ti.max(shade_n.dot(-rd), 1e-4)
+    if (pid == _MID_LAMBERT) or (pid == _MID_PHONG):
+        # Pure-diffuse indirect transport: the lambert stage has no specular
+        # lobe at all, and phong's Blinn highlight responds to delta lights
+        # via NEE only (an indirect GGX proxy for it would add energy its
+        # stage never had).
+        e_diff = albedo3
+    else:
+        tm = f % params.shape[0]
+        met = ti.math.clamp(ti.max(metalness, 0.0), 0.0, 1.0)
+        diel_f0 = ti.math.vec3(0.04, 0.04, 0.04)
+        if pid == _MID_PHYSICAL:
+            ior_m = params[tm, prim, 12]
+            ratio = (ior_m - 1.0) / ti.max(ior_m + 1.0, 1e-4)
+            diel_f0 = ti.math.vec3(
+                params[tm, prim, 14], params[tm, prim, 15],
+                params[tm, prim, 16]) \
+                * (ratio * ratio * params[tm, prim, 13])
+        f0 = diel_f0 * (1.0 - met) + albedo3 * met
+        e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
+        _R3, diel_pass = _material_reflectance(
+            rd, shade_n, ti.max(metalness, 0.0), ior, albedo3, T)
+        e_trans = albedo3 * (diel_pass * T)
+        e_diff = albedo3 * ((1.0 - met) * (1.0 - T)) * (one3 - e_spec)
+    return e_diff, e_spec, e_trans, f0
+
+
+@ti.func
+def _pt_lit_f_pdf(e_diff, e_spec, f0, rough, shade_n, rd, wi,
+                  w_pass, w_diff, w_spec, w_trans):
+    """Physical BSDF response of a lit vertex toward ``wi`` and the pdf with
+    which its continuation sampler generates ``wi``.
+
+    Returns ``(f_cos, pdf)``: the BRDF times the surface cosine (diffuse
+    ``e_diff / pi``, plus exact GGX with the sampled lobe's own alpha,
+    Fresnel and Turquin compensation), and the lobe-mixture solid-angle
+    density (cosine and VNDF terms weighted by the same lobe-selection
+    weights the continuation draws from; the pass/transmission lobes are
+    deltas and add no density). Both ends of every MIS pair -- next-event
+    samples toward emitters and BSDF paths that find them -- use this one
+    function, which is what makes the power-heuristic weights sum to one.
+    """
+    f_cos = ti.math.vec3(0.0, 0.0, 0.0)
+    pdf = 0.0
+    w_sum = w_pass + w_diff + w_spec + w_trans
+    cos_i = shade_n.dot(wi)
+    if (cos_i > 1e-6) and (w_sum > 1e-6):
+        f_cos = e_diff * (_INV_PI * cos_i)
+        pdf = (w_diff / w_sum) * (_INV_PI * cos_i)
+        if w_spec > 0.0:
+            one3 = ti.math.vec3(1.0, 1.0, 1.0)
+            v = -rd
+            h = (v + wi).normalized()
+            n_dot_v = ti.max(shade_n.dot(v), 1e-4)
+            n_dot_h = ti.math.clamp(shade_n.dot(h), 0.0, 1.0)
+            v_dot_h = ti.max(v.dot(h), 1e-4)
+            a_g = ti.max(rough * rough, 1e-4)
+            d = _pt_ggx_ndf(n_dot_h, a_g)
+            lam_v = _pt_smith_lambda(n_dot_v, a_g)
+            lam_l = _pt_smith_lambda(cos_i, a_g)
+            g1_v = 1.0 / (1.0 + lam_v)
+            g2 = 1.0 / (1.0 + lam_v + lam_l)
+            fres = f0 + (one3 - f0) * ti.pow(1.0 - v_dot_h, 5.0)
+            e1 = _env_brdf_approx(one3, n_dot_v, rough)
+            e1s = ti.math.clamp(e1[0], 1e-3, 1.0)
+            comp = one3 + f0 * ((1.0 - e1s) / e1s)
+            f_cos += fres * comp * (d * g2 / ti.max(4.0 * n_dot_v, 1e-6))
+            pdf += (w_spec / w_sum) * (g1_v * d / ti.max(4.0 * n_dot_v, 1e-6))
+    return f_cos, pdf
+
+
+@ti.func
+def _pt_env_pdf_sa(rd, env_cdf: ti.template(), cdf_h, cdf_w):
+    """Solid-angle density with which ``_pt_env_sample`` generates unit
+    direction ``rd``: the direction's bin probability (marginal times
+    conditional CDF differences) over the bin's uniform (u, v) footprint,
+    through the equirect Jacobian ``2 pi^2 sin(theta)``.
+    """
+    u = ti.atan2(rd[2], rd[0]) * (0.5 / _PI) + 0.5
+    v = 0.5 - ti.asin(ti.math.clamp(rd[1], -1.0, 1.0)) / _PI
+    x = ti.math.clamp(ti.cast(u * cdf_w, ti.i32), 0, cdf_w - 1)
+    y = ti.math.clamp(ti.cast(v * cdf_h, ti.i32), 0, cdf_h - 1)
+    marg_prev = 0.0
+    if y > 0:
+        marg_prev = env_cdf[y - 1, cdf_w]
+    p_y = env_cdf[y, cdf_w] - marg_prev
+    cond_prev = 0.0
+    if x > 0:
+        cond_prev = env_cdf[y, x - 1]
+    p_x = env_cdf[y, x] - cond_prev
+    sin_t = ti.sqrt(ti.max(1.0 - rd[1] * rd[1], 1e-8))
+    return p_y * p_x * ti.cast(cdf_h * cdf_w, ti.f32) \
+        / (2.0 * _PI * _PI * ti.max(sin_t, 1e-4))
+
+
+@ti.func
+def _pt_env_sample(env_cdf: ti.template(), cdf_h, cdf_w, u1, u2):
+    """Draw an environment direction from the 2D luminance CDF: binary-search
+    the marginal (column ``cdf_w``) with ``u1`` for the row, that row's
+    conditional with ``u2`` for the column, and reuse each search's bracket
+    remainder as the uniform intra-bin jitter (so the pdf above is exact and
+    no extra dimensions are consumed). Returns ``(dir, pdf_sa)``.
+    """
+    lo = 0
+    hi = cdf_h - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if u1 < env_cdf[mid, cdf_w]:
+            hi = mid
+        else:
+            lo = mid + 1
+    y = lo
+    marg_prev = 0.0
+    if y > 0:
+        marg_prev = env_cdf[y - 1, cdf_w]
+    p_y = env_cdf[y, cdf_w] - marg_prev
+    ry = ti.math.clamp((u1 - marg_prev) / ti.max(p_y, 1e-12), 0.0, 1.0)
+    lo = 0
+    hi = cdf_w - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if u2 < env_cdf[y, mid]:
+            hi = mid
+        else:
+            lo = mid + 1
+    x = lo
+    cond_prev = 0.0
+    if x > 0:
+        cond_prev = env_cdf[y, x - 1]
+    p_x = env_cdf[y, x] - cond_prev
+    rx = ti.math.clamp((u2 - cond_prev) / ti.max(p_x, 1e-12), 0.0, 1.0)
+    u = (ti.cast(x, ti.f32) + rx) / ti.cast(cdf_w, ti.f32)
+    v = (ti.cast(y, ti.f32) + ry) / ti.cast(cdf_h, ti.f32)
+    theta = _PI * v
+    phi = 2.0 * _PI * (u - 0.5)
+    sin_t = ti.sin(theta)
+    direction = ti.math.vec3(ti.cos(phi) * sin_t, ti.cos(theta),
+                             ti.sin(phi) * sin_t)
+    pdf = p_y * p_x * ti.cast(cdf_h * cdf_w, ti.f32) \
+        / (2.0 * _PI * _PI * ti.max(sin_t, 1e-4))
+    return direction, pdf
+
+
+@ti.func
+def _pt_emissive_sample(tri_pos: ti.template(), f, prim, u1, u2):
+    """Uniform point on emissive triangle ``prim`` at frame ``f``: returns
+    ``(point, front_normal, area, w0, w1, w2)`` with the frame's own area
+    (an animated emitter keeps an exact area-measure pdf) and the geometric
+    front normal ``(v1-v0) x (v2-v0)`` that decides the emitting side.
+    """
+    tp = f % tri_pos.shape[0]
+    v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                      tri_pos[tp, prim, 2])
+    v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                      tri_pos[tp, prim, 5])
+    v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                      tri_pos[tp, prim, 8])
+    su = ti.sqrt(ti.max(u1, 0.0))
+    w1 = 1.0 - su
+    w2 = u2 * su
+    w0 = 1.0 - w1 - w2
+    point = v0 * w0 + v1 * w1 + v2 * w2
+    ng = (v1 - v0).cross(v2 - v0)
+    n_len = ng.norm()
+    area = 0.5 * n_len
+    normal = ti.math.vec3(0.0, 0.0, 0.0)
+    if n_len > 1e-12:
+        normal = ng / n_len
+    return point, normal, area, w0, w1, w2
+
+
+@ti.func
+def _pt_nee_light_row(light_pos: ti.template(), light_col: ti.template(),
+                      f, li, spos, n, u1, u2):
+    """Radiometry + visibility target of one CDF-selected packed light row.
+
+    Delta rows (point / spot / directional) keep ``_light_eval``'s
+    centre-of-emitter radiometry -- exact stage brightness parity -- with the
+    visibility ray jittered across the shadow softness by
+    ``_pt_light_sample_point`` (deterministic-fan semantics). An area-sample
+    row instead evaluates the radiometry AT a uniform point inside its own
+    packed cell (falloff distance, range fade and the one-sided cosine all
+    from the sampled point), which is what turns the deterministic K-row
+    staircase into the continuous area integral in expectation. Returns
+    ``(ld, lc, spec_w, wi_vis, ldist, valid)`` -- ``ld`` for the shading
+    response, ``wi_vis``/``ldist`` for the visibility trace.
+    """
+    tl = f % light_pos.shape[0]
+    ltype = 0
+    if light_col.shape[2] > 3:
+        ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
+    ld = ti.math.vec3(0.0, 0.0, 0.0)
+    lc = ti.math.vec3(0.0, 0.0, 0.0)
+    spec_w = 1.0
+    wi_vis = ti.math.vec3(0.0, 0.0, 0.0)
+    ldist = 1e7
+    valid = 0
+    if ltype == _LT_AREA_SAMPLE:
+        lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
+                          light_pos[tl, li, 2])
+        an = ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
+                          light_col[tl, li, 8])
+        hu = light_col[tl, li, 9]
+        hv = light_col[tl, li, 10]
+        target = lp
+        if (hu > 0.0) or (hv > 0.0):
+            b1 = ti.math.vec3(light_col[tl, li, 12], light_col[tl, li, 13],
+                              light_col[tl, li, 14])
+            b2 = an.cross(b1)
+            target = lp + b1 * (hu * (2.0 * u1 - 1.0)) \
+                + b2 * (hv * (2.0 * u2 - 1.0))
+        to_light = target - spos
+        d = to_light.norm()
+        if d > 1e-5:
+            wi = to_light / d
+            lc = ti.math.vec3(light_col[tl, li, 0], light_col[tl, li, 1],
+                              light_col[tl, li, 2])
+            # Falloff exactly as ``_light_eval``'s POINT/SPOT/AREA block,
+            # with the sampled point's own distance.
+            decay = light_col[tl, li, 4]
+            if decay > 0.0:
+                lc = lc / ti.pow(ti.max(d, 1e-4), decay)
+            rng = light_col[tl, li, 5]
+            if rng > 0.0:
+                q = ti.math.clamp(d / rng, 0.0, 1.0)
+                q2 = q * q
+                fade = ti.math.clamp(1.0 - q2 * q2, 0.0, 1.0)
+                lc = lc * (fade * fade)
+            # One-sided cosine emission of the rectangle, at the sample.
+            lc = lc * ti.max((-wi).dot(an), 0.0)
+            ld = wi
+            wi_vis = wi
+            ldist = d
+            valid = 1
+    else:
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            spos, n)
+        wi_vis, ldist, valid = _pt_light_sample_point(
+            light_pos, light_col, f, li, spos, u1, u2)
+    return ld, lc, spec_w, wi_vis, ldist, valid
+
+
 @ti.kernel
 def pt_sampler_probe(seed_root: ti.u32, f: ti.i32, pixel: ti.i32, pair: ti.i32,
                      out: ti.types.ndarray()):
@@ -356,6 +686,49 @@ def pt_sampler_probe(seed_root: ti.u32, f: ti.i32, pixel: ti.i32, pair: ti.i32,
         u = pt_sample_2d(seed_root, key, pair, s)
         out[s, 0] = u[0]
         out[s, 1] = u[1]
+
+
+@ti.kernel
+def pt_nee_pick_probe(nee_cdf: ti.types.ndarray(), n: ti.i32,
+                      u: ti.types.ndarray(), out: ti.types.ndarray()):
+    """Test probe: binary-search each ``u`` through a table CDF, writing
+    ``out[i] = (entry index, selection probability)``. Exists so the
+    next-event table search can be unit-tested without a render.
+    """
+    for i in range(u.shape[0]):
+        entry, p = _pt_pick_nee_entry(nee_cdf, n, u[i])
+        out[i, 0] = ti.cast(entry, ti.f32)
+        out[i, 1] = p
+
+
+@ti.kernel
+def pt_env_sample_probe(env_cdf: ti.types.ndarray(), cdf_h: ti.i32,
+                        cdf_w: ti.i32, u: ti.types.ndarray(),
+                        out: ti.types.ndarray()):
+    """Test probe: draw one environment direction per ``(u1, u2)`` row,
+    writing ``out[i] = (dir.x, dir.y, dir.z, pdf, pdf re-evaluated from the
+    direction)`` -- the sampling/evaluation pair every escape MIS weight
+    needs to agree on.
+    """
+    for i in range(u.shape[0]):
+        d, pdf = _pt_env_sample(env_cdf, cdf_h, cdf_w, u[i, 0], u[i, 1])
+        out[i, 0] = d[0]
+        out[i, 1] = d[1]
+        out[i, 2] = d[2]
+        out[i, 3] = pdf
+        out[i, 4] = _pt_env_pdf_sa(d, env_cdf, cdf_h, cdf_w)
+
+
+@ti.kernel
+def pt_env_pdf_probe(env_cdf: ti.types.ndarray(), cdf_h: ti.i32,
+                     cdf_w: ti.i32, dirs: ti.types.ndarray(),
+                     out: ti.types.ndarray()):
+    """Test probe: the sampler's solid-angle density at given directions,
+    for quadrature checks that the pdf integrates to one over the sphere.
+    """
+    for i in range(dirs.shape[0]):
+        d = ti.math.vec3(dirs[i, 0], dirs[i, 1], dirs[i, 2]).normalized()
+        out[i] = _pt_env_pdf_sa(d, env_cdf, cdf_h, cdf_w)
 
 
 @ti.kernel
@@ -617,7 +990,11 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
              rs_pix: ti.types.ndarray(),
              hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
              pt_thru: ti.types.ndarray(), pt_acc: ti.types.ndarray(),
-             pt_stats: ti.types.ndarray()):
+             pt_stats: ti.types.ndarray(),
+             nee_cdf: ti.types.ndarray(), nee_ref: ti.types.ndarray(),
+             nee_meta: ti.types.ndarray(),
+             tri_emit_prob: ti.types.ndarray(),
+             env_cdf: ti.types.ndarray()):
     """Consume one traverse's hit-event batch (see the module docstring).
 
     Deterministic alpha compositing carries every crossed surface's local
@@ -627,11 +1004,32 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
     unlit-only stack keeps the zero-variance composite while lit content
     gets full transport. The camera-segment alpha transparency
     (``rs_sca[r, 0]``) freezes at the first scatter.
+
+    Direct lighting at a lit vertex is the sum of a deterministic fill from
+    the direction-less rows (ambient / hemisphere) and ``pt_light_samples``
+    draws from the power-weighted next-event table (``nee_cdf`` /
+    ``nee_ref``): delta and area light rows at stage radiometry, emissive
+    triangles and the environment map at physical radiometry with
+    power-heuristic MIS against the continuation lobes (the emitters BSDF
+    paths can also find; delta lights have no geometry to MIS against).
+    Escaping rays sample the environment map in their own direction, so
+    mirrors and GI see the sky the deterministic renderer shows.
     """
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
         num_hits = rs_int[r, 3]
+        # Next-event table + environment metadata (runtime words, so one
+        # compiled kernel serves every scene shape).
+        num_nee = ti.cast(nee_meta[_NM_COUNT] + 0.5, ti.i32)
+        env_share = nee_meta[_NM_ENV_SHARE]
+        n_ls = ti.max(ti.cast(nee_meta[_NM_LIGHT_SAMPLES] + 0.5, ti.i32), 1)
+        env_off = ti.cast(nee_meta[_NM_ENV_OFF] + 0.5, ti.i32)
+        env_w = ti.cast(nee_meta[_NM_ENV_W] + 0.5, ti.i32)
+        env_h = ti.cast(nee_meta[_NM_ENV_H] + 0.5, ti.i32)
+        env_intensity = nee_meta[_NM_ENV_INTENSITY]
+        cdf_h = ti.cast(nee_meta[_NM_ENV_CDF_H] + 0.5, ti.i32)
+        cdf_w = ti.cast(nee_meta[_NM_ENV_CDF_W] + 0.5, ti.i32)
         if num_hits > 0:
             g = ray_offset + rs_pix[r]
             f = time_start + g // pixels_per_frame
@@ -651,6 +1049,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
             layer_prev = rs_sca[r, 2]
             seam_t = rs_sca[r, 3]
             base_dist = rs_sca[r, 4]
+            prev_pdf = rs_sca[r, _SCA_PREV_PDF]
             bounces_left = rs_int[r, 0]
             processed = rs_int[r, 1]
             acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -766,6 +1165,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                 snrm = ti.math.vec3(0.0, 0.0, 0.0)
                 fnrm = ti.math.vec3(0.0, 0.0, 0.0)
                 shade_n = ti.math.vec3(0.0, 0.0, 0.0)
+                fn_len = 0.0
                 needs_normal = lit or authored or (metalness >= 0.0) \
                     or (T > 1e-4)
                 if needs_normal:
@@ -784,7 +1184,8 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                           tri_pos[tp, prim, 7],
                                           tri_pos[tp, prim, 8])
                         fnrm = (v1 - v0).cross(v2 - v0)
-                        if fnrm.norm() > 1e-12:
+                        fn_len = fnrm.norm()
+                        if fn_len > 1e-12:
                             fnrm = fnrm.normalized()
                     else:
                         snrm = _bezier_normal(f, prim, circuit_meta)
@@ -822,6 +1223,31 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                         for k in ti.static(range(3)):
                             thru[k] *= ti.exp(-tri_mat[tma, prim, sa + k] * seg)
 
+                # Lit-lobe energies + selection weights, hoisted ahead of the
+                # radiance block: the emission MIS weight and every NEE
+                # response need exactly the lobes the continuation samples.
+                e_diff_l = ti.math.vec3(0.0, 0.0, 0.0)
+                e_spec_l = ti.math.vec3(0.0, 0.0, 0.0)
+                e_trans_l = ti.math.vec3(0.0, 0.0, 0.0)
+                f0_l = ti.math.vec3(0.0, 0.0, 0.0)
+                wl_pass = 1.0 - alpha
+                wl_diff = 0.0
+                wl_spec = 0.0
+                wl_trans = 0.0
+                if lit:
+                    e_diff_l, e_spec_l, e_trans_l, f0_l = _pt_lit_lobes(
+                        pid, tri_mat, f, prim, albedo3, metalness, rough,
+                        ior, T, shade_n, rd)
+                    wl_diff = alpha * ti.max(e_diff_l[0],
+                                             ti.max(e_diff_l[1],
+                                                    e_diff_l[2]))
+                    wl_spec = alpha * ti.max(e_spec_l[0],
+                                             ti.max(e_spec_l[1],
+                                                    e_spec_l[2]))
+                    wl_trans = alpha * ti.max(e_trans_l[0],
+                                              ti.max(e_trans_l[1],
+                                                     e_trans_l[2]))
+
                 # ----------------------------------------------------------
                 # Local radiance of this crossing (emission semantics).
                 # ----------------------------------------------------------
@@ -832,7 +1258,29 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                             tri_mat[tm, prim, 1],
                                             tri_mat[tm, prim, 2]) \
                         * tri_mat[tm, prim, 3]
-                    direct = emissive
+                    # Emission reached through a sampled smooth lobe is
+                    # MIS-weighted against the NEE strategy that also covers
+                    # this triangle; camera rays, delta continuations and
+                    # emitters outside the table (or their un-sampled back
+                    # side) keep weight 1.
+                    w_emit = 1.0
+                    if (prev_pdf > 0.0) and (tri_emit_prob[prim] > 0.0) \
+                            and (fn_len > 1e-12):
+                        covered = 1
+                        cos_l = (-rd).dot(fnrm)
+                        if tri_mat[tm, prim, _MAT_ONE_SIDED] > 0.5:
+                            if cos_l <= 1e-6:
+                                covered = 0
+                        area_e = 0.5 * fn_len
+                        if covered == 1:
+                            c_l = ti.max(ti.abs(cos_l), 1e-4)
+                            pdf_ne = tri_emit_prob[prim] * (t_hit * t_hit) \
+                                / ti.max(area_e * c_l, 1e-12) \
+                                * ti.cast(n_ls, ti.f32)
+                            w_emit = prev_pdf * prev_pdf \
+                                / ti.max(prev_pdf * prev_pdf
+                                         + pdf_ne * pdf_ne, 1e-20)
+                    direct = emissive * w_emit
                     recv = 1
                     if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
                         if tri_mat[tm, prim, _MAT_NO_SHADOW_RECEIVE] > 0.5:
@@ -841,43 +1289,172 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                     if fnrm.dot(-rd) < 0.0:
                         offs_s = -fnrm
                     sorigin = hit_p + offs_s * (10.0 * min_hit_distance)
-                    for li in range(num_lights):
-                        ld, lc, spec_w, _frac = _light_eval(
-                            light_pos, light_col, f, li, hit_p, shade_n)
-                        if (lc[0] != 0.0) or (lc[1] != 0.0) or (lc[2] != 0.0):
-                            resp = _pt_direct_response(
-                                pid, tri_mat, f, prim, albedo3, shade_n,
-                                -rd, ld, lc, spec_w)
-                            vis3 = ti.math.vec3(1.0, 1.0, 1.0)
-                            if ti.static(shadows != 0):
-                                if (recv == 1) and (spec_w > 0.0):
-                                    u1 = _pt_rng(seed_root, key, s_index,
-                                                 processed * 64 + li, 0)
-                                    u2 = _pt_rng(seed_root, key, s_index,
-                                                 processed * 64 + li, 1)
-                                    wi, ldist, valid = _pt_light_sample_point(
-                                        light_pos, light_col, f, li, hit_p,
-                                        u1, u2)
-                                    if valid == 1 \
-                                            and shade_n.dot(wi) > 1e-4:
-                                        vis3 = _pt_nee_visibility(
-                                            refit, has_tri, has_bez,
-                                            sorigin, wi, ldist, f, ff,
-                                            pixel_size_per_t, base_dist,
-                                            layer_offset_triangles,
-                                            t_nodes, t_node_miss, t_leaf_prim,
-                                            t_leaf_tspan, t_first_leaf,
-                                            tri_pos, tri_colors, tri_uvs,
-                                            tri_tex_meta, textures, tri_extra,
-                                            num_colored_triangles,
-                                            b_nodes, b_node_miss, b_leaf_prim,
-                                            b_leaf_tspan, b_first_leaf,
-                                            circuit_meta, circuit_colors,
-                                            circuit_border_colors,
-                                            edges_2d, edge_accel)
-                                    elif valid == 1:
-                                        vis3 = ti.math.vec3(0.0, 0.0, 0.0)
-                            direct += resp * vis3
+                    # Deterministic fill from the direction-less rows -- the
+                    # literal ambient / hemisphere semantics of the stages,
+                    # never a visibility ray, never in the sampled table.
+                    if light_col.shape[2] > 3:
+                        tl_f = f % light_col.shape[0]
+                        for li in range(num_lights):
+                            lt_row = ti.cast(light_col[tl_f, li, 3] + 0.5,
+                                             ti.i32)
+                            if (lt_row == _LT_AMBIENT) \
+                                    or (lt_row == _LT_HEMISPHERE):
+                                ld, lc, spec_w, _frac = _light_eval(
+                                    light_pos, light_col, f, li, hit_p,
+                                    shade_n)
+                                if (lc[0] != 0.0) or (lc[1] != 0.0) \
+                                        or (lc[2] != 0.0):
+                                    direct += _pt_direct_response(
+                                        pid, tri_mat, f, prim, albedo3,
+                                        shade_n, -rd, ld, lc, spec_w)
+                    # Next-event estimation: ``pt_light_samples`` draws from
+                    # the power-weighted table (delta/area light rows,
+                    # emissive triangles, the environment map).
+                    if num_nee > 0:
+                        inv_ls = 1.0 / ti.cast(n_ls, ti.f32)
+                        pair_nee0 = PAIR_BOUNCE_BASE \
+                            + PAIRS_PER_BOUNCE * max_b
+                        for ls in range(n_ls):
+                            pair_sel = pair_nee0 \
+                                + 2 * (processed * n_ls + ls)
+                            u_sel = pt_sample_2d(seed_root, key, pair_sel,
+                                                 s_index)
+                            u_pt = pt_sample_2d(seed_root, key,
+                                                pair_sel + 1, s_index)
+                            entry, p_sel = _pt_pick_nee_entry(
+                                nee_cdf, num_nee, u_sel[0])
+                            kind = nee_ref[entry, 0]
+                            ref = nee_ref[entry, 1]
+                            contrib = ti.math.vec3(0.0, 0.0, 0.0)
+                            wi_vis = ti.math.vec3(0.0, 0.0, 0.0)
+                            ldist = 1e7
+                            if kind == _NEE_LIGHT_ROW:
+                                if p_sel > 1e-12:
+                                    ld, lc, spec_w, wi_v, ld_d, valid = \
+                                        _pt_nee_light_row(
+                                            light_pos, light_col, f, ref,
+                                            hit_p, shade_n,
+                                            u_pt[0], u_pt[1])
+                                    if (valid == 1) and (
+                                            (lc[0] != 0.0)
+                                            or (lc[1] != 0.0)
+                                            or (lc[2] != 0.0)):
+                                        contrib = _pt_direct_response(
+                                            pid, tri_mat, f, prim,
+                                            albedo3, shade_n, -rd, ld,
+                                            lc, spec_w) * (inv_ls / p_sel)
+                                        wi_vis = wi_v
+                                        ldist = ld_d
+                            elif kind == _NEE_EMISSIVE_TRI:
+                                p_tri = tri_emit_prob[ref]
+                                if p_tri > 1e-12:
+                                    pe, ne, area_s, ew0, ew1, ew2 = \
+                                        _pt_emissive_sample(
+                                            tri_pos, f, ref,
+                                            u_pt[0], u_pt[1])
+                                    to_e = pe - hit_p
+                                    d_e = to_e.norm()
+                                    if (d_e > 1e-4) and (area_s > 1e-12):
+                                        wi = to_e / d_e
+                                        cos_l = (-wi).dot(ne)
+                                        tm_e = f % tri_mat.shape[0]
+                                        if tri_mat[tm_e, ref,
+                                                   _MAT_ONE_SIDED] > 0.5:
+                                            if cos_l <= 1e-6:
+                                                cos_l = 0.0
+                                        c_l = ti.abs(cos_l)
+                                        if c_l > 1e-6:
+                                            le = ti.math.vec3(
+                                                tri_mat[tm_e, ref, 0],
+                                                tri_mat[tm_e, ref, 1],
+                                                tri_mat[tm_e, ref, 2]) \
+                                                * tri_mat[tm_e, ref, 3]
+                                            _ec, e_alpha = _tri_color_g(
+                                                0, f, ref, ew0, ew1, ew2,
+                                                tri_colors, tri_colors,
+                                                tri_uvs, tri_tex_meta,
+                                                textures,
+                                                num_colored_triangles)
+                                            f_cos, pdf_b = _pt_lit_f_pdf(
+                                                e_diff_l, e_spec_l, f0_l,
+                                                rough, shade_n, rd, wi,
+                                                wl_pass, wl_diff, wl_spec,
+                                                wl_trans)
+                                            if bounces_left <= 0:
+                                                pdf_b = 0.0
+                                            pdf_sa = p_tri * (d_e * d_e) \
+                                                / ti.max(area_s * c_l,
+                                                         1e-12)
+                                            pdf_h = pdf_sa \
+                                                * ti.cast(n_ls, ti.f32)
+                                            w_mis = pdf_h * pdf_h / ti.max(
+                                                pdf_h * pdf_h
+                                                + pdf_b * pdf_b, 1e-20)
+                                            contrib = f_cos * le * (
+                                                e_alpha * w_mis * inv_ls
+                                                / ti.max(pdf_sa, 1e-12))
+                                            wi_vis = wi
+                                            ldist = d_e
+                            else:  # _NEE_ENV
+                                if (env_share > 0.0) and (env_w > 0):
+                                    dir_e, pdf_e = _pt_env_sample(
+                                        env_cdf, cdf_h, cdf_w,
+                                        u_pt[0], u_pt[1])
+                                    pdf_sa = env_share * pdf_e
+                                    if (pdf_sa > 1e-12) \
+                                            and (shade_n.dot(dir_e)
+                                                 > 1e-6):
+                                        ec = _sample_env_map(
+                                            f, dir_e, env_off, env_w,
+                                            env_h, env_intensity,
+                                            textures)
+                                        f_cos, pdf_b = _pt_lit_f_pdf(
+                                            e_diff_l, e_spec_l, f0_l,
+                                            rough, shade_n, rd, dir_e,
+                                            wl_pass, wl_diff, wl_spec,
+                                            wl_trans)
+                                        if bounces_left <= 0:
+                                            pdf_b = 0.0
+                                        pdf_h = pdf_sa \
+                                            * ti.cast(n_ls, ti.f32)
+                                        w_mis = pdf_h * pdf_h / ti.max(
+                                            pdf_h * pdf_h
+                                            + pdf_b * pdf_b, 1e-20)
+                                        contrib = f_cos * ec * (
+                                            w_mis * inv_ls / pdf_sa)
+                                        wi_vis = dir_e
+                                        ldist = 1e7
+                            if (contrib[0] != 0.0) or (contrib[1] != 0.0) \
+                                    or (contrib[2] != 0.0):
+                                vis3 = ti.math.vec3(1.0, 1.0, 1.0)
+                                if ti.static(shadows != 0):
+                                    if recv == 1:
+                                        if shade_n.dot(wi_vis) > 1e-4:
+                                            vis3 = _pt_nee_visibility(
+                                                refit, has_tri, has_bez,
+                                                sorigin, wi_vis, ldist,
+                                                f, ff,
+                                                pixel_size_per_t,
+                                                base_dist,
+                                                layer_offset_triangles,
+                                                t_nodes, t_node_miss,
+                                                t_leaf_prim, t_leaf_tspan,
+                                                t_first_leaf,
+                                                tri_pos, tri_colors,
+                                                tri_uvs, tri_tex_meta,
+                                                textures, tri_extra,
+                                                num_colored_triangles,
+                                                b_nodes, b_node_miss,
+                                                b_leaf_prim, b_leaf_tspan,
+                                                b_first_leaf,
+                                                circuit_meta,
+                                                circuit_colors,
+                                                circuit_border_colors,
+                                                edges_2d, edge_accel)
+                                        else:
+                                            vis3 = ti.math.vec3(0.0, 0.0,
+                                                                0.0)
+                                direct += contrib * vis3
                     local = ti.math.vec4(direct[0], direct[1], direct[2],
                                          color[3])
                 elif authored:
@@ -952,35 +1529,12 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                 if needs_normal and (bounces_left > 0):
                     n_dot_v = ti.max(shade_n.dot(-rd), 1e-4)
                     if lit:
-                        if (pid == _MID_LAMBERT) or (pid == _MID_PHONG):
-                            # Pure-diffuse indirect transport: the lambert
-                            # stage has no specular lobe at all, and phong's
-                            # Blinn highlight responds to delta lights via
-                            # NEE only (an indirect GGX proxy for it would
-                            # add energy its stage never had).
-                            e_diff = albedo3
-                        else:
-                            tm2 = f % tri_mat.shape[0]
-                            met = ti.math.clamp(ti.max(metalness, 0.0),
-                                                0.0, 1.0)
-                            diel_f0 = ti.math.vec3(0.04, 0.04, 0.04)
-                            if pid == _MID_PHYSICAL:
-                                ior_m = tri_mat[tm2, prim, 12]
-                                ratio = (ior_m - 1.0) \
-                                    / ti.max(ior_m + 1.0, 1e-4)
-                                diel_f0 = ti.math.vec3(
-                                    tri_mat[tm2, prim, 14],
-                                    tri_mat[tm2, prim, 15],
-                                    tri_mat[tm2, prim, 16]) \
-                                    * (ratio * ratio * tri_mat[tm2, prim, 13])
-                            f0 = diel_f0 * (1.0 - met) + albedo3 * met
-                            e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
-                            _R3, diel_pass = _material_reflectance(
-                                rd, shade_n, ti.max(metalness, 0.0), ior,
-                                albedo3, T)
-                            e_trans = albedo3 * (diel_pass * T)
-                            e_diff = albedo3 * ((1.0 - met) * (1.0 - T)) \
-                                * (one3 - e_spec)
+                        # The hoisted lobes (the same values every NEE
+                        # response and MIS pdf above used).
+                        e_diff = e_diff_l
+                        e_spec = e_spec_l
+                        e_trans = e_trans_l
+                        f0 = f0_l
                     elif authored:
                         e_diff = albedo3
                     elif metalness >= 0.0:
@@ -1003,7 +1557,12 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                 w_sum = w_pass + w_diff + w_spec + w_trans
                 if w_sum <= 1e-6:
                     # Fully absorbed (e.g. an opaque unlit surface): nothing
-                    # continues and the background must NOT show through.
+                    # continues and the background must NOT show through --
+                    # in color or in coverage, so the camera-segment
+                    # transparency drops to zero exactly as a scatter's
+                    # would (the deterministic composite reads such a hit
+                    # as fully opaque).
+                    t_alpha = 0.0
                     absorbed = True
                     done = True
                     break
@@ -1044,6 +1603,15 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                         if fnrm.dot(new_rd) < 0.0:
                             offs = -fnrm
                         new_ro = hit_p + offs * (10.0 * min_hit_distance)
+                        # MIS state: only a lit vertex ran the NEE block, so
+                        # only its sampled direction carries a pdf for the
+                        # next emitter hit to weight against.
+                        prev_pdf = 0.0
+                        if lit:
+                            _fc_d, prev_pdf = _pt_lit_f_pdf(
+                                e_diff_l, e_spec_l, f0_l, rough, shade_n,
+                                rd, new_rd, wl_pass, wl_diff, wl_spec,
+                                wl_trans)
                     elif pick < w_pass + w_diff + w_spec:
                         p_sel = w_spec / w_sum
                         # VNDF sample about the shading normal.
@@ -1079,6 +1647,12 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                                 thru[3] * gmean)
                             offs = fnrm if fnrm.dot(new_rd) > 0.0 else -fnrm
                             new_ro = hit_p + offs * (10.0 * min_hit_distance)
+                            prev_pdf = 0.0
+                            if lit:
+                                _fc_s, prev_pdf = _pt_lit_f_pdf(
+                                    e_diff_l, e_spec_l, f0_l, rough,
+                                    shade_n, rd, new_rd, wl_pass, wl_diff,
+                                    wl_spec, wl_trans)
                     else:
                         p_sel = w_trans / w_sum
                         if htype == 1:
@@ -1099,6 +1673,9 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                             thru[1] * tint[1],
                                             thru[2] * tint[2],
                                             thru[3] * gmean)
+                        # Refraction / a tinted pane is a delta lobe: what
+                        # it finds next is not MIS-covered by any NEE.
+                        prev_pdf = 0.0
                     if ok == 0:
                         # Rejected sample direction: absorbed, not escaped.
                         absorbed = True
@@ -1157,6 +1734,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
             rs_sca[r, 2] = layer_prev
             rs_sca[r, 3] = seam_t
             rs_sca[r, 4] = base_dist
+            rs_sca[r, _SCA_PREV_PDF] = prev_pdf
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
@@ -1168,14 +1746,80 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                     # A ceiling-truncated path keeps its leftover, matching
                     # the wavefront's documented degrade.
                     leftover = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+                if (env_w > 0) and (ti.max(leftover[0],
+                                           ti.max(leftover[1],
+                                                  leftover[2])) > 0.0):
+                    # Environment escape: the leftover throughput samples
+                    # the map in the ray's own direction (mirrors and GI
+                    # see the sky, exactly the deterministic wavefront's
+                    # retire rule) instead of showing the prefilled
+                    # background, and the sample reads opaque. A smooth
+                    # BSDF continuation MIS-weights against the env NEE
+                    # that also covered its direction.
+                    ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                                         env_intensity, textures)
+                    w_env = 1.0
+                    if (env_share > 0.0) and (prev_pdf > 0.0):
+                        p_e = env_share * _pt_env_pdf_sa(
+                            rd, env_cdf, cdf_h, cdf_w) \
+                            * ti.cast(n_ls, ti.f32)
+                        w_env = prev_pdf * prev_pdf \
+                            / ti.max(prev_pdf * prev_pdf + p_e * p_e,
+                                     1e-20)
+                    env_add = ti.math.vec3(leftover[0] * ec[0],
+                                           leftover[1] * ec[1],
+                                           leftover[2] * ec[2]) * w_env
+                    if (bounces_left < max_b) and (firefly_clamp > 0.0):
+                        env_add = ti.min(env_add,
+                                         ti.math.vec3(firefly_clamp,
+                                                      firefly_clamp,
+                                                      firefly_clamp))
+                    for k in ti.static(range(3)):
+                        pt_acc[r, k] += env_add[k]
+                    leftover = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+                    t_alpha = 0.0
                 for k in ti.static(range(4)):
                     pt_acc[r, _PT_ACC_LEFTOVER + k] = leftover[k]
                 pt_acc[r, _PT_ACC_ALPHA] = t_alpha
         else:
-            # No surface this segment: the path escapes to the background.
+            # No surface this segment: the path escapes to the background
+            # (or, with an environment map, to the map in its direction).
+            leftover_e = ti.math.vec4(pt_thru[r, 0], pt_thru[r, 1],
+                                      pt_thru[r, 2], pt_thru[r, 3])
+            t_alpha_e = rs_sca[r, 0]
+            if (env_w > 0) and (ti.max(leftover_e[0],
+                                       ti.max(leftover_e[1],
+                                              leftover_e[2])) > 0.0):
+                g = ray_offset + rs_pix[r]
+                f = time_start + g // pixels_per_frame
+                rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+                prev_pdf_e = rs_sca[r, _SCA_PREV_PDF]
+                ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                                     env_intensity, textures)
+                w_env = 1.0
+                if (env_share > 0.0) and (prev_pdf_e > 0.0):
+                    p_e = env_share * _pt_env_pdf_sa(rd, env_cdf,
+                                                     cdf_h, cdf_w) \
+                        * ti.cast(n_ls, ti.f32)
+                    w_env = prev_pdf_e * prev_pdf_e \
+                        / ti.max(prev_pdf_e * prev_pdf_e + p_e * p_e,
+                                 1e-20)
+                env_add = ti.math.vec3(leftover_e[0] * ec[0],
+                                       leftover_e[1] * ec[1],
+                                       leftover_e[2] * ec[2]) * w_env
+                if (rs_int[r, 0] < rs_int[r, 4]) \
+                        and (firefly_clamp > 0.0):
+                    env_add = ti.min(env_add,
+                                     ti.math.vec3(firefly_clamp,
+                                                  firefly_clamp,
+                                                  firefly_clamp))
+                for k in ti.static(range(3)):
+                    pt_acc[r, k] += env_add[k]
+                leftover_e = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+                t_alpha_e = 0.0
             for k in ti.static(range(4)):
-                pt_acc[r, _PT_ACC_LEFTOVER + k] = pt_thru[r, k]
-            pt_acc[r, _PT_ACC_ALPHA] = rs_sca[r, 0]
+                pt_acc[r, _PT_ACC_LEFTOVER + k] = leftover_e[k]
+            pt_acc[r, _PT_ACC_ALPHA] = t_alpha_e
             rs_int[r, 2] = _DONE
 
 
