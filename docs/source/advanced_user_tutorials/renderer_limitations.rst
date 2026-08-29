@@ -221,9 +221,12 @@ Three further consequences of the split, not covered there:
   machine that cannot fetch them renders without denoising after one warning.
   Flat 2-D content composites deterministically inside the path tracer (zero
   variance), so vector graphics and text stay exact with or without it.
-* Denoised or not, a path-traced frame is *reproducible*: every sample is a
-  pure function of the pixel, frame and sample index, so re-rendering the
-  same scene gives an identical frame on the same machine.
+* Path-traced output is *stochastic*. Two renders of the same scene converge
+  to the same image but need not be identical frame for frame, and the
+  renderer makes no byte-identity promise. Raise ``samples_per_pixel`` (or
+  leave the denoiser on) if residual noise is visible;
+  ``SETTINGS.raytracing.experimental.pt_seed`` re-rolls the noise without
+  changing what the render converges to.
 
 Within the deterministic renderer: two paths
 --------------------------------------------
@@ -992,6 +995,11 @@ plan of record for that remaining scope.
 
 Determinism and reproducibility
 ===============================
+
+This section is about the **deterministic** renderer (``samples_per_pixel ==
+1``). The path tracer is a Monte Carlo estimator and promises only that it
+converges to the right image -- not that two runs of it agree. Nothing below
+applies to it.
 
 The deterministic renderer is designed to render the same frame the same way
 every time, and it does on the paths the project measures. Two caveats:

@@ -4,13 +4,17 @@ Two layers:
 
 * **Sampler tests** drive ``pt_sampler_probe`` directly -- the Sobol-Owen
   sampler is a pure function of ``(seed, frame, pixel, pair, sample index)``,
-  so its stratification, reproducibility and decorrelation are testable
-  without the scene pipeline.
+  so its stratification, purity and decorrelation are testable without the
+  scene pipeline. That purity is a sampling-quality property (stratification,
+  and independence from how a render was split into tiles and waves); the
+  renderer does **not** promise that two runs produce identical frames, and
+  nothing here asserts it (see ``DESIGN_path_tracer_roadmap.md``).
 * **Render tests** drive the real dispatch through ``Scene.save_frame``:
   the path tracer's deterministic transparency must reproduce the
   deterministic renderer's composite on unlit 2-D content away from edges
   (edges legitimately differ: jittered-sample anti-aliasing vs analytic
-  coverage), and a path-traced frame must be byte-reproducible run-to-run.
+  coverage), and its estimators must land on independently computed
+  reference integrals.
 
 The whole module sits outside the fast suite: the render tests compile the
 path tracer's kernel variants, tens of seconds charged to whichever test
@@ -193,19 +197,6 @@ def test_path_traced_transparency_matches_deterministic_compositing(tmp_path):
         f"path-traced interior deviates from the deterministic composite by "
         f"{int(max_err)} (expected exact up to rounding); "
         f"{int((err[flat] > 1).sum())} of {int(flat.sum())} flat pixels off"
-    )
-
-
-def test_path_traced_frame_is_reproducible(tmp_path):
-    """Two renders of the same frame are byte-identical: the sampler is a
-    pure function of (seed, frame, pixel, pair, sample) and accumulation is
-    atomic-free with a fixed summation order.
-    """
-    a = _read(_render_stack_frame(tmp_path, "repro_a.png", 8))
-    b = _read(_render_stack_frame(tmp_path, "repro_b.png", 8))
-    assert torch.equal(a, b), (
-        f"path-traced output changed between identical runs "
-        f"(max diff {int((a - b).abs().max())})"
     )
 
 
@@ -414,34 +405,6 @@ def test_indirect_light_bleeds_color(tmp_path):
     lit = gained[..., 2] > 4
     assert float(gained[..., 2][lit].mean() - gained[..., 0][lit].mean()) > 2, (
         "indirect light arrived achromatic; the red wall did not tint it"
-    )
-
-
-def test_lit_scene_render_is_reproducible(tmp_path):
-    """The full Stage-2 transport (NEE jitter, lobe choices, RR) draws every
-    random number from pure functions of the path identity, so a lit GI
-    render reproduces byte-for-byte, exactly like the unlit stack.
-    """
-
-    def build(scene):
-        scene.set_background(BLACK)
-        Scene.clear_light_sources()
-        PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(animate=False)
-        floor = Prism(dimensions=(6.0, 6.0, 0.1))
-        floor.set_material(MeshLambertMaterial(color=WHITE))
-        floor.spawn(animate=False)
-        ball = Sphere(radius=0.7)
-        ball.set_material(
-            MeshStandardMaterial(color=GREEN, metalness=0.8, roughness=0.3)
-        )
-        ball.move(OUT * 1.0)
-        ball.spawn(animate=False)
-
-    a = _render_scene(tmp_path, "lit_a.png", build, 12, shadows=True)
-    b = _render_scene(tmp_path, "lit_b.png", build, 12, shadows=True)
-    assert torch.equal(a, b), (
-        f"lit path-traced output changed between identical runs "
-        f"(max diff {int((a - b).abs().max())})"
     )
 
 
@@ -697,28 +660,6 @@ def test_env_map_lighting_matches_the_reference_integral(tmp_path):
         f"BSDF-only env arm off the irradiance reference: measured "
         f"{measured_b:.1f}, reference {reference:.1f} -- the two strategies "
         f"no longer estimate the same integral"
-    )
-
-
-def test_env_map_render_is_reproducible(tmp_path):
-    """Environment sampling (CDF draws, escape folds, MIS weights) stays a
-    pure function of the path identity.
-    """
-    env = _sun_env_map()
-
-    def build(scene):
-        scene.set_background(BLACK)
-        Scene.clear_light_sources()
-        scene.set_environment_map(env, ambient=False)
-        floor = Prism(dimensions=(5.0, 5.0, 0.2))
-        floor.set_material(MeshLambertMaterial(color=WHITE))
-        floor.spawn(animate=False)
-
-    a = _render_scene(tmp_path, "env_repro_a.png", build, 8, shadows=True)
-    b = _render_scene(tmp_path, "env_repro_b.png", build, 8, shadows=True)
-    assert torch.equal(a, b), (
-        f"env-lit path-traced output changed between identical runs "
-        f"(max diff {int((a - b).abs().max())})"
     )
 
 

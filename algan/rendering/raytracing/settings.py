@@ -140,9 +140,9 @@ post_process_tonemap = env_flag("ALGAN_POST_PROCESS_TONEMAP", True)
 pt_seed = env_int("ALGAN_PT_SEED", 0)
 # Wave size of the path tracer's sample loop: how many of a pixel's samples
 # are in flight per tile pass. 0 sizes the wave from the arena's free bytes
-# (path_tracer._pt_tile_shape); a fixed value pins the accumulation grouping,
-# which pins byte-level reproducibility across machines with different
-# memory budgets.
+# (path_tracer._pt_tile_shape); a fixed value pins the accumulation grouping
+# regardless of the memory budget, which is what an A/B comparison of two
+# kernel variants wants (see agent_guidance/memory_perf.md).
 pt_wave_samples = env_int("ALGAN_PT_WAVE", 0)
 # Bounce ordinal at which the path tracer starts Russian roulette: earlier
 # bounces always continue (low-order transport carries most of the image),

@@ -143,6 +143,12 @@ of record — read it before starting or resuming optimization work, and update 
 rules, the one shipped exception to byte-identity, and the A/B-fixture constraint on reflective scenes are in
 `agent_guidance/memory_perf.md`.
 
+**The path tracer (`samples_per_pixel > 1`) does not promise byte-identical frames** — only that it converges to the
+right image. Byte-identity still holds today for anything that does not touch sampling, and remains the standard there;
+a change that *does* alter sampling is validated statistically against a high-spp reference instead. Both recipes are in
+`agent_guidance/memory_perf.md`; the reasoning, and what dropping the constraint unlocks, is in
+`algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md`.
+
 ### Pull requests
 **Write the title and body yourself, every time, and never paste a generated summary into them.** The UI's auto-generated description has been wrong on every PR this repo has had, and wrong in a consistent way: it reads the diff and narrates it back. That produces text nobody can trust — it invents novelty (`texture_grid_size` had existed for ages, but the generated body announced that 2-D shapes "could only be one flat colour" before the change), promotes `_`-prefixed internals into the feature list as if users could call them, and spends its length restating what the diff already shows while omitting the two things a reviewer actually needs: **why**, and **whether rendered output moved**.
 

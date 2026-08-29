@@ -23,16 +23,18 @@ Structure per chunk::
 
     finalize_samples(accum) -> frame buffer   # caller (tracer.render_chunk)
 
-One wave holds one path per (tile pixel, wave sample) so every path owns an
-exclusive accumulator row: accumulation is plain stores in a fixed order (no
-atomics), which makes path-traced output reproducible run-to-run for a given
-configuration. The tile/wave split itself is sized from the arena's free
-bytes, so byte-identity holds per machine + memory budget, like the
-deterministic renderer's batch windows.
+One wave holds one path per (tile pixel, wave sample), so every path owns an
+exclusive accumulator row and accumulation is plain stores rather than
+atomics. That is a property of the current layout, **not** a contract: the
+renderer promises convergence, not byte-identical frames, and a future
+feature that needs paths to split (see ``DESIGN_path_tracer_roadmap.md``
+section 8) is free to trade this layout for a shared pool with atomic
+accumulation.
 
-Paths never split (transparency continues in place; refraction, when it
-lands, is a stochastic lobe choice), so there is no shared continuation pool,
-no overflow retry, and compaction may always scan just the active list.
+Paths do not split today (transparency continues in place; a dielectric
+picks reflect-or-refract stochastically), so there is no shared continuation
+pool, no overflow retry, and compaction may always scan just the active
+list.
 """
 
 from __future__ import annotations
@@ -645,8 +647,7 @@ def path_trace_render(
                     # Fold this wave's per-path guide sums into the chunk's
                     # per-pixel sums. Slot r = wave_sample * tp + tile_pixel
                     # (pt_generate/pt_reduce's layout), so a view + sum is
-                    # the whole reduction; one tensor op per wave keeps the
-                    # summation order fixed, preserving reproducibility.
+                    # the whole reduction: one tensor op per wave.
                     wave_sums = pt_aov[:slots].view(sw, tp, PT_AOV_WIDTH).sum(0)
                     seg = slice(tile_start, tile_start + tp)
                     aov_albedo_flat[seg] += wave_sums[:, 0:3]

@@ -213,10 +213,11 @@ only pixels can see.
 | `lit_and_shadowed` | NEE direct lighting with shadows, the sampled emitter table, GGX metal, and diffuse colour bleed. |
 | `environment_and_refraction` | Environment-map NEE and escape, mirror reflection, and refraction through the nested-IOR stack. |
 
-Path-traced output is byte-reproducible per machine + memory budget, so the
-same tolerance applies as everywhere else; like the full-render suite the
-baselines are per machine, and the suite skips in CI
-(`ALGAN_RUN_PATH_TRACED=1` overrides).
+The path tracer promises convergence, not byte-identical frames, but its
+accumulation happens to be atomic-free and its sampler is a pure function of
+path identity, so at a pinned memory budget the same tolerance applies as
+everywhere else. Like the full-render suite the baselines are per machine,
+and the suite skips in CI (`ALGAN_RUN_PATH_TRACED=1` overrides).
 
 The committed `expected_outputs_cpu/` set was rendered on a cloud CPU
 container. **The CUDA set does not exist yet** — creating it takes a CUDA

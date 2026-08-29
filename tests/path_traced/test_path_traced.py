@@ -8,10 +8,13 @@ cannot bake a wrong baseline). This module renders each at a deliberately
 tiny resolution and compares every frame against the checked-in baseline in
 ``expected_outputs_<device>/``.
 
-Path-traced output is byte-reproducible per machine + memory budget (the
-Sobol-Owen sampler is a pure function of path identity and accumulation is
-atomic-free; ``available_memory_override`` pins the batching), so the same
-tolerance as the other render suites applies. Like ``tests/full_renders``,
+The path tracer promises convergence, not byte-identical frames. It happens
+to be stable enough to pixel-compare today -- the Sobol-Owen sampler is a
+pure function of path identity, accumulation is atomic-free while no path
+splits, and ``available_memory_override`` pins the batching -- so the same
+tolerance as the other render suites applies. Should a future change make it
+genuinely stochastic run-to-run, this suite moves to a statistical criterion
+rather than acquiring a reproducibility requirement. Like ``tests/full_renders``,
 the baselines are per *machine*: this suite gates locally and on whichever
 machine rendered its baselines, and skips in CI.
 
@@ -24,8 +27,7 @@ committing it::
     ALGAN_UPDATE_PATH_TRACED_BASELINES=1 .venv/Scripts/python.exe -m pytest \
         tests/path_traced -q
 
-Render twice and commit the second run (and check the two agree byte-for-byte
--- the reproducibility contract). On Windows, render work must run one
+Render twice and commit the second run. On Windows, render work must run one
 process at a time: a killed run orphans child processes that keep the output
 mp4s locked.
 """
@@ -141,8 +143,8 @@ def _pipe_output_to_log(pytestconfig):
 
 # Pinned for the same reason as the other render suites (see
 # tests/full_renders/test_full_renders.py): the frame-window split feeds the
-# merge order and, for the path tracer, the tile/wave split -- both of which
-# byte-reproducibility is defined against.
+# merge order and, for the path tracer, the tile/wave split -- pinning both is
+# what lets a stochastic renderer be pixel-compared at all.
 AVAILABLE_MEMORY_OVERRIDE = 1536 * 1024 * 1024
 
 # Baselines are per machine, like the full-render suite's (fp32 through a

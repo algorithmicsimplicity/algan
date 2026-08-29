@@ -27,8 +27,9 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
 ``pt_reduce``
     Folds a wave's per-path accumulators into the chunk's per-pixel sample
     sums (``accum``), applying leftover throughput to the background. One
-    thread per pixel sums its own wave samples in a fixed order, so
-    accumulation uses no atomics and a render is reproducible run-to-run.
+    thread per pixel sums its own wave samples, so accumulation needs no
+    atomics -- a property of the no-splitting layout, not a promise about
+    frames (see DESIGN_path_tracer_roadmap.md section 8).
 
 ``finalize_samples`` (in ``raytrace_kernels_taichi``) then averages ``accum``
 into the frame buffer exactly as it always has.
@@ -1969,8 +1970,8 @@ def pt_reduce(tile_start: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
     """Fold one wave's per-path rows into the chunk's per-pixel sample sums.
 
     One thread per tile pixel walks its own wave samples in index order --
-    exclusive slots, no atomics, a fixed summation order -- which is what
-    makes path-traced output reproducible run-to-run. The background
+    exclusive slots, no atomics, a fixed summation order, because no path
+    splits today (not because frames are promised to match). The background
     (prefilled into ``out`` at byte scale) enters here through each path's
     leftover throughput; a sample's alpha is ``1 - t_a * (1 - bg_alpha)``
     where ``t_a`` is the deterministically-composited camera-segment

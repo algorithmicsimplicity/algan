@@ -108,10 +108,11 @@ estimate them by sampling. The path tracer renders at output resolution and
 anti-aliases by jittering its samples inside each pixel, so
 ``super_sampling_anti_aliasing`` does not apply to it.
 
-Path-traced output is reproducible: every sample is a pure function of the
-pixel, frame and sample index, so a re-render of the same scene is identical.
 ``SETTINGS.raytracing.experimental.pt_seed`` changes the noise pattern without
-changing what converges.
+changing what the render converges to -- useful for checking that a feature
+you are looking at is real and not a shape in the noise. The path tracer does
+not promise that two renders of the same scene produce identical frames; it
+promises they converge to the same image.
 
 .. _renderer-capabilities:
 

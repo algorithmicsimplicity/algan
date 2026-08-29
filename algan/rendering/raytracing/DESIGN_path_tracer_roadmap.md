@@ -39,12 +39,30 @@ do, and each is reversible if the trade stops paying.
 
 These are not preferences; each is load-bearing and tested.
 
-1. **Byte-reproducibility per machine + memory budget.** Every random decision
-   is a pure function of path identity — `(pt_seed, frame, pixel, dimension
+1. **Sampler purity — but *not* byte-reproducibility.** Every random decision
+   is a pure function of path identity: `(pt_seed, frame, pixel, dimension
    pair, sample index)` for Sobol pairs, plus the peel step for the hash RNG.
-   No atomics; accumulation in a fixed order (`pt_reduce`, and the host-side
-   AOV reduction). Anything stochastic a new feature adds must draw from new,
-   documented dimension pairs, never from shared mutable state.
+   Anything stochastic a new feature adds must draw from new, documented
+   dimension pairs, never from shared mutable state.
+
+   Purity is kept for what it buys *sampling*: stratification (a pixel's
+   sample set is a proper low-discrepancy prefix, which is what makes
+   progressive waves and future adaptive sampling sound), and independence
+   from how a render was split into tiles, waves, chunks and batch windows —
+   which matters because those splits come from the memory budget and change
+   under the OOM retry. It is not kept in order to make two runs match.
+
+   **The renderer does not promise byte-identical frames** (decided
+   2026-08-29; the user-facing guarantee was withdrawn from
+   `performance_and_quality.rst` and `renderer_limitations.rst`, and the
+   three render-level reproducibility tests were deleted). It promises
+   convergence. Concretely: accumulation may use atomics, paths may split,
+   and summation order is not fixed by contract. None of that is *used*
+   today — no path splits, so `pt_reduce` and the AOV reduction stay
+   atomic-free and order-fixed, and frames do in fact reproduce — which is
+   why `tests/path_traced/` can still pixel-compare at a pinned memory
+   budget. Treat that as a convenience the current layout happens to
+   provide, not as an invariant to defend. §8 is what it bought.
 2. **The wavefront shape.** One traverse kernel shared with the deterministic
    renderer; `pt_shade` drains `kbuf`-sized hit batches; per-path state lives
    in `rs_ro/rs_rd/rs_sca/rs_int/rs_pix` + `pt_thru/pt_acc/pt_aov`. One
@@ -86,8 +104,8 @@ lights at all, and biased-away caustics from area emitters.
   crosses tagged transmissive geometry, Newton-iterate the refraction point on
   the specular manifold until the bent chain connects vertex → glass → light.
   This is the minimal production-grade addition and the recommended target:
-  it is *deterministic given the path* (no new randomness → reproducibility
-  free), it lands inside `pt_shade`'s existing NEE loop, and its
+  it is *deterministic given the path* (no new randomness, so it costs the
+  sampler nothing), it lands inside `pt_shade`'s existing NEE loop, and its
   contributions arrive as direct light — outside the firefly clamp, so they
   are not biased away. Needs: smooth normals + derivatives on the caster
   (`tri_norm` exists), a bounded iteration loop with a fail-closed fallback
@@ -101,9 +119,8 @@ lights at all, and biased-away caustics from area emitters.
   deterministic spatial hash, gathered at diffuse vertices. Handles every
   caustic class, but it is a second transport pipeline: emitter sampling from
   the light side, photon storage in the arena, radius/bias control, and a new
-  kernel family. Reproducibility survives if photon count and hash order are
-  fixed, but the memory model and the batch-window structure both grow real
-  complexity.
+  kernel family. The memory model and the batch-window structure both grow
+  real complexity.
 * **BDPT / VCM.** Correct and general, and the worst fit: path identity (the
   purity the sampler contract rests on) becomes genuinely hard to preserve
   across connection strategies, and the wavefront state layout would need a
@@ -151,10 +168,10 @@ Sketch, staying inside the contract:
   uniform behaviour, the byte-parity escape hatch every PT feature has
   shipped with).
 
-**Verification:** byte-reproducibility at fixed settings; an all-unlit 2-D
-scene terminating at the floor count (assert via the plan's sample tally);
-equal-error-vs-equal-time versus uniform sampling on the `lit_and_shadowed`
-suite scene.
+**Verification:** an all-unlit 2-D scene terminating at the floor count
+(assert via the plan's sample tally); equal-error-vs-equal-time versus
+uniform sampling on the `lit_and_shadowed` suite scene; the 2-D composite
+still exact (contract 4).
 
 
 ## 3. Temporal stability
@@ -170,7 +187,7 @@ residual noise re-rolls per frame — shimmer on lit 3-D content at low spp.
   `pt_temporal_seed` mode that drops `frame` from the pair key so every frame
   reuses one sample set: static regions become perfectly stable (identical
   estimates), moving regions re-randomize through the geometry itself. One
-  line in `_pt_key`, no new buffers, reproducibility untouched. Trade-off to
+  line in `_pt_key`, no new buffers, sampler purity untouched. Trade-off to
   document: correlated error reads as a fixed noise "texture" rather than
   shimmer — usually the better artifact for animation, but it is a choice,
   hence a switch rather than a new default.
@@ -187,8 +204,10 @@ residual noise re-rolls per frame — shimmer on lit 3-D content at low spp.
   batch windows, and the OOM chunk-retry must roll it back — precedent exists
   (`truncation.py`'s snapshot/restore does exactly this for its counters).
 
-**Verification:** tier 1 — two renders of a static scene at adjacent frames
-byte-identical in static regions; tier 2 — temporal variance of a fixed
+**Verification:** tier 1 — adjacent frames of a static scene agreeing in
+static regions (that is the *point* of the mode, and is a claim about two
+frames of one render, not about two runs); tier 2 — temporal variance of a
+fixed
 camera path measurably below the per-frame arm at equal spp, with no ghosting
 on the `translucency_and_order` suite scene (2-D content must pass through
 the temporal filter unchanged).
@@ -235,7 +254,7 @@ pairs `2 + 6b + 4, 5` are reserved for exactly this.
 **Verification:** a homogeneous slab against the closed-form
 single-scatter + attenuation solution (the codebase's torch-quadrature
 reference-test pattern from Stage 3); a dense-medium cube converging to its
-diffusion limit; byte-reproducibility throughout.
+diffusion limit.
 
 
 ## 5. One material, two direct-lighting responses
@@ -354,8 +373,8 @@ count never is.
 
 **Verification:** an emissive-mesh scene at equal time against the flat CDF
 (the `_pt_furnace_check` / reference-integral pattern from Stage 3 gives the
-ground truth); delta-light direct lighting byte-identical between
-`pt_light_samples = 1` and a full sum once the table is split.
+ground truth); delta-light direct lighting invariant to `pt_light_samples`
+once the table is split, since summing the rows makes that term exact.
 
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
@@ -376,7 +395,7 @@ dimension index. But Stage 3 solved exactly that problem for next-event
 estimation by indexing pairs on `processed` (`2 + 6B + 2(cL + s)`). The same
 trick applies here: give the lobe select its own crossing-indexed pair after
 the NEE block. Cost is a pair-index constant and one `pt_sample_2d` call;
-reproducibility is unaffected (both draws are pure functions of the same key),
+sampler purity is unaffected (both draws are pure functions of the same key),
 though it does move every existing sample, so it re-baselines
 `tests/path_traced/`.
 
@@ -402,34 +421,101 @@ high-frequency-weighted; equal-spp perceptual comparison on the
 `lit_and_shadowed` suite scene.
 
 
-## 8. Efficiency-aware Russian roulette, and path guiding
+## 8. Splitting, continuation pools, and efficiency-aware RR
 
-Both are survey Stage 4 items. Neither is proposed for now; this section
-records the reasoning so the next person does not re-derive it.
+Byte-reproducibility used to be contract 1, and it made this section short:
+splitting was ruled out architecturally, so EARS was ruled out with it. That
+constraint is gone (see contract 1), so this is now an open engineering
+question rather than a closed one. What follows is the ranking, because "add
+a continuation pool" is three different changes with three different payoffs.
 
-**Russian roulette** is the classic throughput form: survive with probability
-`max(throughput)` past `pt_rr_start_bounce`, floored at 0.05, no splitting
-anywhere. EARS (Rath et al. 2022) learns per-region RR *and splitting* factors
-that provably maximise efficiency, and is the survey's recommended modern
-choice. The blocker here is not the algorithm but the architecture: splitting
-means one path becoming several, and the path tracer's byte-reproducibility
-rests on one path per pixel per wave owning an exclusive accumulator slot with
-no atomics (contract 1, and the reason the design has no shared continuation
-pool). Splitting would need either a per-slot sub-accumulator with a fixed
-reduction order, or the shared pool the deterministic renderer's refraction
-path already has — the latter is precedent, but it reintroduces the overflow
-and retry machinery the PT was deliberately built without. Worth revisiting
-only with a measured scene where RR is the bottleneck.
+**What a pool is for.** Today one slot holds one path and every path owns an
+exclusive accumulator row, so a path can only ever *continue* — never fork.
+Three separate things want forking, and they are worth separating because the
+cheapest is not the famous one:
 
-**Path guiding** (SD-tree, Müller et al. 2017) is deferred on the survey's own
-advice: it pays off on indirect-dominated transport, and says outright that
-surface-dominated scenes with simple lighting should stop before it. Algan's
-workload — explanatory 3-D over a small light rig, much of it 2-D content that
-is zero-variance by construction — is that case. The order of operations if
-this ever inverts is: adaptive sampling (§2) first, since it targets the same
-"spend samples where the error is" goal for a fraction of the complexity and
-suits Algan's variance distribution far better; guiding only if adaptive
-sampling lands and indirect noise is still the limit.
+1. **A shadow-ray queue.** NEE visibility currently runs *inline* inside
+   `pt_shade`: `_pt_nee_visibility` calls the shared shadow walk in the middle
+   of the shade kernel, once per NEE sample per crossing. That is the one
+   place `pt_shade` still behaves like a megakernel, and it is exactly the
+   pattern the wavefront literature exists to remove — the shade kernel
+   carries the traversal's register pressure and its divergence on every
+   thread, including the threads doing no shading at all. Deferring shadow
+   rays into a queue traversed by their own kernel is the most
+   architecturally-aligned change available, and it needs no accumulator
+   change at all (a visibility result comes back to the path that asked for
+   it). It is also the prerequisite for raising `pt_light_samples` or
+   `pt_light_samples`-style allocation without the cost landing inside
+   `pt_shade`.
+
+   Caveat, and the reason this is "measure first" rather than "do this next":
+   the deterministic renderer keeps its shadow walks inline too, and that was
+   a considered choice there. The queue trades kernel simplicity for a
+   round-trip through global memory per shadow ray, and at Algan's light
+   counts the inline version may well win. Profile before building it.
+
+2. **A dielectric split pool.** At a glass surface the path picks
+   reflect-or-refract stochastically (`w_spec` vs `w_trans`). The
+   deterministic renderer *splits* there — that is what `refraction_flag` and
+   `refract_initial_pool_ratio` are for. So glass is noisier under the path
+   tracer than under the deterministic renderer at comparable cost, on a
+   headline Algan feature (`reflections_and_glass.rst`), and the fix is the
+   textbook one: at the first dielectric interface, follow both branches and
+   weight each by its Fresnel share. This is the narrowest useful pool —
+   splitting factor 2, at a known and rare vertex type, bounded by a small
+   depth — and the deterministic renderer's pool plus overflow retry is
+   directly reusable precedent.
+
+3. **A general splitting pool, for EARS.** EARS (Rath et al., SIGGRAPH 2022)
+   treats RR and splitting as one continuous factor `n` per vertex: `n < 1` is
+   roulette, `n > 1` is splitting, and it chooses `n` to maximise *efficiency*
+   — `1 / (variance x cost)` — rather than to bound variance. Classic
+   throughput RR (what this renderer does: survive with probability
+   `max(throughput)` past `pt_rr_start_bounce`, floored at 0.05) only ever
+   reduces work and picks its probability from a heuristic that is not
+   derived from anything optimal. EARS estimates the second moment and the
+   cost of continuing from a lightweight spatial cache learned across
+   iterations, then solves for `n` by a fixed-point iteration the paper proves
+   converges to the efficiency-optimal factors. Its predecessor ADRRS (Vorba &
+   Křivánek 2016) uses a precomputed adjoint and a hand-tuned weight window;
+   its successor MARS (Rath et al., SIGGRAPH Asia 2024) extends the allocation
+   to NEE, which is the principled answer to §6's "how many light samples"
+   question.
+
+**Recommendation: do not start with the pool.** Adaptive sampling (§2) should
+come first, and it is not a stepping stone to splitting — it is a substitute
+for most of what splitting would buy here, at a fraction of the structural
+cost. Both answer "spend effort where the error is"; adaptive sampling answers
+it per *pixel*, needs no pool, no atomics and no accumulator change, and suits
+Algan's variance distribution unusually well because a large fraction of a
+typical frame is unlit 2-D content that is zero-variance by construction and
+should terminate at the floor sample count. Splitting answers the same
+question per *vertex*, which is finer than Algan's shallow transport usually
+needs; it earns its keep in production renderers largely because their shading
+is expensive and their paths are deep.
+
+So the order is: **§2 adaptive sampling → measure → then (2) the dielectric
+split, which is a concrete quality gap against the deterministic renderer,
+and (1) the shadow queue if the profile says the inline walks are hurting →
+EARS only if a measured scene shows RR/splitting is the remaining bottleneck.**
+Building a general pool before there is a profile pointing at one would be
+adding the deterministic renderer's overflow-and-retry machinery on
+speculation.
+
+**When a pool does land**, the things to get right: accumulation becomes
+atomic (fine now, but the AOV reduction and `pt_reduce` both assume exclusive
+rows and must change together); `_PT_BYTES_PER_SLOT` grows by the pool ratio,
+which shrinks the tile and must stay honest or the OOM retry mis-sizes; the
+sampler needs a per-branch decorrelation term in the pair key so split
+siblings do not reuse one sequence; and `tests/path_traced/` moves to the
+statistical criterion in `agent_guidance/memory_perf.md` rather than exact
+pixel comparison.
+
+**Path guiding** (SD-tree, Müller et al. 2017) stays deferred, on the survey's
+own advice: it pays off on indirect-dominated transport, and the survey says
+outright that surface-dominated scenes with simple lighting should stop before
+it. Algan's workload is that case. Revisit only if adaptive sampling lands and
+indirect noise is still the limit.
 
 **Also deliberately not pursued**, for the record: spectral rendering (the
 survey calls it optional for RGB-sufficient work, and Algan has no
