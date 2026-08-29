@@ -65,11 +65,18 @@ Taichi's aborted, and whether an f32 shader lands on the same u8 channel the
 host does. ``DESIGN_metal_native_port.md`` is what it feeds.
 
 **Nothing in Q8 is timed, deliberately.** GitHub's macOS runner is a
-virtualized-GPU instance: it can say whether a shader compiles, binds,
-dispatches and returns the right bits, and it cannot say how fast anything is.
-The Q5 timings below predate that observation -- they are directional, not
-numbers to plan against -- and launch overhead per dispatch, which is a real
-question for the many-small-kernel stages, needs a physical Mac.
+virtualized Apple-silicon instance, and when that was written it was not known
+whether a GPU was behind it at all. It is: ``_mps_vs_cpu_torch_speed.py``
+measured 1538 GFLOP/s of f32 matmul on MPS against 422-485 for the same work on
+the CPU arm, which no software Metal path could reach. What that same run also
+measured is why nothing here is timed anyway -- one synchronized dispatch costs
+**432 us** on this runner against 2.0 us on its CPU, and a host round trip runs
+at 6.0 GB/s into the device and 3.2 GB/s out of it *on unified memory*. Both are
+virtualization taxes on submission and mapping rather than properties of Metal.
+So the Q5 milliseconds stay directional: their compute-bound half is now
+corroborated in shape by a measurement with no Taichi in it, and their staging
+half is inflated by a per-launch cost no Apple laptop pays. Launch overhead for
+the many-small-kernel stages still needs a physical Mac.
 
 Each arm runs in its **own subprocess**. A backend that cannot compile a kernel
 does not always raise -- it can abort the process -- and an aborted arm has to

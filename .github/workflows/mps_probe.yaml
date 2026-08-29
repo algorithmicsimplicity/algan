@@ -6,20 +6,43 @@ name: MPS capability probe
 # port is worth starting, because the deciding facts are properties of the Metal
 # backend and of Taichi's torch interop.
 #
-# This is deliberately NOT part of the ordinary test matrix. macOS minutes bill
-# at ten times the Linux rate and nothing here guards a regression -- it takes a
-# measurement. So it runs only when the probe itself changes, or when someone
-# dispatches it by hand (which needs the file on the default branch first;
-# before then, pushing to a pull request is what triggers it).
+# This is deliberately NOT part of the ordinary test matrix, because nothing
+# here guards a regression -- it takes a measurement. So it runs only when the
+# probe itself changes, or when someone dispatches it by hand (which needs the
+# file on the default branch first; before then, pushing to a pull request is
+# what triggers it).
 #
-# WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized-GPU macOS
-# instance. Capability results -- does this compile, does it bind, does it come
-# back with the right bits -- are sound, and they are what both design docs rest
-# on. Timings are not: read the probe's Q5 milliseconds as directional only, and
-# do not plan against them. Launch overhead per dispatch is a real question for
-# the many-small-kernel stages and it needs a physical Mac. The probe's Q8
-# section (hand-written MSL, no Taichi in the path -- see
-# DESIGN_metal_native_port.md) is deliberately untimed for this reason.
+# The reason is NOT cost. This repository is public, and GitHub's docs are
+# explicit that "use of the standard GitHub-hosted runners is free and unlimited
+# on public repositories" -- the 10x macOS minute multiplier this file used to
+# cite applies to private repositories, and never applied here. What is finite
+# is concurrency: 5 concurrent macOS jobs on the Free plan, shared across every
+# workflow in the account, which is the real reason not to leave a two-arm macOS
+# matrix on every push.
+#
+# WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized Apple-silicon
+# instance -- `hw.model VirtualMac2,1`, `Apple M1 (Virtual)`, 3 CPUs, 7 GB --
+# and the GPU behind it is REAL HARDWARE, not a software Metal path. The `speed`
+# job below measured that in runs 33178820377 and 33179777864: ~1.3 TFLOP/s f32
+# sustained and ~2.3 TFLOP/s f16 on MPS, against ~450 GFLOP/s on the CPU arm,
+# with every result checksum-identical to the CPU's and MPS fallback off. So
+# compute-bound timings here are worth something after all.
+#
+# Read the RATIO carefully, though: it is only 3-4x, and that is the
+# denominator's doing rather than the GPU's. torch on this runner links
+# Accelerate (BLAS_INFO=accelerate), so the CPU arm's matmul is a vendor SGEMM
+# reaching the AMX coprocessor. Taichi's cpu arch compiles no such thing, which
+# is why the probe's Q5 puts the same GPU at 20-30x. An M1 iGPU is ~2.6 TFLOP/s
+# f32 at peak, so this VM gets close to a whole one, not a slice.
+#
+# What is NOT worth anything here is anything with a per-launch cost in it. The
+# same run put one synchronized dispatch at 432 us median on MPS against 2.0 us
+# on the CPU, and host<->device copies at 6.0 / 3.2 GB/s over unified memory --
+# a virtualization tax on submission and mapping that no Apple laptop pays. That
+# is the half of the Q5 milliseconds to keep reading as directional only, and it
+# is why launch overhead for the many-small-kernel stages still needs a physical
+# Mac. The probe's Q8 section (hand-written MSL, no Taichi in the path -- see
+# DESIGN_metal_native_port.md) stays deliberately untimed for the same reason.
 #
 # The Linux arm is the control. It has no MPS, so every GPU section skips and
 # what it proves is that the harness itself works and what the numbers look like
@@ -28,15 +51,24 @@ name: MPS capability probe
 # broken".
 on:
   workflow_dispatch:
+    inputs:
+      sections:
+        description: "Which measurement to take"
+        type: choice
+        default: all
+        options:
+          - all
+          - capability
+          - speed
 
 # Queue behind an in-flight run rather than cancelling it, which is where this
 # differs from the test and code-quality workflows and why. Those cancel because
 # a superseded run answers a question about a commit nobody cares about any
-# more. This one is not a check, it is a measurement, and a half-finished
-# measurement on macOS has already spent the minutes it costs -- most of a run
-# here is the probe itself, on the arm that bills at ten times the Linux rate.
-# Every run is pinned to its own commit, so an older one finishing later is
-# still a valid reading rather than a stale verdict.
+# more. This one is not a check, it is a measurement, and a cancelled
+# measurement returns nothing while still having occupied one of the account's
+# five concurrent macOS slots for as long as it ran. Every run is pinned to its
+# own commit, so an older one finishing later is still a valid reading rather
+# than a stale verdict.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: false
@@ -44,6 +76,10 @@ concurrency:
 jobs:
   probe:
     name: ${{ matrix.os }}
+    # The two jobs answer different questions and cost very different amounts,
+    # so a dispatch can ask for one of them. An empty value is treated as `all`
+    # so that a run triggered without inputs still does everything.
+    if: ${{ inputs.sections == '' || inputs.sections == 'all' || inputs.sections == 'capability' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -127,5 +163,89 @@ jobs:
           path: |
             mps_probe_results.json
             probe-output.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  speed:
+    name: torch cpu vs mps -- ${{ matrix.os }}
+    # Cheap next to the capability probe: no Taichi, no kernel compilation, and
+    # the whole measurement is a few minutes of tensor work.
+    if: ${{ inputs.sections == '' || inputs.sections == 'all' || inputs.sections == 'speed' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      # Same reason as the probe job: this is a comparison, and half a
+      # comparison is not one. Linux is the control -- it has no MPS, so its
+      # mps arm skips and what it shows is that the harness runs and what the
+      # cpu numbers look like on a machine nobody is asking questions about.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+
+    # Nothing here imports algan, so no render device is selected and no Taichi
+    # program is brought up. The variable is pinned anyway, for the same reason
+    # the probe job pins it: so that an accidental import cannot quietly change
+    # what is being measured.
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+      # A silent fallback would run an unimplemented op on the CPU and time it
+      # as the GPU, which is the one answer this job must not be able to give.
+      # The script clears it too; belt and braces, because it is the difference
+      # between a measurement and a misreading.
+      PYTORCH_ENABLE_MPS_FALLBACK: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: ./.github/actions/install-uv
+
+      - name: Create venv
+        run: uv venv
+
+      # Same reason as in the probe job: pycairo has no manylinux wheel and
+      # builds from source against a system cairo. macOS needs nothing.
+      - name: Install cairo and pango headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
+
+      # The locked environment rather than a bare `uv pip install torch`, so the
+      # torch version measured is the one Algan actually ships against.
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run the CPU vs MPS speed comparison
+        # -u so the per-case lines reach the log as they happen; through a
+        # pipe python block-buffers stdout, and a job that hits its timeout
+        # would otherwise show nothing at all.
+        run: uv run python -u benchmarks/_mps_vs_cpu_torch_speed.py | tee speed-output.txt
+
+      - name: Publish the report to the job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## torch CPU vs MPS -- ${{ matrix.os }}"
+            echo
+            echo '```'
+            cat speed-output.txt 2>/dev/null || echo "(the benchmark produced no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mps-speed-${{ matrix.os }}
+          path: |
+            benchmarks/mps_vs_cpu_speed.json
+            speed-output.txt
           if-no-files-found: warn
           retention-days: 14
