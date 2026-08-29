@@ -231,10 +231,15 @@ def _projection_anti_alias_level(scene, primitives):
         RayTracedTrianglePrimitive,
     )
 
+    if not primitives:
+        return requested, False
+    if int(rt_settings.samples_per_pixel) > 1:
+        # The path tracer renders at output resolution (jittered sub-pixel
+        # samples are its anti-aliasing), so projection tessellates for the
+        # output pixel grid.
+        return 1, False
     if (
-        not primitives
-        or int(rt_settings.samples_per_pixel) > 1
-        or not rt_settings.hybrid_raster
+        not rt_settings.hybrid_raster
         or not rt_settings.analytic_aa
         or float(getattr(scene.camera, "near", 0.0) or 0.0) > 0.0
     ):
@@ -495,13 +500,10 @@ class RenderLoopMixin:
         if cached is not None:
             return cached
 
-        rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import _merge_scene
 
         merged_host = _merge_scene(primitive_batch, track_peak=track_peak)
         env_map = getattr(self, "environment_map", None)
-        if env_map is not None and int(rt_settings.samples_per_pixel) > 1:
-            env_map = None
         first._rt_env_meta = None
         if env_map is not None:
             # Environment resampling/packing is source-device scene prep too;

@@ -725,20 +725,30 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     def _shaded_per_fragment(self):
         """True when this primitive's hits are shaded per fragment in-kernel
-        (deterministic renderer, fragment shading on, core lit material or a
-        custom fragment pipeline) rather than baked per vertex -- in which case
-        ``colors`` stays raw albedo.
+        rather than baked per vertex -- in which case ``colors`` stays raw
+        albedo.
+
+        Both renderers shade in-kernel for a core lit material or a custom
+        fragment pipeline; only the *conditions* differ. The deterministic
+        renderer does it when ``fragment_shading`` is on (a custom pipeline
+        forces it on for the scene), and bakes per vertex otherwise. **The
+        path tracer always does**: its next-event estimation and its scattering
+        lobes both read the surface's own albedo, and a vertex bake would hand
+        them a colour that already has one light's response folded in -- which
+        is what made a lit path-traced surface render ~1000x too dark before
+        this. It has no vertex-bake path to fall back to, so
+        ``fragment_shading`` (a deterministic-kernel switch) does not gate it.
+
+        A non-core shader (an authored per-vertex ``set_shader``) still bakes
+        under both: the baked colour rides a pipeline id the path tracer
+        treats as authored appearance and emits unchanged.
         """
         shader = getattr(self, "shader", None)
         if getattr(shader, "_frag_pipeline_id", None) is not None:
-            # A custom pipeline always shades in-kernel on the deterministic
-            # renderer (fragment shading is forced on for such a scene).
-            return rt_settings.samples_per_pixel <= 1
-        return (
-            rt_settings.fragment_shading
-            and rt_settings.samples_per_pixel <= 1
-            and _shader_is_core(shader)
-        )
+            return True
+        if rt_settings.samples_per_pixel > 1:
+            return _shader_is_core(shader)
+        return rt_settings.fragment_shading and _shader_is_core(shader)
 
     def _ordered_shader_param_values(self):
         """The shader's extra (material) parameters as a positional list in the

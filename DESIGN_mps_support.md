@@ -57,8 +57,6 @@ the line:
 | `raster_shadow_trace` | 30 | no |
 | `wavefront_traverse_events` | 30 | no |
 | `wavefront_shadow` | 29 | no |
-| `path_trace_physical_stbvh` | 27 | no |
-| `path_trace_scene_stbvh` | 25 | no |
 | `raster_tri_write` | 20 | yes |
 | `raster_bez_write` | 18 | yes |
 | `raster_tri_count` | 15 | yes |

@@ -135,7 +135,7 @@ markers = [
 # and no longer exists, so a stale @pytest.mark.slow (or a typo'd 'fastt') would
 # otherwise sit in a file doing nothing and looking like it worked.
 addopts = "--strict-markers"
-testpaths = ["tests/unit_tests", "tests/fast", "tests/full_renders"]
+testpaths = ["tests/unit_tests", "tests/fast", "tests/full_renders", "tests/path_traced"]
 
 [tool.isort]
 profile = "black"

@@ -491,7 +491,6 @@ def test_a_bad_experimental_value_is_refused_too(field, bad):
         ("shadows", True, True),
         ("tonemap_exposure", 2, 2.0),  # an int for a float field normalizes
         ("tonemap_method", "agx", "agx"),
-        ("indirect_bounce_strength", 0, 0.0),
     ],
 )
 def test_legitimate_raytracing_values_still_go_through(field, value, expected):

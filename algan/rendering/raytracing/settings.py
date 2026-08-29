@@ -104,8 +104,7 @@ linear_color_space = env_flag("ALGAN_LINEAR_COLOR", True)
 #
 # Folded into the kernels inside ``ti.static``, so a change takes effect for
 # kernels compiled after it (CLAUDE.md's ti.static hazard); set the environment
-# variable for a guaranteed one. Distinct from ``ambient_light``, which belongs
-# to the unwired physical-mode Monte Carlo kernel and is inert.
+# variable for a guaranteed one.
 ambient_strength = env_float("ALGAN_AMBIENT_STRENGTH", 0.1)
 ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 
@@ -133,16 +132,59 @@ tonemap_method = "neutral"
 # Env override for A/B and re-baselining.
 post_process_tonemap = env_flag("ALGAN_POST_PROCESS_TONEMAP", True)
 
-# Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
-# surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
-# with throughput ``albedo * strength`` for color bleeding.
-indirect_bounce_strength = 0.0
-
-# Radiance scale of explicit point lights in physical mode. The default of
-# pi makes a white light produce roughly albedo-level Lambertian brightness.
-light_intensity = 3.141592653589793
-# Constant ambient term added per diffuse interaction in physical mode.
-ambient_light = 0.0
+# Deterministic seed of the path tracer's Sobol-Owen sampler
+# (path_tracer_taichi): every sample is a pure function of
+# (pt_seed, frame, pixel, dimension pair, sample index), so a render
+# reproduces exactly and changing the seed decorrelates every sequence at
+# once.
+pt_seed = env_int("ALGAN_PT_SEED", 0)
+# Wave size of the path tracer's sample loop: how many of a pixel's samples
+# are in flight per tile pass. 0 sizes the wave from the arena's free bytes
+# (path_tracer._pt_tile_shape); a fixed value pins the accumulation grouping
+# regardless of the memory budget, which is what an A/B comparison of two
+# kernel variants wants (see agent_guidance/memory_perf.md).
+pt_wave_samples = env_int("ALGAN_PT_WAVE", 0)
+# Bounce ordinal at which the path tracer starts Russian roulette: earlier
+# bounces always continue (low-order transport carries most of the image),
+# later ones survive with probability proportional to their throughput.
+pt_rr_start_bounce = env_int("ALGAN_PT_RR_START", 3)
+# Per-channel cap on an indirect path's contribution, in display-white units
+# (1.0 = an authored white); 0 disables. Clamping trades a little darkening
+# of very bright indirect paths for the fireflies they would otherwise
+# leave -- the production-standard bias (see the module docstring of
+# path_tracer_taichi for where it applies).
+pt_firefly_clamp = env_float("ALGAN_PT_FIREFLY_CLAMP", 10.0)
+# Next-event-estimation samples the path tracer draws per lit path vertex,
+# each picked from the power-weighted light table (delta/area light rows,
+# emissive triangles, the environment map). 1 is the production default;
+# raising it spends more shadow rays per vertex for less direct-light noise
+# at the same samples_per_pixel.
+pt_light_samples = env_int("ALGAN_PT_LIGHT_SAMPLES", 1)
+# When True (default) the path tracer importance-samples the environment map
+# through a luminance CDF at every lit vertex and MIS-weights escaping BSDF
+# rays against it. False keeps env lighting purely through BSDF-sampled
+# escapes -- the A/B arm for the sampler, still unbiased, just noisier for
+# concentrated maps (a sun disc).
+pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
+# Denoise path-traced output (samples_per_pixel > 1) with the Open Image
+# Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
+# linear HDR color guided by the albedo/normal AOVs the path tracer
+# accumulates. Public. Applies only where it can be correct: the float HDR
+# frame buffer (post_process_tonemap on, the default) -- with the byte
+# buffer the hook skips and logs once. The official weights are fetched to
+# SETTINGS.paths.cache_directory/oidn/ on first use; a machine that cannot
+# get them renders without denoising after one warning, never an error.
+# The deterministic renderer (samples_per_pixel == 1) has no noise and
+# never denoises, whatever this says.
+denoise = env_flag("ALGAN_DENOISE", True)
+# Tile edge (pixels) for the denoiser's U-Net inference; frames larger than
+# a tile run as overlapping tiles (32-pixel overlap, cores stitched) so
+# activation memory is bounded by the tile, not the frame. Floors at 128.
+denoise_tile_size = env_int("ALGAN_DENOISE_TILE_SIZE", 512)
+# Explicit path to an OIDN rt_hdr_alb_nrm .tza weights file, overriding the
+# cache-and-download resolution (offline machines, pinned deployments).
+# Empty = resolve normally.
+denoise_weights = env_str("ALGAN_DENOISE_WEIGHTS", "")
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set
@@ -2070,16 +2112,23 @@ analytic_aa_one_mesh = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 # to key one on (the comment at wavefront_kernels_taichi.py says so in as many
 # words). A half-transparent solid therefore composites at its authored opacity
 # when the camera looks at it directly, and at the old doubled opacity in a
-# MIRROR's image of it. The same gap applies to the Monte Carlo megakernel
-# (``samples_per_pixel > 1``), whose stochastic transparency gives each shell an
-# independent interaction chance and so reproduces ``(1 - a)^2`` in
-# expectation, and to any batch the sheet route rejects and the classic
-# wavefront serves instead (``analytic_raster_route_active``). Measured before
-# this rule existed, the two primary routes agreed: sphere 0.55 delivered 0.679
-# on the sheet route and 0.677 on the wavefront one, so what the fallback still
-# does is exactly the old behaviour rather than some third thing. Closing
-# either needs surface identity plumbed into ray or path state, which is a
-# wider change than this one and is not attempted here.
+# MIRROR's image of it. The same gap applies to any batch the sheet route
+# rejects and the classic wavefront serves instead
+# (``analytic_raster_route_active``). Measured before this rule existed, the
+# two primary routes agreed: sphere 0.55 delivered 0.679 on the sheet route
+# and 0.677 on the wavefront one, so what the fallback still does is exactly
+# the old behaviour rather than some third thing. Closing either needs
+# surface identity plumbed into ray or path state, which is a wider change
+# than this one and is not attempted here.
+#
+# The path tracer (``samples_per_pixel > 1``) DID plumb that identity into
+# path state: its camera segment carries a four-slot ring of entered shell
+# ids (``pt_shade``; per-triangle ids from the merged ``tri_obj`` /
+# ``tri_closed`` pair, gated on this same flag), suppressing the exit
+# crossing of each entry/exit pair -- the per-ray limit of this rule's
+# coverage ceiling, agreeing with it pixel-for-pixel on flat interiors. Its
+# post-scatter segments keep the mirror-image gap above, deliberately
+# matching the deterministic wavefront's bounce loop.
 #
 # OFF restores today's behaviour exactly: the ceiling lives entirely in the
 # compaction, gated on this flag read at batch time, so no pixel, sheet or
@@ -3002,14 +3051,15 @@ def set_fragment_shading(enabled):
 # light has K rows, so its shadow cost goes from K rays to K * 8.
 # ``samples`` stays the user's dial for both quality and cost.
 #
-# KNOWN LIMITS, both deliberate exclusions. The deferred shadow prepass
+# KNOWN LIMIT, a deliberate exclusion. The deferred shadow prepass
 # (``wavefront_shadow``) reads neither light type nor radius and treats every
 # row as a hard point light; it is dead code today (the tracer always
 # compiles ``deferred_shadows == 0``) and must learn these columns before it
-# is ever revived. And the Monte Carlo megakernel's next-event estimation
-# reads packed columns 0-2 only, with extended lights rejected at preflight
-# when ``samples_per_pixel > 1`` anyway, so an area row never reaches it:
-# SPP > 1 keeps hard per-row rays.
+# is ever revived. The path tracer (``samples_per_pixel > 1``) reads the same
+# packed cells but does NOT read this flag at render time: it takes the cell
+# extents as the emitter geometry for its own next-event estimation (one
+# random point per sample instead of the fan), so with the flag off its rows
+# fall back to the packed cell centres exactly as the fans do.
 #
 # OFF restores today's row bit-for-bit. The flag is read host-side ONLY, in
 # build_aux, which packs zeros to the extra columns when it is off -- the
@@ -3063,18 +3113,6 @@ def set_shadows(enabled):
     shadows = bool(enabled)
 
 
-def set_light_intensity(intensity):
-    """Radiance scale applied to explicit point lights in physical mode."""
-    global light_intensity
-    light_intensity = float(intensity)
-
-
-def set_ambient_light(intensity):
-    """Constant ambient lighting term used in physical mode."""
-    global ambient_light
-    ambient_light = float(intensity)
-
-
 def set_samples_per_pixel(samples):
     """Set how many rays are averaged per pixel. 1 (the default) uses the
     exact deterministic renderer; larger values enable Monte Carlo path
@@ -3082,14 +3120,6 @@ def set_samples_per_pixel(samples):
     """
     global samples_per_pixel
     samples_per_pixel = max(1, int(samples))
-
-
-def set_indirect_bounce_strength(strength):
-    """Set the diffuse indirect lighting strength of the Monte Carlo
-    renderer (0 disables diffuse bounces).
-    """
-    global indirect_bounce_strength
-    indirect_bounce_strength = float(strength)
 
 
 def set_linear_color_space(enabled):

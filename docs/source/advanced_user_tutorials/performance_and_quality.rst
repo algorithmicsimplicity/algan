@@ -88,17 +88,31 @@ This is the biggest single decision, because it selects the renderer:
 .. code-block:: python
 
     SETTINGS.raytracing.set(samples_per_pixel=1)     # default: deterministic
-    SETTINGS.raytracing.set(samples_per_pixel=64)    # Monte Carlo path tracer
+    SETTINGS.raytracing.set(samples_per_pixel=64)    # path tracer
 
 * ``1`` uses the **deterministic renderer**: a hybrid pipeline that rasterizes
   primary visibility and traces rays for reflection, refraction and shadows. Fast,
   noise-free, and what every example in this documentation uses.
-* Above ``1`` switches to the **Monte Carlo path tracer**, which gives true global
-  illumination and physically-correct soft shadows and rough reflections, at
-  dramatically higher cost -- and needs a high sample count to be free of noise.
+* Above ``1`` switches to the **path tracer**, which gives true global
+  illumination, physically-correct soft shadows and rough reflections, area and
+  emissive lighting, and image-based environment lighting, at dramatically
+  higher cost. Its raw output is noisy at low sample counts, so by default it
+  is **denoised** (``SETTINGS.raytracing.denoise``, on) with a neural filter
+  guided by the render's own albedo and normal information; turn it off to see
+  or gate the raw estimator.
 
-Only reach for path tracing when you specifically need full light transport. It is
-also a separate GPU kernel with its own cold compile of several minutes on first use.
+Reach for path tracing when you need full light transport. For flat 2-D artwork
+and text the deterministic renderer is not merely cheaper but *better*: it
+resolves those edges with exact analytic coverage, where the path tracer must
+estimate them by sampling. The path tracer renders at output resolution and
+anti-aliases by jittering its samples inside each pixel, so
+``super_sampling_anti_aliasing`` does not apply to it.
+
+``SETTINGS.raytracing.experimental.pt_seed`` changes the noise pattern without
+changing what the render converges to -- useful for checking that a feature
+you are looking at is real and not a shape in the noise. The path tracer does
+not promise that two renders of the same scene produce identical frames; it
+promises they converge to the same image.
 
 .. _renderer-capabilities:
 
@@ -106,8 +120,8 @@ What each renderer supports
 ---------------------------
 
 Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer, and
-several features are implemented only in the deterministic one. Algan checks this
-before it allocates anything and refuses rather than silently dropping them.
+a couple of features are implemented only in the deterministic one. Algan checks
+this before it allocates anything and refuses rather than silently dropping them.
 
 .. list-table::
    :header-rows: 1
@@ -115,30 +129,37 @@ before it allocates anything and refuses rather than silently dropping them.
 
    * - Feature
      - Deterministic (``spp == 1``)
-     - Monte Carlo (``spp > 1``)
-   * - Environment maps
+     - Path tracer (``spp > 1``)
+   * - Materials, textures, all light types
      - Yes
-     - **Not supported**
+     - Yes
    * - Refractive materials (glass)
      - Yes
-     - **Not supported**
+     - Yes
    * - Custom fragment-shader pipelines
      - Yes
-     - **Not supported**
-   * - Extended lights
+     - Yes (shaded as authored; diffuse for indirect bounces)
+   * - Custom scatter overrides
      - Yes
      - **Not supported**
-   * - Global illumination, caustics
+   * - Environment maps
+     - Yes (order-1 SH diffuse)
+     - Yes (importance-sampled, full map)
+   * - Analytic anti-aliasing
+     - Yes
+     - No -- jittered sub-pixel samples instead
+   * - Global illumination, emissive surfaces as lights
      - No
      - Yes
+   * - Denoising (``denoise``, default on)
+     - Not applicable (noise-free)
+     - Yes
 
-"Extended lights" means any light carrying parameters beyond a position and a
-color -- a cone angle, a ground color, an emitter radius, a distance falloff.
-:class:`~.PointLight` is the only one that is not: :class:`~.SpotLight`,
-:class:`~.DirectionalLight`, :class:`~.AmbientLight` and
-:class:`~.RectAreaLight` are all extended, so a scene using any of them cannot
-be path traced. Note that a Scene starts with a point light, so clearing the
-lights and adding your own is often what first trips this.
+A **custom scatter override** is a fragment pipeline that redefines how a ray
+continues (``FragmentStage(..., scatter=...)``). The pipeline's *shading* is
+honoured under both renderers; only the ray-continuation override is
+deterministic-only, because arbitrary user continuation carries no sampling
+density for stochastic transport to weight.
 
 If a scene requests an unsupported feature, Algan raises
 :class:`~algan.errors.UnsupportedFeatureError` naming the features it cannot

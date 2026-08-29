@@ -230,14 +230,12 @@ metal reads as a rough metal, but it does not show you a picture of the room.
     recommended path.
 
     For fully physical rough reflections, raise
-    ``SETTINGS.raytracing.samples_per_pixel`` above 1 to switch to the Monte
-    Carlo path tracer, which jitters every bounce and has the samples to
-    resolve it.
-
-    That switch is not free on this page's subject matter: the path tracer supports
-    neither refraction nor environment maps, so a glass scene or an
-    environment-lit metal scene will raise rather than render. See
-    :ref:`renderer-capabilities` before reaching for it.
+    ``SETTINGS.raytracing.samples_per_pixel`` above 1 to switch to the path
+    tracer, which importance-samples every bounce and has the samples to
+    resolve a wide lobe honestly -- glass, nested media and environment maps
+    included, with the noise denoised by default. What it gives up is this
+    page's *deterministic* machinery (analytic coverage, the screen-space
+    prefilter) and render time. See :ref:`renderer-capabilities`.
 
 Environment Maps
 ================
@@ -270,10 +268,10 @@ each bounce is another full ray traversal:
 
 * A **refractive** object splits each ray into a reflected *and* a refracted ray, so
   glass costs more than metal.
-* Refraction is implemented only by the deterministic wavefront renderer, which is
-  where every ``samples_per_pixel == 1`` render already goes. Raising
-  ``samples_per_pixel`` selects the Monte Carlo path tracer, which cannot honor
-  refraction or environment maps -- see :ref:`renderer-capabilities`.
+* Refraction is implemented by both renderers. Raising ``samples_per_pixel``
+  selects the path tracer, which refracts through the same nested-media stack
+  and importance-samples the environment map instead of prefiltering it -- see
+  :ref:`renderer-capabilities`.
 * ``max_bounces`` multiplies the cost of everything reflective in the scene.
 
 While you are iterating on a shot, lower ``max_bounces`` and leave the resolution at

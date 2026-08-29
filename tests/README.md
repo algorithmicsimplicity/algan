@@ -1,6 +1,6 @@
 # Algan test suites
 
-Three directories, two suites. Always run them with the project venv — the
+Four directories, three suites. Always run them with the project venv — the
 system Python has no taichi. Commands below are written as `<venv-python>`;
 `CLAUDE.md` defines the per-platform interpreter path, and `uv run python`
 works on either.
@@ -115,6 +115,7 @@ you changed lives here.
 | `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~90 s |
 | `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | ~50 s |
 | `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against checked-in baselines. | ~12 minutes on CUDA |
+| `tests/path_traced/` | What the `samples_per_pixel > 1` path tracer draws across three small scenes, compared pixel-wise against checked-in baselines. | ~15 s warm |
 
 ## Adding a test: does it belong in the fast suite?
 
@@ -195,6 +196,36 @@ each scene, so a scene may turn a renderer feature on for itself
 albedo, metallic/roughness and normal textures. Keeping the fixture small is
 deliberate: it keeps the render inside the arena without weakening importer or
 material coverage.
+
+## The path-traced suite
+
+`tests/path_traced/scenes/` holds three small scenes rendered through the
+`samples_per_pixel > 1` wavefront path tracer (each scene file sets
+`samples_per_pixel` itself, and the harness asserts the plan chose the path
+tracer). They are deliberately tiny — 128×72, five frames — because the path
+tracer pays per (pixel, sample, frame) and behavioural correctness lives in
+`tests/unit_tests/test_path_tracer.py`; these baselines exist to catch what
+only pixels can see.
+
+| Scene | Covers |
+| --- | --- |
+| `translucency_and_order` | Deterministic 2-D compositing under PT: same-depth author order, depth-separated overlap, and the closed-shell opacity ring on a rotating translucent solid. |
+| `lit_and_shadowed` | NEE direct lighting with shadows, the sampled emitter table, GGX metal, and diffuse colour bleed. |
+| `environment_and_refraction` | Environment-map NEE and escape, mirror reflection, and refraction through the nested-IOR stack. |
+
+The path tracer promises convergence, not byte-identical frames, but its
+accumulation happens to be atomic-free and its sampler is a pure function of
+path identity, so at a pinned memory budget the same tolerance applies as
+everywhere else. Like the full-render suite the baselines are per machine,
+and the suite skips in CI (`ALGAN_RUN_PATH_TRACED=1` overrides).
+
+The committed `expected_outputs_cpu/` set was rendered on a cloud CPU
+container. **The CUDA set does not exist yet** — creating it takes a CUDA
+machine: run `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
+tests/path_traced -q` there twice, check the second run's outputs against the
+first (they must be byte-identical), look at the videos, and commit
+`expected_outputs_cuda/`. Until then a CUDA machine renders the scenes and
+skips the comparisons.
 
 ## The fast suite's render
 
@@ -316,7 +347,7 @@ variables below write to whichever `expected_outputs_<device>/` matches the
 current machine, so re-baselining on CPU cannot repair a CUDA baseline or vice
 versa.
 
-Both render suites are re-baselined by rendering with the baselines writable,
+Every render suite is re-baselined by rendering with the baselines writable,
 then **looking at the result** before committing:
 
 ```bash
@@ -327,7 +358,11 @@ ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders 
 ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest tests/fast -q
 ```
 
-Both variables are read by the harnesses rather than by the package, so
+```bash
+ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest tests/path_traced -q
+```
+
+These variables are read by the harnesses rather than by the package, so
 `import algan` warns that it does not recognise them. That is expected.
 
 **Never baseline the first render on a fresh machine — render twice and keep

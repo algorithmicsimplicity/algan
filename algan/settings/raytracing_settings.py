@@ -244,12 +244,10 @@ _PUBLIC_FIELDS = frozenset(
         "samples_per_pixel",
         "max_bounces",
         "shadows",
-        "ambient_light",
-        "light_intensity",
-        "indirect_bounce_strength",
         "glossy_reflection",
         "glossy_prefilter",
         "analytic_aa",
+        "denoise",
         "linear_color_space",
         "tonemapping",
         "tonemap_method",
@@ -263,29 +261,14 @@ def _experimental_fields() -> frozenset[str]:
     return _field_names() - _PUBLIC_FIELDS
 
 
-# Settings no renderer this package can actually launch reads. Both are
-# consumed only by ``raytrace_kernels_taichi.path_trace_physical_stbvh``, the
-# never-wired "physical mode" Monte Carlo kernel: ``tracer`` launches
-# ``path_trace_scene_stbvh`` for samples_per_pixel > 1 and the wavefront tracer
-# otherwise, and the only other reference to the physical kernel is a unit
-# test. Setting either therefore did nothing at all, silently, which is worse
-# than not offering them -- so writing one says so. Reads keep working: engine
-# code binds this object and reads fields off it on the hot path, and the
-# values are still what the dead kernel would use.
-_INERT_FIELDS = {
-    "light_intensity": (
-        "'light_intensity' is not read by any renderer this build can launch "
-        "(only by the unwired physical-mode Monte Carlo kernel), so setting it "
-        "would silently do nothing. Scale a light with its own intensity= "
-        "instead: PointLight(intensity=2.0), DirectionalLight(intensity=2.0)."
-    ),
-    "ambient_light": (
-        "'ambient_light' is not read by any renderer this build can launch "
-        "(only by the unwired physical-mode Monte Carlo kernel), so setting it "
-        "would silently do nothing. Add an AmbientLight to the Scene instead: "
-        "AmbientLight(color=WHITE, intensity=0.3).spawn()."
-    ),
-}
+# Settings no renderer this package can actually launch reads: writing one is
+# refused with a "do this instead" message rather than silently doing nothing,
+# while reads and snapshot round-trips keep working. Empty since the unwired
+# physical-mode Monte Carlo kernel (the only reader of the last two entries,
+# ``light_intensity`` and ``ambient_light``) was deleted along with its
+# fields; the refusal machinery stays for the next field that ends up in this
+# position.
+_INERT_FIELDS: dict[str, str] = {}
 
 
 #: Fields the renderer freezes when it is imported, and what to set instead.
@@ -352,16 +335,18 @@ _MINIMUMS = {
     "analytic_aa_secondary_samples": (1, False),
     "glossy_prefilter_max_levels": (1, False),
     "refract_initial_pool_ratio": (1, False),
+    "pt_light_samples": (1, False),
+    "denoise_tile_size": (128, False),
     "wavefront_tile_rays": (1, False),
     "wavefront_tile_min": (1, False),
     "wavefront_tile_max": (1, False),
     # strengths, tolerances and fractions: 0 is a documented, meaningful value
     "max_bounces": (0, False),
-    "ambient_light": (0, False),
     "ambient_strength": (0, False),
     "ambient_strength_linear": (0, False),
-    "indirect_bounce_strength": (0, False),
-    "light_intensity": (0, False),
+    "pt_firefly_clamp": (0, False),
+    "pt_rr_start_bounce": (0, False),
+    "pt_wave_samples": (0, False),
     "tonemap_exposure": (0, False),
     "shadow_eps_relative": (0, False),
     "shadow_near_fraction": (0, False),

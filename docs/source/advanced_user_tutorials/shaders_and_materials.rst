@@ -183,7 +183,7 @@ at the ``set_shader`` / ``set_material`` call, and again once per render for
 the lights spawned after it. See :doc:`renderer_limitations`.
 
 For full physically-based light transport -- true global illumination rather than
-direct lighting plus deterministic bounces -- switch to the Monte Carlo path tracer
+direct lighting plus deterministic bounces -- switch to the path tracer
 by raising the sample count:
 
 .. code-block:: python
