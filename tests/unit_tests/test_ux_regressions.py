@@ -683,23 +683,46 @@ def test_light_parameters_are_validated_instead_of_silently_clamped():
         RectAreaLight(samples=0)
 
 
-def test_monte_carlo_unsupported_features_fail_preflight():
+def test_path_tracer_unsupported_features_fail_preflight():
+    """What the path tracer still refuses: environment maps (until it gains
+    environment sampling) and custom scatter overrides (user-defined ray
+    continuation has no sampling density for stochastic transport to weight).
+    """
     rt_settings.set_unsupported_feature_policy("error")
-    merged = {"has_refractive": True, "has_user_pipeline": True}
-    extended_light = SimpleNamespace(_render_aux=object())
+    merged = {"has_user_pipeline": True, "has_custom_scatter": True}
 
     with pytest.raises(UnsupportedFeatureError) as exc_info:
         _validate_render_capabilities(
             4,
             torch.zeros((1, 1, 3)),
             merged,
-            [extended_light],
+            [],
         )
     message = str(exc_info.value)
     assert "environment maps" in message
-    assert "refractive materials" in message
-    assert "custom fragment-shader pipelines" in message
-    assert "extended lights" in message
+    assert "custom scatter overrides" in message
+
+
+def test_path_tracer_supports_the_features_the_monte_carlo_kernel_refused():
+    """Refraction, custom fragment pipelines and extended lights were Monte
+    Carlo rejections; the path tracer honours all three, so they are
+    *requested* without being *unsupported*.
+    """
+    rt_settings.set_unsupported_feature_policy("error")
+    extended_light = SimpleNamespace(_render_aux=object())
+
+    plan = _validate_render_capabilities(
+        4,
+        None,
+        {"has_refractive": True, "has_user_pipeline": True,
+         "has_custom_scatter": False},
+        [extended_light],
+    )
+    assert plan.backend == "path_tracer"
+    assert plan.is_supported
+    assert "refractive materials" in plan.requested_features
+    assert "custom fragment-shader pipelines" in plan.requested_features
+    assert "extended lights" in plan.requested_features
 
 
 def test_render_plan_describes_supported_deterministic_route():

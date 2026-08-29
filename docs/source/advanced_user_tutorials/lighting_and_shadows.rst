@@ -313,10 +313,9 @@ proportional cost.
    fully opaque one blocks. Ambient and emissive terms are unaffected.
 
    What the deterministic renderer cannot do is refractive transport: caustics,
-   and light bent as it passes through glass. These require using the
-   Monte Carlo path tracer, at the cost of a large increase in render time. Note that raising
-   ``samples_per_pixel`` above 1 also gives up most of this page: see
-   :ref:`renderer-capabilities`.
+   and light bent as it passes through glass. These require the path tracer, at
+   the cost of a large increase in render time. It honours every light type on
+   this page; see :ref:`renderer-capabilities` for what it does give up.
 
 .. admonition:: How many lights can cast shadows?
    :class: seealso

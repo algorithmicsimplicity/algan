@@ -28,7 +28,6 @@ from algan import (
     BLACK,
     BLUE,
     GREEN,
-    ORIGIN,
     OUT,
     RED,
     RIGHT,
@@ -344,7 +343,12 @@ def test_nee_direct_lighting_matches_deterministic(tmp_path):
 
 
 def test_point_light_shadow_under_path_tracing(tmp_path):
-    """With ``shadows`` on, NEE visibility rays darken occluded geometry."""
+    """With ``shadows`` on, NEE visibility rays darken occluded geometry.
+
+    Asserted as the physical invariant rather than at a guessed pixel: a
+    shadow can only ever *remove* light, so turning ``shadows`` on must
+    darken a meaningful part of the frame and brighten none of it.
+    """
 
     def build(scene):
         scene.set_background(BLACK)
@@ -361,29 +365,29 @@ def test_point_light_shadow_under_path_tracing(tmp_path):
 
     lit = _render_scene(tmp_path, "shadow_off.png", build, 24, shadows=False)
     shadowed = _render_scene(tmp_path, "shadow_on.png", build, 24, shadows=True)
-    h, w = lit.shape[0], lit.shape[1]
-    # Just outside the blocker's straight-down projection the floor stays lit
-    # in both renders; inside it only the shadowed render darkens. The
-    # blocker itself is unlit 2-D and draws on top, so probe the floor next
-    # to the frame centre... the blocker covers the centre, so probe under
-    # its edge shadow: a point light above the centre projects the blocker's
-    # shadow around the centre; the blocker occludes the view there too.
-    # Probe a ring between the blocker's silhouette and the shadow edge.
-    centre_bright_lit = float(lit[h // 2 + 12, w // 2, :3].float().mean())
-    centre_bright_shadowed = float(
-        shadowed[h // 2 + 12, w // 2, :3].float().mean()
+    delta = (lit - shadowed).amax(-1)
+    darkened = int((delta > 2).sum())
+    brightened = int((delta < -2).sum())
+    assert darkened > 20, (
+        f"shadows changed almost nothing: {darkened} pixels darkened "
+        f"(max drop {int(delta.max())})"
     )
-    assert centre_bright_shadowed < 0.75 * centre_bright_lit, (
-        f"no shadow: lit {centre_bright_lit:.0f} vs shadowed "
-        f"{centre_bright_shadowed:.0f}"
+    assert brightened == 0, (
+        f"{brightened} pixels got BRIGHTER with shadows on; a shadow can only "
+        "remove light"
     )
 
 
 def test_indirect_light_bleeds_color(tmp_path):
     """Global illumination: a red wall beside a white floor bleeds red onto
-    it (the deterministic renderer cannot; the old Monte Carlo kernel needed
-    an opt-in hack). Compared against its own far side rather than an
-    absolute value so the test tracks lighting, not tonemapping.
+    it. The deterministic renderer cannot do this at all and the old Monte
+    Carlo kernel needed an opt-in hack; here it is simply what the transport
+    does.
+
+    Isolated as a ``max_bounces`` A/B rather than a position probe: 0 bounces
+    gates scattering off entirely, so the two renders share geometry, direct
+    lighting and tonemapping, and every difference between them IS the
+    indirect transport. Red must arrive, and it must arrive as *red*.
     """
 
     def build(scene):
@@ -399,15 +403,20 @@ def test_indirect_light_bleeds_color(tmp_path):
         wall.move(RIGHT * 2.5 + OUT * 1.5)
         wall.spawn(animate=False)
 
-    img = _render_scene(tmp_path, "bleed.png", build, 48).float()
-    h, w = img.shape[0], img.shape[1]
+    direct = _render_scene(tmp_path, "bleed_off.png", build, 48,
+                           max_bounces=0).float()
+    gi = _render_scene(tmp_path, "bleed_on.png", build, 48).float()
     # OpenCV loads BGR: channel 2 is red, 0 is blue.
-    near = img[h // 2, w // 2 + 6]
-    far = img[h // 2, w // 2 - 20]
-    near_redness = float(near[2] - near[0])
-    far_redness = float(far[2] - far[0])
-    assert near_redness > far_redness + 6, (
-        f"no red bleed: near {near.tolist()} far {far.tolist()}"
+    gained = gi - direct
+    red_gain = float(gained[..., 2].max())
+    assert red_gain > 4, (
+        f"indirect bounces added no red light (max red gain {red_gain:.1f})"
+    )
+    # The bounce came off a red wall, so it must carry red rather than lift
+    # every channel equally.
+    lit = gained[..., 2] > 4
+    assert float(gained[..., 2][lit].mean() - gained[..., 0][lit].mean()) > 2, (
+        "indirect light arrived achromatic; the red wall did not tint it"
     )
 
 
