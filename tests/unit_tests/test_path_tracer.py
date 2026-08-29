@@ -141,7 +141,9 @@ def _render_stack_frame(tmp_path, name, samples_per_pixel):
     snapshot = SETTINGS.snapshot()
     SceneManager.reset()
     try:
-        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        # denoise off throughout this module: it tests the estimator, and CI
+        # must not depend on the denoiser weights being downloadable.
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel, denoise=False)
         with Scene(video_settings=STACK_SETTINGS) as scene:
             with Off():
                 Square(side_length=6.0, color=BLUE).spawn(animate=False)
@@ -244,7 +246,7 @@ def _render_scene(tmp_path, name, build, samples_per_pixel, video=None, **rt_kwa
     snapshot = SETTINGS.snapshot()
     SceneManager.reset()
     try:
-        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel, denoise=False)
         for key, value in rt_kwargs.items():
             SETTINGS.raytracing.set(**{key: value})
         with Scene(video_settings=settings) as scene:
@@ -459,7 +461,7 @@ def _render_scene_exp(
     snapshot = SETTINGS.snapshot()
     SceneManager.reset()
     try:
-        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel, denoise=False)
         for key, value in rt_kwargs.items():
             SETTINGS.raytracing.set(**{key: value})
         for key, value in (experimental or {}).items():
@@ -819,7 +821,7 @@ def _render_scene_result(
     snapshot = SETTINGS.snapshot()
     SceneManager.reset()
     try:
-        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel)
+        SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel, denoise=False)
         for key, value in rt_kwargs.items():
             SETTINGS.raytracing.set(**{key: value})
         for key, value in (experimental or {}).items():

@@ -176,9 +176,9 @@ def render_environment(monkeypatch):
     Scenes write ``SETTINGS.raytracing`` (``samples_per_pixel`` at minimum),
     so the whole settings root is snapshotted and restored.
 
-    NOTE for the denoiser stage: when the ``denoise`` setting lands (default
-    True), this fixture must pin ``denoise=False`` so the baselines keep
-    gating the ray-traced output rather than a network's smoothing of it.
+    ``denoise`` is pinned OFF: these baselines gate the ray-traced output
+    itself, not a network's smoothing of it (and CI must never depend on
+    the denoiser weights being downloadable).
     """
     snapshot = SETTINGS.snapshot()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -190,6 +190,7 @@ def render_environment(monkeypatch):
         cache_directory=str(CACHE_DIR),
     )
     SETTINGS.computing.set(available_memory_override=AVAILABLE_MEMORY_OVERRIDE)
+    SETTINGS.raytracing.set(denoise=False)
     SceneManager.reset()
     try:
         yield

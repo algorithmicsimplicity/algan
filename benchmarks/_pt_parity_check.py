@@ -96,7 +96,7 @@ def _render(name, spp):
     snapshot = SETTINGS.snapshot()
     SceneManager.reset()
     try:
-        SETTINGS.raytracing.set(samples_per_pixel=spp)
+        SETTINGS.raytracing.set(samples_per_pixel=spp, denoise=False)
         with Scene(video_settings=VS) as scene:
             _build()
             result = scene.save_frame(

@@ -166,6 +166,25 @@ pt_light_samples = env_int("ALGAN_PT_LIGHT_SAMPLES", 1)
 # escapes -- the A/B arm for the sampler, still unbiased, just noisier for
 # concentrated maps (a sun disc).
 pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
+# Denoise path-traced output (samples_per_pixel > 1) with the Open Image
+# Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
+# linear HDR color guided by the albedo/normal AOVs the path tracer
+# accumulates. Public. Applies only where it can be correct: the float HDR
+# frame buffer (post_process_tonemap on, the default) -- with the byte
+# buffer the hook skips and logs once. The official weights are fetched to
+# SETTINGS.paths.cache_directory/oidn/ on first use; a machine that cannot
+# get them renders without denoising after one warning, never an error.
+# The deterministic renderer (samples_per_pixel == 1) has no noise and
+# never denoises, whatever this says.
+denoise = env_flag("ALGAN_DENOISE", True)
+# Tile edge (pixels) for the denoiser's U-Net inference; frames larger than
+# a tile run as overlapping tiles (32-pixel overlap, cores stitched) so
+# activation memory is bounded by the tile, not the frame. Floors at 128.
+denoise_tile_size = env_int("ALGAN_DENOISE_TILE_SIZE", 512)
+# Explicit path to an OIDN rt_hdr_alb_nrm .tza weights file, overriding the
+# cache-and-download resolution (offline machines, pinned deployments).
+# Empty = resolve normally.
+denoise_weights = env_str("ALGAN_DENOISE_WEIGHTS", "")
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set

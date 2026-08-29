@@ -1613,6 +1613,25 @@ def render_batch_raytraced(
                     "SETTINGS.raytracing.set(linear_color_space=False)."
                 )
             out_dtype = torch.float32 if post_tonemap else torch.uint8
+            # The denoiser (public ``denoise``, default on) applies only to
+            # path-traced output on the float HDR buffer -- the deterministic
+            # renderer has no noise, and the byte buffer holds
+            # display-encoded values the filter was not trained on. Resolved
+            # here, once per chunk: ``get_denoiser`` memoizes the loaded
+            # network per process and degrades to None (denoise off, one
+            # warning) when the weights cannot be had.
+            denoiser = None
+            if samples > 1 and rt_settings.denoise:
+                if post_tonemap:
+                    from algan.rendering.denoise import get_denoiser
+
+                    denoiser = get_denoiser(device)
+                else:
+                    logger.log(
+                        PERF,
+                        "denoise is on but post_process_tonemap is off: the "
+                        "frame buffer is uint8, so denoising is skipped.",
+                    )
             # Drivers are element counts, not the resolution: the buffers scale
             # linearly, so keying on width/height would make the table useless
             # at any resolution the corpus happened not to cover.
@@ -1676,6 +1695,31 @@ def render_batch_raytraced(
                             (end - start, width * height, 5), torch.float32
                         )
                     accum.zero_()
+                aovs = aov_bg = None
+                if denoiser is not None:
+                    # The denoiser's guides: per-pixel sample sums of albedo,
+                    # normal and background weight (path_trace_render fills
+                    # them), plus a snapshot of the prefilled background the
+                    # weight is folded with -- the kernel never knows the
+                    # background's colors, only how much of each path reached
+                    # it.
+                    with memory.scope(
+                        "denoise_aovs",
+                        aov_cells=(end - start) * width * height * 12,
+                    ):
+                        aovs = tuple(
+                            memory.get_tensor(
+                                (end - start, width * height, 3), torch.float32
+                            )
+                            for _ in range(3)
+                        )
+                        aov_bg = memory.get_tensor(
+                            (end - start, width * height, 3), torch.float32
+                        )
+                    for tensor in aovs:
+                        tensor.zero_()
+                    aov_bg.copy_(out[:, :, :3])
+                    aov_bg /= 255.0
             # Coplanar layer order: circuits < triangles < PN patches.
             layer_offset_triangles = float(merged["num_circuits"])
             if samples > 1:
@@ -1712,6 +1756,7 @@ def render_batch_raytraced(
                         transparent=transparent_background,
                         samples=samples_eff,
                         env_meta=env_meta,
+                        aovs=aovs,
                         out=out,
                         accum=accum,
                     )
@@ -1723,6 +1768,23 @@ def render_batch_raytraced(
                     accum,
                     out,
                 )
+                if denoiser is not None:
+                    # Denoise the finalized linear HDR color in place,
+                    # between the estimator and everything display-facing
+                    # (tonemap, FXAA, user post-processes). The float buffer
+                    # holds linear radiance at byte scale; alpha/coverage
+                    # channels pass through untouched. The guides: sample
+                    # sums divided down, the background weight folded with
+                    # the prefill snapshot.
+                    inv_spp = 1.0 / float(samples_eff)
+                    shape = (end - start, height, width, 3)
+                    albedo = ((aovs[0] + aovs[2] * aov_bg) * inv_spp).view(shape)
+                    normal = (aovs[1] * inv_spp).view(shape)
+                    color = (out[:, :, :3] * (1.0 / 255.0)).view(shape)
+                    denoised = denoiser(color, albedo, normal)
+                    out[:, :, :3] = (
+                        denoised.reshape(end - start, width * height, 3) * 255.0
+                    )
             else:
                 # col_row/gen/layer metadata, AA accumulation and every tile
                 # buffer are wavefront-only. Release them before post

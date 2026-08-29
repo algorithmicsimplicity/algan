@@ -213,7 +213,7 @@ _NEE_ENV = 2
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 9
+NEE_META_WIDTH = 10
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -223,6 +223,25 @@ _NM_ENV_H = 5
 _NM_ENV_INTENSITY = 6
 _NM_ENV_CDF_H = 7  # env CDF bin-grid dimensions
 _NM_ENV_CDF_W = 8
+_NM_AOV = 9  # 1 = accumulate the denoiser's albedo/normal AOVs (pt_aov)
+
+# Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
+# (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
+# gated). The albedo and normal guides are throughput-weighted composites
+# over the path's DELTA PREFIX -- the crossings before its first non-delta
+# scatter: pass-through (a straight line) and refraction / the tinted pane
+# (delta lobes) keep accumulating, a diffuse or GGX pick closes the prefix
+# at its own crossing, and an escape credits the environment map (in-kernel,
+# where the texels are) or the background (via the leftover weight, folded
+# on the host where the prefill lives). On an opaque single-surface scene
+# this IS the standard first-non-delta-vertex convention; on algan's
+# translucent stacks it degrades to the flat-shaded composite, which is
+# exactly the detail a denoiser should preserve.
+PT_AOV_WIDTH = 10
+_AOV_ALB = 0  # 3 columns: sum of thru.rgb * alpha * base color
+_AOV_NRM = 3  # 3 columns: sum of thru.a * alpha * shading normal
+_AOV_BGW = 6  # 3 columns: leftover throughput while open (background credit)
+_AOV_CLOSED = 9  # 1 = the delta prefix has ended; accumulate nothing more
 
 
 def _sobol_dim1_directions():
@@ -1015,7 +1034,8 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
              nee_meta: ti.types.ndarray(),
              tri_emit_prob: ti.types.ndarray(),
              env_cdf: ti.types.ndarray(),
-             tri_shell: ti.types.ndarray()):
+             tri_shell: ti.types.ndarray(),
+             pt_aov: ti.types.ndarray()):
     """Consume one traverse's hit-event batch (see the module docstring).
 
     Deterministic alpha compositing carries every crossed surface's local
@@ -1055,6 +1075,9 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
         env_intensity = nee_meta[_NM_ENV_INTENSITY]
         cdf_h = ti.cast(nee_meta[_NM_ENV_CDF_H] + 0.5, ti.i32)
         cdf_w = ti.cast(nee_meta[_NM_ENV_CDF_W] + 0.5, ti.i32)
+        # AOV accumulation for the denoiser (every pt_aov access is gated on
+        # this: with it off the tensor is a [1, PT_AOV_WIDTH] dummy).
+        aov_on = nee_meta[_NM_AOV] > 0.5
         if num_hits > 0:
             g = ray_offset + rs_pix[r]
             f = time_start + g // pixels_per_frame
@@ -1085,6 +1108,12 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
             ring = ti.Vector([-1, -1, -1, -1])
             for q in ti.static(range(_SHELL_RING_SLOTS)):
                 ring[q] = rs_int[r, _INT_RING0 + q]
+            aov_open = 0
+            aov_alb = ti.math.vec3(0.0, 0.0, 0.0)
+            aov_nrm = ti.math.vec3(0.0, 0.0, 0.0)
+            if aov_on:
+                if pt_aov[r, _AOV_CLOSED] < 0.5:
+                    aov_open = 1
 
             kb_t = ti.Vector([0.0] * kbuf)
             kb_layer = ti.Vector([0.0] * kbuf)
@@ -1582,6 +1611,15 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                                    firefly_clamp))
                 acc += add
 
+                # AOV guides: this crossing's contribution to the delta
+                # prefix, at the SAME weights the radiance composite uses
+                # (no firefly clamp -- a guide, not radiance). A suppressed
+                # closed-shell exit has alpha 0 and adds nothing.
+                if aov_open == 1:
+                    aov_alb += ti.math.vec3(thru[0], thru[1], thru[2]) \
+                        * (alpha * albedo3)
+                    aov_nrm += (thru[3] * alpha) * shade_n
+
                 # ----------------------------------------------------------
                 # Continuation: pass-through | diffuse | specular | transmit.
                 # ----------------------------------------------------------
@@ -1630,6 +1668,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                     # as fully opaque).
                     t_alpha = 0.0
                     absorbed = True
+                    aov_open = 0  # the absorbing surface is the guide
                     done = True
                     break
                 u_lobe = _pt_rng(seed_root, key, s_index, processed, 7)
@@ -1657,6 +1696,9 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                     new_ro = hit_p
                     ok = 1
                     if pick < w_pass + w_diff:
+                        # A diffuse pick is non-delta: the AOV prefix ends at
+                        # this crossing (whose albedo/normal it just added).
+                        aov_open = 0
                         p_sel = w_diff / w_sum
                         new_rd = _pt_cosine_direction(shade_n, u_dir)
                         tint = e_diff * (alpha / ti.max(p_sel, 1e-6))
@@ -1679,6 +1721,8 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
                                 wl_trans)
                     elif pick < w_pass + w_diff + w_spec:
+                        # GGX is non-delta (any roughness): close the prefix.
+                        aov_open = 0
                         p_sel = w_spec / w_sum
                         # VNDF sample about the shading normal.
                         t_b, b_b = _pt_onb(shade_n)
@@ -1806,6 +1850,11 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
             rs_int[r, 2] = _DONE if done else _ACTIVE
             for q in ti.static(range(_SHELL_RING_SLOTS)):
                 rs_int[r, _INT_RING0 + q] = ring[q]
+            if aov_on:
+                for k in ti.static(range(3)):
+                    pt_aov[r, _AOV_ALB + k] += aov_alb[k]
+                    pt_aov[r, _AOV_NRM + k] += aov_nrm[k]
+                pt_aov[r, _AOV_CLOSED] = 1.0 - ti.cast(aov_open, ti.f32)
             if done:
                 leftover = thru
                 if absorbed:
@@ -1844,17 +1893,31 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                                       firefly_clamp))
                     for k in ti.static(range(3)):
                         pt_acc[r, k] += env_add[k]
+                    if (aov_on) and (aov_open == 1):
+                        # An escaping delta prefix sees the map: credit it
+                        # to the albedo guide (unweighted -- a guide).
+                        for k in ti.static(range(3)):
+                            pt_aov[r, _AOV_ALB + k] += leftover[k] * ec[k]
                     leftover = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     t_alpha = 0.0
                 for k in ti.static(range(4)):
                     pt_acc[r, _PT_ACC_LEFTOVER + k] = leftover[k]
                 pt_acc[r, _PT_ACC_ALPHA] = t_alpha
+                if (aov_on) and (aov_open == 1):
+                    # Whatever is left shows the background; the host folds
+                    # this weight with the prefilled background color.
+                    for k in ti.static(range(3)):
+                        pt_aov[r, _AOV_BGW + k] += leftover[k]
         else:
             # No surface this segment: the path escapes to the background
             # (or, with an environment map, to the map in its direction).
             leftover_e = ti.math.vec4(pt_thru[r, 0], pt_thru[r, 1],
                                       pt_thru[r, 2], pt_thru[r, 3])
             t_alpha_e = rs_sca[r, 0]
+            aov_open_e = 0
+            if aov_on:
+                if pt_aov[r, _AOV_CLOSED] < 0.5:
+                    aov_open_e = 1
             if (env_w > 0) and (ti.max(leftover_e[0],
                                        ti.max(leftover_e[1],
                                               leftover_e[2])) > 0.0):
@@ -1883,11 +1946,17 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                                                   firefly_clamp))
                 for k in ti.static(range(3)):
                     pt_acc[r, k] += env_add[k]
+                if aov_open_e == 1:
+                    for k in ti.static(range(3)):
+                        pt_aov[r, _AOV_ALB + k] += leftover_e[k] * ec[k]
                 leftover_e = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                 t_alpha_e = 0.0
             for k in ti.static(range(4)):
                 pt_acc[r, _PT_ACC_LEFTOVER + k] = leftover_e[k]
             pt_acc[r, _PT_ACC_ALPHA] = t_alpha_e
+            if aov_open_e == 1:
+                for k in ti.static(range(3)):
+                    pt_aov[r, _AOV_BGW + k] += leftover_e[k]
             rs_int[r, 2] = _DONE
 
 

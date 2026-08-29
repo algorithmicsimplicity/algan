@@ -716,8 +716,11 @@ def test_path_tracer_supports_the_features_the_monte_carlo_kernel_refused():
     plan = _validate_render_capabilities(
         4,
         torch.zeros((1, 1, 3)),
-        {"has_refractive": True, "has_user_pipeline": True,
-         "has_custom_scatter": False},
+        {
+            "has_refractive": True,
+            "has_user_pipeline": True,
+            "has_custom_scatter": False,
+        },
         [extended_light],
     )
     assert plan.backend == "path_tracer"
@@ -1315,7 +1318,9 @@ def test_lifted_path_tracer_features_render(feature, tmp_path):
     scene = SceneManager.instance().current_scene
     scene.set_video_settings(SMOKE_TEST)
 
-    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
+    # denoise off: this exercises the estimator's feature coverage, and CI
+    # must not depend on the denoiser weights being downloadable.
+    with algan.SETTINGS.raytracing.override(samples_per_pixel=4, denoise=False):
         if feature == "refraction":
             sphere = Sphere(radius=0.6, color=BLUE)
             sphere.set_material(

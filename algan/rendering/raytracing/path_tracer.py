@@ -46,6 +46,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NEE_EMISSIVE_TRI,
     _NEE_ENV,
     _NEE_LIGHT_ROW,
+    _NM_AOV,
     _NM_COUNT,
     _NM_ENV_CDF_H,
     _NM_ENV_CDF_W,
@@ -58,6 +59,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _SHELL_RING_SLOTS,
     NEE_META_WIDTH,
     PT_ACC_WIDTH,
+    PT_AOV_WIDTH,
     PT_INT_WIDTH,
     PT_STAT_SHELL_RING,
     PT_STAT_TRUNC_SURFACES,
@@ -90,7 +92,9 @@ from algan.utils.memory_utils import InsufficientMemoryException
 # Bytes of arena state per path slot: rs_ro/rs_rd (12 + 12), rs_sca (the
 # nested-IOR width -- the path tracer always carries the media stack),
 # rs_int (PT_INT_WIDTH i32: the shared 5 plus the closed-shell ring),
-# rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32),
+# rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32), pt_aov
+# (PT_AOV_WIDTH f32 -- budgeted whether or not the denoiser's AOVs are on,
+# since the budget only shapes work grouping, never results),
 # the compactor's ping-pong index pair (2 i32), and the transient
 # per-iteration hit-event batch at worst case num_active == pool
 # (kbuf * (4 f32 + 2 i32)).
@@ -102,6 +106,7 @@ _PT_BYTES_PER_SLOT = (
     + 4
     + 4 * 4
     + PT_ACC_WIDTH * 4
+    + PT_AOV_WIDTH * 4
     + 2 * 4
     + kbuf * (4 * 4 + 2 * 4)
 )
@@ -384,6 +389,7 @@ def path_trace_render(
     transparent,
     samples,
     env_meta=None,
+    aovs=None,
     out,
     accum,
 ):
@@ -394,6 +400,13 @@ def path_trace_render(
     ``finalize_samples``. Raises the arena's memory exceptions with all tile
     state released, so the chunk-halving retry in ``render_chunk`` works
     unchanged.
+
+    ``aovs``, when given, is ``(albedo, normal, bg_weight)`` -- three zeroed
+    ``[frames, pixels, 3]`` float32 tensors the call fills with per-pixel
+    SAMPLE SUMS of the denoiser guides (see ``pt_aov`` in
+    ``path_tracer_taichi``): the caller divides by ``samples`` and folds
+    ``bg_weight`` with its own background colors (the kernel does not know
+    them). ``None`` skips all AOV work.
     """
     # Local import: tracer imports this module lazily at dispatch, and these
     # helpers live beside the deterministic orchestration it reuses.
@@ -423,6 +436,11 @@ def path_trace_render(
         memory, merged, light_pos, light_col, int(num_lights), env_meta
     )
     tri_shell = _build_shell_table(memory, merged)
+    if aovs is not None:
+        nee_meta[_NM_AOV] = 1.0
+        aov_albedo_flat = aovs[0].view(-1, 3)
+        aov_normal_flat = aovs[1].view(-1, 3)
+        aov_bgw_flat = aovs[2].view(-1, 3)
 
     tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
@@ -459,6 +477,9 @@ def path_trace_render(
                 rs_pix = memory.get_tensor((pool,), i32)
                 pt_thru = memory.get_tensor((pool, 4), f32)
                 pt_acc = memory.get_tensor((pool, PT_ACC_WIDTH), f32)
+                pt_aov = memory.get_tensor(
+                    (pool if aovs is not None else 1, PT_AOV_WIDTH), f32
+                )
                 pt_stats = memory.get_tensor((PT_STATS_WIDTH,), i32)
             compactor = _ArenaRayCompactor(memory, pool, i32)
             pt_stats.zero_()
@@ -470,6 +491,8 @@ def path_trace_render(
                 rs_int[:slots].copy_(int_init)
                 pt_thru[:slots].fill_(1.0)
                 pt_acc[:slots].zero_()
+                if aovs is not None:
+                    pt_aov[:slots].zero_()
                 pt_generate(
                     int(slots),
                     int(tp),
@@ -614,9 +637,21 @@ def path_trace_render(
                             tri_emit_prob,
                             env_cdf,
                             tri_shell,
+                            pt_aov,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1
+                if aovs is not None:
+                    # Fold this wave's per-path guide sums into the chunk's
+                    # per-pixel sums. Slot r = wave_sample * tp + tile_pixel
+                    # (pt_generate/pt_reduce's layout), so a view + sum is
+                    # the whole reduction; one tensor op per wave keeps the
+                    # summation order fixed, preserving reproducibility.
+                    wave_sums = pt_aov[:slots].view(sw, tp, PT_AOV_WIDTH).sum(0)
+                    seg = slice(tile_start, tile_start + tp)
+                    aov_albedo_flat[seg] += wave_sums[:, 0:3]
+                    aov_normal_flat[seg] += wave_sums[:, 3:6]
+                    aov_bgw_flat[seg] += wave_sums[:, 6:9]
                 pt_reduce(
                     int(tile_start),
                     int(tp),
