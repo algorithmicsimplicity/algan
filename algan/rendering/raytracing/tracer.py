@@ -14,10 +14,11 @@ the render arena, and dispatches on the sample count:
   host iterations, and a shared continuation pool for reflective /
   refractive splits (an overflowing tile is discarded and retried with fewer
   primaries, never approximated).
-* ``samples_per_pixel > 1`` -- the Monte Carlo path-tracing megakernel
-  (``path_trace_scene_stbvh``), one thread per (frame, pixel, sample) path,
-  accumulating into a float32 per-pixel buffer that ``finalize_samples``
-  averages.
+* ``samples_per_pixel > 1`` -- the path tracer (``path_tracer.py`` +
+  ``path_tracer_taichi.py``): the same wavefront shape, sharing this
+  renderer's traversal kernel outright, run in sample waves of one path per
+  pixel at output resolution (jittered samples are the anti-aliasing) into a
+  float32 per-pixel buffer that ``finalize_samples`` averages.
 
 Reflections and refraction are inferred from the mob's Three.js-style
 material properties. Use ``MeshStandardMaterial(metalness=..., roughness=...)``
@@ -46,7 +47,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_samples,
     kbuf,
     max_surfaces_per_ray,
-    path_trace_scene_stbvh,
 )
 from algan.rendering.raytracing.scene_builder import (
     _downsample_background,
@@ -150,7 +150,7 @@ class RenderPlan:
     depending on Taichi/Torch implementation objects.
     """
 
-    backend: Literal["deterministic_wavefront", "monte_carlo"]
+    backend: Literal["deterministic_wavefront", "path_tracer"]
     samples_per_pixel: int
     requested_features: tuple[str, ...]
     unsupported_features: tuple[str, ...] = ()
@@ -655,8 +655,14 @@ def effective_anti_alias_level(
     far_clip=0.0,
     transparent_background=False,
 ):
-    """Return 1 for analytic raster, otherwise the requested AA setting."""
+    """Return 1 for analytic raster or the path tracer, otherwise the
+    requested AA setting.
+    """
     requested = max(1, int(requested))
+    if int(rt_settings.samples_per_pixel) > 1:
+        # The path tracer renders at output resolution: jittered sub-pixel
+        # samples are its anti-aliasing.
+        return 1
     if analytic_raster_route_active(
         merged,
         light_sources=light_sources,
@@ -973,26 +979,31 @@ def _build_render_plan(
 ):
     """Resolve the renderer route and feature compatibility for a batch."""
     samples_requested = max(1, int(samples_per_pixel))
-    backend = "monte_carlo" if samples_requested > 1 else "deterministic_wavefront"
+    backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
+    unsupported = []
     if scene_environment_map is not None:
         requested.append("environment maps")
     if bool(merged.get("has_refractive")):
         requested.append("refractive materials")
     if _scene_has_user_pipeline(merged):
         requested.append("custom fragment-shader pipelines")
+        if samples_requested > 1 and _scene_has_custom_scatter(merged):
+            # Pipelines are evaluated at hits under the path tracer exactly
+            # as the deterministic renderer evaluates them, but a custom
+            # SCATTER override redefines ray continuation with no sampling
+            # density, which stochastic transport cannot honor.
+            unsupported.append("custom scatter overrides")
     if any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
     ):
         requested.append("extended lights")
-
-    unsupported = tuple(requested) if samples_requested > 1 else ()
     return RenderPlan(
         backend=backend,
         samples_per_pixel=samples_requested,
         requested_features=tuple(requested),
-        unsupported_features=unsupported,
+        unsupported_features=tuple(unsupported),
     )
 
 
@@ -1001,11 +1012,12 @@ def _validate_render_capabilities(
 ):
     """Validate that the selected renderer can honor the authored scene.
 
-    ``samples_per_pixel > 1`` selects the Monte Carlo megakernel. Several
-    features currently exist only in the deterministic wavefront renderer;
-    silently discarding them is more dangerous than failing early. The global
-    unsupported-feature policy permits an explicit warning/ignore migration
-    mode for benchmarks and legacy projects.
+    ``samples_per_pixel > 1`` selects the path tracer, which supports the
+    deterministic renderer's feature set except custom scatter overrides
+    (arbitrary user continuation code has no sampling density for stochastic
+    transport); silently discarding a feature is more dangerous than failing
+    early. The global unsupported-feature policy permits an explicit
+    warning/ignore migration mode for benchmarks and legacy projects.
     """
     plan = _build_render_plan(
         samples_per_pixel,
@@ -1016,7 +1028,7 @@ def _validate_render_capabilities(
     if plan.unsupported_features:
         feature_list = ", ".join(plan.unsupported_features)
         rt_settings.report_unsupported_features(
-            "The Monte Carlo renderer selected by samples_per_pixel > 1 "
+            "The path tracer selected by samples_per_pixel > 1 "
             f"cannot honor: {feature_list}. Set samples_per_pixel to 1 to use "
             "the deterministic wavefront renderer, remove those features, or "
             "set_unsupported_feature_policy('warn'/'ignore') explicitly."
@@ -1146,9 +1158,8 @@ def render_batch_raytraced(
     fragment_shading = rt_settings.fragment_shading
     max_bounces = rt_settings.max_bounces
     tonemap_exposure = rt_settings.tonemap_exposure
-    indirect_bounce_strength = rt_settings.indirect_bounce_strength
     scene_env_map = getattr(scene, "environment_map", None)
-    env_map = scene_env_map if int(samples_per_pixel) <= 1 else None
+    env_map = scene_env_map
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
     merged = getattr(primitives[0], "_rt_device_scene", None)
@@ -1182,10 +1193,10 @@ def render_batch_raytraced(
         )
     scene.last_render_plan = plan
 
-    # Refraction is only implemented by the general wavefront tracer, which is
-    # already where every deterministic (samples <= 1) batch goes -- so this
-    # only gates the refraction template, not routing. The Monte Carlo
-    # megakernel (samples > 1) ignores the refractive index.
+    # These flags gate the deterministic wavefront's refraction template and
+    # split pool only; the path tracer (samples > 1) always carries the
+    # nested-IOR media stack and refracts through its own stochastic
+    # transmission lobe instead.
     refractive_det = bool(merged.get("has_refractive")) and int(samples_per_pixel) <= 1
     # Semi-transparent PBR surfaces split off a reflection branch, so they need
     # the same pool + split code the refraction path compiles in. No routing
@@ -1215,7 +1226,14 @@ def render_batch_raytraced(
         far_clip=far_clip,
         transparent_background=transparent_background,
     )
-    aa = 1 if analytic_raster else max(1, int(anti_alias_level))
+    # The path tracer renders at output resolution: its jittered sub-pixel
+    # samples ARE the anti-aliasing, so a supersample level would multiply the
+    # pixel count for nothing (render_loop._effective_anti_alias_level makes
+    # the same call for the host-side buffer planning).
+    if analytic_raster or int(samples_per_pixel) > 1:
+        aa = 1
+    else:
+        aa = max(1, int(anti_alias_level))
 
     # Anti-aliasing strategy. Analytic raster coverage always renders at output
     # resolution (aa == 1). Every route it cannot cover keeps the requested
@@ -1339,12 +1357,9 @@ def render_batch_raytraced(
     )
 
     samples = max(1, int(samples_per_pixel))
-    # In-place AA folds the anti-alias super-sampling into the Monte Carlo
-    # sample count: each of the ``aa^2`` sub-pixels would have drawn ``samples``
-    # random rays jittered over its own cell and then been averaged down, which
-    # is equivalent (same total, same expectation) to drawing ``samples * aa^2``
-    # rays jittered over the whole output pixel. (The wavefront/super-sample
-    # path keeps ``kernel_aa == 1``, so ``samples_eff == samples`` there.)
+    # The path tracer always runs at aa == 1 (jittered samples are the AA), so
+    # this is ``samples`` there; on the deterministic in-place-AA route it
+    # folds the ``aa^2`` sub-pixel average into the per-pixel sample count.
     samples_eff = samples * (kernel_aa * kernel_aa)
 
     # Deterministic per-fragment shading is active for a single-sample,
@@ -1415,7 +1430,7 @@ def render_batch_raytraced(
     # bounce block to per-material scatter dispatch (custom ray bouncing); it is
     # only assembled when a pipeline in *this* scene overrides bouncing, so an
     # ordinary scene keeps the byte-identical built-in bounce block (empty ()).
-    if det_frag:
+    if det_frag or samples > 1:
         from algan.rendering.shaders.fragment_shaders import (
             build_frag_pipelines,
             build_frag_scatters,
@@ -1426,11 +1441,15 @@ def render_batch_raytraced(
         # it would specialize this render's shade kernel on every pipeline the
         # process ever registered -- a scene with no custom shader at all would
         # compile its own uncached kernel variant just because some earlier
-        # scene had one.
+        # scene had one. The path tracer evaluates the same pipelines at its
+        # hits; custom SCATTER overrides stay deterministic-only (rejected in
+        # _build_render_plan), so its tuple stays empty there.
         batch_pids = _batch_user_pipeline_ids(merged)
         frag_pipelines = build_frag_pipelines(batch_pids)
         frag_scatters = (
-            build_frag_scatters(batch_pids) if _scene_has_custom_scatter(merged) else ()
+            build_frag_scatters(batch_pids)
+            if (samples <= 1 and _scene_has_custom_scatter(merged))
+            else ()
         )
     else:
         frag_pipelines = ()
@@ -1467,12 +1486,23 @@ def render_batch_raytraced(
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
-    if det_frag:
+    if det_frag or samples > 1:
+        # The path tracer packs lights exactly as the deterministic
+        # per-fragment route does: its next-event estimation reads the same
+        # rows through the same ``_light_eval`` radiometry. The env-SH row
+        # stays deterministic-only on purpose: the path tracer integrates
+        # the map for real (CDF next-event estimation + escaping rays), and
+        # the SH irradiance row would light every diffuse vertex a second
+        # time.
         light_device = torch.device("cpu")
         light_pos_host, light_col_host, num_lights = _pack_lights(
             light_sources, num_frames, light_device
         )
-        if env_map is not None and getattr(scene, "environment_ambient", True):
+        if (
+            env_map is not None
+            and samples <= 1
+            and getattr(scene, "environment_ambient", True)
+        ):
             light_pos_host, light_col_host, num_lights = _append_env_sh_light(
                 light_pos_host,
                 light_col_host,
@@ -1488,9 +1518,6 @@ def render_batch_raytraced(
         ):
             light_pos = _arena_copy(memory, light_pos_host)
             light_col = _arena_copy(memory, light_col_host)
-    elif samples > 1:
-        light_pos = light_col = None
-        num_lights = 0
     else:
         # Deterministic, fragment shading off: tiny placeholders for the
         # (compiled-out) material/light kernel args.
@@ -1586,6 +1613,25 @@ def render_batch_raytraced(
                     "SETTINGS.raytracing.set(linear_color_space=False)."
                 )
             out_dtype = torch.float32 if post_tonemap else torch.uint8
+            # The denoiser (public ``denoise``, default on) applies only to
+            # path-traced output on the float HDR buffer -- the deterministic
+            # renderer has no noise, and the byte buffer holds
+            # display-encoded values the filter was not trained on. Resolved
+            # here, once per chunk: ``get_denoiser`` memoizes the loaded
+            # network per process and degrades to None (denoise off, one
+            # warning) when the weights cannot be had.
+            denoiser = None
+            if samples > 1 and rt_settings.denoise:
+                if post_tonemap:
+                    from algan.rendering.denoise import get_denoiser
+
+                    denoiser = get_denoiser(device)
+                else:
+                    logger.log(
+                        PERF,
+                        "denoise is on but post_process_tonemap is off: the "
+                        "frame buffer is uint8, so denoising is skipped.",
+                    )
             # Drivers are element counts, not the resolution: the buffers scale
             # linearly, so keying on width/height would make the table useless
             # at any resolution the corpus happened not to cover.
@@ -1649,58 +1695,73 @@ def render_batch_raytraced(
                             (end - start, width * height, 5), torch.float32
                         )
                     accum.zero_()
+                aovs = aov_bg = None
+                if denoiser is not None:
+                    # The denoiser's guides: per-pixel sample sums of albedo,
+                    # normal and background weight (path_trace_render fills
+                    # them), plus a snapshot of the prefilled background the
+                    # weight is folded with -- the kernel never knows the
+                    # background's colors, only how much of each path reached
+                    # it.
+                    with memory.scope(
+                        "denoise_aovs",
+                        aov_cells=(end - start) * width * height * 12,
+                    ):
+                        aovs = tuple(
+                            memory.get_tensor(
+                                (end - start, width * height, 3), torch.float32
+                            )
+                            for _ in range(3)
+                        )
+                        aov_bg = memory.get_tensor(
+                            (end - start, width * height, 3), torch.float32
+                        )
+                    for tensor in aovs:
+                        tensor.zero_()
+                    aov_bg.copy_(out[:, :, :3])
+                    aov_bg /= 255.0
             # Coplanar layer order: circuits < triangles < PN patches.
             layer_offset_triangles = float(merged["num_circuits"])
-            shared_args = (
-                tri_bvh.blocks,
-                tri_bvh.node_miss,
-                tri_bvh.leaf_prim,
-                tri_bvh.leaf_tspan,
-                tri_bvh.first_leaf,
-                merged["tri_pos"],
-                merged["tri_norm"],
-                merged["tri_extra"],
-                merged["tri_colors"],
-                merged["tri_uvs"],
-                merged["tri_tex_meta"],
-                merged["textures"],
-                int(merged["num_colored_triangles"]),
-                bez_bvh.blocks,
-                bez_bvh.node_miss,
-                bez_bvh.leaf_prim,
-                bez_bvh.leaf_tspan,
-                bez_bvh.first_leaf,
-                merged["circuit_meta"],
-                merged["circuit_colors"],
-                merged["circuit_border_colors"],
-                merged["edges_2d"],
-                merged["edge_accel"],
-                cam_origin,
-                sp,
-                pbx,
-                pby,
-                pixel_world_scale,
-                int(start),
-                int(end),
-                int(width),
-                int(height),
-                float(width // 2),
-                float(height // 2),
-                layer_offset_triangles,
-                int(max_bounces),
-                1 if transparent_background else 0,
-            )
             if samples > 1:
-                from algan.rendering.raytracing.refit_bvh import RefitBVH
-
-                path_trace_scene_stbvh(
-                    1 if isinstance(tri_bvh, RefitBVH) else 0,
-                    *shared_args,
-                    samples_eff,
-                    float(indirect_bounce_strength),
-                    out,
-                    accum,
+                from algan.rendering.raytracing.path_tracer import (
+                    path_trace_render,
                 )
+
+                with memory.temp():
+                    path_trace_render(
+                        memory=memory,
+                        tri_bvh=tri_bvh,
+                        bez_bvh=bez_bvh,
+                        merged=merged,
+                        cam_origin=cam_origin,
+                        screen_point=sp,
+                        pixel_basis_x=pbx,
+                        pixel_basis_y=pby,
+                        pixel_world_scale=pixel_world_scale,
+                        time_start=start,
+                        time_end=end,
+                        width=width,
+                        height=height,
+                        half_screen_w=float(width // 2),
+                        half_screen_h=float(height // 2),
+                        layer_offset_triangles=layer_offset_triangles,
+                        has_tri=has_tri,
+                        has_bez=has_bez,
+                        light_pos=light_pos,
+                        light_col=light_col,
+                        num_lights=num_lights,
+                        frag_pipelines=frag_pipelines,
+                        shadows=1 if bool(shadows) else 0,
+                        max_bounces=int(max_bounces),
+                        near_clip=near_clip,
+                        far_clip=far_clip,
+                        transparent=transparent_background,
+                        samples=samples_eff,
+                        env_meta=env_meta,
+                        aovs=aovs,
+                        out=out,
+                        accum=accum,
+                    )
                 finalize_samples(
                     samples_eff,
                     1 if transparent_background else 0,
@@ -1709,6 +1770,23 @@ def render_batch_raytraced(
                     accum,
                     out,
                 )
+                if denoiser is not None:
+                    # Denoise the finalized linear HDR color in place,
+                    # between the estimator and everything display-facing
+                    # (tonemap, FXAA, user post-processes). The float buffer
+                    # holds linear radiance at byte scale; alpha/coverage
+                    # channels pass through untouched. The guides: sample
+                    # sums divided down, the background weight folded with
+                    # the prefill snapshot.
+                    inv_spp = 1.0 / float(samples_eff)
+                    shape = (end - start, height, width, 3)
+                    albedo = ((aovs[0] + aovs[2] * aov_bg) * inv_spp).view(shape)
+                    normal = (aovs[1] * inv_spp).view(shape)
+                    color = (out[:, :, :3] * (1.0 / 255.0)).view(shape)
+                    denoised = denoiser(color, albedo, normal)
+                    out[:, :, :3] = (
+                        denoised.reshape(end - start, width * height, 3) * 255.0
+                    )
             else:
                 # col_row/gen/layer metadata, AA accumulation and every tile
                 # buffer are wavefront-only. Release them before post

@@ -28,7 +28,7 @@ Feature matrix
 
 Every renderer feature, and where it is available. "Analytic" is the
 deterministic renderer's default path; "supersampled" is its fallback (both are
-``samples_per_pixel == 1``); "Monte Carlo" is ``samples_per_pixel > 1``. Each
+``samples_per_pixel == 1``); "Path tracer" is ``samples_per_pixel > 1``. Each
 row links to the section that explains it.
 
 .. list-table::
@@ -38,7 +38,7 @@ row links to the section that explains it.
    * - Feature
      - Analytic
      - Supersampled
-     - Monte Carlo
+     - Path tracer
      - Notes
    * - Analytic (exact-coverage) anti-aliasing
      - Yes
@@ -48,32 +48,32 @@ row links to the section that explains it.
    * - Supersampling (``super_sampling_anti_aliasing``)
      - Ignored
      - Yes
-     - Folded into the sample count
+     - Ignored (jittered samples instead)
      - `Anti-aliasing`_
    * - Per-fragment materials
      - Triangles only
      - Triangles only
-     - **No** (baked per vertex)
+     - Triangles only
      - `What is lit, and how`_
    * - Extended lights (all but ``PointLight``)
      - Triangles only
      - Triangles only
-     - **Refused**
+     - Triangles only
      - `What is lit, and how`_
    * - Ray-traced shadows
      - Triangles only
      - Triangles only
-     - **No**
+     - Triangles only
      - `Shadows`_
    * - Soft shadows
      - Yes (8-ray fan)
      - Yes (8-ray fan)
-     - **No**
+     - Yes (sampled per path)
      - `Shadows`_
    * - Color / material / normal maps
      - Triangles only
      - Triangles only
-     - Color only
+     - Triangles only
      - `Texture maps`_
    * - Mip-mapped texture minification
      - **No**
@@ -83,17 +83,17 @@ row links to the section that explains it.
    * - Environment map (skybox + reflections)
      - Yes
      - Yes
-     - **Refused**
+     - Yes
      - `Texture maps`_
    * - Environment lighting (image-based)
      - Order-1 SH
      - Order-1 SH
-     - **Refused**
+     - Full map, importance-sampled
      - `Texture maps`_
    * - Mirror reflection
      - Yes
      - Yes
-     - Yes (stochastic)
+     - Yes
      - `Reflection, refraction and transmission`_
    * - Blurred (glossy) reflection
      - Opt-in, screen-space prefilter
@@ -103,12 +103,12 @@ row links to the section that explains it.
    * - Refraction (glass)
      - Yes, single medium
      - Yes, single medium
-     - **Refused**
+     - Yes, nested media
      - `Reflection, refraction and transmission`_
    * - Nested media (glass in glass)
      - **No**
      - **No**
-     - **No**
+     - Yes
      - `Reflection, refraction and transmission`_
    * - Transmission through a 2-D shape
      - Thin pane, no bending
@@ -118,12 +118,12 @@ row links to the section that explains it.
    * - Custom fragment-shader pipelines
      - Yes
      - Yes
-     - **Refused**
+     - Yes
      - `What is lit, and how`_
    * - Custom ray scatter (bounce override)
      - **Falls back**
      - Yes
-     - No
+     - **Refused**
      - `Which renderer runs your scene`_
    * - Near clipping (``camera.near``)
      - **Falls back**
@@ -133,7 +133,7 @@ row links to the section that explains it.
    * - Far clipping (``camera.far``)
      - Yes
      - Yes
-     - No
+     - Yes
      - `Camera`_
    * - Transparent background
      - Yes (not with an env map)
@@ -155,11 +155,16 @@ row links to the section that explains it.
      - Yes
      - Yes
      - —
-   * - Global illumination / caustics
+   * - Global illumination, emissive surfaces as lights
      - **No**
      - **No**
      - Yes
      - `Not implemented at all`_
+   * - Denoising (``denoise``, default on)
+     - Not applicable (noise-free)
+     - Not applicable (noise-free)
+     - Yes
+     - `Which renderer runs your scene`_
    * - True orthographic projection
      - **No**
      - **No**
@@ -195,19 +200,33 @@ Which renderer runs your scene
 
 ``SETTINGS.raytracing.samples_per_pixel`` selects the renderer, not a quality
 dial. ``1`` (the default) is the deterministic renderer; anything above it is
-the Monte Carlo path tracer, which does not implement environment maps,
-refractive materials, custom fragment-shader pipelines or any light other than a
-plain :class:`~.PointLight`. Algan refuses such a combination rather than
-silently dropping it. See :ref:`renderer-capabilities` for the full table.
+the path tracer, which does not implement custom scatter overrides. Algan
+refuses such a combination rather than silently dropping it. See
+:ref:`renderer-capabilities` for the full table.
 
-Two further consequences of the split, not covered there:
+Three further consequences of the split, not covered there:
 
-* The Monte Carlo renderer shades from **baked per-vertex color**, so
-  per-fragment material response, normal maps, material-property maps and
-  ray-traced shadows are all absent from it as well. Its lighting comes from the
-  integrator.
-* Its output is stochastic. Two renders of the same frame at the same sample
-  count are not byte-identical, and low sample counts are visibly noisy.
+* The path tracer shades **per fragment**, like the deterministic renderer's
+  fragment route. Direct light comes from sampling one entry of a
+  power-weighted table per lit surface point -- delta and area lights,
+  emissive triangles and the environment map together -- while the
+  direction-less ambient and hemisphere lights keep their deterministic fill.
+  What it does not reproduce is the deterministic renderer's screen-space
+  glossy prefilter: real sampled glossy transport replaces it.
+* Its raw output is stochastic, so low sample counts are visibly noisy. By
+  default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
+  Image Denoise RT filter re-implemented in torch, guided by albedo and
+  normal information the render accumulates alongside the image. The weights
+  (about 2 MB) are fetched once into the cache directory on first use; a
+  machine that cannot fetch them renders without denoising after one warning.
+  Flat 2-D content composites deterministically inside the path tracer (zero
+  variance), so vector graphics and text stay exact with or without it.
+* Path-traced output is *stochastic*. Two renders of the same scene converge
+  to the same image but need not be identical frame for frame, and the
+  renderer makes no byte-identity promise. Raise ``samples_per_pixel`` (or
+  leave the denoiser on) if residual noise is visible;
+  ``SETTINGS.raytracing.experimental.pt_seed`` re-rolls the noise without
+  changing what the render converges to.
 
 Within the deterministic renderer: two paths
 --------------------------------------------
@@ -484,13 +503,17 @@ Everything else about texturing:
   normal maps are sampled per fragment; a packed **metallic-roughness** map and
   an **emissive** map are reduced to their *mean* and applied as per-primitive
   constants. Occlusion maps are ignored.
-* **Environment maps are resampled to at most 2048 pixels wide**, and their
-  diffuse (image-based-lighting) contribution is an **order-1 spherical
-  harmonic** -- four coefficients. That is enough for a directional tint and no
-  more: a map with a small bright sun lights the scene as though the sun were
-  smeared across the sky. The map's *specular* contribution -- the sky itself,
-  and what a mirror or a lens shows of it -- is sampled from the full (resampled)
-  image, so only the diffuse term is band-limited.
+* **Environment maps are resampled to at most 2048 pixels wide**, and on the
+  deterministic renderer their diffuse (image-based-lighting) contribution is
+  an **order-1 spherical harmonic** -- four coefficients. That is enough for a
+  directional tint and no more: a map with a small bright sun lights the scene
+  as though the sun were smeared across the sky. The map's *specular*
+  contribution -- the sky itself, and what a mirror or a lens shows of it -- is
+  sampled from the full (resampled) image, so only the diffuse term is
+  band-limited. The **path tracer** has no such band limit: it
+  importance-samples the full map through a luminance table at every lit
+  surface point, so a small bright sun lights the scene as a sun, with the
+  correct sharp-soft shadows.
 
 
 Shadows
@@ -551,8 +574,8 @@ Limits and approximations
   glass, so there are no caustics: a glass object's shadow keeps its sharp
   silhouette, and everything its interior does to the light crossing it --
   opacity, albedo tint, absorption over the chord -- happens along a straight
-  line. Caustics need ``samples_per_pixel > 1``, which gives up most of this
-  page's features.
+  line. The path tracer's shadow rays travel the same straight line, so this
+  holds under both renderers; see `Not implemented at all`_.
 
 
 Reflection, refraction and transmission
@@ -854,6 +877,11 @@ Hard limits
      - 16
      - Further layers merge into the last, and attenuate once between them
        instead of once each. **Warns** (:ref:`limits-truncation`).
+   * - Nested translucent closed-shell solids along one path-traced camera ray
+     - 4
+     - The surplus shell attenuates once per crossing instead of once per
+       entry/exit pair, rendering slightly too opaque. **Warns**
+       (:ref:`limits-truncation`).
    * - Frames in one render batch
      - 32767
      - Raises. Not reachable in practice -- memory bounds the batch far below
@@ -911,10 +939,11 @@ check without reading logs::
     assert not truncations, truncations.as_dict()
 
 :class:`~.TruncationCounts` has one field per ceiling --
-``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers`` and
-``dropped_continuations`` -- plus ``total``. The counts are cumulative over the
-whole render, except ``shadow_lights``, which is a property of the scene rather
-than a tally of events and reports the worst batch.
+``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers``,
+``dropped_continuations`` and ``closed_shell_ring`` -- plus ``total``. The
+counts are cumulative over the whole render, except ``shadow_lights``, which is
+a property of the scene rather than a tally of events and reports the worst
+batch.
 
 Every counter is unconditional, so **a zero is a measurement**: it says the
 ceiling was watched and never reached, not that nothing was looking.
@@ -945,21 +974,32 @@ Neither renderer does any of these, at any setting:
 * **Auxiliary output passes.** There is no depth buffer, normal buffer, object
   ID buffer, motion-vector buffer or cryptomatte to write out -- only the shaded
   RGB(A) frame.
-* **Temporal anti-aliasing**, temporal accumulation or denoising of any kind.
-* **A "physical" light-transport mode.** ``SETTINGS.raytracing.light_intensity``
-  and ``SETTINGS.raytracing.ambient_light`` are read by no renderer that user
-  code can select, so **writing either now raises**
-  :class:`~algan.errors.AlganConfigurationError` rather than accepting a value
-  that would change nothing. Reading them still works, and restoring a captured
-  :meth:`~algan.settings.root_settings.AlganSettings.snapshot` still round-trips
-  them. Scale a light with its own ``intensity=`` and add an
+* **Temporal anti-aliasing** or temporal accumulation. Denoising exists, but
+  only for the path tracer (``denoise``; see
+  `Which renderer runs your scene`_) -- the deterministic renderer has no
+  noise to remove.
+* **A "physical" light-transport mode.** The unwired physical-mode Monte Carlo
+  kernel and the two settings only it read (``light_intensity`` and
+  ``ambient_light``) have been deleted, as has ``indirect_bounce_strength``,
+  whose color-bleed hack belonged to the replaced Monte Carlo megakernel.
+  Scale a light with its own ``intensity=`` and add an
   :class:`~algan.rendering.lights.AmbientLight` for ambient.
-  ``SETTINGS.raytracing.indirect_bounce_strength`` is read only when
-  ``samples_per_pixel > 1``.
+
+For the path tracer's share of this list -- caustics, adaptive sampling,
+temporal stability, volumes and subsurface scattering -- the engineering side
+(why each is absent, and what implementing it would take under the renderer's
+reproducibility and kernel contracts) is written up in
+``algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md``, which is the
+plan of record for that remaining scope.
 
 
 Determinism and reproducibility
 ===============================
+
+This section is about the **deterministic** renderer (``samples_per_pixel ==
+1``). The path tracer is a Monte Carlo estimator and promises only that it
+converges to the right image -- not that two runs of it agree. Nothing below
+applies to it.
 
 The deterministic renderer is designed to render the same frame the same way
 every time, and it does on the paths the project measures. Two caveats:
@@ -981,7 +1021,7 @@ every time, and it does on the paths the project measures. Two caveats:
 See Also
 ========
 
-- :ref:`renderer-capabilities` -- the deterministic/Monte Carlo feature table.
+- :ref:`renderer-capabilities` -- the deterministic/path-tracer feature table.
 - :doc:`lighting_and_shadows` -- the light types and how shadows are enabled.
 - :doc:`reflections_and_glass` -- setting up mirrors, metals and glass.
 - :doc:`shaders_and_materials` -- the material classes in full.

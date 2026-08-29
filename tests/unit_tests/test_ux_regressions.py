@@ -683,23 +683,52 @@ def test_light_parameters_are_validated_instead_of_silently_clamped():
         RectAreaLight(samples=0)
 
 
-def test_monte_carlo_unsupported_features_fail_preflight():
+def test_path_tracer_unsupported_features_fail_preflight():
+    """What the path tracer still refuses: custom scatter overrides
+    (user-defined ray continuation has no sampling density for stochastic
+    transport to weight). Environment maps graduated to full support --
+    integrated for real through CDF next-event estimation and escaping rays
+    -- so they must NOT appear in the refusal.
+    """
     rt_settings.set_unsupported_feature_policy("error")
-    merged = {"has_refractive": True, "has_user_pipeline": True}
-    extended_light = SimpleNamespace(_render_aux=object())
+    merged = {"has_user_pipeline": True, "has_custom_scatter": True}
 
     with pytest.raises(UnsupportedFeatureError) as exc_info:
         _validate_render_capabilities(
             4,
             torch.zeros((1, 1, 3)),
             merged,
-            [extended_light],
+            [],
         )
     message = str(exc_info.value)
-    assert "environment maps" in message
-    assert "refractive materials" in message
-    assert "custom fragment-shader pipelines" in message
-    assert "extended lights" in message
+    assert "custom scatter overrides" in message
+    assert "environment maps" not in message
+
+
+def test_path_tracer_supports_the_features_the_monte_carlo_kernel_refused():
+    """Refraction, custom fragment pipelines, extended lights and
+    environment maps were Monte Carlo rejections; the path tracer honours
+    all four, so they are *requested* without being *unsupported*.
+    """
+    rt_settings.set_unsupported_feature_policy("error")
+    extended_light = SimpleNamespace(_render_aux=object())
+
+    plan = _validate_render_capabilities(
+        4,
+        torch.zeros((1, 1, 3)),
+        {
+            "has_refractive": True,
+            "has_user_pipeline": True,
+            "has_custom_scatter": False,
+        },
+        [extended_light],
+    )
+    assert plan.backend == "path_tracer"
+    assert plan.is_supported
+    assert "refractive materials" in plan.requested_features
+    assert "custom fragment-shader pipelines" in plan.requested_features
+    assert "extended lights" in plan.requested_features
+    assert "environment maps" in plan.requested_features
 
 
 def test_render_plan_describes_supported_deterministic_route():
@@ -1214,25 +1243,69 @@ def test_internal_helpers_are_importable_but_not_star_exported():
 @pytest.mark.parametrize(
     ("feature", "expected"),
     [
-        ("environment_map", "environment maps"),
-        ("refraction", "refractive materials"),
-        ("fragment_pipeline", "custom fragment-shader pipelines"),
-        ("extended_light", "extended lights"),
+        ("custom_scatter", "custom scatter overrides"),
     ],
 )
-def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
+def test_an_authored_scene_reaches_the_path_tracer_capability_check(
     feature, expected, tmp_path
 ):
     """The preflight is only worth having if real authoring actually trips it.
 
     ``_validate_render_capabilities`` is unit-tested above against hand-built
-    ``merged`` dicts, which proves the message but not the wiring: that
-    ``set_material(MeshPhysicalMaterial(transmission=...))` really sets
-    ``has_refractive``, that ``set_environment_map`` reaches the check at all,
-    and so on. Authoring each feature the way a user would and asserting the
-    render refuses is what closes that gap -- and it needs no GPU, because the
-    check runs on host metadata before any arena reservation or kernel
+    ``merged`` dicts, which proves the message but not the wiring: that a
+    fragment pipeline carrying a custom scatter registers as one. Authoring
+    the still-unsupported feature the way a user would and asserting the
+    render refuses is what closes that gap -- and it needs no GPU, because
+    the check runs on host metadata before any arena reservation or kernel
     compilation.
+    """
+    import taichi as ti
+
+    from algan.constants.color import BLUE
+    from algan.mobs.shapes_3d import Sphere
+    from algan.rendering.shaders.fragment_shaders import (
+        STAGE_STANDARD,
+        FragmentStage,
+    )
+    from algan.settings.video_settings import SMOKE_TEST
+
+    rt_settings.set_unsupported_feature_policy("error")
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(SMOKE_TEST)
+
+    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
+        if feature == "custom_scatter":
+
+            @ti.func
+            def _test_scatter_noop():
+                pass
+
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_fragment_shader(
+                [
+                    FragmentStage(
+                        STAGE_STANDARD.ti_func,
+                        STAGE_STANDARD.param_specs,
+                        scatter=_test_scatter_noop,
+                    )
+                ]
+            )
+            sphere.spawn()
+
+        scene.wait(0.2)
+
+        with pytest.raises(UnsupportedFeatureError, match=expected):
+            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)
+
+
+@pytest.mark.parametrize(
+    "feature",
+    ["refraction", "fragment_pipeline", "extended_light", "environment_map"],
+)
+def test_lifted_path_tracer_features_render(feature, tmp_path):
+    """Features the path tracer gained (refraction, fragment pipelines,
+    extended lights and environment maps were Monte Carlo rejections before
+    it) pass preflight and render one small frame end-to-end.
     """
     from algan.constants.color import BLUE, WHITE
     from algan.constants.spatial import OUT, UP
@@ -1245,11 +1318,10 @@ def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
     scene = SceneManager.instance().current_scene
     scene.set_video_settings(SMOKE_TEST)
 
-    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
-        if feature == "environment_map":
-            scene.set_environment_map(torch.rand((4, 8, 3)))
-            Sphere(radius=0.6, color=BLUE).spawn()
-        elif feature == "refraction":
+    # denoise off: this exercises the estimator's feature coverage, and CI
+    # must not depend on the denoiser weights being downloadable.
+    with algan.SETTINGS.raytracing.override(samples_per_pixel=4, denoise=False):
+        if feature == "refraction":
             sphere = Sphere(radius=0.6, color=BLUE)
             sphere.set_material(
                 MeshPhysicalMaterial(transmission=1.0, ior=1.5, thickness=0.5)
@@ -1266,11 +1338,13 @@ def test_an_authored_scene_reaches_the_monte_carlo_capability_check(
                     location=UP * 3 + OUT * 3, color=WHITE, intensity=3
                 ).spawn()
             Sphere(radius=0.6, color=BLUE).spawn()
+        elif feature == "environment_map":
+            scene.set_environment_map(torch.rand((4, 8, 3)))
+            Sphere(radius=0.6, color=BLUE).spawn()
 
-        scene.wait(0.2)
-
-        with pytest.raises(UnsupportedFeatureError, match=expected):
-            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)
+        result = scene.save_frame(tmp_path / f"pt_{feature}.png", overwrite=True)
+        assert result.render_plan.backend == "path_tracer"
+        assert not result.render_plan.unsupported_features
 
 
 def test_arrow3d_endpoints_follow_the_arrow():

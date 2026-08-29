@@ -77,8 +77,6 @@ def test_deterministic_shadows_accumulate_every_blocker_opacity(
 ):
     snapshot = SETTINGS.snapshot()
     try:
-        # ambient_light is not set here: it is inert (no renderer this build
-        # can launch reads it) and writing it now raises rather than pretending.
         SETTINGS.raytracing.set(
             shadows=True,
             tonemapping=False,

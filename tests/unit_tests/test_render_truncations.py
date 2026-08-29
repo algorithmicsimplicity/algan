@@ -126,6 +126,7 @@ def test_a_render_that_truncated_nothing_reports_zero_rather_than_nothing():
         "shadow_lights": 0,
         "sheet_layers": 0,
         "dropped_continuations": 0,
+        "closed_shell_ring": 0,
     }
 
 
@@ -135,9 +136,10 @@ def test_total_covers_every_ceiling():
         shadow_lights=2,
         sheet_layers=4,
         dropped_continuations=8,
+        closed_shell_ring=16,
     )
 
-    assert counts.total == 15
+    assert counts.total == 31
     assert counts
 
 

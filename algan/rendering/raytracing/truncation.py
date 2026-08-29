@@ -1,4 +1,4 @@
-"""Counters for the render path's four silent truncations.
+"""Counters for the render path's silent truncations.
 
 Each of these is a fixed ceiling that degrades the *image* when it binds --
 transport that should have reached the pixel does not -- and every one of them
@@ -29,6 +29,12 @@ The ceilings, and what each costs when it binds:
     and retries the tile, so it never loses one; a batch at ``pool_ratio == 1``
     has no spare slots at all and the reservation simply fails, dropping that
     branch's contribution.
+``closed_shell_ring``
+    4 declared closed shells simultaneously entered along one path-traced
+    camera ray (``pt_shade``'s per-ray ring, the ``solid_shell_alpha``
+    ceiling's per-ray form).  The surplus shell's exit crossing composites
+    again instead of being suppressed, so translucent solids nested more
+    than four deep render slightly too opaque.
 
 Reporting.  Truncation is a correctness event, not a budgeting one, so the
 first occurrence of each ceiling in a render is a ``WARNING`` -- unlike the
@@ -82,6 +88,10 @@ class TruncationCounts:
     #: Reflection/refraction continuation rays that could not reserve a pool
     #: slot and were dropped.
     dropped_continuations: int = 0
+    #: Path-traced camera-segment crossings of a declared closed shell that
+    #: found the per-ray ring full; those crossings attenuated per crossing
+    #: (the pre-ceiling behaviour) instead of once per entry/exit pair.
+    closed_shell_ring: int = 0
 
     @property
     def total(self) -> int:
@@ -121,6 +131,13 @@ _CEILING_MESSAGES = {
         "{count} reflection/refraction continuation ray(s) could not reserve "
         "a slot in the tile's ray pool and were dropped, so those branches "
         "contribute nothing to the frame."
+    ),
+    "closed_shell_ring": (
+        "{count} path-traced camera ray(s) were inside more than {cap} "
+        "declared closed shells at once; the surplus shell attenuated per "
+        "crossing instead of once, so that region renders slightly too "
+        "opaque. Use fewer nested translucent closed-shell solids along the "
+        "view direction."
     ),
 }
 

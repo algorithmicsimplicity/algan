@@ -28,9 +28,9 @@ Usage::
     from algan.rendering.raytracing import set_samples_per_pixel
 
     # samples_per_pixel=1 (default) renders with the exact deterministic
-    # wavefront tracer; > 1 enables Monte Carlo path tracing: jittered
-    # sub-pixel rays, stochastic transparency, glossy (rough) reflections and
-    # optional diffuse indirect lighting via indirect_bounce_strength.
+    # wavefront tracer; > 1 enables the path tracer: jittered sub-pixel
+    # samples (implicit anti-aliasing) at output resolution, with
+    # deterministic Sobol-Owen sampling.
     set_samples_per_pixel(64)  # before rendering
 
     mirror = algan.Sphere().set_material(
@@ -49,10 +49,7 @@ from algan.rendering.raytracing.primitives import (
     RayTracedTrianglePrimitive,
     is_post_process_tonemap_enabled,
     max_bounces,
-    set_ambient_light,
     set_fragment_shading,
-    set_indirect_bounce_strength,
-    set_light_intensity,
     set_samples_per_pixel,
     set_shadows,
     set_unsupported_feature_policy,
@@ -70,9 +67,6 @@ __all__ = [
     "RayTracedBezierCircuitPrimitive",
     "is_post_process_tonemap_enabled",
     "set_samples_per_pixel",
-    "set_indirect_bounce_strength",
-    "set_light_intensity",
-    "set_ambient_light",
     "set_fragment_shading",
     "set_shadows",
     "set_unsupported_feature_policy",
