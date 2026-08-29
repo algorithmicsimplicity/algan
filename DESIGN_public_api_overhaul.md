@@ -75,16 +75,30 @@ arc = mn.Arc(angle=PI / 2)  # Manim, radians — and it says so
    where they are as the implementation, and the new package is the public face).
 2. Re-export from it: everything in `algan.mobs.manim_compat.__all__`, `opengl_compat.__all__`,
    `point_cloud.__all__`, `image_compat.__all__`, `manim_parity.__all__`, plus `manim_mob`.
-3. **Re-export the native classes under their Manim names too.** `manim_compat` deliberately
-   omits classes that already exist natively (`_WRAPPED_MANIM_CLASS_NAMES` skips them), so
-   `mn.Square` and `mn.Circle` do not exist today. They must, or `import algan.manim as mn` is
-   not a usable Manim namespace. Re-export the native `Square`, `Circle`, `Line`, `Rectangle`,
-   `Polygon`, `Dot`, `Sphere`, `Cylinder`, `Cone`, `Text`, `Tex`.
+3. **Remove the native-omission carve-out: wrap every Manim class, including ones with a native
+   equivalent.** `_WRAPPED_MANIM_CLASS_NAMES` currently skips "existing native Algan classes"
+   (~20 of them), which made sense while both surfaces shared one namespace and a name could
+   only mean one thing. Once they are separate namespaces that reason is gone, and the clean
+   rule is: **`Sphere` is Algan's, `mn.Sphere` is Manim's.** Every name in `algan.manim` then
+   behaves by Manim's conventions with no exceptions to memorise, and no native class is
+   reachable by two spellings.
+
+   Add to the wrap list: `Square`, `Circle`, `Line`, `Rectangle`, `Polygon`, `Dot`, `Triangle`,
+   `RegularPolygon`, `Sphere`, `Cylinder`, `Cone`, `Cube`, `Torus`, `Prism`, `Surface`,
+   `Arrow3D`, `Dot3D`, `Text`, `Tex`, `Code`.
+
+   **Verified feasible**: all twenty wrap through `_make_manim_wrapper` and construct
+   successfully, 3-D geometry included — `ManimMob` converts Manim `Surface` subclasses
+   (`Sphere`, `Torus`, `Cone`) into curved quad patches rather than rejecting them. Nothing in
+   the omitted set needs special handling.
 4. Move `Mobject = Mob` and `GenericGraph = Graph` out of `algan/__init__.py` and into
    `algan/manim/__init__.py`.
 5. `install_opengl_aliases(globals())` moves with them, called against the `algan.manim`
-   namespace. Note it maps `OpenGLSquare → Square` etc. onto the **native** classes, so it must
-   run after step 3 populates them.
+   namespace, and now resolves `OpenGLSquare → mn.Square` — the **Manim wrapper**, not the
+   native class. This is a behaviour change: the OpenGL aliases currently point at native Algan
+   classes. It is the correct one (an `OpenGL*` name is a Manim-renderer name and should follow
+   Manim's conventions), but it must be called out in the PR body, and it means the aliases now
+   depend on step 3 having run.
 6. Delete the compat names from root `algan.__all__`. The mechanism is already there: add the
    compat modules to `_INTERNAL_EXPORT_MODULES` in `algan/__init__.py`.
 7. Keep `algan.manim` out of `algan.__all__` — it is reached by `import`, not by star-import.
@@ -93,11 +107,16 @@ arc = mn.Arc(angle=PI / 2)  # Manim, radians — and it says so
 
 ### Consequences to resolve during the work
 
-- **`Text`, `Tex`, `Code`, `MathTex` are native (`algan.mobs.text`) but `MathTexPart`,
-  `SingleStringMathTex`, `Paragraph`, `MarkupText`, `Title`, `BulletedList` are compat.** Decide
-  per class whether it is Algan's or Manim's; do not leave the family split by accident.
-- **`Graph` is compat.** If Algan wants a native graph class this is where that gets decided.
-  Out of scope for this plan — record the decision either way.
+- **Compat-only classes leave the root namespace with nothing behind them.** Step 3 gives every
+  *native* class a Manim twin, but the reverse gap stays: `Axes`, `NumberLine`, `Graph`,
+  `Table`, `Matrix`, `Brace`, `Vector`, `Arrow`, `Angle`, `Sector`, `Annulus` and the rest have
+  no native equivalent, so after this phase `from algan import *` has no axes, no graph, no
+  table and no arrow. For an explanatory-maths engine that is a real hole. Either users write
+  `mn.Axes()` for these, or Algan grows native versions — decide before this phase ships, and
+  record it here either way. Writing native replacements is out of scope for this plan.
+- **The text family stops being split.** `Text`, `Tex` and `Code` are native and now get Manim
+  twins; `MathTexPart`, `SingleStringMathTex`, `Paragraph`, `MarkupText`, `Title` and
+  `BulletedList` are compat-only and fall under the gap above.
 - `docs/source/` examples using compat classes need the `import algan.manim as mn` line.
 
 ### Explicitly NOT doing
@@ -412,18 +431,19 @@ So today `stroke_width` is a Manim-facing constructor kwarg that is halved on it
 native `border_width` attribute. A blind rename produces one name meaning two things depending
 on which door the value came through — strictly worse than the status quo.
 
-### Decision required before implementing
+### Decision — settled
 
-Either:
+**Keep Algan's unit and move the `/2` conversion to the `algan.manim` boundary.**
+`border_width` → `stroke_width` everywhere native, and native `stroke_width=1` means exactly
+what `border_width=1` meant. The halving survives only inside `algan.manim`, where it is
+explicitly a Manim-convention translation and sits beside every other Manim convention.
 
-- **(a) Keep Algan's unit, convert at the compat boundary.** `border_width` → `stroke_width`
-  everywhere native; the `/2` conversion lives only in `algan.manim`, where it is explicitly a
-  Manim-convention translation. Native `stroke_width=1` stays what `border_width=1` was.
-- **(b) Adopt Manim's unit.** Drop the `/2`, doubling every native stroke width. Simpler
-  concept, but it moves rendered output everywhere and needs a full re-baseline.
+The rejected alternative was adopting Manim's unit (dropping the `/2`, doubling every native
+stroke width): a simpler concept, but it moves rendered output everywhere and needs a full
+re-baseline for no user-visible gain.
 
-**Recommended: (a).** It is a pure rename with no pixel movement, and Phase 1 has already made
-the compat boundary the natural home for convention translation.
+This is why the phase is blocked on Phase 1 — the conversion has nowhere clean to live until
+`algan.manim` exists.
 
 ### Work
 
@@ -440,9 +460,8 @@ Kernel files carry 20+ occurrences: `*_taichi.py` are linted but never formatted
 there is a kernel edit, so expect a full cold recompile and clear the offline cache before any
 A/B timing.
 
-**Verification**: full suite plus `tests/full_renders`. Under option (a) output must be
-**byte-identical** — this is a rename, not a rendering change. If baselines move, something was
-converted twice.
+**Verification**: full suite plus `tests/full_renders`. Output must be **byte-identical** — this
+is a rename, not a rendering change. If baselines move, something was converted twice.
 
 ---
 
@@ -478,8 +497,9 @@ Do these with review, not blind `sed`: `run_time` appears inside docstring prose
    time, so a missed rename is a build failure rather than a silent stale doc.
 4. `uv run python docs/make_and_open_docs.py --skip-examples --no-open` for the structural pass,
    then a full build.
-5. Re-baseline only if Phase 6 took option (b). Every other phase in this plan is a rename and
-   must not move a pixel.
+5. **No re-baselining should be needed.** Every phase in this plan is a rename or a namespace
+   move; none of them may move a pixel. A baseline that shifts is a bug, not a new expectation —
+   find it before regenerating.
 
 ---
 
