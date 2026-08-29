@@ -93,6 +93,7 @@ like*:
     SETTINGS.raytracing.set(max_bounces=6)
     SETTINGS.raytracing.set(shadows=True)
     SETTINGS.raytracing.set(tonemap_exposure=1.2)
+    SETTINGS.raytracing.set(denoise=False)         # raw path-traced output
 
 The renderer also carries a large number of performance and capability
 switches — kernel fusion, rasterization gates, memory ratios, and so on. Those

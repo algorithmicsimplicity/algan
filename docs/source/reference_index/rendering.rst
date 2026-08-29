@@ -17,6 +17,7 @@ Rendering
    ~rendering.raytracing
    ~rendering.raytracing.settings
    ~rendering.raytracing.truncation
+   ~rendering.denoise
    ~rendering.primitives.primitive
    ~rendering.primitives.triangle_primitive
    ~rendering.primitives.bezier_circuit_primitive

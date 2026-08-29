@@ -218,6 +218,14 @@ same tolerance applies as everywhere else; like the full-render suite the
 baselines are per machine, and the suite skips in CI
 (`ALGAN_RUN_PATH_TRACED=1` overrides).
 
+The committed `expected_outputs_cpu/` set was rendered on a cloud CPU
+container. **The CUDA set does not exist yet** — creating it takes a CUDA
+machine: run `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
+tests/path_traced -q` there twice, check the second run's outputs against the
+first (they must be byte-identical), look at the videos, and commit
+`expected_outputs_cuda/`. Until then a CUDA machine renders the scenes and
+skips the comparisons.
+
 ## The fast suite's render
 
 `tests/fast/scene.py` is a seventh scene under the same conventions, kept apart

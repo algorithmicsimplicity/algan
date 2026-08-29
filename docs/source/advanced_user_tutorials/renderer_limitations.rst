@@ -83,12 +83,12 @@ row links to the section that explains it.
    * - Environment map (skybox + reflections)
      - Yes
      - Yes
-     - **Refused**
+     - Yes
      - `Texture maps`_
    * - Environment lighting (image-based)
      - Order-1 SH
      - Order-1 SH
-     - **Refused**
+     - Full map, importance-sampled
      - `Texture maps`_
    * - Mirror reflection
      - Yes
@@ -160,6 +160,11 @@ row links to the section that explains it.
      - **No**
      - Yes
      - `Not implemented at all`_
+   * - Denoising (``denoise``, default on)
+     - Not applicable (noise-free)
+     - Not applicable (noise-free)
+     - Yes
+     - `Which renderer runs your scene`_
    * - True orthographic projection
      - **No**
      - **No**
@@ -195,20 +200,30 @@ Which renderer runs your scene
 
 ``SETTINGS.raytracing.samples_per_pixel`` selects the renderer, not a quality
 dial. ``1`` (the default) is the deterministic renderer; anything above it is
-the path tracer, which does not implement environment maps or custom scatter
-overrides. Algan refuses such a combination rather than silently dropping it.
-See :ref:`renderer-capabilities` for the full table.
+the path tracer, which does not implement custom scatter overrides. Algan
+refuses such a combination rather than silently dropping it. See
+:ref:`renderer-capabilities` for the full table.
 
-Two further consequences of the split, not covered there:
+Three further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
-  fragment route, and lights every surface by sampling the scene's lights
-  directly. What it does not reproduce is the deterministic renderer's
-  ambient fill and its screen-space glossy prefilter: real indirect transport
-  replaces both.
-* Its output is stochastic, so low sample counts are visibly noisy -- but it is
-  *reproducible*: every sample is a pure function of the pixel, frame and
-  sample index, so re-rendering the same scene gives an identical frame.
+  fragment route. Direct light comes from sampling one entry of a
+  power-weighted table per lit surface point -- delta and area lights,
+  emissive triangles and the environment map together -- while the
+  direction-less ambient and hemisphere lights keep their deterministic fill.
+  What it does not reproduce is the deterministic renderer's screen-space
+  glossy prefilter: real sampled glossy transport replaces it.
+* Its raw output is stochastic, so low sample counts are visibly noisy. By
+  default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
+  Image Denoise RT filter re-implemented in torch, guided by albedo and
+  normal information the render accumulates alongside the image. The weights
+  (about 2 MB) are fetched once into the cache directory on first use; a
+  machine that cannot fetch them renders without denoising after one warning.
+  Flat 2-D content composites deterministically inside the path tracer (zero
+  variance), so vector graphics and text stay exact with or without it.
+* Denoised or not, a path-traced frame is *reproducible*: every sample is a
+  pure function of the pixel, frame and sample index, so re-rendering the
+  same scene gives an identical frame on the same machine.
 
 Within the deterministic renderer: two paths
 --------------------------------------------
@@ -485,13 +500,17 @@ Everything else about texturing:
   normal maps are sampled per fragment; a packed **metallic-roughness** map and
   an **emissive** map are reduced to their *mean* and applied as per-primitive
   constants. Occlusion maps are ignored.
-* **Environment maps are resampled to at most 2048 pixels wide**, and their
-  diffuse (image-based-lighting) contribution is an **order-1 spherical
-  harmonic** -- four coefficients. That is enough for a directional tint and no
-  more: a map with a small bright sun lights the scene as though the sun were
-  smeared across the sky. The map's *specular* contribution -- the sky itself,
-  and what a mirror or a lens shows of it -- is sampled from the full (resampled)
-  image, so only the diffuse term is band-limited.
+* **Environment maps are resampled to at most 2048 pixels wide**, and on the
+  deterministic renderer their diffuse (image-based-lighting) contribution is
+  an **order-1 spherical harmonic** -- four coefficients. That is enough for a
+  directional tint and no more: a map with a small bright sun lights the scene
+  as though the sun were smeared across the sky. The map's *specular*
+  contribution -- the sky itself, and what a mirror or a lens shows of it -- is
+  sampled from the full (resampled) image, so only the diffuse term is
+  band-limited. The **path tracer** has no such band limit: it
+  importance-samples the full map through a luminance table at every lit
+  surface point, so a small bright sun lights the scene as a sun, with the
+  correct sharp-soft shadows.
 
 
 Shadows
@@ -552,8 +571,8 @@ Limits and approximations
   glass, so there are no caustics: a glass object's shadow keeps its sharp
   silhouette, and everything its interior does to the light crossing it --
   opacity, albedo tint, absorption over the chord -- happens along a straight
-  line. Caustics need ``samples_per_pixel > 1``, which gives up most of this
-  page's features.
+  line. The path tracer's shadow rays travel the same straight line, so this
+  holds under both renderers; see `Not implemented at all`_.
 
 
 Reflection, refraction and transmission
@@ -855,6 +874,11 @@ Hard limits
      - 16
      - Further layers merge into the last, and attenuate once between them
        instead of once each. **Warns** (:ref:`limits-truncation`).
+   * - Nested translucent closed-shell solids along one path-traced camera ray
+     - 4
+     - The surplus shell attenuates once per crossing instead of once per
+       entry/exit pair, rendering slightly too opaque. **Warns**
+       (:ref:`limits-truncation`).
    * - Frames in one render batch
      - 32767
      - Raises. Not reachable in practice -- memory bounds the batch far below
@@ -912,10 +936,11 @@ check without reading logs::
     assert not truncations, truncations.as_dict()
 
 :class:`~.TruncationCounts` has one field per ceiling --
-``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers`` and
-``dropped_continuations`` -- plus ``total``. The counts are cumulative over the
-whole render, except ``shadow_lights``, which is a property of the scene rather
-than a tally of events and reports the worst batch.
+``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers``,
+``dropped_continuations`` and ``closed_shell_ring`` -- plus ``total``. The
+counts are cumulative over the whole render, except ``shadow_lights``, which is
+a property of the scene rather than a tally of events and reports the worst
+batch.
 
 Every counter is unconditional, so **a zero is a measurement**: it says the
 ceiling was watched and never reached, not that nothing was looking.
@@ -946,7 +971,10 @@ Neither renderer does any of these, at any setting:
 * **Auxiliary output passes.** There is no depth buffer, normal buffer, object
   ID buffer, motion-vector buffer or cryptomatte to write out -- only the shaded
   RGB(A) frame.
-* **Temporal anti-aliasing**, temporal accumulation or denoising of any kind.
+* **Temporal anti-aliasing** or temporal accumulation. Denoising exists, but
+  only for the path tracer (``denoise``; see
+  `Which renderer runs your scene`_) -- the deterministic renderer has no
+  noise to remove.
 * **A "physical" light-transport mode.** The unwired physical-mode Monte Carlo
   kernel and the two settings only it read (``light_intensity`` and
   ``ambient_light``) have been deleted, as has ``indirect_bounce_strength``,

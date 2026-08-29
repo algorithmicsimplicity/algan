@@ -312,10 +312,13 @@ proportional cost.
    through each occluder's opacity, so stacked translucent surfaces compound and a
    fully opaque one blocks. Ambient and emissive terms are unaffected.
 
-   What the deterministic renderer cannot do is refractive transport: caustics,
-   and light bent as it passes through glass. These require the path tracer, at
-   the cost of a large increase in render time. It honours every light type on
-   this page; see :ref:`renderer-capabilities` for what it does give up.
+   What neither renderer does is refractive *shadow* transport: a shadow ray
+   travels a straight line through glass under both, so there are no caustics
+   (see :doc:`renderer_limitations`). The path tracer honours every light type
+   on this page -- area lights and emissive surfaces as true sampled emitters,
+   the rest exactly as the deterministic stages define them -- at the cost of
+   a large increase in render time; see :ref:`renderer-capabilities` for what
+   it gives up.
 
 .. admonition:: How many lights can cast shadows?
    :class: seealso

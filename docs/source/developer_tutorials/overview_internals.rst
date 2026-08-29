@@ -105,7 +105,7 @@ path from the live ``SETTINGS.raytracing`` configuration and scene features:
 
 * the deterministic wavefront path for single-sample rendering and features
   such as deterministic reflection/refraction;
-* the Monte Carlo path tracer for multi-sample stochastic rendering where its
+* the wavefront path tracer for multi-sample stochastic rendering where its
   capability set is sufficient;
 * the hybrid primary-raster path when enabled, with continuation rays handled
   by the wavefront machinery.

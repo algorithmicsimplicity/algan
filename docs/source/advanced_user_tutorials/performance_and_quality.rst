@@ -94,8 +94,12 @@ This is the biggest single decision, because it selects the renderer:
   primary visibility and traces rays for reflection, refraction and shadows. Fast,
   noise-free, and what every example in this documentation uses.
 * Above ``1`` switches to the **path tracer**, which gives true global
-  illumination and physically-correct soft shadows and rough reflections, at
-  dramatically higher cost -- and needs a high sample count to be free of noise.
+  illumination, physically-correct soft shadows and rough reflections, area and
+  emissive lighting, and image-based environment lighting, at dramatically
+  higher cost. Its raw output is noisy at low sample counts, so by default it
+  is **denoised** (``SETTINGS.raytracing.denoise``, on) with a neural filter
+  guided by the render's own albedo and normal information; turn it off to see
+  or gate the raw estimator.
 
 Reach for path tracing when you need full light transport. For flat 2-D artwork
 and text the deterministic renderer is not merely cheaper but *better*: it
@@ -138,13 +142,16 @@ this before it allocates anything and refuses rather than silently dropping them
      - Yes
      - **Not supported**
    * - Environment maps
-     - Yes
-     - **Not supported**
+     - Yes (order-1 SH diffuse)
+     - Yes (importance-sampled, full map)
    * - Analytic anti-aliasing
      - Yes
      - No -- jittered sub-pixel samples instead
    * - Global illumination, emissive surfaces as lights
      - No
+     - Yes
+   * - Denoising (``denoise``, default on)
+     - Not applicable (noise-free)
      - Yes
 
 A **custom scatter override** is a fragment pipeline that redefines how a ray
