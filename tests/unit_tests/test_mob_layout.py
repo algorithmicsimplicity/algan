@@ -80,7 +80,7 @@ def test_none_screen_rectangle_corners_default_to_whole_screen():
 def test_exact_screen_rectangle_fit_animates_scale_and_position_together():
     scene = SceneManager.instance().current_scene
     square = Square().spawn(animate=False)
-    source_size = square.get_axis_aligned_size()
+    source_size = square.get_bounding_box_size()
     expected_lower, expected_upper = _screen_rectangle_at_z_zero(scene, (0, 0), (1, 1))
     target_size = expected_upper - expected_lower
 
@@ -88,7 +88,7 @@ def test_exact_screen_rectangle_fit_animates_scale_and_position_together():
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
 
     torch.testing.assert_close(
-        square.get_axis_aligned_size(), (source_size + target_size) * 0.5
+        square.get_bounding_box_size(), (source_size + target_size) * 0.5
     )
     torch.testing.assert_close(
         square.get_center(), (expected_lower + expected_upper) * 0.5
@@ -145,7 +145,7 @@ def test_screen_rectangle_fit_keeps_a_mob_with_depth_inside_the_frame(camera_rot
     scene = SceneManager.instance().current_scene
     if camera_rotation:
         with Off():
-            scene.camera.rotate(camera_rotation, UP, about_point=ORIGIN)
+            scene.camera.rotate(camera_rotation, UP, about=ORIGIN)
     cube = Cube(add_to_scene=False)
 
     cube.fit_to_screen()
@@ -167,7 +167,7 @@ def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
     # camera turned away from them.
     scene = SceneManager.instance().current_scene
     with Off():
-        scene.camera.rotate(30, UP, about_point=ORIGIN)
+        scene.camera.rotate(30, UP, about=ORIGIN)
     square = Square(add_to_scene=False)
 
     square.fit_to_screen((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
@@ -186,10 +186,10 @@ def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
 def test_screen_rectangle_fit_uses_a_camera_aligned_bounding_box():
     scene = SceneManager.instance().current_scene
     with Off():
-        scene.camera.rotate(30, UP, about_point=ORIGIN)
+        scene.camera.rotate(30, UP, about=ORIGIN)
     square = Square(add_to_scene=False)
     with Off():
-        square.rotate(30, UP, about_point=ORIGIN)
+        square.rotate(30, UP, about=ORIGIN)
 
     square.fit_to_screen((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
 
@@ -206,7 +206,7 @@ def test_layout_size_scale_and_center_helpers_are_chainable():
     square = Square(add_to_scene=False)
 
     torch.testing.assert_close(
-        square.get_axis_aligned_size(), torch.tensor([[[2.0, 2.0, 0.0]]])
+        square.get_bounding_box_size(), torch.tensor([[[2.0, 2.0, 0.0]]])
     )
     assert square.move_center_to((1, 2, 3)) is square
     torch.testing.assert_close(square.get_center(), torch.tensor([[[1.0, 2.0, 3.0]]]))

@@ -33,32 +33,31 @@ _SCREEN_FIT_TOLERANCE = 1e-6
 
 class MobLayoutMixin:
     """Bounding boxes, boundary queries, and screen-relative placement
-    (``move_to_edge``, ``move_next_to``, ``move_inline_with_*``, ...).
+    (``move_to_screen_edge``, ``move_next_to``, ``align_with``, ...).
     """
 
-    def get_axis_aligned_lower_corner(self) -> torch.Tensor:
-        """Get the minimum corner of this Mob's own points, ignoring children.
+    def get_bounding_box_min(self) -> torch.Tensor:
+        """Get the minimum corner of the box enclosing this Mob and its children.
+
+        The same box :meth:`get_bounding_box` returns the corners of, and the
+        box :meth:`get_center` is the middle of.
 
         Returns
         -------
         torch.Tensor
-            Per-axis minimum of this Mob's points, shape ``(*, 1, 3)``. For the
-            corner of the whole hierarchy, use
-            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_bounding_box`.
+            Per-axis minimum, shape ``(*, 1, 3)``.
         """
-        return self.location.amin(-2, keepdim=True)
+        return self.get_bounding_box().amin(-2, keepdim=True)
 
-    def get_axis_aligned_upper_corner(self) -> torch.Tensor:
-        """Get the maximum corner of this Mob's own points, ignoring children.
+    def get_bounding_box_max(self) -> torch.Tensor:
+        """Get the maximum corner of the box enclosing this Mob and its children.
 
         Returns
         -------
         torch.Tensor
-            Per-axis maximum of this Mob's points, shape ``(*, 1, 3)``. For the
-            corner of the whole hierarchy, use
-            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_bounding_box`.
+            Per-axis maximum, shape ``(*, 1, 3)``.
         """
-        return self.location.amax(-2, keepdim=True)
+        return self.get_bounding_box().amax(-2, keepdim=True)
 
     @staticmethod
     def _box_corners(lower_corner, upper_corner):
@@ -160,36 +159,17 @@ class MobLayoutMixin:
         )
         return broadcast_gather(points, -2, ind, keepdim=True)
 
-    def get_boundary_edge_point_recursive(
-        self, direction: torch.Tensor
-    ) -> torch.Tensor:
-        """Get the outermost point of this Mob's hierarchy along a direction.
-
-        Walks the hierarchy so a Group reports the extreme point of whichever
-        member reaches furthest.
-        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_edge_point`
-        is the
-        public spelling of this.
-
-        Parameters
-        ----------
-        direction
-            Direction to search along, shape ``(*, 3)``.
-
-        Returns
-        -------
-        torch.Tensor
-            The extreme boundary point, shape ``(*, 1, 3)``.
-        """
+    def _edge_point_recursive(self, direction: torch.Tensor) -> torch.Tensor:
+        """The outermost point of this Mob's whole hierarchy along a direction."""
         num_children = len(self.children)
         if num_children == 0:
             return self._select_in_direction(self.get_boundary_points(), direction)
         elif num_children == 1:
-            return self.children[0].get_boundary_edge_point_recursive(direction)
+            return self.children[0]._edge_point_recursive(direction)
         return self._select_in_direction(
             torch.cat(
                 [
-                    child.get_boundary_edge_point_recursive(direction)
+                    child._edge_point_recursive(direction)
                     for child in self.children
                     if not child.exclude_from_boundary
                 ],
@@ -198,25 +178,33 @@ class MobLayoutMixin:
             direction,
         )
 
-    def get_boundary_edge_point(self, direction: torch.Tensor) -> torch.Tensor:
+    def get_edge_point(
+        self, direction: torch.Tensor, recursive: bool = True
+    ) -> torch.Tensor:
         """Get the point on the Mob furthest along a direction.
 
         The actual outermost point of the geometry, which for an irregular shape
         is off to one side rather than straight out from the center. For the
         point straight out from the center, use
-        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_in_direction`.
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_point`.
 
         Parameters
         ----------
         direction
             Direction to search along, shape ``(*, 3)``; need not be normalized.
+        recursive
+            Whether to search this Mob's descendants as well, so a Group reports
+            the extreme point of whichever member reaches furthest. Defaults to
+            True; pass False to search only this Mob's own points.
 
         Returns
         -------
         torch.Tensor
             The extreme boundary point, shape ``(*, 1, 3)``.
         """
-        return self.get_boundary_edge_point_recursive(direction)
+        if not recursive:
+            return self._select_in_direction(self.get_boundary_points(), direction)
+        return self._edge_point_recursive(direction)
 
     def get_center(self) -> torch.Tensor:
         """Get the center of the box enclosing this Mob and its descendants.
@@ -242,7 +230,7 @@ class MobLayoutMixin:
         bbox = self.get_bounding_box()
         return get_median_location(bbox)
 
-    def get_axis_aligned_size(self) -> torch.Tensor:
+    def get_bounding_box_size(self) -> torch.Tensor:
         """Get the Mob's size along the world x, y and z axes.
 
         Measured from the bounding box of this Mob and its descendants, in world
@@ -265,7 +253,7 @@ class MobLayoutMixin:
         torch.Tensor
             Width of this Mob and its descendants, shape ``(*, 1, 1)``.
         """
-        return self.get_axis_aligned_size()[..., 0:1]
+        return self.get_bounding_box_size()[..., 0:1]
 
     def get_height(self) -> torch.Tensor:
         """Get the Mob's extent along the world y axis, in world units.
@@ -275,7 +263,7 @@ class MobLayoutMixin:
         torch.Tensor
             Height of this Mob and its descendants, shape ``(*, 1, 1)``.
         """
-        return self.get_axis_aligned_size()[..., 1:2]
+        return self.get_bounding_box_size()[..., 1:2]
 
     def get_depth(self) -> torch.Tensor:
         """Get the Mob's extent along the world z axis, in world units.
@@ -285,7 +273,7 @@ class MobLayoutMixin:
         torch.Tensor
             Depth of this Mob and its descendants, shape ``(*, 1, 1)``.
         """
-        return self.get_axis_aligned_size()[..., 2:3]
+        return self.get_bounding_box_size()[..., 2:3]
 
     def move_center_to(self, point: torch.Tensor) -> MobLayoutMixin:
         """Move the Mob so the middle of its bounding box lands on a point.
@@ -416,7 +404,7 @@ class MobLayoutMixin:
         axes = torch.cat(
             (
                 camera.get_right_direction(),
-                camera.get_upwards_direction(),
+                camera.get_up_direction(),
                 camera.get_forward_direction(),
             ),
             -2,
@@ -802,7 +790,7 @@ class MobLayoutMixin:
             self.move(target_center - source_center)
         return self
 
-    def get_boundary_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
+    def get_boundary_point(self, direction: torch.Tensor) -> torch.Tensor:
         """Get the point where the Mob's boundary sits along a direction.
 
         The outermost boundary point projected back onto the line through the
@@ -823,14 +811,14 @@ class MobLayoutMixin:
 
         See Also
         --------
-        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_edge_point`
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_edge_point`
             The true extreme point, which may be off-axis.
         """
-        # Funnels get_length_in_direction, move_inline_with_*, move_next_to and
+        # Funnels get_length_in_direction, align_with, move_next_to and
         # Group.arrange_in_line, all of which otherwise fail with a bare
         # AttributeError on 'int' when handed a scalar.
         direction = F.normalize(cast_to_direction("direction", direction), p=2, dim=-1)
-        edge_point = self.get_boundary_edge_point(direction)
+        edge_point = self.get_edge_point(direction)
 
         # Get the logical center of the Mob (or its current location if no complex center is defined)
         mob_center = self.get_center()
@@ -841,78 +829,15 @@ class MobLayoutMixin:
             + mob_center
         )
 
-    def set_x_coord(self, target: Mob | torch.Tensor | float) -> MobLayoutMixin:
-        """Move the Mob along the world x axis only, leaving y and z alone.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        target
-            New x coordinate in world units, or a Mob whose x coordinate to take.
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
-        """
-        return self.set_individual_coords(target, 0)
-
-    def set_y_coord(self, target: Mob | torch.Tensor | float) -> MobLayoutMixin:
-        """Move the Mob along the world y axis only, leaving x and z alone.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        target
-            New y coordinate in world units, or a Mob whose y coordinate to take.
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
-        """
-        return self.set_individual_coords(target, 1)
-
-    def set_z_coord(self, target: Mob | torch.Tensor | float) -> MobLayoutMixin:
-        """Move the Mob along the world z axis only, leaving x and y alone.
-
-        The z axis runs out of the screen, so this changes how far the Mob is
-        from the camera.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        target
-            New z coordinate in world units, or a Mob whose z coordinate to take.
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
-        """
-        return self.set_individual_coords(target, 2)
-
-    def set_individual_coords(
-        self, target: Mob | torch.Tensor | float, coord_indexes: int | list[int]
+    def set_coord(
+        self,
+        indices: int | list[int],
+        value: Mob | torch.Tensor | float,
     ) -> MobLayoutMixin:
         """Move the Mob along selected world axes, leaving the others alone.
 
-        The general form of
-        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_x_coord` and
-        friends; pass a list to
-        set several axes at once.
+        The general form of the :attr:`x`, :attr:`y`, :attr:`z` and :attr:`xy`
+        properties; pass a list to set several axes at once.
 
         Animation
         ---------
@@ -921,13 +846,14 @@ class MobLayoutMixin:
 
         Parameters
         ----------
-        target
-            New coordinate values, or a Mob whose location supplies them. A
-            multi-component value is indexed with ``coord_indexes``, so a full 3-D
-            point can be passed and only the selected axes are taken from it.
-        coord_indexes
+        indices
             Which axes to write: ``0`` for x, ``1`` for y, ``2`` for z, or a list
             such as ``[0, 2]``.
+        value
+            New coordinate values in world units, or a Mob whose location
+            supplies them. A multi-component value is indexed with ``indices``,
+            so a full 3-D point can be passed and only the selected axes taken
+            from it.
 
         Returns
         -------
@@ -936,81 +862,26 @@ class MobLayoutMixin:
         """
         from algan.animatable_base.mob import Mob
 
-        if isinstance(target, Mob):
-            target = target.location
-        target = cast_to_tensor(target)
-        if not hasattr(coord_indexes, "__len__"):
-            coord_indexes = [coord_indexes]
-        if target.shape[-1] != 1:
-            target = target[..., coord_indexes]
+        if isinstance(value, Mob):
+            value = value.location
+        value = cast_to_tensor(value)
+        if not hasattr(indices, "__len__"):
+            indices = [indices]
+        if value.shape[-1] != 1:
+            value = value[..., indices]
         new_location = self.location.clone()
-        new_location[..., coord_indexes] = target
+        new_location[..., indices] = value
         self.location = new_location
         return self
 
-    def get_x_coord(self, *args, **kwargs) -> torch.Tensor:
-        """Get the Mob's x coordinate in world units.
-
-        Parameters
-        ----------
-        *args, **kwargs
-            Passed to
-            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_individual_coords`
-            -- notably
-            ``centered=True`` to measure the bounding-box center instead of the
-            Mob's anchor.
-
-        Returns
-        -------
-        torch.Tensor
-            The x coordinate, shape ``(*, 1)``.
-        """
-        return self.get_individual_coords(0, *args, **kwargs)
-
-    def get_y_coord(self, *args, **kwargs) -> torch.Tensor:
-        """Get the Mob's y coordinate in world units.
-
-        Parameters
-        ----------
-        *args, **kwargs
-            Passed to
-            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_individual_coords`
-            -- notably
-            ``centered=True``.
-
-        Returns
-        -------
-        torch.Tensor
-            The y coordinate, shape ``(*, 1)``.
-        """
-        return self.get_individual_coords(1, *args, **kwargs)
-
-    def get_z_coord(self, *args, **kwargs) -> torch.Tensor:
-        """Get the Mob's z coordinate in world units.
-
-        Parameters
-        ----------
-        *args, **kwargs
-            Passed to
-            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_individual_coords`
-            -- notably
-            ``centered=True``.
-
-        Returns
-        -------
-        torch.Tensor
-            The z coordinate, shape ``(*, 1)``.
-        """
-        return self.get_individual_coords(2, *args, **kwargs)
-
-    def get_individual_coords(
-        self, coord_indexes: int | list[int], centered: bool = False
+    def get_coord(
+        self, indices: int | list[int], centered: bool = False
     ) -> torch.Tensor:
         """Get selected world coordinates of the Mob.
 
         Parameters
         ----------
-        coord_indexes
+        indices
             Which axes to read: ``0`` for x, ``1`` for y, ``2`` for z, or a list
             of them.
         centered
@@ -1023,35 +894,76 @@ class MobLayoutMixin:
             A copy of the requested coordinates, safe to keep and modify.
         """
         location = self.get_center() if centered else self.location
-        return location[..., coord_indexes].clone()
+        return location[..., indices].clone()
 
-    def set_x_y_coord(self, xy_coords: torch.Tensor):
-        """Move the Mob in the screen plane, keeping its distance from the camera.
-
-        Writes the x and y coordinates and leaves z as it is. Unlike its
-        neighbours, this returns nothing, so it cannot be chained.
+    @property
+    def x(self) -> torch.Tensor:
+        """The Mob's x coordinate in world units, shape ``(*, 1)``.
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        xy_coords
-            New x and y in world units; the first two components of a tensor of
-            shape ``(*, 2)`` or larger are used, so a 3-D point may be passed and
-            its z ignored.
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
+        Assignment is recorded like any other Mob attribute: ``mob.x = 3``
+        slides the Mob over the current context's duration, and
+        ``with Off(): mob.x = 3`` teleports it. Reading is not animated.
         """
-        new_location = self.location.clone()
-        new_location[..., :2] = xy_coords[..., :2]
-        self.location = new_location
-        return self
+        return self.get_coord(0)
+
+    @x.setter
+    def x(self, value):
+        self.set_coord(0, value)
+
+    @property
+    def y(self) -> torch.Tensor:
+        """The Mob's y coordinate in world units, shape ``(*, 1)``.
+
+        Animation
+        ---------
+        Assignment is recorded, exactly as for :attr:`x`.
+        """
+        return self.get_coord(1)
+
+    @y.setter
+    def y(self, value):
+        self.set_coord(1, value)
+
+    @property
+    def z(self) -> torch.Tensor:
+        """The Mob's z coordinate in world units, shape ``(*, 1)``.
+
+        The z axis runs out of the screen, so this is how far the Mob is from
+        the camera.
+
+        Animation
+        ---------
+        Assignment is recorded, exactly as for :attr:`x`.
+        """
+        return self.get_coord(2)
+
+    @z.setter
+    def z(self, value):
+        self.set_coord(2, value)
+
+    @property
+    def xy(self) -> torch.Tensor:
+        """The Mob's x and y coordinates in world units, shape ``(*, 2)``.
+
+        Writing it moves the Mob in the screen plane and leaves z -- its
+        distance from the camera -- alone. A value with more than two components
+        may be assigned; the extra components are ignored.
+
+        Animation
+        ---------
+        Assignment is recorded, exactly as for :attr:`x`.
+        """
+        return self.get_coord([0, 1])
+
+    @xy.setter
+    def xy(self, value):
+        from algan.animatable_base.mob import Mob
+
+        if isinstance(value, Mob):
+            value = value.location
+        self.set_coord([0, 1], cast_to_tensor(value)[..., :2])
 
     def get_length_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
         """Get how far the Mob extends along an arbitrary direction.
@@ -1072,12 +984,11 @@ class MobLayoutMixin:
         """
         # Get the boundary points in the positive and negative directions and calculate their distance
         return (
-            self.get_boundary_in_direction(direction)
-            - self.get_boundary_in_direction(-direction)
+            self.get_boundary_point(direction) - self.get_boundary_point(-direction)
         ).norm(p=2, dim=-1, keepdim=True)
 
-    def get_points_evenly_along_direction(
-        self, direction: torch.Tensor, num_points: int = 3
+    def sample_points_in_direction(
+        self, direction: torch.Tensor, count: int = 3
     ) -> list[torch.Tensor]:
         """Get evenly spaced points spanning the Mob along a direction.
 
@@ -1089,20 +1000,20 @@ class MobLayoutMixin:
         ----------
         direction
             Direction to space the points along, shape ``(*, 3)``.
-        num_points
+        count
             How many points to return. Defaults to ``3``.
 
         Returns
         -------
         list[torch.Tensor]
-            ``num_points`` points, each of shape ``(*, 1, 3)``, ordered from the
+            ``count`` points, each of shape ``(*, 1, 3)``, ordered from the
             ``direction`` end towards the opposite end.
         """
         e, s = (
-            self.get_boundary_edge_point(direction),
-            self.get_boundary_edge_point(-direction),
+            self.get_edge_point(direction),
+            self.get_edge_point(-direction),
         )
-        return [s * t + (1 - t) * e for t in torch.linspace(0, 1, num_points + 2)[1:-1]]
+        return [s * t + (1 - t) * e for t in torch.linspace(0, 1, count + 2)[1:-1]]
 
     def get_displacement_to_boundary(
         self, mob: Mob, direction: torch.Tensor
@@ -1110,9 +1021,9 @@ class MobLayoutMixin:
         """Get the displacement that would align this Mob's boundary with another's.
 
         The vector
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_boundary`
-        applies; useful when you
-        want the number rather than the movement.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.align_with`
+        applies with ``anchor='boundary'``; useful when you want the number
+        rather than the movement.
 
         Parameters
         ----------
@@ -1127,6 +1038,6 @@ class MobLayoutMixin:
             Displacement from this Mob's boundary to ``mob``'s, shape
             ``(*, 1, 3)``.
         """
-        my_boundary = self.get_boundary_in_direction(direction)
-        other_boundary = mob.get_boundary_in_direction(direction)
+        my_boundary = self.get_boundary_point(direction)
+        other_boundary = mob.get_boundary_point(direction)
         return other_boundary - my_boundary

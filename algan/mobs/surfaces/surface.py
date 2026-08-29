@@ -1908,7 +1908,7 @@ class Surface(Mob):
         camera_location = camera.location.reshape(-1, 3)[0]
         forward = camera.get_forward_direction().reshape(-1, 3)[0]
         right = camera.get_right_direction().reshape(-1, 3)[0]
-        upwards = camera.get_upwards_direction().reshape(-1, 3)[0]
+        upwards = camera.get_up_direction().reshape(-1, 3)[0]
         relative = points - camera_location
         depth = (relative * forward).sum(dim=-1)
 
@@ -3642,14 +3642,14 @@ class Surface(Mob):
                 packed, dtype=torch.int32, device=corners.device
             ).repeat_interleave(per_grid)
         # A solid built from several Surfaces -- a capped Cylinder is a tube
-        # plus two discs -- says so by giving every part the same ``mesh_key``,
+        # plus two discs -- says so by giving every part the same ``_mesh_key``,
         # which merges them into one surface for the analytic-AA run rule
         # instead of leaving each joint a boundary between two (see
         # ``primitives._mesh_ids_from_collection``). Only consecutive members
         # merge, which the authored draw order provides: it walks each tree
         # parent-first, so a part's own caps follow it.
-        if getattr(self, "mesh_key", None) is not None:
-            primitive.mesh_key = self.mesh_key
+        if getattr(self, "_mesh_key", None) is not None:
+            primitive.mesh_key = self._mesh_key
         # A plain Surface is a two-sided sheet; the shapes of revolution built
         # on it declare an outside (Mob.two_sided). A solid among them
         # (:class:`~algan.mobs.shapes_3d.Sphere` with full ranges, a capped
@@ -3659,7 +3659,7 @@ class Surface(Mob):
         # as does any partial sweep that cuts the shell.
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
-        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         return primitive
 
     def coord_function(self, uv: torch.Tensor):

@@ -45,9 +45,9 @@ def run(mode, clip):
     with Seq(run_time=2, rate_func=rate_funcs.identity):
         camera = Scene.get_camera()
         if mode == "rotate":
-            camera.rotate(360, UP, about_point=ORIGIN)
+            camera.rotate(360, UP, about=ORIGIN)
         else:
-            camera.orbit(360, UP, about_point=ORIGIN)
+            camera.orbit(360, UP, about=ORIGIN)
     start = time.perf_counter()
     Scene.save_video(os.path.join(OUT_DIR, f"ab_{mode}_{int(clip)}"), reset=True)
     return time.perf_counter() - start

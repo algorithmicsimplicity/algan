@@ -305,17 +305,39 @@ All eleven verified present on `Mob` today:
 `morph_soup_parts` is overridden in `mobs/shapes_3d.py` and `mobs/point_cloud.py` — rename all
 three together or the override silently stops overriding.
 
+**Corrected during implementation — `retroactive` stays public.** It is the `with` block a user
+writes to record earlier in the video, with a docstring and a worked example; `set_to_retroactive`
+and `set_to_current` are the raw authoring-cursor pair it wraps, and privatizing those two leaves
+the concept exactly one public spelling. `mesh_key` is privatized on `Mob` only — a render
+primitive's own `mesh_key` is a different object's attribute and keeps its name.
+
 ### 3b. Consolidate duplicate geometry queries
 
 | Delete | Keep |
 | :--- | :--- |
-| `get_boundary_edge_point`, `get_boundary_edge_point_recursive`, `get_boundary_in_direction`, `Group.get_boundary_edge_point2` | `get_edge_point(direction, recursive=False)` |
-| `Group.get_mob_midpoint` | `get_center()` — already the identical bbox min/max midpoint |
+| `get_boundary_edge_point`, `get_boundary_edge_point_recursive`, `Group.get_boundary_edge_point2` | `get_edge_point(direction, recursive=True)` |
+| `get_boundary_in_direction` | renamed `get_boundary_point(direction)` — **not** deleted |
+| `Group.get_mob_midpoint` | privatized `_get_mob_midpoint` — **not** replaced by `get_center()` |
 | `Group.mobs` | `Group.children` — `mobs` already just returns `self.children`, so this is an alias and the API policy forbids it |
 
-`Group.get_boundary_edge_point2` takes the extremum across members rather than over the whole
-bounding box, which is a real behavioural difference from `Mob.get_boundary_edge_point` — fold it
-in as the `Group` override of `get_edge_point`, do not just delete it.
+**Corrected during implementation — three claims in the original table were wrong.**
+
+- `get_boundary_in_direction` is **not** a duplicate of `get_boundary_edge_point`. The edge point
+  is the true extreme point of the geometry; the boundary point is that extreme projected back
+  onto the line through the Mob's center, which is what every placement method measures with. It
+  is renamed to `get_boundary_point` so the pair reads as a pair, and kept.
+- `Group.get_mob_midpoint` is **not** the bbox min/max midpoint. It is the min/max midpoint of
+  the members' *locations*, and it is what sets the Group's own anchor in `__init__` and `add`.
+  Replacing it with `get_center()` would move every Group's anchor — a pixel move, which no phase
+  in this plan may make. It is privatized instead: users have `get_center()` for the visual
+  middle, and the anchor rule stays an internal.
+- `Group.get_boundary_edge_point2` is uncalled dead code, and its "extremum across members" is
+  what `Mob.get_boundary_edge_point` already does — it differs only by skipping the
+  `exclude_from_boundary` filter and by returning a squeezed shape. It is deleted outright, with
+  no `Group` override to fold in.
+
+`recursive` **defaults to True**, not False as first written: every existing caller wants the
+recursive behaviour, so any other default would silently change what a Group measures.
 
 ### 3c. Rename
 
@@ -329,10 +351,20 @@ in as the `Group` override of `get_edge_point`, do not just delete it.
 | `move_out_of_screen(edge, ...)` | `move_off_screen(direction, ...)` |
 | `move_to_point_along_square(destination, displacement)` | `move_to_point_with_displacement(destination, displacement)` |
 | `move_between(loc1, loc2)` | `move_between(start, end)` |
-| `set_x_y_coord(xy_coords)` | `set_xy(coords)` |
+| `set_x_y_coord(xy_coords)` | deleted; the `.xy` property from 3e replaces it |
 | `rotate(num_degrees, axis, about_point)` | `rotate(angle, axis, about=None, *, degrees=True)` |
 | `orbit(num_degrees, axis, about_point)` | `orbit(angle, axis, about=None, *, degrees=True)` |
 | `move_to(location, path_arc_angle)` and `move_to_point_along_arc(point, arc_angle_degrees, ...)` | `move_to(location, arc_angle=None)` |
+
+**`get_bounding_box_min` / `_max` now mean what their names say.** The two corner methods read
+only the Mob's *own* points and ignored its children, so keeping that under a `bounding_box` name
+would have been actively misleading beside `get_bounding_box_size`, which is recursive. Both are
+uncalled anywhere in the package, so redefining them off `get_bounding_box()` moves nothing;
+the trio (min, max, size) and `get_center()` now all describe the same box.
+
+**`set_x_y_coord` is deleted rather than renamed to `set_xy`.** 3e replaces the six single-axis
+coordinate methods with properties on exactly the argument that a method spelling standing beside
+a property is the duplication this overhaul exists to remove; `set_xy` would be that duplication.
 
 `about_point → about`, **not** `center`. `center` is already taken three ways in this API
 (`get_center()`, `Camera.center_on`, and the `Text(center=)` bool in Phase 5), and
@@ -343,6 +375,10 @@ in as the `Group` override of `get_edge_point`, do not just delete it.
 For `d` in `right`, `up`, `forward`: `get_{d}_direction()` with a `.{d}` property alias, and
 `get_{d}_basis()` with no alias. This is the one place the plan adds an alias deliberately;
 record it in `CLAUDE.md`'s alias roster alongside `IN`/`OUT` and the settings spellings.
+
+`Mob.up` collides with `HemisphereLight`'s own `up` attribute, which a `Light` (a `Mob`) writes
+in its constructor and a read-only property would break. Its constructor parameter stays `up`;
+the attribute it stores into is `sky_direction`.
 
 ### 3e. Coordinate access
 
@@ -365,8 +401,25 @@ Mob over the context duration and `with Off(): mob.x = 3` teleports it — the s
 `move_inline_with_mob` collapse into:
 
 ```python
-align_with(mob, direction, anchor='center' | 'edge' | 'boundary', buffer=None)
+align_with(mob, direction, anchor='center' | 'edge' | 'boundary', buffer=None, from_mob=None)
 ```
+
+The three anchors are the three behaviours the four methods actually had, and two of the four
+turned out to be the same one: `move_inline_with_edge` with its default `edge=None` cancels its
+own buffer and computes exactly `move_inline_with_boundary`. So `'center'` is
+`move_inline_with_center` (== `move_inline_with_mob(center=True)`), `'boundary'` is the flush
+same-side alignment those two spellings shared, and `'edge'` is `move_inline_with_mob`'s
+abutting alignment, which now honours `buffer` instead of documenting it as having no effect.
+`from_mob` is carried over from `move_inline_with_mob`; it is the one capability none of the
+other three had.
+
+**`anchor='boundary'` projects onto `direction`, which `move_inline_with_boundary` did not.**
+That method moved the whole boundary-to-boundary displacement, so
+`move_next_to(other, RIGHT, align_edge=DOWN)` — its only caller — slid the Mob back onto the
+target's centre in x while lining the bottoms up. Every method in this family documents "only
+the component along `direction` is applied", so the projection is the intended behaviour and
+the old one was a bug. It is the single pixel-moving change in Phase 3; nothing pixel-compared
+exercises `align_edge`.
 
 **`anchor=`, not `align_to=`** — `Group.arrange_in_line` gets an `align_to` parameter in Phase 4
 that takes a *direction vector*. Same name with two types in one API is what we are here to fix.

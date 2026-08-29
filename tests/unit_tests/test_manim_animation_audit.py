@@ -321,7 +321,7 @@ def test_surface_logical_pn_topology_is_fixed_during_animation():
 
     with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
         cylinder.rotate(720, algan.OUT)
-        cylinder.move_out_of_screen(algan.LEFT, despawn=False)
+        cylinder.move_off_screen(algan.LEFT, despawn=False)
 
     assert (cylinder.grid_width, cylinder.grid_height) == initial_resolution
     assert cylinder.grid.location.shape[-2] == initial_grid_rows

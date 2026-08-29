@@ -536,7 +536,7 @@ class ManimCompatMob(ManimMob):
         )
         return self._animate_to_manim(source, before_source=before)
 
-    def move(self, displacement, path_arc_angle=None, recursive=True, **kwargs):
+    def move(self, displacement, arc_angle=None, recursive=True, **kwargs):
         """Move by a displacement, applying it as a Manim ``shift``.
 
         Algan's generic implementation moves to ``self.location + displacement``,
@@ -545,20 +545,22 @@ class ManimCompatMob(ManimMob):
         also has submobjects (an :class:`Arrow`'s tip, for example).  Shifting
         the backing geometry instead keeps the travelled displacement exact for
         every Mob, and is what the relative-placement helpers
-        (:meth:`~.Mob.move_to_edge`, :meth:`~.Mob.move_next_to`, ...) are built
+        (:meth:`~.Mob.move_to_screen_edge`, :meth:`~.Mob.move_next_to`, ...) are built
         on.
         """
         displacement = cast_to_tensor(displacement)
-        if path_arc_angle is not None or not recursive or kwargs:
+        if arc_angle is not None or not recursive or kwargs:
             # Curved paths and non-recursive moves have no Manim equivalent.
             # Let Algan record the motion, then derive the backing geometry from
             # the resulting rows rather than trying to mirror the operation.
             target = self.location + displacement
-            if path_arc_angle is None:
+            if arc_angle is None:
                 self.set_location(target, recursive=recursive, **kwargs)
             else:
-                self.move_to_point_along_arc(
-                    target, path_arc_angle, recursive=recursive, **kwargs
+                # ``_move_along_arc``, not ``move_to``: this class overrides
+                # ``move_to`` with Manim's signature.
+                self._move_along_arc(
+                    target, arc_angle, recursive=recursive, **kwargs
                 )
             self._sync_manim_from_algan()
             return self
@@ -842,7 +844,7 @@ against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
 leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
 exactly where Algan's default camera puts its top border. Nothing is cut off,
 but the text touches the frame edge with no margin at all. Call
-:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
 inset it by the usual buffer, or ``.move(DOWN * 1)`` to place it by hand.
 
 The default rule is sized from Manim's frame too, at ``frame_width - 2``, which

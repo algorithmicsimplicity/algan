@@ -481,7 +481,7 @@ class TriangleMesh(Mob):
         # An imported model honours the shadow flags like anything else. The
         # declaration is resolved through the hierarchy, so setting it on the
         # ThreeDModelMob covers the TriangleMesh children it holds.
-        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         return primitive
 
     def triangle_shell_ids(self):

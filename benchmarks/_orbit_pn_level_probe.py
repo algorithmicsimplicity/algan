@@ -65,9 +65,9 @@ with Off():
 
 with Seq(run_time=4, rate_func=rate_funcs.identity):
     if mode == "rotate":
-        Scene.get_camera().rotate(360, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:
-        Scene.get_camera().orbit(360, UP, about_point=ORIGIN)
+        Scene.get_camera().orbit(360, UP, about=ORIGIN)
 
 out_dir = os.path.join(os.path.dirname(__file__), "_orbit_out")
 os.makedirs(out_dir, exist_ok=True)

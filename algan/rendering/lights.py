@@ -479,7 +479,9 @@ class HemisphereLight(Light):
         if not args and "location" not in kwargs:
             kwargs["location"] = ORIGIN
         self.ground_color = ground_color
-        self.up = _as_direction_target(up)
+        # ``up`` is the constructor's name for it; the attribute is spelled
+        # differently because ``Mob.up`` is the mob's own up direction.
+        self.sky_direction = _as_direction_target(up)
         super().__init__(*args, **kwargs)
 
     def build_aux(self, location):
@@ -496,7 +498,7 @@ class HemisphereLight(Light):
             Aux columns for the packed light row, shape ``[T, K, 13]``.
         """
         aux = self._blank_aux(location)
-        aux[..., 3:6] = F.normalize(self.up, p=2, dim=-1)
+        aux[..., 3:6] = F.normalize(self.sky_direction, p=2, dim=-1)
         gc = self.ground_color
         if gc is None:
             gc = torch.zeros(3)

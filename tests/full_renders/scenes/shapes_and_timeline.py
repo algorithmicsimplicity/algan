@@ -288,9 +288,9 @@ with Seq():
 # Act 5 -- lifecycle: part of the scene leaves the frame, the rest despawns.
 # --------------------------------------------------------------------------
 with Sync(run_time=1.4):
-    filled[0].move_out_of_screen(LEFT, despawn=False)
-    filled[5].move_out_of_screen(RIGHT, despawn=False)
-    filled[2].move_out_of_screen(UP, despawn=False)
+    filled[0].move_off_screen(LEFT, despawn=False)
+    filled[5].move_off_screen(RIGHT, despawn=False)
+    filled[2].move_off_screen(UP, despawn=False)
     morph.rotate(180, OUT)
     hub.scale(1.4)
     counter.set_value(0.0)

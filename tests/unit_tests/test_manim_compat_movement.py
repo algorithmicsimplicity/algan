@@ -70,7 +70,7 @@ def _buffer():
 
 
 def _gap_to_screen_border(scene, mob, edge):
-    boundary = mob.get_boundary_in_direction(edge)
+    boundary = mob.get_boundary_point(edge)
     border = scene.camera.project_point_onto_screen_border(boundary, edge)
     return (border - boundary).norm(p=2, dim=-1).reshape(-1)[0]
 
@@ -100,7 +100,7 @@ def test_move_to_edge_insets_the_boundary_by_the_buffer(name, edge_name):
     mob = COMPAT_MOBS[name]()
     start = _center(mob)
 
-    assert mob.move_to_edge(edge) is mob
+    assert mob.move_to_screen_edge(edge) is mob
 
     torch.testing.assert_close(
         _gap_to_screen_border(scene, mob, edge), _buffer(), atol=2e-5, rtol=0
@@ -113,11 +113,11 @@ def test_move_to_edge_insets_the_boundary_by_the_buffer(name, edge_name):
 
 
 @pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
-def test_move_to_corner_insets_both_boundaries_by_the_buffer(name):
+def test_move_to_screen_corner_insets_both_boundaries_by_the_buffer(name):
     scene = SceneManager.instance().current_scene
     mob = COMPAT_MOBS[name]()
 
-    assert mob.move_to_corner(UP, RIGHT) is mob
+    assert mob.move_to_screen_corner((UP, RIGHT)) is mob
 
     for edge in (UP, RIGHT):
         torch.testing.assert_close(
@@ -135,8 +135,8 @@ def test_move_next_to_leaves_exactly_the_buffer_gap(name, direction_name):
     assert mob.move_next_to(target, direction) is mob
 
     torch.testing.assert_close(
-        mob.get_boundary_in_direction(-direction),
-        target.get_boundary_in_direction(direction) + direction * _buffer(),
+        mob.get_boundary_point(-direction),
+        target.get_boundary_point(direction) + direction * _buffer(),
         atol=2e-5,
         rtol=0,
     )
@@ -179,7 +179,7 @@ def test_batched_algan_points_are_accepted_where_manim_wants_one_point(name):
     # point the Mob is centered on is a point reflection, which leaves any
     # shape's bounding-box center exactly where it was.  The angle is in
     # degrees -- ``rotate`` on a compatibility Mob is Algan's, not Manim's.
-    assert mob.rotate(180, about_point=anchor.location) is mob
+    assert mob.rotate(180, about=anchor.location) is mob
     torch.testing.assert_close(_center(mob), anchor_point, atol=2e-5, rtol=0)
 
     # And through the generic delegation to an un-overridden Manim method.

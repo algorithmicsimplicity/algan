@@ -575,7 +575,7 @@ class Neuron(Mob):
         self.shell = (
             self._make_shell(grid_height, neuron_color)
             .move_to(self.location)
-            .look(direction, axis=1)
+            .look(direction, with_axis="up")
         )
         self.synapses = [
             self.synapse_cls(
@@ -700,8 +700,8 @@ k = 1
 
 def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
     with Off(animation_manager=mob1.animation_manager):
-        p1 = mob1.get_points_evenly_along_direction(direction)
-        p2 = mob2.get_points_evenly_along_direction(direction)
+        p1 = mob1.sample_points_in_direction(direction)
+        p2 = mob2.sample_points_in_direction(direction)
         syns = [
             Synapse(scene=mob1.scene).move_between_points(p1[i], p2[i])
             for i in range(num_points)
@@ -716,7 +716,7 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
         for s in syns:
             s.wave_color(
                 color + GLOW,
-                direction=s.get_upwards_direction(),
+                direction=s.get_up_direction(),
                 opacity=1,
                 wave_length=1.5,
             )
@@ -862,8 +862,8 @@ class NeuralNetMLP(Mob):
         if isinstance(inputs, Mob):
             inputs = [
                 [_]
-                for _ in inputs.get_points_evenly_along_direction(
-                    -(self.get_forward_direction() + self.get_upwards_direction()),
+                for _ in inputs.sample_points_in_direction(
+                    -(self.get_forward_direction() + self.get_up_direction()),
                     len(self.layers[0]),
                 )
             ]
@@ -896,7 +896,7 @@ class NeuralNetMLP(Mob):
                 for n in self.layers[0]:
                     for syn in n.synapses:
                         syn.location = n.location + self.get_forward_direction() * self.input_synapse_offset * 0.5
-                        syn.basis = torch.cat([-self.get_upwards_direction() * syn.scale_coefficient[...,:1],
+                        syn.basis = torch.cat([-self.get_up_direction() * syn.scale_coefficient[...,:1],
                                                self.get_forward_direction() * self.input_synapse_offset,
                                                -self.get_right_direction() * syn.scale_coefficient[...,2:]], -1)
                         syn.set_location_by_function(syn.coord_function)"""

@@ -217,7 +217,7 @@ class _CapDisc(Surface):
     A :class:`~algan.mobs.surfaces.surface.Surface` rather than a 2-D
     :class:`~algan.mobs.shapes_2d.Circle`, so that a cap is the same kind of
     geometry as the body it closes: a triangle mesh that responds to light,
-    and one that can carry the body's ``mesh_key`` so the renderer treats the
+    and one that can carry the body's ``_mesh_key`` so the renderer treats the
     rim as an interior edge of a single surface rather than the boundary where
     two independently antialiased surfaces meet.
 
@@ -615,7 +615,7 @@ class Cone(Surface):
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         with Off(animation_manager=self.animation_manager):
-            self.look(direction_t, axis=1)
+            self.look(direction_t, with_axis="up")
         # A capped cone's base has to be a Scene actor to be drawn at all: the
         # render loop collects primitives from ``Scene.actors``, not by walking
         # the hierarchy, and ``add_children`` does not register anything. Left
@@ -628,7 +628,7 @@ class Cone(Surface):
         # tolerances go with it: the disc grows that count in whole multiples
         # of it as its rim needs, measured against the accuracy the cone
         # itself was built to.
-        self.mesh_key = ("solid", self.id)
+        self._mesh_key = ("solid", self.id)
         self.base_circle = _CapDisc(
             rim_function=self._cap_ring_offsets,
             scene=self.scene,
@@ -639,14 +639,14 @@ class Cone(Surface):
             max_grid_resolution=self._max_grid_resolution,
             add_to_scene=bool(show_base) and self._added_to_scene,
         )
-        self.base_circle.mesh_key = self.mesh_key
+        self.base_circle._mesh_key = self._mesh_key
         with Off(animation_manager=self.animation_manager):
             self.base_circle.move_to(-direction_t * height * 0.5)
         # Capped AND swept the whole way round is what closes the shell: the
         # disc seals the base, but a partial sweep still leaves the wedge's cut
         # faces open (the disc itself is whole either way -- see
         # ``_cap_ring_offsets``). Both the side and its cap must carry the
-        # declaration: they share one surface id (``mesh_key``), and the
+        # declaration: they share one surface id (``_mesh_key``), and the
         # renderer reads it per triangle.
         self.closed_shell = bool(show_base) and _sweep_is_full(v_range, 2 * PI)
         self.base_circle.closed_shell = self.closed_shell
@@ -693,7 +693,7 @@ class Cone(Surface):
         radial, axial = _radial_and_axial_coordinates(
             pn_points,
             self.location,
-            self.get_upwards_direction(),
+            self.get_up_direction(),
         )
         radius = torch.as_tensor(
             self.radius,
@@ -839,7 +839,7 @@ class Cylinder(Surface):
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         if not torch.allclose(direction_t, UP.to(direction_t)):
-            self.look(direction_t, axis=1)
+            self.look(direction_t, with_axis="up")
         if show_ends:
             self.add_bases(direction_t)
 
@@ -864,7 +864,7 @@ class Cylinder(Surface):
         # tolerances go with it: the discs grow that count in whole multiples
         # of it as their rims need, measured against the accuracy the tube
         # itself was built to.
-        self.mesh_key = ("solid", self.id)
+        self._mesh_key = ("solid", self.id)
         caps = {
             "rim_function": self._cap_ring_offsets,
             "scene": self.scene,
@@ -876,11 +876,11 @@ class Cylinder(Surface):
         }
         self.bottom_cap = _CapDisc(direction=-direction, **caps)
         self.top_cap = _CapDisc(direction=direction, **caps)
-        self.bottom_cap.mesh_key = self.mesh_key
-        self.top_cap.mesh_key = self.mesh_key
+        self.bottom_cap._mesh_key = self._mesh_key
+        self.top_cap._mesh_key = self._mesh_key
         # Both ends sealed AND swept the whole way round closes the shell; a
         # half-pipe with whole discs is still open along its cut. The tube and
-        # its caps share one surface id (``mesh_key``), so all three carry the
+        # its caps share one surface id (``_mesh_key``), so all three carry the
         # declaration -- the renderer reads it per triangle.
         self.closed_shell = _sweep_is_full(self.v_range, 2 * PI)
         self.bottom_cap.closed_shell = self.closed_shell
@@ -968,7 +968,7 @@ class Cylinder(Surface):
         radial, _ = _radial_and_axial_coordinates(
             pn_points,
             self.location,
-            self.get_upwards_direction(),
+            self.get_up_direction(),
         )
         radius = torch.as_tensor(
             self.radius,
@@ -1180,14 +1180,14 @@ class Arrow3D(Mob):
     _morph_family = "aggregate"
     draws_descendants = True
 
-    def morph_soup_parts(self):
+    def _morph_soup_parts(self):
         return self._renderable_descendants()
 
     def _renderable_descendants(self):
         """This arrow's geometry, each part immediately followed by its own caps.
 
         Depth-first and parent-first, which is what lets a part and its caps
-        share a ``mesh_key``: only consecutive members merge.
+        share a ``_mesh_key``: only consecutive members merge.
         """
         parts = []
 
@@ -1217,7 +1217,7 @@ class Arrow3D(Mob):
         # The whole subtree, not just the shaft and the head: their end discs
         # are children of theirs and are not Scene actors, so this is the only
         # thing that asks them to build. Emitting each part's discs directly
-        # after it is what makes their shared mesh_key merge.
+        # after it is what makes their shared _mesh_key merge.
         primitives = []
         for part in self._renderable_descendants():
             primitive = part.get_render_primitives()
@@ -1729,7 +1729,7 @@ class Polyhedron(Mob):
         self.add_children(self.faces, self.graph)
 
     #: ``get_render_primitives`` below hands the renderer every face under one
-    #: ``mesh_key``, and nothing else -- so the faces are this Mob's internals
+    #: ``_mesh_key``, and nothing else -- so the faces are this Mob's internals
     #: rather than Mobs of their own, and the vertex ``Dot3D``s and edge Mobs
     #: under ``self.graph`` (kept for Manim parity, where ``graph_config``
     #: styles them) are geometry it owns but never puts on screen. Both facts

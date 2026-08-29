@@ -210,9 +210,9 @@ class Line(BezierCircuitCubic):
         end_center = end.get_center() if isinstance(end, Mob) else cast_to_tensor(end)
         direction = end_center - start_center
         if isinstance(start, Mob):
-            start_center = start.get_boundary_in_direction(direction)
+            start_center = start.get_boundary_point(direction)
         if isinstance(end, Mob):
-            end_center = end.get_boundary_in_direction(-direction)
+            end_center = end.get_boundary_point(-direction)
         direction = end_center - start_center
         length = direction.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-10)
         if buff:
@@ -551,7 +551,7 @@ class TriangleVertices(Mob):
         # (``Mob.closed_shell``) when its geometry proves one.
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
-        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         return primitive
 
 

@@ -216,7 +216,7 @@ wants radians -- the Manim-compatibility mobs (``Axes``, ``NumberPlane``,
 ``Arc``, ``Brace``, ``VGroup`` and everything else deriving from
 :class:`~algan.mobs.manim_compat.ManimCompatMob`) included.
 
-Everything else -- including ``rotate``, ``orbit``, ``move(path_arc_angle=...)``,
+Everything else -- including ``rotate``, ``orbit``, ``move(arc_angle=...)``,
 camera field of view and Euler angles, and light cone angles -- is in degrees.
 
 .. _migrating-manim-defaults:
@@ -331,7 +331,7 @@ outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.
     below its own frame top, putting the title's top at ``y = 3.5`` -- exactly
     Algan's top border. Nothing is cut off, but it sits flush against the frame
     edge with no margin. Call
-    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
     inset it by Algan's usual buffer, or place it by hand with
     ``.move(DOWN * 1)``.
 
@@ -407,7 +407,7 @@ through the Scene:
     PointLight(location=UP * 4 + LEFT * 4 + OUT * 4).spawn()
 
     with Seq(run_time=3, rate_func=rate_funcs.identity):
-        camera.rotate(180, UP, about_point=ORIGIN)
+        camera.rotate(180, UP, about=ORIGIN)
 
     Scene.save_video()
 

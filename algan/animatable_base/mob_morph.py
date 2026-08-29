@@ -82,7 +82,7 @@ class MobMorphMixin:
         def visit(mob):
             # A Mob that draws its descendants is one unit however many children
             # it keeps: a Polyhedron's twelve faces arrive under a single
-            # ``mesh_key`` and are its internals, not twelve Mobs to pair.
+            # ``_mesh_key`` and are its internals, not twelve Mobs to pair.
             # Pairing them separately published each face to the Scene as well,
             # so the Polyhedron and the face both drew it -- and did the same
             # for the vertex-and-edge graph the Polyhedron never draws at all.
@@ -144,7 +144,7 @@ class MobMorphMixin:
 
     @staticmethod
     def _morph_extent(mob):
-        size = mob.get_axis_aligned_size()
+        size = mob.get_bounding_box_size()
         return float(size.reshape(-1, size.shape[-1]).mean(0).norm())
 
     #: How the default assignment weighs the three things that can distinguish
@@ -333,7 +333,7 @@ class MobMorphMixin:
     def _pair_supports_geometric_morph(source, target):
         if "image" in {source._morph_family, target._morph_family}:
             return False
-        if source.morph_kind == target.morph_kind:
+        if source._morph_kind == target._morph_kind:
             return True
 
         from algan.animatable_base.morph_conversions import get_morph_conversion
@@ -685,7 +685,7 @@ class MobMorphMixin:
                     ).to(parent_batch_sizes.dtype)
         return self
 
-    def reorder_batch_to_minimize_movement(self, target: Mob) -> Mob:
+    def _reorder_batch_to_minimize_movement(self, target: Mob) -> Mob:
         """Re-pair this Mob's objects with the nearest target objects."""
         points_per_object = self.num_points_per_object
         my_points = unsquish(cast_to_tensor(self.location)[0], -2, points_per_object)
@@ -925,7 +925,7 @@ class MobMorphMixin:
             elif difference < 0:
                 theirs._expand_n_batch(-difference)
             if minimize_movement:
-                theirs.reorder_batch_to_minimize_movement(mine)
+                theirs._reorder_batch_to_minimize_movement(mine)
 
     def _record_same_kind_morph(
         self,
@@ -1070,8 +1070,8 @@ class MobMorphMixin:
 
     @staticmethod
     def _fit_bbox(mob, reference):
-        size = mob.get_axis_aligned_size()
-        target_size = reference.get_axis_aligned_size().to(size)
+        size = mob.get_bounding_box_size()
+        target_size = reference.get_bounding_box_size().to(size)
         epsilon = torch.finfo(size.dtype).eps
         scale = torch.ones_like(size)
         valid = (size > epsilon) & (target_size > epsilon)
@@ -1215,7 +1215,7 @@ class MobMorphMixin:
         # soups (Text("hello") is 4379) where the solve runs away.
         triangles = source_soup.location.shape[-2] // 3
         if minimize_movement or triangles <= self._REORDER_TRIANGLE_CAP:
-            target_soup.reorder_batch_to_minimize_movement(source_soup)
+            target_soup._reorder_batch_to_minimize_movement(source_soup)
         else:
             get_logger().log(
                 PERF,
@@ -1305,7 +1305,7 @@ class MobMorphMixin:
         if (
             not source_primitives
             and not target_primitives
-            and source.morph_kind == target.morph_kind
+            and source._morph_kind == target._morph_kind
         ):
             # Neither side draws anything -- two empty Groups, say. There is no
             # pair to record, and a context whose block records no event never
@@ -1442,7 +1442,7 @@ class MobMorphMixin:
                         }
                         or (
                             strategy == "auto"
-                            and pair_source.morph_kind != pair_target.morph_kind
+                            and pair_source._morph_kind != pair_target._morph_kind
                             and self._pair_wants_crossfade(pair_source, pair_target)
                         )
                         # A same-kind pair that crosses an untravellable
@@ -1512,7 +1512,7 @@ class MobMorphMixin:
         strategy,
         replacement_allowed,
     ):
-        same_kind = source.morph_kind == target.morph_kind
+        same_kind = source._morph_kind == target._morph_kind
         if strategy == "dissolve":
             return self._record_dissolve(
                 source,
@@ -1659,7 +1659,7 @@ class MobMorphMixin:
             raise ValueError("become requires source and target Mobs in the same Scene")
         if (
             strategy == "morph"
-            and self.morph_kind != other_mob.morph_kind
+            and self._morph_kind != other_mob._morph_kind
             and not detach_history
         ):
             raise NotImplementedError(

@@ -32,18 +32,18 @@ ones that matter for camera work:
      - Effect
    * - ``camera.move(OUT * 2)``
      - Dolly back, keeping the same aim.
-   * - ``camera.rotate(deg, UP, about_point=ORIGIN)``
+   * - ``camera.rotate(deg, UP, about=ORIGIN)``
      - Turntable: swing around the scene, staying pointed at it.
    * - ``camera.look_at(point)``
      - Turn to face a point without moving.
-   * - ``camera.orbit(deg, UP, about_point=p)``
+   * - ``camera.orbit(deg, UP, about=p)``
      - Swings along a circle around ``p`` *without* changing its pointing direction.
    * - ``camera.move_to_make_mob_center_of_view(mob)``
      - Automatically reframes so the target Mob is centered.
 
 The turntable shot is the classic way to show off a 3-D scene. Notice that we use
 :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` with
-``about_point``:
+``about``:
 
 .. algan:: CameraTurntable
 
@@ -54,7 +54,7 @@ The turntable shot is the classic way to show off a 3-D scene. Notice that we us
                for i in (-1, 0, 1)]).spawn()
 
     with Seq(run_time=4, rate_func=rate_funcs.identity):
-        Scene.get_camera().rotate(360, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -142,7 +142,7 @@ where you need exact parallel lines without perspective distortion, use
                        for i in range(4)]).spawn()
 
     with Seq(run_time=3):
-        cubes.rotate(360, UP, about_point=ORIGIN)
+        cubes.rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -188,8 +188,8 @@ these Mob methods all resolve against it:
 * :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position` and
   :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.move_center_to_screen_position` -- place a Mob at fractional
   screen coordinates.
-* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` and
-  :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner` -- rest against a
+* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` and
+  :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner` -- rest against a
   screen border.
 * :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen` -- scale and move to fill a screen
   rectangle.
@@ -213,7 +213,7 @@ the camera as a child, or drive it with an updater:
         caption.spawn()
 
     with Seq(run_time=3, rate_func=rate_funcs.identity):
-        Scene.get_camera().rotate(90, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(90, UP, about=ORIGIN)
 
     Scene.save_video()
 

@@ -411,7 +411,7 @@ def _aggregate_to_pn_soup(mob, *, add_to_scene=False):
     and ``become`` decomposed them into parts it then had to publish separately;
     ``Arrow3D().become(Sphere())`` raised outright.
     """
-    parts = mob.morph_soup_parts()
+    parts = mob._morph_soup_parts()
     soups = [convert_to_pn_soup(part, add_to_scene=False) for part in parts]
     soups = [soup for soup in soups if soup.location.shape[-2]]
     if not soups:

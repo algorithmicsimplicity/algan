@@ -69,7 +69,7 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 
 Algan is in private beta and carries **no compatibility aliases for its own
 API**. There is one Algan name for each Algan thing; if you find a second, it is
-a bug — with exactly three deliberate exceptions, all exported and supported:
+a bug — with exactly four deliberate exceptions, all exported and supported:
 
 - The Manim compatibility layer (`Mobject = Mob`, `GenericGraph = Graph`,
   `install_opengl_aliases()`, the `manim_compat` / `manim_parity` / `point_cloud` wrappers).
@@ -80,6 +80,11 @@ a bug — with exactly three deliberate exceptions, all exported and supported:
   **never reads `IN` or `OUT`** — `tests/unit_tests/test_spatial_constants.py` walks the
   package's AST and fails if any module does. Write `OUTWARD` in library code; `OUT` is
   fine in docs, tests and examples, which is where it stays exercised.
+- **`Mob.right` / `Mob.up` / `Mob.forward`** are property spellings of
+  `get_right_direction()` / `get_up_direction()` / `get_forward_direction()`. Reading a
+  direction is common enough in a positioning expression that the call parentheses get in the
+  way. The *basis* getters (`get_up_basis()` and friends) deliberately have no property
+  spelling: they carry the Mob's scale, and a scaled vector reads wrongly as `mob.up`.
 - **Two `SETTINGS.video` fields take a short spelling**: `fps`/`FPS` for
   `frames_per_second`, and `ssaa`/`SSAA` for `super_sampling_anti_aliasing`. These are
   what the rest of the world calls them, and they are written often enough that the long

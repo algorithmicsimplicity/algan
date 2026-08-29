@@ -66,7 +66,7 @@ def test_flag_set_on_an_aggregate_reaches_the_geometry(fresh_scene, flag):
 
     A ``Cube`` is a ``Polyhedron`` whose FACES build the primitives, so reading
     the flag off the mob that builds them would silently ignore
-    ``cube.casts_shadows = False``. It did, before ``resolved_shadow_flags``.
+    ``cube.casts_shadows = False``. It did, before ``_resolved_shadow_flags``.
     """
     cube = Cube(side_length=1.0, fill_opacity=1)
     setattr(cube, flag, False)

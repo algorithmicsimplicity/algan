@@ -27,7 +27,7 @@ default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving somethin
                        for i in range(4)]).spawn()
 
     with Seq(run_time=3):
-        cubes.rotate(360, UP, about_point=ORIGIN)
+        cubes.rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -49,7 +49,7 @@ So, we can animate a camera movement as follows:
 
     camera = Scene.get_camera()
     with Sync(run_time=3, rate_func=rate_funcs.identity):
-        camera.rotate(180, UP, about_point=ORIGIN)
+        camera.rotate(180, UP, about=ORIGIN)
         ball.move(UP * 0.8)
 
     Scene.save_video()
@@ -80,7 +80,7 @@ which act as light sources.
 
     light = Scene.get_light_sources()[0]
     with Seq(run_time=4, rate_func=rate_funcs.identity):
-        light.orbit(360, OUT, about_point=ORIGIN)
+        light.orbit(360, OUT, about=ORIGIN)
 
     Scene.save_video()
 

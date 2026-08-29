@@ -16,6 +16,7 @@ from algan.errors import (
     HierarchyError,
     UnsupportedFeatureError,
 )
+from algan.constants.math import PI
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
 from algan.rendering.camera import Camera
@@ -592,7 +593,7 @@ def test_group_uses_one_member_store_and_repairs_parent_links():
     replacement = Square(add_to_scene=False)
     group = Group(first, second, add_to_scene=False)
 
-    assert group.mobs is group.children
+    assert not hasattr(group, "mobs")  # `children` is the one spelling
     group[0] = replacement
 
     assert group.children == [replacement, second]
@@ -1142,7 +1143,7 @@ def test_vector_arguments_reject_scalars():
         lambda: square.move_to(1),
         lambda: square.rotate(90, 1),
         lambda: square.rotate(algan.OUT, 90),
-        lambda: square.move_to_edge(1),
+        lambda: square.move_to_screen_edge(1),
     ):
         with pytest.raises(AlganConfigurationError):
             call()
@@ -1375,7 +1376,7 @@ def test_arrow3d_endpoints_follow_the_arrow():
             atol=1e-5,
         )
 
-        arrow.rotate(90, algan.OUT, about_point=arrow.get_start())
+        arrow.rotate(90, algan.OUT, about=arrow.get_start())
         assert torch.allclose(
             arrow.get_vector().reshape(-1),
             torch.tensor((0.0, 1.1, 0.0)),
@@ -1767,3 +1768,115 @@ def test_image_pixels_may_arrive_as_a_numpy_array():
         # the one padding produced.
         with pytest.raises(ValueError, match=r"got \(8, 8, 2\)"):
             algan.ImageMob(torch.zeros(8, 8, 2))
+
+
+@pytest.mark.fast
+def test_the_mob_positioning_surface_answers_to_its_public_names():
+    """Phase 3 of the public API overhaul renamed most of ``Mob``'s
+    positioning surface and privatized the rest. Every name below is called
+    here so a later rename fails at a call site and not only in the export
+    snapshot.
+    """
+    with algan.Scene():
+        square = Square().spawn()
+        other = Square().spawn()
+
+        # 3b -- one edge-point query, and the center-projected boundary beside
+        # it under a name that says they are a pair.
+        assert square.get_edge_point(algan.RIGHT) is not None
+        assert square.get_edge_point(algan.RIGHT, recursive=False) is not None
+        assert square.get_boundary_point(algan.RIGHT) is not None
+
+        # 3c -- the bounding-box trio all describe the same box.
+        torch.testing.assert_close(
+            square.get_bounding_box_max() - square.get_bounding_box_min(),
+            square.get_bounding_box_size(),
+        )
+        assert len(square.sample_points_in_direction(algan.UP, count=4)) == 4
+        assert square.move_to_screen_edge(algan.RIGHT) is square
+        assert square.move_to_screen_corner((algan.UP, algan.RIGHT)) is square
+        assert square.move_between(algan.ORIGIN, algan.RIGHT) is square
+        assert square.move_to_point_with_displacement(algan.ORIGIN, algan.UP) is square
+        assert square.move_to(algan.RIGHT, arc_angle=90) is square
+        assert square.rotate(90, algan.OUT, about=algan.ORIGIN) is square
+        assert square.orbit(90, algan.OUT, about=algan.ORIGIN) is square
+
+        # A radian spelling of the same turn is available on both.
+        assert square.rotate(PI / 2, algan.OUT, degrees=False) is square
+        assert square.orbit(PI / 2, algan.OUT, about=algan.ORIGIN, degrees=False) is square
+
+        # 3d -- the direction getters and their property spellings agree, and
+        # the basis getters have no property spelling.
+        for name in ("right", "up", "forward"):
+            torch.testing.assert_close(
+                getattr(square, name), getattr(square, f"get_{name}_direction")()
+            )
+            assert getattr(square, f"get_{name}_basis")() is not None
+
+        # 3e -- coordinates are properties, and assigning one is recorded like
+        # any other Mob attribute.
+        with algan.Off():
+            square.x = 3.0
+        torch.testing.assert_close(square.x, torch.full_like(square.x, 3.0))
+        with algan.Off():
+            square.xy = (1.0, 2.0)
+        torch.testing.assert_close(square.y, torch.full_like(square.y, 2.0))
+        assert square.get_coord([0, 2]) is not None
+        assert square.set_coord(2, 1.0) is square
+
+        # 3f -- one alignment method with three anchors.
+        for anchor in ("center", "edge", "boundary", "BOUNDARY"):
+            assert square.align_with(other, algan.UP, anchor=anchor) is square
+        with pytest.raises(AlganConfigurationError, match="anchor must be"):
+            square.align_with(other, algan.UP, anchor="middle")
+
+        # 3g -- look's axis is named, not an index.
+        assert square.look(algan.UP, with_axis="up") is square
+        assert square.look_at(algan.ORIGIN, with_axis="Forward") is square
+        with pytest.raises(AlganConfigurationError, match="with_axis must be"):
+            square.look(algan.UP, with_axis=2)
+
+        # 3a/3b -- the privatized and deleted names are gone.
+        for gone in (
+            "get_boundary_edge_point",
+            "get_boundary_in_direction",
+            "set_x_coord",
+            "get_x_coord",
+            "set_individual_coords",
+            "set_x_y_coord",
+            "move_to_edge",
+            "move_out_of_screen",
+            "move_inline_with_center",
+            "get_upwards_direction",
+            "morph_soup_parts",
+            "resolved_shadow_flags",
+            "check_properties_are_valid",
+        ):
+            assert not hasattr(square, gone), gone
+
+
+@pytest.mark.fast
+def test_move_next_to_align_edge_only_moves_along_the_alignment_axis():
+    """``align_edge`` refines a placement; it used to undo it.
+
+    It was implemented on ``move_inline_with_boundary``, which moved the whole
+    boundary-to-boundary displacement rather than its component along the
+    alignment axis -- so ``move_next_to(chart, RIGHT, align_edge=DOWN)`` lined
+    the bottoms up *and* slid the caption back on top of the chart in x.
+    """
+    with algan.Scene():
+        chart = Square().scale(1.5).spawn()
+        caption = Square().scale(0.3).spawn()
+
+        with algan.Off():
+            caption.move_next_to(chart, algan.RIGHT)
+            beside = caption.get_center().clone()
+            caption.move_next_to(chart, algan.RIGHT, align_edge=algan.DOWN)
+
+        # x is untouched by the secondary alignment ...
+        torch.testing.assert_close(caption.get_center()[..., 0], beside[..., 0])
+        # ... and the bottoms now agree.
+        torch.testing.assert_close(
+            caption.get_boundary_point(algan.DOWN)[..., 1],
+            chart.get_boundary_point(algan.DOWN)[..., 1],
+        )

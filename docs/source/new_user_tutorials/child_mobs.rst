@@ -35,7 +35,7 @@ Let's see an example.
     center_square.rotate(90, OUT)
     center_square.move(RIGHT * 1)
     with Seq(run_time=5):
-        center_square.rotate(360, OUT, about_point=ORIGIN)
+        center_square.rotate(360, OUT, about=ORIGIN)
 
     center_square.wait()
     # You can even animate the parent and a child at the same time.

@@ -8,7 +8,7 @@ reach for the highest one that does the job:
 
 1. **Relative to another Mob** -- ``a.move_next_to(b, RIGHT)``. Survives changes
    to the other Mob's size and position.
-2. **Relative to the screen** -- ``mob.move_to_edge(UP)``,
+2. **Relative to the screen** -- ``mob.move_to_screen_edge(UP)``,
    ``mob.move_to_screen_position(0.9, 0.1)``. Survives resolution changes.
 3. **Absolute world coordinates** -- ``mob.move_to(UP * 2 + LEFT * 3)``. Precise,
    but you have to know the numbers.
@@ -60,8 +60,8 @@ and ``y`` about ``-3.5`` to ``3.5``:
 
     Dot(color=YELLOW).move_to(RIGHT * 6.2 + UP * 3.4).spawn()
     Dot(color=YELLOW).move_to(LEFT * 6.2 + DOWN * 3.4).spawn()
-    Dot(color=RED).move_to_corner(UP, LEFT).spawn()
-    Dot(color=RED).move_to_corner(DOWN, RIGHT).spawn()
+    Dot(color=RED).move_to_screen_corner((UP, LEFT)).spawn()
+    Dot(color=RED).move_to_screen_corner((DOWN, RIGHT)).spawn()
     Scene.wait()
 
     Scene.save_video()
@@ -82,10 +82,10 @@ Absolute Placement
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move`
      - Move *by* a displacement.
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`
-     - Move *to* an absolute point. ``path_arc_angle`` curves the path.
+     - Move *to* an absolute point. ``arc_angle`` curves the path.
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_between`
      - Move to the midpoint of two points or Mobs.
-   * - :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_x_coord`, :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_y_coord`, :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_z_coord`
+   * - :attr:`~algan.animatable_base.mob_layout.MobLayoutMixin.x`, :attr:`~algan.animatable_base.mob_layout.MobLayoutMixin.y`, :attr:`~algan.animatable_base.mob_layout.MobLayoutMixin.z`
      - Change one axis, leaving the others alone.
 
 .. algan:: PositioningAbsolute
@@ -95,8 +95,8 @@ Absolute Placement
     square = Square(color=BLUE).scale(0.5).spawn()
 
     square.move_to(UP * 2 + LEFT * 3)
-    square.move_to(RIGHT * 3, path_arc_angle=120)   # swing round instead of sliding
-    square.set_y_coord(0)                           # drop back to the middle row
+    square.move_to(RIGHT * 3, arc_angle=120)   # swing round instead of sliding
+    square.y = 0                                    # drop back to the middle row
 
     Scene.save_video()
 
@@ -112,16 +112,16 @@ see the Mob:
 
    * - Method
      - What it does
-   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge`
+   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge`
      - Rest against one screen edge, ``buffer`` away from it.
-   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner`
+   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner`
      - Rest in a corner, named by its two edges.
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position`
      - Place at fractional screen coordinates: ``(0, 0)`` bottom-left,
        ``(1, 1)`` top-right.
    * - :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`
      - Scale *and* move so the Mob fills a rectangle of the screen.
-   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_out_of_screen`
+   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_off_screen`
      - Slide off-screen entirely (and despawn there, by default).
 
 .. algan:: PositioningScreen
@@ -132,14 +132,14 @@ see the Mob:
     box = Square(color=BLUE).scale(0.5).spawn()
 
     box.move_to(UP * 2 + LEFT * 3)
-    box.move_to_edge(RIGHT)
-    box.move_to_corner(DOWN, LEFT)
+    box.move_to_screen_edge(RIGHT)
+    box.move_to_screen_corner((DOWN, LEFT))
     box.move_next_to(label, UP)
     box.move_to_screen_position(0.9, 0.1)
 
     Scene.save_video()
 
-The gap left by :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge`, :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner` and :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_next_to` is measured from the Mob's *boundary*, not its centre,
+The gap left by :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge`, :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner` and :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_next_to` is measured from the Mob's *boundary*, not its centre,
 so a big shape and a small shape both end up equally inset. It defaults to
 ``SETTINGS.style.buffer`` (``0.6`` world units) and every one of those methods
 takes a ``buffer`` argument to override it.
@@ -174,10 +174,10 @@ Relative Placement
      - What it does
    * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_next_to`
      - Sit just beside another Mob, edge to edge.
-   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_center`
-     - Line centres up along an axis.
-   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_edge`, :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_boundary`
-     - Line edges up along an axis.
+   * - :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.align_with`
+     - Line two Mobs up along one axis. ``anchor='center'`` lines their centres
+       up, ``'boundary'`` their ``direction``-side edges, and ``'edge'`` brings
+       this Mob's far side up against the other's near side.
 
 ``move_next_to`` also takes ``align_edge``, which adds a secondary alignment --
 so two Mobs placed side by side can additionally share a bottom edge:
@@ -252,10 +252,10 @@ Orientation
      - Turn to face a point.
    * - :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.reset_basis`
      - Return to the default orientation and scale.
-   * - :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_right_direction`, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_upwards_direction`, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_forward_direction`
+   * - :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_right_direction`, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_up_direction`, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_forward_direction`
      - The Mob's own axes, as unit vectors.
 
-The difference between ``rotate(..., about_point=p)`` and ``orbit(..., about_point=p)``
+The difference between ``rotate(..., about=p)`` and ``orbit(..., about=p)``
 is whether the Mob turns as it travels: ``rotate`` carries the orientation
 around with it (like the Moon, always showing the same face inward), ``orbit``
 keeps the orientation fixed (like a carousel horse that stays upright).

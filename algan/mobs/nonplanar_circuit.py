@@ -804,7 +804,7 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
     # 288 independent quads, not a closed orientable mesh -- so a back-facing hit
     # keeps the viewer-facing flip rather than being shaded as an inside.
     primitive.declare_one_sided(False)
-    primitive.declare_shadow_flags(*circuit.resolved_shadow_flags())
+    primitive.declare_shadow_flags(*circuit._resolved_shadow_flags())
     # One shell per sub-path: a tile's own coverage must not be summed with the
     # neighbour it merely touches.
     primitive.mesh_ids = (
@@ -887,7 +887,7 @@ def build_stroke_primitive(
         ),
     )
     primitive.num_texture_points = 0
-    primitive.declare_shadow_flags(*circuit.resolved_shadow_flags())
+    primitive.declare_shadow_flags(*circuit._resolved_shadow_flags())
     return primitive
 
 

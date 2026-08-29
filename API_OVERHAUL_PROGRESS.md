@@ -15,14 +15,15 @@ Update it in the same commit as the work it describes.
 | 1 | Extract the Manim compat layer into `algan.manim` | **Done** |
 | 1b | Native adapters for the curated root subset | **Done** |
 | 2 | Remove leaked internals from `algan.__all__` | **Done** |
-| 3 | `Mob` surface: privatize, consolidate, rename | Not started |
+| 3 | `Mob` surface: privatize, consolidate, rename | **Done** |
 | 4 | Scene, Camera, Lights, Group | Not started |
 | 5 | Class and parameter naming | Not started |
 | 6 | `border_*` → `stroke_*` | Not started |
 | 7 | `run_time` → `duration`, `rate_func` → `easing` | Not started |
 | 8 | Documentation and baselines | Not started |
 
-**Export count**: 471 at the start → 379 after Phase 1b → 361 after Phase 2.
+**Export count**: 471 at the start → 379 after Phase 1b → 361 after Phase 2. Phase 3 moves no
+exports: everything it touches is a `Mob` method or property, not a module-level name.
 
 ---
 
@@ -77,6 +78,42 @@ codec — the reason to pin a binary is that moviepy's build lacks a codec yours
 must beat the probe rather than join it; default behaviour byte-for-byte unchanged), and an
 explicit `__all__` on `algan/constants/rate_funcs.py`.
 
+### Phase 3 — the `Mob` surface
+
+**3a — privatized.** `_apply_absolute_change_two`, `_set_to_retroactive`, `_set_to_current`,
+`_generate_animatable_attr_set_get_methods`, `_check_properties_are_valid`, `_morph_soup_parts`
+(with its two overrides), `_morph_kind`, `_reorder_batch_to_minimize_movement`,
+`_resolved_shadow_flags` (with its seven callers) and `Mob._mesh_key`. `retroactive()` stayed
+public — see plan change 5.
+
+**3b — consolidated.** `get_boundary_edge_point` + `get_boundary_edge_point_recursive` →
+`get_edge_point(direction, recursive=True)`; `get_boundary_in_direction` →
+`get_boundary_point`; `Group.get_boundary_edge_point2` deleted; `Group.get_mob_midpoint`
+privatized; `Group.mobs` deleted in favour of `children`.
+
+**3c — renamed.** `get_bounding_box_min` / `_max` / `_size`, `sample_points_in_direction`,
+`get_up_direction` / `get_up_basis`, `move_to_screen_edge`, `move_to_screen_corner`,
+`move_off_screen`, `move_to_point_with_displacement`, `move_between(start, end)`,
+`rotate(angle, axis, about, *, degrees=True)`, `orbit(...)` likewise, and
+`move_to(location, arc_angle=None)` absorbing `move_to_point_along_arc` (now `_move_along_arc`).
+
+**3d — direction properties.** `.right` / `.up` / `.forward`, recorded in `CLAUDE.md`'s alias
+roster, which now names four exceptions rather than three.
+
+**3e — coordinate properties.** `.x` / `.y` / `.z` / `.xy`, replacing the six single-axis
+methods; `get_coord(indices, centered=False)` / `set_coord(indices, value)` replace
+`get_individual_coords` / `set_individual_coords`.
+
+**3f — one alignment method.** `align_with(mob, direction, anchor, buffer, from_mob)` replaces
+all four `move_inline_with_*`.
+
+**3g — named look axes.** `look(direction, with_axis='forward')` and `look_at` likewise, with
+`'right'`/`'up'`/`'forward'` matched case-insensitively and anything else raising.
+
+Also landed: `test_ux_regressions.py` gained
+`test_the_mob_positioning_surface_answers_to_its_public_names`, which calls every new name and
+asserts every removed one is gone, per Phase 0 step 3.
+
 ---
 
 ## Plan changes made during implementation
@@ -117,6 +154,46 @@ Recorded here and in the design doc, so the two do not drift.
    `_MANIM_NAMESPACE_ANCHOR = None` line is what keeps the import where it has to be; it is not
    otherwise meaningful.
 
+5. **`retroactive()` stays public; only the cursor pair under it is privatized.** The design
+   doc's 3a list had all three. But `retroactive()` is the `with` block a user writes to record
+   earlier in the video — a documented feature with a worked example — while
+   `set_to_retroactive` / `set_to_current` are the raw authoring-cursor moves it wraps and the
+   only thing a caller of them gains is the chance to forget the second one. Privatizing those
+   two leaves the concept exactly one public spelling, which is what the overhaul is for.
+
+6. **Three of Phase 3b's "duplicates" were not duplicates.** Same failure mode as the Phase 2
+   table, and caught the same way — by reading the implementations rather than the names:
+   `get_boundary_in_direction` computes a different point from `get_boundary_edge_point` (the
+   extreme projected back onto the center line, which is what every placement method measures
+   with), `Group.get_mob_midpoint` is the midpoint of member *locations* and not the bounding
+   box, so replacing it with `get_center()` would move every Group's anchor, and
+   `Group.get_boundary_edge_point2` was uncalled dead code rather than a behavioural variant.
+   The first two are kept (renamed and privatized respectively); only the third is deleted.
+
+7. **`recursive` defaults to True on `get_edge_point`**, not False as the design table said.
+   Every existing caller reached the recursive spelling, so False would have silently changed
+   what a Group measures — a pixel move, which no phase in this plan may make.
+
+8. **`set_x_y_coord` is deleted, not renamed to `set_xy`.** 3c asked for the rename and 3e adds
+   an `.xy` property; keeping both would be the duplication 3e's own text calls out. The
+   property wins, consistently with the six single-axis methods it also replaces.
+
+9. **`move_next_to(align_edge=...)` changes behaviour, and this is the one place Phase 3 moves
+   a pixel.** `align_edge` was implemented on `move_inline_with_boundary`, which moved the
+   *whole* boundary-to-boundary displacement rather than its component along the alignment
+   axis. For `caption.move_next_to(chart, RIGHT, align_edge=DOWN)` that displacement is
+   `(-2.4, -0.7, 0)` on a 3x2 chart: the secondary alignment slid the caption back on top of
+   the chart in x, undoing the placement it was supposed to refine. `align_with` projects onto
+   the axis, as its whole family always documented, so the call now does what the tutorial
+   prose says. Nothing pixel-compared uses `align_edge` — one doc example does, and its output
+   changes to the correct picture.
+
+10. **`HemisphereLight.up` had to move.** A `Light` is a `Mob`, and 3d's new read-only `Mob.up`
+   property shadowed the attribute the constructor writes. Its parameter is still `up`; the
+   attribute is now `sky_direction`. (`NeuralNetMLP.forward` also shadows the new `.forward`
+   property, but it is an unexported class and a subclass attribute wins, so it still works;
+   noted rather than changed.)
+
 ---
 
 ## Known follow-ups
@@ -127,6 +204,10 @@ Recorded here and in the design doc, so the two do not drift.
 - **`UnitInterval` and `TangentialArc` left the root namespace** and were not put in the curated
   subset. Reachable as `mn.UnitInterval` / `mn.TangentialArc`. Revisit if they turn out to be
   reached for often.
+- **Phase 3 renamed names inside `docs/source/` as it went**, because the `.. algan::` examples
+  execute at build time and would otherwise fail. That is a spot fix on the renamed symbols
+  only; the Phase 8 sweep still owes the prose (the positioning tutorial's method tables now
+  describe `align_with` three times over, for instance) and a real doc build.
 - **`tests/full_renders` and `tests/path_traced` have not been run yet** on this branch. They are
   the pixel-comparing suites; Phase 1/1b should not have moved output, but that is unverified.
   Run before Phase 8, and note that this is a CPU-only session so the CUDA baselines cannot be

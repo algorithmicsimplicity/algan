@@ -62,7 +62,7 @@ Because lights are standard Mobs, you can animate them directly on the timeline:
 
     light = Scene.get_light_sources()[0]
     with Seq(run_time=4, rate_func=rate_funcs.identity):
-        light.orbit(360, OUT, about_point=ORIGIN)
+        light.orbit(360, OUT, about=ORIGIN)
         light.color = BLUE
 
     Scene.save_video()

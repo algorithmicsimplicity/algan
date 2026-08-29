@@ -306,9 +306,9 @@ class Camera(Mob):
             This camera, so calls can be chained.
         """
         with Sync(animation_manager=self.animation_manager):
-            self.rotate(angle_1, RIGHT, about_point=ORIGIN)
-            self.rotate(angle_2, UP, about_point=ORIGIN)
-            self.rotate(angle_3, OUTWARD, about_point=ORIGIN)
+            self.rotate(angle_1, RIGHT, about=ORIGIN)
+            self.rotate(angle_2, UP, about=ORIGIN)
+            self.rotate(angle_3, OUTWARD, about=ORIGIN)
         return self
 
     def get_render_screen_basis(self):
@@ -385,9 +385,9 @@ class Camera(Mob):
         """
         f = self.get_forward_direction()
         r = self.get_right_direction()
-        u = self.get_upwards_direction()
-        # mob_boundary_points = [mob.get_boundary_in_direction(_) + _ * buffer for _ in [u, r, -u, -r]]
-        mob_boundary_points = [mob.get_boundary_in_direction(_) for _ in [-r, u, r, -u]]
+        u = self.get_up_direction()
+        # mob_boundary_points = [mob.get_boundary_point(_) + _ * buffer for _ in [u, r, -u, -r]]
+        mob_boundary_points = [mob.get_boundary_point(_) for _ in [-r, u, r, -u]]
         mob_boundary_points = torch.stack(mob_boundary_points)
         # mobl = sum(mob_boundary_points) / len(mob_boundary_points)
         mobl = 0.5 * ((mob_boundary_points).amax(0) + (mob_boundary_points).amin(0))

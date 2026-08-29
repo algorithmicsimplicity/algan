@@ -1020,7 +1020,7 @@ class Paragraph(Group):
                 alignment_direction=align_direction,
             )
         self.lines_text = lines
-        self.chars = self.mobs
+        self.chars = self.children
 
     def set_all_lines_alignments(self, alignment: str):
         """Re-align every line of the paragraph.
@@ -1141,7 +1141,7 @@ class Code(Group):
             with Off(animation_manager=self.animation_manager):
                 dots.arrange_in_line(RIGHT, buffer=0.08)
                 dots.move_next_to(
-                    frame.get_boundary_in_direction(UP), DOWN, buffer=0.08
+                    frame.get_boundary_point(UP), DOWN, buffer=0.08
                 )
             self.background_mobject = Group(
                 frame, dots, scene=self.scene, add_to_scene=add_to_scene

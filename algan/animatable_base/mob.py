@@ -109,8 +109,8 @@ def _coerce_if_color(attr, value):
 _MANIM_METHOD_HINTS = {
     "shift": "move(...)",
     "next_to": "move_next_to(...)",
-    "to_edge": "move_to_edge(...)",
-    "to_corner": "move_to_corner(...)",
+    "to_edge": "move_to_screen_edge(...)",
+    "to_corner": "move_to_screen_corner(...)",
     "move_to": "move_to(...)",
     "set_fill": "set the `color` attribute, or set_material(...)",
     "set_stroke": "set the `border_color` and `border_width` attributes",
@@ -132,7 +132,7 @@ _MANIM_METHOD_HINTS = {
     "become": "become(...)",
     "save_state": "clone(spawn=False) inside `with Off():`",
     "restore": "become(the clone you saved)",
-    "rotate_about_origin": "rotate(..., about_point=ORIGIN)",
+    "rotate_about_origin": "rotate(..., about=ORIGIN)",
     "flip": "rotate(180, axis)",
 }
 
@@ -223,7 +223,7 @@ class Mob(
     #: Mob's DESCENDANTS as well as its own. Almost nothing does: a
     #: ``BezierCircuitCubic`` or a ``Surface`` draws its own rows and leaves its
     #: children to draw themselves. ``Polyhedron`` is the exception -- it
-    #: gathers every face under one ``mesh_key`` -- and the difference decides
+    #: gathers every face under one ``_mesh_key`` -- and the difference decides
     #: two things for :meth:`~.Mob.become`: whether the Mob is one morph unit or
     #: several, and whether a descendant may be published to the Scene in its
     #: own right (doing so under an aggregator draws it twice, and draws
@@ -231,7 +231,7 @@ class Mob(
     #: vertex-and-edge graph).
     draws_descendants = False
 
-    def morph_soup_parts(self) -> list:
+    def _morph_soup_parts(self) -> list:
         """The Mobs an aggregate's PN conversion should convert and concatenate.
 
         Only meaningful for a Mob whose ``_morph_family`` is ``"aggregate"``.
@@ -334,7 +334,7 @@ class Mob(
     #: edge rather than a boundary two independently antialiased surfaces meet
     #: at. ``None`` (the default) leaves each part its own surface. Only
     #: consecutive parts merge; see ``primitives._mesh_ids_from_collection``.
-    mesh_key = None
+    _mesh_key = None
 
     def __init__(
         self,
@@ -405,7 +405,7 @@ class Mob(
         self.shader = None
 
     @property
-    def morph_kind(self):
+    def _morph_kind(self):
         """Structural primitive kind used to dispatch :meth:`become`.
 
         The family separates genuinely different renderer primitives which may
@@ -486,7 +486,7 @@ class Mob(
                 return True
         return False
 
-    def resolved_shadow_flags(self):
+    def _resolved_shadow_flags(self):
         """``(casts_shadows, receives_shadows)`` for this Mob, resolved against
         its ancestors: an opt-out anywhere above it applies to it.
 
@@ -700,7 +700,7 @@ class Mob(
         animated_args={"interpolation": 0.0},
         unique_args=["key", "recursive", "relative"],
     )
-    def apply_absolute_change_two(
+    def _apply_absolute_change_two(
         self,
         key: str,
         change1: any,
@@ -885,7 +885,7 @@ class Mob(
         with Sync(animation_manager=self.animation_manager):
             if color is not None:
                 # new_color=None restores each part to its own current color
-                # (resolved inside apply_absolute_change_two). Passing
+                # (resolved inside _apply_absolute_change_two). Passing
                 # ``self.color`` here instead would broadcast the parent's own
                 # color over all descendants — for a composite whose parent Mob
                 # never had its color set (Groups, NeuralNetMLP, ...) that is
@@ -898,12 +898,12 @@ class Mob(
                 #    color = color.set_opacity(o)
                 #    if new_color is not None:
                 #        new_color = new_color.set_opacity(o)
-                self.apply_absolute_change_two(
+                self._apply_absolute_change_two(
                     "color", cast_to_tensor(color), new_color, recursive=recursive
                 )
             if opacity is not None:
                 o = cast_to_tensor(opacity)
-                self.apply_absolute_change_two("opacity", o, o, recursive=recursive)
+                self._apply_absolute_change_two("opacity", o, o, recursive=recursive)
         return self
 
     def wave_color(
@@ -998,7 +998,7 @@ class Mob(
             This Mob, so calls can be chained.
         """
         if direction is None:
-            direction = self.get_upwards_direction()
+            direction = self.get_up_direction()
         direction = direction * (-1 if reverse else 1)
         # What each part's pulse actually writes, which decides whether a finer
         # sampling can show the wave at all (see pulse_color).
@@ -1413,7 +1413,7 @@ class Mob(
 
             Scene.save_video()
         """
-        self.check_properties_are_valid((attr,))
+        self._check_properties_are_valid((attr,))
         if self._writes_through_property_setter(attr):
             self._raise_not_row_wise_error("map_animated_attribute", attr)
         current = self.get_animated_attribute(attr, include_descendants=True, copy=True)
@@ -1945,7 +1945,7 @@ class Mob(
             _SETTABLE_PROPERTY_CACHE[klass] = cached
         return cached[1] | set(self.animatable_attrs)
 
-    def check_properties_are_valid(self, property_names):
+    def _check_properties_are_valid(self, property_names):
         """Raise if any of the given names is not an animatable attribute.
 
         Called by :meth:`~.Mob.set` so that a typo such as
@@ -2059,7 +2059,7 @@ class Mob(
 
         """
         _reject_context_kwargs(kwargs)
-        self.check_properties_are_valid(kwargs.keys())
+        self._check_properties_are_valid(kwargs.keys())
         with Sync(animation_manager=self.animation_manager):
             for key, value in kwargs.items():
                 self.__setattr__(

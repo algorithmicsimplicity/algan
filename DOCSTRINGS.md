@@ -91,41 +91,46 @@ A worked Tier-1 exemplar — this is what `Mob.rotate` should look like (it curr
 
 ```python
 @animated_function(
-    animated_args={"num_degrees": 0},
-    unique_args=["axis", "about_point"],
+    animated_args={"angle": 0},
+    unique_args=["axis", "about", "degrees"],
 )
 def rotate(
     self,
-    num_degrees: float | torch.Tensor,
+    angle: float | torch.Tensor,
     axis: torch.Tensor = OUT,
-    about_point: torch.Tensor | None = None,
+    about: torch.Tensor | None = None,
+    *,
+    degrees: bool = True,
 ) -> Mob:
     """Rotate the Mob about an axis, optionally around a point in space.
 
-    With the default ``about_point=None`` only the Mob's orientation changes and it
-    stays where it is. Given an ``about_point``, the Mob also travels around the axis
+    With the default ``about=None`` only the Mob's orientation changes and it
+    stays where it is. Given an ``about`` point, the Mob also travels around the axis
     through that point, like a planet orbiting while spinning. To move around a point
     *without* re-orienting the Mob, use :meth:`~.Mob.orbit`.
 
     Animation
     ---------
-    Recorded as an animation: the rotation sweeps from 0 to ``num_degrees`` over the
+    Recorded as an animation: the rotation sweeps from 0 to ``angle`` over the
     current context's duration (1 second by default). Wrap the call in a context to
     change that -- ``with Seq(run_time=3): mob.rotate(90)`` -- or in ``Off()`` to apply
     it instantly without animating. Applies to this Mob and all of its descendants.
 
     Parameters
     ----------
-    num_degrees
-        How far to rotate, **in degrees**, counter-clockwise around ``axis``.
-        Accepts a per-Mob tensor of shape ``(*, 1)`` for batched Mobs.
+    angle
+        How far to rotate, counter-clockwise around ``axis``, **in degrees**
+        unless ``degrees`` is False. Accepts a per-Mob tensor of shape ``(*, 1)``
+        for batched Mobs.
     axis
         Axis to rotate around; does not need to be normalized. Defaults to ``OUT``
         (the +z axis, pointing out of the screen), which spins a flat 2-D shape in
         the screen plane.
-    about_point
+    about
         3-D point, shape ``(*, 3)``, that the Mob rotates around. Defaults to
         ``None``, meaning rotate in place about the Mob's own center.
+    degrees
+        Whether ``angle`` is in degrees. Defaults to True; pass False for radians.
 
     Returns
     -------
@@ -141,7 +146,7 @@ def rotate(
         square = Square().spawn()
         square.rotate(90)
         square.rotate(180, axis=UP)
-        square.rotate(90, about_point=RIGHT * 2)
+        square.rotate(90, about=RIGHT * 2)
 
         Scene.save_video()
     """
@@ -221,7 +226,7 @@ A number without a unit is a support ticket.
   `v_range` parametric domains on `Sphere` / `Cone` / `Cylinder` / `Torus` — must say
   "in radians" and name the reason, because they contradict the default.
 - **Distances** are in world units unless the method name says screen (`move_to_screen_position`,
-  `move_to_edge`); for screen-space parameters say so and give the range ("``x`` and ``y`` in
+  `move_to_screen_edge`); for screen-space parameters say so and give the range ("``x`` and ``y`` in
   screen units, where ``(0, 0)`` is the center").
 - **Times** are in seconds.
 - **Colors** accept an Algan `Color`, a named constant (`BLUE`), or anything `Color()` accepts.
@@ -252,7 +257,7 @@ If a specific kwarg is the reason users reach for the passthrough, name it:
 
 ```
 **kwargs
-    Passed to :meth:`~.Mob.move_to` -- notably ``path_arc_angle`` to curve the path.
+    Passed to :meth:`~.Mob.move_to` -- notably ``arc_angle`` to curve the path.
 ```
 
 If the function *consumes* kwargs for compatibility and ignores them (`_translate_vector_style_kwargs`
@@ -294,7 +299,7 @@ carries an `Animation` section. State, in one short paragraph:
 1. **Is it recorded?** "Recorded as an animation" vs "Takes effect immediately and is not animated".
 2. **Default duration**, if recorded: "over the current context's duration (1 second by default)".
 3. **What interpolates**, for `@animated_function` methods: name the animated argument and its start
-   value, e.g. "sweeps from 0 to ``num_degrees``" (`animated_args={"num_degrees": 0}`).
+   value, e.g. "sweeps from 0 to ``angle``" (`animated_args={"angle": 0}`).
 4. **How to change the timing**: one inline example, `with Seq(run_time=3): ...` or `with Off(): ...`.
 5. **Propagation**: whether the change applies to descendants (most `Mob` attribute writes do) or
    only to this Mob (`set_non_recursive`).
@@ -334,15 +339,15 @@ settings errors (`AlganConfigurationError`). Do not document internal assertion 
 ## 8. See Also
 
 Add one when the reader is likely in the wrong place. Algan has dense method families
-(`move_next_to`, `move_inline_with_edge`, `move_inline_with_center`, `move_inline_with_mob`,
-`move_inline_with_boundary`) where the differences are subtle — that is exactly the case for
+(`move_next_to`, `align_with`, `move_to_screen_edge`, `move_to_screen_corner`) where the
+differences are subtle — that is exactly the case for
 `See Also`, with a reason attached to each entry:
 
 ```
 See Also
 --------
 :meth:`~.Mob.move_next_to` : Place this Mob beside another with a buffer.
-:meth:`~.Mob.move_inline_with_center` : Align centers without changing the other axis.
+:meth:`~.Mob.align_with` : Line two Mobs up along one axis, by center, edge or boundary.
 ```
 
 ## 9. Examples
@@ -430,12 +435,12 @@ thing. Consequently:
 | Anti-pattern | Where it exists today |
 |---|---|
 | Default value not stated | `Square.side_length`, `Circle.radius`, `Rectangle.width/height` |
-| Angle without "degrees" | `Mob.rotate`, `Mob.orbit` (no `Parameters` section at all) |
+| Angle without "degrees" | `Mob.rotate`, `Mob.orbit` (both fixed in the API overhaul's Phase 3) |
 | Returns `self`, says nothing | `Animatable.spawn` |
 | No docstring on a taught API | `Animatable.clone` (6 parameters, one deprecated), `Animatable.despawn` |
 | Copy-pasted parent summary | `SurroundingRectangle` ("A rectangle.") |
 | Parameters out of signature order / phantom `*args` | `Rectangle`, `Square`, `Circle` |
-| Types duplicated in the docstring | `move_to`, `move_inline_with_edge` (vs `move_next_to`, which is correct) |
+| Types duplicated in the docstring | `move_to` (vs `move_next_to`, which is correct) |
 | No annotations, so no types render | `Scene.save_video`, `Scene.save_frame` |
 | Bare indented code, not a `code-block` | `Mob.set_shader` |
 | Internal mechanics in a user docstring | `Animatable` class docstring's `data_sub_inds` / `parent_batch_sizes` entries |
@@ -489,7 +494,7 @@ turned up while writing them: `MarkupText` strips its markup unconditionally rat
 Pango is missing (its docstring claimed otherwise), and a `Title` places itself against *Manim's*
 frame, which puts its top at exactly Algan's top border — flush against the edge with no margin.
 Both are now stated where a reader will hit them. Chasing the second one turned up a real bug in
-`move_to_edge`, since fixed: it took its inset direction from `normalize(boundary - border)`, which
+`move_to_screen_edge`, since fixed: it took its inset direction from `normalize(boundary - border)`, which
 is degenerate for a boundary lying on the border and points the wrong way for a Mob already
 off-screen.
 

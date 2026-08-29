@@ -73,7 +73,7 @@ def build(cfg):
                 ]
             ).spawn()
         with Seq(run_time=1, rate_func=rate_funcs.identity):
-            Scene.get_camera().orbit(360, UP, about_point=ORIGIN)
+            Scene.get_camera().orbit(360, UP, about=ORIGIN)
     elif cfg == "text_past":
         with Off():
             t = Group([Text("straddle").move(UP * 1.2 * i) for i in (-1, 0, 1)]).spawn()

@@ -25,7 +25,7 @@ def fresh_scene_stack():
 def _midpoint_of_recorded_move(angle_degrees):
     scene = Scene(scene_initializer=_empty_scene)
     mob = Mob(location=[0, 0, 0]).spawn(animate=False)
-    mob.move_to_point_along_arc([2, 0, 0], angle_degrees, arc_normal=[0, 0, 1])
+    mob.move_to([2, 0, 0], angle_degrees, arc_normal=[0, 0, 1])
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
     location = mob.location.clone()
     scene.terminate()
@@ -63,7 +63,7 @@ def test_shallow_arc_remains_finite_and_reaches_target(angle_degrees):
     mob = Mob(location=[0, 0, 0]).spawn(animate=False)
     target = torch.tensor([[[2.0, 0.0, 0.0]]])
 
-    mob.move_to_point_along_arc(target, angle_degrees, arc_normal=[0, 0, 1])
+    mob.move_to(target, angle_degrees, arc_normal=[0, 0, 1])
     torch.testing.assert_close(mob.location, target, atol=1e-6, rtol=0)
 
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
@@ -77,7 +77,7 @@ def test_shallow_arc_remains_finite_and_reaches_target(angle_degrees):
 def test_non_unit_normal_supports_an_arbitrary_arc_plane():
     scene = Scene(scene_initializer=_empty_scene)
     mob = Mob(location=[0, 0, 0]).spawn(animate=False)
-    mob.move_to_point_along_arc(
+    mob.move_to(
         [0, 2, 0],
         180,
         arc_normal=[5, 0, 0],
@@ -99,7 +99,7 @@ def test_batched_zero_and_circular_sweeps_are_supported_together():
         location=[[0, 0, 0], [0, 0, 0]],
         add_to_scene=False,
     ).spawn(animate=False)
-    mob.move_to_point_along_arc(
+    mob.move_to(
         [[2, 0, 0], [2, 0, 0]],
         torch.tensor([0.0, 90.0]).view(1, 2, 1),
         arc_normal=[0, 0, 1],
@@ -118,7 +118,7 @@ def test_non_recursive_arc_move_leaves_child_location_unchanged():
     parent.add_children(child)
     parent.spawn(animate=False)
 
-    parent.move_to_point_along_arc(
+    parent.move_to(
         [2, 0, 0],
         90,
         arc_normal=[0, 0, 1],
@@ -150,5 +150,5 @@ def test_invalid_arc_geometry_is_rejected(target, angle, normal, message):
     scene = Scene(scene_initializer=_empty_scene)
     mob = Mob(location=[0, 0, 0], add_to_scene=False)
     with pytest.raises(ValueError, match=message):
-        mob.move_to_point_along_arc(target, angle, arc_normal=normal)
+        mob.move_to(target, angle, arc_normal=normal)
     scene.terminate()

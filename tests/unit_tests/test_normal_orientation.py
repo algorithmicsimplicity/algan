@@ -130,7 +130,7 @@ def _outward(mob, points):
     axis_source = (
         mob.get_forward_direction()
         if isinstance(mob, Torus)
-        else mob.get_upwards_direction()
+        else mob.get_up_direction()
     )
     axis = F.normalize(axis_source.reshape(-1, 3)[0], dim=-1)
     axial = (delta * axis).sum(-1, keepdim=True) * axis

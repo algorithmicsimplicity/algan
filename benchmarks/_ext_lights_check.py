@@ -60,7 +60,7 @@ def ground(y=-1.5, half=8.0):
 def tilt_camera(deg=-25, dolly=0.0):
     cam = Scene.get_camera()
     with Off():
-        cam.rotate(deg, RIGHT, about_point=ORIGIN)
+        cam.rotate(deg, RIGHT, about=ORIGIN)
         if dolly:
             cam.move(cam.get_forward_direction() * dolly)
 

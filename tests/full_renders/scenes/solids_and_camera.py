@@ -142,7 +142,7 @@ with Seq():
         # The Group tilts about its own centre while each member also spins
         # about its own axis: the descendant bases have to compose, not
         # overwrite, and the labels must not follow (they are not children).
-        flat.rotate(14, OUT, about_point=flat_center)
+        flat.rotate(14, OUT, about=flat_center)
         flat[0].rotate(140, UP + RIGHT)
         flat[1].rotate(-110, UP)
         flat[2].rotate(200, RIGHT + OUT)
@@ -156,9 +156,9 @@ with Seq():
         curved[4].rotate(-70, RIGHT)
         key_light.move(LEFT * 9)
     with Sync(run_time=1.6):
-        flat.rotate(-14, OUT, about_point=flat_center)
+        flat.rotate(-14, OUT, about=flat_center)
         # Travel out along a curved path and back, so the row is restored.
-        curved[0].move_to_point_along_arc(curved[0].get_center(), 180, arc_normal=OUT)
+        curved[0].move_to(curved[0].get_center(), 180, arc_normal=OUT)
         curved[3].scale(1.3)
         key_light.move(RIGHT * 9)
     with Sync(run_time=0.8):
@@ -220,12 +220,12 @@ with Seq():
     with Sync(run_time=2.0):
         triad.rotate(120, UP + RIGHT)
         hull.rotate(-150, UP + OUT)
-        Scene.get_camera().rotate(9, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(9, UP, about=ORIGIN)
     with Sync(run_time=1.8):
-        Scene.get_camera().rotate(-9, UP, about_point=ORIGIN)
-        Scene.get_camera().orbit(4, RIGHT, about_point=ORIGIN)
+        Scene.get_camera().rotate(-9, UP, about=ORIGIN)
+        Scene.get_camera().orbit(4, RIGHT, about=ORIGIN)
     with Sync(run_time=1.2):
-        Scene.get_camera().orbit(-4, RIGHT, about_point=ORIGIN)
+        Scene.get_camera().orbit(-4, RIGHT, about=ORIGIN)
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
@@ -239,7 +239,7 @@ with Sync(run_time=0.8):
 
 with Off():
     layout_label = Text(
-        "fit_to_screen  +  wave_color  +  move_out_of_screen",
+        "fit_to_screen  +  wave_color  +  move_off_screen",
         font_size=23,
         color=TEAL_A,
         font=FONT,
@@ -265,7 +265,7 @@ with Seq():
         curved[1].rotate(180, UP)
         curved[3].rotate(180, RIGHT)
     with Sync(run_time=1.4):
-        curved[0].move_out_of_screen(RIGHT, despawn=False)
-        curved[1].move_out_of_screen(UP, despawn=False)
+        curved[0].move_off_screen(RIGHT, despawn=False)
+        curved[1].move_off_screen(UP, despawn=False)
         curved[4].scale(0.6)
     Scene.wait(0.3)

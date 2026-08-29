@@ -42,7 +42,7 @@ def test_rotate_about_point_changes_basis_and_location():
     mob = Mob(location=[1, 0, 0], add_to_scene=False)
     initial_basis = mob.basis.clone()
 
-    mob.rotate(90, OUT, about_point=ORIGIN)
+    mob.rotate(90, OUT, about=ORIGIN)
 
     torch.testing.assert_close(
         mob.location,
@@ -59,7 +59,7 @@ def test_orbit_only_changes_location():
     mob = Mob(location=[1, 0, 0], add_to_scene=False)
     initial_basis = mob.basis.clone()
 
-    mob.orbit(90, OUT, about_point=ORIGIN)
+    mob.orbit(90, OUT, about=ORIGIN)
 
     torch.testing.assert_close(
         mob.location,
@@ -76,7 +76,7 @@ def test_animated_rotate_about_point_replays_location_and_basis_together():
     mob = Mob(location=[1, 0, 0], add_to_scene=False).spawn(animate=False)
     initial_basis = mob.basis.clone()
 
-    mob.rotate(90, OUT, about_point=ORIGIN)
+    mob.rotate(90, OUT, about=ORIGIN)
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
 
     diagonal = math.sqrt(0.5)
