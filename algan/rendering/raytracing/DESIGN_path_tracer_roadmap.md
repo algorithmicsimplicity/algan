@@ -325,11 +325,20 @@ every emissive triangle and one environment entry, rebuilt per render call
 (`_build_nee_tables`). Selection is global and purely power-proportional: no
 spatial term, no orientation cone, no BSDF awareness.
 
-**Where that is right.** For lights it is the correct call and the redesign
-plan said so. Algan scenes carry single-digit light counts; a light BVH over
-four rows would cost more to build and traverse than it saves, and the survey
-recommends one (Conty Estevez & Kulla 2018) on the strength of production
-scenes with thousands.
+**Where that is right — with a caveat.** For lights the redesign plan said a
+tree was not worth it, and the conclusion holds, but the *reason* usually
+given for it does not. It is tempting to say "four lights, so a tree cannot
+pay" — yet a spatially-aware sampler beats power-proportional selection even
+at tiny counts, because power-proportional ignores distance entirely and will
+pick a bright light across the room as often as a dim one against the
+surface. The survey quotes PBRT-v4 §12.6 measuring a **2.72x MSE improvement
+on a two-light scene** for exactly this reason.
+
+What actually settles it is that for a handful of lights the best sampler is
+no sampler: sum every row, as the code did before Stage 3 and as the
+ambient / hemisphere fill still does. That is exact, has zero variance, and
+costs less than any selection scheme. A tree is the answer for a population
+too large to sum, which lights are not and emissive meshes are.
 
 **Where it is already wrong.** Stage 3 put *emissive triangles* in the same
 table, and those are not single-digit. One emissive mesh is thousands of
@@ -353,28 +362,113 @@ count never is.
 
 **What to do**, in order of value per unit of work:
 
-* **Split the table by cardinality.** Sum all delta and area light rows
-  deterministically (bounded by `num_lights`, and already what the ambient /
-  hemisphere fill does two blocks above), and keep the stochastic CDF for
-  emissive triangles plus the env entry. Direct lighting goes back to
-  noise-free, the emissive path keeps its MIS, and `pt_light_samples` becomes
-  what it should be — a control on emitter sampling, not on lights. Small,
-  local to `pt_shade`'s NEE block and `_build_nee_tables`; no new buffers.
-* **A light BVH over the emissive-triangle entries** (Conty Estevez & Kulla
-  2018: bounding box plus orientation cone per node, stochastic traversal on
-  one rescaled random number, so stratification survives). Build it host-side
-  beside the CDF, from the same frame-0 powers; the kernel walks it in place
-  of the binary search. The MIS pdf stays computable — the traversal's
-  selection probability replaces `tri_emit_prob[prim]`, which is already the
-  single value both MIS ends read, so the change is contained to how that
-  number is produced. This is the survey's "high-value, moderate-effort win"
-  and is worth doing once emissive meshes are a supported look rather than an
-  incidental one.
+### 6a. Split the table by cardinality (small, do first)
+
+Sum all delta and area light rows deterministically — they are bounded by
+`num_lights` and single-digit in practice, and the ambient / hemisphere fill
+two blocks above already works exactly this way — and keep the stochastic CDF
+for emissive triangles plus the env entry. Direct lighting goes back to
+noise-free, the emissive path keeps its MIS, and `pt_light_samples` becomes
+what it should be: a control on *emitter* sampling, not on lights. Local to
+`pt_shade`'s NEE block and `_build_nee_tables`; no new buffers.
+
+Note what this implies about the light-BVH question below: for a handful of
+lights, the best sampler is **no sampler**. A tree beats power-proportional
+selection, but summing beats both, exactly and at lower cost. A light tree is
+therefore not a general replacement for the flat CDF — it is the answer for
+the one population that cannot be summed.
+
+### 6b. A light tree over the emitter entries (the real fix)
+
+Conty Estevez & Kulla 2018, as in PBRT-v4's `BVHLightSampler` and Cycles:
+each node carries its subtree's emitted power, its bounds, and an
+**orientation cone** (axis, normal spread `theta_o`, emission spread
+`theta_e`). Sampling descends stochastically — at each node, score the
+children by an importance heuristic in the shading point `x`, normalise, pick
+one with a *rescaled* random number, and multiply the probabilities down to
+the leaf. The heuristic is roughly `power * |cos theta'| / d^2`, with the cone
+bounding how much of the node can face `x` at all. Rescaling the single random
+number rather than drawing a fresh one per level is what preserves
+stratification, which matters here because the entry-select draw is a Sobol
+pair (§7).
+
+This directly attacks what makes the flat CDF bad: back-facing emitters get
+near-zero probability instead of full power-proportional probability, and
+distant ones are discounted by `1/d^2`.
+
+**Why not reuse the scene BVH.** The instinct is right that a BVH already
+exists and that a second one sounds redundant, but the STBVH is the wrong tree
+in four specific ways, and they are worth spelling out because only the first
+is obvious:
+
+1. **Wrong payload.** Kernel-facing nodes are `blocks [first_leaf, 8, arity]`
+   — six bounds lanes, a packed frame interval, one pad — chosen so a node
+   visit is one aligned 128-byte (or 64-byte f16) fetch. There is no room for
+   power and a cone. That part is easy to fix with a parallel array, so it is
+   the least of the four.
+2. **Wrong contents.** It holds *every* triangle; emitters are a tiny subset.
+   With per-node power sums a zero-power subtree is skipped in O(1), so it
+   would function — but you descend `log(N_all)` levels to reach `log(E)`
+   worth of decisions, and the interior nodes carry no useful discrimination.
+3. **Wrong shape.** It is built to minimise ray-traversal cost (SAH). A light
+   tree wants to minimise *sampling variance*, which Conty-Kulla do with an
+   SAH variant that also penalises wide orientation cones — a node grouping
+   emitters that face opposite directions is bad for sampling however tight
+   its bounds are. Reusing the SAH tree gives a working sampler with a
+   needlessly poor selection distribution.
+4. **Wrong axis, specifically to Algan.** The STBVH is *spatio-temporal*: its
+   leaves are primitive *instances* with frame intervals, and the 4D Morton
+   order deliberately clusters the same primitive at adjacent frames. For
+   light sampling that is precisely backwards — you want distinct emitters
+   clustered spatially at one frame, not one emitter clustered across time.
+   Interior power sums would also be sums over instances that may not exist at
+   the frame being shaded, which does not bias the result (the pdf is whatever
+   both MIS ends agree it is) but does degrade the distribution.
+
+Against that, a purpose-built tree is cheap: it is over `E` emitter entries
+rather than `N` triangles, it is built host-side in torch inside
+`_build_nee_tables` — which already computes per-triangle power and area — and
+it is rebuilt per render call, not per frame. Production renderers all build a
+separate light tree for these reasons, and they unify analytic lights into it;
+here, per 6a, the light rows do not need to be in a tree at all.
+
+**The one substantive cost: the MIS pdf becomes a query, not a lookup.**
+Today both ends of the emissive MIS pair read one constant,
+`tri_emit_prob[prim]` — the NEE side to form `pdf_sa`, the BSDF-hit side to
+form `pdf_ne`. A spatially-varying sampler makes the selection probability a
+function of the shading point, so at a BSDF hit on an emitter the kernel must
+recompute *the probability that next-event estimation would have chosen this
+triangle from the previous vertex*. That means a PMF query, and the standard
+implementation is an upward walk from the emitter's leaf to the root using
+stored parent pointers (cheaper than a top-down re-descent) — so the tree
+needs a parent array as well as children.
+
+The good news, and the reason this is cheaper here than it first looks: the
+query needs the previous vertex, and **the path state already carries it**.
+`rs_ro` is not updated on a pass-through crossing, only on a scatter, so
+during the peel loop `ro` *is* the previous scatter point — which is exactly
+why the current code can write `pdf_ne` in terms of `t_hit`, the distance
+measured from it. A position-only importance heuristic therefore needs no new
+per-path state at all. Wanting the shading-normal term too would need three
+more floats: `rs_sca` is width 12 with columns 0–5 used by the path tracer, 6
+free, and 7–11 owned by the nested-IOR stack, so one free column exists and a
+widening would cost `_PT_BYTES_PER_SLOT` +12 bytes and a slightly smaller
+tile. Start position-only.
+
+Two smaller consequences to keep straight: `tri_emit_prob` is also used as a
+*predicate* (`> 0` gates the MIS weight and marks "this triangle is in the
+table"), so that flag survives as an array even once the probability becomes a
+query; and the NEE and MIS ends must call the *same* PMF routine, as they call
+the same `_pt_lit_f_pdf` today — that identity is what makes the weights sum
+to one, and it is the thing to test directly rather than by eye.
 
 **Verification:** an emissive-mesh scene at equal time against the flat CDF
 (the `_pt_furnace_check` / reference-integral pattern from Stage 3 gives the
-ground truth); delta-light direct lighting invariant to `pt_light_samples`
-once the table is split, since summing the rows makes that term exact.
+ground truth); a unit probe asserting the descent's returned probability
+equals the upward PMF walk for the same (point, triangle) pair, over random
+points — that single test is what keeps MIS correct; and delta-light direct
+lighting invariant to `pt_light_samples` once 6a lands, since summing the rows
+makes that term exact.
 
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
