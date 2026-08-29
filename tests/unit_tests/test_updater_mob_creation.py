@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 import algan
+import algan.manim as mn
 from algan.errors import UnsupportedFeatureError
 from algan.settings.video_settings import SMOKE_TEST
 
@@ -110,8 +111,8 @@ def test_reshaping_a_pre_existing_mob_inside_an_updater_is_explained(tmp_path):
     that does work.
     """
     with algan.Scene(video_settings=SMOKE_TEST):
-        tracker = algan.ValueTracker(0).spawn()
-        number = algan.DecimalNumber(0).spawn()
+        tracker = mn.ValueTracker(0).spawn()
+        number = mn.DecimalNumber(0).spawn()
         number.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
 
         tracker.set_value(5)
@@ -122,7 +123,7 @@ def test_reshaping_a_pre_existing_mob_inside_an_updater_is_explained(tmp_path):
 def test_numeric_display_counts_inside_an_updater(tmp_path):
     """The alternative the error above points at has to actually work."""
     with algan.Scene(video_settings=SMOKE_TEST):
-        tracker = algan.ValueTracker(0).spawn()
+        tracker = mn.ValueTracker(0).spawn()
         display = algan.NumericDisplay(0.0).spawn()
         display.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
         tracker.set_value(5)
@@ -144,7 +145,7 @@ def test_set_value_leaves_a_manim_number_visible(tmp_path):
 
     def brightest(value):
         with algan.Scene(video_settings=SMOKE_TEST):
-            number = algan.DecimalNumber(0.0).spawn()
+            number = mn.DecimalNumber(0.0).spawn()
             if value is not None:
                 number.set_value(value)
             result = algan.Scene.save_frame(str(tmp_path / f"number_{value}.png"))

@@ -34,8 +34,8 @@ from algan import (
     Tetrahedron,
     TriangleVertices,
 )
-from algan.manim import Cross, VGroup
 from algan.animatable_base.mob_morph import MobMorphMixin
+from algan.manim import Cross, VGroup
 
 
 @pytest.fixture

@@ -5,18 +5,18 @@ import inspect
 import numpy as np
 
 import algan
+import algan.manim as mn
 
 
 def test_all_manim_0201_mobjects_are_exported():
-    assert algan.MANIM_COMMUNITY_VERSION == "0.20.1"
-    assert len(algan.MANIM_MOBJECT_NAMES) == 188
-    assert len(set(algan.MANIM_MOBJECT_NAMES)) == 188
-    assert algan.missing_manim_mobjects(vars(algan)) == ()
-    algan.validate_manim_mobject_parity(vars(algan))
+    assert mn.MANIM_COMMUNITY_VERSION == "0.20.1"
+    assert len(mn.MANIM_MOBJECT_NAMES) == 188
+    assert len(set(mn.MANIM_MOBJECT_NAMES)) == 188
+    assert mn.missing_manim_mobjects(vars(mn)) == ()
+    mn.validate_manim_mobject_parity(vars(mn))
     assert all(
-        inspect.isclass(getattr(algan, name))
-        and issubclass(getattr(algan, name), algan.Mob)
-        for name in algan.MANIM_MOBJECT_NAMES
+        inspect.isclass(getattr(mn, name)) and issubclass(getattr(mn, name), algan.Mob)
+        for name in mn.MANIM_MOBJECT_NAMES
     )
 
 
@@ -27,7 +27,7 @@ def test_manim_backed_graphing_and_mutation_api():
         add_to_scene=False,
     )
     graph = axes.plot(lambda x: x * x, x_range=[-1, 1])
-    assert isinstance(graph, algan.ParametricFunction)
+    assert isinstance(graph, mn.ParametricFunction)
     assert algan.Arc(add_to_scene=False).get_render_primitives() is not None
     arrow = algan.Arrow(algan.LEFT, algan.RIGHT, add_to_scene=False)
     assert arrow.add_tip() is arrow
@@ -90,7 +90,7 @@ def test_native_3d_geometry_families_build_renderable_meshes():
 
 
 def test_point_cloud_and_image_apis_are_native():
-    cloud = algan.DotCloud(
+    cloud = mn.DotCloud(
         points=[[0, 0, 0], [1, 0, 0]],
         radius=0.03,
         add_to_scene=False,
@@ -102,12 +102,12 @@ def test_point_cloud_and_image_apis_are_native():
     assert tuple(cloud.children) != old_children
     assert len(cloud.get_descendants()) > 0
 
-    first = algan.DotCloud(
+    first = mn.DotCloud(
         points=[[0, 0, 0]],
         color=algan.RED,
         add_to_scene=False,
     )
-    second = algan.DotCloud(
+    second = mn.DotCloud(
         points=[[0, 0, 0]],
         color=algan.BLUE,
         add_to_scene=False,
@@ -117,7 +117,7 @@ def test_point_cloud_and_image_apis_are_native():
 
     pixels = np.zeros((2, 3, 4), dtype=np.uint8)
     pixels[..., 3] = 128
-    image = algan.ImageMobject(
+    image = mn.ImageMobject(
         pixels,
         scale_to_resolution=None,
         add_to_scene=False,
@@ -126,7 +126,7 @@ def test_point_cloud_and_image_apis_are_native():
     assert image.set_opacity(0.5) is image
     assert np.all(image.get_pixel_array()[..., 3] == 64)
 
-    abstract = algan.AbstractImageMobject(
+    abstract = mn.AbstractImageMobject(
         scale_to_resolution=None,
         add_to_scene=False,
     )
@@ -175,12 +175,12 @@ def test_native_vector_style_and_surrounding_rectangle_api():
 
 
 def test_renderer_specific_surface_equivalents():
-    surface = algan.OpenGLSurface(
+    surface = mn.OpenGLSurface(
         lambda u, v: (u, v, u * v),
         resolution=(3, 3),
         add_to_scene=False,
     )
-    mesh = algan.OpenGLSurfaceMesh(
+    mesh = mn.OpenGLSurfaceMesh(
         surface,
         resolution=(2, 2),
         add_to_scene=False,
@@ -202,13 +202,13 @@ def test_svg_and_vector_field_families_convert_nested_geometry(tmp_path):
 
     objects = [
         algan.SVGMobject(svg_path, add_to_scene=False),
-        algan.ArrowVectorField(
+        mn.ArrowVectorField(
             field,
             x_range=[-1, 1, 1],
             y_range=[-1, 1, 1],
             add_to_scene=False,
         ),
-        algan.StreamLines(
+        mn.StreamLines(
             field,
             x_range=[-1, 1, 2],
             y_range=[-1, 1, 2],

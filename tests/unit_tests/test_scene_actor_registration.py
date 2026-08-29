@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 import algan
+import algan.manim as mn
 
 
 @pytest.fixture(autouse=True)
@@ -131,7 +132,7 @@ def test_code_built_detached_registers_nothing():
 
 
 def test_image_mobject_display_frame_is_registered():
-    mob = algan.ImageMobjectFromCamera(algan.Scene.get_camera())
+    mob = mn.ImageMobjectFromCamera(algan.Scene.get_camera())
     mob.add_display_frame()
     _spawned(mob)
 

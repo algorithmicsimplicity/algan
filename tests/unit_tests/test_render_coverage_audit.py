@@ -287,6 +287,20 @@ def test_scene_text_pins_a_vendored_font(scene_path):
 
 
 def test_every_exemption_names_something_that_still_exists():
-    """A stale exemption would silently excuse a class that was renamed."""
-    unknown = sorted(name for name in EXEMPT if not hasattr(algan, name))
-    assert not unknown, f"EXEMPT names that are no longer exported: {unknown}"
+    """A stale exemption would silently excuse a class that was renamed.
+
+    Both namespaces count. An exemption says "this class does not need render
+    coverage", which stays true wherever the class is reachable from -- the
+    point-cloud and OpenGL-alias bases live in ``algan.manim`` rather than the
+    root namespace, and are no less real for it.
+    """
+    import algan.manim as manim_namespace
+
+    unknown = sorted(
+        name
+        for name in EXEMPT
+        if not hasattr(algan, name) and not hasattr(manim_namespace, name)
+    )
+    assert not unknown, (
+        f"EXEMPT names that exist in neither algan nor algan.manim: {unknown}"
+    )
