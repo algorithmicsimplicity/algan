@@ -18,6 +18,9 @@ labelled, non-overlapping rows so a regression reads as a diff in one column.
 
 import torch
 
+# The point-cloud family is Manim-compat, so Phase 1 of the API overhaul moved
+# it out of the root namespace and behind ``algan.manim``.
+import algan.manim as mn
 from algan import *
 
 # Pinned so the render does not depend on the host's fonts;
@@ -407,7 +410,7 @@ with Sync(run_time=0.6):
     primitive_labels.despawn()
 
 with Off():
-    dot_cloud = DotCloud(
+    dot_cloud = mn.DotCloud(
         points=torch.stack(
             (
                 LEFT * 0.55 + DOWN * 0.45,
@@ -419,21 +422,21 @@ with Off():
         stroke_width=10,
         color=YELLOW,
     ).move(LEFT * 4.2 + UP * 0.55)
-    point_cloud_dot = PointCloudDot(
+    point_cloud_dot = mn.PointCloudDot(
         radius=0.62,
         density=5,
         stroke_width=7,
         color=BLUE_A,
     ).move(LEFT * 1.4 + UP * 0.55)
-    true_dot = TrueDot(stroke_width=16, color=GREEN_A).move(RIGHT * 1.4 + UP * 0.55)
-    point_group = PGroup(
-        DotCloud(
+    true_dot = mn.TrueDot(stroke_width=16, color=GREEN_A).move(RIGHT * 1.4 + UP * 0.55)
+    point_group = mn.PGroup(
+        mn.DotCloud(
             points=torch.stack((LEFT * 0.42, RIGHT * 0.42, UP * 0.5)),
             stroke_width=9,
             color=ORANGE,
             add_to_scene=False,
         ),
-        TrueDot(
+        mn.TrueDot(
             center=DOWN * 0.48,
             stroke_width=14,
             color=PURPLE,

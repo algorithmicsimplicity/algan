@@ -219,10 +219,39 @@ Recorded here and in the design doc, so the two do not drift.
   execute at build time and would otherwise fail. That is a spot fix on the renamed symbols
   only; the Phase 8 sweep still owes the prose (the positioning tutorial's method tables now
   describe `align_with` three times over, for instance) and a real doc build.
-- **`tests/full_renders` and `tests/path_traced` have not been run yet** on this branch. They are
-  the pixel-comparing suites; Phase 1/1b should not have moved output, but that is unverified.
-  Run before Phase 8, and note that this is a CPU-only session so the CUDA baselines cannot be
-  spoken for.
+- **`tests/full_renders` is red, and it was red before Phase 3. Phase 1/1b moved rendered
+  output.** This was the open question above; it is now answered, and the answer is the one the
+  plan said must not happen. Run on this branch (CPU, `expected_outputs_cpu`) it is
+  **4 failed, 3 passed**, and run on `faf4dae` — the commit before Phase 3 — it is the same four
+  scenes with byte-identical deltas:
+
+  | Scene | Deviation | Worst frame |
+  | :--- | :--- | :--- |
+  | `manim_compat_and_plots` | 192 channel values | 119 |
+  | `solids_and_camera` | 200 channel values | 179 |
+  | `materials_and_lighting` | 14 channel values | 21 |
+  | `shapes_and_timeline` | `NameError: DotCloud` — the scene never rendered | — |
+
+  Identical numbers on both sides is what establishes that **Phase 3 moved nothing**; it is also
+  what establishes that Phase 1 or 1b did. The tolerance is 2, so 192 and 200 are not rounding.
+  Diffs are in `tests/full_renders/output_errors/`.
+
+  **Diagnosing and fixing this belongs to whoever picks up next, before Phase 8.** Phase 8's
+  "no re-baselining should be needed -- a baseline that shifts is a bug, find it before
+  regenerating" is exactly this situation. The obvious suspect is Phase 1b's degrees-to-radians
+  adapter: `manim_compat_and_plots` is the scene made of compat classes, and the known-follow-up
+  above already records that the docs contain an `Arc(angle=3.14)` that now means 3.14 degrees.
+  That does not explain `solids_and_camera` or `materials_and_lighting`, which use native
+  geometry, so expect more than one cause.
+
+  The `DotCloud` `NameError` is fixed here, since it is a one-line consequence of Phase 1 that
+  was hiding a whole scene from comparison: the point-cloud family (`DotCloud`, `PointCloudDot`,
+  `TrueDot`, `PGroup`) left the root namespace, and the scene now reaches it through
+  `import algan.manim as mn` — the same move Phase 1 made in `test_point_cloud_rendering` and
+  missed here because this suite was never run.
+
+- **`tests/path_traced` has still not been run** on this branch. Note also that this is a
+  CPU-only session, so the CUDA baselines cannot be spoken for either way.
 
 ---
 
