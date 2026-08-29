@@ -46,7 +46,7 @@ cap_process_memory(float(os.environ.get("ALGAN_GRIDNORM_MEM_GB", "10")))
 
 import torch  # noqa: E402
 
-from algan.rendering.taichi_runtime import init_taichi, sync_devices  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices, init_taichi  # noqa: E402
 
 init_taichi()
 
@@ -135,11 +135,11 @@ def main():
             failures += 1
 
         def timed(fn, iters, g=grid):
-            sync_devices()
+            _sync_devices()
             t0 = time.perf_counter()
             for _ in range(iters):
                 fn(g)
-            sync_devices()
+            _sync_devices()
             return (time.perf_counter() - t0) / iters * 1000.0
 
         iters = max(3, min(30, int(2e7 // max(1, grid.numel()))))

@@ -253,6 +253,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
     min_alpha,
     min_weight,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 RESOLUTIONS = {"ld": LD, "md": MD, "hd": HD}
 
@@ -1141,8 +1142,7 @@ def _measure(build, settings, capture=None):
                     band_rule=rule,
                     band_c=c,
                 )
-                if stream is not None and stream["sheet_key"].is_cuda:
-                    torch.cuda.synchronize()
+                _sync_devices()
                 st = svis_stats.sheet_stats[label]
                 st.seconds += time.perf_counter() - t0
                 if stream is None:

@@ -21,7 +21,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from algan.rendering.taichi_runtime import init_taichi, sync_devices  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices, init_taichi  # noqa: E402
 
 init_taichi()
 
@@ -46,7 +46,7 @@ def run(tiles, empty):
     seconds for the whole window.
     """
     per = (TOTAL + tiles - 1) // tiles
-    sync_devices()
+    _sync_devices()
     t0 = time.perf_counter()
     start = 0
     while start < TOTAL:
@@ -54,7 +54,7 @@ def run(tiles, empty):
         pa = pix_accum[start : start + n]
         wf_composite_accum(0, W, H, 0, start, pa, T_VAL, EXPOSURE, empty, out)
         start += n
-    sync_devices()
+    _sync_devices()
     return time.perf_counter() - t0
 
 

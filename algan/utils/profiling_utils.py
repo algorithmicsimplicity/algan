@@ -87,6 +87,7 @@ from algan.animatable_base.animatable import Animatable
 from algan.environment import env_flag, env_int, env_overrides
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.surfaces.surface import Surface
+from algan.rendering.taichi_runtime import _sync_devices
 from algan.scene import Scene
 
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
@@ -101,26 +102,6 @@ REPORT_PATH = "algan_profile_report.txt"
 KERNEL_PROFILER = False
 # Samples per pixel; > 1 selects the Monte Carlo kernels. Set from profile_scene.
 SPP = 1
-
-
-# ---------------------------------------------------------------------------
-# Device sync
-# ---------------------------------------------------------------------------
-def _sync_devices():
-    # Stage boundaries may now run on the batch-prep worker thread (scene
-    # prefetch). Syncing there would serialize against the render thread's
-    # GPU work (misattributing it) and ti.sync() is not safe off the main
-    # thread, so only sync from the main thread.
-    if threading.current_thread() is not threading.main_thread():
-        return
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    try:
-        if hasattr(torch, "mps") and torch.mps.is_available():
-            torch.mps.synchronize()
-    except Exception:
-        pass
-    ti.sync()
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +120,7 @@ class StageTimers:
         self.times = defaultdict(float)
         self.exclusive_times = defaultdict(float)
         self.counts = defaultdict(int)
-        self.cuda_sync_times = defaultdict(float)
+        self.device_sync_times = defaultdict(float)
         self.launch_times = defaultdict(float)
         # Work units processed per timed block, keyed by stage name like
         # ``times``. The wavefront bounce loop reports the active-ray count
@@ -190,7 +171,7 @@ class StageTimers:
             if items is not None:
                 self.item_totals[name] += int(items)
             # self.launch_times[name] += t1 - t0
-            # self.cuda_sync_times[name] += t2 - t0
+            # self.device_sync_times[name] += t2 - t0
             tls.active.discard(name)
 
     def charge_kernel_to_parent(self, dt):
@@ -376,17 +357,16 @@ def _make_kernel_wrapper(orig, name):
         _sync_devices()
         t0 = time.perf_counter()
         result = orig(*args, **kwargs)
-        # _sync_devices()
         t1 = time.perf_counter()
-        torch.cuda.synchronize()
+        # The whole device sync is one bucket: the torch and Taichi arms are no
+        # longer timed apart, because both go through the shared helper.
+        _sync_devices()
         t2 = time.perf_counter()
-        ti.sync()
-        t3 = time.perf_counter()
-        dt = t3 - t0
+        dt = t2 - t0
         TIMERS.times[label] += dt
         TIMERS.counts[label] += 1
         TIMERS.launch_times[label] += t1 - t0
-        TIMERS.cuda_sync_times[label] += t2 - t1
+        TIMERS.device_sync_times[label] += t2 - t1
         # Charge the launch to the enclosing stage's child accumulator, exactly
         # as a nested ``TIMERS.stage`` would on exit, so the stage that issued
         # this kernel does not count it as its OWN work. Without this a stage's
@@ -1211,7 +1191,7 @@ def run_once(
         "telemetry": sampler.summary() if sampler is not None else None,
         "cprofile_path": dump_path,
         "launch_times": dict(TIMERS.launch_times),
-        "cuda_sync_times": dict(TIMERS.cuda_sync_times),
+        "device_sync_times": dict(TIMERS.device_sync_times),
     }
 
 
@@ -1368,7 +1348,7 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
 
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
             lt = res["launch_times"].get(name, 0)
-            ct = res["cuda_sync_times"].get(name, 0)
+            ct = res["device_sync_times"].get(name, 0)
             excl = res["exclusive_times"].get(name, secs)
             w(
                 f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"

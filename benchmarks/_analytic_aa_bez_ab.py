@@ -68,6 +68,7 @@ from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.rendering.shaders.materials import (  # noqa: E402
     MeshStandardMaterial,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_rt2_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -163,8 +164,7 @@ def render(name, tag, aa, analytic):
     set_fragment_shading(True)
     build_scene(name)
     fname = f"aaAB_{name}_{tag}"
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     render_to_file(
         file_name=fname,
@@ -173,8 +173,7 @@ def render(name, tag, aa, analytic):
         render_settings=RenderSettings(RES, FPS, super_sampling_anti_aliasing=aa),
         file_extension="mp4",
     )
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    _sync_devices()
     dt = time.perf_counter() - t0
     rt_settings.set_analytic_aa(False)
     return os.path.join(OUT_DIR, fname + ".mp4"), dt

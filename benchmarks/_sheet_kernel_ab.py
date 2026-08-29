@@ -21,10 +21,10 @@ import time
 
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
-import torch  # noqa: E402
 
 from algan import *  # noqa: E402,F403
 from algan.rendering.raytracing import raster_pipeline, sheets  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.settings import SETTINGS  # noqa: E402
 
 W = int(sys.argv[1]) if len(sys.argv) > 2 else 1920
@@ -35,24 +35,16 @@ EXPERIMENTAL = SETTINGS.raytracing.experimental
 acc = collections.Counter()
 
 
-def _sync():
-    """Synchronize the device before/after a timed region; a no-op where
-    there is no CUDA to synchronize (torch.cuda.synchronize raises there).
-    """
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
 def timed(mod, name, key):
     orig = getattr(mod, name)
 
     def wrapper(*a, **k):
-        _sync()
+        _sync_devices()
         t0 = time.perf_counter()
         try:
             return orig(*a, **k)
         finally:
-            _sync()
+            _sync_devices()
             acc[key] += time.perf_counter() - t0
 
     setattr(mod, name, wrapper)
@@ -99,10 +91,10 @@ for _round in range(ROUNDS):
     for arm, cfg in ARMS.items():
         EXPERIMENTAL.set(**cfg)
         acc.clear()
-        _sync()
+        _sync_devices()
         t0 = time.perf_counter()
         Scene.save_frame("_sheet_kernel_ab.png", VS)
-        _sync()
+        _sync_devices()
         samples[arm].append(time.perf_counter() - t0)
         stages[arm].update(acc)
 

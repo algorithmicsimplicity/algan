@@ -17,8 +17,6 @@ import statistics
 import sys
 import time
 
-import torch
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import algan.rendering.raytracing.tracer as tracer_mod  # noqa: E402
@@ -50,6 +48,7 @@ from algan.rendering.raytracing import (  # noqa: E402
 from algan.rendering.raytracing.settings import (
     set_wavefront_sort_materials,  # noqa: E402
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.utils.algan_utils import render_to_file  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -95,10 +94,10 @@ _orig_wf = tracer_mod.raytrace_render_wavefront
 
 
 def _timed_wf(*a, **k):
-    torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     r = _orig_wf(*a, **k)
-    torch.cuda.synchronize()
+    _sync_devices()
     _wf_times.append(time.perf_counter() - t0)
     return r
 

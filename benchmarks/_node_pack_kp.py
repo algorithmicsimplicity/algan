@@ -2,7 +2,7 @@
 
 Renders the same animated flat-triangle scene as ``_node_pack_parity.py``
 (PREVIEW video, ray-traced shadows) with ``wavefront_traverse`` and
-``wavefront_shade`` monkeypatched behind ``torch.cuda.synchronize()`` timing
+``wavefront_shade`` monkeypatched behind ``_sync_devices()`` timing
 fences, and reports per-kernel totals (median over reps, after a warm-up
 render that absorbs compile + cold GPU clocks). Run once before and once
 after a layout change; the cross-process wall-time noise on Pascal is why the
@@ -18,8 +18,6 @@ import statistics
 import sys
 import time
 
-import torch
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from _node_pack_parity import build_and_animate  # noqa: E402
@@ -30,6 +28,7 @@ from algan.rendering.raytracing import (  # noqa: E402
     set_fragment_shading,
     set_shadows,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.utils.algan_utils import render_to_file  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
@@ -43,10 +42,10 @@ _counts = {}
 
 def _timed(name, orig):
     def wrapper(*a, **k):
-        torch.cuda.synchronize()
+        _sync_devices()
         t0 = time.perf_counter()
         r = orig(*a, **k)
-        torch.cuda.synchronize()
+        _sync_devices()
         _times[name] += time.perf_counter() - t0
         _counts[name] += 1
         return r

@@ -44,6 +44,25 @@ For performance changes:
 
 Use focused parity/benchmark scripts under `../benchmarks` when present. The default path should remain output-compatible unless the change intentionally modifies rendering. If adding an experimental optimization, provide a kill switch and keep capability checks, memory estimation, and fallback behavior coherent.
 
+### One device sync, everywhere
+
+`algan.rendering.taichi_runtime._sync_devices()` is the package's only device
+barrier. Nothing calls `torch.cuda.synchronize`, `torch.mps.synchronize` or
+`ti.sync` directly -- not engine code, not tests, not benchmarks. Timing a
+kernel behind a bare `torch.cuda.synchronize()` measures the *dispatch* rather
+than the work whenever the kernel is a Taichi launch (which on a CPU arch is
+every kernel), and a bare `ti.sync()` misses the torch side of the same batch.
+The helper covers both, skips whichever backend is absent, is safe to call
+before Taichi is initialized, and returns without syncing off the main thread
+-- syncing on the batch-prep worker would serialize against the render thread
+and misattribute its GPU work.
+
+The two backend probes (`_mps_capability_probe.py`,
+`_taichi_arch_coexistence_probe.py`) and the algan-free torch comparison
+`_mps_vs_cpu_torch_speed.py` are the deliberate exceptions: what they measure
+*is* the per-backend sync call, so routing them through the helper would erase
+the thing under test.
+
 ### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
 
 Some scenes render slightly differently every run, with no change to the code

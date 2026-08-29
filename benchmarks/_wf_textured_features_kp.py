@@ -59,6 +59,7 @@ from algan.rendering.raytracing.settings import (  # noqa: E402
     set_wf_textured,
     set_wf_textured_features,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.utils.profiling_utils import (  # noqa: E402
     _collect_taichi_kernel_gpu,
     enable_taichi_kernel_profiler,
@@ -129,7 +130,7 @@ def render_stage(textured, feat, tag):
     build()
     ti.profiler.clear_kernel_profiler_info()
     SceneManager.instance().save_frame(os.path.join(OUT_DIR, f"kp_{tag}.png"))
-    ti.sync()
+    _sync_devices()
     rows = _collect_taichi_kernel_gpu()
     shade = _kernel_ms(rows, "wf_shade_textured") + _kernel_ms(rows, "wavefront_shade")
     trav = _kernel_ms(rows, "wavefront_traverse")

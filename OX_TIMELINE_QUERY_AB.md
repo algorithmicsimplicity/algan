@@ -99,7 +99,7 @@ max absolute deviation **0.0**. (This matches the prior synthetic parity work:
 Methodology: the two arms alternate inside each round (a shared 4-vCPU box
 drifts more across a blocked pair of runs than the effect being measured),
 median of **9 rounds** reported, one untimed call per arm before the rounds so
-cold kernel compilation is outside the timed region, `sync_devices()` around
+cold kernel compilation is outside the timed region, `_sync_devices()` around
 each timed call. Both arms go through the shipped dispatch
 (`generate_array_states` with `prepared=` prebuilt, as renders pass it); only
 `tl._OPT_DISABLED` flips. The whole experiment was run twice in independent

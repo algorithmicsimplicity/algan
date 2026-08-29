@@ -28,16 +28,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from algan import *  # noqa: E402
 from algan.rendering.raytracing import sheet_resolve_taichi as srt  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 #: Position of ``mode`` in sheet_resolve_shade's argument list (the first
 #: value after the 38 shared pre_args -- see raster_pipeline's launch sites).
 _MODE_ARG = 38
-
-
-def _sync():
-    import taichi as ti
-
-    ti.sync()
 
 
 def main():
@@ -54,10 +49,10 @@ def main():
             f"arg {_MODE_ARG} is {mode!r}, not a resolve mode -- the launch "
             "signature moved; recount pre_args in raster_pipeline"
         )
-        _sync()
+        _sync_devices()
         t0 = time.perf_counter()
         out = orig(*args, **kwargs)
-        _sync()
+        _sync_devices()
         dt = time.perf_counter() - t0
         totals[mode] = totals.get(mode, 0.0) + dt
         counts[mode] = counts.get(mode, 0) + 1

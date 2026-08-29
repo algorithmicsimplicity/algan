@@ -54,17 +54,23 @@ _needs_audit_tree = pytest.mark.skipif(
     reason="benchmarks/renderer_audit/ is not present",
 )
 
-# The crawl case is eight renders and runs five to seven minutes, which is a
-# quarter again on top of the whole unit suite for one assertion. It is worth
-# that locally -- it is the claim the feature exists to make -- and not worth
-# it on every CI run, so it follows the precedent ``tests/full_renders`` set:
-# skipped when ``CI`` is set, and forced back on by ``ALGAN_RUN_GLOSSY_CRAWL=1``
-# on a machine that wants it.
+# The crawl case is four renders of two camera positions each, and it is the
+# most expensive test in the repository: measured at 852 s before the pair
+# batching below landed and 704 s after, against 1008 s for the whole rest of
+# ``tests/unit_tests`` put together. One assertion is not worth doubling the
+# unit suite, so it runs only when asked for -- ``ALGAN_RUN_GLOSSY_CRAWL=1``,
+# anywhere, CI included.
+#
+# It used to be skipped under ``CI`` alone, which made the local suite twice
+# the length of the one CI actually gates on and hid the difference behind an
+# environment variable nobody sets by hand. The claim it makes is still the
+# claim the feature exists for; run it when touching the glossy route, when
+# re-deriving REPORT.md 4.5's table, and before a release.
 _skip_slow_crawl = pytest.mark.skipif(
-    bool(os.environ.get("CI")) and not os.environ.get("ALGAN_RUN_GLOSSY_CRAWL"),
+    not os.environ.get("ALGAN_RUN_GLOSSY_CRAWL"),
     reason=(
-        "the half-pixel crawl case is eight renders (~5-7 min); set "
-        "ALGAN_RUN_GLOSSY_CRAWL=1 to run it under CI"
+        "the half-pixel crawl case is eight renders (~12 min); set "
+        "ALGAN_RUN_GLOSSY_CRAWL=1 to run it"
     ),
 )
 
@@ -474,14 +480,23 @@ def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):
     the measurement, which renders calib_glossy twice per arm with the camera
     nudged 0.008 world units (half a pixel) and reports the mean absolute
     difference over the reflecting region as a fraction of its mean. Eight
-    480x360 renders, each its own process; measured at **5-7 minutes** on
-    this machine, comfortably under the ~15-minute ceiling above which the
-    brief says to skip or downsize. Not marked ``fast`` for the reasons in
-    the module docstring.
+    480x360 renders in **four** processes -- one per setting combination, with
+    each arm's two camera positions batched together, since the nudge is a
+    number in the scene spec and gates no kernel. Measured at **12 minutes**
+    on this machine (14 before the batching), which is why it is opt-in; see
+    ``_skip_slow_crawl``. Not marked ``fast`` for the reasons in the module
+    docstring.
 
     Measured here (and printed identically by REPORT.md §4.5.1's table):
     relative mad/mean of 0.000144 (glossy off), 0.000523 (prefiltered),
-    0.031970 (interleaved fan), 0.033133 (plain fan). The assertions keep an
+    0.031970 (interleaved fan), 0.0335 (plain fan). The first three reproduce
+    to every digit shown. The plain fan is the one arm whose figure moves
+    between runs -- it *measures* a screen-space dither, and CUDA's split-pixel
+    accumulation order is not reproducible to the last bit -- so it is quoted
+    to the precision it actually holds; 0.033133 was the value first recorded.
+    Batching the pair into one process does not move it: rendering that arm
+    the old way, two fresh processes, returns 0.033481925380152294 against the
+    batched run's 0.033481925380152294. The assertions keep an
     order-of-magnitude margin around those numbers; the comments say what
     moved if one fires.
     """

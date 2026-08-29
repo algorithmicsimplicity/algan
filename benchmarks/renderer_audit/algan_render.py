@@ -8,6 +8,12 @@ Usage::
 
     <venv-python> benchmarks/renderer_audit/algan_render.py scenes/showcase.json --out out/
 
+Several scenes may be given at once, with one ``--suffix`` per scene; they are
+rendered in the one interpreter, which pays the Taichi kernel preparation pass
+once instead of per scene. Every render still gets its own JSON line on stdout.
+Settings that gate kernel compilation (``--glossy`` and the ``ALGAN_GLOSSY_*``
+environment variables) apply to the whole invocation -- see ``main``.
+
 Nothing here is a test and nothing is baselined: it exists to be looked at.
 Every knob that is not in the spec is left at Algan's default on purpose --
 the audit is about what a user gets, not about what the engine can be talked
@@ -334,9 +340,31 @@ def render(
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("scene", type=Path)
+    # Several scenes in ONE interpreter, on purpose. A fresh process costs an
+    # `import algan` plus a full Taichi kernel preparation pass (tens of
+    # seconds, and re-paid in full every time -- the frontend AST transform
+    # runs before the offline-cache key even exists, and the CUDA backend
+    # regenerates PTX per process), which dwarfs a 480x360 render. Scenes that
+    # differ only in their *spec* -- geometry, camera -- can therefore share a
+    # process and pay that once.
+    #
+    # What may NOT share a process is a change to anything the kernels gate on
+    # at compile time: the glossy route, the interleave and prefilter flags are
+    # `ti.static` gates resolved when the kernel compiles, so a second arm in
+    # the same process would silently reuse the first arm's compiled code and
+    # report its numbers as its own (CLAUDE.md's Taichi gotchas; it has
+    # produced two wrong measurements in this repo already). Those arrive as
+    # environment variables and flags, which are per-process by construction --
+    # so keep one process per *setting* combination, and batch only over
+    # scenes.
+    ap.add_argument("scene", type=Path, nargs="+")
     ap.add_argument("--out", type=Path, default=_HERE / "out")
-    ap.add_argument("--suffix", default="algan")
+    ap.add_argument(
+        "--suffix",
+        default=["algan"],
+        nargs="+",
+        help="output suffix; give one, or one per scene",
+    )
     ap.add_argument("--aa", type=int, default=3, help="super_sampling_anti_aliasing")
     ap.add_argument(
         "--no-tonemap",
@@ -353,16 +381,25 @@ def main(argv=None):
     ap.add_argument("--bounces", type=int, default=None)
     ap.add_argument("--no-shadows", dest="shadows", action="store_false")
     args = ap.parse_args(argv)
-    render(
-        args.scene,
-        args.out,
-        args.suffix,
-        args.aa,
-        tonemap=args.tonemap,
-        glossy=args.glossy,
-        bounces=args.bounces,
-        shadows=args.shadows,
-    )
+    suffixes = args.suffix
+    if len(suffixes) == 1:
+        suffixes = suffixes * len(args.scene)
+    if len(suffixes) != len(args.scene):
+        ap.error(
+            f"got {len(args.scene)} scenes and {len(args.suffix)} suffixes: "
+            "pass one suffix, or one per scene"
+        )
+    for scene, suffix in zip(args.scene, suffixes):
+        render(
+            scene,
+            args.out,
+            suffix,
+            args.aa,
+            tonemap=args.tonemap,
+            glossy=args.glossy,
+            bounces=args.bounces,
+            shadows=args.shadows,
+        )
 
 
 if __name__ == "__main__":

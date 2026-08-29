@@ -44,6 +44,7 @@ from algan.rendering.raytracing import (  # noqa: E402
     set_samples_per_pixel,
     set_shadows,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.settings.render_settings import RenderSettings  # noqa: E402
 from algan.settings.renderer_settings import RENDERER_SETTINGS  # noqa: E402
 
@@ -79,12 +80,10 @@ _orig_wf = tracer_mod.raytrace_render_wavefront
 
 
 def _timed_wf(*args, **kwargs):
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     result = _orig_wf(*args, **kwargs)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    _sync_devices()
     _wf_times.append(time.perf_counter() - t0)
     return result
 

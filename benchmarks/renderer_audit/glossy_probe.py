@@ -100,7 +100,7 @@ def _measure(path):
     }
 
 
-def _crawl(render, scene_path, nudge):
+def _crawl(render_batch, scene_path, nudge):
     """How much the image moves when the camera moves half a pixel.
 
     The dither that makes glossy reflections crawl is fixed in SCREEN space, so
@@ -130,20 +130,18 @@ def _crawl(render, scene_path, nudge):
         ("glossy, interleaved fan", 8, True, "1", False),
         ("glossy, plain fan", 8, True, "0", False),
     ):
-        a, _ = render(
-            f"crawl_{label.replace(' ', '_').replace(',', '')}_a",
+        # Both camera positions in ONE process. The nudge is a number in the
+        # scene spec -- it changes no `ti.static` gate, so the pair compiles
+        # the same kernels and the arm is still measured against itself. The
+        # gates that DO have to differ (glossy, interleave, prefilter) still
+        # get a process each, which is the rule this loop exists to respect.
+        stem = f"crawl_{label.replace(' ', '_').replace(',', '')}"
+        (a, _), (b, _) = render_batch(
+            [f"{stem}_a", f"{stem}_b"],
             taps,
             glossy,
             interleave,
-            scene_path,
-            prefilter,
-        )
-        b, _ = render(
-            f"crawl_{label.replace(' ', '_').replace(',', '')}_b",
-            taps,
-            glossy,
-            interleave,
-            shifted,
+            [scene_path, shifted],
             prefilter,
         )
         out[label] = _pair_difference(a, b)
@@ -264,7 +262,25 @@ def main(argv=None):
     OUT.mkdir(parents=True, exist_ok=True)
     rows = []
 
-    def _render(suffix, taps, glossy, interleave=None, scene=None, prefilter=None):
+    def _render_batch(
+        suffixes, taps, glossy, interleave=None, scenes=None, prefilter=None
+    ):
+        """Render several scenes in ONE subprocess; return a (path, seconds) each.
+
+        Every argument that gates kernel compilation -- ``glossy``,
+        ``interleave``, ``prefilter``, ``taps`` -- is per-invocation, so one
+        call is one setting combination. That is the invariant this batching
+        must not break: those reach the kernels as ``ti.static`` gates resolved
+        at compile time, and a second *setting* in the same process would
+        silently reuse the first one's compiled code. Batching over ``scenes``
+        is safe because a scene is data the kernels read at runtime.
+
+        Worth doing because the per-process cost is not the render. A fresh
+        interpreter pays ``import algan`` plus a full kernel preparation pass;
+        on a 480x360 audit scene that is the large majority of the wall time,
+        and it is why the crawl comparison below renders each arm's two camera
+        positions together rather than one process each.
+        """
         env = dict(os.environ)
         if taps is not None:
             env["ALGAN_ANALYTIC_AA_SECONDARY"] = str(taps)
@@ -274,14 +290,15 @@ def main(argv=None):
         # of glossy_reflection now, so a tap-fan arm that leaves this unset
         # silently measures the prefilter instead and reports it as the fan.
         env["ALGAN_GLOSSY_PREFILTER"] = "1" if prefilter else "0"
+        scenes = [args.scene] if scenes is None else list(scenes)
         cmd = [
             sys.executable,
             str(_HERE / "algan_render.py"),
-            str(scene if scene is not None else args.scene),
+            *[str(scene) for scene in scenes],
             "--out",
             str(OUT),
             "--suffix",
-            suffix,
+            *suffixes,
             "--aa",
             str(args.aa),
             "--no-tonemap",
@@ -291,8 +308,25 @@ def main(argv=None):
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if proc.returncode != 0:
             raise SystemExit(proc.stderr[-2000:])
-        info = json.loads(proc.stdout.strip().splitlines()[-1])
-        return Path(info["output"]), info["seconds"]
+        # One JSON line per render, in the order the scenes were given. Other
+        # lines on stdout (Taichi's banner, the kernel-preparation notice) are
+        # not JSON, so they are skipped rather than counted.
+        infos = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            infos.append(json.loads(line))
+        if len(infos) != len(scenes):
+            raise SystemExit(
+                f"expected {len(scenes)} renders, parsed {len(infos)} "
+                f"from: {proc.stdout[-2000:]}"
+            )
+        return [(Path(i["output"]), i["seconds"]) for i in infos]
+
+    def _render(suffix, taps, glossy, interleave=None, scene=None, prefilter=None):
+        scenes = None if scene is None else [scene]
+        return _render_batch([suffix], taps, glossy, interleave, scenes, prefilter)[0]
 
     if args.figure:
         name = json.loads(Path(args.scene).read_text()).get("name", args.scene.stem)
@@ -301,7 +335,7 @@ def main(argv=None):
         return
 
     if args.crawl is not None:
-        result = _crawl(_render, args.scene, args.crawl)
+        result = _crawl(_render_batch, args.scene, args.crawl)
         print(
             f"a {args.crawl} world-unit (half pixel) camera nudge moves the "
             "reflecting region by:"

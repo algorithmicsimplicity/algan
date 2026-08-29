@@ -54,7 +54,7 @@ from algan.rendering.taichi_runtime import (
     ensure_taichi_for_render,
     render_job_holding_the_arch,
 )
-from algan.rendering.taichi_runtime import sync_devices as _sync_devices
+from algan.rendering.taichi_runtime import _sync_devices
 from algan.settings import SETTINGS
 from algan.settings._startup import _ANIMATION_DEVICE, render_device
 from algan.utils.color_space import srgb_to_linear

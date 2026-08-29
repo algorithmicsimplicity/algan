@@ -29,6 +29,7 @@ import torch  # noqa: E402
 
 from algan import *  # noqa: E402,F403
 from algan.rendering.raytracing import raster_pipeline, sheets  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 W = int(sys.argv[1]) if len(sys.argv) > 2 else 1920
 H = int(sys.argv[2]) if len(sys.argv) > 2 else 1080
@@ -45,12 +46,12 @@ def timed(mod, name, key):
     orig = getattr(mod, name)
 
     def wrapper(*a, **k):
-        torch.cuda.synchronize()
+        _sync_devices()
         t0 = time.perf_counter()
         try:
             return orig(*a, **k)
         finally:
-            torch.cuda.synchronize()
+            _sync_devices()
             dt = time.perf_counter() - t0
             k2 = key + ("_in_compact" if (key == "sorts" and in_compact[0]) else "")
             acc[k2] += dt
@@ -63,14 +64,14 @@ def timed_compact():
     orig = sheets.compact_sheets
 
     def wrapper(*a, **k):
-        torch.cuda.synchronize()
+        _sync_devices()
         t0 = time.perf_counter()
         in_compact[0] = True
         try:
             return orig(*a, **k)
         finally:
             in_compact[0] = False
-            torch.cuda.synchronize()
+            _sync_devices()
             acc["compact"] += time.perf_counter() - t0
 
     sheets.compact_sheets = wrapper
@@ -108,10 +109,10 @@ print(
 for i in range(REPS):
     acc.clear()
     calls.clear()
-    torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     Scene.save_frame(f"_sheet_stage_timing_{i}.png", VS)
-    torch.cuda.synchronize()
+    _sync_devices()
     wall = time.perf_counter() - t0
     prep, emit = acc["prepare"], acc["emission"]
     srt_c, comp = acc["sorts_in_compact"], acc["compact"]

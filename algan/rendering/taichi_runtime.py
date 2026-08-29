@@ -346,11 +346,29 @@ def _install_taichi_compile_logger():
     program_type._algan_compile_timing_wrapped = True
 
 
-def sync_devices():
-    """Block until all pending torch-CUDA and Taichi device work has finished."""
+def _sync_devices():
+    """Block until all pending torch and Taichi device work has finished.
+
+    The one device-sync helper in the package: nothing else calls
+    ``torch.cuda.synchronize``, ``torch.mps.synchronize`` or ``ti.sync``
+    directly. Syncs whichever torch backend is present (CUDA, MPS) and then
+    Taichi; on a CPU-only build every arm is a no-op.
+
+    Only the main thread syncs. Stage boundaries can run on the batch-prep
+    worker thread (scene prefetch), where syncing would serialize against the
+    render thread's GPU work — misattributing it in a profile — and where
+    ``ti.sync()`` is not safe to call at all.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-    ti.sync()
+    if torch.mps.is_available():
+        torch.mps.synchronize()
+    # Guarded: several call sites sync before any kernel has run, and ti.sync()
+    # on an uninitialized runtime raises "Please call init() first".
+    if _already_initialized():
+        ti.sync()
 
 
 def _already_initialized():
@@ -578,10 +596,23 @@ def taichi_init_kwargs():
         # artifacts once several variants (general / no-PN / lean /
         # path-trace / wavefront, plus per-config rebuilds) are
         # compiled, forcing repeated ~minutes-long recompiles. Raise
-        # it (disk-backed) so every kernel stays cached. The field is
-        # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
-        # 19x the default).
-        "offline_cache_max_size_of_files": 1_000_000_000,
+        # it (disk-backed) so every kernel stays cached.
+        #
+        # 2 GB, and the ceiling is not a guess: the pybind setter for
+        # this field takes a *signed 32-bit* int, so 2_147_483_647 is
+        # accepted and 2**31 raises TypeError out of ti.init (checked
+        # on taichi 1.7.4 -- it fails loudly rather than wrapping, so
+        # a too-large value here could never become a silently tiny
+        # cache). 2_000_000_000 keeps a margin under that and is 20x
+        # the Taichi default.
+        #
+        # Worth the headroom because the eviction is not free and not
+        # visible: Taichi prunes to 75% of this on program *exit*, so
+        # a working set over the cap is re-compiled by the next run,
+        # every run, with nothing in the log to say so. A single CUDA
+        # megakernel artifact runs 30-45 MB, and one machine's cache
+        # was measured sitting at 751 MiB of the old 1 GB.
+        "offline_cache_max_size_of_files": 2_000_000_000,
     }
     # Keep Algan's compiled kernels in a dedicated directory under Algan's
     # cache dir instead of Taichi's global default, so they never contend

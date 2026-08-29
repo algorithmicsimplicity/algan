@@ -44,6 +44,7 @@ from algan.rendering.lights import AmbientLight, DirectionalLight  # noqa: E402
 from algan.rendering.raytracing import set_fragment_shading  # noqa: E402
 from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.rendering.shaders.materials import MeshStandardMaterial  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_rt2_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -76,15 +77,13 @@ def render(roughness, tag):
     set_fragment_shading(True)
     rt_settings.set_analytic_aa(True, bezier=True, triangles=True)
     build(roughness)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     render_to_file(
         file_path=path,
         video_settings=RenderSettings((W, H), 1, super_sampling_anti_aliasing=1),
     )
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    _sync_devices()
     dt = time.perf_counter() - t0
     import cv2
 

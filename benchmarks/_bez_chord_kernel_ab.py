@@ -22,7 +22,7 @@ from algan.rendering.raytracing.primitives import (
     _bezier_criterion_inputs,
 )
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
-from algan.rendering.taichi_runtime import sync_devices
+from algan.rendering.taichi_runtime import _sync_devices
 from algan.settings._startup import render_device
 
 
@@ -50,10 +50,10 @@ def _timed(primitive, args, *, use_kernel, repeats):
     counts = None
     best = float("inf")
     for _ in range(repeats):
-        sync_devices()
+        _sync_devices()
         start = time.perf_counter()
         counts = primitive._compute_samples_per_segment(*args)
-        sync_devices()
+        _sync_devices()
         best = min(best, time.perf_counter() - start)
     return counts, best
 

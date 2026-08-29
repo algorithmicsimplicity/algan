@@ -83,6 +83,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
     depth_tie_epsilon,
     min_hit_distance,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
 
 DEBUG = bool(os.environ.get("STEPS_DEBUG"))
@@ -938,7 +939,7 @@ def _run(geom, data, n_rays, verify, random_rays):
                 _to_ti(data["edge_accel"]),
                 ref,
             )
-    ti.sync()
+    _sync_devices()
     o = out.cpu().numpy()
     result = {
         "rays": n,

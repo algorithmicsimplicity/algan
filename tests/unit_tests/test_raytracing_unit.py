@@ -47,6 +47,7 @@ from algan.rendering.raytracing.stbvh import (
     _spread_bits_4,
     build_stbvh,
 )
+from algan.rendering.taichi_runtime import _sync_devices
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -284,11 +285,10 @@ def _run_kernel(
             "(commit ceaf3c4); deterministic rendering is now the wavefront "
             "tracer, which these raw-tensor unit tests do not drive"
         )
-    # Only CUDA needs an explicit barrier before the kernel's writes are read
-    # back through torch; calling it unconditionally raises "Found no NVIDIA
-    # driver" on a CPU-only machine, where DEVICE is already cpu.
-    if DEVICE.type == "cuda":
-        torch.cuda.synchronize()
+    # Barrier before the kernel's writes are read back through torch. The
+    # shared helper syncs only the backends that are actually present, so this
+    # is safe on a CPU-only machine.
+    _sync_devices()
     return out
 
 

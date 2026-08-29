@@ -905,7 +905,7 @@ with all MAX_SHADOW_LIGHTS lights (§5). NOT gated on shadows or light count.
   renderer_settings.py    effective_triangle_primitive() (raster-agnostic;
                           returns the configured class, §6.3).
   taichi_runtime.py       single ti.init entry point (init_taichi), tuned
-                          runtime kwargs, sync_devices, and the Taichi
+                          runtime kwargs, _sync_devices, and the Taichi
                           compile-timing logger (ALGAN_LOG_TAICHI_COMPILES,
                           ALGAN_TAICHI_COMPILE_LOG).
 

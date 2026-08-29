@@ -42,6 +42,7 @@ import torch  # noqa: E402
 
 import algan.animation_timeline.timeline as tl  # noqa: E402
 from algan.mobs.surfaces.surface import compute_grid_vertex_normals  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 DEVICE = os.environ.get("ALGAN_AB_DEVICE", "cpu")
 ROUNDS = int(os.environ.get("AB_ROUNDS", "5"))
@@ -152,13 +153,11 @@ def main():
         # design doc's standing warning about wall-clock A/Bs here).
         def timed(paired, iters, g=grid):
             _arm(paired)
-            if DEVICE != "cpu":
-                torch.cuda.synchronize()
+            _sync_devices()
             t0 = time.perf_counter()
             for _ in range(iters):
                 compute_grid_vertex_normals(g)
-            if DEVICE != "cpu":
-                torch.cuda.synchronize()
+            _sync_devices()
             return (time.perf_counter() - t0) / iters * 1000.0
 
         iters = max(3, min(30, int(2e7 // max(1, grid.numel()))))

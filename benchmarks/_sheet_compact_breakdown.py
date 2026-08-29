@@ -21,6 +21,8 @@ os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
 import torch  # noqa: E402
 
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
+
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 3_661_824
 NB = int(sys.argv[2]) if len(sys.argv) > 2 else 3_290_404
 REPS = int(sys.argv[3]) if len(sys.argv) > 3 else 5
@@ -41,11 +43,11 @@ results = []
 
 def bench(label, fn):
     fn()
-    torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     for _ in range(REPS):
         fn()
-    torch.cuda.synchronize()
+    _sync_devices()
     dt = (time.perf_counter() - t0) / REPS
     results.append((label, dt))
 

@@ -520,8 +520,3 @@ def implements(torch_function):
 
 
 HANDLED_FUNCTIONS = {}
-
-
-def wait_for_cuda():
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()

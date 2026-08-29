@@ -41,6 +41,7 @@ import torch  # noqa: E402
 
 from algan.rendering.raytracing import raster_pipeline as rp  # noqa: E402
 from algan.rendering.raytracing.sheets import compact_sheets  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 
 class SheetStats:
@@ -96,8 +97,7 @@ class _SheetSpy:
                 band_rule=RULE,
                 band_c=BAND_C,
             )
-            if stream is not None and stream["sheet_key"].is_cuda:
-                torch.cuda.synchronize()
+            _sync_devices()
             stats.seconds += time.perf_counter() - t0
             if stream is None:
                 return coverage

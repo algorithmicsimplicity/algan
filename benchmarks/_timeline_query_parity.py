@@ -39,7 +39,7 @@ cap_process_memory(float(os.environ.get("ALGAN_BENCH_MEM_GB", "4")))
 
 import torch  # noqa: E402
 
-from algan.rendering.taichi_runtime import init_taichi, sync_devices  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices, init_taichi  # noqa: E402
 
 init_taichi()
 
@@ -244,10 +244,10 @@ def bench():
 
         warm = tl._generate_array_states_taichi(*args)  # warm/compile
         del warm  # nothing else may hold a [T, N, D] buffer during the timing
-        sync_devices()
+        _sync_devices()
         s = time.perf_counter()
         a = tl._generate_array_states_taichi(*args)
-        sync_devices()
+        _sync_devices()
         taichi_s = time.perf_counter() - s
 
         warm = tl.generate_array_states(

@@ -28,7 +28,7 @@ from algan.rendering.logical_pn import (
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.primitives import LogicalPNTrianglePrimitive
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
-from algan.rendering.taichi_runtime import sync_devices
+from algan.rendering.taichi_runtime import _sync_devices
 from algan.settings._startup import render_device
 
 
@@ -118,10 +118,10 @@ def _timed_search(primitive, inputs, *, use_kernel, repeats):
     levels = edge_levels = None
     best = float("inf")
     for _ in range(repeats):
-        # sync_devices, not torch.cuda.synchronize: on a CPU arch the kernel
-        # is a Taichi launch that torch knows nothing about, and timing it
-        # without ti.sync() would measure the dispatch rather than the work.
-        sync_devices()
+        # _sync_devices syncs Taichi too: on a CPU arch the kernel is a Taichi
+        # launch that torch knows nothing about, and timing it without the
+        # Taichi barrier would measure the dispatch rather than the work.
+        _sync_devices()
         start = time.perf_counter()
         # Four values since per-dimension dicing landed: the trailing
         # (apex, across) pair is the row direction and the across level. This
@@ -131,7 +131,7 @@ def _timed_search(primitive, inputs, *, use_kernel, repeats):
         levels, edge_levels, _apex, _across = primitive._required_subdivision_levels(
             *inputs
         )
-        sync_devices()
+        _sync_devices()
         best = min(best, time.perf_counter() - start)
     return levels, edge_levels, best
 

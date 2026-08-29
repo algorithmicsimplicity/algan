@@ -61,8 +61,8 @@ from algan.constants.color import BLUE, YELLOW
 from algan.constants.spatial import OUT, RIGHT, UP
 from algan.mobs.shapes_2d import Square
 from algan.rendering.taichi_runtime import (
+    _sync_devices,  # noqa: E402
     init_taichi,
-    sync_devices,
     taichi_arch_is_cpu,
 )
 from algan.scene_manager import SceneManager
@@ -411,10 +411,10 @@ def time_case(capture, rounds):
     samples = {"torch": [], "taichi": []}
     for _ in range(rounds):
         for name, arm in (("torch", _TORCH_ARM), ("taichi", _TAICHI_ARM)):
-            sync_devices()
+            _sync_devices()
             start = time.perf_counter()
             out = run_case(capture, arm)
-            sync_devices()
+            _sync_devices()
             samples[name].append((time.perf_counter() - start) * 1e3)
             del out
     return statistics.median(samples["torch"]), statistics.median(samples["taichi"])

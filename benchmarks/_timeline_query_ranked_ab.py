@@ -40,7 +40,7 @@ cap_process_memory(float(os.environ.get("ALGAN_RANKED_AB_MEM_GB", "10")))
 
 import torch  # noqa: E402
 
-from algan.rendering.taichi_runtime import init_taichi, sync_devices  # noqa: E402
+from algan.rendering.taichi_runtime import _sync_devices, init_taichi  # noqa: E402
 
 init_taichi()
 
@@ -391,10 +391,10 @@ def bench(regime, window):
             del warm
             best = float("inf")
             for _ in range(_REPEATS):
-                sync_devices()
+                _sync_devices()
                 s = time.perf_counter()
                 got = fn(times, n_rows, edits, index, active_rows)
-                sync_devices()
+                _sync_devices()
                 best = min(best, time.perf_counter() - s)
                 del got
             timings[name] = best

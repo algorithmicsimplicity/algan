@@ -86,6 +86,7 @@ from algan.rendering.shaders.materials import (  # noqa: E402
     MeshPhysicalMaterial,
     MeshStandardMaterial,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_rt2_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -281,16 +282,14 @@ def render_once(cfg, aa_level, analytic, tag, reps=2):
         )
         with Scene(video_settings=settings) as scene:
             build_scene(cfg)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            _sync_devices()
             t0 = time.perf_counter()
             scene.save_video(
                 os.path.join(OUT_DIR, name + ".mp4"),
                 video_settings=settings,
                 overwrite=True,
             )
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            _sync_devices()
             dt = time.perf_counter() - t0
         rt_settings.set_analytic_aa(False)
         set_shadows(False)

@@ -1,9 +1,11 @@
 """Shared fixtures and options for the Algan test suites.
 
-Four things live here because they are cross-cutting:
+Five things live here because they are cross-cutting:
 
 * the ``fast`` marker and ``--fast``, which together define the fast suite:
   the tests marked ``fast`` and nothing else. See ``tests/README.md``;
+* live ``pytest.log`` piping and per-test wall times, for every suite that a
+  run actually collects from;
 * a wall-clock report against the fast suite's budget, so the suite cannot
   creep past it unnoticed;
 * the frame-by-frame video comparison, shared by ``tests/fast/`` and
@@ -15,8 +17,13 @@ Four things live here because they are cross-cutting:
 
 from __future__ import annotations
 
+import atexit
+import contextlib
+import re
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -77,6 +84,219 @@ FAST_SUITE_BUDGET_SECONDS = 75.0
 MAX_CHANNEL_DIFFERENCE = 2
 
 
+# ---------------------------------------------------------------------------
+# Live log piping, one copy for all three suites
+# ---------------------------------------------------------------------------
+# Each suite directory gets a ``pytest.log`` holding everything the terminal
+# showed, plus a wall time per test. Written and flushed as the run happens,
+# not at the end: a render suite takes minutes and the whole point is watching
+# it move. This used to be two byte-identical copies inside the render test
+# modules, opened from a session fixture -- which was too late to catch the
+# progress line, and left ``tests/unit_tests`` with no log at all.
+TESTS_ROOT = Path(__file__).resolve().parent
+SUITE_DIRS = ("fast", "full_renders", "unit_tests")
+
+#: Open log handles for this run; the timing hooks write straight to these so
+#: the per-test lines land in the file without also cluttering the terminal.
+_LOG_FILES: list[Any] = []
+
+#: Whether the log is currently at the start of a line. The terminal writes
+#: progress a character at a time ("....") with no newline, so a timing line
+#: appended blind lands mid-dots as ``.[   0.75s] PASSED ...``. Tracked across
+#: both writers so the timing lines can break to a fresh line first.
+_AT_LINE_START = True
+
+#: Every tee wrapper installed this run, so a log handle can be detached from
+#: all of them before it is closed.
+_TEE_STREAMS: list[Any] = []
+
+
+class _TeeStream:
+    """A stream wrapper that writes to an underlying stream and registered log files."""
+
+    def __init__(self, original_stream: Any) -> None:
+        self._orig = original_stream
+        self._log_files: list[Any] = []
+
+    def add_file(self, file_obj: Any) -> None:
+        if file_obj not in self._log_files:
+            self._log_files.append(file_obj)
+
+    def write(self, s: str) -> int:
+        global _AT_LINE_START
+        res = self._orig.write(s)
+        if self._log_files:
+            clean = re.sub("\\x1b\\[[0-9;]*[a-zA-Z]", "", s)
+            for f in list(self._log_files):
+                with contextlib.suppress(Exception):
+                    f.write(clean)
+                    f.flush()
+            if clean:
+                _AT_LINE_START = clean.endswith("\n")
+        return res
+
+    def flush(self) -> None:
+        self._orig.flush()
+        for f in list(self._log_files):
+            with contextlib.suppress(Exception):
+                f.flush()
+
+    def isatty(self) -> bool:
+        return getattr(self._orig, "isatty", lambda: False)()
+
+    def fileno(self) -> int:
+        return self._orig.fileno()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._orig, name)
+
+
+def _setup_log_piping(log_path: Path, config: Any = None) -> Any:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
+
+    if not hasattr(sys.stdout, "add_file"):
+        sys.stdout = _TeeStream(sys.stdout)
+    if not hasattr(sys.stderr, "add_file"):
+        sys.stderr = _TeeStream(sys.stderr)
+
+    tees = [sys.stdout, sys.stderr]
+
+    if config is not None:
+        tr = config.pluginmanager.get_plugin("terminalreporter")
+        if tr and hasattr(tr, "_tw"):
+            if not hasattr(tr._tw._file, "add_file"):
+                tr._tw._file = _TeeStream(tr._tw._file)
+            tees.append(tr._tw._file)
+
+    for tee in tees:
+        tee.add_file(log_file)
+        if tee not in _TEE_STREAMS:
+            _TEE_STREAMS.append(tee)
+
+    # Closed for real in ``pytest_unconfigure``; this is only the backstop for
+    # a run that dies before pytest gets to unconfigure.
+    atexit.register(_close_log_file, log_file)
+    return log_file
+
+
+def _close_log_file(log_file: Any) -> None:
+    """Detach a log handle from every tee, then close it once."""
+    if log_file.closed:
+        return
+    for tee in _TEE_STREAMS:
+        if log_file in tee._log_files:
+            tee._log_files.remove(log_file)
+    with contextlib.suppress(Exception):
+        log_file.flush()
+    log_file.close()
+
+
+def pytest_unconfigure(config):
+    """Close the logs deterministically, at the end of the run.
+
+    Leaving this to ``atexit`` alone raced the interpreter's own teardown and
+    the handles were reported as ``ResourceWarning: unclosed file`` on the way
+    out. The terminal writer's tee keeps its reference either way, hence the
+    detach in ``_close_log_file``.
+    """
+    while _LOG_FILES:
+        _close_log_file(_LOG_FILES.pop())
+
+
+def _write_to_logs(text: str) -> None:
+    """Write straight to the log files, bypassing the terminal.
+
+    Breaks to a fresh line first when the terminal has left a partial one, so
+    a timing line never lands in the middle of the progress dots.
+    """
+    global _AT_LINE_START
+    if not _AT_LINE_START:
+        text = "\n" + text
+    for f in list(_LOG_FILES):
+        with contextlib.suppress(Exception):
+            f.write(text)
+            f.flush()
+    if text:
+        _AT_LINE_START = text.endswith("\n")
+
+
+def _collected_suite_dirs(items) -> list[Path]:
+    """The suite directories this run actually has tests in.
+
+    Derived from the selected items rather than from ``config.args`` so that a
+    ``--fast`` run, which collects all three directories but selects from two,
+    does not leave a stale empty log in the third.
+    """
+    dirs = set()
+    for item in items:
+        with contextlib.suppress(ValueError, TypeError):
+            rel = Path(str(item.fspath)).resolve().relative_to(TESTS_ROOT)
+            if rel.parts and rel.parts[0] in SUITE_DIRS:
+                dirs.add(TESTS_ROOT / rel.parts[0])
+    return sorted(dirs)
+
+
+def pytest_collection_finish(session):
+    """Open a live log per collected suite, before the first test runs."""
+    if _LOG_FILES:
+        return
+    for suite_dir in _collected_suite_dirs(session.items):
+        _LOG_FILES.append(_setup_log_piping(suite_dir / "pytest.log", session.config))
+    if not _LOG_FILES:
+        return
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    _write_to_logs(
+        f"# algan test run started {stamp} -- {len(session.items)} tests collected\n"
+        f"# columns: [wall time] OUTCOME test id\n"
+    )
+
+
+# nodeid -> seconds accumulated across setup/call/teardown, and the outcome to
+# report. A test's wall time is all three phases: an expensive fixture is part
+# of what the run costs, and attributing only ``call`` hides it.
+_PHASE_SECONDS: dict[str, float] = {}
+_OUTCOMES: dict[str, str] = {}
+#: (seconds, nodeid) for the slowest-tests table appended at the end.
+_DURATIONS: list[tuple[float, str]] = []
+
+
+def pytest_runtest_logreport(report):
+    """Accumulate each test's wall time and log one line when it finishes."""
+    if not _LOG_FILES:
+        return
+    nodeid = report.nodeid
+    _PHASE_SECONDS[nodeid] = _PHASE_SECONDS.get(nodeid, 0.0) + report.duration
+    if report.when == "call":
+        _OUTCOMES[nodeid] = report.outcome.upper()
+    elif report.failed:
+        # A failure outside ``call`` is a broken fixture, not a failed test.
+        _OUTCOMES[nodeid] = f"ERROR({report.when})"
+    elif report.when == "setup" and report.skipped:
+        _OUTCOMES[nodeid] = "SKIPPED"
+    if report.when != "teardown":
+        return
+    seconds = _PHASE_SECONDS.pop(nodeid, 0.0)
+    outcome = _OUTCOMES.pop(nodeid, "UNKNOWN")
+    _DURATIONS.append((seconds, nodeid))
+    _write_to_logs(f"[{seconds:8.2f}s] {outcome:<14} {nodeid}\n")
+
+
+def _write_slowest_table(limit: int = 25) -> None:
+    if not _LOG_FILES or not _DURATIONS:
+        return
+    total = sum(seconds for seconds, _ in _DURATIONS)
+    lines = [
+        "",
+        f"=== slowest {min(limit, len(_DURATIONS))} of {len(_DURATIONS)} tests "
+        f"({total:.1f}s in tests, excluding collection and teardown of the run) ===",
+    ]
+    for seconds, nodeid in sorted(_DURATIONS, reverse=True)[:limit]:
+        share = seconds / total if total else 0.0
+        lines.append(f"[{seconds:8.2f}s] {share:5.1%}  {nodeid}")
+    _write_to_logs("\n".join(lines) + "\n")
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--fast",
@@ -116,7 +336,13 @@ def pytest_configure(config):
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Report the fast suite against its budget, so creep is visible."""
+    """Append the slowest-tests table to the logs, and report the fast budget.
+
+    The table goes to the log only. The terminal already has ``--durations``
+    for anyone who wants it there, and the fast suite's budget line is what CI
+    reads off the terminal.
+    """
+    _write_slowest_table()
     if not config.getoption("fast"):
         return
     started = getattr(config, "_algan_fast_started", None)

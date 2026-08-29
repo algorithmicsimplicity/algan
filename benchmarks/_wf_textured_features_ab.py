@@ -58,6 +58,7 @@ from algan.rendering.raytracing.settings import (  # noqa: E402
     set_wf_textured,
     set_wf_textured_features,
 )
+from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -115,10 +116,10 @@ _orig = tracer_mod.raytrace_render_wavefront
 
 
 def _timed(*a, **k):
-    torch.cuda.synchronize()
+    _sync_devices()
     t0 = time.perf_counter()
     r = _orig(*a, **k)
-    torch.cuda.synchronize()
+    _sync_devices()
     _wf_times.append(time.perf_counter() - t0)
     return r
 

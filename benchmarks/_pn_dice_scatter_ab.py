@@ -22,6 +22,7 @@ import algan  # noqa: F401  -- sets up devices / inference mode
 from algan.mobs.shapes_3d import Sphere, Torus
 from algan.rendering.raytracing import primitives as primitives_module
 from algan.rendering.raytracing.primitives import LogicalPNTrianglePrimitive
+from algan.rendering.taichi_runtime import _sync_devices
 
 
 def _legacy_scatter(output, values, targets):
@@ -85,10 +86,10 @@ def _dice(mob, camera, device, *, legacy, repeats):
                     setattr(primitive, name, value.to(device))
             if primitive.uvs is not None:
                 primitive.uvs = primitive.uvs.to(device)
-            torch.cuda.synchronize()
+            _sync_devices()
             start = time.perf_counter()
             primitive._dice_logical_pn(camera)
-            torch.cuda.synchronize()
+            _sync_devices()
             best = min(best, time.perf_counter() - start)
             captured = {name: getattr(primitive, name) for name in _CAPTURED}
         return captured, best
