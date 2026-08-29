@@ -74,7 +74,8 @@ pair                         use
 ===========================  ==================================================
 0                            sub-pixel jitter (2D)
 1                            lens (2D) -- reserved for depth of field
-2 + 6b + 0                   bounce ``b``: x lobe select, y Russian roulette
+2 + 6b + 0                   bounce ``b``: y Russian roulette (x unused -- the
+                             lobe select draws white noise, see the roadmap)
 2 + 6b + 1                   bounce ``b``: BSDF direction (2D)
 2 + 6b + 2, 3                bounce ``b``: reserved (legacy light slots)
 2 + 6b + 4, 5                bounce ``b``: reserved for volumes
