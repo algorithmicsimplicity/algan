@@ -110,6 +110,10 @@ all four `move_inline_with_*`.
 **3g — named look axes.** `look(direction, with_axis='forward')` and `look_at` likewise, with
 `'right'`/`'up'`/`'forward'` matched case-insensitively and anything else raising.
 
+**Verified**: full `tests/unit_tests` green on CPU (2408 passed, 139 skipped), `--fast` green
+(404 passed), `ruff check` and `ruff format --check` both back to their pre-existing failures.
+The pixel-compared suites are noted under follow-ups.
+
 Also landed: `test_ux_regressions.py` gained
 `test_the_mob_positioning_surface_answers_to_its_public_names`, which calls every new name and
 asserts every removed one is gone, per Phase 0 step 3.
