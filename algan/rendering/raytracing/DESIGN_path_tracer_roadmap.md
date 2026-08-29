@@ -8,6 +8,57 @@ record for the path tracer's remaining scope — update it when one of these
 lands, the way `DESIGN_optimization_targets.md` is updated for optimization
 work.
 
+
+## What the path tracer is for
+
+**It is the fallback that always works.** Not a second way to render what the
+deterministic renderer already renders, and not an attempt to reproduce its
+look. It exists for the scenes the deterministic renderer *cannot* do:
+
+* **Global illumination**, and anything else that needs real transport —
+  colour bleed, physically correct soft shadows, rough reflections that see
+  the scene rather than a prefiltered proxy.
+* **Scenes that exhaust memory in the deterministic renderer.** Its
+  reflection/refraction branches split into a shared pool, so a scene with
+  enough interacting transparent and reflective surfaces OOMs a single frame.
+  The path tracer's per-path state is a fixed size and paths never split, so
+  its memory is `slots x _PT_BYTES_PER_SLOT` and nothing else — it renders
+  what the other one cannot fit.
+* **Scenes with too many lights.** The deterministic renderer's cost is
+  linear in light count and its shadows are capped at
+  `ALGAN_MAX_SHADOW_LIGHTS` (16, with each `RectAreaLight` emitter sample
+  eating a slot). A hundred-light scene is not slow there, it is impossible.
+  The path tracer samples lights instead of summing them, so its cost per
+  vertex is independent of how many there are.
+
+Three consequences, and they are the reason several sections below reach a
+different conclusion than they first did:
+
+1. **Parity with the deterministic renderer is not a goal.** Where the two
+   disagree, the path tracer should be *right*, not matching. A user reaches
+   for it because the other renderer could not do the job, so there is
+   usually no side-by-side to preserve — and the two already differ visibly
+   (no ambient fill, no glossy prefilter, jittered rather than analytic AA).
+   Partial parity that no one can rely on is worth less than correctness.
+   See §5.
+2. **Cost must not be linear in light count, anywhere.** That is one of the
+   three reasons the fallback exists, so any `for li in range(num_lights)`
+   in the hot path is a defect against the renderer's purpose, not a missing
+   optimization. See §6.
+3. **Bounded memory is a feature, not an accident.** "Renders what the
+   deterministic renderer OOMs on" is a promise that fixed per-path state
+   makes and that splitting takes away. Every continuation-pool proposal in
+   §8 spends exactly the property that makes this renderer the fallback, and
+   must be judged on that basis.
+
+What it does *not* have to be: deterministic (the byte-reproducibility
+guarantee was withdrawn — see contract 1), or a match for the deterministic
+renderer's brightness, shading rate or edge treatment.
+
+What it *must* be: **complete**. A fallback that refuses a feature leaves the
+user with nowhere to go, and a fallback that silently drops one is worse. §9
+is the audit of where it is not yet complete.
+
 Status: the redesign's staged landing table (stages 1–6) is complete on this
 branch — the wavefront skeleton and deterministic 2-D compositing, BSDF
 sampling (cosine diffuse, spherical-cap VNDF GGX with Turquin compensation,
@@ -30,9 +81,8 @@ transport. §5 covers why those two ends do not agree numerically.
 
 What follows is everything the original plan named beyond the staged table
 (§§1–4), then the divergences from the SOTA survey the redesign was specified
-against that were *decided* rather than merely deferred (§§5–8) — each is a
-place where Algan knowingly departs from what a production path tracer would
-do, and each is reversible if the trade stops paying.
+against that were *decided* rather than merely deferred (§§5–8), then the
+completeness audit the fallback role demands (§9).
 
 
 ## The contract every one of these must land under
@@ -71,13 +121,22 @@ These are not preferences; each is load-bearing and tested.
    arguments (variant explosion) — and the kernel sits at 59 of Taichi's 64
    runtime-argument ceiling, so new inputs prefer widening an existing tensor
    over adding one.
-3. **The arena.** All per-path and per-scene state is accounted in
-   `_PT_BYTES_PER_SLOT` / scoped allocations so the tile/wave split and the
-   OOM chunk-halving retry keep working.
-4. **The deterministic 2-D contract.** Camera-segment transparency composites
-   with zero variance (`benchmarks/_pt_parity_check.py` holds flat interiors
-   to ≤ 1 channel count against the deterministic route at any spp). A feature
-   that would make unlit stacks stochastic is wrong by construction here.
+3. **Bounded per-path state.** All per-path and per-scene state is accounted
+   in `_PT_BYTES_PER_SLOT` / scoped allocations so the tile/wave split and the
+   OOM chunk-halving retry keep working — and, more than bookkeeping, the
+   *size* is fixed: paths do not split, so a scene cannot make one path cost
+   more memory than another. That is what lets this renderer finish scenes
+   the deterministic one OOMs on, which is one of the three reasons it
+   exists. A feature that makes per-path memory data-dependent is spending
+   the renderer's purpose and needs to say so out loud, with a hard cap.
+4. **The 2-D contract.** Camera-segment transparency composites with zero
+   variance (`benchmarks/_pt_parity_check.py` holds flat interiors to ≤ 1
+   channel count against the deterministic route at any spp). Note this is
+   *not* a parity obligation of the kind §5 argues against: it is the one
+   place matching is worth having, because a user who fell back to the path
+   tracer for a 3-D reason should not lose text and vector-graphics quality
+   as collateral. A feature that would make unlit stacks stochastic is wrong
+   by construction here.
 5. **The sampler dimension table** in `path_tracer_taichi.py`'s module
    docstring is the registry of who consumes randomness. Pairs
    `2 + 6b + 4, 5` are already **reserved for volumes**.
@@ -277,41 +336,51 @@ place, do not light the same surface identically — and the discrepancy is
 largest exactly where it is most visible, on smooth metals, because the two
 `G` terms diverge as roughness falls.
 
-**Why it is this way, and why that is defensible.** Brightness parity with the
-deterministic renderer is a product requirement, not an implementation detail:
-`spp == 1` is the default, every example in the docs renders through it, and a
-user raising `samples_per_pixel` to reduce noise must not watch their lighting
-change key. Light rows are the only emitters the deterministic renderer has,
-so they are the only ones with a parity obligation. Emissive triangles and env
-maps have no deterministic counterpart to match, which is exactly why they
-were free to use the physical BSDF — and they had to, because MIS is only
-correct when both ends of the pair evaluate the same function.
+**Why it is this way.** Brightness parity with the deterministic renderer was
+taken as a product requirement: `spp == 1` is the default, every example in
+the docs renders through it, and a user raising `samples_per_pixel` should not
+watch their lighting change key. Light rows are the only emitters the
+deterministic renderer has, so they were the only ones with a parity
+obligation; emissive triangles and env maps had no counterpart to match, which
+is why they were free to use the physical BSDF — and they had to, because MIS
+is only correct when both ends evaluate the same function.
 
-**Why it should not stay this way forever.** Three reasons, in ascending
-severity:
+**Why that reasoning does not survive the renderer's stated purpose.** The
+path tracer is the fallback for scenes the deterministic renderer cannot
+render (see the top of this document). In those scenes there is no `spp == 1`
+render to change key *from* — the comparison the parity requirement protects
+does not exist. And where a scene *can* be rendered both ways, the two already
+differ visibly: no ambient fill, no glossy prefilter, jittered instead of
+analytic AA, real GI instead of none. Parity was already partial, and partial
+parity is worth less than being right.
 
-1. It is a silent trap for any future feature that makes light rows
-   MIS-able — making area lights hittable geometry is the obvious one, and it
-   is also how an area light would gain its mirror image. The moment a BSDF
-   ray can find a light row, the two ends must agree or the weights stop
-   summing to one, and the failure is a subtle brightness error rather than
-   an exception.
-2. The white-furnace tests (`test_lambert_furnace_is_lossless`,
-   `test_ggx_furnace_keeps_energy_with_compensation`) only exercise the
-   transport half. Nothing pins the stage half's energy, so a future edit to
-   `_pt_direct_response` can break reciprocity with no test failing.
-3. It costs the renderer the ability to state a single answer to "what BSDF
-   is this?", which every other physically-based decision here rests on.
+So the trade inverts. What the split costs is concrete: an emissive quad and a
+`RectAreaLight` of matched radiance light the same surface differently; the
+furnace tests cover only the transport half, so a future edit to
+`_pt_direct_response` can break reciprocity silently; and it is a live trap
+for anything that makes light rows MIS-able (making area lights hittable
+geometry — which is also how an area light would gain its mirror image — needs
+both ends to agree or the weights stop summing to one). What it buys is a
+brightness match that no longer has a use case.
 
-**What resolving it takes.** The honest fix is to make the *deterministic*
-renderer's stage formulas energy-correct (drop the `k` remap for the exact
-Smith `G2`, put the `1/pi` on diffuse and rescale authored light intensity to
-compensate) so both renderers converge on one BSDF, then delete
-`_pt_direct_response` in favour of `_pt_lit_f_pdf` everywhere. That is a
-re-baseline of every committed frame in the repo, on both devices — a
-deliberate, self-contained change, not something to slip in beside another
-feature. Until then this section is the record of the divergence, and any new
-lit-vertex code must be explicit about which of the two it is implementing.
+**What resolving it now takes — much less than it used to.** The previous
+draft of this section proposed fixing the *deterministic* renderer's stage
+formulas first (exact Smith `G2`, `1/pi` on diffuse, authored intensities
+rescaled to compensate) so both renderers could converge on one BSDF. That was
+a re-baseline of every committed frame in the repo on both devices, and it was
+only necessary because parity had to be preserved through the change. It does
+not: **delete `_pt_direct_response` and call `_pt_lit_f_pdf` for light rows
+too.** The deterministic renderer keeps its stage formulas and its baselines
+untouched; only `tests/path_traced/` re-baselines.
+
+Two things to get right in that change. The NEE estimator for a light row
+becomes `f_cos * radiance / p_sel` in place of the stage response, so the
+delta-light radiometry from `_light_eval` (decay, range fade, spot cone,
+one-sided area cosine) stays exactly as it is — it is the *emitter* model, and
+only the *surface* response changes. And phong loses its Blinn-Phong highlight
+in favour of GGX, which is a visible change to `MeshPhongMaterial` under the
+path tracer and should be called out in the limitations page rather than
+discovered.
 
 **Verification when it lands:** a Lambert and a GGX surface lit by a
 `RectAreaLight` and by an emissive quad of matched radiance agree to within
@@ -325,65 +394,91 @@ every emissive triangle and one environment entry, rebuilt per render call
 (`_build_nee_tables`). Selection is global and purely power-proportional: no
 spatial term, no orientation cone, no BSDF awareness.
 
-**Where that is right — with a caveat.** For lights the redesign plan said a
-tree was not worth it, and the conclusion holds, but the *reason* usually
-given for it does not. It is tempting to say "four lights, so a tree cannot
-pay" — yet a spatially-aware sampler beats power-proportional selection even
-at tiny counts, because power-proportional ignores distance entirely and will
-pick a bright light across the room as often as a dim one against the
-surface. The survey quotes PBRT-v4 §12.6 measuring a **2.72x MSE improvement
-on a two-light scene** for exactly this reason.
+**Why treeing the *lights* looked unnecessary — and why that was wrong.** The
+redesign plan said a tree over a handful of light rows could not pay, and an
+earlier draft of this section agreed, proposing instead that the kernel simply
+**sum every light row deterministically** (exact, zero variance, cheaper than
+any selection scheme at small `N`).
 
-What actually settles it is that for a handful of lights the best sampler is
-no sampler: sum every row, as the code did before Stage 3 and as the
-ambient / hemisphere fill still does. That is exact, has zero variance, and
-costs less than any selection scheme. A tree is the answer for a population
-too large to sum, which lights are not and emissive meshes are.
+That proposal contradicts the renderer's purpose. "Too many lights" is one of
+the three reasons the path tracer exists: the deterministic renderer's cost is
+linear in light count and its shadows cap out at 16, so a hundred-light scene
+is impossible there and the user is told to fall back to here. A fallback
+whose direct lighting is *also* linear in light count does not solve that
+problem — it reproduces it. Summing is the right answer only for the small-`N`
+case that was never the reason anyone reached for this renderer.
 
-**Where it is already wrong.** Stage 3 put *emissive triangles* in the same
-table, and those are not single-digit. One emissive mesh is thousands of
-entries, and a global power CDF will happily pick a triangle on the far side
-of the scene, facing away, occluded — a sample whose contribution is zero
-before the shadow ray is even traced. The cost is paid per NEE draw per
-crossing per bounce. This is precisely the regime the light-BVH literature
-exists for, and Algan is now in it whenever a scene has a glowing mesh rather
-than a glowing quad.
+It is also worth retiring the usual argument for small `N` on its own terms.
+"Only four lights, so a tree cannot pay" is false: a spatially-aware sampler
+beats power-proportional selection even at two lights, because
+power-proportional ignores distance entirely and will pick a bright light
+across the room as often as a dim one against the surface. The survey quotes
+PBRT-v4 §12.6 measuring a **2.72x MSE improvement on a two-light scene** for
+exactly this reason.
 
-**Second, smaller regression.** `pt_light_samples` defaults to 1, so direct
-lighting from *delta* rows is now stochastic: one entry drawn from the CDF per
-vertex, weighted by `1/p_sel`. Before Stage 3 the kernel summed every row, so
-delta direct lighting carried *no* variance at all — it was an exact analytic
-sum, and the only noise in a simple lit scene came from indirect transport.
-Single-sample selection introduces variance where there was none, and it grows
-with the light count (an `N`-light rig now estimates its direct term from one
-randomly chosen light per vertex). That is a bad trade at Algan's scale: the
-CDF exists to bound cost when the emitter count is large, and the light-row
-count never is.
+### 6a. The tree covers the whole table, not just emitters
 
-**What to do**, in order of value per unit of work:
+So the light tree is not an optimization for the emissive-mesh case with the
+light rows left outside it. It is the selection structure for **every** entry
+the NEE table holds — delta rows, area-light cells, emissive triangles — with
+the environment entry alongside as it is now. That makes per-vertex direct
+lighting `O(log E)` in the total emitter count, which is the property the
+"too many lights" use case actually needs, and it is what promotes 6b from
+"worth doing once emissive meshes are a supported look" to **required for a
+stated primary use case**.
 
-### 6a. Split the table by cardinality (small, do first)
+Keep a **sum-everything fast path** for tiny tables (a threshold on entry
+count, in the low tens): it is exact, has zero variance and costs less than
+descending a tree. But that is an optimization for the easy case, not the
+architecture — and the easy case is not the one the renderer exists for. Note
+too that `RectAreaLight` expands to `K` rows, so "tiny" is reached sooner than
+light count suggests: one 4x4 area light is already 16 entries.
 
-Sum all delta and area light rows deterministically — they are bounded by
-`num_lights` and single-digit in practice, and the ambient / hemisphere fill
-two blocks above already works exactly this way — and keep the stochastic CDF
-for emissive triangles plus the env entry. Direct lighting goes back to
-noise-free, the emissive path keeps its MIS, and `pt_light_samples` becomes
-what it should be: a control on *emitter* sampling, not on lights. Local to
-`pt_shade`'s NEE block and `_build_nee_tables`; no new buffers.
+### 6a-bis. Two loops that are linear in light count today
 
-Note what this implies about the light-BVH question below: for a handful of
-lights, the best sampler is **no sampler**. A tree beats power-proportional
-selection, but summing beats both, exactly and at lower cost. A light tree is
-therefore not a general replacement for the flat CDF — it is the answer for
-the one population that cannot be summed.
+Independent of the tree, `pt_shade` still walks every light row twice, and
+under the purpose stated at the top of this document these are defects rather
+than inefficiencies:
 
-### 6b. A light tree over the emitter entries (the real fix)
+* **The ambient / hemisphere fill** scans all `num_lights` rows at every lit
+  crossing to find the zero-to-two direction-less rows
+  (`for li in range(num_lights)`, testing `lt_row` per row). In a 200-light
+  scene that is a 200-iteration scan per crossing per bounce to find two
+  entries. Fix host-side: pack ambient-type rows contiguously and pass their
+  offset and count in `nee_meta`, which has spare words. Small and purely
+  mechanical.
+* **The authored-appearance branch** (manim, toon, normal, matcap, depth and
+  every `set_fragment_shader` pipeline) loops all lights and traces a shadow
+  ray for each up to `max_shadow_lights`, filling the `vis` vector
+  `_run_frag_pipeline` expects. That is the deterministic renderer's cost
+  model *and* its 16-light cap, running inside the fallback: such a surface in
+  a hundred-light scene gets shadows from the first 16 lights and pays 16
+  shadow rays per crossing. These materials are opt-in rather than Algan's
+  default (a shader-less mob is unlit, and the physically-integrated
+  materials go through the NEE table), so this is a hole rather than the
+  common path — but it is a hole in exactly the use case the renderer is
+  advertised for, and the feature matrix does not mention that the cap is
+  lifted only for some materials.
+
+  The fix is harder than the first because `_run_frag_pipeline`'s interface is
+  a per-light visibility vector. The options are to sample `pt_light_samples`
+  lights from the table and fill only those slots (changing what the vector
+  means, so the pipeline contract needs restating), or to keep the vector for
+  the sampled subset and document authored-appearance materials as sampling
+  their lighting like everything else. Either way it is an interface decision,
+  not just a loop rewrite, which is why it is called out separately here.
+
+### 6b. Building the tree
 
 Conty Estevez & Kulla 2018, as in PBRT-v4's `BVHLightSampler` and Cycles:
 each node carries its subtree's emitted power, its bounds, and an
 **orientation cone** (axis, normal spread `theta_o`, emission spread
-`theta_e`). Sampling descends stochastically — at each node, score the
+`theta_e`). A delta row is a degenerate leaf — a point (or, for a directional
+row, a direction) with no area and a full cone — which is why one tree can
+hold rows and triangles together rather than needing a separate structure per
+emitter kind; that unification is what production light trees are for, and
+per 6a it is the point here rather than an extra. Sampling descends
+stochastically — at each node, score the
 children by an importance heuristic in the shading point `x`, normalise, pick
 one with a *rescaled* random number, and multiply the probabilities down to
 the leaf. The heuristic is roughly `power * |cos theta'| / d^2`, with the cone
@@ -406,8 +501,10 @@ is obvious:
    visit is one aligned 128-byte (or 64-byte f16) fetch. There is no room for
    power and a cone. That part is easy to fix with a parallel array, so it is
    the least of the four.
-2. **Wrong contents.** It holds *every* triangle; emitters are a tiny subset.
-   With per-node power sums a zero-power subtree is skipped in O(1), so it
+2. **Wrong contents.** It holds *every* triangle, and holds no light rows at
+   all — so it could never be the whole answer, only the emissive-triangle
+   half of it. Emitters are a tiny subset of what it does hold:
+   with per-node power sums a zero-power subtree is skipped in O(1), so it
    would function — but you descend `log(N_all)` levels to reach `log(E)`
    worth of decisions, and the interior nodes carry no useful discrimination.
 3. **Wrong shape.** It is built to minimise ray-traversal cost (SAH). A light
@@ -549,16 +646,19 @@ cheapest is not the famous one:
    counts the inline version may well win. Profile before building it.
 
 2. **A dielectric split pool.** At a glass surface the path picks
-   reflect-or-refract stochastically (`w_spec` vs `w_trans`). The
-   deterministic renderer *splits* there — that is what `refraction_flag` and
-   `refract_initial_pool_ratio` are for. So glass is noisier under the path
-   tracer than under the deterministic renderer at comparable cost, on a
-   headline Algan feature (`reflections_and_glass.rst`), and the fix is the
-   textbook one: at the first dielectric interface, follow both branches and
-   weight each by its Fresnel share. This is the narrowest useful pool —
-   splitting factor 2, at a known and rare vertex type, bounded by a small
-   depth — and the deterministic renderer's pool plus overflow retry is
-   directly reusable precedent.
+   reflect-or-refract stochastically (`w_spec` vs `w_trans`); the
+   deterministic renderer *splits* there instead — that is what
+   `refraction_flag` and `refract_initial_pool_ratio` are for — so glass is
+   noisier per sample here. The textbook fix is to follow both branches at
+   the first dielectric interface, weighted by Fresnel share: the narrowest
+   useful pool, splitting factor 2, at a known and rare vertex type, bounded
+   by a small depth.
+
+   Read the precedent carefully, though. That same deterministic split pool
+   is *why* glass-heavy scenes OOM there, which is one of the reasons a user
+   would be on the path tracer for such a scene at all. Copying it copies the
+   failure mode into the renderer whose job is to not have it. See the
+   demotion below.
 
 3. **A general splitting pool, for EARS.** EARS (Rath et al., SIGGRAPH 2022)
    treats RR and splitting as one continuous factor `n` per vertex: `n < 1` is
@@ -576,11 +676,24 @@ cheapest is not the famous one:
    to NEE, which is the principled answer to §6's "how many light samples"
    question.
 
+**The cost every pool shares, and why it is bigger here than elsewhere.**
+Contract 3 is not bookkeeping: "renders scenes the deterministic renderer
+OOMs on" is one of the three reasons this renderer exists, and it is true
+*because* per-path state is a fixed size that no scene can inflate. The
+deterministic renderer OOMs precisely because its reflection and refraction
+branches split into a shared pool whose occupancy is data-dependent. Adding a
+pool here reintroduces that failure mode into the renderer whose job is to not
+have it. That does not forbid pools, but it does mean every one of them is
+spending the property that makes this the fallback, and must therefore come
+with a hard cap, honest `_PT_BYTES_PER_SLOT` accounting, and a degradation
+path that is *worse output*, never an OOM.
+
 **Recommendation: do not start with the pool.** Adaptive sampling (§2) should
 come first, and it is not a stepping stone to splitting — it is a substitute
 for most of what splitting would buy here, at a fraction of the structural
-cost. Both answer "spend effort where the error is"; adaptive sampling answers
-it per *pixel*, needs no pool, no atomics and no accumulator change, and suits
+cost, and it moves in the right direction on memory rather than the wrong one.
+Both answer "spend effort where the error is"; adaptive sampling answers it
+per *pixel*, needs no pool, no atomics and no accumulator change, and suits
 Algan's variance distribution unusually well because a large fraction of a
 typical frame is unlit 2-D content that is zero-variance by construction and
 should terminate at the floor sample count. Splitting answers the same
@@ -588,18 +701,32 @@ question per *vertex*, which is finer than Algan's shallow transport usually
 needs; it earns its keep in production renderers largely because their shading
 is expensive and their paths are deep.
 
-So the order is: **§2 adaptive sampling → measure → then (2) the dielectric
-split, which is a concrete quality gap against the deterministic renderer,
-and (1) the shadow queue if the profile says the inline walks are hurting →
-EARS only if a measured scene shows RR/splitting is the remaining bottleneck.**
-Building a general pool before there is a profile pointing at one would be
-adding the deterministic renderer's overflow-and-retry machinery on
+**The dielectric split is demoted.** An earlier draft ranked it first among
+the pools, on the grounds that glass is noisier here than under the
+deterministic renderer at comparable cost. That was a parity argument, and
+parity is not a goal (see the top of this document and §5) — worse, it is a
+parity argument for adding back the exact splitting behaviour that makes the
+deterministic renderer OOM on glass-heavy scenes, which is one of the reasons
+a user would be on the path tracer for that scene in the first place. The
+honest framing is that stochastic reflect-or-refract is *noisier per sample*
+and *bounded in memory*, and bounded memory is the feature. If glass noise
+turns out to be the real complaint, the first answers are more samples,
+adaptive sampling, and the denoiser — all of which keep the memory profile.
+
+So the order is: **§2 adaptive sampling → measure → the shadow-ray queue if
+the profile says the inline NEE walks hurt (it is the only one of the three
+that does not touch per-path memory at all) → a capped dielectric split only
+if measurement, not parity, asks for it → EARS last, and only behind a scene
+where RR and splitting are demonstrably the bottleneck.** Building a general
+pool before a profile points at one would mean importing the deterministic
+renderer's overflow-and-retry machinery, and its OOM behaviour, on
 speculation.
 
 **When a pool does land**, the things to get right: accumulation becomes
 atomic (fine now, but the AOV reduction and `pt_reduce` both assume exclusive
 rows and must change together); `_PT_BYTES_PER_SLOT` grows by the pool ratio,
 which shrinks the tile and must stay honest or the OOM retry mis-sizes; the
+split factor needs a hard ceiling so no scene can drive it unboundedly; the
 sampler needs a per-branch decorrelation term in the pair key so split
 siblings do not reuse one sequence; and `tests/path_traced/` moves to the
 statistical criterion in `agent_guidance/memory_perf.md` rather than exact
@@ -618,6 +745,85 @@ public surface is deliberately Three.js-shaped, per the API rules in
 `CLAUDE.md` — adopting OpenPBR would be an API decision, not a renderer one);
 and BDPT/VCM/MLT, which the survey advises against as a primary integrator and
 which §1 already rules out for this architecture.
+
+
+## 9. Completeness: the fallback must not refuse or silently drop anything
+
+A fallback that rejects a feature leaves the user with **no renderer at all**
+for that scene, and one that silently drops a feature is worse — the frame
+comes out wrong with nothing pointing at why. Under the purpose stated at the
+top of this document, each of these is a bug against the renderer's role
+rather than a missing nicety. Audited at the current head:
+
+* **Custom scatter overrides are hard-rejected.** `_build_render_plan` puts
+  `"custom scatter overrides"` in `unsupported_features` when
+  `samples_per_pixel > 1`, so a scene using `FragmentStage(..., scatter=...)`
+  raises `UnsupportedFeatureError` rather than rendering. If that scene is
+  also one the deterministic renderer cannot fit — the exact case the
+  fallback exists for — the user has nowhere to go, and the error message
+  tells them to set `samples_per_pixel` back to 1, which is the thing that
+  did not work.
+
+  The stated reason is that arbitrary user continuation carries no sampling
+  density for stochastic transport to weight. True, but the renderer already
+  has a category for exactly that: a **delta lobe**. Refraction and tinted
+  panes both take a deterministic direction and continue with `prev_pdf = 0`,
+  which suppresses the MIS weight and treats whatever the ray finds next as
+  covered by no NEE strategy. A custom scatter fits that mould precisely —
+  call the user's function for the direction, continue with weight 1 and
+  `prev_pdf = 0`, and the estimator stays consistent. It is their code and
+  their density; treating it as a delta continuation is honest and is the
+  same contract the built-in delta lobes get. The one genuine limitation is
+  that such surfaces cannot be MIS-covered, which is already the case for
+  every other delta lobe.
+
+* **`camera.near` is silently ignored — and the docs say it works.** Near
+  clipping is applied in `wavefront_generate_rays` (it advances `ro` along
+  the camera forward axis by `near_clip / rd.dot(fwd)`). The path tracer does
+  not call that kernel: `pt_generate` builds primaries through `_generate_ray`
+  with no near-clip term, and nothing downstream reapplies it. So the setting
+  does nothing under `samples_per_pixel > 1`, while the feature matrix in
+  `renderer_limitations.rst` lists **Yes** in the "Path tracer" column for
+  near clipping.
+
+  Measured, 48x48, one red square, `camera.near = 100` (well in front of
+  everything): at `spp == 1` the frame goes to mean 0 — everything clipped,
+  as asked. At `spp == 8` the mean is 35.62 with and without the setting,
+  bit for bit. The feature is inert.
+
+  Either the kernel gains the same three lines or the matrix is corrected,
+  but the current combination is the worst of the three outcomes: a user sets
+  a documented option, gets no error, and gets a frame that ignores it. The
+  fix is small — `pt_generate` already has the camera basis it needs, and the
+  clip is an origin advance before the ray enters the wavefront, so nothing
+  else in the path tracer has to know about it.
+
+* **`camera.far` is not applied**, and is correctly documented as **No**. It
+  is still a hole in a fallback: a scene relying on far clipping to cull
+  distant geometry has no path-traced equivalent. Cheap to add at the same
+  site (a maximum `t` on the primary ray, which the traverse already bounds
+  per segment).
+
+* **The 16-light shadow cap is only partly lifted, and the docs do not say
+  so.** Physically-integrated materials sample shadows through the NEE table
+  and are uncapped; authored-appearance materials still loop lights and stop
+  at `max_shadow_lights`. The limitations page presents the cap as a single
+  renderer-wide limit. See §6a-bis for the fix and why it is an interface
+  decision.
+
+**The standing rule this section implies:** when the deterministic renderer
+gains a feature, the question is not "does the path tracer match it" (§5 says
+that is not a goal) but "**can the path tracer still render a scene that uses
+it**". A feature that only one renderer supports is fine when it is the path
+tracer's; it is a hole when it is the deterministic renderer's, because the
+fallback direction only runs one way.
+
+**Verification:** a test that asserts `_build_render_plan` returns no
+`unsupported_features` for `samples_per_pixel > 1` on every feature
+combination the deterministic renderer accepts — the machine-checkable form
+of "the fallback never refuses", and the thing that would have caught the
+custom-scatter hole. A near/far clipping render test under the path tracer,
+which nothing currently covers.
 
 
 ## Smaller known gaps, for completeness
