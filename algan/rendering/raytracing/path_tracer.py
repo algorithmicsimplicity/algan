@@ -57,6 +57,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_ENV_OFF,
     _NM_ENV_SHARE,
     _NM_ENV_W,
+    _NM_FAR_CLIP,
     _NM_LIGHT_SAMPLES,
     _SHELL_RING_SLOTS,
     NEE_META_WIDTH,
@@ -194,7 +195,9 @@ def _build_env_cdf(env_rgb, max_h=128, max_w=256):
     return env_cdf.float(), power
 
 
-def _build_nee_tables(memory, merged, light_pos, light_col, num_lights, env_meta):
+def _build_nee_tables(
+    memory, merged, light_pos, light_col, num_lights, env_meta, far_clip=0.0
+):
     """Build one render call's power-weighted next-event table.
 
     One flat CDF over everything a shadow ray can aim at -- delta and
@@ -324,6 +327,10 @@ def _build_nee_tables(memory, merged, light_pos, light_col, num_lights, env_meta
         meta[_NM_ENV_INTENSITY] = env_intensity
         meta[_NM_ENV_CDF_H] = float(cdf_h)
         meta[_NM_ENV_CDF_W] = float(cdf_w)
+        # The far plane rides the meta vector rather than a new kernel
+        # argument: pt_shade is close to Taichi's 64-argument ceiling, and a
+        # per-render scalar is exactly what this vector is for.
+        meta[_NM_FAR_CLIP] = float(max(0.0, far_clip))
         nee_meta = _arena_values(memory, meta, torch.float32)
     return nee_cdf, nee_ref, nee_meta, emit_prob, env_cdf
 
@@ -388,6 +395,8 @@ def path_trace_render(
     frag_pipelines,
     shadows,
     max_bounces,
+    near_clip,
+    far_clip,
     transparent,
     samples,
     env_meta=None,
@@ -399,7 +408,11 @@ def path_trace_render(
 
     ``out`` must hold the prefilled background (byte scale) and ``accum`` the
     zeroed ``[frames, pixels, 5]`` sample sums; the caller averages them with
-    ``finalize_samples``. Raises the arena's memory exceptions with all tile
+    ``finalize_samples``. ``near_clip`` / ``far_clip`` are the camera's clip
+    distances in world units (0 = no plane), applied with the deterministic
+    renderer's semantics: the near plane advances the primary origin and
+    seeds ``base_dist``, and the far plane retires a path once
+    ``base_dist + t`` passes it. Raises the arena's memory exceptions with all tile
     state released, so the chunk-halving retry in ``render_chunk`` works
     unchanged.
 
@@ -435,7 +448,7 @@ def path_trace_render(
     # The power-weighted next-event table + environment CDF for this call
     # (before the tile budget is taken, so their bytes are accounted).
     nee_cdf, nee_ref, nee_meta, tri_emit_prob, env_cdf = _build_nee_tables(
-        memory, merged, light_pos, light_col, int(num_lights), env_meta
+        memory, merged, light_pos, light_col, int(num_lights), env_meta, far_clip
     )
     tri_shell = _build_shell_table(memory, merged)
     if aovs is not None:
@@ -510,8 +523,10 @@ def path_trace_render(
                     screen_point,
                     pixel_basis_x,
                     pixel_basis_y,
+                    float(near_clip),
                     rs_ro,
                     rs_rd,
+                    rs_sca,
                     rs_pix,
                 )
                 active = compactor.initial(slots)

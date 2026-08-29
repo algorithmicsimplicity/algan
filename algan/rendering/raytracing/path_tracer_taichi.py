@@ -215,7 +215,7 @@ _NEE_ENV = 2
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 10
+NEE_META_WIDTH = 11
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -226,6 +226,7 @@ _NM_ENV_INTENSITY = 6
 _NM_ENV_CDF_H = 7  # env CDF bin-grid dimensions
 _NM_ENV_CDF_W = 8
 _NM_AOV = 9  # 1 = accumulate the denoiser's albedo/normal AOVs (pt_aov)
+_NM_FAR_CLIP = 10  # camera.far in world units (0 = no far plane)
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -779,9 +780,9 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 half_screen_w: ti.f32, half_screen_h: ti.f32,
                 cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
                 pixel_basis_x: ti.types.ndarray(),
-                pixel_basis_y: ti.types.ndarray(),
+                pixel_basis_y: ti.types.ndarray(), near_clip: ti.f32,
                 rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-                rs_pix: ti.types.ndarray()):
+                rs_sca: ti.types.ndarray(), rs_pix: ti.types.ndarray()):
     """Write each slot's jittered primary ray.
 
     Slot layout: ``slot = k * tile_pixels + p_local`` holds wave sample
@@ -789,7 +790,9 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
     pixel's next ``S`` samples in flight and ``pt_reduce`` can walk a pixel's
     slots at stride ``tile_pixels``. The rest of the per-slot state is
     constant at generation and broadcast-filled by the host (the same
-    coalesced-fill reasoning as the deterministic ``const_fill`` path).
+    coalesced-fill reasoning as the deterministic ``const_fill`` path) --
+    except ``base_dist`` under a near clip, which varies per ray and is
+    written here over the host's broadcast zero.
     """
     pixels_per_frame = width * height
     for slot in range(num_slots):
@@ -806,6 +809,19 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                                half_screen_w, half_screen_h,
                                cam_origin, screen_point,
                                pixel_basis_x, pixel_basis_y)
+        if near_clip > 0.0:
+            # Near plane, identical to ``wavefront_generate_rays``: advance
+            # the origin to the plane at ``near_clip`` along the camera's
+            # forward axis (planar, like Three.js), and seed ``base_dist``
+            # with the skipped distance so far-plane and screen-space widths
+            # stay camera-relative rather than origin-relative.
+            fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                                screen_point[f, 2])
+                   - ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
+                                  cam_origin[f, 2])).normalized()
+            t_near = near_clip / ti.max(rd.dot(fwd), 1e-6)
+            ro = ro + rd * t_near
+            rs_sca[slot, 4] = t_near
         for k in ti.static(range(3)):
             rs_ro[slot, k] = ro[k]
             rs_rd[slot, k] = rd[k]
@@ -1077,6 +1093,7 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
         env_intensity = nee_meta[_NM_ENV_INTENSITY]
         cdf_h = ti.cast(nee_meta[_NM_ENV_CDF_H] + 0.5, ti.i32)
         cdf_w = ti.cast(nee_meta[_NM_ENV_CDF_W] + 0.5, ti.i32)
+        far_clip = nee_meta[_NM_FAR_CLIP]
         # AOV accumulation for the denoiser (every pt_aov access is gated on
         # this: with it off the tensor is a [1, PT_AOV_WIDTH] dummy).
         aov_on = nee_meta[_NM_AOV] > 0.5
@@ -1155,6 +1172,17 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                             sel = q
                             t_hit = kb_t[q]
                             hit_layer = kb_layer[q]
+                if (far_clip > 0.0) and (base_dist + t_hit > far_clip):
+                    # Past the camera's far distance, the same test and the
+                    # same site as ``wavefront_shade``. Hits drain
+                    # front-to-back so everything left is farther still;
+                    # retire the path (not absorbed, so its leftover
+                    # throughput still shows the background or the
+                    # environment map). ``base_dist`` accumulates across
+                    # scatters, so the plane clips path length from the
+                    # camera exactly as it does for the other renderer.
+                    done = True
+                    break
                 prim = 0
                 flags = 0
                 a = 0.0

@@ -252,6 +252,52 @@ def _render_scene(tmp_path, name, build, samples_per_pixel, video=None, **rt_kwa
     return _read(result)
 
 
+def test_camera_clip_planes_apply_under_path_tracing(tmp_path):
+    """``camera.near`` and ``camera.far`` clip path-traced frames too.
+
+    Both were regressions of the fallback role rather than of parity: a scene
+    that needs the path tracer (for GI, memory or light count) must not
+    silently lose a camera setting the deterministic renderer honours. Near
+    clipping used to be inert here -- ``pt_generate`` built primaries without
+    it -- while the feature matrix advertised it, and far clipping was
+    unimplemented.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_light_sources()
+        Square(side_length=3.0, color=RED).spawn(animate=False)
+
+    def with_camera(**clip):
+        def inner(scene):
+            build(scene)
+            for name, value in clip.items():
+                setattr(scene.camera, name, value)
+
+        return inner
+
+    base = _render_scene(tmp_path, "clip_base.png", build, 8).float()
+    assert base.mean() > 5.0, "the unclipped scene rendered (nearly) empty"
+
+    # A near plane in front of everything, and a far plane behind everything,
+    # each leave the background alone.
+    near = _render_scene(
+        tmp_path, "clip_near.png", with_camera(near=100.0), 8
+    ).float()
+    assert near.max() == 0, f"near plane did not clip (max {int(near.max())})"
+    far = _render_scene(tmp_path, "clip_far.png", with_camera(far=0.5), 8).float()
+    assert far.max() == 0, f"far plane did not clip (max {int(far.max())})"
+
+    # Planes generous enough to contain the scene change nothing.
+    wide = _render_scene(
+        tmp_path, "clip_wide.png", with_camera(near=0.1, far=1000.0), 8
+    ).float()
+    assert (wide - base).abs().max() <= 1, (
+        "clip planes that contain the whole scene moved the image by "
+        f"{int((wide - base).abs().max())}"
+    )
+
+
 def test_lambert_furnace_is_lossless(tmp_path):
     """White furnace, diffuse: a pure-white Lambert sphere in front of a
     pure-white background with no lights must render white everywhere -- the

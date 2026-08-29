@@ -1753,6 +1753,8 @@ def render_batch_raytraced(
                         frag_pipelines=frag_pipelines,
                         shadows=1 if bool(shadows) else 0,
                         max_bounces=int(max_bounces),
+                        near_clip=near_clip,
+                        far_clip=far_clip,
                         transparent=transparent_background,
                         samples=samples_eff,
                         env_meta=env_meta,

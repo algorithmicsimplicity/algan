@@ -753,7 +753,9 @@ A fallback that rejects a feature leaves the user with **no renderer at all**
 for that scene, and one that silently drops a feature is worse — the frame
 comes out wrong with nothing pointing at why. Under the purpose stated at the
 top of this document, each of these is a bug against the renderer's role
-rather than a missing nicety. Audited at the current head:
+rather than a missing nicety. Audited at the current head — the clip-plane
+entry is kept after its fix because it is the worked example of the failure
+mode this section exists to catch:
 
 * **Custom scatter overrides are hard-rejected.** `_build_render_plan` puts
   `"custom scatter overrides"` in `unsupported_features` when
@@ -777,32 +779,28 @@ rather than a missing nicety. Audited at the current head:
   that such surfaces cannot be MIS-covered, which is already the case for
   every other delta lobe.
 
-* **`camera.near` is silently ignored — and the docs say it works.** Near
-  clipping is applied in `wavefront_generate_rays` (it advances `ro` along
-  the camera forward axis by `near_clip / rd.dot(fwd)`). The path tracer does
-  not call that kernel: `pt_generate` builds primaries through `_generate_ray`
-  with no near-clip term, and nothing downstream reapplies it. So the setting
-  does nothing under `samples_per_pixel > 1`, while the feature matrix in
-  `renderer_limitations.rst` lists **Yes** in the "Path tracer" column for
-  near clipping.
+* **`camera.near` and `camera.far` — FIXED.** Near clipping used to be inert
+  under the path tracer while the feature matrix advertised it: it is applied
+  in `wavefront_generate_rays`, which the path tracer does not call, and
+  `pt_generate` built primaries through `_generate_ray` with no near-clip
+  term. Far clipping was simply unimplemented and documented as such.
 
-  Measured, 48x48, one red square, `camera.near = 100` (well in front of
-  everything): at `spp == 1` the frame goes to mean 0 — everything clipped,
-  as asked. At `spp == 8` the mean is 35.62 with and without the setting,
-  bit for bit. The feature is inert.
+  Both now land where the deterministic renderer puts them. `pt_generate`
+  advances the primary origin to the near plane along the camera forward axis
+  and seeds `base_dist` with the skipped distance (so screen-space widths and
+  the far plane stay camera-relative rather than origin-relative), and
+  `pt_shade` retires a path when `base_dist + t_hit` passes the far plane, at
+  the same site in the drain loop `wavefront_shade` uses. Because `base_dist`
+  accumulates across scatters in both renderers, the far plane clips *path
+  length from the camera* identically. `far_clip` rides `nee_meta` (a new
+  `_NM_FAR_CLIP` word) rather than a new kernel argument, per contract 2.
 
-  Either the kernel gains the same three lines or the matrix is corrected,
-  but the current combination is the worst of the three outcomes: a user sets
-  a documented option, gets no error, and gets a frame that ignores it. The
-  fix is small — `pt_generate` already has the camera basis it needs, and the
-  clip is an origin advance before the ray enters the wavefront, so nothing
-  else in the path tracer has to know about it.
-
-* **`camera.far` is not applied**, and is correctly documented as **No**. It
-  is still a hole in a fallback: a scene relying on far clipping to cull
-  distant geometry has no path-traced equivalent. Cheap to add at the same
-  site (a maximum `t` on the primary ray, which the traverse already bounds
-  per segment).
+  Measured before the fix, 48x48, one red square, `camera.near = 100`: the
+  deterministic frame clipped to mean 0 and the path-traced one was unchanged
+  at 35.62. After: both clip to 0 for a near plane in front of the geometry
+  and for a far plane behind it, and planes generous enough to contain the
+  scene leave the frame within one channel count of unclipped. Covered by
+  `test_camera_clip_planes_apply_under_path_tracing`.
 
 * **The 16-light shadow cap is only partly lifted, and the docs do not say
   so.** Physically-integrated materials sample shadows through the NEE table
@@ -818,12 +816,24 @@ it**". A feature that only one renderer supports is fine when it is the path
 tracer's; it is a hole when it is the deterministic renderer's, because the
 fallback direction only runs one way.
 
-**Verification:** a test that asserts `_build_render_plan` returns no
-`unsupported_features` for `samples_per_pixel > 1` on every feature
-combination the deterministic renderer accepts — the machine-checkable form
-of "the fallback never refuses", and the thing that would have caught the
-custom-scatter hole. A near/far clipping render test under the path tracer,
-which nothing currently covers.
+**Verification.** Two tests, one of which exists now:
+
+* **The fallback never refuses** — assert `_build_render_plan` returns an
+  empty `unsupported_features` for `samples_per_pixel > 1` across every
+  feature combination the deterministic renderer accepts. This is the
+  machine-checkable form of the rule above and the thing that would have
+  caught the custom-scatter hole; it is the test to add alongside the custom
+  scatter work, and it should fail today. Build it by enumerating the
+  features `_build_render_plan` inspects rather than by listing scenes, so a
+  future rejection added to that function fails the test the moment it is
+  written.
+* **Clip planes apply** —
+  `test_camera_clip_planes_apply_under_path_tracing` (landed with the fix
+  above). Note the shape of the assertion, because it generalises: it checks
+  both that a clipping configuration *clips* and that a generous one leaves
+  the frame alone. The first half alone would pass on a renderer that
+  clipped everything; the second alone would pass on the inert
+  implementation this replaced.
 
 
 ## Smaller known gaps, for completeness
@@ -842,8 +852,6 @@ Tracked here so they are one search away, in rough order of effort:
   identity through arbitrary bounce trees.
 * **CUDA baselines for `tests/path_traced/` do not exist.** Procedure is in
   `tests/README.md`; needs a CUDA machine.
-* **Far clipping** is not applied by the path tracer (documented in the
-  feature matrix).
 * **Self-intersection offsetting is a fixed world-space epsilon.** Every
   spawned ray leaves along the geometric normal by `10 * min_hit_distance`
   (1e-3 world units, five sites in `pt_shade`), which is scale-dependent in

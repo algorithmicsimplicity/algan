@@ -133,7 +133,7 @@ row links to the section that explains it.
    * - Far clipping (``camera.far``)
      - Yes
      - Yes
-     - No
+     - Yes
      - `Camera`_
    * - Transparent background
      - Yes (not with an env map)
