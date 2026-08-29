@@ -982,6 +982,13 @@ Neither renderer does any of these, at any setting:
   Scale a light with its own ``intensity=`` and add an
   :class:`~algan.rendering.lights.AmbientLight` for ambient.
 
+For the path tracer's share of this list -- caustics, adaptive sampling,
+temporal stability, volumes and subsurface scattering -- the engineering side
+(why each is absent, and what implementing it would take under the renderer's
+reproducibility and kernel contracts) is written up in
+``algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md``, which is the
+plan of record for that remaining scope.
+
 
 Determinism and reproducibility
 ===============================
