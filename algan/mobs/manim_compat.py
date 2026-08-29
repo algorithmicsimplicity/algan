@@ -559,9 +559,7 @@ class ManimCompatMob(ManimMob):
             else:
                 # ``_move_along_arc``, not ``move_to``: this class overrides
                 # ``move_to`` with Manim's signature.
-                self._move_along_arc(
-                    target, arc_angle, recursive=recursive, **kwargs
-                )
+                self._move_along_arc(target, arc_angle, recursive=recursive, **kwargs)
             self._sync_manim_from_algan()
             return self
         before, source = self._prepare_manim_edit()
@@ -578,15 +576,17 @@ class ManimCompatMob(ManimMob):
 
     def rotate(
         self,
-        num_degrees: float | torch.Tensor,
+        angle: float | torch.Tensor,
         axis: torch.Tensor = OUTWARD,
-        about_point: torch.Tensor | None = None,
+        about: torch.Tensor | None = None,
+        *,
+        degrees: bool = True,
     ) -> Mob:
         """Rotate the Mob, using Algan's rotation rather than Manim's.
 
         ``rotate`` is one of the names this class shares with :class:`~.Mob`,
         and the two libraries mean different things by it: Algan measures
-        ``num_degrees`` in degrees where Manim's angle is in radians, and an
+        ``angle`` in degrees where Manim's angle is in radians, and an
         explicit ``axis`` turns the opposite way in each (their default z axis
         are opposite vectors, which is exactly what makes the *default*
         rotation agree).  A compatibility Mob is animated as an Algan Mob, so
@@ -601,13 +601,13 @@ class ManimCompatMob(ManimMob):
         center, whereas Algan's generic implementation uses ``location``, the
         center of the backing Mobject's *own* points.  The two differ for every
         Mob that also has submobjects -- an :class:`Arrow` would otherwise turn
-        about its shaft rather than in place -- so ``about_point`` defaults to
+        about its shaft rather than in place -- so ``about`` defaults to
         :meth:`~.MobLayoutMixin.get_center`, which agrees with Manim's
         ``get_center`` for these objects.
         """
-        if about_point is None:
-            about_point = self.get_center()
-        return Mob.rotate(self, num_degrees, axis, about_point)
+        if about is None:
+            about = self.get_center()
+        return Mob.rotate(self, angle, axis, about, degrees=degrees)
 
     def set(self, **kwargs):
         # Algan's internal morphing path calls ``set`` with animatable state

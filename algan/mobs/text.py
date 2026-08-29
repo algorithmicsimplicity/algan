@@ -1140,9 +1140,7 @@ class Code(Group):
             )
             with Off(animation_manager=self.animation_manager):
                 dots.arrange_in_line(RIGHT, buffer=0.08)
-                dots.move_next_to(
-                    frame.get_boundary_point(UP), DOWN, buffer=0.08
-                )
+                dots.move_next_to(frame.get_boundary_point(UP), DOWN, buffer=0.08)
             self.background_mobject = Group(
                 frame, dots, scene=self.scene, add_to_scene=add_to_scene
             )

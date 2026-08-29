@@ -188,7 +188,14 @@ Recorded here and in the design doc, so the two do not drift.
    prose says. Nothing pixel-compared uses `align_edge` — one doc example does, and its output
    changes to the correct picture.
 
-10. **`HemisphereLight.up` had to move.** A `Light` is a `Mob`, and 3d's new read-only `Mob.up`
+10. **`ManimCompatMob.rotate` takes the rename too, despite the no-touching-compat-names rule.**
+    That override exists precisely *because* it follows Algan's `rotate` rather than Manim's --
+    degrees, Algan's axis constants, a real basis rotation -- and says so in its docstring.
+    Its parameters were Algan's spelling, not Manim's, so they move with Algan's: `angle`,
+    `about`, and the new `degrees`. Manim's own `rotate(angle, axis, about_point)` is untouched
+    where the vendored library defines it. Caught by the full suite, not by `--fast`.
+
+11. **`HemisphereLight.up` had to move.** A `Light` is a `Mob`, and 3d's new read-only `Mob.up`
    property shadowed the attribute the constructor writes. Its parameter is still `up`; the
    attribute is now `sky_direction`. (`NeuralNetMLP.forward` also shadows the new `.forward`
    property, but it is an unexported class and a subclass attribute wins, so it still works;

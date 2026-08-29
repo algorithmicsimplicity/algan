@@ -366,6 +366,12 @@ the trio (min, max, size) and `get_center()` now all describe the same box.
 coordinate methods with properties on exactly the argument that a method spelling standing beside
 a property is the duplication this overhaul exists to remove; `set_xy` would be that duplication.
 
+**The compat layer's own `rotate` moves with this one.** `ManimCompatMob.rotate` overrides
+`Mob.rotate` in order to follow *Algan's* semantics rather than Manim's — degrees, Algan's axis
+constants, a real basis rotation — so its parameters are Algan's names and take Algan's renames.
+This is not a compat name being renamed; Manim's `rotate(angle, axis, about_point)` in the
+vendored library is untouched.
+
 `about_point → about`, **not** `center`. `center` is already taken three ways in this API
 (`get_center()`, `Camera.center_on`, and the `Text(center=)` bool in Phase 5), and
 `rotate(90, OUT, center=...)` reads as "center the mob".

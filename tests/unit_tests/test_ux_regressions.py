@@ -11,12 +11,12 @@ import torch
 import algan
 from algan import render_loop
 from algan.animation_timeline.animation_contexts import Sync
+from algan.constants.math import PI
 from algan.errors import (
     AlganConfigurationError,
     HierarchyError,
     UnsupportedFeatureError,
 )
-from algan.constants.math import PI
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
 from algan.rendering.camera import Camera
@@ -1803,7 +1803,9 @@ def test_the_mob_positioning_surface_answers_to_its_public_names():
 
         # A radian spelling of the same turn is available on both.
         assert square.rotate(PI / 2, algan.OUT, degrees=False) is square
-        assert square.orbit(PI / 2, algan.OUT, about=algan.ORIGIN, degrees=False) is square
+        assert (
+            square.orbit(PI / 2, algan.OUT, about=algan.ORIGIN, degrees=False) is square
+        )
 
         # 3d -- the direction getters and their property spellings agree, and
         # the basis getters have no property spelling.
