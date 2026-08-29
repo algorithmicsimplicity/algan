@@ -919,7 +919,16 @@ def _make_manim_wrapper(name: str):
 
 
 # Classes that are cubic-Bezier/image/composite Mobjects in the vendored Manim
-# implementation. Existing native Algan classes are intentionally omitted.
+# implementation.
+#
+# Names with a native Algan equivalent are wrapped too, and deliberately so:
+# this module is reached as ``algan.manim``, a namespace where every name means
+# "Manim's version, by Manim's conventions". ``Sphere`` is Algan's and
+# ``algan.manim.Sphere`` is Manim's; omitting the overlapping ones would leave
+# holes in that namespace whose only explanation is which classes Algan happened
+# to implement natively. Manim ``Surface`` subclasses (``Sphere``, ``Torus``,
+# ``Cone``) convert as well as the flat ones -- ManimMob turns their quad grids
+# into curved patches -- so there is nothing to exclude on capability grounds.
 _WRAPPED_MANIM_CLASS_NAMES = (
     "Angle",
     "AnnotationDot",
@@ -931,6 +940,7 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "ArcPolygon",
     "ArcPolygonFromArcs",
     "Arrow",
+    "Arrow3D",
     "ArrowCircleFilledTip",
     "ArrowCircleTip",
     "ArrowSquareFilledTip",
@@ -947,15 +957,20 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "BraceLabel",
     "BraceText",
     "BulletedList",
+    "Circle",
+    "Code",
     "ComplexPlane",
     "ComplexValueTracker",
+    "Cone",
     "ConvexHull",
     "Cross",
+    "Cube",
     "CubicBezier",
     "CurvedArrow",
     "CurvedDoubleArrow",
     "CurvesAsSubmobjects",
     "Cutout",
+    "Cylinder",
     "DashedLine",
     "DashedVMobject",
     "DecimalMatrix",
@@ -963,6 +978,8 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "DecimalTable",
     "DiGraph",
     "Difference",
+    "Dot",
+    "Dot3D",
     "DoubleArrow",
     "Elbow",
     "Ellipse",
@@ -980,6 +997,7 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "LabeledDot",
     "LabeledLine",
     "LabeledPolygram",
+    "Line",
     "ManimBanner",
     "MathTable",
     "MathTex",
@@ -990,7 +1008,11 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "NumberPlane",
     "ParametricFunction",
     "PolarPlane",
+    "Polygon",
     "Polygram",
+    "Prism",
+    "Rectangle",
+    "RegularPolygon",
     "RegularPolygram",
     "RightAngle",
     "RoundedRectangle",
@@ -999,15 +1021,22 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "ScreenRectangle",
     "Sector",
     "SingleStringMathTex",
+    "Sphere",
+    "Square",
     "Star",
     "StealthTip",
     "StreamLines",
+    "Surface",
     "Table",
     "TangentLine",
+    "Tex",
+    "Text",
     "ThreeDAxes",
     "ThreeDVMobject",
     "TipableVMobject",
     "Title",
+    "Torus",
+    "Triangle",
     "Underline",
     "Union",
     "UnitInterval",

@@ -16,18 +16,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan import (
-    BLUE_A,
-    GREEN_A,
-    YELLOW,
-    Dot3D,
-    DotCloud,
-    Off,
-    PGroup,
-    PointCloudDot,
-    Scene,
-    TrueDot,
-)
+from algan import BLUE_A, GREEN_A, YELLOW, Dot3D, Off, Scene
+from algan.manim import DotCloud, PGroup, PointCloudDot, TrueDot
 from algan.mobs.surfaces.surface import (
     get_grid_to_triangle_indices,
     get_render_primitives_batched,

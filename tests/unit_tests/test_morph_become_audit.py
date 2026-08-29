@@ -21,7 +21,6 @@ from algan import (
     UP,
     Arrow3D,
     Circle,
-    Cross,
     Cube,
     Dot3D,
     Group,
@@ -34,8 +33,8 @@ from algan import (
     Sync,
     Tetrahedron,
     TriangleVertices,
-    VGroup,
 )
+from algan.manim import Cross, VGroup
 from algan.animatable_base.mob_morph import MobMorphMixin
 
 

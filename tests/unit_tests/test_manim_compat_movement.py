@@ -27,16 +27,14 @@ from algan import (
     RIGHT,
     SETTINGS,
     UP,
-    Arrow,
-    Axes,
     ManimMob,
     Off,
     SceneManager,
     Square,
-    Star,
     Sync,
     rate_funcs,
 )
+from algan.manim import Arrow, Axes, Star
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,7 @@
 # Public API Overhaul — Plan of Record
 
-**Status**: planned, not started
+**Status**: in progress. `API_OVERHAUL_PROGRESS.md` tracks what has landed and what is left;
+this file stays the specification.
 **Scope**: every public class, method, function, parameter, setting and constant in `algan`.
 **Compatibility**: none required. Algan is in closed beta; there are no user scripts to protect.
 Rename and delete outright — no deprecation shims, no aliases (see `CLAUDE.md`, "Public API").
@@ -146,15 +147,27 @@ take different units and are genuinely different call surfaces.
 
 There are two conventions to convert and both are mechanical:
 
-| Convention | Conversion | Affected parameters |
-| :--- | :--- | :--- |
-| Angles | radians → degrees | `angle`, `start_angle`, `other_angle`, `rotation` |
-| Stroke width | Manim's unit is half Algan's (Phase 6) | `stroke_width` |
+| Convention | Conversion | Affected parameters | Lands in |
+| :--- | :--- | :--- | :--- |
+| Angles | degrees → radians on the way in | `angle`, `start_angle`, `other_angle`, `rotation` | **1b** |
+| Stroke width | Manim's unit is half Algan's | `stroke_width` | **Phase 6** |
 
-Write **one** `_ManimAdapter` base that takes the parameter names to convert as class-creation
-keywords, rather than 60 hand-written constructors that will drift apart. The same helper is what
-Phase 6 uses for the stroke-width boundary — they are the same mechanism, so build it once here
-and have Phase 6 reuse it.
+Write **one** adapter factory that takes the parameter names to convert as keywords, rather than
+60 hand-written constructors that will drift apart. Phase 6 then adds `stroke_width` to the same
+table rather than building a second mechanism.
+
+**The stroke-width half is deliberately deferred.** Doing it here would change what
+`Arrow(stroke_width=6)` renders while the native attribute is still called `border_width` and its
+unit has not been settled — and every phase in this plan is required not to move a pixel. Phase 6
+is where the native attribute is renamed and the unit decided, so that is where its conversion
+belongs. Deferring costs nothing: no test or doc currently passes `stroke_width` to any of the
+six affected classes.
+
+**Convert only explicitly-passed values, never defaults.** Manim's defaults are already in
+radians and already correct — `Arc`'s `angle=TAU/4` is a quarter turn either way. Binding
+defaults and then converting would read `TAU/4` as degrees and produce a 1.57° arc. The adapter
+therefore normalises positional arguments through the wrapper's signature and converts only the
+parameters the caller actually supplied.
 
 Verified conflict set (checked against the vendored Manim signatures): `Arc`, `ArcBetweenPoints`,
 `AnnularSector`, `Sector`, `Angle`, `ArcPolygon`, `Elbow` carry angle parameters; `AnnularSector`,

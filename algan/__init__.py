@@ -99,6 +99,7 @@ _install_render_arch_guard()
 
 from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
+from algan.animation_timeline.animation_contexts import *
 from algan.manim_defaults import (
     from_manim_coordinates,
     manim_fov,
@@ -106,14 +107,10 @@ from algan.manim_defaults import (
 )
 from algan.mobs.bezier_circuit import *
 from algan.mobs.group import *
-from algan.mobs.image_compat import *
 from algan.mobs.image_mob import *
-from algan.mobs.manim_compat import *
+from algan.mobs.manim_adapters import *
 from algan.mobs.manim_mob import *
-from algan.mobs.manim_parity import *
 from algan.mobs.numeric_display import NumericDisplay
-from algan.mobs.opengl_compat import *
-from algan.mobs.point_cloud import *
 from algan.mobs.shapes_2d import *
 from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.surface import *
@@ -121,14 +118,6 @@ from algan.mobs.text import *
 from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
 from algan.project import Project
 from algan.rendering import camera
-
-# Manim names its root class Mobject; Algan's native equivalent is Mob.  Its
-# abstract graph and OpenGL renderer-specific bases likewise map to Algan's
-# renderer-independent classes.
-Mobject = Mob
-GenericGraph = Graph
-install_opengl_aliases(globals())
-from algan.animation_timeline.animation_contexts import *
 from algan.rendering.lights import *
 from algan.scene import Scene
 from algan.sound.audio_effect import AudioEffect, AudioManager
@@ -200,6 +189,20 @@ from algan.animations.changing import *
 from algan.animations.indication import *
 from algan.animations.manim_animations import *
 from algan.animations.movement import *
+
+# The Manim compatibility layer is a separate surface, reached as
+# ``algan.manim`` rather than star-imported here: every name in it means
+# "Manim's version, by Manim's conventions", and mixing the two namespaces is
+# what made ``Square`` (degrees) and ``Arc`` (radians) indistinguishable. The
+# import is eager so ``import algan.manim as mn`` needs no second import, but
+# nothing it defines reaches ``algan.__all__``.
+#
+# It must stay *below* the Mob imports and behind this assignment, which keeps
+# isort from hoisting it into the block above: ``algan.manim`` imports ``Mob``,
+# which imports ``algan.animated_function``, so pulling it up leaves this module
+# half-initialised and the import fails.
+_MANIM_NAMESPACE_ANCHOR = None
+from algan import manim as _manim_namespace  # noqa: E402, F401
 
 
 def clear_cache(taichi_kernels=False):

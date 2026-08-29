@@ -84,6 +84,77 @@ def test_every_exported_name_resolves():
     assert not missing, f"__all__ names that do not resolve on the package: {missing}"
 
 
+#: Modules that implement Algan's own geometry. A name defined in one of these
+#: is native, and must not also be reachable as a Manim adapter.
+_NATIVE_MOB_MODULES = (
+    "algan.animatable_base.mob",
+    "algan.mobs.bezier_circuit",
+    "algan.mobs.group",
+    "algan.mobs.image_mob",
+    "algan.mobs.numeric_display",
+    "algan.mobs.shapes_2d",
+    "algan.mobs.shapes_3d",
+    "algan.mobs.surfaces.surface",
+    "algan.mobs.text",
+    "algan.mobs.three_d_models",
+)
+
+
+@pytest.mark.fast
+def test_no_adapter_shadows_a_native_class():
+    """The curated adapter set may only cover classes Algan has no native version of.
+
+    ``algan.manim`` deliberately wraps *every* Manim class, natives included,
+    so ``mn.Sphere`` exists beside Algan's ``Sphere``. The adapters are the
+    other direction -- root-namespace spellings for Manim classes with no
+    native counterpart -- and there the overlap must be empty: a native class
+    already owns its root name, and an adapter for it would be the second
+    spelling this surface exists to avoid.
+
+    Enforced rather than reviewed, because the boundary moves. Phase 5 renames
+    ``NumericDisplay`` to ``DecimalNumber``, which is exactly how a name
+    crosses from one side to the other.
+    """
+    from algan.mobs.manim_adapters import _ADAPTED
+
+    collisions = {}
+    for name in _ADAPTED:
+        exported = getattr(algan, name, None)
+        origin = getattr(exported, "__module__", "")
+        if origin in _NATIVE_MOB_MODULES:
+            collisions[name] = origin
+
+    assert not collisions, (
+        "these adapter names resolve to a native Algan class, so the root "
+        f"namespace carries two spellings of each: {collisions}. Remove them "
+        "from _ADAPTED in algan/mobs/manim_adapters.py -- the native class "
+        "keeps the root name and Manim's stays reachable as algan.manim.<name>."
+    )
+
+
+@pytest.mark.fast
+def test_adapters_and_manim_namespace_agree_on_geometry():
+    """An adapter must be the same shape as its Manim original, in Algan's units."""
+    import torch
+
+    import algan.manim as mn
+
+    native = algan.Arc(angle=90, start_angle=0)
+    manim_side = mn.Arc(angle=torch.pi / 2, start_angle=0)
+    assert torch.allclose(
+        native.control_points.location,
+        manim_side.control_points.location,
+        atol=1e-6,
+    ), "Arc(angle=90) and mn.Arc(angle=PI/2) should build identical geometry"
+
+    # A class with no declared conversion delegates unchanged.
+    assert torch.allclose(
+        algan.Ellipse(width=2, height=1).control_points.location,
+        mn.Ellipse(width=2, height=1).control_points.location,
+        atol=1e-6,
+    )
+
+
 @pytest.mark.fast
 def test_no_underscored_or_duplicate_exports():
     """The assembly rules should never emit a private name, or the same name twice."""
