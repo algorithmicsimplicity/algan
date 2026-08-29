@@ -167,6 +167,17 @@ through `background_rectangle` — they have no angle parameter.)
 A compat class earns a native adapter when it (a) has no native equivalent, (b) is something an
 author reaches for directly, and (c) is not a Manim architecture or renderer construct.
 
+**(a) is a hard, mechanical exclusion and must be enforced in code, not by reading the list.**
+The subset is drawn from the *original* 99 compat-only names, never from the post-Phase-1 wrap
+list — Phase 1 step 3 adds `Sphere`, `Square`, `Circle`, `Text`, `Tex` and 15 more natives to
+that list, and every one of them must stay out. A native class already exports its own root name;
+giving it an adapter too would create the second spelling this overhaul exists to delete.
+
+The exclusion covers natives that are *planned* as well as present: `DecimalNumber` is out
+because Phase 5 renames native `NumericDisplay` onto that name. Phase 1b's implementation
+asserts this — it fails if any curated name resolves to a native module — so the rule cannot rot
+as classes move between the two surfaces.
+
 **In** — geometry: `Arc`, `ArcBetweenPoints`, `Sector`, `AnnularSector`, `Annulus`, `Ellipse`,
 `Angle`, `RightAngle`, `Elbow`, `Polygram`, `RegularPolygram`, `RoundedRectangle`, `Star`,
 `Cross`, `CubicBezier`, `TangentLine`, `DashedLine`, `ConvexHull`; boolean ops `Union`,
