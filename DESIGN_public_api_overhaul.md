@@ -261,9 +261,15 @@ Add to `_INTERNAL_EXPORT_NAMES` in `algan/__init__.py`:
 | `release_torch_memory` | `utils.memory_utils` |
 | `fragment_light`, `fragment_light_vis`, `prep_normal`, `shading_normal`, `smith_geometry`, `ggx_distribution` | `rendering.raytracing.shading_taichi` |
 | `basic_material_shader`, `basic_pbr_shader`, `depth_shader`, `lambert_shader`, `manim_shader`, `matcap_shader`, `normal_shader`, `phong_shader`, `physical_shader`, `standard_shader`, `toon_shader` | `rendering.shaders.*` |
-| `RenderPlan`, `TruncationCounts` | `rendering.raytracing.*` |
-| `FragmentStage`, `STAGE_LAMBERT`, `STAGE_MANIM`, `STAGE_PHONG`, `STAGE_PHYSICAL`, `STAGE_STANDARD`, `STAGE_UNLIT` | `rendering.shaders.fragment_shaders` |
 | `ANIMATABLE_PROPERTY_VERSION` | `animatable_base` |
+| `to_color` | `constants.color` |
+
+**Corrected during implementation — these stay exported.** `RenderPlan`, `TruncationCounts`,
+`FragmentStage` and the six `STAGE_*` constants are documented user-facing API, and the
+fragment-shader callables (`phong_shader`, `standard_shader`, ...) are reached by the
+star-import in the executable `.. algan::` examples and pinned by
+`test_builtin_fragment_pipeline_is_available_to_star_imports`. This table was built from
+names that look internal; check tests and executable examples before trusting it.
 
 Additionally:
 

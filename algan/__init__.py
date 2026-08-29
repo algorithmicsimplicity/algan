@@ -315,6 +315,44 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "wiggle_step",
         "wiggle",
         "there_and_back",
+        # Video encoding: codec probing, encoder selection and the moviepy
+        # binary override. All internal to what save_video does; the user-facing
+        # controls are its ``codec``/``ffmpeg_params`` arguments and
+        # SETTINGS.paths.ffmpeg_binary.
+        "check_codec_is_available",
+        "resolve_encode_binary",
+        "select_video_encoder",
+        "override_moviepy_ffmpeg_binary",
+        # Surface topology and tessellation plumbing.
+        "wrap_pad_texture",
+        "surface_closed_axes",
+        "surface_weld_flags",
+        "orient_faces_outward",
+        # Timeline recording introspection, engine memory, version counters.
+        "attr_ranges_for_mob",
+        "release_torch_memory",
+        "ANIMATABLE_PROPERTY_VERSION",
+        # Colour coercion: deliberately passes tensors through untouched so a
+        # per-row colour buffer is not collapsed to one colour, which makes it
+        # the wrong shape for a user-facing constructor. Every public entry
+        # point (Mob colour kwargs, materials) already calls it for you.
+        "to_color",
+        # Raw Taichi shading functions: microfacet BSDF maths taking kernel
+        # memory arguments, unusable from an authoring script.
+        "fragment_light",
+        "fragment_light_vis",
+        "prep_normal",
+        "shading_normal",
+        "smith_geometry",
+        "ggx_distribution",
+        # NOTE: the fragment-shader callables (``phong_shader``,
+        # ``standard_shader``, ...) are deliberately NOT here. They look like
+        # engine internals and one tutorial passage imports them by module
+        # path, but the star import is their real contract: the executable
+        # ``.. algan::`` examples in shaders_and_materials.rst open with
+        # ``from algan import *`` and then pass ``standard_shader`` to
+        # ``set_fragment_shader``, and two unit tests assert their presence in
+        # ``__all__``. They are authoring vocabulary, not plumbing.
         # tooling and dev utilities
         "make_manim_dir",
         "missing_manim_mobjects",

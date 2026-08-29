@@ -14,7 +14,7 @@ Update it in the same commit as the work it describes.
 | 0 | Pin the surface with a snapshot test | **Done** |
 | 1 | Extract the Manim compat layer into `algan.manim` | **Done** |
 | 1b | Native adapters for the curated root subset | **Done** |
-| 2 | Remove leaked internals from `algan.__all__` | Not started |
+| 2 | Remove leaked internals from `algan.__all__` | **Done** |
 | 3 | `Mob` surface: privatize, consolidate, rename | Not started |
 | 4 | Scene, Camera, Lights, Group | Not started |
 | 5 | Class and parameter naming | Not started |
@@ -22,7 +22,7 @@ Update it in the same commit as the work it describes.
 | 7 | `run_time` → `duration`, `rate_func` → `easing` | Not started |
 | 8 | Documentation and baselines | Not started |
 
-**Export count**: 471 at the start → 379 after Phase 1b.
+**Export count**: 471 at the start → 379 after Phase 1b → 361 after Phase 2.
 
 ---
 
@@ -59,6 +59,24 @@ Update it in the same commit as the work it describes.
 - `Arc(angle=90)` and `mn.Arc(angle=PI/2)` verified to build identical geometry, as does a
   no-conversion class (`Ellipse`).
 
+### Phase 2 — leaked internals
+
+Eighteen names left `algan.__all__`, all still importable at their real paths:
+
+- Video encoding: `check_codec_is_available`, `resolve_encode_binary`,
+  `select_video_encoder`, `override_moviepy_ffmpeg_binary`
+- Surface plumbing: `wrap_pad_texture`, `surface_closed_axes`, `surface_weld_flags`,
+  `orient_faces_outward`
+- Engine internals: `attr_ranges_for_mob`, `release_torch_memory`,
+  `ANIMATABLE_PROPERTY_VERSION`, `to_color`
+- Raw Taichi shading maths: `fragment_light`, `fragment_light_vis`, `prep_normal`,
+  `shading_normal`, `smith_geometry`, `ggx_distribution`
+
+Also landed: `SETTINGS.paths.ffmpeg_binary` (outranks every other candidate, for every
+codec — the reason to pin a binary is that moviepy's build lacks a codec yours has, so it
+must beat the probe rather than join it; default behaviour byte-for-byte unchanged), and an
+explicit `__all__` on `algan/constants/rate_funcs.py`.
+
 ---
 
 ## Plan changes made during implementation
@@ -75,7 +93,25 @@ Recorded here and in the design doc, so the two do not drift.
    already radians and already correct (`Arc`'s `angle=TAU/4` is a quarter turn either way);
    binding defaults before converting would read `1.57` as degrees.
 
-3. **`algan.manim` is imported at the bottom of `algan/__init__.py`, behind an assignment.**
+3. **Eleven names the plan called leaks are public API and stay exported.** The design doc's
+   Phase 2 table was assembled from names that *look* internal, and two groups in it were
+   wrong:
+
+   - `FragmentStage` and `STAGE_LAMBERT`/`MANIM`/`PHONG`/`PHYSICAL`/`STANDARD`/`UNLIT`,
+     plus `RenderPlan` and `TruncationCounts`, are documented user-facing API —
+     `shaders_and_materials.rst` gives the stage constants their own reference table, and
+     `renderer_limitations.rst` documents the render plan as script-readable.
+   - The fragment-shader callables (`phong_shader`, `standard_shader`, ...) were removed and
+     had to be put back. One tutorial passage imports them by module path, which looked like
+     the contract, but the executable `.. algan::` examples in the same file open with
+     `from algan import *` and then pass `standard_shader` to `set_fragment_shader`, and
+     `test_builtin_fragment_pipeline_is_available_to_star_imports` asserts exactly that.
+
+   **Lesson for the remaining phases: check tests and executable doc examples before
+   removing a name, not prose alone.** Both errors were caught by the full suite, neither by
+   `--fast`.
+
+4. **`algan.manim` is imported at the bottom of `algan/__init__.py`, behind an assignment.**
    Ruff's isort hoists a bare import into the block above, and from there `algan.manim` →
    `Mob` → `algan.animated_function` hits a partially-initialised module. The
    `_MANIM_NAMESPACE_ANCHOR = None` line is what keeps the import where it has to be; it is not
