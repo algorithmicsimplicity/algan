@@ -166,9 +166,27 @@ def _install_pipeline_report():
             f"distinct={int(torch.unique(depth).numel())}"
         )
 
+    def group_line(stream):
+        # ``num_groups`` counts (pixel, mesh, facing) triples -- the banding
+        # BEFORE the conflict-rank split and before the shading-class split.
+        # It brackets where a collapsed sheet count collapsed: a healthy
+        # num_groups with 128 sheets puts it in the two splits (both of which
+        # build a wide composite key -- ``band * 16 + rank``, then ``band *
+        # 2**25 + class``, the second reaching ~2**40 and so past where MPS
+        # int64 stops being exact); a num_groups already near 128 puts it in
+        # the sort and the group detection ahead of them.
+        return (
+            f"  [compact-out] groups={int(stream['num_groups'])} "
+            f"split_groups={int(stream['num_split_groups'])} "
+            f"sheets={int(stream['num_sheets'])}"
+        )
+
     def reporting_compact(coverage, *args, **kwargs):
         _say(key_lines, coverage)
-        return original_compact(coverage, *args, **kwargs)
+        stream = original_compact(coverage, *args, **kwargs)
+        if stream is not None:
+            _say(group_line, stream)
+        return stream
 
     # The module attribute is the only binding to patch: ``raster_pipeline``
     # imports the name inside the function that calls it, so it resolves this
