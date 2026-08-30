@@ -188,8 +188,11 @@ a parameter in that scene silently broke the benchmark's patch -- a call site no
 Python identifier can find.
 
 **Verified**: full `tests/unit_tests` green on CPU (2409 passed, 139 skipped), `--fast` green
-(405 passed), lint and format at their pre-existing counts. The pixel-suite result is in the
-commit that follows.
+(405 passed), lint and format at their pre-existing counts. `tests/fast` green, and
+`tests/full_renders` back to exactly the three stale-baseline failures `master` has, with the
+same deltas (14 @ 21, 26 @ 293, 200 @ 179) -- so Phase 5 moved no pixels, PN geometry included.
+That last part is the one the design flagged: `Torus`, `Prism` and `Line3D` are invisible to
+`--fast`.
 
 ---
 
