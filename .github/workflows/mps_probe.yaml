@@ -507,9 +507,17 @@ jobs:
         env:
           ALGAN_LOG_TAICHI_COMPILES: "1"
         run: |
-          uv run pytest -x -q \
-            tests/unit_tests/test_glossy_prefilter.py \
+          # These three run the failing render IN-PROCESS, so the compile log
+          # lands in this step's own output. test_glossy_prefilter is
+          # deliberately NOT here: it renders each arm in a subprocess and
+          # keeps only `proc.stderr`, so its compile lines -- which go to
+          # stdout -- are discarded before pytest ever sees them, and the first
+          # run of this step got the assertion and nothing else. No `-x`, for
+          # the same reason: one abort must not hide the rest.
+          uv run pytest -q \
             tests/unit_tests/test_deterministic_shadow_opacity.py \
+            tests/unit_tests/test_render_truncations.py \
+            tests/unit_tests/test_area_light_soft_shadow.py \
             > compile-trace.txt 2>&1 || true
           echo "last kernels Taichi started on, and the abort:"
           grep -E 'compile\] started|Assertion failed|error:' compile-trace.txt \

@@ -244,7 +244,7 @@ def test_band_stats_kernels_match_the_five_scatters(positioned, wide_kernel_arms
     assert _bits_equal(w_rp, rp), "rep_orig"
 
 
-def test_band_stats_leaves_unused_band_rows_at_sentinel():
+def test_band_stats_leaves_unused_band_rows_at_sentinel(wide_kernel_arms):
     g = torch.Generator().manual_seed(29)
     n, nb = 512, 128
     band = torch.randint(0, nb // 2, (n,), generator=g)  # upper half unused
