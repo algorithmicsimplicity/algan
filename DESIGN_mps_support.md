@@ -324,8 +324,54 @@ cleared so a gap is loud:
 
 The amin/amax gap is not incidental: `_one_mesh_pixel_caps`
 (`raster_pipeline.py:1330-1332`) uses exactly those two for the per-pixel surface
-id spread. Everything else passed, including int64 `scatter_add_`, 64-bit shifts,
-`view(torch.uint8)`, `argsort`/`sort` on int64, `unique_consecutive`, `bincount`.
+id spread. Everything else **ran without raising**, including int64
+`scatter_add_`, 64-bit shifts, `view(torch.uint8)`, `argsort`/`sort` on int64,
+`unique_consecutive`, `bincount` — which is a weaker statement than it looks, and
+§2.3b is what the difference cost.
+
+### 2.3b Some int64 ops do not raise, they answer wrongly
+
+The table above asks whether an op is *implemented*. It is not the same question
+as whether it is *right*, and the ops that answer wrongly are worse than the ones
+that fail: a `RuntimeError` names itself, and a silently truncated integer key
+arrives as a picture nobody can explain.
+
+`benchmarks/_mps_torch_op_probe.py` asks the second question — every op the
+compaction uses, run on MPS and on the CPU over the same input in one process, at
+the pipeline's real dtypes and magnitudes. Two ops disagree:
+
+| op | measured |
+| --- | --- |
+| `index_select` over int64 **values** near 2**62 | **every one** of 60000 elements changed, relative error 2.7e-8 |
+| `//` on int64 near 2**40 | disagrees with the CPU |
+
+2.7e-8 is about **25 significant bits** — a float round trip, not 64-bit integer
+work. Storing and moving the same values *is* exact (a device round trip returns
+them bit for bit), and `>>`, `&` and multiply-add are exact at 2**50, so it is
+those operations specifically rather than int64 as a whole. The index dtype is
+also fine: `index_select` over **float32 values** with an int64 *index* is exact.
+
+Both of Algan's wide int64s are composite keys, so both were hit:
+
+* **The fragment key**, `pixel << 32 | bit_cast(depth)` (`raster_taichi.py:2039`),
+  about 2**50 at 1080p. A 25-bit gather destroys bits 25..0, which masks the low
+  word with `0xFC000000` — and every float32 in `[4, 8)` then decodes as
+  **exactly 2.0**. That is not a story told after the fact: the arithmetic gives
+  2.0 for 5.317023, 6.0 and 7.723102 alike, and the Apple GPU reported `depth
+  min=2.000000 max=2.000000 distinct=1` where the CPU has `5.317023 .. 7.723102,
+  distinct=37899`. Fixed by `mps_compat.gather_packed_key`, which gathers the two
+  32-bit words and repacks.
+* **The shading-class key**, `band * _SHADE_CLASS_BASE + cls` with a base of
+  `1 << 25` (`sheets.py` §4.4), about 2**40 for a frame with 40956 bands. Here it
+  is `unique` that merges rows differing only below the ceiling. Isolated by
+  re-running the same compaction with the split off — 40956 sheets without it,
+  128 with it — and fixed by `mps_compat.band_class_groups`, which groups the
+  pairs by a two-pass stable sort instead of forming the product.
+
+The general rule this leaves: **on MPS, do not put a value wider than about 2**24
+through an int64 gather, division or `unique`.** Composite keys are where a
+renderer builds such values, and they are exactly the values whose low bits carry
+the meaning.
 
 ### 2.4 How non-deterministic MPS actually is
 

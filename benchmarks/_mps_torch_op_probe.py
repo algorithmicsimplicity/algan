@@ -364,25 +364,51 @@ def probe_lookup(device):
         key_m.index_select(0, pick_m),
     )
 
-    def split_gather(key, pick):
+    def halves_gather(key, pick):
+        """The FIRST attempt: two 32-bit halves. Kept because it fails.
+
+        A 32-bit half still reaches 2**32, above the 2**24 ceiling the ladder
+        measures, so this rounds -- less than the full-width gather, enough to
+        leave a render wrong. Probing it keeps that fact attached to the code
+        that replaced it.
+        """
         high = (key >> 32).to(torch.int32).index_select(0, pick)
         low = (key & 0xFFFFFFFF).to(torch.int32).index_select(0, pick)
         return (high.to(torch.int64) << 32) | (low.to(torch.int64) & 0xFFFFFFFF)
 
+    def lane_gather(key, pick):
+        """What ``mps_compat.gather_packed_key`` does: four 16-bit lanes."""
+        out = None
+        for shift in range(0, 64, 16):
+            lane = ((key >> shift) & 0xFFFF).to(torch.int32).index_select(0, pick)
+            part = lane.to(torch.int64) << shift
+            out = part if out is None else (out | part)
+        return out
+
     _check(
-        "split gather of the same key (the fix)",
+        "two-half gather of the same key (the REJECTED fix)",
         key_c.index_select(0, pick_c),
-        split_gather(key_m, pick_m),
+        halves_gather(key_m, pick_m),
     )
     _check(
-        "split gather recovers the depths",
+        "four-lane gather of the same key (the fix)",
+        key_c.index_select(0, pick_c),
+        lane_gather(key_m, pick_m),
+    )
+    _check(
+        "four-lane gather recovers the depths",
         depth_c.index_select(0, pick_c),
-        (split_gather(key_m, pick_m) & 0xFFFFFFFF).to(torch.int32).view(torch.float32),
+        (lane_gather(key_m, pick_m) & 0xFFFFFFFF).to(torch.int32).view(torch.float32),
     )
     _check(
-        "index_select(int32 values)",
+        "index_select(int32 values near 2**30)",
         (key_c & 0xFFFFFFFF).to(torch.int32).index_select(0, pick_c),
         (key_m & 0xFFFFFFFF).to(torch.int32).index_select(0, pick_m),
+    )
+    _check(
+        "index_select(int32 values under 2**16)",
+        (key_c & 0xFFFF).to(torch.int32).index_select(0, pick_c),
+        (key_m & 0xFFFF).to(torch.int32).index_select(0, pick_m),
     )
     _check(
         "int64 (hi << 32) | lo repack",

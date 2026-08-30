@@ -164,22 +164,35 @@ def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to(torch.int32) if mps_friendly() else tensor
 
 
+#: Where MPS's integer gather stops being exact. Measured, not assumed:
+#: ``benchmarks/_mps_torch_op_probe.py`` walks 2**20, 2**24, 2**30, 2**40,
+#: 2**50 and 2**62 on an Apple GPU and reports
+#:
+#:     2**20: all exact        2**30: //, index_select
+#:     2**24: all exact        2**40: //, index_select
+#:                             2**50: //, index_select
+#:                             2**62: //, index_select
+#:
+#: which is a float32 mantissa to the bit, and is what ``index_select`` and
+#: ``//`` evidently run through. Storing, moving, comparing, shifting, masking
+#: and multiply-add stay exact at every rung, so it is those two operations
+#: rather than int64 as a whole.
+_MPS_EXACT_INT_BITS = 24
+
+#: Lane width for :func:`gather_packed_key`. Any value below 2**16 is far
+#: enough under the ceiling above to be gathered exactly, whatever the dtype.
+_GATHER_LANE_BITS = 16
+
+
 def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     """``tensor.index_select(0, index)`` for a packed 64-bit key.
 
-    **MPS does not gather a full-width int64 exactly.** Measured by
-    ``benchmarks/_mps_torch_op_probe.py`` on an Apple GPU: an ``index_select``
-    over int64 values near 2**62 came back with **every one** of 60000 elements
-    changed, at a relative error of 2.7e-8 -- about 25 significant bits kept,
-    which is a float round trip rather than 64-bit integer work. Storing and
-    moving the same values is exact (a round trip through the device returns
-    them bit for bit), and ``>>``, ``&`` and multiply-add are exact at 2**50,
-    so it is the gather specifically.
-
-    That is not a rounding difference, it is a lost image, and the arithmetic
-    says so exactly. The renderer's fragment key is ``pixel << 32 |
+    **MPS gathers an integer through 24 bits of mantissa.** Below 2**24 it is
+    exact; above, it silently rounds -- see ``_MPS_EXACT_INT_BITS`` for the
+    measurement. That is not a rounding difference but a lost image, and the
+    arithmetic says so exactly. The renderer's fragment key is ``pixel << 32 |
     bit_cast(depth)`` (``raster_taichi.py:2039``), about 2**50 for a 1080p
-    frame, so a 25-bit gather destroys bits 25..0 and leaves the low word
+    frame, so a 24-bit gather destroys bits 25..0 and leaves the low word
     masked with ``0xFC000000``. Every depth in ``[4, 8)`` -- which is the whole
     smoke scene -- then reads back as **exactly 2.0**, and that is what the
     Apple GPU produced: ``depth min=2.000000 max=2.000000 distinct=1`` against
@@ -187,18 +200,36 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     one depth the compaction cannot order or band them, and 40956 sheets
     collapsed to 128.
 
-    The fix gathers the two 32-bit words separately and repacks, so no value
-    the gather touches is ever wider than 32 bits. Off the mode, and for any
-    dtype that is not int64, this is exactly ``index_select``.
+    So this gathers the key in **four 16-bit lanes** and reassembles it. The
+    obvious cheaper split -- two 32-bit halves -- does not work, and the probe
+    caught it doing so: a 32-bit half still reaches 2**32, which is above the
+    ceiling, and the render that shipped it came back with the low word rounded
+    from ``40e68475`` to ``40e68480`` and its distinct depths down from 37899 to
+    22292. Better than the 2.0 it replaced and still wrong. A 16-bit lane is
+    below 2**24 by a wide margin, and reassembly uses only shifts and ors, which
+    are exact.
+
+    Off the mode, and for any dtype that is not int64, this is exactly
+    ``index_select``.
+
+    **Not the only gather at risk, only the confirmed one.** ``sheets._lexsort``
+    gathers ``pix``, which is ``frame_rel * width * height + pixel``: 282179 for
+    the 1080p smoke frame, comfortably exact, but a multi-frame 4K chunk would
+    put it past 2**24. Nothing has rendered at that size on MPS yet, so this
+    stays scoped to the key the hardware actually caught -- it is a real
+    exposure and it is written down rather than guessed at.
     """
     if not mps_friendly() or tensor.dtype is not torch.int64:
         return tensor.index_select(0, index)
-    # ``.to(torch.int32)`` on the low word wraps to a negative where bit 31 is
-    # set; that is a reinterpretation, not a loss, and the mask on the way back
-    # undoes it. The high word is a pixel index and cannot reach bit 31.
-    high = (tensor >> 32).to(torch.int32).index_select(0, index)
-    low = (tensor & 0xFFFFFFFF).to(torch.int32).index_select(0, index)
-    return (high.to(torch.int64) << 32) | (low.to(torch.int64) & 0xFFFFFFFF)
+    mask = (1 << _GATHER_LANE_BITS) - 1
+    gathered = None
+    for shift in range(0, 64, _GATHER_LANE_BITS):
+        # Masked before the narrowing, so every lane is in [0, 2**16) and no
+        # cast has to wrap and no lane carries a sign.
+        lane = ((tensor >> shift) & mask).to(torch.int32).index_select(0, index)
+        part = lane.to(torch.int64) << shift
+        gathered = part if gathered is None else (gathered | part)
+    return gathered
 
 
 def band_class_groups(band_of_frag, cls_eff, base):

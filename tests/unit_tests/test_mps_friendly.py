@@ -250,22 +250,62 @@ def test_the_split_gather_matches_index_select(computing_settings, friendly):
 
 
 @pytest.mark.fast
-def test_the_split_gather_survives_the_top_bit_of_the_low_word():
-    """A depth whose float32 bits set bit 31 must not come back negative.
+def test_the_split_gather_is_exact_across_the_whole_int64_range():
+    """Every lane boundary, both sign bits, and the extremes.
 
-    The low word is carried through int32, where bit 31 is the sign, so the
-    round trip only works because the repack masks. Negative float32 depths
-    do not occur, but the sheet key's low word is not always a depth -- and a
-    gather that silently drops one bit in one dtype is exactly the class of
-    defect this function exists to fix.
+    The key is carried in four 16-bit lanes, so the values that could go wrong
+    are the ones straddling a lane edge or setting a sign bit somewhere -- bit
+    15 of a lane, bit 31 of a half, bit 63 of the whole. Algan's keys are
+    non-negative and its low words are float32 depth bits, but a gather that
+    silently drops one bit in one corner is exactly the class of defect this
+    function exists to fix, so it should not depend on the caller's range.
     """
     keys = torch.tensor(
-        [(7 << 32) | 0xFFFFFFFF, (1 << 32) | 0x80000000, 3], dtype=torch.int64
+        [
+            0,
+            1,
+            -1,
+            (1 << 50) | 0x40E68475,
+            (7 << 32) | 0xFFFFFFFF,
+            (1 << 32) | 0x80000000,
+            (1 << 63) - 1,
+            -(1 << 63),
+            0xFFFF,
+            0x10000,
+        ],
+        dtype=torch.int64,
     )
-    order = torch.tensor([2, 0, 1])
+    order = torch.tensor([9, 0, 4, 7, 2, 5, 1, 8, 3, 6])
     for friendly in (False, True):
         SETTINGS.computing.set(mps_friendly=friendly)
         assert torch.equal(gather_packed_key(keys, order), keys.index_select(0, order))
+
+
+@pytest.mark.fast
+def test_the_split_gather_keeps_every_lane_under_the_mps_ceiling(monkeypatch):
+    """No value handed to ``index_select`` may reach 2**24.
+
+    The whole point of the lane split, and the thing the first attempt got
+    wrong: two 32-bit halves are still above the ceiling, so the gather still
+    rounded and the render still came back wrong -- just less wrong. This
+    asserts the property directly rather than trusting the arithmetic, by
+    watching what the gathers are actually handed.
+    """
+    SETTINGS.computing.set(mps_friendly=True)
+    seen = []
+    original = torch.Tensor.index_select
+
+    def watching(self, dim, index):
+        if not self.is_floating_point():
+            seen.append(int(self.abs().max()) if self.numel() else 0)
+        return original(self, dim, index)
+
+    monkeypatch.setattr(torch.Tensor, "index_select", watching)
+    keys, _, _ = _packed_keys(512)
+    gather_packed_key(keys, torch.randperm(512))
+
+    assert seen, "the split gather did no integer gather at all"
+    assert max(seen) < (1 << 24), f"a gather saw {max(seen)}, at or past 2**24"
 
 
 @pytest.mark.fast
