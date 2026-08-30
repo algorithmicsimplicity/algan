@@ -164,6 +164,43 @@ def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to(torch.int32) if mps_friendly() else tensor
 
 
+def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+    """``tensor.index_select(0, index)`` for a packed 64-bit key.
+
+    **MPS does not gather a full-width int64 exactly.** Measured by
+    ``benchmarks/_mps_torch_op_probe.py`` on an Apple GPU: an ``index_select``
+    over int64 values near 2**62 came back with **every one** of 60000 elements
+    changed, at a relative error of 2.7e-8 -- about 25 significant bits kept,
+    which is a float round trip rather than 64-bit integer work. Storing and
+    moving the same values is exact (a round trip through the device returns
+    them bit for bit), and ``>>``, ``&`` and multiply-add are exact at 2**50,
+    so it is the gather specifically.
+
+    That is not a rounding difference, it is a lost image, and the arithmetic
+    says so exactly. The renderer's fragment key is ``pixel << 32 |
+    bit_cast(depth)`` (``raster_taichi.py:2039``), about 2**50 for a 1080p
+    frame, so a 25-bit gather destroys bits 25..0 and leaves the low word
+    masked with ``0xFC000000``. Every depth in ``[4, 8)`` -- which is the whole
+    smoke scene -- then reads back as **exactly 2.0**, and that is what the
+    Apple GPU produced: ``depth min=2.000000 max=2.000000 distinct=1`` against
+    the CPU's ``5.317023 .. 7.723102, distinct=37899``. With every fragment at
+    one depth the compaction cannot order or band them, and 40956 sheets
+    collapsed to 128.
+
+    The fix gathers the two 32-bit words separately and repacks, so no value
+    the gather touches is ever wider than 32 bits. Off the mode, and for any
+    dtype that is not int64, this is exactly ``index_select``.
+    """
+    if not mps_friendly() or tensor.dtype is not torch.int64:
+        return tensor.index_select(0, index)
+    # ``.to(torch.int32)`` on the low word wraps to a negative where bit 31 is
+    # set; that is a reinterpretation, not a loss, and the mask on the way back
+    # undoes it. The high word is a pixel index and cannot reach bit 31.
+    high = (tensor >> 32).to(torch.int32).index_select(0, index)
+    low = (tensor & 0xFFFFFFFF).to(torch.int32).index_select(0, index)
+    return (high.to(torch.int64) << 32) | (low.to(torch.int64) & 0xFFFFFFFF)
+
+
 def taichi_accumulate_dtype():
     """:func:`accumulate_dtype`'s Taichi twin, for a kernel's ``acc_t``.
 

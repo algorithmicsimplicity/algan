@@ -24,6 +24,7 @@ import torch
 from algan.environment import env_str
 from algan.rendering.mps_compat import (
     accumulate_dtype,
+    gather_packed_key,
     kernel_index,
     reduction_index_dtype,
     reduction_index_sentinel,
@@ -1135,7 +1136,7 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     layer_order = torch.argsort(layer, descending=True, stable=True)
     del layer
 
-    key_l = frag_key.index_select(0, layer_order)
+    key_l = gather_packed_key(frag_key, layer_order)
     pixel = key_l >> 32
     t_bits = (key_l & 0xFFFFFFFF).to(torch.int32)
     del key_l
@@ -1173,7 +1174,14 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     """
     m = int(idx.shape[0])
     if not rt_settings.raster_fused_gather or m == 0:
-        return tuple(t.index_select(0, idx) for t in (key, ref, ab, cov, msk, opq))
+        # ``key`` is the packed 64-bit fragment key and takes the split gather
+        # (see ``gather_packed_key``); the other five are 32 bits or narrower
+        # and go straight through. Off MPS-friendly mode both are
+        # ``index_select``.
+        return (
+            gather_packed_key(key, idx),
+            *(t.index_select(0, idx) for t in (ref, ab, cov, msk, opq)),
+        )
     from algan.rendering.raytracing.sheet_compact_taichi import (
         gather_fragment_arrays,
     )
@@ -1880,7 +1888,7 @@ def prepare_sparse_raster_coverage(
                 # rebinding frees the array it replaces, which is worth more
                 # here than the fused gather's traffic saving (see its
                 # docstring).
-                key_s = key_s.index_select(0, keep_idx)
+                key_s = gather_packed_key(key_s, keep_idx)
                 ref_s = ref_s.index_select(0, keep_idx)
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)

@@ -349,6 +349,46 @@ def probe_lookup(device):
         big_c.index_select(0, pick_c),
         big_c.to(device).index_select(0, pick_c.to(device)),
     )
+    # The packed key at its real magnitude, and then the SPLIT gather that
+    # `mps_compat.gather_packed_key` replaces it with. The first is the defect
+    # -- a 25-bit gather of a 2**50 key masks the low word with 0xFC000000, so
+    # every depth in [4, 8) reads back as exactly 2.0, which is what the Apple
+    # GPU produced. The second is the fix, and every op in it is 32 bits wide
+    # or narrower.
+    key_c, depth_c, _, _, _ = _stream(N, "cpu")
+    key_m = key_c.to(device)
+    pick_m = pick_c.to(device)
+    _check(
+        "index_select(packed pixel<<32|depth key)",
+        key_c.index_select(0, pick_c),
+        key_m.index_select(0, pick_m),
+    )
+
+    def split_gather(key, pick):
+        high = (key >> 32).to(torch.int32).index_select(0, pick)
+        low = (key & 0xFFFFFFFF).to(torch.int32).index_select(0, pick)
+        return (high.to(torch.int64) << 32) | (low.to(torch.int64) & 0xFFFFFFFF)
+
+    _check(
+        "split gather of the same key (the fix)",
+        key_c.index_select(0, pick_c),
+        split_gather(key_m, pick_m),
+    )
+    _check(
+        "split gather recovers the depths",
+        depth_c.index_select(0, pick_c),
+        (split_gather(key_m, pick_m) & 0xFFFFFFFF).to(torch.int32).view(torch.float32),
+    )
+    _check(
+        "index_select(int32 values)",
+        (key_c & 0xFFFFFFFF).to(torch.int32).index_select(0, pick_c),
+        (key_m & 0xFFFFFFFF).to(torch.int32).index_select(0, pick_m),
+    )
+    _check(
+        "int64 (hi << 32) | lo repack",
+        key_c,
+        ((key_m >> 32) << 32) | (key_m & 0xFFFFFFFF),
+    )
 
 
 def probe_int64_arithmetic(device):

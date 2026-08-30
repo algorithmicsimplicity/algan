@@ -66,6 +66,10 @@ def _host(tensor):
     return tensor.detach().cpu().to(torch.float64)
 
 
+#: Every diagnostic line, in order, so the run can repeat them at the end.
+_NOTES: list = []
+
+
 def _say(build, *args):
     """Print what ``build`` returns, or why it could not be built.
 
@@ -73,11 +77,29 @@ def _say(build, *args):
     these run inside the pipeline, and a bad one turns a run that would have
     produced a frame and a table into a traceback and neither. Losing one line
     of a report is a much smaller cost than losing the round.
+
+    The line is also kept, so :func:`_replay_notes` can repeat the whole set
+    after the render. These lines are emitted from inside the pipeline, which
+    puts them thousands of Taichi compile messages above the end of the log --
+    and the GitHub Actions API serves a fixed window at the END of a job's log,
+    so an inline diagnostic is one that cannot be read without fetching the
+    whole thing. Repeating them costs nothing and makes the report reachable.
     """
     try:
-        print(build(*args))
+        line = build(*args)
     except Exception as exc:  # noqa: BLE001
-        print(f"  [report] {build.__name__} failed: {type(exc).__name__}: {exc}")
+        line = f"  [report] {build.__name__} failed: {type(exc).__name__}: {exc}"
+    _NOTES.append(line)
+    print(line)
+
+
+def _replay_notes():
+    """Repeat every diagnostic line, where the log tail can reach it."""
+    if not _NOTES:
+        return
+    print("\npipeline diagnostics, repeated so the log tail carries them:")
+    for line in _NOTES:
+        print(line)
 
 
 def _install_pipeline_report():
@@ -153,18 +175,41 @@ def _install_pipeline_report():
     original_compact = _sheets.compact_sheets
 
     def key_lines(coverage):
+        # ``frag_key`` is ``pixel << 32 | bit_cast(depth)``, written by one
+        # statement of raster_tri_write beside frag_ref / frag_cov / frag_msk.
+        # Reporting the two words SEPARATELY, and the siblings alongside, is
+        # what tells a bad value apart from a bad binding: a constant depth
+        # word with a healthy pixel word and healthy siblings is the kernel's
+        # arithmetic, while everything garbled together is the buffer.
         n = int(coverage["num_fragments"])
         key = coverage["frag_key"][:n].cpu()
         pixels = key >> 32
-        depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
-        return (
+        low = (key & 0xFFFFFFFF).to(torch.int32)
+        depth = low.view(torch.float32)
+        lines = [
             f"  [compact-in] key n={n} "
             f"distinct_pixels={int(torch.unique(pixels).numel())} "
-            f"pixel_min={int(pixels.min())} pixel_max={int(pixels.max())}\n"
+            f"pixel_min={int(pixels.min())} pixel_max={int(pixels.max())}",
             f"  [compact-in] depth min={float(depth.min()):.6f} "
             f"max={float(depth.max()):.6f} "
-            f"distinct={int(torch.unique(depth).numel())}"
-        )
+            f"distinct={int(torch.unique(depth).numel())} "
+            f"low_word_hex_first={int(low[0]) & 0xFFFFFFFF:08x}",
+        ]
+        for name in ("frag_ref", "frag_msk", "frag_cap"):
+            sibling = coverage.get(name)
+            if sibling is None:
+                continue
+            sibling = sibling[:n].cpu()
+            lines.append(
+                f"  [compact-in] {name} min={int(sibling.min())} "
+                f"max={int(sibling.max())} "
+                f"distinct={int(torch.unique(sibling).numel())}"
+                if not sibling.is_floating_point()
+                else f"  [compact-in] {name} min={float(sibling.min()):.6f} "
+                f"max={float(sibling.max()):.6f} "
+                f"distinct={int(torch.unique(sibling).numel())}"
+            )
+        return "\n".join(lines)
 
     def group_line(stream):
         # ``num_groups`` counts (pixel, mesh, facing) triples -- the banding
@@ -347,6 +392,8 @@ def main() -> int:
             Sphere(radius=0.65).move(RIGHT * 1.1 + UP * 0.35).spawn()
             Sphere(radius=0.5).move(OUTWARD * 1.2 + RIGHT * 0.3).spawn()
         scene.save_frame(str(frame_path), video_settings=LD)
+
+    _replay_notes()
 
     # Whether the fork was in the path at all. A wrapper that installed and
     # converted nothing leaves every argument on Taichi's host-staging path,

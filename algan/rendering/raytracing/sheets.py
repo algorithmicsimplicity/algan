@@ -66,6 +66,7 @@ from algan.environment import env_float
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     cummax_values,
+    gather_packed_key,
     kernel_index,
     reduction_index_dtype,
     taichi_accumulate_dtype,
@@ -1519,7 +1520,11 @@ def compact_sheets(
             band_corr,
         )
 
-    sheet_key = frag_key.index_select(0, nearest_orig).index_select(0, final)
+    # Two gathers of the PACKED key, so both take the split form under
+    # MPS-friendly mode (``gather_packed_key``): a full-width int64 gather on
+    # MPS keeps only ~25 significant bits, which would leave every sheet
+    # carrying the same depth.
+    sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
     sheet_pix = sheet_pix.index_select(0, final)
     rep_final = rep_orig.index_select(0, final)
 

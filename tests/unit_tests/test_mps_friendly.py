@@ -44,6 +44,7 @@ from algan.rendering.mps_compat import (
     accumulate_dtype,
     cummax_values,
     cummin_values,
+    gather_packed_key,
     mps_friendly,
     reduction_index_dtype,
     reduction_index_sentinel,
@@ -206,6 +207,78 @@ def test_the_scan_does_not_alias_its_input(computing_settings):
     got = cummax_values(x, 0)
     got += 1.0
     assert torch.equal(x, torch.tensor([3.0, 1.0, 2.0]))
+
+
+# ------------------------------------------------- the split key gather
+
+
+def _packed_keys(n, seed=0):
+    """A fragment stream's packed keys: ``pixel << 32 | bit_cast(depth)``.
+
+    The same shape ``raster_taichi.py:2039`` writes, and the same magnitude:
+    a 1080p pixel index puts these near 2**50, which is where MPS's own
+    int64 gather stops being exact.
+    """
+    g = torch.Generator().manual_seed(seed)
+    pixel = torch.randint(0, 1920 * 1080, (n,), generator=g, dtype=torch.int64)
+    depth = torch.rand(n, generator=g, dtype=torch.float32) * 4.0 + 4.0
+    return (pixel << 32) | depth.view(torch.int32).to(torch.int64), pixel, depth
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("friendly", [False, True])
+def test_the_split_gather_matches_index_select(computing_settings, friendly):
+    """Both arms answer exactly what ``index_select`` answers.
+
+    The point of the split form is that it never handles a value wider than
+    32 bits; the point of this test is that doing so costs nothing -- the
+    packed key comes back bit for bit, pixel and depth both.
+    """
+    computing_settings.set(mps_friendly=friendly)
+    keys, pixel, depth = _packed_keys(4096)
+    order = torch.randperm(4096)
+
+    got = gather_packed_key(keys, order)
+
+    assert torch.equal(got, keys.index_select(0, order))
+    assert torch.equal(got >> 32, pixel.index_select(0, order))
+    assert torch.equal(
+        (got & 0xFFFFFFFF).to(torch.int32).view(torch.float32),
+        depth.index_select(0, order),
+    )
+
+
+@pytest.mark.fast
+def test_the_split_gather_survives_the_top_bit_of_the_low_word():
+    """A depth whose float32 bits set bit 31 must not come back negative.
+
+    The low word is carried through int32, where bit 31 is the sign, so the
+    round trip only works because the repack masks. Negative float32 depths
+    do not occur, but the sheet key's low word is not always a depth -- and a
+    gather that silently drops one bit in one dtype is exactly the class of
+    defect this function exists to fix.
+    """
+    keys = torch.tensor(
+        [(7 << 32) | 0xFFFFFFFF, (1 << 32) | 0x80000000, 3], dtype=torch.int64
+    )
+    order = torch.tensor([2, 0, 1])
+    for friendly in (False, True):
+        SETTINGS.computing.set(mps_friendly=friendly)
+        assert torch.equal(gather_packed_key(keys, order), keys.index_select(0, order))
+
+
+@pytest.mark.fast
+def test_the_split_gather_leaves_narrow_dtypes_alone(computing_settings):
+    """Only int64 takes the split path; everything else is ``index_select``."""
+    computing_settings.set(mps_friendly=True)
+    order = torch.tensor([2, 0, 1])
+    for source in (
+        torch.tensor([1.5, 2.5, 3.5]),
+        torch.tensor([1, 2, 3], dtype=torch.int32),
+    ):
+        assert torch.equal(
+            gather_packed_key(source, order), source.index_select(0, order)
+        )
 
 
 # ------------------------------------------------- the narrowed kernel arms
