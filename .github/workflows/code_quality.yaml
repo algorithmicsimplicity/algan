@@ -71,6 +71,19 @@ jobs:
           python-version: "3.11"
       - uses: ./.github/actions/install-uv
 
+      # ManimPango publishes no wheel this runner's interpreter can use, so
+      # installing Algan's dependencies builds it from source -- and its
+      # setup.py asks pkg-config for pangocairo >= 1.30 before it will even
+      # report its build requirements. Without these the job dies in
+      # `uv pip install dist/*.whl` with `RequiredDependencyException:
+      # pangocairo >= 1.30.0 is required`, which reads like a packaging fault
+      # in Algan and is not one. The test job installs the same three for the
+      # same reason; cairo comes along because pycairo builds from source too.
+      - name: Install system dependencies for manimpango
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
+
       - name: Build the wheel and sdist
         run: uv build
 

@@ -60,7 +60,7 @@ The next line
 
 
 creates a Text object. In Algan, any object that can be animated and appears on screen is
-called a **Mob** (short for Moveable Object). Here, we create a :class:`.Text` object,
+called a **Mob** (short for Moveable Object). Here, we create a :class:`~algan.mobs.text.Text` object,
 which is a type of :class:`.Mob` that displays text. We initialize it with the content "Hello World!"
 and a font size of 100. This mob is then assigned the name *text* so we can
 refer to it later in the script.

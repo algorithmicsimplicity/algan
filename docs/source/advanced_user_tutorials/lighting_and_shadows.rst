@@ -9,8 +9,8 @@ environment maps (image-based lighting). This tutorial covers all of them.
 .. note::
 
    Lights, shadows and environment maps affect **3-D objects** (those built on
-   :class:`~.Surface`, such as :class:`~.Sphere`, :class:`~.Cylinder` and
-   :class:`~.Cone`, and imported 3-D models). Flat 2-D shapes and text are drawn
+   :class:`~algan.mobs.surfaces.surface.Surface`, such as :class:`~algan.mobs.shapes_3d.Sphere`, :class:`~algan.mobs.shapes_3d.Cylinder` and
+   :class:`~algan.mobs.shapes_3d.Cone`, and imported 3-D models). Flat 2-D shapes and text are drawn
    with their own color and are not lit.
 
 The Default Light

@@ -14,7 +14,7 @@ and animated as one entity.
 The parent-child relation is established by calling
 :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`,
 which attaches the parameter mob as a child of the calling mob.
-Algan also provides the :class:`~.Group` class which takes a collection of
+Algan also provides the :class:`~algan.mobs.group.Group` class which takes a collection of
 mobs and attaches them to a new invisible parent ``Group`` mob. ``Group``
 also provides various layout helpers.
 
