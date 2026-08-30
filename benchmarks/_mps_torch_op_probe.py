@@ -191,6 +191,33 @@ def probe_unique(device):
             _check(f"unique values n={n}", u_c, u_m)
             _check(f"unique inverse n={n}", inv_c, inv_m)
 
+    # The WIDE key, which is the one the shading-class split actually builds:
+    # ``skey = band * _SHADE_CLASS_BASE + cls`` with ``_SHADE_CLASS_BASE =
+    # 1 << 25`` (sheets.py:120, 1267). For the smoke scene that reaches ~2**40,
+    # against the ~2**20 the case above covers -- and the case above passes on
+    # MPS while the render collapses 40956 sheets to 128, so the untested
+    # magnitude is the interesting one. int64 SURVIVES a round trip at 2**40
+    # (see the arithmetic probe), so this asks specifically whether ``unique``
+    # -- which sorts internally -- keeps the low bits that distinguish two
+    # bands.
+    print("\n  unique over the shading-class key (sheets.py:1267, ~2**40)")
+    shade_base = 1 << 25
+    for bands in (4096, 40956):
+        g = torch.Generator().manual_seed(7)
+        band_c = torch.arange(bands, dtype=torch.int64).repeat_interleave(2)
+        cls_c = torch.randint(0, 3, (band_c.numel(),), generator=g, dtype=torch.int64)
+        skey_c = band_c * shade_base + cls_c
+        u_c = torch.unique(skey_c, sorted=True)
+        u_m = torch.unique(skey_c.to(device), sorted=True)
+        ok = int(u_c.numel()) == int(u_m.numel())
+        _report(
+            f"unique(band * 2**25 + cls) bands={bands} max=2**{int(skey_c.max()).bit_length() - 1}",
+            ok,
+            f"cpu {int(u_c.numel())} distinct vs mps {int(u_m.numel())}",
+        )
+        if ok:
+            _check(f"unique wide-key values bands={bands}", u_c, u_m)
+
 
 def probe_scans(device):
     """The prefix sums that turn per-element flags into segment ids."""
