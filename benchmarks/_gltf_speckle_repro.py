@@ -35,5 +35,5 @@ with Off():
     model.rotate(angle, UP)
 
 Scene.set_background(DARKER_GRAY)
-Scene.save_frame(str(OUT_DIR / ("angle_%g" % angle)), MD, overwrite=True)
-print("wrote", OUT_DIR / ("angle_%g.png" % angle))
+Scene.save_frame(str(OUT_DIR / f"angle_{angle:g}"), MD, overwrite=True)
+print("wrote", OUT_DIR / f"angle_{angle:g}.png")

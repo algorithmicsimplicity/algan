@@ -39,6 +39,13 @@ from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
+
+
+def _sha256(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 PINNED_BYTES = 2_400_000_000
 
 
@@ -118,9 +125,7 @@ def main():
         on_path = os.path.join(OUT_DIR, f"anyhit_{label}_on.mp4")
         off_px = read_frames(off_path)
         on_px = read_frames(on_path)
-        sha_equal = hashlib.sha256(open(off_path, "rb").read()).hexdigest() == (
-            hashlib.sha256(open(on_path, "rb").read()).hexdigest()
-        )
+        sha_equal = _sha256(off_path) == _sha256(on_path)
         delta = np.abs(off_px.astype(np.int16) - on_px.astype(np.int16))
         keep_off = t_off[1:] if len(t_off) > 1 else t_off
         keep_on = t_on[1:] if len(t_on) > 1 else t_on
@@ -129,8 +134,8 @@ def main():
             f"pixels>2={(delta > 2).sum()} "
             f"off={min(keep_off):6.2f}s on={min(keep_on):6.2f}s "
             f"speedup={min(keep_off) / min(keep_on):5.2f}x "
-            f"(all off={['%.2f' % t for t in t_off]} "
-            f"on={['%.2f' % t for t in t_on]})",
+            f"(all off={[f'{t:.2f}' for t in t_off]} "
+            f"on={[f'{t:.2f}' for t in t_on]})",
             flush=True,
         )
 

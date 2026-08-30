@@ -1,4 +1,4 @@
-"""Compare renderer-audit images side by side and report where they differ.
+r"""Compare renderer-audit images side by side and report where they differ.
 
 Two images of the same scene from two renderers will never be byte-equal, and a
 raw pixel diff is dominated by whichever renderer is globally brighter -- which

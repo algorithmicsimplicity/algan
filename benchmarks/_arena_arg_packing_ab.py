@@ -43,15 +43,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Overridable so the same body can be re-shaped: a single body shape cannot
 # tell a systematic indirection cost apart from the backend's scheduling
 # lottery, which moves these kernels by ~10% on its own.
-NF = int(os.environ.get("AB_NF", 40))       # f32 array parameters
-NI = int(os.environ.get("AB_NI", 8))        # i32 array parameters
-SZ = 1 << 15      # elements per f32 array  (128 KiB)
-ISZ = 1 << 13     # elements per i32 array  (32 KiB)
+NF = int(os.environ.get("AB_NF", 40))  # f32 array parameters
+NI = int(os.environ.get("AB_NI", 8))  # i32 array parameters
+SZ = 1 << 15  # elements per f32 array  (128 KiB)
+ISZ = 1 << 13  # elements per i32 array  (32 KiB)
 ROUNDS = int(os.environ.get("AB_ROUNDS", 3))  # unrolled passes per thread
 NTHREADS = 1 << 20
 
 
-ALIAS = True   # emit the arena store + read-back block (set by --variant)
+ALIAS = True  # emit the arena store + read-back block (set by --variant)
 
 
 def _body(read, iread, store, load_back):
@@ -164,10 +164,12 @@ def run_arm(arm, cache_dir, reps):
     # takes -- exactly what ManualMemory hands the renderer today. Both arms
     # therefore touch byte-identical memory in byte-identical order.
     gen = torch.Generator(device=dev).manual_seed(1234)
-    fbuf = torch.rand(NF * SZ + NTHREADS, device=dev, generator=gen,
-                      dtype=torch.float32)
-    ibuf = torch.randint(0, 1000, (NI * ISZ,), device=dev, generator=gen,
-                         dtype=torch.int32)
+    fbuf = torch.rand(
+        NF * SZ + NTHREADS, device=dev, generator=gen, dtype=torch.float32
+    )
+    ibuf = torch.randint(
+        0, 1000, (NI * ISZ,), device=dev, generator=gen, dtype=torch.int32
+    )
     out = torch.zeros(NTHREADS, device=dev, dtype=torch.float32)
 
     if arm == "split":
@@ -179,37 +181,41 @@ def run_arm(arm, cache_dir, reps):
     # Taichi's front end re-reads a kernel's source with ``inspect``, so the
     # generated kernel has to live in a real file on disk rather than an exec'd
     # namespace. Stable path per arm keeps the offline-cache key stable too.
-    mod_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "_arena_arg_gen")
+    mod_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_arena_arg_gen")
     os.makedirs(mod_dir, exist_ok=True)
-    header = "\n".join([
-        "import taichi as ti",
-        f"MASK = {SZ - 1}",
-        f"IMASK = {ISZ - 1}",
-        f"NF = {NF}",
-        "",
-        "",
-    ])
+    header = "\n".join(
+        [
+            "import taichi as ti",
+            f"MASK = {SZ - 1}",
+            f"IMASK = {ISZ - 1}",
+            f"NF = {NF}",
+            "",
+            "",
+        ]
+    )
     tag = ("alias" if ALIAS else "plain") + f"_{NF}_{NI}_{ROUNDS}"
     mod_path = os.path.join(mod_dir, f"gen_{tag}_{arm}.py")
     with open(mod_path, "w", encoding="utf-8") as fh:
         fh.write(header + src + "\n")
     sys.path.insert(0, mod_dir)
     import importlib
+
     mod = importlib.import_module(f"gen_{tag}_{arm}")
     importlib.reload(mod)
     kernel = getattr(mod, name)
 
     if arm == "split":
-        arrs = [fbuf[k * SZ:(k + 1) * SZ] for k in range(NF)]
-        iarrs = [ibuf[k * ISZ:(k + 1) * ISZ] for k in range(NI)]
-        scratch = fbuf[NF * SZ:]
+        arrs = [fbuf[k * SZ : (k + 1) * SZ] for k in range(NF)]
+        iarrs = [ibuf[k * ISZ : (k + 1) * ISZ] for k in range(NI)]
+        scratch = fbuf[NF * SZ :]
         args = [NTHREADS, *arrs, *iarrs, scratch, out]
     elif arm == "arena":
-        off_f = torch.tensor([k * SZ for k in range(NF)] + [NF * SZ],
-                             device=dev, dtype=torch.int32)
-        off_i = torch.tensor([k * ISZ for k in range(NI)], device=dev,
-                             dtype=torch.int32)
+        off_f = torch.tensor(
+            [k * SZ for k in range(NF)] + [NF * SZ], device=dev, dtype=torch.int32
+        )
+        off_i = torch.tensor(
+            [k * ISZ for k in range(NI)], device=dev, dtype=torch.int32
+        )
         args = [NTHREADS, fbuf, ibuf, off_f, off_i, out]
     else:
         args = [NTHREADS, fbuf, ibuf]
@@ -304,6 +310,7 @@ def main():
         return
 
     import tempfile
+
     root = args.out or tempfile.mkdtemp(prefix="arena_ab_")
     os.makedirs(root, exist_ok=True)
     rows = []
@@ -313,13 +320,22 @@ def main():
             cache = os.path.join(root, f"cache_{args.variant}_{NF}_{ROUNDS}_{arm}")
             os.makedirs(cache, exist_ok=True)
             proc = subprocess.run(
-                [sys.executable, os.path.abspath(__file__), "--arm", arm,
-                 "--cache", cache, "--reps", str(args.reps),
-                 "--variant", args.variant],
-                capture_output=True, text=True,
+                [
+                    sys.executable,
+                    os.path.abspath(__file__),
+                    "--arm",
+                    arm,
+                    "--cache",
+                    cache,
+                    "--reps",
+                    str(args.reps),
+                    "--variant",
+                    args.variant,
+                ],
+                capture_output=True,
+                text=True,
             )
-            line = [x for x in proc.stdout.splitlines()
-                    if x.startswith("RESULT ")]
+            line = [x for x in proc.stdout.splitlines() if x.startswith("RESULT ")]
             if not line:
                 print(proc.stdout[-4000:])
                 print(proc.stderr[-4000:])
@@ -327,14 +343,16 @@ def main():
             rec = json.loads(line[0][7:])
             rec["phase"] = phase
             rows.append(rec)
-            print(f"{phase:5s} {arm:7s} args={rec['n_kernel_args']:3d} "
-                  f"first_launch={rec['first_launch_s']:8.3f}s "
-                  f"device={rec['device_ms']:8.3f}ms "
-                  f"wall={rec['wall_per_launch_ms']:8.3f}ms "
-                  f"launch={rec['launch_overhead_us']:7.1f}us "
-                  f"(noFL {rec['launch_overhead_noFL_us']:7.1f}us, "
-                  f"fl {rec['fast_launch_hits']}/{rec['fast_launch_misses']}) "
-                  f"chk={rec['checksum']:.6e}")
+            print(
+                f"{phase:5s} {arm:7s} args={rec['n_kernel_args']:3d} "
+                f"first_launch={rec['first_launch_s']:8.3f}s "
+                f"device={rec['device_ms']:8.3f}ms "
+                f"wall={rec['wall_per_launch_ms']:8.3f}ms "
+                f"launch={rec['launch_overhead_us']:7.1f}us "
+                f"(noFL {rec['launch_overhead_noFL_us']:7.1f}us, "
+                f"fl {rec['fast_launch_hits']}/{rec['fast_launch_misses']}) "
+                f"chk={rec['checksum']:.6e}"
+            )
     with open(os.path.join(root, "results.json"), "w") as fh:
         json.dump(rows, fh, indent=2)
     print("\nresults: " + os.path.join(root, "results.json"))

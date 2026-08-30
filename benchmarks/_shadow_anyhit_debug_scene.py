@@ -27,6 +27,13 @@ from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
+
+
+def _sha256(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 PINNED_BYTES = 2_400_000_000
 
 
@@ -58,8 +65,8 @@ def main():
         p_on, dt = run_arm("on", on_value)
         t_on.append(dt)
         print(f"round {r}: on  {dt:7.2f}s", flush=True)
-    sha_off = hashlib.sha256(open(p_off, "rb").read()).hexdigest()
-    sha_on = hashlib.sha256(open(p_on, "rb").read()).hexdigest()
+    sha_off = _sha256(p_off)
+    sha_on = _sha256(p_on)
     keep_off = t_off[1:] if len(t_off) > 1 else t_off
     keep_on = t_on[1:] if len(t_on) > 1 else t_on
     print(

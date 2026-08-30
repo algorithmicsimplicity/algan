@@ -14,7 +14,6 @@ import sys
 
 os.environ["ALGAN_USE_DAEMON"] = "0"
 
-import torch
 from torch.profiler import ProfilerActivity, profile
 
 from algan import *  # noqa: F403

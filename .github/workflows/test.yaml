@@ -30,9 +30,33 @@ jobs:
       # two-platform matrix is to learn whether a change is portable, and that
       # answer only exists when both halves have reported.
       fail-fast: false
+      # Two axes with different jobs. `os` is the portability question and
+      # needs a real second platform, so it runs on both. `python-version` is
+      # the "do the classifiers in pyproject.toml tell the truth" question,
+      # and that is answered by the ends of the supported range rather than by
+      # every point in it -- so 3.9 and 3.13 are added on Linux only, where
+      # runner minutes are free and unlimited for public repositories.
+      #
+      # 3.9 is `requires-python`'s floor and the one most likely to break:
+      # it is the version that has no PEP 604 `X | Y` and no PEP 585 `list[int]`
+      # at runtime. Ruff already guards the annotations (`target-version =
+      # "py39"` plus a mandatory `from __future__ import annotations`), but
+      # nothing guarded that the package actually imports and runs there.
+      #
+      # 3.13 is the ceiling below `<3.14`, and it is not a formality: pydub --
+      # reached at import time through manim's scene_file_writer -- imports
+      # `audioop`, which was REMOVED from the standard library in 3.13. What
+      # makes that work is `audioop-lts`, which uv.lock carries with a
+      # `python_full_version >= '3.13'` marker. A job here is what keeps a
+      # future lock update from quietly dropping it.
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.9"
+          - os: ubuntu-latest
+            python-version: "3.13"
 
     # Linux takes the ordinary automatic probe, which finds no accelerator and
     # resolves to the CPU on its own.
@@ -180,24 +204,34 @@ jobs:
       # `failure()`.
       #
       # `output_errors/` exists only after a failed comparison, so
-      # `if-no-files-found: ignore` keeps a passing run quiet. The name carries
-      # the platform because artifact names have to be unique within a run.
+      # `if-no-files-found: ignore` keeps a passing run quiet.
+      #
+      # The name carries the platform AND the Python version, because artifact
+      # names have to be unique within a run and upload-artifact@v4 fails the
+      # job on a collision rather than merging. The platform alone was unique
+      # while the matrix held one Python; adding 3.9 and 3.13 made three Linux
+      # jobs that would all have claimed `fast-render-ubuntu-latest`.
       - name: Upload the fast render and any difference video
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fast-render-${{ matrix.os }}
+          name: fast-render-${{ matrix.os }}-py${{ matrix.python-version }}
           path: |
             tests/fast/algan_outputs/
             tests/fast/output_errors/
           if-no-files-found: ignore
           retention-days: 7
 
-      # One upload, from one platform. Both jobs cover the same lines of the
-      # same source, so a second report adds nothing but a second chance for a
+      # One upload, from one job. Every job covers the same lines of the same
+      # source, so a second report adds nothing but a second chance for a
       # Codecov outage to fail a green run -- and `fail_ci_if_error` is on.
+      #
+      # The Python version is pinned in this condition as well as the OS, and
+      # has to be: `runner.os == 'Linux'` alone was a single job when the
+      # matrix held one Python, and became three the moment 3.9 and 3.13 were
+      # added.
       - name: Upload coverage to Codecov
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.python-version == '3.10'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

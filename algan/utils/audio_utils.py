@@ -23,7 +23,6 @@ from algan.logging.logger import get_logger
 logger = get_logger("audio")
 pattern = re.compile(r"[\W_]+", re.UNICODE)
 
-from algan.errors import AudioTranscriptMismatchError
 
 # --- Configuration ---
 # A larger chunk size is more efficient with the optimized torchaudio function.

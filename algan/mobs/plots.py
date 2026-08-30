@@ -13,18 +13,15 @@ from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,
-    Sync,
-    active_scene_for_new_mob,
 )
 from algan.constants.color import *
 from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUTWARD, RIGHT, UP
 from algan.mobs.group import Group
-from algan.mobs.shapes_2d import Quad, Rectangle, TriangleTriangulated
+from algan.mobs.shapes_2d import Quad, Rectangle
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
     interpolate,
-    mean,
     squish,
     unsquish,
 )

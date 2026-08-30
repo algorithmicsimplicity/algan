@@ -69,5 +69,5 @@ profile_scene(
     f"nn_abl_{ARM}_{QUALITY}",
     runs=2,
     kernel_profiler=False,
-    save_video_kwargs=dict(ffmpeg_params=["-crf", "17", "-preset", "ultrafast"]),
+    save_video_kwargs={"ffmpeg_params": ["-crf", "17", "-preset", "ultrafast"]},
 )

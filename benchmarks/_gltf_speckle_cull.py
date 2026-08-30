@@ -102,5 +102,5 @@ for y in range(500, 800, 20):
     xs = np.where(np.abs(g[y] - bg) > 4)[0]
     if len(xs) < 5:
         continue
-    l = xs[0]
-    print(y, "L", l, g[y, l - 1 : l + 6])
+    lo = xs[0]
+    print(y, "L", lo, g[y, lo - 1 : lo + 6])

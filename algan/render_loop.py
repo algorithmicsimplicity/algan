@@ -51,10 +51,10 @@ from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPri
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.truncation import reset_truncations
 from algan.rendering.taichi_runtime import (
+    _sync_devices,
     ensure_taichi_for_render,
     render_job_holding_the_arch,
 )
-from algan.rendering.taichi_runtime import _sync_devices
 from algan.settings import SETTINGS
 from algan.settings._startup import _ANIMATION_DEVICE, render_device
 from algan.utils.color_space import srgb_to_linear
@@ -63,11 +63,11 @@ from algan.utils.memory_utils import (
     ManualMemory,
     auto_record_enabled,
     begin_cuda_peak,
-    release_torch_memory,
     end_cuda_peak,
     get_num_available_bytes,
     is_cuda_oom,
     note_nonarena_peak,
+    release_torch_memory,
     scene_excluded_from_gc,
 )
 

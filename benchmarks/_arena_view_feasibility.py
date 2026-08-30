@@ -23,8 +23,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import taichi as ti  # noqa: E402
-from taichi.lang import impl as _ti_impl  # noqa: E402
 import torch  # noqa: E402
+from taichi.lang import impl as _ti_impl  # noqa: E402
 
 from algan.rendering.taichi_runtime import taichi_init_kwargs  # noqa: E402
 
@@ -83,17 +83,22 @@ class View(tuple):
 def k_ref(n: ti.i32, a: ti.types.ndarray(), out: ti.types.ndarray()):
     for i in range(n):
         v = ti.math.vec3(a[i, 0], a[i, 1], a[i, 2])
-        a[i, 1] = v[0] + v[2]          # store through the array
+        a[i, 1] = v[0] + v[2]  # store through the array
         out[i] = v[0] * 2.0 + v[1] - v[2] + a[i, 1]
 
 
 @ti.kernel
-def k_view(n: ti.i32, arena: ti.types.ndarray(), off: ti.types.ndarray(),
-           rows: ti.template(), out: ti.types.ndarray()):
+def k_view(
+    n: ti.i32,
+    arena: ti.types.ndarray(),
+    off: ti.types.ndarray(),
+    rows: ti.template(),
+    out: ti.types.ndarray(),
+):
     a = ti.static(View(arena, off[0], (rows, 3)))
     for i in range(n):
         v = ti.math.vec3(a[i, 0], a[i, 1], a[i, 2])
-        a[i, 1] = v[0] + v[2]          # store through the VIEW
+        a[i, 1] = v[0] + v[2]  # store through the VIEW
         out[i] = v[0] * 2.0 + v[1] - v[2] + a[i, 1]
 
 
@@ -127,22 +132,31 @@ def main():
     # --- 5. a REAL algan ti.func, unmodified --------------------------------
     # _triangle_normal does 3-D template indexing AND reads ``.shape[0]``.
     @ti.kernel
-    def k_real_ref(m: ti.i32, frames: ti.i32, tri_norm: ti.types.ndarray(),
-                   tri_pos: ti.types.ndarray(), o: ti.types.ndarray()):
+    def k_real_ref(
+        m: ti.i32,
+        frames: ti.i32,
+        tri_norm: ti.types.ndarray(),
+        tri_pos: ti.types.ndarray(),
+        o: ti.types.ndarray(),
+    ):
         for i in range(m):
-            nrm = _triangle_normal(i % frames, i, 0.2, 0.3, 0.5,
-                                   tri_norm, tri_pos)
+            nrm = _triangle_normal(i % frames, i, 0.2, 0.3, 0.5, tri_norm, tri_pos)
             o[i] = nrm[0] + nrm[1] * 2.0 + nrm[2] * 3.0
 
     @ti.kernel
-    def k_real_view(m: ti.i32, frames: ti.i32, arena_: ti.types.ndarray(),
-                    off_: ti.types.ndarray(), fr: ti.template(),
-                    pr: ti.template(), o: ti.types.ndarray()):
+    def k_real_view(
+        m: ti.i32,
+        frames: ti.i32,
+        arena_: ti.types.ndarray(),
+        off_: ti.types.ndarray(),
+        fr: ti.template(),
+        pr: ti.template(),
+        o: ti.types.ndarray(),
+    ):
         tri_norm = ti.static(View(arena_, off_[0], (fr, pr, 9)))
         tri_pos = ti.static(View(arena_, off_[1], (fr, pr, 9)))
         for i in range(m):
-            nrm = _triangle_normal(i % frames, i, 0.2, 0.3, 0.5,
-                                   tri_norm, tri_pos)
+            nrm = _triangle_normal(i % frames, i, 0.2, 0.3, 0.5, tri_norm, tri_pos)
             o[i] = nrm[0] + nrm[1] * 2.0 + nrm[2] * 3.0
 
     frames, prims = 4, 512
@@ -154,19 +168,28 @@ def main():
     tp_src = torch.rand(numel, device=dev, generator=gen, dtype=torch.float32)
 
     o1 = torch.zeros(prims, device=dev, dtype=torch.float32)
-    k_real_ref(prims, frames, tn_src.clone().view(frames, prims, 9),
-               tp_src.clone().view(frames, prims, 9), o1)
+    k_real_ref(
+        prims,
+        frames,
+        tn_src.clone().view(frames, prims, 9),
+        tp_src.clone().view(frames, prims, 9),
+        o1,
+    )
 
     arena2 = torch.zeros(pad + 2 * numel, device=dev, dtype=torch.float32)
-    arena2[pad:pad + numel] = tn_src
-    arena2[pad + numel:] = tp_src
+    arena2[pad : pad + numel] = tn_src
+    arena2[pad + numel :] = tp_src
     off2 = torch.tensor([pad, pad + numel], device=dev, dtype=torch.int32)
     o2 = torch.zeros(prims, device=dev, dtype=torch.float32)
     k_real_view(prims, frames, arena2, off2, frames, prims, o2)
 
-    print("real ti.func agrees:  ", torch.equal(o1, o2),
-          "(max |d| =", float((o1 - o2).abs().max().item()), ")")
-
+    print(
+        "real ti.func agrees:  ",
+        torch.equal(o1, o2),
+        "(max |d| =",
+        float((o1 - o2).abs().max().item()),
+        ")",
+    )
 
     # --- 7. RUNTIME shapes --------------------------------------------------
     # Compile-time shapes would specialize the kernel per scene -- a
@@ -174,21 +197,30 @@ def main():
     # work with shape entries that are Taichi Exprs read from a metadata
     # ndarray, so nothing about the geometry is baked into the kernel.
     @ti.kernel
-    def k_real_view_rt(m: ti.i32, frames: ti.i32, arena_: ti.types.ndarray(),
-                       off_: ti.types.ndarray(), shp: ti.types.ndarray(),
-                       o: ti.types.ndarray()):
+    def k_real_view_rt(
+        m: ti.i32,
+        frames: ti.i32,
+        arena_: ti.types.ndarray(),
+        off_: ti.types.ndarray(),
+        shp: ti.types.ndarray(),
+        o: ti.types.ndarray(),
+    ):
         tri_norm = ti.static(View(arena_, off_[0], (shp[0], shp[1], shp[2])))
         tri_pos = ti.static(View(arena_, off_[1], (shp[0], shp[1], shp[2])))
         for i in range(m):
-            nrm = _triangle_normal(i % frames, i, 0.2, 0.3, 0.5,
-                                   tri_norm, tri_pos)
+            nrm = _triangle_normal(i % frames, i, 0.2, 0.3, 0.5, tri_norm, tri_pos)
             o[i] = nrm[0] + nrm[1] * 2.0 + nrm[2] * 3.0
 
     shp = torch.tensor([frames, prims, 9], device=dev, dtype=torch.int32)
     o3 = torch.zeros(prims, device=dev, dtype=torch.float32)
     k_real_view_rt(prims, frames, arena2, off2, shp, o3)
-    print("runtime-shape view:   ", torch.equal(o1, o3),
-          "(max |d| =", float((o1 - o3).abs().max().item()), ")")
+    print(
+        "runtime-shape view:   ",
+        torch.equal(o1, o3),
+        "(max |d| =",
+        float((o1 - o3).abs().max().item()),
+        ")",
+    )
 
 
 if __name__ == "__main__":

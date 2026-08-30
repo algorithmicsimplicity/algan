@@ -52,6 +52,7 @@ def main():
     ssaa = int(sys.argv[3]) if len(sys.argv) > 3 else 2
 
     from algan.utils.profiling_utils import enable_taichi_kernel_profiler
+
     enable_taichi_kernel_profiler()
 
     import taichi as ti
@@ -64,8 +65,7 @@ def main():
     build_scene(width, height, ssaa)
 
     t0 = time.perf_counter()
-    Scene.save_video(os.path.join("benchmarks", "_arena_budget_probe"),
-                     overwrite=True)
+    Scene.save_video(os.path.join("benchmarks", "_arena_budget_probe"), overwrite=True)
     wall = time.perf_counter() - t0
 
     dev_ms = 0.0
@@ -82,24 +82,36 @@ def main():
     # Since the arena conversion the kernel itself takes far fewer -- that
     # count is on the launcher's spec, not here.
     import algan.rendering.raytracing.sheet_resolve_taichi as srt
+
     launcher = getattr(srt, "_sheet_resolve_shade_launch", None)
     bound = len(launcher.arena_spec) if launcher is not None else 0
 
     print()
-    print(f"resolution {width}x{height} ssaa={ssaa} "
-          f"(internal {width * ssaa}x{height * ssaa})")
+    print(
+        f"resolution {width}x{height} ssaa={ssaa} "
+        f"(internal {width * ssaa}x{height * ssaa})"
+    )
     print(f"render wall                 {wall:8.2f} s")
-    print(f"sheet_resolve_shade launches{n:8d}   "
-          f"(threads {len(REC['threads'])}, {REC['nd']} ndarray args at the "
-          f"call site, {REC['nd'] - bound + 5} at the kernel)")
-    print(f"  device total              {dev_ms / 1000:8.3f} s   "
-          f"per launch {dev_ms / max(n, 1):8.3f} ms")
-    print(f"  host enqueue total        {REC['host_s']:8.3f} s   "
-          f"per launch {REC['host_s'] / max(n, 1) * 1000:8.3f} ms")
+    print(
+        f"sheet_resolve_shade launches{n:8d}   "
+        f"(threads {len(REC['threads'])}, {REC['nd']} ndarray args at the "
+        f"call site, {REC['nd'] - bound + 5} at the kernel)"
+    )
+    print(
+        f"  device total              {dev_ms / 1000:8.3f} s   "
+        f"per launch {dev_ms / max(n, 1):8.3f} ms"
+    )
+    print(
+        f"  host enqueue total        {REC['host_s']:8.3f} s   "
+        f"per launch {REC['host_s'] / max(n, 1) * 1000:8.3f} ms"
+    )
     # Launch 1 carries the compile (cold) or the offline-cache load (warm);
     # only the ones after it are the steady-state enqueue cost.
-    print("  host enqueue, each launch  "
-          + " ".join(f"{d * 1000:.2f}" for d in REC["each"]) + " ms")
+    print(
+        "  host enqueue, each launch  "
+        + " ".join(f"{d * 1000:.2f}" for d in REC["each"])
+        + " ms"
+    )
 
 
 if __name__ == "__main__":

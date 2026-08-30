@@ -5,6 +5,8 @@ own `bash` tool. Turn 2 (a role:"tool" message present) -> emit plain text.
 That exercises the full OpenCode loop with no external credential.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import time

@@ -22,8 +22,6 @@ alpha-channel video) and ``GLOW`` (black with full glow).
 
 from __future__ import annotations
 
-import re
-
 import torch
 
 from algan.errors import InvalidColorError
@@ -85,9 +83,7 @@ def _parse_color_string(s: str) -> tuple[tuple[float, float, float], float]:
             f"or a standard CSS color name (e.g. 'red', 'navy', 'coral')."
         )
 
-    if len(hex_str) == 3:
-        hex_str = "".join(c * 2 for c in hex_str)
-    elif len(hex_str) == 4:
+    if len(hex_str) == 3 or len(hex_str) == 4:
         hex_str = "".join(c * 2 for c in hex_str)
 
     if len(hex_str) == 6:

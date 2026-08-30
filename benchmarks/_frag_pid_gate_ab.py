@@ -58,6 +58,13 @@ from algan.rendering.shaders.materials import (  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
+
+
+def _sha256(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 PINNED_BYTES = 2_400_000_000
 
 # (label, mixed materials, hybrid raster front-end)
@@ -162,9 +169,7 @@ def main():
             t_on.append(dt)
         off_path = os.path.join(OUT_DIR, f"pidgate_{label}_off.mp4")
         on_path = os.path.join(OUT_DIR, f"pidgate_{label}_on.mp4")
-        sha_equal = hashlib.sha256(open(off_path, "rb").read()).hexdigest() == (
-            hashlib.sha256(open(on_path, "rb").read()).hexdigest()
-        )
+        sha_equal = _sha256(off_path) == _sha256(on_path)
         delta = np.abs(
             read_frames(off_path).astype(np.int16)
             - read_frames(on_path).astype(np.int16)
@@ -177,8 +182,8 @@ def main():
             f"pixels>2={(delta > 2).sum()} "
             f"off={min(keep_off):6.2f}s on={min(keep_on):6.2f}s "
             f"speedup={min(keep_off) / min(keep_on):5.2f}x "
-            f"(all off={['%.2f' % t for t in t_off]} "
-            f"on={['%.2f' % t for t in t_on]})",
+            f"(all off={[f'{t:.2f}' for t in t_off]} "
+            f"on={[f'{t:.2f}' for t in t_on]})",
             flush=True,
         )
 

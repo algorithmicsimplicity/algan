@@ -42,8 +42,8 @@ from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     begin_cuda_peak,
-    release_torch_memory,
     end_cuda_peak,
+    release_torch_memory,
 )
 
 _STBVH_TENSOR_FIELDS = ("nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")

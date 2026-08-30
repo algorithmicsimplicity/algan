@@ -59,5 +59,5 @@ for y in range(190, 900, 30):
     xs = np.where(g[y] > bg + 8)[0]
     if len(xs) < 5:
         continue
-    l, r = xs[0], xs[-1]
-    print(y, "L", l, g[y, l - 1 : l + 4], "| R", r, g[y, r - 3 : r + 2])
+    lo, hi = xs[0], xs[-1]
+    print(y, "L", lo, g[y, lo - 1 : lo + 4], "| R", hi, g[y, hi - 3 : hi + 2])

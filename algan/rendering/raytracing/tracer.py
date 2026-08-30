@@ -130,9 +130,9 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 )
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
-    release_torch_memory,
     ensure_render_headroom,
     is_cuda_oom,
+    release_torch_memory,
 )
 
 logger = get_logger("raytracing")

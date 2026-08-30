@@ -23,6 +23,12 @@ from algan.scene_manager import SceneManager
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
 
+
+def _sha256(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 # Pin the measured free-VRAM figure so the arena (and therefore every batch
 # split) is identical run to run; render output is not split-invariant.
 PINNED_BYTES = 2_400_000_000
@@ -40,7 +46,7 @@ def main():
     t0 = time.perf_counter()
     Scene.save_video(path, PREVIEW, overwrite=True)
     dt = time.perf_counter() - t0
-    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    digest = _sha256(path)
     print(f"PARITY {tag}: {dt:8.2f}s  sha256={digest}", flush=True)
 
 

@@ -38,7 +38,8 @@ _HERE = Path(__file__).resolve().parent
 
 def _srgb_to_linear(u8: np.ndarray) -> np.ndarray:
     """The sRGB EOTF, on 0..255 bytes. Both engines write the OETF at the byte
-    write (``REPORT.md`` §1), so this is what undoes it."""
+    write (``REPORT.md`` §1), so this is what undoes it.
+    """
     c = u8.astype(np.float64) / 255.0
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
@@ -61,7 +62,8 @@ def _backdrop_front_z(spec):
 def _project(spec, width, height):
     """Pixel centre of each sphere's shadow on the backdrop, plus its pixel
     radius. Pinhole camera looking down -Z from ``camera.position``; the spec's
-    ``fov`` is the vertical field of view in degrees (``SPEC.md``)."""
+    ``fov`` is the vertical field of view in degrees (``SPEC.md``).
+    """
     cam = spec["camera"]
     cz = float(cam["position"][2])
     fov = math.radians(float(cam["fov"]))
@@ -163,7 +165,8 @@ def _disc_mean(lin: np.ndarray, cx: float, cy: float, r: float):
 
 def _open_backdrop(lin: np.ndarray, shadows, width, height):
     """A patch of lit backdrop with no sphere and no shadow on it: the
-    brightest 2% of pixels, which on these scenes is exactly that."""
+    brightest 2% of pixels, which on these scenes is exactly that.
+    """
     lum = lin @ np.array([0.2126, 0.7152, 0.0722])
     thresh = np.quantile(lum, 0.98)
     mask = lum >= thresh

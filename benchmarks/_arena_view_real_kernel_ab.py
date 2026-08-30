@@ -85,12 +85,16 @@ class View(tuple):
 
 '''
 
-DT_TAG = {"torch.float32": "f32", "torch.int32": "i32", "torch.int64": "i64",
-          "torch.uint8": "u8", "torch.float16": "f16"}
+DT_TAG = {
+    "torch.float32": "f32",
+    "torch.int32": "i32",
+    "torch.int64": "i64",
+    "torch.uint8": "u8",
+    "torch.float16": "f16",
+}
 
 
-def generate_variant(repo_root, layout, out_path, consts=None,
-                     suffix="_arena"):
+def generate_variant(repo_root, layout, out_path, consts=None, suffix="_arena"):
     """Emit the arena variant module from the shipped kernel source.
 
     ``layout`` maps each ndarray parameter name to (dtype_tag, ndim, off_slot,
@@ -102,25 +106,31 @@ def generate_variant(repo_root, layout, out_path, consts=None,
         src = fh.read()
     lines = src.split("\n")
     tree = ast.parse(src)
-    fn = next(n for n in tree.body
-              if isinstance(n, ast.FunctionDef) and n.name == KERNEL_NAME)
+    fn = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == KERNEL_NAME
+    )
 
     header_end = min(d.lineno for d in fn.decorator_list) - 1
     header = "\n".join(lines[:header_end])
 
-    params = [(a.arg, ast.unparse(a.annotation) if a.annotation else None)
-              for a in fn.args.args]
+    params = [
+        (a.arg, ast.unparse(a.annotation) if a.annotation else None)
+        for a in fn.args.args
+    ]
     nd_all = [n for n, ann in params if ann == "ti.types.ndarray()"]
     nd_names = [n for n in nd_all if n in layout]
     kept = [n for n in nd_all if n not in layout]
 
-    keep = [f"{n}: {ann}" if ann else n
-            for n, ann in params
-            if ann != "ti.types.ndarray()" or n in kept]
+    keep = [
+        f"{n}: {ann}" if ann else n
+        for n, ann in params
+        if ann != "ti.types.ndarray()" or n in kept
+    ]
     tags = sorted({layout[n][0] for n in nd_names})
     arenas = [f"arena_{t}: ti.types.ndarray()" for t in tags]
-    new_params = keep + arenas + ["aoff: ti.types.ndarray()",
-                                  "ashp: ti.types.ndarray()"]
+    new_params = (
+        keep + arenas + ["aoff: ti.types.ndarray()", "ashp: ti.types.ndarray()"]
+    )
 
     binds = []
     for name in nd_names:
@@ -138,15 +148,19 @@ def generate_variant(repo_root, layout, out_path, consts=None,
             dims = ", ".join(str(int(x)) for x in shape_t)
         if ndim == 1:
             dims += ","
-        binds.append(f"    {name} = ti.static(View(arena_{tag}, "
-                     f"{base}, ({dims})))")
+        binds.append(f"    {name} = ti.static(View(arena_{tag}, {base}, ({dims})))")
 
-    body_start = fn.body[0].lineno - 1        # docstring line
-    body = lines[body_start:fn.end_lineno]
+    body_start = fn.body[0].lineno - 1  # docstring line
+    body = lines[body_start : fn.end_lineno]
 
-    out = [header, VIEW_SRC, "", "@ti.kernel",
-           f"def {KERNEL_NAME}{suffix}(",
-           "        " + ",\n        ".join(new_params) + "):"]
+    out = [
+        header,
+        VIEW_SRC,
+        "",
+        "@ti.kernel",
+        f"def {KERNEL_NAME}{suffix}(",
+        "        " + ",\n        ".join(new_params) + "):",
+    ]
     # Docstring first (it is fn.body[0]), then the bindings, then the rest of
     # the body verbatim.
     doc_end = fn.body[0].end_lineno - fn.body[0].lineno + 1
@@ -163,19 +177,41 @@ def generate_variant(repo_root, layout, out_path, consts=None,
 # parameter of these names. Over-inclusive is safe: it only makes the
 # read-only arena smaller.
 WRITTEN = {
-    "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
-    "event_frame", "event_msk", "event_dp", "event_toff", "shadow_vis",
-    "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix", "pix_accum",
-    "rs_alloc", "dump_out",
+    "sheet_memo",
+    "sheet_accept",
+    "event_pos",
+    "event_snrm",
+    "event_fnrm",
+    "event_frame",
+    "event_msk",
+    "event_dp",
+    "event_toff",
+    "shadow_vis",
+    "rs_ro",
+    "rs_rd",
+    "rs_acc",
+    "rs_sca",
+    "rs_int",
+    "rs_pix",
+    "pix_accum",
+    "rs_alloc",
+    "dump_out",
 }
 
 # Hot read-only arrays worth their own arena under the "fine" policy: the
 # per-hit geometry and material fetches, and the per-pixel sheet records.
 HOT = {
-    "tri_pos": "geo", "tri_norm": "geo", "tri_mat": "mat",
-    "tri_extra": "mat", "tri_mat_id": "mat",
-    "sheet_offsets": "sheet", "sheet_key": "sheet", "sheet_ref": "sheet",
-    "sheet_ab": "sheet", "sheet_cov": "sheet", "sheet_msk": "sheet",
+    "tri_pos": "geo",
+    "tri_norm": "geo",
+    "tri_mat": "mat",
+    "tri_extra": "mat",
+    "tri_mat_id": "mat",
+    "sheet_offsets": "sheet",
+    "sheet_key": "sheet",
+    "sheet_ref": "sheet",
+    "sheet_ab": "sheet",
+    "sheet_cov": "sheet",
+    "sheet_msk": "sheet",
     "sheet_cap": "sheet",
 }
 
@@ -185,17 +221,32 @@ HOT = {
 # first -- the "hybrid" policies keep this many as real ndarray parameters and
 # arena everything else.
 HOTTEST = [
-    "sheet_key", "sheet_ref", "sheet_ab", "sheet_cov", "sheet_msk",
-    "sheet_cap", "sheet_offsets", "tri_pos", "tri_norm", "tri_mat",
-    "tri_mat_id", "covered_idx", "pix_accum", "rs_sca", "rs_int", "rs_ro",
-    "rs_rd", "rs_acc", "rs_pix", "circuit_meta",
+    "sheet_key",
+    "sheet_ref",
+    "sheet_ab",
+    "sheet_cov",
+    "sheet_msk",
+    "sheet_cap",
+    "sheet_offsets",
+    "tri_pos",
+    "tri_norm",
+    "tri_mat",
+    "tri_mat_id",
+    "covered_idx",
+    "pix_accum",
+    "rs_sca",
+    "rs_int",
+    "rs_ro",
+    "rs_rd",
+    "rs_acc",
+    "rs_pix",
+    "circuit_meta",
 ]
 
 
 #: Per-ray state rows plus the per-pixel accumulator: the arrays indexed by
 #: SLOT (up to ~4.6M rows) rather than by primitive or sheet.
-RAY_STATE = ["rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix",
-             "pix_accum"]
+RAY_STATE = ["rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix", "pix_accum"]
 
 
 def keep_set(policy):
@@ -205,9 +256,9 @@ def keep_set(policy):
     ``keep:a+b+c``   -- exactly these names.
     """
     if policy.startswith("hybrid"):
-        return set(HOTTEST[:int(policy[len("hybrid"):])])
+        return set(HOTTEST[: int(policy[len("hybrid") :])])
     if policy.startswith("keep:"):
-        spec = policy[len("keep:"):]
+        spec = policy[len("keep:") :]
         out = set()
         for tok in spec.split("+"):
             if tok == "raystate":
@@ -281,8 +332,7 @@ def pack(names, args, layout, device):
     """Concatenate every captured tensor into one flat arena per dtype."""
     import torch
 
-    order = [n for n, (k, _) in zip(names, args)
-             if k == "tensor" and n in layout]
+    order = [n for n, (k, _) in zip(names, args) if k == "tensor" and n in layout]
     by_name = {n: v for n, (k, v) in zip(names, args) if k == "tensor"}
     bufs = {}
     offs = [0] * len(order)
@@ -299,13 +349,17 @@ def pack(names, args, layout, device):
         cursors[tag] += t.numel()
         shps.extend(list(t.shape))
     for tag, total in cursors.items():
-        dt = {"f32": torch.float32, "i32": torch.int32,
-              "i64": torch.int64, "u8": torch.uint8}[tag.split("_")[0]]
+        dt = {
+            "f32": torch.float32,
+            "i32": torch.int32,
+            "i64": torch.int64,
+            "u8": torch.uint8,
+        }[tag.split("_")[0]]
         bufs[tag] = torch.empty(total, dtype=dt, device=device)
     for name in order:
         tag, ndim, off_slot, _ = layout[name]
         t = by_name[name].to(device)
-        bufs[tag][offs[off_slot]:offs[off_slot] + t.numel()] = t.reshape(-1)
+        bufs[tag][offs[off_slot] : offs[off_slot] + t.numel()] = t.reshape(-1)
     aoff = torch.tensor(offs, dtype=torch.int32, device=device)
     ashp = torch.tensor(shps, dtype=torch.int32, device=device)
     return bufs, aoff, ashp, order
@@ -320,15 +374,14 @@ def unpack(bufs, layout, names, args, device):
         tag, ndim, off_slot, _ = layout[name]
         n = val.numel()
         base = _OFFS[off_slot]
-        out[name] = bufs[tag][base:base + n].reshape(val.shape).clone()
+        out[name] = bufs[tag][base : base + n].reshape(val.shape).clone()
     return out
 
 
 _OFFS = None
 
 
-def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
-                                                              "fine")):
+def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role", "fine")):
     """Warm, in-process, alternating A/B: shipped kernel vs each arena policy.
 
     Cross-process wall clock swung ~17% between two runs of the SAME arm on
@@ -361,9 +414,9 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
     from algan.rendering.raytracing.sheet_resolve_taichi import (
         sheet_resolve_shade as k_ref,
     )
+
     ref_args = [v.to(device) if k == "tensor" else v for k, v in args]
-    ref_pristine = [t.clone() if isinstance(t, torch.Tensor) else t
-                    for t in ref_args]
+    ref_pristine = [t.clone() if isinstance(t, torch.Tensor) else t for t in ref_args]
 
     def restore_ref():
         for cur, orig in zip(ref_args, ref_pristine):
@@ -388,11 +441,16 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
         if mode == "const":
             off_list = aoff.tolist()
             by_name = {n: v for n, (k, v) in zip(names, args) if k == "tensor"}
-            consts = {nm: (off_list[layout[nm][2]], tuple(by_name[nm].shape))
-                      for nm in layout}
-        generate_variant(repo_root, layout,
-                         os.path.join(gen_dir, mod_name + ".py"),
-                         consts=consts, suffix=f"_{slug}")
+            consts = {
+                nm: (off_list[layout[nm][2]], tuple(by_name[nm].shape)) for nm in layout
+            }
+        generate_variant(
+            repo_root,
+            layout,
+            os.path.join(gen_dir, mod_name + ".py"),
+            consts=consts,
+            suffix=f"_{slug}",
+        )
         mod = importlib.import_module(mod_name)
         importlib.reload(mod)
         kernel = getattr(mod, KERNEL_NAME + f"_{slug}")
@@ -412,12 +470,22 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
         own_pristine = {nm: t.clone() for nm, t in own.items()}
         call = head + [bufs[t] for t in tags] + [aoff, ashp]
         pristine = {t: b.clone() for t, b in bufs.items()}
-        arms.append({
-            "policy": pol, "kernel": kernel, "args": call, "bufs": bufs,
-            "pristine": pristine, "layout": layout, "aoff": aoff.tolist(),
-            "n_arenas": len(tags), "tags": tags, "own": own,
-            "own_pristine": own_pristine, "kept": kept,
-        })
+        arms.append(
+            {
+                "policy": pol,
+                "kernel": kernel,
+                "args": call,
+                "bufs": bufs,
+                "pristine": pristine,
+                "layout": layout,
+                "aoff": aoff.tolist(),
+                "n_arenas": len(tags),
+                "tags": tags,
+                "own": own,
+                "own_pristine": own_pristine,
+                "kept": kept,
+            }
+        )
 
     def restore(arm):
         for t, b in arm["bufs"].items():
@@ -438,8 +506,9 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
     restore_ref()
     k_ref(*ref_args)
     _sync_devices()
-    ref_out = {n: v.clone() for n, v in zip(names, ref_args)
-               if isinstance(v, torch.Tensor)}
+    ref_out = {
+        n: v.clone() for n, v in zip(names, ref_args) if isinstance(v, torch.Tensor)
+    }
     for arm in arms:
         restore(arm)
         arm["kernel"](*arm["args"])
@@ -453,8 +522,7 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
             else:
                 tag, _nd, off_slot, _ss = arm["layout"][name]
                 base = arm["aoff"][off_slot]
-                got = arm["bufs"][tag][
-                    base:base + val.numel()].reshape(val.shape)
+                got = arm["bufs"][tag][base : base + val.numel()].reshape(val.shape)
             if not torch.equal(got, ref_out[name]):
                 diff.append(name)
         arm["differing"] = diff
@@ -488,7 +556,7 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
 
     def launch_us(kernel, kargs):
         tiny = list(kargs)
-        tiny[0] = 0          # num_covered = 0: times argument binding only
+        tiny[0] = 0  # num_covered = 0: times argument binding only
         for _ in range(20):
             kernel(*tiny)
         _sync_devices()
@@ -513,29 +581,49 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role",
             _t, _nd, off_slot, _ss = arm["layout"][nm]
             esz = 8 if _t.startswith("i64") else 4
             bad.append(f"{nm}:{arm['aoff'][off_slot] * esz % 128}")
-        print(f"  {arm['policy']:>12s} ray-state base offsets mod 128B: "
-              f"{' '.join(bad) or '(kept as params)'}")
-    print(f"{'arm':>10s} {'arenas':>7s} {'ndarr':>6s} "
-          f"{'device ms':>10s} {'delta':>8s} {'launch us':>10s}  differing")
-    print(f"{'ref':>10s} {'-':>7s} "
-          f"{sum(1 for a in ref_args if isinstance(a, torch.Tensor)):6d} "
-          f"{ref_ms:10.3f} {'--':>8s} {lu_ref:10.0f}  "
-          f"(recheck {lu_ref2:.0f} us)")
-    out = {"arch": str(arch), "launches_each": n, "ref_device_ms": ref_ms,
-           "ref_launch_us": lu_ref, "ref_launch_us_again": lu_ref2, "arms": []}
+        print(
+            f"  {arm['policy']:>12s} ray-state base offsets mod 128B: "
+            f"{' '.join(bad) or '(kept as params)'}"
+        )
+    print(
+        f"{'arm':>10s} {'arenas':>7s} {'ndarr':>6s} "
+        f"{'device ms':>10s} {'delta':>8s} {'launch us':>10s}  differing"
+    )
+    print(
+        f"{'ref':>10s} {'-':>7s} "
+        f"{sum(1 for a in ref_args if isinstance(a, torch.Tensor)):6d} "
+        f"{ref_ms:10.3f} {'--':>8s} {lu_ref:10.0f}  "
+        f"(recheck {lu_ref2:.0f} us)"
+    )
+    out = {
+        "arch": str(arch),
+        "launches_each": n,
+        "ref_device_ms": ref_ms,
+        "ref_launch_us": lu_ref,
+        "ref_launch_us_again": lu_ref2,
+        "arms": [],
+    }
     for arm in arms:
         ms = arm["tot"] / n * 1000.0
         d = (ms - ref_ms) / ref_ms * 100.0
         nd = sum(1 for a in arm["args"] if isinstance(a, torch.Tensor))
-        print(f"{arm['policy']:>10s} {arm['n_arenas']:7d} {nd:6d} "
-              f"{ms:10.3f} {d:+7.1f}% {arm['launch_us']:10.0f}  "
-              f"{arm['differing'] or 'none'}")
-        out["arms"].append({
-            "policy": arm["policy"], "n_arenas": arm["n_arenas"],
-            "n_ndarray_args": nd, "device_ms": ms, "delta_pct": d,
-            "launch_us": arm["launch_us"], "differing": arm["differing"],
-            "tags": arm["tags"],
-        })
+        print(
+            f"{arm['policy']:>10s} {arm['n_arenas']:7d} {nd:6d} "
+            f"{ms:10.3f} {d:+7.1f}% {arm['launch_us']:10.0f}  "
+            f"{arm['differing'] or 'none'}"
+        )
+        out["arms"].append(
+            {
+                "policy": arm["policy"],
+                "n_arenas": arm["n_arenas"],
+                "n_ndarray_args": nd,
+                "device_ms": ms,
+                "delta_pct": d,
+                "launch_us": arm["launch_us"],
+                "differing": arm["differing"],
+                "tags": arm["tags"],
+            }
+        )
     return out
 
 
@@ -564,10 +652,10 @@ def run_arm(arm, cap_path, cache_dir, reps, tag="", policy="dtype"):
         from algan.rendering.raytracing.sheet_resolve_taichi import (
             sheet_resolve_shade as kernel,
         )
+
         name = KERNEL_NAME
         dev_args = [v.to(device) if k == "tensor" else v for k, v in args]
-        pristine = [t.clone() if isinstance(t, torch.Tensor) else t
-                    for t in dev_args]
+        pristine = [t.clone() if isinstance(t, torch.Tensor) else t for t in dev_args]
 
         def restore():
             for cur, orig in zip(dev_args, pristine):
@@ -579,10 +667,12 @@ def run_arm(arm, cap_path, cache_dir, reps, tag="", policy="dtype"):
         gen_dir = os.path.join(repo_root, "benchmarks", "_arena_arg_gen")
         os.makedirs(gen_dir, exist_ok=True)
         mod_path = os.path.join(gen_dir, f"sheet_resolve_arena_{slug}.py")
-        nd_names, tags = generate_variant(repo_root, layout, mod_path,
-                                          suffix=f"_{slug}")
+        nd_names, tags = generate_variant(
+            repo_root, layout, mod_path, suffix=f"_{slug}"
+        )
         sys.path.insert(0, gen_dir)
         import importlib
+
         mod = importlib.import_module(f"sheet_resolve_arena_{slug}")
         importlib.reload(mod)
         kernel = getattr(mod, KERNEL_NAME + f"_{slug}")
@@ -620,13 +710,13 @@ def run_arm(arm, cap_path, cache_dir, reps, tag="", policy="dtype"):
 
     # --- correctness: digest every array the kernel may have written ----
     if arm == "ref":
-        result = {n: v.clone() for n, v in zip(names, dev_args)
-                  if isinstance(v, torch.Tensor)}
+        result = {
+            n: v.clone() for n, v in zip(names, dev_args) if isinstance(v, torch.Tensor)
+        }
     else:
         result = unpack(bufs, layout, names, args, device)
         result.update({nm: t.clone() for nm, t in own.items()})
-    digests = {n: float(v.double().abs().sum().item())
-               for n, v in result.items()}
+    digests = {n: float(v.double().abs().sum().item()) for n, v in result.items()}
 
     # --- steady-state device time --------------------------------------
     for _ in range(2):
@@ -648,6 +738,7 @@ def run_arm(arm, cap_path, cache_dir, reps, tag="", policy="dtype"):
 
     # --- host launch cost ----------------------------------------------
     from algan.utils import taichi_fast_launch as tfl
+
     tfl.STATS["fast"] = tfl.STATS["slow"] = 0
     # num_covered = 0 makes the body a no-op, so this times argument binding.
     tiny = list(call_args)
@@ -663,8 +754,10 @@ def run_arm(arm, cap_path, cache_dir, reps, tag="", policy="dtype"):
 
     out_dir = os.path.join(repo_root, "benchmarks", "_arena_real_out")
     os.makedirs(out_dir, exist_ok=True)
-    torch.save({n: v.cpu() for n, v in result.items()},
-               os.path.join(out_dir, f"result_{arm}{tag}.pt"))
+    torch.save(
+        {n: v.cpu() for n, v in result.items()},
+        os.path.join(out_dir, f"result_{arm}{tag}.pt"),
+    )
 
     return {
         "arm": arm,
@@ -684,35 +777,49 @@ def main():
     ap.add_argument("--capture", required=True)
     ap.add_argument("--arm", choices=["ref", "arena"])
     ap.add_argument("--policies", default="dtype,role,fine")
-    ap.add_argument("--policy", default="dtype",
-                    help="arena grouping for the cross-process compile matrix")
-    ap.add_argument("--both", action="store_true",
-                    help="warm in-process alternating A/B (device time)")
+    ap.add_argument(
+        "--policy",
+        default="dtype",
+        help="arena grouping for the cross-process compile matrix",
+    )
+    ap.add_argument(
+        "--both",
+        action="store_true",
+        help="warm in-process alternating A/B (device time)",
+    )
     ap.add_argument("--cache", default="")
     ap.add_argument("--reps", type=int, default=20)
     ap.add_argument("--out", default="")
     ap.add_argument("--tag", default="")
-    ap.add_argument("--align", type=int, default=0,
-                    help="pad each array's arena base to N bytes (0 = pack "
-                         "back-to-back, the original behaviour)")
+    ap.add_argument(
+        "--align",
+        type=int,
+        default=0,
+        help="pad each array's arena base to N bytes (0 = pack "
+        "back-to-back, the original behaviour)",
+    )
     a = ap.parse_args()
 
     global ALIGN_BYTES
     ALIGN_BYTES = a.align
 
     if a.both:
-        rec = run_both(a.capture, a.cache, a.reps,
-                       policies=tuple(a.policies.split(",")))
+        rec = run_both(
+            a.capture, a.cache, a.reps, policies=tuple(a.policies.split(","))
+        )
         if a.out:
             with open(a.out, "w") as fh:
                 json.dump(rec, fh, indent=2)
         return
     if a.arm:
-        print("RESULT " + json.dumps(run_arm(a.arm, a.capture, a.cache,
-                                             a.reps, a.tag, a.policy)))
+        print(
+            "RESULT "
+            + json.dumps(run_arm(a.arm, a.capture, a.cache, a.reps, a.tag, a.policy))
+        )
         return
 
     import tempfile
+
     root = a.out or tempfile.mkdtemp(prefix="arena_real_")
     os.makedirs(root, exist_ok=True)
     recs = {}
@@ -721,30 +828,45 @@ def main():
             cache = os.path.join(root, "cache_" + arm)
             os.makedirs(cache, exist_ok=True)
             proc = subprocess.run(
-                [sys.executable, os.path.abspath(__file__),
-                 "--capture", a.capture, "--arm", arm, "--cache", cache,
-                 "--reps", str(a.reps), "--tag", f"_{phase}",
-                 "--policy", a.policy, "--align", str(a.align)],
-                capture_output=True, text=True,
+                [
+                    sys.executable,
+                    os.path.abspath(__file__),
+                    "--capture",
+                    a.capture,
+                    "--arm",
+                    arm,
+                    "--cache",
+                    cache,
+                    "--reps",
+                    str(a.reps),
+                    "--tag",
+                    f"_{phase}",
+                    "--policy",
+                    a.policy,
+                    "--align",
+                    str(a.align),
+                ],
+                capture_output=True,
+                text=True,
                 # A warm daemon would serve these from a process that may hold
                 # another arm's monkey-patched module, and its ti.static gates
                 # are already resolved. One fresh process per arm.
-                env={**os.environ, "ALGAN_USE_DAEMON": "0",
-                     "ALGAN_AUTO_DAEMON": "0"},
+                env={**os.environ, "ALGAN_USE_DAEMON": "0", "ALGAN_AUTO_DAEMON": "0"},
             )
-            line = [x for x in proc.stdout.splitlines()
-                    if x.startswith("RESULT ")]
+            line = [x for x in proc.stdout.splitlines() if x.startswith("RESULT ")]
             if not line:
                 print(proc.stdout[-6000:])
                 print(proc.stderr[-6000:])
                 raise SystemExit(f"{arm}/{phase} failed")
             rec = json.loads(line[0][7:])
             recs[(phase, arm)] = rec
-            print(f"{phase:5s} {arm:6s} ndarrays={rec['n_ndarray_args']:3d} "
-                  f"total_args={rec['n_total_args']:3d} "
-                  f"first_launch={rec['first_launch_s']:8.3f}s "
-                  f"device={rec['device_ms']:8.3f}ms "
-                  f"launch={rec['launch_overhead_us']:8.1f}us")
+            print(
+                f"{phase:5s} {arm:6s} ndarrays={rec['n_ndarray_args']:3d} "
+                f"total_args={rec['n_total_args']:3d} "
+                f"first_launch={rec['first_launch_s']:8.3f}s "
+                f"device={rec['device_ms']:8.3f}ms "
+                f"launch={rec['launch_overhead_us']:8.1f}us"
+            )
 
     d1 = recs[("warm", "ref")]["digests"]
     d2 = recs[("warm", "arena")]["digests"]

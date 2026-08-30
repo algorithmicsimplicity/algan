@@ -162,7 +162,12 @@ extend-exclude = [
   "media",
   "algan/external_libraries",
 ]
-fix = true
+# `ruff check` reports and does not rewrite. Opt in to rewriting per-invocation
+# with `ruff check --fix` (and `--unsafe-fixes` for the rest). This used to be
+# `fix = true`, which made the plain command a silent bulk-edit of the working
+# tree -- surprising on its own, and actively dangerous in a repo where a fix
+# applied to a Taichi kernel changes what the GPU compiles.
+fix = false
 
 [tool.ruff.lint]
 select = [

@@ -52,7 +52,8 @@ def install_hook(which_call=0):
     # so the replay can rebuild the call positionally without a hand-written
     # list that could drift from the signature.
     import inspect
-    _fn = getattr(real_kernel, '__wrapped__', real_kernel)
+
+    _fn = getattr(real_kernel, "__wrapped__", real_kernel)
     names = list(inspect.signature(_fn).parameters)
 
     def hook(*args, **kwargs):
@@ -80,25 +81,27 @@ def build_scene(width, height, ssaa):
         OUT,
         RED,
         RIGHT,
+        SETTINGS,
         UP,
         Circle,
         MeshStandardMaterial,
         Off,
         PointLight,
+        Scene,
         Sphere,
         Square,
         Sync,
         Text,
-        Scene,
-        SETTINGS,
     )
 
-    SETTINGS.video.set(resolution=(width, height), frames_per_second=10,
-                       super_sampling_anti_aliasing=ssaa)
+    SETTINGS.video.set(
+        resolution=(width, height),
+        frames_per_second=10,
+        super_sampling_anti_aliasing=ssaa,
+    )
     with Off():
         floor = Square().scale(8).rotate(90, RIGHT).move(DOWN * 2.2)
-        floor.set_material(MeshStandardMaterial(roughness=0.15,
-                                                metalness=0.6))
+        floor.set_material(MeshStandardMaterial(roughness=0.15, metalness=0.6))
         floor.spawn()
         s1 = Sphere().scale(0.8).move(LEFT * 2.5).spawn()
         s2 = Sphere().scale(0.5).move(RIGHT * 2.5 + UP).spawn()
@@ -130,8 +133,9 @@ def main():
     install_hook()
     build_scene(width, height, ssaa)
     with contextlib.suppress(_CaptureDone):
-        Scene.save_video(os.path.join("benchmarks", "_arena_capture_probe"),
-                         overwrite=True)
+        Scene.save_video(
+            os.path.join("benchmarks", "_arena_capture_probe"), overwrite=True
+        )
 
     if "args" not in CAPTURE:
         raise SystemExit("kernel was never launched -- scene took another path")
@@ -139,8 +143,10 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     torch.save(CAPTURE, out_path)
     total = 0
-    print(f"captured {len(CAPTURE['args'])} args from sheet_resolve_shade "
-          f"at {width}x{height} ssaa={ssaa}")
+    print(
+        f"captured {len(CAPTURE['args'])} args from sheet_resolve_shade "
+        f"at {width}x{height} ssaa={ssaa}"
+    )
     for name, (kind, val) in zip(CAPTURE["names"], CAPTURE["args"]):
         if kind == "tensor":
             total += val.numel() * val.element_size()

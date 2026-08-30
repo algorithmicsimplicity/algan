@@ -62,14 +62,14 @@ for y in range(400, 620, 2):
     xs = np.where(row > bg + 6)[0]
     if len(xs) < 20:
         continue
-    l, r = xs.min(), xs.max()
+    lo, hi = xs.min(), xs.max()
     # overshoot = outermost covered pixel above the pixel just inside it
-    worst = max(worst, row[l] - row[l + 1], row[r] - row[r - 1])
+    worst = max(worst, row[lo] - row[lo + 1], row[hi] - row[hi - 1])
 for y in [470, 510, 550, 570, 600]:
     row = R[y]
     xs = np.where(row > bg + 6)[0]
     if len(xs) < 20:
         continue
-    l, r = xs.min(), xs.max()
-    print(f" y={y} LEFT", row[l - 2 : l + 9], " RIGHT", row[r - 8 : r + 3])
+    lo, hi = xs.min(), xs.max()
+    print(f" y={y} LEFT", row[lo - 2 : lo + 9], " RIGHT", row[hi - 8 : hi + 3])
 print(f"worst rim overshoot (outer minus next-inner): {worst}")

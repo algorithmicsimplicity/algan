@@ -114,19 +114,23 @@ def build_split():
 
 
 def build_view():
-    params = ["n: ti.i32", "af: ti.types.ndarray()", "ai: ti.types.ndarray()",
-              "off_f: ti.types.ndarray()", "off_i: ti.types.ndarray()",
-              "shp: ti.types.ndarray()", "out: ti.types.ndarray()"]
+    params = [
+        "n: ti.i32",
+        "af: ti.types.ndarray()",
+        "ai: ti.types.ndarray()",
+        "off_f: ti.types.ndarray()",
+        "off_i: ti.types.ndarray()",
+        "shp: ti.types.ndarray()",
+        "out: ti.types.ndarray()",
+    ]
     head = ["@ti.kernel", "def k_view(", "        " + ", ".join(params) + "):"]
     # One binding line per array, at the top of the kernel -- the entire diff a
     # real port would make to a megakernel body.
     binds = []
     for k in range(NF):
-        binds.append(f"    a{k} = ti.static(View(af, off_f[{k}], "
-                     f"(shp[0], shp[1])))")
+        binds.append(f"    a{k} = ti.static(View(af, off_f[{k}], (shp[0], shp[1])))")
     for k in range(NI):
-        binds.append(f"    b{k} = ti.static(View(ai, off_i[{k}], "
-                     f"(shp[2], shp[3])))")
+        binds.append(f"    b{k} = ti.static(View(ai, off_i[{k}], (shp[2], shp[3])))")
     body = _body(lambda k: f"a{k}", lambda k: f"b{k}")
     return "\n".join(head + binds + body), "k_view"
 
@@ -146,46 +150,52 @@ def run_arm(arm, cache_dir, reps):
     dev = "cuda" if arch == ti.cuda else "cpu"
 
     gen = torch.Generator(device=dev).manual_seed(1234)
-    fbuf = torch.rand(NF * ROWS * COLS, device=dev, generator=gen,
-                      dtype=torch.float32)
-    ibuf = torch.randint(0, 1000, (NI * IROWS * COLS,), device=dev,
-                         generator=gen, dtype=torch.int32)
+    fbuf = torch.rand(NF * ROWS * COLS, device=dev, generator=gen, dtype=torch.float32)
+    ibuf = torch.randint(
+        0, 1000, (NI * IROWS * COLS,), device=dev, generator=gen, dtype=torch.int32
+    )
     out = torch.zeros(NTHREADS, device=dev, dtype=torch.float32)
 
     src, name = build_split() if arm == "split" else build_view()
-    mod_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "_arena_arg_gen")
+    mod_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_arena_arg_gen")
     os.makedirs(mod_dir, exist_ok=True)
-    header = "\n".join([
-        "import taichi as ti",
-        f"MASK = {ROWS - 1}",
-        f"IMASK = {IROWS - 1}",
-        VIEW_SRC if arm == "view" else "",
-        "",
-    ])
+    header = "\n".join(
+        [
+            "import taichi as ti",
+            f"MASK = {ROWS - 1}",
+            f"IMASK = {IROWS - 1}",
+            VIEW_SRC if arm == "view" else "",
+            "",
+        ]
+    )
     tag = f"v_{NF}_{NI}_{ROUNDS}_{arm}"
-    with open(os.path.join(mod_dir, f"gen_{tag}.py"), "w",
-              encoding="utf-8") as fh:
+    with open(os.path.join(mod_dir, f"gen_{tag}.py"), "w", encoding="utf-8") as fh:
         fh.write(header + src + "\n")
     sys.path.insert(0, mod_dir)
     import importlib
+
     mod = importlib.import_module(f"gen_{tag}")
     importlib.reload(mod)
     kernel = getattr(mod, name)
 
     if arm == "split":
-        arrs = [fbuf[k * ROWS * COLS:(k + 1) * ROWS * COLS].view(ROWS, COLS)
-                for k in range(NF)]
-        iarrs = [ibuf[k * IROWS * COLS:(k + 1) * IROWS * COLS].view(IROWS, COLS)
-                 for k in range(NI)]
+        arrs = [
+            fbuf[k * ROWS * COLS : (k + 1) * ROWS * COLS].view(ROWS, COLS)
+            for k in range(NF)
+        ]
+        iarrs = [
+            ibuf[k * IROWS * COLS : (k + 1) * IROWS * COLS].view(IROWS, COLS)
+            for k in range(NI)
+        ]
         args = [NTHREADS, *arrs, *iarrs, out]
     else:
-        off_f = torch.tensor([k * ROWS * COLS for k in range(NF)], device=dev,
-                             dtype=torch.int32)
-        off_i = torch.tensor([k * IROWS * COLS for k in range(NI)], device=dev,
-                             dtype=torch.int32)
-        shp = torch.tensor([ROWS, COLS, IROWS, COLS], device=dev,
-                           dtype=torch.int32)
+        off_f = torch.tensor(
+            [k * ROWS * COLS for k in range(NF)], device=dev, dtype=torch.int32
+        )
+        off_i = torch.tensor(
+            [k * IROWS * COLS for k in range(NI)], device=dev, dtype=torch.int32
+        )
+        shp = torch.tensor([ROWS, COLS, IROWS, COLS], device=dev, dtype=torch.int32)
         args = [NTHREADS, fbuf, ibuf, off_f, off_i, shp, out]
 
     _sync_devices()
@@ -255,6 +265,7 @@ def main():
         return
 
     import tempfile
+
     root = args.out or tempfile.mkdtemp(prefix="arena_view_ab_")
     os.makedirs(root, exist_ok=True)
     print(f"[shape NF={NF} NI={NI} COLS={COLS} ROUNDS={ROUNDS}]")
@@ -263,23 +274,33 @@ def main():
             cache = os.path.join(root, f"cache_{NF}_{ROUNDS}_{arm}")
             os.makedirs(cache, exist_ok=True)
             proc = subprocess.run(
-                [sys.executable, os.path.abspath(__file__), "--arm", arm,
-                 "--cache", cache, "--reps", str(args.reps)],
-                capture_output=True, text=True,
+                [
+                    sys.executable,
+                    os.path.abspath(__file__),
+                    "--arm",
+                    arm,
+                    "--cache",
+                    cache,
+                    "--reps",
+                    str(args.reps),
+                ],
+                capture_output=True,
+                text=True,
             )
-            line = [x for x in proc.stdout.splitlines()
-                    if x.startswith("RESULT ")]
+            line = [x for x in proc.stdout.splitlines() if x.startswith("RESULT ")]
             if not line:
                 print(proc.stdout[-4000:])
                 print(proc.stderr[-4000:])
                 raise SystemExit(f"{arm}/{phase} failed")
             rec = json.loads(line[0][7:])
-            print(f"{phase:5s} {arm:6s} args={rec['n_kernel_args']:3d} "
-                  f"first_launch={rec['first_launch_s']:7.3f}s "
-                  f"device={rec['device_ms']:8.3f}ms "
-                  f"launch={rec['launch_overhead_us']:7.1f}us "
-                  f"(fl {rec['fast_launch_hits']}/{rec['fast_launch_misses']}) "
-                  f"chk={rec['checksum']:.9e}")
+            print(
+                f"{phase:5s} {arm:6s} args={rec['n_kernel_args']:3d} "
+                f"first_launch={rec['first_launch_s']:7.3f}s "
+                f"device={rec['device_ms']:8.3f}ms "
+                f"launch={rec['launch_overhead_us']:7.1f}us "
+                f"(fl {rec['fast_launch_hits']}/{rec['fast_launch_misses']}) "
+                f"chk={rec['checksum']:.9e}"
+            )
 
 
 if __name__ == "__main__":

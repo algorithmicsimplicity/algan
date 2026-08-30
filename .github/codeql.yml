@@ -1,3 +1,22 @@
+# Configuration for the CodeQL workflow (.github/workflows/codeql.yaml).
+#
+# The query exclusions below were inherited from Manim and are kept on this
+# first enablement rather than re-derived, so that the initial alert set is
+# something a person can actually triage. Two of them are confirmed against
+# this codebase:
+#
+#   py/unexpected-raise-in-special-method  -- Mob.__getattr__ and the SETTINGS
+#       section __getattr__/__setattr__ raise AttributeError to report an
+#       unknown attribute or alias (algan/animatable_base/mob.py,
+#       algan/settings/abstract_settings.py).
+#   py/init-calls-subclass, py/multiple-calls-to-init, py/missing-call-to-init
+#       -- the Mob mixin hierarchy under algan/animatable_base cooperates
+#       through __init__ in ways CodeQL's model reads as bugs.
+#
+# The remaining two -- py/modification-of-locals and
+# py/method-first-arg-is-not-self -- are carried over unverified; nothing in
+# `algan/` was found to trigger them. Drop them once a scan has run and shown
+# they are genuinely unneeded.
 query-filters:
     - exclude:
           id: py/init-calls-subclass
@@ -11,8 +30,18 @@ query-filters:
           id: py/missing-call-to-init
     - exclude:
         id: py/method-first-arg-is-not-self
+
+# Scan Algan's own source and nothing else. `algan/external_libraries` is
+# vendored third-party code (manim, ground, sect) that CLAUDE.md treats as
+# read-only -- alerts there are not actionable, and they would swamp the ones
+# that are. The previous version of this file said `paths: - manim`, a
+# directory this repository does not have, which was left over from Manim.
 paths:
-    - manim
+    - algan
 paths-ignore:
-    - tests/
-    - example_scenes/
+    - algan/external_libraries
+    - tests
+    - benchmarks
+    - example_scenes
+    - docs
+    - scripts

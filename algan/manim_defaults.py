@@ -1,4 +1,4 @@
-"""Match a Scene's viewpoint, lighting and framing to Manim's defaults.
+r"""Match a Scene's viewpoint, lighting and framing to Manim's defaults.
 
 :func:`apply_manim_defaults` -- reached as
 :meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>` -- repoints

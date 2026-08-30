@@ -3431,9 +3431,6 @@ def wavefront_shade_arena(
             ff = ti.cast(f, ti.f32)
             ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
             rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-            inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
-                                  _safe_inverse(rd[1]),
-                                  _safe_inverse(rd[2]))
 
             w_bg = ti.math.vec3(1.0, 1.0, 1.0)
             if ti.static(first_iter == 0):

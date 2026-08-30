@@ -14,15 +14,15 @@ running only the actual check actions (linting, formatting, testing, doc buildin
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import itertools
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 try:
     import yaml
@@ -78,15 +78,15 @@ def format_cell(text: str, width: int, align: str = "left") -> str:
 @dataclass
 class Step:
     name: str
-    run: Optional[str] = None
-    uses: Optional[str] = None
-    with_args: Dict[str, Any] = field(default_factory=dict)
-    env: Dict[str, str] = field(default_factory=dict)
-    if_cond: Optional[str] = None
-    working_directory: Optional[str] = None
+    run: str | None = None
+    uses: str | None = None
+    with_args: dict[str, Any] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
+    if_cond: str | None = None
+    working_directory: str | None = None
     continue_on_error: bool = False
     is_setup: bool = False
-    source_file: Optional[Path] = None
+    source_file: Path | None = None
 
 
 @dataclass
@@ -94,11 +94,11 @@ class Job:
     id: str
     name: str
     runs_on: str
-    needs: List[str] = field(default_factory=list)
-    strategy_matrix: Dict[str, List[Any]] = field(default_factory=dict)
-    env: Dict[str, str] = field(default_factory=dict)
-    steps: List[Step] = field(default_factory=list)
-    if_cond: Optional[str] = None
+    needs: list[str] = field(default_factory=list)
+    strategy_matrix: dict[str, list[Any]] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
+    steps: list[Step] = field(default_factory=list)
+    if_cond: str | None = None
 
 
 @dataclass
@@ -106,8 +106,8 @@ class Workflow:
     path: Path
     filename: str
     name: str
-    env: Dict[str, str] = field(default_factory=dict)
-    jobs: Dict[str, Job] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
+    jobs: dict[str, Job] = field(default_factory=dict)
 
 
 @dataclass
@@ -118,7 +118,7 @@ class StepResult:
     command: str
     status: str  # "PASSED", "FAILED", "SKIPPED"
     duration: float
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 class StepClassifier:
@@ -187,7 +187,10 @@ class StepClassifier:
 
             # If step name strongly indicates setup and is not a known check
             name_lower = step.name.lower()
-            if any(
+            # Kept nested rather than merged with the inner `not any(...)`:
+            # both conditions are multi-line `any()` comprehensions, and the
+            # comment below explains the exception the inner one carves out.
+            if any(  # noqa: SIM102
                 keyword in name_lower
                 for keyword in [
                     "install system dependencies",
@@ -217,8 +220,8 @@ class ExpressionEvaluator:
     @staticmethod
     def evaluate(
         text: str,
-        matrix_context: Dict[str, Any],
-        env_context: Dict[str, str],
+        matrix_context: dict[str, Any],
+        env_context: dict[str, str],
         repo_root: Path,
         workflow_name: str,
     ) -> str:
@@ -288,7 +291,7 @@ class WorkflowParser:
         self.repo_root = repo_root
         self.workflows_dir = repo_root / ".github" / "workflows"
 
-    def discover_workflows(self) -> List[Path]:
+    def discover_workflows(self) -> list[Path]:
         if not self.workflows_dir.exists():
             return []
 
@@ -299,7 +302,7 @@ class WorkflowParser:
 
         return workflow_files
 
-    def parse_workflow(self, file_path: Path) -> Optional[Workflow]:
+    def parse_workflow(self, file_path: Path) -> Workflow | None:
         if yaml is None:
             raise RuntimeError(
                 "PyYAML is not installed. Please install PyYAML (e.g., `uv pip install pyyaml`) "
@@ -307,7 +310,7 @@ class WorkflowParser:
             )
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
         except Exception as e:
             print(
@@ -350,7 +353,7 @@ class WorkflowParser:
                 needs = []
 
             # Matrix strategy
-            strategy_matrix: Dict[str, List[Any]] = {}
+            strategy_matrix: dict[str, list[Any]] = {}
             strategy = job_spec.get("strategy", {})
             if isinstance(strategy, dict):
                 matrix = strategy.get("matrix", {})
@@ -366,7 +369,7 @@ class WorkflowParser:
 
             # Job steps
             steps_data = job_spec.get("steps", [])
-            steps: List[Step] = []
+            steps: list[Step] = []
             if isinstance(steps_data, list):
                 for step_spec in steps_data:
                     if not isinstance(step_spec, dict):
@@ -424,7 +427,7 @@ class WorkflowParser:
 
         return workflow
 
-    def load_all_workflows(self) -> List[Workflow]:
+    def load_all_workflows(self) -> list[Workflow]:
         workflow_paths = self.discover_workflows()
         workflows = []
         for path in workflow_paths:
@@ -452,10 +455,10 @@ class LocalCIRunner:
         self.dry_run = dry_run
         self.matrix_all = matrix_all
         self.verbose = verbose
-        self.results: List[StepResult] = []
+        self.results: list[StepResult] = []
 
     def _normalize_command(self, cmd: str) -> str:
-        """Normalizes multiline shell commands (e.g. joining lines ending in \\)."""
+        r"""Normalizes multiline shell commands (e.g. joining lines ending in \\)."""
         lines = [line.strip() for line in cmd.strip().splitlines() if line.strip()]
         if not lines:
             return ""
@@ -477,8 +480,8 @@ class LocalCIRunner:
         return " && ".join(joined_lines) if len(joined_lines) > 1 else joined_lines[0]
 
     def _get_matrix_combinations(
-        self, matrix_def: Dict[str, List[Any]]
-    ) -> List[Dict[str, Any]]:
+        self, matrix_def: dict[str, list[Any]]
+    ) -> list[dict[str, Any]]:
         """Generates matrix combinations. Returns [ {} ] if matrix is empty."""
         if not matrix_def:
             return [{}]
@@ -498,10 +501,10 @@ class LocalCIRunner:
     def _execute_command(
         self,
         cmd: str,
-        env: Dict[str, str],
+        env: dict[str, str],
         working_dir: Path,
         step_label: str,
-    ) -> Tuple[bool, float, Optional[str]]:
+    ) -> tuple[bool, float, str | None]:
         """Executes a single normalized shell command and streams output."""
         start_time = time.time()
 
@@ -552,7 +555,7 @@ class LocalCIRunner:
         step: Step,
         workflow: Workflow,
         job: Job,
-        matrix_context: Dict[str, Any],
+        matrix_context: dict[str, Any],
         step_idx: int,
         total_steps: int,
     ) -> StepResult:
@@ -640,7 +643,7 @@ class LocalCIRunner:
         )
 
     def run_job(
-        self, job: Job, workflow: Workflow, matrix_context: Dict[str, Any]
+        self, job: Job, workflow: Workflow, matrix_context: dict[str, Any]
     ) -> bool:
         matrix_str = (
             f" [matrix: {', '.join(f'{k}={v}' for k, v in matrix_context.items())}]"
@@ -679,7 +682,7 @@ class LocalCIRunner:
         return all_passed
 
     def run_workflow(
-        self, workflow: Workflow, target_job_id: Optional[str] = None
+        self, workflow: Workflow, target_job_id: str | None = None
     ) -> bool:
         print(
             f"\n{Style.BOLD}{Style.MAGENTA}======================================================{Style.RESET}"
@@ -714,10 +717,10 @@ class LocalCIRunner:
 
         return workflow_passed
 
-    def _resolve_job_order(self, jobs: Dict[str, Job]) -> List[str]:
+    def _resolve_job_order(self, jobs: dict[str, Job]) -> list[str]:
         """Resolves execution order of jobs according to `needs:` dependencies."""
         visited = set()
-        order: List[str] = []
+        order: list[str] = []
 
         def visit(jid: str) -> None:
             if jid in visited or jid not in jobs:
@@ -811,7 +814,7 @@ class LocalCIRunner:
             return 0
 
 
-def list_workflows(workflows: List[Workflow], skip_setup: bool) -> None:
+def list_workflows(workflows: list[Workflow], skip_setup: bool) -> None:
     """Lists discovered workflows, jobs, and steps with their classification."""
     print(
         f"\n{Style.BOLD}{Style.WHITE}Discovered CI Workflows & Actions:{Style.RESET}\n"

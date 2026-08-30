@@ -420,7 +420,8 @@ def _two_sided_normal(n_interp, face_n, flat, view_dir):
     the harness scenes -- ``_faces_viewer`` reads the geometric normal wherever
     it is credible, and the blend only moves that credibility test's own dot
     product -- so this is parity by reasoning, not a fix for anything
-    observed."""
+    observed.
+    """
     n = n_interp
     if not _faces_viewer(_shading_normal(n_interp, face_n, flat), face_n,
                          view_dir):

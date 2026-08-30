@@ -98,12 +98,12 @@ def _build_material(mat):
             opacity=opacity,
         )
 
-    common = dict(
-        color=color,
-        emissive=_color(mat.get("emissive"), (0.0, 0.0, 0.0)),
-        emissive_intensity=mat.get("emissive_intensity", 1.0),
-        opacity=opacity,
-    )
+    common = {
+        "color": color,
+        "emissive": _color(mat.get("emissive"), (0.0, 0.0, 0.0)),
+        "emissive_intensity": mat.get("emissive_intensity", 1.0),
+        "opacity": opacity,
+    }
     if kind == "lambert":
         return MeshLambertMaterial(**common)
     if kind == "phong":
@@ -118,9 +118,10 @@ def _build_material(mat):
     # defaults and three_render.mjs already applied 0.85, so the two back ends
     # were silently rendering different materials for any object that left
     # roughness out.
-    pbr = dict(
-        roughness=mat.get("roughness", 0.85), metalness=mat.get("metalness", 0.0)
-    )
+    pbr = {
+        "roughness": mat.get("roughness", 0.85),
+        "metalness": mat.get("metalness", 0.0),
+    }
     if kind == "standard":
         return MeshStandardMaterial(**pbr, **common)
     return MeshPhysicalMaterial(
