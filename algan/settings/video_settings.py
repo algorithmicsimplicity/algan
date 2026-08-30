@@ -26,8 +26,8 @@ leaves ``HD`` alone. Pass one to
 
 Two fields carry a short second spelling, because their long names are a
 mouthful for something written this often: ``fps``/``FPS`` for
-``frames_per_second`` and ``ssaa``/``SSAA`` for
-``super_sampling_anti_aliasing``. They are the same setting -- ``HD.set(fps=60)``
+``frames_per_second`` and ``ssaa``/``SSAA`` for ``supersampling``.
+They are the same setting -- ``HD.set(fps=60)``
 and ``HD.set(frames_per_second=60)`` do the same thing, and reading either
 spelling answers with the same value.
 """
@@ -43,15 +43,15 @@ from algan.settings.abstract_settings import Settings, settings_aliases
 @settings_aliases(
     fps="frames_per_second",
     FPS="frames_per_second",
-    ssaa="super_sampling_anti_aliasing",
-    SSAA="super_sampling_anti_aliasing",
+    ssaa="supersampling",
+    SSAA="supersampling",
 )
 @dataclass
 class VideoSettings(Settings):
     """Video output settings used by :meth:`algan.scene.Scene.save_video`.
 
     ``frames_per_second`` may also be written ``fps`` or ``FPS``, and
-    ``super_sampling_anti_aliasing`` -- how many samples per axis the frame is
+    ``supersampling`` -- how many samples per axis the frame is
     rendered at before being filtered back down to ``resolution`` -- may also be
     written ``ssaa`` or ``SSAA``. The short spellings are accepted for reading,
     for assignment, as constructor keywords and by :meth:`set`; the declared
@@ -60,9 +60,9 @@ class VideoSettings(Settings):
 
     resolution: tuple[int, int]
     frames_per_second: int = 30
-    super_sampling_anti_aliasing: int = 2
+    supersampling: int = 2
     fxaa: bool = False
-    audio_frames_per_second: int = 44100
+    audio_sample_rate: int = 44100
 
     def __post_init__(self):
         try:
@@ -87,20 +87,18 @@ class VideoSettings(Settings):
                 "frames_per_second must be a positive integer"
             )
         if (
-            not isinstance(self.super_sampling_anti_aliasing, int)
-            or isinstance(self.super_sampling_anti_aliasing, bool)
-            or self.super_sampling_anti_aliasing <= 0
+            not isinstance(self.supersampling, int)
+            or isinstance(self.supersampling, bool)
+            or self.supersampling <= 0
         ):
-            raise AlganConfigurationError(
-                "super_sampling_anti_aliasing must be a positive integer"
-            )
+            raise AlganConfigurationError("supersampling must be a positive integer")
         if (
-            not isinstance(self.audio_frames_per_second, int)
-            or isinstance(self.audio_frames_per_second, bool)
-            or self.audio_frames_per_second <= 0
+            not isinstance(self.audio_sample_rate, int)
+            or isinstance(self.audio_sample_rate, bool)
+            or self.audio_sample_rate <= 0
         ):
             raise AlganConfigurationError(
-                "audio_frames_per_second must be a positive integer"
+                "audio_sample_rate must be a positive integer"
             )
         if not isinstance(self.fxaa, bool):
             raise AlganConfigurationError("fxaa must be a boolean")
@@ -112,9 +110,9 @@ def _preset(*args, **kwargs):
     return VideoSettings(*args, **kwargs).as_preset()
 
 
-THUMBNAIL = _preset((1280, 720), 1, super_sampling_anti_aliasing=4)
-SMOKE_TEST = _preset((32, 32), 2, super_sampling_anti_aliasing=1)
-PREVIEW = _preset((704, 396), 10, super_sampling_anti_aliasing=1)
+THUMBNAIL = _preset((1280, 720), 1, supersampling=4)
+SMOKE_TEST = _preset((32, 32), 2, supersampling=1)
+PREVIEW = _preset((704, 396), 10, supersampling=1)
 LD = _preset((864, 486), 15)
 MD = _preset((1280, 720), 30)
 HD = _preset((1920, 1080), 30)

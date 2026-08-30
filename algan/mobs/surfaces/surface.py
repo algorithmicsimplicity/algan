@@ -1285,6 +1285,25 @@ class Surface(Mob):
         self.ignore_wave_animations = True
         self._resolution_update_in_progress = False
 
+    @property
+    def vertices(self) -> torch.Tensor:
+        """The surface's vertex positions, shape ``(*, grid_width * grid_height, 3)``.
+
+        The live tensor the renderer tessellates from, laid out row-major over
+        the ``grid_height`` x ``grid_width`` sample grid. Writing it moves the
+        surface's vertices, and is recorded like any other Mob attribute.
+
+        Animation
+        ---------
+        Assignment is recorded, so the vertices travel to their new positions
+        over the current context's duration.
+        """
+        return self.grid.location
+
+    @vertices.setter
+    def vertices(self, value):
+        self.grid.location = value
+
     @classmethod
     def from_batches(cls, centers, *args, colors=None, **kwargs):
         """Build many independently indexable surfaces without per-surface mobs.

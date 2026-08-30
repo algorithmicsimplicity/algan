@@ -103,7 +103,7 @@ region:
 whole outline. :func:`~.ShowPassingFlashWithThinningStrokeWidth` does the same
 with a tapering stroke.
 
-To draw a shape on screen as if by hand, use :func:`~.draw_border_then_fill`. It
+To draw a shape on screen as if by hand, use :func:`~.DrawBorderThenFill`. It
 first traces the outer border and then animates the fill:
 
 .. algan:: AnimationsDrawBorderThenFill
@@ -113,7 +113,7 @@ first traces the outer border and then animates the fill:
     circle = Circle(color=BLUE).scale(0.8).move(LEFT * 2).spawn(False)
     square = Square(color=YELLOW).scale(0.8).move(RIGHT * 2).spawn(False)
 
-    draw_border_then_fill([circle, square], run_time=2)
+    DrawBorderThenFill([circle, square], run_time=2)
 
     Scene.save_video()
 

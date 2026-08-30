@@ -23,7 +23,7 @@ from algan.logging.logger import get_logger
 logger = get_logger("audio")
 pattern = re.compile(r"[\W_]+", re.UNICODE)
 
-from algan.errors import TranscriptAudioMismatchError
+from algan.errors import AudioTranscriptMismatchError
 
 # --- Configuration ---
 # A larger chunk size is more efficient with the optimized torchaudio function.
@@ -277,7 +277,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
         if (
             script_start_ind < 0
         ):  # script_words != [_[0] for _ in word_time_stamps[word_counter.count:word_counter.count+len(script_words)]]:
-            # raise TranscriptAudioMismatchError(f'Error, the following text was not found in the recorded '
+            # raise AudioTranscriptMismatchError(f'Error, the following text was not found in the recorded '
             #                                   f'transcript of the speech audio file:\n\n{script_words}')
             logger.warning(
                 f"Warning: the following text was not found in the recorded transcript of the speech"

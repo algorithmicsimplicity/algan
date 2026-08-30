@@ -45,7 +45,7 @@ row links to the section that explains it.
      - No
      - No
      - `Anti-aliasing`_
-   * - Supersampling (``super_sampling_anti_aliasing``)
+   * - Supersampling (``supersampling``)
      - Ignored
      - Yes
      - Ignored (jittered samples instead)
@@ -233,7 +233,7 @@ Within the deterministic renderer: two paths
 
 The deterministic renderer has an **analytic-coverage path** (the default, and
 the one every example in these docs uses) and a **supersampled fallback**. The
-fallback renders the frame at ``super_sampling_anti_aliasing`` (``ssaa``) times
+fallback renders the frame at ``supersampling`` (``ssaa``) times
 the output resolution and box-filters it back down, casting one primary ray per
 sub-pixel sample.
 
@@ -262,8 +262,8 @@ The fallback is a genuine quality *and* cost change, so it is worth knowing when
 you are on it:
 
 * Analytic coverage is off. Edge quality is whatever
-  ``super_sampling_anti_aliasing`` (default ``2``) buys.
-* The frame buffer is ``super_sampling_anti_aliasing ** 2`` times larger, so
+  ``supersampling`` (default ``2``) buys.
+* The frame buffer is ``supersampling ** 2`` times larger, so
   batches shrink by the same factor and the render takes correspondingly longer.
   At the default that is 4x.
 * Per-fragment shading, shadows, reflection and refraction all still work. Only
@@ -711,7 +711,7 @@ What analytic coverage does and does not resolve
 Other anti-aliasing notes
 -------------------------
 
-* ``super_sampling_anti_aliasing`` is **ignored** on the analytic path, which
+* ``supersampling`` is **ignored** on the analytic path, which
   always renders at output resolution. It applies only on the supersampled
   fallback.
 * FXAA is available (``video_settings.fxaa``). It runs on linear HDR values

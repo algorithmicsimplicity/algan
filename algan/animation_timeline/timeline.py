@@ -1407,10 +1407,10 @@ class AttributeTimeline:
                     f"reshape itself while frames are being rendered.\n\n"
                     f"Updaters can set any animatable attribute (location, "
                     f"color, opacity, ...) but not restructure a Mob. For a "
-                    f"value that counts up, use NumericDisplay, whose digits "
+                    f"value that counts up, use DecimalNumber, whose digits "
                     f"animate without rebuilding geometry:\n\n"
                     f"    tracker = ValueTracker(0).spawn()\n"
-                    f"    display = NumericDisplay(0.0).spawn()\n"
+                    f"    display = DecimalNumber(0.0).spawn()\n"
                     f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
                 )
 

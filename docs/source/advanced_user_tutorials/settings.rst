@@ -67,7 +67,7 @@ Short spellings
 
 Two video settings have long names for something written this often, so each
 takes a short alias as well -- ``fps`` or ``FPS`` for ``frames_per_second``, and
-``ssaa`` or ``SSAA`` for ``super_sampling_anti_aliasing``:
+``ssaa`` or ``SSAA`` for ``supersampling``:
 
 .. code-block:: python
 

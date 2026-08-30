@@ -92,7 +92,7 @@ follow-up with its own proof burden.
   pre-existing, do not chase.
 - The Taichi offline cache does not invalidate on `@ti.func` edits — if you
   edit the kernel after a run, clear the cache
-  (`clear_cache(taichi_kernels=True)`) before re-verifying.
+  (`clear_cached_kernels()`) before re-verifying.
 - Never edit a `*_taichi.py` while one of your own renders is running.
 - Do not modify `scratch_perf/r3/probes/count_window_pairs_dispatches.py`
   in place — copy it if it needs adapting.

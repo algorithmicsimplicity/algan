@@ -923,7 +923,7 @@ class Scene(RenderLoopMixin):
                 f"Color such as BLUE, a hex string ('#101820'), or the path of "
                 f"an image to use as the background."
             ) from not_a_color
-        a = self.video_settings.super_sampling_anti_aliasing
+        a = self.video_settings.supersampling
         # get_image returns [height, width, channels]; interpolate wants
         # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
         # the image's rows and columns instead, rendering it transposed.)

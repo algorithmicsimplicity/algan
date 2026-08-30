@@ -8,7 +8,7 @@ silhouette and the border/fill seam.
 On top of that geometry it exercises the recording side of the engine end to
 end -- the four animation contexts and their nesting, ``run_time`` rescaling,
 rate functions, every indication animation, ``become`` morphing, updaters,
-``wave_color``, ``draw_border_then_fill`` and the spawn/despawn lifecycle.
+``wave_color``, ``DrawBorderThenFill`` and the spawn/despawn lifecycle.
 
 Only native :mod:`algan.mobs.shapes_2d` geometry appears here; the
 Manim-compatibility shapes live in ``manim_compat_and_plots`` so a regression in
@@ -198,7 +198,7 @@ with Seq():
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
-# Act 4 -- become morphing, updaters, NumericDisplay and hand-drawing.
+# Act 4 -- become morphing, updaters, DecimalNumber and hand-drawing.
 # --------------------------------------------------------------------------
 with Sync(run_time=0.8):
     filled_labels.despawn()
@@ -217,10 +217,10 @@ with Off():
     hub = RegularPolygon(3, radius=0.55, color=MAROON).move(LEFT * 1.4 + DOWN * 1.4)
     satellite = Dot(radius=0.17, color=YELLOW).move(LEFT * 1.4 + DOWN * 1.4)
     counter = (
-        NumericDisplay(
+        DecimalNumber(
             0.0,
-            num_decimal_places=1,
-            num_integer_places=2,
+            decimal_places=1,
+            integer_places=2,
             color=WHITE,
         )
         .scale(2.2)
@@ -282,7 +282,7 @@ with Seq():
             )
         )
         counter.set_value(-4.0)
-    draw_border_then_fill([drawn], run_time=1.4)
+    DrawBorderThenFill([drawn], run_time=1.4)
     satellite.remove_updater(orbit_id)
     hub.remove_updater(spin_id)
     Scene.wait(0.3)

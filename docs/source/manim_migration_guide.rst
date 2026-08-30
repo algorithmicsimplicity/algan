@@ -453,7 +453,7 @@ Built-in presets are immutable, so this creates a modified copy:
 
 .. code-block:: python
 
-    fast_hd = HD.set(frames_per_second=24, super_sampling_anti_aliasing=1)
+    fast_hd = HD.set(frames_per_second=24, supersampling=1)
 
 The render device is a setting: ``SETTINGS.computing.set(render_device="cuda")``,
 at the top of the script. The animation device is not -- set

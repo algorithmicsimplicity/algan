@@ -3,7 +3,7 @@
 Scenes: ``text`` and ``shapes`` are bezier circuits (phase 1), ``meshes`` is
 flat triangles (phase 2).
 
-The point of analytic coverage is to retire the ``super_sampling_anti_aliasing`` tax, so
+The point of analytic coverage is to retire the ``supersampling`` tax, so
 the comparison that matters is not "toggle on vs off at the same resolution"
 but:
 
@@ -81,7 +81,7 @@ RES = tuple(int(v) for v in os.environ.get("AA_AB_RES", "1280x720").split("x"))
 FPS = int(os.environ.get("AA_AB_FPS", "15"))
 REPS = int(os.environ.get("AA_AB_REPS", "3"))
 
-# (tag, super_sampling_anti_aliasing, analytic)
+# (tag, supersampling, analytic)
 ARMS = [
     ("aa2_super", 2, False),
     ("aa1_analytic", 1, True),
@@ -170,7 +170,7 @@ def render(name, tag, aa, analytic):
         file_name=fname,
         output_dir=OUT_DIR,
         output_path="",
-        render_settings=RenderSettings(RES, FPS, super_sampling_anti_aliasing=aa),
+        render_settings=RenderSettings(RES, FPS, supersampling=aa),
         file_extension="mp4",
     )
     _sync_devices()

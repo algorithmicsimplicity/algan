@@ -35,7 +35,7 @@ def main():
     out = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "_bez_border_aa_out", f"{MODE}"
     )
-    Scene.save_frame(out, PREVIEW.set(super_sampling_anti_aliasing=4))
+    Scene.save_frame(out, PREVIEW.set(supersampling=4))
 
     from PIL import Image
 

@@ -290,7 +290,7 @@ def render(
     r = spec.get("render", {})
     width = int(r.get("width", 640))
     height = int(r.get("height", 480))
-    video = VideoSettings((width, height), 30, super_sampling_anti_aliasing=aa)
+    video = VideoSettings((width, height), 30, supersampling=aa)
     SETTINGS.video.set(video)
     SETTINGS.raytracing.set(shadows=shadows, tonemapping=tonemap)
     if bounces is not None:
@@ -365,7 +365,7 @@ def main(argv=None):
         nargs="+",
         help="output suffix; give one, or one per scene",
     )
-    ap.add_argument("--aa", type=int, default=3, help="super_sampling_anti_aliasing")
+    ap.add_argument("--aa", type=int, default=3, help="supersampling")
     ap.add_argument(
         "--no-tonemap",
         dest="tonemap",

@@ -618,13 +618,27 @@ before forwarding. Do not change what is sent to Pango.
 | From | To |
 | :--- | :--- |
 | `NumericDisplay(value, num_decimal_places=2)` | `DecimalNumber(value, decimal_places=2)` |
-| `Surface.grid` | `Surface.mesh`, plus `Surface.vertices` property → `mesh.location` |
+| `Surface.grid` | **kept**; only the `Surface.vertices` property is added |
 | `scene_function` | `@algan_scene` |
 | `clear_cache(taichi_kernels=False)` | `clear_cache(include_kernels=False)` + `clear_cached_kernels()` |
 | `draw_border_then_fill` | `DrawBorderThenFill` (class, matching `Indicate`/`Wiggle`) |
 | `TranscriptAudioMismatchError` | `AudioTranscriptMismatchError` |
 | `SETTINGS.video.audio_frames_per_second` | `audio_sample_rate` |
 | `SETTINGS.video.super_sampling_anti_aliasing` | `supersampling`, keeping `ssaa`/`SSAA` aliases |
+
+**Corrected during implementation — `Surface.grid` stays `grid`.** The rename would have made
+the class less coherent, not more: `grid_width`, `grid_height`, `_grid_orientation`,
+`grid_to_triangle_vertices` and the whole tessellation vocabulary say *grid* and the plan keeps
+all of them, so `surface.mesh` beside `surface.grid_width` reads as two different objects. It
+would also collide three ways in the renderer, which already has `TriangleMesh`, `_mesh_key` and
+`mesh_ids` meaning other things, and `render_loop` reads `actor.grid` generically across
+`Surface` and `TriangleMesh` alike. The user-facing half of the row is the part worth having and
+is done: `surface.vertices` reads and writes the vertex positions without reaching through a
+child Mob at all.
+
+**`clear_cache(include_kernels=)` gains `clear_cached_kernels()` as the design asked**, and the
+two are documented as the same operation — the kernel cache lives inside the content-cache
+directory, so there is no way to drop one without the other.
 
 The `NumericDisplay → DecimalNumber` rename **requires Phase 1 to have landed** — the compat
 `DecimalNumber` must be out of the root namespace first, or the two collide.

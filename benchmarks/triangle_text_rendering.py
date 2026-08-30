@@ -23,5 +23,5 @@ def render_static_triangulated_text():
 
 set_log_level("DEBUG")
 q = PREVIEW
-q.super_sampling_anti_aliasing = 1
+q.supersampling = 1
 render_all_funcs(__name__, q)

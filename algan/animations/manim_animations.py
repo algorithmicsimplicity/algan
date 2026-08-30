@@ -1,6 +1,6 @@
 """Manim's signature animations, as Algan animated functions.
 
-:func:`draw_border_then_fill` is the hand-drawing effect: the outline is traced
+:func:`DrawBorderThenFill` is the hand-drawing effect: the outline is traced
 as though by a pen, then the fill washes in behind it. It takes any iterable of
 Mobs, so it works on shapes as readily as on text.
 
@@ -28,7 +28,7 @@ def _with_opacity(color, opacity):
     return color
 
 
-def draw_border_then_fill(
+def DrawBorderThenFill(
     mobs,
     run_time=None,
     lag_ratio=None,
@@ -82,7 +82,7 @@ def draw_border_then_fill(
         from algan import *
 
         squares = Group([Square() for _ in range(3)]).arrange_in_line(RIGHT).spawn()
-        draw_border_then_fill(squares.children)
+        DrawBorderThenFill(squares.children)
 
         Scene.save_video()
 

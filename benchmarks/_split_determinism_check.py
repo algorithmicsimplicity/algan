@@ -327,7 +327,7 @@ def _render(tag: str, mode: str) -> np.ndarray:
         _build_scene(mode)
         scene.save_video(
             path,
-            # MD unmodified: its default super_sampling_anti_aliasing supersamples, which
+            # MD unmodified: its default supersampling supersamples, which
             # multiplies both the ray count and the continuation-pool pressure.
             video_settings=MD.set(resolution=RES, frames_per_second=FPS),
             overwrite=True,

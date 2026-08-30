@@ -294,7 +294,7 @@ Read `CLAUDE.md` before changing kernel code. The ones that bite here:
   the first arm's code and reports its numbers as its own. **One process per
   arm.**
 * **The offline kernel cache does not invalidate on `@ti.func` edits.** Clear it
-  with `clear_cache(taichi_kernels=True)` before any kernel A/B.
+  with `clear_cached_kernels()` before any kernel A/B.
 * **Never edit a `*_taichi.py` file while a render is running.**
 * `algan_render.py` sets `ALGAN_USE_DAEMON=0`; keep it. A warm daemon does not
   adopt import-time environment variables and carries the previous run's state.

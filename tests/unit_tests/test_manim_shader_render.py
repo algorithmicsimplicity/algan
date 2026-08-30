@@ -113,7 +113,7 @@ def _video_settings():
     return VideoSettings(
         resolution=_RESOLUTION,
         frames_per_second=1,
-        super_sampling_anti_aliasing=1,
+        supersampling=1,
     )
 
 

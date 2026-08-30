@@ -81,7 +81,7 @@ def render(roughness, tag):
     t0 = time.perf_counter()
     render_to_file(
         file_path=path,
-        video_settings=RenderSettings((W, H), 1, super_sampling_anti_aliasing=1),
+        video_settings=RenderSettings((W, H), 1, supersampling=1),
     )
     _sync_devices()
     dt = time.perf_counter() - t0

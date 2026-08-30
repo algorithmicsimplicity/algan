@@ -103,7 +103,7 @@ def render(builder, roughness, tag):
     builder(roughness)
     render_to_file(
         file_path=path,
-        video_settings=RenderSettings((W, H), FPS, super_sampling_anti_aliasing=1),
+        video_settings=RenderSettings((W, H), FPS, supersampling=1),
     )
     cap = cv2.VideoCapture(path)
     frames = []

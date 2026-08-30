@@ -224,7 +224,7 @@ def _projection_anti_alias_level(scene, primitives):
     material/legacy check falls back, Bezier tessellation remains at least as
     fine as the AA=2 reference and its bounds are merely more conservative.
     """
-    requested = max(1, int(scene.video_settings.super_sampling_anti_aliasing))
+    requested = max(1, int(scene.video_settings.supersampling))
     rt_settings = SETTINGS.raytracing
     from algan.rendering.raytracing.primitives import (
         RayTracedBezierCircuitPrimitive,
@@ -1122,7 +1122,7 @@ class RenderLoopMixin:
 
         aa = effective_anti_alias_level(
             merged_host,
-            self.video_settings.super_sampling_anti_aliasing,
+            self.video_settings.supersampling,
             light_sources=lights,
             environment_map=env_map,
             near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
@@ -1402,7 +1402,7 @@ class RenderLoopMixin:
 
             aa = effective_anti_alias_level(
                 merged_host,
-                self.video_settings.super_sampling_anti_aliasing,
+                self.video_settings.supersampling,
                 light_sources=render_lights,
                 environment_map=env_map,
                 near_clip=float(getattr(camera, "near", 0.0) or 0.0),
@@ -1496,7 +1496,7 @@ class RenderLoopMixin:
                     camera.ray_origin,
                     camera.screen_point,
                     camera.screen_basis,
-                    anti_alias_level=self.video_settings.super_sampling_anti_aliasing,
+                    anti_alias_level=self.video_settings.supersampling,
                     light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
@@ -1569,7 +1569,7 @@ class RenderLoopMixin:
             is_post_process_tonemap_enabled,
         )
 
-        aa = max(1, int(self.video_settings.super_sampling_anti_aliasing))
+        aa = max(1, int(self.video_settings.supersampling))
         # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
         # default super-sampled buffer averaged down in post-processing;
         # ALGAN_INPLACE_AA keeps the buffer at output resolution.

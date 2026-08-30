@@ -88,7 +88,7 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
         "width": scene.num_pixels_screen_width,
         "height": scene.num_pixels_screen_height,
     }
-    temporary = VideoSettings((17, 13), 2, super_sampling_anti_aliasing=1)
+    temporary = VideoSettings((17, 13), 2, supersampling=1)
 
     def fake_frames(*_args, **_kwargs):
         yield torch.zeros(
@@ -135,9 +135,7 @@ def test_save_frame_resolves_negative_at_from_current_context_time(
     monkeypatch, tmp_path
 ):
     scene = SceneManager.instance().current_scene
-    scene.set_video_settings(
-        VideoSettings((17, 13), 10, super_sampling_anti_aliasing=1)
-    )
+    scene.set_video_settings(VideoSettings((17, 13), 10, supersampling=1))
     scene.animation_manager.context.timespan.current_time = 3.0
     requested_windows = []
 
@@ -169,9 +167,7 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
     algan_logger.addHandler(caplog.handler)
     try:
         scene = SceneManager.instance().current_scene
-        scene.set_video_settings(
-            VideoSettings((17, 13), 10, super_sampling_anti_aliasing=1)
-        )
+        scene.set_video_settings(VideoSettings((17, 13), 10, supersampling=1))
         _stub_out_frame_writing(monkeypatch, scene)
 
         scene.save_frame(tmp_path / "single_still", at=0.0)
@@ -466,7 +462,7 @@ def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path
 
     result = algan.Scene.save_video(
         tmp_path / "scene",
-        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 1, supersampling=1),
         overwrite=False,
     )
 
@@ -483,7 +479,7 @@ def test_transparent_mp4_fails_before_render_and_preserves_scene(tmp_path):
     with pytest.raises(AlganConfigurationError, match="MP4"):
         algan.Scene.save_video(
             tmp_path / "scene.mp4",
-            video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 1, supersampling=1),
             background=algan.TRANSPARENT,
         )
     assert SceneManager.instance().current_scene is scene
@@ -509,7 +505,7 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="writer failed"):
         algan.Scene.save_video(
             tmp_path / "failure.mp4",
-            video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 1, supersampling=1),
             animate_fade_out=False,
             reset=True,
         )
@@ -543,7 +539,7 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
 
     result = algan.Scene.save_video(
         tmp_path / "keep.mp4",
-        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 1, supersampling=1),
         animate_fade_out=False,
     )
 
@@ -577,7 +573,7 @@ def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
 
     algan.Scene.save_video(
         tmp_path / "discard.mp4",
-        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 1, supersampling=1),
         animate_fade_out=False,
         reset=True,
     )
@@ -766,7 +762,7 @@ def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
     def helper():
         calls.append("helper")
 
-    @algan_utils.scene_function(name="main")
+    @algan_utils.algan_scene(name="main")
     def entry_point():
         calls.append("scene")
 
@@ -818,7 +814,7 @@ def test_root_star_exports_exclude_internal_helpers():
     ):
         assert leaked not in namespace, f"{leaked} leaked into the star namespace"
     # Still importable from their real home.
-    from algan.utils.algan_utils import scene_function  # noqa: F401
+    from algan.utils.algan_utils import algan_scene  # noqa: F401
     from algan.utils.tensor_utils import mean  # noqa: F401
 
 
@@ -841,9 +837,9 @@ def test_camera_validates_projection_and_clip_parameters():
     assert camera.orthographic is True
     assert camera.set_fov(45) is camera
     assert camera.orthographic is False
-    scene.set_video_settings(VideoSettings((20, 10), 1, super_sampling_anti_aliasing=1))
+    scene.set_video_settings(VideoSettings((20, 10), 1, supersampling=1))
     assert camera.pixel_height == pytest.approx(0.2)
-    scene.set_video_settings(VideoSettings((40, 20), 1, super_sampling_anti_aliasing=1))
+    scene.set_video_settings(VideoSettings((40, 20), 1, supersampling=1))
     assert camera.pixel_height == pytest.approx(0.1)
 
 
@@ -877,7 +873,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
     monkeypatch.setattr(scene, "render_to_video", fake_render_to_video)
     result = algan.Scene.save_video(
         tmp_path / "static.mp4",
-        video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
         animate_fade_out=False,
     )
 
@@ -889,22 +885,22 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
 @pytest.mark.fast
 def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     """Border-textured Mobs still animate when supplied through any iterable."""
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
     squares = [Square(add_to_scene=True).spawn(animate=False) for _ in range(3)]
     assert squares[0].border_color.shape[-1] == 5
 
-    animated = draw_border_then_fill(squares)
+    animated = DrawBorderThenFill(squares)
 
     assert animated == squares
     # A generator is an iterable too, and must not be consumed twice.
-    assert draw_border_then_fill(mob for mob in squares) == squares
+    assert DrawBorderThenFill(mob for mob in squares) == squares
 
 
 @pytest.mark.fast
 def test_draw_border_then_fill_restores_the_original_style():
     """The temporary outline must not become the Mob's permanent style."""
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
     square = Square(
         color=algan.BLUE,
@@ -917,7 +913,7 @@ def test_draw_border_then_fill_restores_the_original_style():
     ]
     original_border_width = square.border_width.clone()
 
-    draw_border_then_fill(square for _ in range(1))
+    DrawBorderThenFill(square for _ in range(1))
 
     assert torch.allclose(square.border_width, original_border_width)
     assert all(
@@ -927,7 +923,7 @@ def test_draw_border_then_fill_restores_the_original_style():
 
 
 def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
     squares = [Square(add_to_scene=True).spawn(False) for _ in range(3)]
     drawn = []
@@ -939,7 +935,7 @@ def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
             lambda _t=1.0, square=square: drawn.append(square) or square,
         )
 
-    assert draw_border_then_fill(squares, reverse=True) == list(reversed(squares))
+    assert DrawBorderThenFill(squares, reverse=True) == list(reversed(squares))
     assert drawn == list(reversed(squares))
 
 
@@ -973,9 +969,9 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
 
 
 def test_draw_border_then_fill_tolerates_an_empty_iterable():
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
-    assert draw_border_then_fill([]) == []
+    assert DrawBorderThenFill([]) == []
 
 
 def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
@@ -997,7 +993,7 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
         seen["border_color"] = border_color
         return seen["mobs"]
 
-    monkeypatch.setattr(manim_animations, "draw_border_then_fill", fake)
+    monkeypatch.setattr(manim_animations, "DrawBorderThenFill", fake)
 
     assert text.write() is text
     assert len(seen["mobs"]) == len(text.character_mobs)
@@ -1169,7 +1165,7 @@ def test_never_spawned_mob_warns(monkeypatch, tmp_path):
     with pytest.warns(NeverSpawnedMobWarning, match="Circle"):
         algan.Scene.save_video(
             tmp_path / "forgot.mp4",
-            video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 4, supersampling=1),
         )
 
 
@@ -1192,7 +1188,7 @@ def test_add_to_scene_false_is_the_only_way_to_mark_reference_geometry(
     _stub_render(monkeypatch, scene)
     algan.Scene.save_video(
         tmp_path / "become.mp4",
-        video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
     )
     assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
 
@@ -1208,7 +1204,7 @@ def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
     with pytest.warns(NeverSpawnedMobWarning, match="add_to_scene=False"):
         algan.Scene.save_video(
             tmp_path / "become_unflagged.mp4",
-            video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 4, supersampling=1),
         )
 
 
@@ -1472,7 +1468,7 @@ def test_the_scenes_own_video_settings_reach_both_render_calls(tmp_path):
     """
     import cv2
 
-    tiny = VideoSettings((32, 32), 2, super_sampling_anti_aliasing=1)
+    tiny = VideoSettings((32, 32), 2, supersampling=1)
 
     with algan.Scene(video_settings=tiny):
         Square(color=algan.BLUE).spawn()
@@ -1510,9 +1506,7 @@ def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
     try:
         with algan.Scene():
             Square(color=algan.BLUE).spawn()
-            algan.SETTINGS.video.set(
-                VideoSettings((64, 48), 3, super_sampling_anti_aliasing=1)
-            )
+            algan.SETTINGS.video.set(VideoSettings((64, 48), 3, supersampling=1))
             clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
     finally:
         algan.SETTINGS.video.set(restore)

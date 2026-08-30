@@ -8,7 +8,7 @@ from algan import Project, Scene, SceneManager, Speech
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
 from algan.utils import algan_utils
-from algan.utils.algan_utils import RenderResult, scene_function
+from algan.utils.algan_utils import RenderResult, algan_scene
 
 
 class _SilentClip:
@@ -35,7 +35,7 @@ def test_project_builds_stable_scene_and_frame_ids(tmp_path):
     def introduction(optional="accepted"):
         return optional
 
-    @scene_function(name="custom_name")
+    @algan_scene(name="custom_name")
     def implementation():
         pass
 
@@ -62,11 +62,11 @@ def test_project_constructor_validation(tmp_path):
     with pytest.raises(AlganConfigurationError, match="requires arguments: value"):
         Project([requires_argument], **paths)
 
-    @scene_function(name="duplicate")
+    @algan_scene(name="duplicate")
     def first():
         pass
 
-    @scene_function(name="duplicate")
+    @algan_scene(name="duplicate")
     def second():
         pass
 

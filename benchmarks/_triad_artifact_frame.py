@@ -111,7 +111,7 @@ runpy.run_path(_scene_path, run_name="__algan_scene__")
 
 kw = {"resolution": (704 * args.scale, 396 * args.scale)}
 if args.aa is not None:
-    kw["super_sampling_anti_aliasing"] = args.aa
+    kw["supersampling"] = args.aa
 if args.video:
     r = Scene.save_video(
         args.name,

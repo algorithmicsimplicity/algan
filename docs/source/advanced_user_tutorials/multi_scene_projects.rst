@@ -114,7 +114,7 @@ See Also
 ========
 
 * :class:`~algan.project.Project` -- the full API.
-* :func:`~algan.project.scene_function` -- marks a zero-argument function as a scene
+* :func:`~algan.project.algan_scene` -- marks a zero-argument function as a scene
   entry point for ``render_all_funcs``.
 * :doc:`saving_videos_and_images` -- the single-Scene form these calls wrap.
 * :doc:`settings` -- how ``video_settings`` and the output paths resolve.

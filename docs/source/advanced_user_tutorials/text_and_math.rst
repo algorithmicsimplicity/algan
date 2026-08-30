@@ -37,7 +37,7 @@ Plain Text
         Text("plain", font_size=44),
         Text("bold", font_size=44, weight="BOLD"),
         Text("italic", font_size=44, slant="ITALIC"),
-        Text("colored words", font_size=44, t2c={"colored": YELLOW}),
+        Text("colored words", font_size=44, color_map={"colored": YELLOW}),
     ])
     lines.arrange_in_line(DOWN, buffer=0.35).move_to(ORIGIN).spawn()
     lines.wait()
@@ -61,9 +61,10 @@ Plain Text
      - ``"NORMAL"``, ``"BOLD"``, ...
    * - ``slant``
      - ``"NORMAL"`` or ``"ITALIC"``.
-   * - ``t2c``
+   * - ``color_map``
      - Text-to-color: ``{"word": YELLOW}`` colors just that substring.
-       ``t2f``, ``t2s``, ``t2w`` do the same for font, slant and weight.
+       ``font_map``, ``slant_map``, ``weight_map`` do the same for font, slant
+       and weight.
    * - ``line_spacing``
      - Gap between lines of a multi-line string.
    * - ``gradient``
@@ -174,7 +175,7 @@ separate from animations.
 
 ``write()`` takes ``run_time`` for the whole sequence and ``lag_ratio`` for how
 much each glyph overlaps the next (``0`` writes them all at once). It is shorthand
-for :func:`~.draw_border_then_fill` applied to the glyphs -- that function works
+for :func:`~.DrawBorderThenFill` applied to the glyphs -- that function works
 on any iterable of Mobs, so you can use it on shapes too. See
 :doc:`../galleries/built_in_animations` for that.
 
@@ -188,14 +189,14 @@ in between when you change it:
 
     from algan import *
 
-    counter = NumericDisplay(0.0, num_decimal_places=2).scale(2).spawn()
+    counter = DecimalNumber(0.0, decimal_places=2).scale(2).spawn()
     with Seq(run_time=3):
         counter.value = 100.0
 
     Scene.save_video()
 
-``num_decimal_places`` fixes the digits after the point and
-``num_integer_places`` sets an initial minimum width before it. If the value later
+``decimal_places`` fixes the digits after the point and
+``integer_places`` sets an initial minimum width before it. If the value later
 needs more integer digits, the display grows automatically; the extra slots remain
 available so its width stays stable afterwards.
 

@@ -92,7 +92,7 @@ accident: 13 tests failed with a green tree and nothing wrong with the change.
   object count when a scene needs depth.
 
 **Wiping the kernel cache for a kernel-constant A/B: do NOT use
-`clear_cache(taichi_kernels=True)`.** It deletes the whole `~/.algan/cache`,
+`clear_cached_kernels()`.** It deletes the whole `~/.algan/cache`,
 Manim Tex geometry included. On this machine that is worse than the doc used to
 say: `_glyph_cache_cold_warm.py` cannot even produce a cold arm here, because a
 cold Tex cache needs a working LaTeX run and `latex` fails ("did not produce a

@@ -179,11 +179,11 @@ def f2b():
     )
 
 
-@check("F2c", "NumericDisplay counts inside an updater")
+@check("F2c", "DecimalNumber counts inside an updater")
 def f2c():
     def build():
         with Scene(video_settings=SMOKE_TEST):
-            display = NumericDisplay(0.0).spawn()
+            display = DecimalNumber(0.0).spawn()
             tracker = ValueTracker(0).spawn()
             display.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
             tracker.set_value(5)

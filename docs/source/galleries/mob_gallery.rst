@@ -326,8 +326,8 @@ between values:
 
     from algan import *
 
-    counter = NumericDisplay(0.0, num_decimal_places=1,
-                             num_integer_places=3).scale(2).spawn()
+    counter = DecimalNumber(0.0, decimal_places=1,
+                             integer_places=3).scale(2).spawn()
     counter.value = 99.9
 
     Scene.save_video()

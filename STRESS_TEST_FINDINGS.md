@@ -148,7 +148,7 @@ Scene.save_frame("out.png")
 # IndexError: index 248 is out of bounds for dimension 0 with size 248
 ```
 
-`DecimalNumber` and `Integer` both fail this way. Algan's own `NumericDisplay` works,
+`DecimalNumber` and `Integer` both fail this way. Algan's own `DecimalNumber` works,
 and so does a `ValueTracker` driving a `Square`'s location — it is Mob *creation* that
 breaks, not updaters or trackers.
 
@@ -170,7 +170,7 @@ be called twice and give the same video.
 What an updater still cannot do is *reshape* a Mob that existed before the render: row
 layout is fixed at authoring time and the batch's window was materialized against the
 rows it had. That now raises `UnsupportedFeatureError` naming the updater and pointing
-at `NumericDisplay`, which does count. Tests:
+at `DecimalNumber`, which does count. Tests:
 `tests/unit_tests/test_updater_mob_creation.py`. Checks: `F2`, `F2b`, `F2c`.
 
 ---

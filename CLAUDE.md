@@ -86,7 +86,7 @@ a bug — with exactly four deliberate exceptions, all exported and supported:
   way. The *basis* getters (`get_up_basis()` and friends) deliberately have no property
   spelling: they carry the Mob's scale, and a scaled vector reads wrongly as `mob.up`.
 - **Two `SETTINGS.video` fields take a short spelling**: `fps`/`FPS` for
-  `frames_per_second`, and `ssaa`/`SSAA` for `super_sampling_anti_aliasing`. These are
+  `frames_per_second`, and `ssaa`/`SSAA` for `supersampling`. These are
   what the rest of the world calls them, and they are written often enough that the long
   names get in the way. An alias is a spelling and not a field — it never appears in
   `to_dict()`, `dataclasses.fields` or a snapshot — so state saved through one spelling
@@ -113,7 +113,7 @@ Scene.save_video("example", HD)  # one-off quality override
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background_color, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background_color, post_processes)`. Both return `RenderResult`; `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
 - **`reset` defaults to False**, so `save_video` leaves the Scene exactly as authored and you can render again — including a preview from inside a `with` block that has not finished yet. `save_frame` never mutates the Scene.
-- **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `super_sampling_anti_aliasing` (`ssaa`/`SSAA`), `fxaa` and `audio_frames_per_second`.
+- **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `supersampling` (`ssaa`/`SSAA`), `fxaa` and `audio_sample_rate`.
 - **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The ~55 kernel/perf switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
 - **Paths**: `SETTINGS.paths.output_root / output_directory / name`. A bare filename goes to the output directory; anything with a directory in it is used as given.
@@ -126,7 +126,7 @@ API-change discipline — are in `agent_guidance/api_settings.md`.
 ## Development Notes
 
 ### Taichi gotchas (these cost real debugging time)
-- The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cache(taichi_kernels=True)`.
+- The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cached_kernels()`.
 - Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.
 - Keep Taichi debug mode off (`ALGAN_TI_DEBUG=1` opts in); debug mode makes the megakernels ~11x slower.

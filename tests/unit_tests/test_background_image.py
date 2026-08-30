@@ -43,7 +43,7 @@ def test_image_background_keeps_the_source_orientation(tmp_path):
 
 
 def test_image_background_is_scaled_to_the_supersampled_frame(tmp_path):
-    settings = SMOKE_TEST.set(super_sampling_anti_aliasing=2)
+    settings = SMOKE_TEST.set(supersampling=2)
     height, width = settings.resolution[1], settings.resolution[0]
     path, _ = _write_test_image(tmp_path, height // 2, width // 2)
 

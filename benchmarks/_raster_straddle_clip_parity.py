@@ -11,7 +11,7 @@ The scenes are built to straddle: geometry sweeping past the camera, the camera
 flying through a mesh, an orbiting camera, and text passing the camera plane.
 
 Note this cannot be checked against the classic wavefront instead: that route
-renders at ``super_sampling_anti_aliasing`` while the analytic raster route renders at 1, so
+renders at ``supersampling`` while the analytic raster route renders at 1, so
 the two differ everywhere for reasons unrelated to the clip.
 
     .venv/Scripts/python.exe benchmarks/_raster_straddle_clip_parity.py [configs...]

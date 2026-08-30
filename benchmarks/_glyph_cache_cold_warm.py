@@ -5,7 +5,7 @@ populates the Manim Tex/SVG geometry cache, and its glyph antialiasing differs
 from every run after it -- 18 channel values over 100 frames of
 ``text_and_media``, against a tolerance of 2. The same hazard is restated in
 ``DESIGN_mesh_identity_open.md`` ssA for a local kernel-constant A/B, because
-``clear_cache(taichi_kernels=True)`` deletes the WHOLE ``~/.algan/cache``,
+``clear_cached_kernels()`` deletes the WHOLE ``~/.algan/cache``,
 glyph geometry included, so the render right after a cache wipe differs from
 every later one *for a reason that has nothing to do with the change under
 test* -- and it lands in the diff looking exactly like the change.

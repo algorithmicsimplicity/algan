@@ -111,9 +111,10 @@ def test_no_adapter_shadows_a_native_class():
     already owns its root name, and an adapter for it would be the second
     spelling this surface exists to avoid.
 
-    Enforced rather than reviewed, because the boundary moves. Phase 5 renames
-    ``NumericDisplay`` to ``DecimalNumber``, which is exactly how a name
-    crosses from one side to the other.
+    Enforced rather than reviewed, because the boundary moves. Phase 5 renamed
+    native ``NumericDisplay`` to ``DecimalNumber``, which is exactly how a name
+    crosses from one side to the other -- the compat ``DecimalNumber`` stays
+    ``mn.``-only, and this guard is what would catch it if it did not.
     """
     from algan.mobs.manim_adapters import _ADAPTED
 

@@ -63,7 +63,7 @@ Transparent output cannot use MP4. Use MOV or WebM, or an opaque background.
 
 ### Scene-function discovery
 
-Use the `@scene_function` decorator for zero-argument scene entry points consumed by `render_all_funcs`. It is deliberately not named `scene`, which would collide with the conventional variable name for a Scene instance. Legacy implicit discovery of every zero-argument function remains as a warning-producing fallback and may accidentally render helpers.
+Use the `@algan_scene` decorator for zero-argument scene entry points consumed by `render_all_funcs`. It is deliberately not named `scene`, which would collide with the conventional variable name for a Scene instance. Legacy implicit discovery of every zero-argument function remains as a warning-producing fallback and may accidentally render helpers.
 
 `render_all_funcs` creates an isolated Scene for each function. Scene functions should either rely on that active Scene or accept no arguments and explicitly obtain it; helper constructors should still propagate Scene ownership from their inputs.
 
@@ -93,7 +93,7 @@ HD_60 = HD.set(frames_per_second=60)
 
 Unknown field names are rejected with a close-match suggestion by both `set(...)` and direct attribute assignment — `SETTINGS.video.frame_rate = 60` raises rather than silently attaching a junk attribute.
 
-A field may declare **aliases**, and `SETTINGS.video` is the one section that does: `fps`/`FPS` for `frames_per_second`, and `ssaa`/`SSAA` for `super_sampling_anti_aliasing`. The mechanism is the `settings_aliases` class decorator in `algan/settings/abstract_settings.py`, applied outside `@dataclass` so it wraps the generated `__init__`; the alias is resolved to the declared name once, at each entry point (`__init__`, `set`, `__setattr__`), and everything downstream — validation, `dataclasses.replace`, the write-back loop — sees declared names only. So an alias is a *spelling*, not a field: it is absent from `to_dict()`, from `dataclasses.fields` and from `SETTINGS.snapshot()`, which is what lets state saved through one spelling restore through the other. Naming one field by two spellings in a single call raises rather than resolving to whichever came last.
+A field may declare **aliases**, and `SETTINGS.video` is the one section that does: `fps`/`FPS` for `frames_per_second`, and `ssaa`/`SSAA` for `supersampling`. The mechanism is the `settings_aliases` class decorator in `algan/settings/abstract_settings.py`, applied outside `@dataclass` so it wraps the generated `__init__`; the alias is resolved to the declared name once, at each entry point (`__init__`, `set`, `__setattr__`), and everything downstream — validation, `dataclasses.replace`, the write-back loop — sees declared names only. So an alias is a *spelling*, not a field: it is absent from `to_dict()`, from `dataclasses.fields` and from `SETTINGS.snapshot()`, which is what lets state saved through one spelling restore through the other. Naming one field by two spellings in a single call raises rather than resolving to whichever came last.
 
 This is the **one** deliberate exception to "there is one Algan name for each Algan thing", alongside `IN`/`OUT`. Do not add an alias for a field because its name is long; these two exist because the abbreviations are what the rest of the world calls them. Library code writes the declared name.
 
@@ -144,8 +144,8 @@ Algan has removed its transitional aliases ahead of public release. The canonica
 - one `file_path` rather than separate filename/directory arguments;
 - `SETTINGS` sections rather than the old defaults globals;
 - Scene-owned managers rather than singleton managers;
-- `@scene_function` rather than `@scene`;
-- `draw_border_then_fill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand.
+- `@algan_scene` rather than `@scene`;
+- `DrawBorderThenFill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand.
 
 Do not add a second spelling for something that already has a name. If a rename is genuinely warranted, rename in place and update every call site — the project is pre-release specifically so this stays cheap.
 

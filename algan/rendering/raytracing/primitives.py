@@ -2890,7 +2890,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         # Ratio of the internal render resolution to the output resolution: the
         # supersampling factor actually in force for this batch, which is 1 on
-        # the analytic-AA route regardless of the requested super_sampling_anti_aliasing.
+        # the analytic-AA route regardless of the requested supersampling.
         self._rt_projection_aa = float(camera.screen_height) / float(
             getattr(camera, "output_screen_height", camera.screen_height)
         )

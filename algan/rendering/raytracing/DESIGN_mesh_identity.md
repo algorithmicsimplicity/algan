@@ -384,7 +384,7 @@ GTX 1050 (4 GB), driver 576.52, Taichi 1.7.4, torch 2.7.1+cu128.
   measurement destroyed this way. Prefer counts, byte-diffs and in-process
   alternating A/B with an explicit control. If a number straddles 1.0 across two
   orderings, it is room temperature.
-* **Cold Taichi compiles run 35-45 minutes** after `clear_cache(taichi_kernels=
+* **Cold Taichi compiles run 35-45 minutes** after `clear_cached_kernels(
   True)`, and a new `ti.static` template VALUE (a new `aa_grp`, flipping
   `WATERTIGHT_TRI`) is a new variant with its own cold compile. Budget for it.
   Clear the cache before any kernel A/B: the offline cache does **not** invalidate
@@ -686,7 +686,7 @@ scan — is a third arm again, and the one whose case the interior/silhouette
 split above has just improved.
 
 *Method note, because it cost the shipped cache once already:*
-`clear_cache(taichi_kernels=True)` deletes the **whole** cache directory, Manim
+`clear_cached_kernels()` deletes the **whole** cache directory, Manim
 Tex geometry included, and the first render after that differs from every later
 one (§4.10) — which would land in the diff as if it were the change. Back up
 `~/.algan/cache/taichi`, remove only that, and restore it afterwards; the
@@ -1573,7 +1573,7 @@ baseline debt this leaves.
 4. WHAT MUST BE VERIFIED ON A CUDA DEVICE
 ================================================================================
 
-Clear the Taichi cache (`clear_cache(taichi_kernels=True)`) before any A/B — it
+Clear the Taichi cache (`clear_cached_kernels()`) before any A/B — it
 does not invalidate on `@ti.func` edits. Never edit `*_taichi.py` while a render
 or a warm daemon is running.
 
@@ -1942,7 +1942,7 @@ its result. `1035 passed, 89 skipped` on `pytest -q tests/unit_tests`.
     `text_and_media`, against a tolerance of 2.
 
     **Measured here, and this machine does not show it on the fast scene.** With
-    the whole cache wiped (`clear_cache(taichi_kernels=True)` takes the Manim
+    the whole cache wiped (`clear_cached_kernels()` takes the Manim
     caches with it), run 2 and run 3 of `tests/fast` are byte-identical to each
     other and to the committed baseline. So the rule is still the right default —
     it costs one render and the failure mode is a baseline nobody can reproduce —
@@ -3385,8 +3385,8 @@ Two things follow, and the second is the general one:
   the same discipline as §0.1's rule 1, applied to the harness rather than to
   the feature.
 
-Corollary for anyone A/B-ing a kernel constant on these scenes: `clear_cache(
-taichi_kernels=True)` takes the **Manim Tex geometry cache** with it, and the
+Corollary for anyone A/B-ing a kernel constant on these scenes:
+`clear_cached_kernels()` takes the **Manim Tex geometry cache** with it, and the
 first render after that differs from every later one (§4.10). Back up and
 restore `~/.algan/cache/taichi` instead, or render twice per arm and keep the
 second.

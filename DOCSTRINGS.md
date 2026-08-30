@@ -395,7 +395,7 @@ Also, for classes:
 - reStructuredText, not Markdown. ``` ``literal`` ``` for code, values, and settings names;
   `*emphasis*`; no backtick-single-quote pairs.
 - Roles for cross-references: `:meth:`~.Mob.move_to``, `:class:`~.Mob``, `:attr:`~.Mob.location``,
-  `:func:`~.draw_border_then_fill``. The `~.` prefix renders the short name and keeps lines short.
+  `:func:`~.DrawBorderThenFill``. The `~.` prefix renders the short name and keeps lines short.
 - **Code in a docstring must be in a directive.** `set_shader`'s recovery recipe is currently written
   as bare indented lines inside a paragraph, which Sphinx renders as one run-on line. Use:
 

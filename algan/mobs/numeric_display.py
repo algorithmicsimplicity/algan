@@ -1,11 +1,11 @@
 """A number on screen that animates between values.
 
-:class:`NumericDisplay` renders a number as text and makes its ``value`` an
+:class:`DecimalNumber` renders a number as text and makes its ``value`` an
 animatable attribute, so ``counter.value = 100`` counts smoothly from wherever it
 was over the surrounding context's duration -- re-rendering the glyphs each frame
 rather than interpolating their outlines.
 
-``num_decimal_places`` and ``num_integer_places`` fix the format so the display
+``decimal_places`` and ``integer_places`` fix the format so the display
 does not jitter in width as digits come and go.
 """
 
@@ -33,18 +33,18 @@ from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor
 
 
-class NumericDisplay(Mob):
-    def __init__(self, value, num_decimal_places=2, num_integer_places=None, **kwargs):
+class DecimalNumber(Mob):
+    def __init__(self, value, decimal_places=2, integer_places=None, **kwargs):
         """An animated numeric counter whose integer part grows as needed.
 
         Parameters
         ----------
         value
             The initial value displayed.
-        num_decimal_places
+        decimal_places
             Number of digits after the decimal point. With 0, no decimal
             point is shown.
-        num_integer_places
+        integer_places
             Initial minimum number of digits before the decimal point. If None,
             derived from the initial value (at least 1). The display allocates
             more leading digit slots automatically when its value grows.
@@ -52,14 +52,14 @@ class NumericDisplay(Mob):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         value = cast_to_tensor(value)
-        self.num_decimal_places = num_decimal_places
+        self.decimal_places = decimal_places
         required_integer_places = self._required_integer_places(value)
-        if num_integer_places is None:
-            num_integer_places = required_integer_places
+        if integer_places is None:
+            integer_places = required_integer_places
         else:
-            num_integer_places = max(num_integer_places, required_integer_places)
-        self.num_integer_places = num_integer_places
-        num_i, num_d = num_integer_places, num_decimal_places
+            integer_places = max(integer_places, required_integer_places)
+        self.integer_places = integer_places
+        num_i, num_d = integer_places, decimal_places
         animation_manager = kwargs["scene"].animation_manager
         with (
             Off(animation_manager=animation_manager),
@@ -108,7 +108,7 @@ class NumericDisplay(Mob):
                 for d in self.digit_mobs[i].character_mobs:
                     d.location = location
             super().__init__(**kwargs)
-            self.register_attrs_as_animatable(["value"], NumericDisplay)
+            self.register_attrs_as_animatable(["value"], DecimalNumber)
             self._setattr_without_record("value", value)
 
             parent_location, parent_basis = self.location, self.basis
@@ -178,17 +178,17 @@ class NumericDisplay(Mob):
             scalar = abs(float(item.item()))
             if not math.isfinite(scalar):
                 continue
-            formatted = f"{scalar:.{self.num_decimal_places}f}"
+            formatted = f"{scalar:.{self.decimal_places}f}"
             required = max(required, len(formatted.partition(".")[0]))
         return required
 
     def _ensure_integer_places(self, value):
         """Prepend enough integer slots for a newly assigned finite value."""
         required = self._required_integer_places(value)
-        if required <= self.num_integer_places:
+        if required <= self.integer_places:
             return
 
-        old_num_integer_places = self.num_integer_places
+        old_integer_places = self.integer_places
         source_digit = self.digit_mobs[0]
         new_digits_near_to_far = []
         with Off(
@@ -196,7 +196,7 @@ class NumericDisplay(Mob):
             record_attr_modifications=False,
             animation_manager=self.animation_manager,
         ):
-            for place_from_right in range(old_num_integer_places, required):
+            for place_from_right in range(old_integer_places, required):
                 digit_mob = source_digit.clone(spawn=False)
                 digit_mob.set(opacity=0)
                 slot_location = map_local_to_global_coords(
@@ -213,10 +213,10 @@ class NumericDisplay(Mob):
         new_digits = list(reversed(new_digits_near_to_far))
         self.digit_mobs = (
             new_digits
-            + self.digit_mobs[:old_num_integer_places]
-            + self.digit_mobs[old_num_integer_places:]
+            + self.digit_mobs[:old_integer_places]
+            + self.digit_mobs[old_integer_places:]
         )
-        self.num_integer_places = required
+        self.integer_places = required
         self.add_children(new_digits)
 
         if self.is_spawned() and not self.is_despawned():
@@ -227,7 +227,7 @@ class NumericDisplay(Mob):
         value = cast_to_tensor(value)
         neg_opacity = torch.where((value < 0), 1, 0)
         value = value.abs()
-        num_i, num_d = self.num_integer_places, self.num_decimal_places
+        num_i, num_d = self.integer_places, self.decimal_places
         # Largest value the digit slots can show; anything bigger is clamped
         # (also protects against rounding carrying into a non-existent digit).
         limit = (10**num_i) - ((10**-num_d) if num_d > 0 else 1)

@@ -368,7 +368,7 @@ def _make_preflight_driver(monkeypatch, overlapped):
     scene.memory = render_loop_module.ManualMemory(
         0, device=torch.device("cpu"), managed=True, num_bytes=1 << 16
     )
-    scene.video_settings = SimpleNamespace(super_sampling_anti_aliasing=1)
+    scene.video_settings = SimpleNamespace(supersampling=1)
     scene.num_pixels_screen_width = 4
     scene.num_pixels_screen_height = 4
     scene.camera = SimpleNamespace(near=0.0, far=100.0)

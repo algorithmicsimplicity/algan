@@ -71,7 +71,7 @@ pre-patch, and say exactly what fails and how.
 - `tests/full_renders` baselines are per-machine and FAIL here —
   pre-existing, do not chase.
 - The Taichi offline cache does not invalidate on `@ti.func` edits — clear
-  it (`clear_cache(taichi_kernels=True)`) after editing a kernel before
+  it (`clear_cached_kernels()`) after editing a kernel before
   re-verifying.
 - Never edit a `*_taichi.py` while one of your renders is running.
 

@@ -415,7 +415,7 @@ the default flips.
 
 **8.3 Taichi kernel-cache staleness.** Editing `@ti.func`s (`_ss_pixel`,
 `_bez_pixel_hit`, `_bezier_point_metrics`) does **not** invalidate the offline
-cache. Run `clear_cache(taichi_kernels=True)` before every A/B, and
+cache. Run `clear_cached_kernels()` before every A/B, and
 never edit `*_taichi.py` while a render process is live.
 
 **8.4 Register pressure.** The resolve is occupancy-bound. Coverage adds one

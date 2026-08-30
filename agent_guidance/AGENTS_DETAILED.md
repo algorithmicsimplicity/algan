@@ -125,7 +125,7 @@ This dual binding is a convenience layer, not a reason to hide Scene ownership i
 
 Taichi kernel work has several repository-specific hazards:
 
-- The offline cache does not reliably invalidate when an imported `@ti.func` changes. Clear it before trustworthy A/B tests of kernel-source edits with `clear_cache(taichi_kernels=True)`.
+- The offline cache does not reliably invalidate when an imported `@ti.func` changes. Clear it before trustworthy A/B tests of kernel-source edits with `clear_cached_kernels()`.
 - Never edit `*_taichi.py` while a render is running. The JIT can compile mixed old/new source.
 - The render daemon restarts itself after any Algan source change: it fingerprints every `.py` under `../algan` at startup, re-checks at each run launch, and refuses the run and shuts down if anything differs, so the script runs in a fresh process with the edited code. No hand restart, but the cold start (and, for kernel edits, a full recompile) is still paid. See `DESIGN_daemon_lifecycle.md`.
 - The daemon also refuses a run whose *import-time* environment differs from the one it imported algan with (`_IMPORT_TIME_VARIABLES` in `../algan/environment.py`), because those values are already module-level defaults by then: a script setting a renderer toggle before its own `import algan` would otherwise be served with the daemon's value. Live variables are swapped in per run and can be changed mid-script. When a run ends the daemon resets its state and hands the render's GPU memory back to the driver (`gc.collect()` + `torch.cuda.empty_cache()`), so an idle daemon holds the warm process and nothing else; `ALGAN_DAEMON_RELEASE_MEMORY=0` opts out.

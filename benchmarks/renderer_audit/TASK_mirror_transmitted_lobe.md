@@ -337,7 +337,7 @@ Read `CLAUDE.md` in full before changing kernel code. The ones that bite here:
 * **Never edit a `*_taichi.py` file while a render is running** — the JIT reads
   sources at first launch and can compile half-edited code.
 * **The offline kernel cache does not invalidate on `@ti.func` edits.** Clear it
-  with `clear_cache(taichi_kernels=True)` before A/B-benchmarking a change to
+  with `clear_cached_kernels()` before A/B-benchmarking a change to
   `_material_reflectance` or `_scatter_impl`, or you will measure the old code.
 * **A `ti.static` gate is resolved at compile time**, so flipping the setting
   behind one mid-process does nothing and the second arm silently reuses the

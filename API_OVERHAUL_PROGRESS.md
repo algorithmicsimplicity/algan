@@ -17,7 +17,7 @@ Update it in the same commit as the work it describes.
 | 2 | Remove leaked internals from `algan.__all__` | **Done** |
 | 3 | `Mob` surface: privatize, consolidate, rename | **Done** |
 | 4 | Scene, Camera, Lights, Group | **Done** |
-| 5 | Class and parameter naming | Not started |
+| 5 | Class and parameter naming | **Done** |
 | 6 | `border_*` → `stroke_*` | Not started |
 | 7 | `run_time` → `duration`, `rate_func` → `easing` | Not started |
 | 8 | Documentation and baselines | Not started |
@@ -155,6 +155,30 @@ compat layer, a scene covering compat geometry has to reach it the way a user wo
 `algan.manim` joins that allowlist. And two `.. algan::` examples in
 `lighting_and_shadows.rst` build a `SpotLight(angle=...)`.
 
+### Phase 5 — class and parameter naming
+
+**Timeline contexts.** `Lag(ratio=0.5)` (with a default, so `Lag()` works), `match_durations`
+for `same_run_time`, `Speech(transcript)`, `Audio(source, *, wait_at_end=0.0)`.
+
+**Shapes.** `Square(size)` / `Cube(size)`, `Prism(width, height, depth)`,
+`Torus(ring_radius, tube_radius)`, `Line3D(radius)`,
+`Arrow3D(shaft_radius, tip_length, tip_radius)`, `ThreeDModelMob` → `Model3D` with
+`precompute_animation`, and `normalize` / `normalize_size` collapsed into one optional
+`fit_to_size`.
+
+**Text.** `color_map` / `font_map` / `gradient_map` / `slant_map` / `weight_map` for the `t2*`
+pairs, `center` for `should_center`, `line_spacing=None` for `-1`, `Tex(delimiter=)`,
+`get_segment(index)`, and `slant` / `weight` normalized to upper case at the Pango boundary so
+any case is accepted.
+
+**Other.** `DecimalNumber(value, decimal_places=, integer_places=)`, `Surface.vertices`,
+`@algan_scene`, `clear_cache(include_kernels=)` + `clear_cached_kernels()`,
+`DrawBorderThenFill`, `AudioTranscriptMismatchError`, `SETTINGS.video.audio_sample_rate` and
+`SETTINGS.video.supersampling` (keeping the `ssaa`/`SSAA` aliases).
+
+The export snapshot moved by exactly the five names added and four removed, which is what the
+Phase 0 guard is for.
+
 ---
 
 ## Plan changes made during implementation
@@ -262,6 +286,21 @@ Recorded here and in the design doc, so the two do not drift.
 14. **`Scene.add_light` and `remove_light` already existed** as class-level aliases of
     `add_light_source` / `remove_light_source`, contradicting the design appendix's "`add_light`
     does not exist". Phase 4 therefore removes a duplication here rather than only renaming.
+
+15. **`Surface.grid` is not renamed to `mesh`; only the `vertices` property is added.** The
+    rename would leave `surface.mesh` beside `surface.grid_width`, `grid_height`,
+    `_grid_orientation` and `grid_to_triangle_vertices`, none of which the plan renames, so the
+    class would read as two objects rather than one. `mesh` is also taken three ways in the
+    renderer already (`TriangleMesh`, `_mesh_key`, `mesh_ids`), and `render_loop` reads
+    `actor.grid` generically across `Surface` and `TriangleMesh`. The half of the row worth
+    having is the property, and that landed: `surface.vertices` reads and writes vertex
+    positions without reaching through a child Mob.
+
+16. **`Model3D`'s `normalize` / `normalize_size` pair collapses into one `fit_to_size`.** The
+    design renamed the class and the size argument but left the boolean, which would have kept
+    a size argument that silently does nothing unless a separate flag is set. Every call site
+    in the repository passed both; each becomes the one argument it already meant, and
+    `fit_to_size=None` is the off position.
 
 ---
 

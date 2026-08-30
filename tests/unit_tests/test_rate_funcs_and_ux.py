@@ -1,6 +1,5 @@
 """Unit tests for newly added rate_funcs, color parsing, exception hierarchy, CLI, and RenderResult reprs."""
 
-import math
 import tempfile
 from pathlib import Path
 
@@ -9,12 +8,12 @@ import torch
 
 from algan.cli import main as cli_main
 from algan.constants import rate_funcs
-from algan.constants.color import BLUE, RED, WHITE, Color
+from algan.constants.color import Color
 from algan.errors import (
     AlganError,
+    AudioTranscriptMismatchError,
     InvalidColorError,
     ModifiedProtectedAttributeError,
-    TranscriptAudioMismatchError,
 )
 from algan.utils.algan_utils import RenderResult
 
@@ -139,7 +138,7 @@ def test_invalid_color_raises_actionable_error():
 
 def test_exception_taxonomy():
     assert issubclass(ModifiedProtectedAttributeError, AlganError)
-    assert issubclass(TranscriptAudioMismatchError, AlganError)
+    assert issubclass(AudioTranscriptMismatchError, AlganError)
     assert issubclass(InvalidColorError, AlganError)
 
 

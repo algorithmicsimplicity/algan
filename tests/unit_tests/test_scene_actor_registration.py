@@ -146,7 +146,7 @@ def test_image_mobject_display_frame_is_registered():
     [
         pytest.param(lambda: algan.Text("ab"), id="Text"),
         pytest.param(lambda: algan.Tex("x^2"), id="Tex"),
-        pytest.param(lambda: algan.NumericDisplay(1.5), id="NumericDisplay"),
+        pytest.param(lambda: algan.NumericDisplay(1.5), id="DecimalNumber"),
         pytest.param(lambda: algan.Cube(), id="Cube"),
         pytest.param(lambda: algan.Dodecahedron(), id="Dodecahedron"),
         pytest.param(lambda: algan.Sphere(resolution=(4, 3)), id="Sphere"),

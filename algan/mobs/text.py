@@ -114,7 +114,7 @@ class Tex(Mob):
         :meth:`get_segment`, and they are compiled as one document so a
         ``\left`` in one string can close in the next. A single list or tuple is
         unpacked, and no strings at all gives an empty ``Tex``.
-    arg_separator
+    delimiter
         Inserted between consecutive ``tex_strings`` in the compiled source (and
         used to join them when ``latex=False``). Defaults to ``" "``, one space.
     tex_environment
@@ -133,7 +133,7 @@ class Tex(Mob):
         ``True``.
     pango_kwargs
         Styling forwarded to the Pango renderer when ``latex=False``: ``font``,
-        ``weight``, ``slant``, ``line_spacing``, ``t2c``, ``gradient`` and the
+        ``weight``, ``slant``, ``line_spacing``, ``color_map``, ``gradient`` and the
         rest of Manim's ``Text`` arguments. Ignored under LaTeX. Defaults to
         ``None`` (no styling). Prefer :class:`~algan.mobs.text.Text`, which
         exposes these as ordinary named arguments.
@@ -211,7 +211,7 @@ class Tex(Mob):
     def __init__(
         self,
         *tex_strings,
-        arg_separator=" ",
+        delimiter=" ",
         tex_environment=None,
         font_size=24,
         latex=True,
@@ -234,13 +234,13 @@ class Tex(Mob):
             tex_strings = ("",)
         self.tex_strings = tuple(str(part) for part in tex_strings)
         self.tex_environment = tex_environment
-        self.arg_separator = arg_separator
+        self.delimiter = delimiter
         self.latex = latex
 
         base_font_size = 48
         if self.latex:
             tex_kwargs = {
-                "arg_separator": arg_separator,
+                "arg_separator": delimiter,
                 "font_size": base_font_size,
             }
             if tex_environment is not None:
@@ -253,7 +253,7 @@ class Tex(Mob):
                     "use algan.Text, which provides a LaTeX fallback."
                 )
             t = mn.Text(
-                arg_separator.join(self.tex_strings),
+                delimiter.join(self.tex_strings),
                 font_size=base_font_size,
                 **(pango_kwargs or {}),
             )
@@ -279,7 +279,7 @@ class Tex(Mob):
         if latex:
             styled_fills = None
         else:
-            # Pango styling (t2c/t2g/gradient) lands as per-submobject fill
+            # Pango styling (color_map/gradient_map/gradient) lands as per-submobject fill
             # colors on the manim Text; capture them (aligned with the
             # ImageMobject-filtered glyph list) to re-apply on the batch.
             styled_fills = [
@@ -374,7 +374,7 @@ class Tex(Mob):
                     styled = color_map.get(hex_c)
                     if styled is None:
                         if hex_c == "#FFFFFF":
-                            # Untouched by t2c/gradient: keep the base color.
+                            # Untouched by color_map/gradient: keep the base color.
                             continue
                         styled = Color(hex_c, glow=base_glow, opacity=fill_op)
                     view = self.character_mobs[i]
@@ -429,7 +429,7 @@ class Tex(Mob):
             )
         return result
 
-    def get_segment(self, i: int):
+    def get_segment(self, index: int):
         """Get one of the text's LaTeX segments as a Mob.
 
         Segments are the pieces the text was constructed from, so a ``Tex`` built from
@@ -438,7 +438,7 @@ class Tex(Mob):
 
         Parameters
         ----------
-        i
+        index
             Index of the segment.
 
         Returns
@@ -446,7 +446,7 @@ class Tex(Mob):
         :class:`~.Group`
             A Group of the glyphs in that segment, sharing data with this text.
         """
-        return self[self.segment_starts[i] : self.segment_ends[i]]
+        return self[self.segment_starts[index] : self.segment_ends[index]]
 
     def __getitem__(self, item):
         """Get individual glyphs by index or slice, so ``text[0]`` works.
@@ -482,7 +482,7 @@ class Tex(Mob):
         """Animate this text appearing as if it were being hand-written.
 
         Each glyph's outline is traced and then filled, one glyph after another. This
-        is :func:`~algan.animations.manim_animations.draw_border_then_fill` applied to
+        is :func:`~algan.animations.manim_animations.DrawBorderThenFill` applied to
         this text's glyphs.
 
         Animation
@@ -495,7 +495,7 @@ class Tex(Mob):
         ----------
         *args, **kwargs
             Passed to
-            :func:`~algan.animations.manim_animations.draw_border_then_fill`
+            :func:`~algan.animations.manim_animations.DrawBorderThenFill`
 
         Returns
         -------
@@ -515,9 +515,9 @@ class Tex(Mob):
         """
         # Imported here rather than at module scope: the animations package is
         # imported after the mobs package during algan's own initialization.
-        from algan.animations.manim_animations import draw_border_then_fill
+        from algan.animations.manim_animations import DrawBorderThenFill
 
-        draw_border_then_fill(self.character_mobs, *args, **kwargs)
+        DrawBorderThenFill(self.character_mobs, *args, **kwargs)
         return self
 
     def on_create(self):
@@ -629,13 +629,15 @@ class Text(Tex):
 
     When Pango is available (manim's optional ``Text`` support), the styling
     arguments -- ``font``, ``weight``, ``slant``, ``line_spacing``,
-    ``disable_ligatures``, and the span-level ``t2c``/``t2f``/``t2s``/``t2w``/
-    ``t2g``/``gradient`` -- are forwarded to the Pango renderer and fully
-    affect the glyphs. Color values in ``t2c``/``t2g``/``gradient`` may be
+    ``disable_ligatures``, and the span-level
+    ``color_map``/``font_map``/``slant_map``/``weight_map``/``gradient_map``/
+    ``gradient`` -- are forwarded to the Pango renderer and fully
+    affect the glyphs. Color values in ``color_map``/``gradient_map``/``gradient`` may be
     algan colors (glow and opacity are preserved), hex strings, or named
     manim colors. ``weight`` accepts Pango weight names (``"THIN"``, ``"LIGHT"``,
     ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, ...), ``slant`` accepts
-    ``"NORMAL"``, ``"ITALIC"``, ``"OBLIQUE"``. Note a ``t2c`` value of pure white is
+    ``"NORMAL"``, ``"ITALIC"``, ``"OBLIQUE"``; both are matched case-insensitively.
+    Note a ``color_map`` value of pure white is
     indistinguishable from unstyled text and falls back to the base color.
 
     When Pango is unavailable, Algan renders the textual content through
@@ -665,7 +667,7 @@ class Text(Tex):
         out twice the size of plain :class:`~algan.mobs.text.Tex`.
     line_spacing
         Distance between baselines of a multi-line string, in Pango's units.
-        Defaults to ``-1``, meaning Pango's own spacing for the font.
+        Defaults to ``None``, meaning Pango's own spacing for the font.
     font
         Font family name, as installed on the system. Defaults to ``""``,
         meaning Pango's default family.
@@ -675,20 +677,20 @@ class Text(Tex):
         A Pango weight name -- ``"THIN"``, ``"LIGHT"``, ``"NORMAL"``,
         ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, and the rest.
         Defaults to ``"NORMAL"``.
-    t2c
-        Text-to-color: maps a substring to the color its glyphs take. Color
+    color_map
+        Maps a substring to the color its glyphs take. Color
         values may be Algan colors (glow and opacity survive), hex strings, or
         named Manim colors. A value of pure white is indistinguishable from
         unstyled text and falls back to the base color. Defaults to ``None``.
-    t2f
-        Text-to-font: maps a substring to a font family. Defaults to ``None``.
-    t2g
-        Text-to-gradient: maps a substring to a tuple of colors to fade
-        between across it. Defaults to ``None``.
-    t2s
-        Text-to-slant: maps a substring to a slant name. Defaults to ``None``.
-    t2w
-        Text-to-weight: maps a substring to a weight name. Defaults to ``None``.
+    font_map
+        Maps a substring to a font family. Defaults to ``None``.
+    gradient_map
+        Maps a substring to a tuple of colors to fade between across it.
+        Defaults to ``None``.
+    slant_map
+        Maps a substring to a slant name. Defaults to ``None``.
+    weight_map
+        Maps a substring to a weight name. Defaults to ``None``.
     gradient
         A tuple of colors faded across the whole string. Defaults to ``None``,
         one flat color.
@@ -704,7 +706,7 @@ class Text(Tex):
         Scale the finished text uniformly so it is this wide, in world units.
         Applied after ``height``, so passing both leaves the width matched and
         the height wherever the aspect ratio puts it. Defaults to ``None``.
-    should_center
+    center
         Whether to move the finished text to the world origin. Defaults to
         ``True``; pass ``False`` to keep the position ``location`` gave it.
     disable_ligatures
@@ -730,7 +732,7 @@ class Text(Tex):
 
         Text("Hello, world", font_size=36).move(UP * 0.5).spawn()
         Text("Hello, world", font_size=36,
-             t2c={"world": BLUE}).move(DOWN * 0.5).spawn()
+             color_map={"world": BLUE}).move(DOWN * 0.5).spawn()
 
         Scene.save_video()
     """
@@ -742,32 +744,38 @@ class Text(Tex):
         stroke_width=0,
         color=None,
         font_size=48,
-        line_spacing=-1,
+        line_spacing=None,
         font="",
         slant="NORMAL",
         weight="NORMAL",
-        t2c=None,
-        t2f=None,
-        t2g=None,
-        t2s=None,
-        t2w=None,
+        color_map=None,
+        font_map=None,
+        gradient_map=None,
+        slant_map=None,
+        weight_map=None,
         gradient=None,
         tab_width=4,
         warn_missing_font=True,
         height=None,
         width=None,
-        should_center=True,
+        center=True,
         disable_ligatures=False,
         use_svg_cache=False,
         **kwargs,
     ):
         self.text = str(text).expandtabs(tab_width)
         self.font = font
+        # Pango wants these upper-cased ("BOLD", "ITALIC"); accept whatever
+        # case the caller wrote and normalize at the boundary rather than
+        # changing what Pango is sent.
+        slant = slant.upper() if isinstance(slant, str) else slant
+        weight = weight.upper() if isinstance(weight, str) else weight
         self.slant = slant
         self.weight = weight
         self.line_spacing = line_spacing
-        self.t2c, self.t2f, self.t2g = t2c, t2f, t2g
-        self.t2s, self.t2w = t2s, t2w
+        self.color_map, self.font_map = color_map, font_map
+        self.gradient_map = gradient_map
+        self.slant_map, self.weight_map = slant_map, weight_map
         self.gradient = gradient
         self.disable_ligatures = disable_ligatures
         self.use_svg_cache = use_svg_cache
@@ -784,36 +792,45 @@ class Text(Tex):
                 "font": font,
                 "slant": slant,
                 "weight": weight,
-                "line_spacing": line_spacing,
+                # Pango spells "use the font's own spacing" as -1.
+                "line_spacing": -1 if line_spacing is None else line_spacing,
                 "warn_missing_font": warn_missing_font,
                 "disable_ligatures": disable_ligatures,
             }
-            color_map = {}
-            if t2f:
-                pango_kwargs["t2f"] = dict(t2f)
-            if t2s:
-                pango_kwargs["t2s"] = dict(t2s)
-            if t2w:
-                pango_kwargs["t2w"] = dict(t2w)
-            if t2c:
-                pango_kwargs["t2c"] = {
-                    k: _to_pango_hex(v, color_map) for k, v in t2c.items()
+            # ``pango_colors`` is the hex lookup handed to Pango, not the
+            # user's substring -> colour ``color_map``.
+            pango_colors = {}
+            if font_map:
+                pango_kwargs["t2f"] = dict(font_map)
+            if slant_map:
+                pango_kwargs["t2s"] = {
+                    k: v.upper() if isinstance(v, str) else v
+                    for k, v in slant_map.items()
                 }
-            if t2g:
+            if weight_map:
+                pango_kwargs["t2w"] = {
+                    k: v.upper() if isinstance(v, str) else v
+                    for k, v in weight_map.items()
+                }
+            if color_map:
+                pango_kwargs["t2c"] = {
+                    k: _to_pango_hex(v, pango_colors) for k, v in color_map.items()
+                }
+            if gradient_map:
                 pango_kwargs["t2g"] = {
-                    k: tuple(_to_pango_hex(c, color_map) for c in v)
-                    for k, v in t2g.items()
+                    k: tuple(_to_pango_hex(c, pango_colors) for c in v)
+                    for k, v in gradient_map.items()
                 }
             if gradient:
                 pango_kwargs["gradient"] = tuple(
-                    _to_pango_hex(c, color_map) for c in gradient
+                    _to_pango_hex(c, pango_colors) for c in gradient
                 )
             super().__init__(
                 self.text,
                 font_size=font_size,
                 latex=False,
                 pango_kwargs=pango_kwargs,
-                pango_color_map=color_map,
+                pango_color_map=pango_colors,
                 sync_border_color=not explicit_border_color,
                 **kwargs,
             )
@@ -842,7 +859,7 @@ class Text(Tex):
                 current = self.get_length_in_direction(RIGHT)
                 if float(current.reshape(-1)[0]) > 0:
                     self.scale(float(width) / float(current.reshape(-1)[0]))
-            if should_center:
+            if center:
                 self.move_to(ORIGIN)
 
     def write(self, *args, **kwargs):
@@ -895,8 +912,8 @@ class MarkupText(Text):
     color, not red. The source you passed is kept on ``original_text``.
 
     To color or restyle part of a string, use :class:`~algan.mobs.text.Text`'s
-    ``t2c`` / ``t2f`` / ``t2s`` / ``t2w`` / ``t2g`` arguments instead -- those do
-    reach the renderer.
+    ``color_map`` / ``font_map`` / ``slant_map`` / ``weight_map`` /
+    ``gradient_map`` arguments instead -- those do reach the renderer.
 
     Parameters
     ----------
@@ -910,7 +927,7 @@ class MarkupText(Text):
         As :class:`~algan.mobs.text.Text`, with the same defaults.
     font, slant, weight, gradient, disable_ligatures, warn_missing_font
         As :class:`~algan.mobs.text.Text`, with the same defaults.
-    tab_width, height, width, should_center
+    tab_width, height, width, center
         As :class:`~algan.mobs.text.Text`, with the same defaults. All of these
         are redeclared here only so this constructor's signature matches
         Manim's.
@@ -933,8 +950,8 @@ class MarkupText(Text):
 
         MarkupText("<b>bold</b> markup is stripped",
                    font_size=32).move(UP * 0.5).spawn()
-        Text("t2c is not", font_size=32,
-             t2c={"not": BLUE}).move(DOWN * 0.5).spawn()
+        Text("color_map is not", font_size=32,
+             color_map={"not": BLUE}).move(DOWN * 0.5).spawn()
 
         Scene.save_video()
     """
@@ -946,7 +963,7 @@ class MarkupText(Text):
         stroke_width=0,
         color=None,
         font_size=48,
-        line_spacing=-1,
+        line_spacing=None,
         font="",
         slant="NORMAL",
         weight="NORMAL",
@@ -955,7 +972,7 @@ class MarkupText(Text):
         tab_width=4,
         height=None,
         width=None,
-        should_center=True,
+        center=True,
         disable_ligatures=False,
         warn_missing_font=True,
         **kwargs,
@@ -981,7 +998,7 @@ class MarkupText(Text):
             tab_width=tab_width,
             height=height,
             width=width,
-            should_center=should_center,
+            center=center,
             disable_ligatures=disable_ligatures,
             warn_missing_font=warn_missing_font,
             **kwargs,
@@ -991,7 +1008,7 @@ class MarkupText(Text):
 class Paragraph(Group):
     """A group of individually addressable text lines."""
 
-    def __init__(self, *text, line_spacing=-1, alignment=None, **kwargs):
+    def __init__(self, *text, line_spacing=None, alignment=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         add_to_scene = kwargs.pop("add_to_scene", True)
@@ -1005,7 +1022,7 @@ class Paragraph(Group):
         mobs = [Text(line, add_to_scene=add_to_scene, **kwargs) for line in lines]
         super().__init__(*mobs, add_to_scene=add_to_scene)
         if mobs:
-            buffer = 0.2 if line_spacing == -1 else line_spacing
+            buffer = 0.2 if line_spacing is None else line_spacing
             align_direction = {
                 "left": LEFT,
                 "center": None,

@@ -110,7 +110,7 @@ from algan.mobs.group import *
 from algan.mobs.image_mob import *
 from algan.mobs.manim_adapters import *
 from algan.mobs.manim_mob import *
-from algan.mobs.numeric_display import NumericDisplay
+from algan.mobs.numeric_display import DecimalNumber
 from algan.mobs.shapes_2d import *
 from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.surface import *
@@ -205,21 +205,26 @@ _MANIM_NAMESPACE_ANCHOR = None
 from algan import manim as _manim_namespace  # noqa: E402, F401
 
 
-def clear_cache(taichi_kernels=False):
+def clear_cache(include_kernels=False):
     """Delete Algan's content caches (tessellations, manim Tex/Text, audio).
 
     The Taichi offline kernel cache lives inside the cache directory too
     (the environment-selected Taichi cache directory) but is spared by default:
     it holds compiled kernels (minutes to rebuild), is version-keyed, and is
-    never invalidated by scene-content changes. Pass
-    ``taichi_kernels=True`` to wipe it as well (e.g. before
-    A/B-benchmarking kernel edits -- the offline cache does not invalidate on
-    ``@ti.func`` changes).
+    never invalidated by scene-content changes.
+
+    Parameters
+    ----------
+    include_kernels
+        Whether to wipe the compiled Taichi kernels as well. Defaults to False.
+        :func:`clear_cached_kernels` is the same thing said outright, and is
+        what to reach for before A/B-benchmarking a kernel edit -- the offline
+        cache does not invalidate on ``@ti.func`` changes.
     """
     f = SETTINGS.paths.cache_directory
     if not os.path.exists(f):
         return
-    if taichi_kernels:
+    if include_kernels:
         shutil.rmtree(f)
         return
     from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
@@ -233,6 +238,20 @@ def clear_cache(taichi_kernels=False):
             shutil.rmtree(p)
         else:
             os.remove(p)
+
+
+def clear_cached_kernels():
+    """Delete the compiled Taichi kernels, and Algan's content caches with them.
+
+    The offline kernel cache does not invalidate when an imported ``@ti.func``
+    changes, so a kernel edit A/B-benchmarked against a warm cache measures the
+    old kernel. Clearing costs a cold compile of minutes.
+
+    This is :func:`clear_cache` with ``include_kernels=True``; the kernel cache
+    lives inside the same directory, so there is no way to drop one without the
+    other.
+    """
+    clear_cache(include_kernels=True)
 
 
 def default_scene_initializer(scene):

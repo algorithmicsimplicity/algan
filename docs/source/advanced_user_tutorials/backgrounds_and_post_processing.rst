@@ -172,7 +172,7 @@ Anti-aliasing
 
 Algan supports three anti-aliasing techniques:
 
-* **Supersampling (SSAA):** ``SETTINGS.video.super_sampling_anti_aliasing``
+* **Supersampling (SSAA):** ``SETTINGS.video.supersampling``
   (default ``2``) renders at 2x resolution and downsamples. It is written
   ``ssaa`` or ``SSAA`` just as often -- both are the same setting.
 * **Analytic AA:** ``SETTINGS.raytracing.analytic_aa`` (on by default) resolves
