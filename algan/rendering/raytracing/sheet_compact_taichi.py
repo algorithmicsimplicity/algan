@@ -72,6 +72,17 @@ with each other bitwise. Do not narrow it to f32: a real frame's sheets are
 81% one fragment and 17% two (both order-independent whatever the width), but
 the remaining 1.6% run to eleven, and ``sheet_cov`` feeds thresholds.
 
+The one exception is not a loophole in that rule, it is the absence of the
+alternative: **Metal has no f64 at all**, so MPS-friendly mode passes
+``ti.f32`` for every ``acc_t`` here and accepts what the paragraph above says
+it costs (``mps_compat``; ``DESIGN_mps_support.md`` §1.2). It is a
+``ti.template()`` argument rather than a ``ti.static`` gate so that Taichi
+compiles a variant per width -- a static gate resolves once, at the first
+compile, and the second arm would silently reuse the first arm's code. The
+same argument carries ``idx_t`` for ``band_stats_reduce``'s atomics, which
+Metal aborts on at i64 and which lose nothing at i32 because every value they
+reduce is a position or a count.
+
 The one-mesh reduction (``one_mesh_pixel_reduce``) carries the same-shaped
 float contract one stage earlier in the pipeline: its ``front``/``back``
 per-pixel coverage sums accumulate in f64 registers and are rounded through

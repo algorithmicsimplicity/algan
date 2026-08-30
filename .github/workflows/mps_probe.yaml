@@ -372,10 +372,23 @@ jobs:
           print('torch mps       :', torch.backends.mps.is_available())
           "
 
-      # The smallest thing that exercises the whole renderer, run first so a
-      # total failure to render costs one minute rather than the suite's
-      # twenty. It writes a PNG through save_frame, so it needs no encoder.
+      # Before the renderer, the kernel spellings it is built out of. Every
+      # case runs in its own subprocess because Metal's refusals are SIGABRTs
+      # rather than exceptions, so this survives what the render does not --
+      # and it runs first for exactly that reason: a render that aborts leaves
+      # nothing behind, and this leaves a table.
+      - name: Probe what Metal will compile
+        run: uv run python benchmarks/_mps_metal_codegen_probe.py
+
+      # The smallest thing that exercises the whole renderer, run before the
+      # suite so a total failure to render costs one minute rather than the
+      # suite's twenty. It writes a PNG through save_frame, so it needs no
+      # encoder. The compile log names each kernel as Taichi starts on it,
+      # which is the only way to tell WHICH kernel an abort was inside: the
+      # abort itself prints Metal's complaint and no name.
       - name: Render one frame
+        env:
+          ALGAN_LOG_TAICHI_COMPILES: "1"
         run: uv run python benchmarks/_mps_render_smoke.py
 
       # The same scope test.yaml runs, so a pass here means the Apple GPU path
