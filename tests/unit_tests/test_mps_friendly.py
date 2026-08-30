@@ -322,6 +322,39 @@ def test_the_split_gather_leaves_narrow_dtypes_alone(computing_settings):
         )
 
 
+# ------------------------------------------------- FXAA's border padding
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(("h", "w"), [(5, 7), (4, 4), (1, 9), (9, 1)])
+def test_a_clamped_grid_reproduces_border_padding(h, w):
+    """FXAA's substitution, at the level it substitutes.
+
+    ``grid_sampler_2d`` with padding mode 1 (border) raises on MPS --
+    ``RuntimeError: MPS: Unsupported Border padding mode`` -- so ``fxaa`` runs
+    mode 0 (zeros) over a grid clamped to the edge pixel CENTRES. That is not
+    an approximation: with ``align_corners=False`` pixel ``i`` sits at
+    ``(2i + 1) / N - 1``, so a coordinate past the first or last centre has its
+    whole bilinear footprint clamped onto that edge pixel under border padding,
+    which is exactly what sampling at the centre returns.
+
+    Checked here at float64 over a grid reaching well outside the image, which
+    is the case the padding mode exists for, and including the single-row and
+    single-column shapes where the two clamp bounds meet.
+    """
+    generator = torch.Generator().manual_seed(h * 31 + w)
+    image = torch.randn(2, 3, h, w, generator=generator, dtype=torch.float64)
+    grid = torch.rand(2, h, w, 2, generator=generator, dtype=torch.float64) * 4.0 - 2.0
+
+    border = torch.ops.aten.grid_sampler_2d(image, grid, 0, 1, False)
+    clamped = grid.clone()
+    clamped[..., 0].clamp_(1.0 / w - 1.0, 1.0 - 1.0 / w)
+    clamped[..., 1].clamp_(1.0 / h - 1.0, 1.0 - 1.0 / h)
+    zeros = torch.ops.aten.grid_sampler_2d(image, clamped, 0, 0, False)
+
+    assert torch.allclose(border, zeros, rtol=0.0, atol=1e-12)
+
+
 # ------------------------------------------------- the band/class grouping
 
 
@@ -408,29 +441,6 @@ def test_the_pair_grouping_survives_a_band_count_that_overflows_the_wide_key():
 # ------------------------------------------------- the narrowed kernel arms
 
 
-def _skip_without_the_wide_arm():
-    """Skip a narrow-vs-wide comparison where the wide arm cannot exist.
-
-    These tests are A/B: they run the float64 / int64 arm and the narrowed one
-    and assert the second answers the first. That only works on a device that
-    HAS the first. Metal has no f64 at all and no int64 atomic
-    (``DESIGN_mps_support.md`` §1.2), so on an MPS render device the wide
-    launch does not produce a worse answer, it aborts inside Taichi -- which is
-    the very thing the narrowing exists to avoid, and not a regression to
-    report.
-
-    Skipping loses nothing. The narrow arm is what MPS runs, and the comparison
-    that validates it runs on every CPU and CUDA machine, which is where the
-    wide arm is available to compare against.
-    """
-    if str(SETTINGS.computing.render_device) == "mps":
-        pytest.skip(
-            "the float64 / int64 arm cannot compile on Metal, so there is "
-            "nothing here to compare the narrowed arm against; the comparison "
-            "runs on CPU and CUDA"
-        )
-
-
 def _band_stats_arrays(nb, n, dtype):
     return (
         torch.full((nb,), n, dtype=dtype),
@@ -442,7 +452,7 @@ def _band_stats_arrays(nb, n, dtype):
     )
 
 
-def test_the_int32_band_stats_kernel_answers_the_int64_one():
+def test_the_int32_band_stats_kernel_answers_the_int64_one(wide_kernel_arms):
     """Positions and counts, so the narrow answer is the wide one exactly.
 
     Also the check that the ``idx_t`` template really specialises: if Taichi
@@ -457,7 +467,6 @@ def test_the_int32_band_stats_kernel_answers_the_int64_one():
     )
     from algan.rendering.taichi_runtime import init_taichi
 
-    _skip_without_the_wide_arm()
     init_taichi()
     generator = torch.Generator().manual_seed(17)
     n, nb = 4096, 512
@@ -507,7 +516,7 @@ def test_the_int32_band_stats_kernel_answers_the_int64_one():
     assert int(results[torch.int64][4].sum()) == n
 
 
-def test_the_float32_area_kernel_tracks_the_float64_one():
+def test_the_float32_area_kernel_tracks_the_float64_one(wide_kernel_arms):
     """The narrowed accumulator is the same sum, not the same bits."""
     from algan.rendering.raytracing.raster_taichi import (
         _AA_MASK_ALL as MASK_ALL,
@@ -518,7 +527,6 @@ def test_the_float32_area_kernel_tracks_the_float64_one():
     from algan.rendering.raytracing.sheet_compact_taichi import sheet_band_reduce
     from algan.rendering.taichi_runtime import init_taichi
 
-    _skip_without_the_wide_arm()
     init_taichi()
     generator = torch.Generator().manual_seed(23)
     n, nb = 8192, 256
@@ -659,7 +667,9 @@ def _render(tmp_path, name):
     ).to(torch.int16)
 
 
-def test_a_scene_renders_in_mps_friendly_mode(computing_settings, tmp_path):
+def test_a_scene_renders_in_mps_friendly_mode(
+    computing_settings, tmp_path, wide_kernel_arms
+):
     """The whole renderer, with every float64 accumulator narrowed.
 
     The tolerance is loose on purpose. What moves between the two arms is the
@@ -672,7 +682,6 @@ def test_a_scene_renders_in_mps_friendly_mode(computing_settings, tmp_path):
     corrupted buffer, a dropped clamp) violates immediately, rather than on a
     per-pixel bound that would only be pinning noise.
     """
-    _skip_without_the_wide_arm()
     computing_settings.set(mps_friendly=False)
     wide = _render(tmp_path, "wide.png")
     computing_settings.set(mps_friendly=True)

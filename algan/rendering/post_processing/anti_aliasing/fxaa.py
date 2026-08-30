@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import torch
 
+from algan.rendering.mps_compat import mps_friendly
+
 
 def _where(condition, a, b, out):
     """``torch.where`` with an arena-owned output."""
@@ -169,7 +171,25 @@ def fxaa(
         torch.mul(s0, edge_mask, out=s0)
         grid[..., 1].add_(s0[:, 0])
 
-        torch.ops.aten.grid_sampler_2d.out(images, grid, 0, 1, False, out=antialiased)
+        # Padding mode 1 is BORDER, which MPS does not implement -- it raises
+        # `RuntimeError: MPS: Unsupported Border padding mode`. Clamping the
+        # grid to the edge pixel CENTRES reproduces it exactly and lets mode 0
+        # (zeros) run, because after the clamp no sample reaches the padding at
+        # all. With ``align_corners=False`` pixel ``i`` sits at
+        # ``(2i + 1) / N - 1``, so the first and last centres are ``1/N - 1``
+        # and ``1 - 1/N``; a coordinate past one of those has its whole
+        # bilinear footprint clamped onto that edge pixel under border padding,
+        # which is what sampling at the centre returns. Checked against the
+        # border-padded result over grids reaching well outside the image:
+        # identical to a float64 rounding bit.
+        padding_mode = 1
+        if mps_friendly():
+            grid[..., 0].clamp_(1.0 / W - 1.0, 1.0 - 1.0 / W)
+            grid[..., 1].clamp_(1.0 / H - 1.0, 1.0 - 1.0 / H)
+            padding_mode = 0
+        torch.ops.aten.grid_sampler_2d.out(
+            images, grid, 0, padding_mode, False, out=antialiased
+        )
 
     return antialiased
 

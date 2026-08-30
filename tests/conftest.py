@@ -467,3 +467,29 @@ def assert_video_matches_baseline():
         )
 
     return compare
+
+
+@pytest.fixture
+def wide_kernel_arms():
+    """Skip a narrow-vs-wide kernel comparison where the wide arm cannot exist.
+
+    Several tests are A/B: they launch the float64 / int64 kernel arm and
+    assert the narrowed one answers it, or check a kernel against a torch
+    reference computed at the wide dtype. That needs a device that HAS the wide
+    arm. Metal has no f64 at all and no int64 atomic
+    (``DESIGN_mps_support.md`` §1.2), so on an MPS render device the wide
+    launch does not answer worse -- it fails to compile
+    (``Type f64 not supported``) or aborts inside Taichi, which is precisely
+    what MPS-friendly mode exists to avoid and not a regression to report.
+
+    Skipping loses no coverage that MPS depends on. The narrow arm is what an
+    Apple GPU runs; the comparison that validates it against the wide one runs
+    on every CPU and CUDA machine, which is where the wide arm is available to
+    compare against.
+    """
+    if str(SETTINGS.computing.render_device) == "mps":
+        pytest.skip(
+            "the float64 / int64 kernel arm cannot compile on Metal, so there "
+            "is nothing here to compare against; the comparison runs on CPU "
+            "and CUDA"
+        )

@@ -550,6 +550,11 @@ jobs:
             sed -n '/^=* short test summary/,$p' pytest-output.txt \
               | head -40 || true
           fi
+          if [ -f compile-trace.txt ]; then
+            echo "== last kernels before any bind_pipeline abort =="
+            grep -E 'compile\] started|Assertion failed|program_source' \
+              compile-trace.txt | tail -12 || true
+          fi
 
       - name: Upload what was rendered
         if: always()
