@@ -181,7 +181,11 @@ jobs:
             echo "(the op probe wrote nothing)"
             exit 0
           fi
-          sed -n '/isolated gathers/,$p' torch-op-probe.txt
+          # Just this section, not to end of file: the per-case ok/FAIL lines
+          # are what attribute the defect, and letting the run's whole failure
+          # summary follow them pushes them straight back out of the window
+          # this step exists to fit inside.
+          sed -n '/isolated gathers/,/^$/p' torch-op-probe.txt
 
       - name: Upload the raw results
         if: always()
