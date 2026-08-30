@@ -233,7 +233,7 @@ def _build_light(light):
             target=_vec(light["target"]),
             color=color,
             intensity=intensity,
-            angle=float(light["angle"]),
+            cone_angle=float(light["angle"]),
             penumbra=float(light.get("penumbra", 0.0)),
             decay=float(light.get("decay", 0.0)),
             distance=float(light.get("distance", 0.0)),

@@ -81,7 +81,7 @@ def build_scene():
         SpotLight(
             location=LEFT * 4 + UP * 2 + IN * 4,
             target=ORIGIN,
-            angle=50.0,
+            cone_angle=50.0,
             penumbra=0.5,
             intensity=1.2,
         ).spawn(animate=False)

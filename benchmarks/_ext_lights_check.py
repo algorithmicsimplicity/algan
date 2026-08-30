@@ -123,7 +123,7 @@ def scene_spot():
             target=DOWN * 1.5,
             color=WHITE,
             intensity=40.0,
-            angle=22.0,
+            cone_angle=22.0,
             penumbra=0.6,
             decay=2.0,
         ).spawn(animate=False),

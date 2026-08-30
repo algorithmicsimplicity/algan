@@ -171,7 +171,7 @@ def build_scene():
                 target=LEFT * 1.2 + DOWN * 0.9,
                 color=BLUE_A,
                 intensity=5.0,
-                angle=22.0,
+                cone_angle=22.0,
                 penumbra=0.35,
             ).spawn(animate=False)
             rect_light = RectAreaLight(
