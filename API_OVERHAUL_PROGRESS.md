@@ -245,6 +245,18 @@ be half-applied by the parameter rename inside it.
 The export snapshot moved by exactly `DEFAULT_DURATION` for the first sweep, and
 `ComposedEasing` + `easings` for the second.
 
+**Verified**: full `tests/unit_tests` green on CPU (2409 passed, 139 skipped), `--fast` green
+(405 passed) after each sweep independently, `tests/fast` green, and `tests/full_renders` at the
+same three stale-baseline failures with unchanged deltas -- no pixels moved.
+
+Two records elsewhere quoted a name this phase changed and had to be repaired by hand rather
+than swept: the Phase 2 entry above, which names the file `rate_funcs.py` because that is what
+it was called then, and a row in `STRESS_TEST_FINDINGS.md` whose whole point was that the
+README wrote `Sync(duration=2.0)` while the parameter was `run_time`. Sweeping the second one
+turned it into "the parameter is `duration`" against a call that says `duration` -- a finding
+with its finding removed. Prose that deliberately quotes an old name is the one thing a
+mechanical rename cannot be trusted with.
+
 ---
 
 ## Plan changes made during implementation
