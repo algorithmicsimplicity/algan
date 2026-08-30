@@ -142,6 +142,11 @@ across `Light` and all five subclasses; `SpotLight(cone_angle=..., degrees=True)
 `test_the_scene_camera_light_and_group_surface_answers_to_its_public_names`, the Phase 4
 counterpart of the Phase 3 one.
 
+**Verified**: full `tests/unit_tests` green on CPU (2409 passed, 139 skipped), `--fast` green
+(405 passed), lint and format at their pre-existing counts. The pixel suites are recorded under
+follow-ups; the pixel suites were still running when this was written and the result is
+recorded in the commit that follows.
+
 Two guards had to move with the work, and both were caught by the full suite rather than by
 `--fast`. `test_render_coverage_audit`'s "never import the world" rule allowed only
 `from algan import *` and `torch`; since Phase 1 made `algan.manim` the public spelling of the
