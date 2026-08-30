@@ -55,6 +55,31 @@ from algan.settings import SETTINGS  # noqa: E402
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "mps_render_smoke"
 
 
+def _host(tensor):
+    """A float64 CPU copy of ``tensor``, for a checksum both arms can share.
+
+    ``.to(torch.float64)`` on an MPS tensor raises -- Metal has no float64 at
+    all, which is the whole subject here -- so the move to the host comes
+    FIRST. Getting that order wrong is what took down the first run that
+    carried these diagnostics.
+    """
+    return tensor.detach().cpu().to(torch.float64)
+
+
+def _say(build, *args):
+    """Print what ``build`` returns, or why it could not be built.
+
+    A diagnostic must never be able to take down the render it instruments:
+    these run inside the pipeline, and a bad one turns a run that would have
+    produced a frame and a table into a traceback and neither. Losing one line
+    of a report is a much smaller cost than losing the round.
+    """
+    try:
+        print(build(*args))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [report] {build.__name__} failed: {type(exc).__name__}: {exc}")
+
+
 def _install_pipeline_report():
     """Report what the raster pipeline found, so a black frame is localizable.
 
@@ -70,18 +95,36 @@ def _install_pipeline_report():
     A fragment count that differs with the triangle count is a tessellation
     difference and expected; one that differs with the triangle count EQUAL is
     a rasteriser defect.
+
+    Every number below is computed on the CPU, for two reasons that both
+    matter. A diagnostic must not depend on the thing it is diagnosing -- these
+    exist to judge MPS, so reducing on MPS would let the defect under
+    investigation quietly shape the evidence. And the arms are compared to each
+    other, so the reduction has to be the same arithmetic on both; a float32
+    device sum against a float32 host sum differs in the last digits for
+    reasons that have nothing to do with the question.
     """
     from algan.rendering.raytracing import raster_pipeline
 
     original = raster_pipeline.prepare_sparse_raster_coverage
 
+    def geometry_line(merged):
+        tri_pos = _host(merged["tri_pos"])
+        return (
+            f"  [geometry] triangles={tri_pos.shape[1]} "
+            f"pos_sum={float(tri_pos.sum()):.6f}"
+        )
+
+    def coverage_line(cov):
+        cov = _host(cov)
+        return (
+            f"  [pipeline] frag_cov min={float(cov.min()):.6f} "
+            f"max={float(cov.max()):.6f} sum={float(cov.sum()):.3f}"
+        )
+
     def reporting(merged, *args, **kwargs):
-        tri_pos = merged.get("tri_pos") if isinstance(merged, dict) else None
-        if tri_pos is not None:
-            print(
-                f"  [geometry] triangles={tri_pos.shape[1]} "
-                f"pos_sum={float(tri_pos.to(torch.float64).sum()):.6f}"
-            )
+        if isinstance(merged, dict) and merged.get("tri_pos") is not None:
+            _say(geometry_line, merged)
         coverage = original(merged, *args, **kwargs)
         if coverage is None:
             print("  [pipeline] no coverage at all -- nothing rasterised")
@@ -93,10 +136,7 @@ def _install_pipeline_report():
         )
         cov = coverage.get("frag_cov")
         if cov is not None and cov.numel():
-            print(
-                f"  [pipeline] frag_cov min={float(cov.min()):.6f} "
-                f"max={float(cov.max()):.6f} sum={float(cov.sum()):.3f}"
-            )
+            _say(coverage_line, cov)
         return coverage
 
     raster_pipeline.prepare_sparse_raster_coverage = reporting
@@ -112,19 +152,22 @@ def _install_pipeline_report():
 
     original_compact = _sheets.compact_sheets
 
-    def reporting_compact(coverage, *args, **kwargs):
+    def key_lines(coverage):
         n = int(coverage["num_fragments"])
-        key = coverage["frag_key"][:n]
+        key = coverage["frag_key"][:n].cpu()
         pixels = key >> 32
         depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
-        print(
-            f"  [compact-in] key n={n} distinct_pixels={int(torch.unique(pixels).numel())} "
-            f"pixel_min={int(pixels.min())} pixel_max={int(pixels.max())}"
-        )
-        print(
+        return (
+            f"  [compact-in] key n={n} "
+            f"distinct_pixels={int(torch.unique(pixels).numel())} "
+            f"pixel_min={int(pixels.min())} pixel_max={int(pixels.max())}\n"
             f"  [compact-in] depth min={float(depth.min()):.6f} "
-            f"max={float(depth.max()):.6f} distinct={int(torch.unique(depth).numel())}"
+            f"max={float(depth.max()):.6f} "
+            f"distinct={int(torch.unique(depth).numel())}"
         )
+
+    def reporting_compact(coverage, *args, **kwargs):
+        _say(key_lines, coverage)
         return original_compact(coverage, *args, **kwargs)
 
     # The module attribute is the only binding to patch: ``raster_pipeline``
