@@ -83,6 +83,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.environment import env_flag
+from algan.rendering.mps_compat import reduction_index_dtype
 
 #: A sub-path counts as planar when ``sqrt(lambda_min / lambda_max)`` of its
 #: control points' covariance -- RMS spread off the best-fit plane as a fraction
@@ -584,9 +585,13 @@ def _extremal_within_group(values, scores, groups, num_groups):
     best = torch.full(
         (frames, num_groups), -1.0, device=values.device, dtype=scores.dtype
     ).scatter_reduce_(1, spread, scores, "amax", include_self=True)
-    index = torch.arange(limit, device=values.device).expand_as(scores)
+    # int32 in MPS-friendly mode, where an int64 amin ``scatter_reduce_`` is
+    # unimplemented; a control-point index is bounded by ``limit``, so the
+    # narrow tie-break picks the same winner.
+    idx_dtype = reduction_index_dtype()
+    index = torch.arange(limit, device=values.device, dtype=idx_dtype).expand_as(scores)
     chosen = torch.full(
-        (frames, num_groups), limit, device=values.device, dtype=torch.long
+        (frames, num_groups), limit, device=values.device, dtype=idx_dtype
     ).scatter_reduce_(
         1,
         spread,
@@ -594,7 +599,7 @@ def _extremal_within_group(values, scores, groups, num_groups):
         "amin",
         include_self=True,
     )
-    chosen = chosen.clamp_max(limit - 1)
+    chosen = chosen.to(torch.long).clamp_max(limit - 1)
     return torch.gather(values, 1, chosen.unsqueeze(-1).expand(-1, -1, 3))
 
 

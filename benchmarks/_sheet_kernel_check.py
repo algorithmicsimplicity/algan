@@ -34,6 +34,7 @@ import os
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
 import numpy as np  # noqa: E402
+import taichi as ti  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
 
@@ -631,6 +632,7 @@ def shell_case(label, key, o2, back, cov_in):
         cov64k,
         nn_,
         got,
+        ti.f64,
     )
     ok = bits_equal(want, got)
     if not ok:
@@ -653,6 +655,7 @@ def shell_case(label, key, o2, back, cov_in):
             cov64k,
             nn_,
             c,
+            ti.f64,
         )
         repeats.append(c)
     ok = ok and all(bits_equal(r, got) for r in repeats)
@@ -783,10 +786,11 @@ def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
         cm,
         nf,
         bool(positioned),
+        ti.i64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
     )
     ok = (
         bits_equal(w_fs, fs)

@@ -46,6 +46,7 @@ from algan.mobs.nonplanar_circuit import (
     build_render_primitives as build_nonplanar_render_primitives,
 )
 from algan.mobs.nonplanar_circuit import classify_circuit
+from algan.rendering.mps_compat import cummax_values
 from algan.rendering.raytracing.utils import _unify_time
 from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.settings.video_settings import PREVIEW
@@ -1142,7 +1143,7 @@ class BezierCircuitCubic(Mob):
 
         inds = torch.arange(x.shape[-3], device=x.device).view(-1, 1, 1)
         circuit_start_inds = torch.where(circuit_start_mask, inds, 0)
-        circuit_start_inds = torch.cummax(circuit_start_inds, -3)[0]
+        circuit_start_inds = cummax_values(circuit_start_inds, -3)
         # circuit_start_inds now contains the index of the start of the current index's circuit.
 
         next_segment_inds = (inds + 1) % x.shape[-3]
@@ -1513,7 +1514,7 @@ def build_render_primitives_batched(actors, scene):
     # actor's candidates are >= its offset and below the next actor's), so
     # one global cummax restarts cleanly at every actor boundary.
     circuit_start_inds = torch.where(circuit_start_mask, local_col + off_col, off_col)
-    circuit_start_inds = torch.cummax(circuit_start_inds, -3)[0] - off_col
+    circuit_start_inds = cummax_values(circuit_start_inds, -3) - off_col
     next_segment_inds = torch.where(
         local == last_local, torch.zeros_like(local), local + 1
     ).view(-1, 1, 1)

@@ -291,6 +291,7 @@ _INTERNAL_EXPORT_MODULES = (
     "algan.animation_timeline.timeline",
     "algan.mobs.nonplanar_circuit",
     "algan.rendering.logical_pn",
+    "algan.rendering.mps_compat",
     "algan.utils.file_utils",
     "algan.utils.lazy_import",
     "algan.utils.python_utils",

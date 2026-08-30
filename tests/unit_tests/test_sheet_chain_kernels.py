@@ -17,6 +17,7 @@ convention in ``test_sheet_compaction.py``).
 from __future__ import annotations
 
 import pytest
+import taichi as ti
 import torch
 
 from algan.rendering.raytracing.raster_pipeline import (
@@ -112,7 +113,7 @@ def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas):
     got = cov.clone()
     scratch = cov.to(torch.float64)
     solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got
+        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got, ti.f64
     )
     assert _bits_equal(want, got), (
         f"max abs diff {(want - got).abs().max().item()}, "
@@ -121,7 +122,7 @@ def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas):
 
     again = cov.clone()
     solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again
+        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again, ti.f64
     )
     assert _bits_equal(got, again), "kernel is not deterministic across runs"
 
@@ -147,6 +148,7 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments():
             cov.to(torch.float64),
             n,
             got,
+            ti.f64,
         )
         assert _bits_equal(want, got), f"n={n}"
 
@@ -224,10 +226,11 @@ def test_band_stats_kernels_match_the_five_scatters(positioned):
         cm,
         nf,
         bool(positioned),
+        ti.i64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
     )
 
     assert _bits_equal(w_fs, fs), "first_sorted"
@@ -270,10 +273,11 @@ def test_band_stats_leaves_unused_band_rows_at_sentinel():
         cm,
         nf,
         True,
+        ti.i64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
     )
     assert _bits_equal(w_fs, fs), "first_sorted"
     assert _bits_equal(w_mp, mp), "min_pos"

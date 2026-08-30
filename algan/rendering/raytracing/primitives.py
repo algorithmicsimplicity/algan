@@ -23,6 +23,7 @@ from algan.rendering.logical_pn import (
     normalize_pixel_tolerance,
     snap_boundary_values,
 )
+from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
     batch_arange,
@@ -2705,8 +2706,13 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     edge_count = counts_all[circ]  # [V] own circuit's edge count
     # Power-of-two size class per edge: within a bucket the gather width is
     # at most 2x any member's circuit size, keeping total work within 2x of
-    # sum_c Vc^2.
-    size_class = torch.ceil(torch.log2(edge_count.to(torch.float64))).to(torch.long)
+    # sum_c Vc^2. Purely a BUCKETING key -- the loop below takes each bucket's
+    # own ``max`` as its gather width -- so the narrower log of MPS-friendly
+    # mode can round an exact power of two into the neighbouring bucket
+    # without changing a single result, only the work split.
+    size_class = torch.ceil(torch.log2(edge_count.to(accumulate_dtype()))).to(
+        torch.long
+    )
 
     sigma = torch.zeros((T, V), device=device)
     unresolved = ~degen

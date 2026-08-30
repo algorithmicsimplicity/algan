@@ -22,6 +22,12 @@ import math
 import torch
 
 from algan.environment import env_str
+from algan.rendering.mps_compat import (
+    accumulate_dtype,
+    reduction_index_dtype,
+    reduction_index_sentinel,
+    taichi_accumulate_dtype,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
@@ -1217,17 +1223,19 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         )
         starts = torch.cumsum(counts, 0) - counts
         ends = starts + counts - 1
+        idx_dtype = reduction_index_dtype()
         first_opaque = torch.full(
-            (counts.numel(),), num_frags, dtype=torch.int64, device=device
+            (counts.numel(),), num_frags, dtype=idx_dtype, device=device
         )
         opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
         first_opaque.scatter_reduce_(
             0,
             segments.index_select(0, opaque_pos),
-            opaque_pos,
+            opaque_pos.to(idx_dtype),
             reduce="amin",
             include_self=True,
         )
+        first_opaque = first_opaque.to(torch.int64)
         del opaque_pos, starts
         keep_end = torch.minimum(first_opaque, ends)
         del first_opaque, ends
@@ -1280,8 +1288,9 @@ def _one_mesh_pixel_caps(
         starts = torch.cumsum(counts, 0) - counts
         lo = torch.full((num_covered,), 2147483647, dtype=torch.int32, device=device)
         hi = torch.full((num_covered,), -1, dtype=torch.int32, device=device)
-        front = torch.zeros(num_covered, dtype=torch.float64, device=device)
-        back = torch.zeros(num_covered, dtype=torch.float64, device=device)
+        acc = accumulate_dtype()
+        front = torch.zeros(num_covered, dtype=acc, device=device)
+        back = torch.zeros(num_covered, dtype=acc, device=device)
         one_mesh_pixel_reduce(
             key_s,
             ref_s,
@@ -1300,6 +1309,7 @@ def _one_mesh_pixel_caps(
             hi,
             front,
             back,
+            taichi_accumulate_dtype(),
         )
         # The i32 fill differs from the torch arm's 1<<40 only on a pixel with
         # no fragment at all, which cannot happen; see the kernel docstring.
@@ -1321,7 +1331,13 @@ def _one_mesh_pixel_caps(
 
     frame_of = _tri_obj_row(key_s >> 32, ppf, time_start, tri_obj.shape[0])
     safe_ref = ref_s.clamp_min(0).to(torch.int64)
-    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+    # ``reduction_index_dtype`` is int64 here and int32 in MPS-friendly mode,
+    # where int64 amin/amax ``scatter_reduce_`` is unimplemented (§2.3). A
+    # surface id is bounded by the batch's surface count, so the narrow answer
+    # is the wide one -- exactly the argument the kernel arm above already
+    # makes for its own int32 spread.
+    idx_dtype = reduction_index_dtype()
+    sid = tri_obj[frame_of, safe_ref].to(idx_dtype)
     # A bezier fragment has ref < 0 and no surface id; a pixel holding
     # one is never single-mesh. Same for a non-opaque fragment, whose
     # far sheet is legitimately visible THROUGH the near one.
@@ -1331,8 +1347,10 @@ def _one_mesh_pixel_caps(
     seg = torch.repeat_interleave(
         torch.arange(num_covered, dtype=torch.int64, device=device), counts
     )
-    lo = torch.full((num_covered,), 1 << 40, dtype=torch.int64, device=device)
-    hi = torch.full((num_covered,), -1, dtype=torch.int64, device=device)
+    lo = torch.full(
+        (num_covered,), reduction_index_sentinel(), dtype=idx_dtype, device=device
+    )
+    hi = torch.full((num_covered,), -1, dtype=idx_dtype, device=device)
     lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
     hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
     one_mesh = (lo == hi) & (lo >= 0)
@@ -1364,7 +1382,7 @@ def _one_mesh_pixel_caps(
     # nothing measurable -- it is one pass over the fragments, against a
     # render this sits at ~1% of.
     is_back = (msk_s & AA_BACKFACE_BIT) != 0
-    acc = torch.float64
+    acc = accumulate_dtype()
     cov_acc = cov_s.to(acc)
     front = torch.zeros(num_covered, dtype=acc, device=device)
     back = torch.zeros_like(front)

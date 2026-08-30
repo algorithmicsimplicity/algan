@@ -63,17 +63,23 @@ jobs:
     #
     # macos-latest is pinned, and the reason is measured rather than assumed:
     # left on `auto` it resolves to MPS -- the runner really does offer one --
-    # and Algan does not run there. 88 tests failed on the first macOS run, in
+    # and Algan did not run there. 88 tests failed on the first macOS run, in
     # two families that are both the same fact. Torch: the raster pipeline
     # allocates in float64 (raster_pipeline.py, `_one_mesh_pixel_caps`), and
     # "the MPS framework doesn't support float64". Taichi: `ti.gpu` on a Mac
-    # resolves through Vulkan, whose SPIR-V builder answers "Type f64 not
-    # supported" to the same kernels. So this is not a CI-configuration
-    # problem -- Algan has never supported MPS, and supporting it means taking
-    # float64 out of the raster pipeline and the kernels, which moves rendered
-    # output and wants its own change. Until then the Mac job tests the CPU
-    # path, which is what makes it a portability check rather than a
-    # standing failure. Take the pin off the day MPS lands.
+    # resolves to Metal, whose SPIR-V builder answers "Type f64 not supported"
+    # to the same kernels.
+    #
+    # Both of those are now addressed -- kernel arguments are packed into arena
+    # views (DESIGN_mps_support.md §1.1) and MPS-friendly mode narrows every
+    # f64 accumulator and int64 reduction the renderer has (§1.2) -- but
+    # addressed is not verified: the Metal failures are SIGABRTs inside Taichi
+    # rather than exceptions, so only an Apple GPU can say. The `render` job in
+    # mps_probe.yaml is what asks, on the same runner and the same suites. This
+    # pin comes off when that job has been green for a while, and not before: a
+    # standing red job in the required matrix teaches nobody anything. Until
+    # then the Mac job tests the CPU path, which is what makes it a portability
+    # check rather than a standing failure.
     env:
       ALGAN_RENDER_DEVICE: ${{ startsWith(matrix.os, 'macos') && 'cpu' || 'auto' }}
 

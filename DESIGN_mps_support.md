@@ -109,6 +109,34 @@ bit-identical run to run on MPS — but only through torch. As a Taichi kernel o
 Metal it aborts with the above. f32 `ti.atomic_add` does work, so a
 non-deterministic mode has a floor; a deterministic one does not, in a kernel.
 
+> **Addressed — MPS-friendly mode.** The floor is what shipped.
+> `SETTINGS.computing.mps_friendly` (`'auto'`, on exactly when the render
+> device is MPS) narrows every renderer path this section names, in one place:
+> `algan/rendering/mps_compat.py`. f64 accumulators become f32 —
+> `accumulate_dtype()` on the torch side, `taichi_accumulate_dtype()` for the
+> kernels, passed as a `ti.template()` dtype argument so Taichi compiles a
+> variant per width rather than resolving a `ti.static` gate once. The int64
+> atomics and the int64 amin/amax `scatter_reduce_`s of §2.3 become int32
+> (`reduction_index_dtype()`); every value they reduce is a position, a count
+> or a surface id, all bounded by the fragment count, so **that** narrowing
+> costs nothing at all. `cummax`/`cummin` become a log-step scan of
+> `maximum`/`minimum`, which is exact because both ops are idempotent and
+> neither reassociates.
+>
+> The float narrowing does cost what this section says it costs, and the mode
+> says so rather than pretending otherwise: **MPS-friendly mode is not
+> deterministic**. Measured on the fast suite's own scene, CPU, mode off
+> against mode on: 99.94% of channels identical, 0.019% differing by more than
+> 2, worst 34 — concentrated on silhouettes, which is the signature of a
+> ceiling that wobbles in its low bits flipping borderline fragments in and out
+> of being clipped, exactly as §2.4 predicts.
+>
+> The mode is settable on any device, and that is deliberate: it is what lets a
+> machine with no Apple GPU run the substitutions. `tests/unit_tests/
+> test_mps_friendly.py` does, including both compiled kernel variants against
+> each other, and it walks the AST of `algan/rendering/` so a new f64
+> accumulator fails a test rather than a Mac.
+
 ### 1.3 Taichi stages every torch tensor through host memory
 
 `kernel_impl.py` copies any ndarray argument that is neither a host tensor nor a
@@ -257,10 +285,23 @@ Not a port. In dependency order:
    `DESIGN_mps_zero_copy.md`. It needs a forked wheel and it is worth doing
    *after* step 2, not before: packing is what shrinks the patch.)
 2. **Kernel argument packing** so no kernel binds more than ~24 buffers. This is
-   the large one and there is no way around it (§1.1).
+   the large one and there is no way around it (§1.1). **Done**: every kernel
+   now takes its buffers as views of the render arena, and none binds more than
+   24. Written against the table in §1.1 rather than against a machine.
 3. **f64 and i64 atomics out of the kernels**, replaced by f32 with a documented
    non-deterministic mode, since the deterministic fixed-point form cannot run in
-   a Metal kernel (§1.2).
+   a Metal kernel (§1.2). **Done**: MPS-friendly mode, per §1.2's amendment.
+
+Steps 2 and 3 are therefore code, and step 1 is not started. What neither of
+them is yet is *verified*: both were written against the measurements in this
+document, and the failures they clear are `SIGABRT`s inside Taichi rather than
+exceptions, so nothing short of an Apple GPU can say whether they are really
+gone. The `render` job in `.github/workflows/mps_probe.yaml` is what asks —
+`ALGAN_RENDER_DEVICE=mps` on `macos-latest`, one smoke frame and then
+`tests/unit_tests tests/fast`, beside a Linux control arm that forces the mode
+on over a CPU device so that a two-arm failure separates "the mode is broken"
+from "what is left is Metal". `test.yaml`'s macOS pin to
+`ALGAN_RENDER_DEVICE=cpu` stays until that job has been green for a while.
 
 The payoff even then is compute-bound scenes only: 52x on the path tracer,
 53x *worse* on the bandwidth-bound raster stages unless step 1 lands first.

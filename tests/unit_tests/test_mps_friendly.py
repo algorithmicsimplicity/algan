@@ -1,0 +1,463 @@
+"""MPS-friendly mode: the flag, the substitutions, and a render through them.
+
+``DESIGN_mps_support.md`` §1.2 measured what Metal cannot do -- no float64
+anywhere, no int64 atomics, no int64 amin/amax ``scatter_reduce_``, no
+``cummax`` -- and ``algan.rendering.mps_compat`` is the one place the renderer
+substitutes for each. These tests run the mode **on the CPU**, which is the
+only way anything but an Apple machine can check it, and is exactly why the
+helpers dispatch on the mode rather than on a tensor's device.
+
+Four things are pinned here:
+
+* the flag itself -- ``'auto'`` follows the render device, ``True``/``False``
+  do not, the environment variable wins, and a nonsense value is refused;
+* the substitutions in isolation -- the scan against ``cummax``/``cummin``,
+  the dtypes against the mode;
+* the narrowed **kernel variants** against the wide ones, which is what says
+  the ``ti.template()`` dtype arguments really specialise rather than one arm
+  silently reusing the other's compiled code (``CLAUDE.md``'s ``ti.static``
+  hazard, which is why these are template arguments);
+* an end-to-end render in the mode, compared against the same scene rendered
+  out of it. That render is what would have caught the aliasing this mode
+  introduced the first time: at float32 ``cov.to(accumulate_dtype())`` is the
+  identity, so the shell-ceiling kernel's scratch buffer became the coverage
+  array it was clamping.
+
+The render is deliberately compared with a **loose** tolerance. MPS-friendly
+mode is not bit-identical and is not meant to be -- narrowing the §6.6.4
+accumulators is the trade Metal forces -- so what the comparison establishes
+is that the mode renders the same picture, not the same bytes.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+import taichi as ti
+import torch
+
+from algan import LD, OUTWARD, RIGHT, UP, Off, Scene, Sphere, Square
+from algan.errors import AlganConfigurationError
+from algan.rendering import mps_compat
+from algan.rendering.mps_compat import (
+    accumulate_dtype,
+    cummax_values,
+    cummin_values,
+    mps_friendly,
+    reduction_index_dtype,
+    reduction_index_sentinel,
+    taichi_accumulate_dtype,
+    taichi_reduction_index_dtype,
+)
+from algan.settings import SETTINGS
+
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+
+
+@pytest.fixture
+def computing_settings(monkeypatch):
+    """``SETTINGS.computing``, restored, with the environment out of the way.
+
+    ``ALGAN_MPS_FRIENDLY`` overrides the setting by design, so a run that has
+    it exported -- which is exactly how this mode is exercised over a CPU
+    render device, in ``mps_probe.yaml``'s Linux arm and in any local
+    ``ALGAN_MPS_FRIENDLY=1 pytest`` -- would make every test below assert
+    against the environment rather than against what it set.
+    """
+    monkeypatch.delenv("ALGAN_MPS_FRIENDLY", raising=False)
+    snapshot = SETTINGS.snapshot()
+    try:
+        yield SETTINGS.computing
+    finally:
+        SETTINGS.restore(snapshot)
+
+
+# ------------------------------------------------------------------ the flag
+
+
+@pytest.mark.fast
+def test_auto_follows_the_render_device(computing_settings, monkeypatch):
+    """The default resolves per call, because the device is settable per render."""
+    computing_settings.set(mps_friendly="auto")
+    monkeypatch.setattr(mps_compat, "render_device", lambda: torch.device("cpu"))
+    assert mps_friendly() is False
+    monkeypatch.setattr(mps_compat, "render_device", lambda: torch.device("mps"))
+    assert mps_friendly() is True
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("value", [True, False])
+def test_an_explicit_value_ignores_the_device(computing_settings, monkeypatch, value):
+    computing_settings.set(mps_friendly=value)
+    for device in ("cpu", "mps"):
+        monkeypatch.setattr(
+            mps_compat, "render_device", lambda d=device: torch.device(d)
+        )
+        assert mps_friendly() is value
+
+
+@pytest.mark.fast
+def test_the_environment_variable_wins(computing_settings, monkeypatch):
+    """``ALGAN_MPS_FRIENDLY`` is how a CPU machine runs the mode's own tests."""
+    computing_settings.set(mps_friendly=False)
+    monkeypatch.setitem(os.environ, "ALGAN_MPS_FRIENDLY", "1")
+    assert mps_friendly() is True
+    monkeypatch.setitem(os.environ, "ALGAN_MPS_FRIENDLY", "0")
+    computing_settings.set(mps_friendly=True)
+    assert mps_friendly() is False
+
+
+@pytest.mark.fast
+def test_a_string_spelling_of_the_flag_is_accepted(computing_settings):
+    computing_settings.set(mps_friendly="on")
+    assert computing_settings.mps_friendly is True
+    computing_settings.set(mps_friendly="AUTO")
+    assert computing_settings.mps_friendly == "auto"
+
+
+@pytest.mark.fast
+def test_a_nonsense_value_is_refused(computing_settings):
+    with pytest.raises(AlganConfigurationError, match="mps_friendly"):
+        computing_settings.set(mps_friendly="sometimes")
+
+
+@pytest.mark.fast
+def test_the_flag_survives_a_snapshot_round_trip(computing_settings):
+    computing_settings.set(mps_friendly=True)
+    snapshot = SETTINGS.snapshot()
+    computing_settings.set(mps_friendly="auto")
+    SETTINGS.restore(snapshot)
+    assert SETTINGS.computing.mps_friendly is True
+
+
+# ------------------------------------------------------- the dtype selectors
+
+
+@pytest.mark.fast
+def test_the_dtypes_follow_the_mode(computing_settings):
+    computing_settings.set(mps_friendly=False)
+    assert accumulate_dtype() is torch.float64
+    assert reduction_index_dtype() is torch.int64
+    assert reduction_index_sentinel() == 1 << 40
+    assert taichi_accumulate_dtype() is ti.f64
+    assert taichi_reduction_index_dtype() is ti.i64
+
+    computing_settings.set(mps_friendly=True)
+    assert accumulate_dtype() is torch.float32
+    assert reduction_index_dtype() is torch.int32
+    assert reduction_index_sentinel() == 2147483647
+    assert taichi_accumulate_dtype() is ti.f32
+    assert taichi_reduction_index_dtype() is ti.i32
+
+
+@pytest.mark.fast
+def test_the_sentinel_fits_its_own_dtype(computing_settings):
+    """A sentinel that overflowed its slot would wrap to a real position."""
+    for value in (False, True):
+        computing_settings.set(mps_friendly=value)
+        dtype = reduction_index_dtype()
+        assert reduction_index_sentinel() <= torch.iinfo(dtype).max
+        filled = torch.full((3,), reduction_index_sentinel(), dtype=dtype)
+        assert int(filled[0]) == reduction_index_sentinel()
+
+
+# ---------------------------------------------------------------- the scans
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("dim", [0, 1, 2])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.int64])
+def test_the_scan_reproduces_cummax_and_cummin(computing_settings, dim, dtype):
+    """The log-step scan is ``cummax``/``cummin``, exactly, not approximately.
+
+    ``maximum`` and ``minimum`` are idempotent, so the doubling's overlapping
+    ranges cannot change the answer, and neither op reassociates -- there is
+    no float rounding to differ over.
+    """
+    generator = torch.Generator().manual_seed(7)
+    if dtype.is_floating_point:
+        x = torch.randn((7, 5, 9), generator=generator, dtype=dtype)
+    else:
+        x = torch.randint(-50, 50, (7, 5, 9), generator=generator, dtype=dtype)
+
+    computing_settings.set(mps_friendly=True)
+    assert torch.equal(cummax_values(x, dim), torch.cummax(x, dim).values)
+    assert torch.equal(cummin_values(x, dim), torch.cummin(x, dim).values)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("n", [0, 1, 2, 3, 64, 65])
+def test_the_scan_handles_every_length(computing_settings, n):
+    """Including the ones the doubling's bounds are easiest to get wrong on."""
+    computing_settings.set(mps_friendly=True)
+    x = torch.arange(n, dtype=torch.float32).flip(0)
+    got = cummax_values(x, 0)
+    assert got.shape == x.shape
+    if n:
+        assert torch.equal(got, torch.cummax(x, 0).values)
+
+
+@pytest.mark.fast
+def test_the_scan_does_not_alias_its_input(computing_settings):
+    """A returned view would let a later in-place write corrupt the source."""
+    computing_settings.set(mps_friendly=True)
+    x = torch.tensor([3.0, 1.0, 2.0])
+    got = cummax_values(x, 0)
+    got += 1.0
+    assert torch.equal(x, torch.tensor([3.0, 1.0, 2.0]))
+
+
+# ------------------------------------------------- the narrowed kernel arms
+
+
+def _band_stats_arrays(nb, n, dtype):
+    return (
+        torch.full((nb,), n, dtype=dtype),
+        torch.full((nb,), n, dtype=dtype),
+        torch.full((nb,), n, dtype=dtype),
+        torch.full((nb,), n, dtype=dtype),
+        torch.zeros(nb, dtype=torch.float32),
+        torch.zeros(nb, dtype=dtype),
+    )
+
+
+def test_the_int32_band_stats_kernel_answers_the_int64_one():
+    """Positions and counts, so the narrow answer is the wide one exactly.
+
+    Also the check that the ``idx_t`` template really specialises: if Taichi
+    reused one variant's compiled code for the other, the int32 launch would
+    write through an int64 view of a half-length buffer and these would not
+    line up.
+    """
+    from algan.rendering.raytracing.raster_taichi import _AA_MASK_ALL as MASK_ALL
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        band_stats_reduce,
+        band_stats_rep_orig,
+    )
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    generator = torch.Generator().manual_seed(17)
+    n, nb = 4096, 512
+    band = torch.randint(0, nb, (n,), generator=generator)
+    pos_o = torch.randperm(n, generator=generator)
+    msk = torch.randint(0, MASK_ALL + 1, (n,), generator=generator, dtype=torch.int32)
+    cov = torch.rand(n, generator=generator)
+
+    results = {}
+    for ti_dtype, torch_dtype in ((ti.i64, torch.int64), (ti.i32, torch.int32)):
+        first, minp, first_p, minp_p, cmax, nfrag = _band_stats_arrays(
+            nb, n, torch_dtype
+        )
+        band_stats_reduce(
+            band.contiguous(),
+            msk.contiguous(),
+            pos_o.contiguous(),
+            cov.contiguous(),
+            n,
+            int(MASK_ALL),
+            first,
+            minp,
+            first_p,
+            minp_p,
+            cmax,
+            nfrag,
+            True,
+            ti_dtype,
+        )
+        rep = torch.full((nb,), n, dtype=torch_dtype)
+        band_stats_rep_orig(
+            band.contiguous(),
+            pos_o.contiguous(),
+            cov.contiguous(),
+            cmax,
+            n,
+            rep,
+            ti_dtype,
+        )
+        results[torch_dtype] = [
+            t.to(torch.int64) for t in (first, minp, first_p, minp_p, nfrag, rep)
+        ] + [cmax]
+
+    for wide, narrow in zip(results[torch.int64], results[torch.int32]):
+        assert torch.equal(wide, narrow)
+    # Not vacuous: some band really was reduced into.
+    assert int(results[torch.int64][4].sum()) == n
+
+
+def test_the_float32_area_kernel_tracks_the_float64_one():
+    """The narrowed accumulator is the same sum, not the same bits."""
+    from algan.rendering.raytracing.raster_taichi import (
+        _AA_MASK_ALL as MASK_ALL,
+    )
+    from algan.rendering.raytracing.raster_taichi import (
+        _AA_SLIVER_BIT as SLIVER_BIT,
+    )
+    from algan.rendering.raytracing.sheet_compact_taichi import sheet_band_reduce
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    generator = torch.Generator().manual_seed(23)
+    n, nb = 8192, 256
+    band = torch.randint(0, nb, (n,), generator=generator)
+    msk = torch.randint(0, MASK_ALL + 1, (n,), generator=generator, dtype=torch.int32)
+    cov = torch.rand(n, generator=generator)
+
+    areas = {}
+    unions = {}
+    for ti_dtype, torch_dtype in ((ti.f64, torch.float64), (ti.f32, torch.float32)):
+        area = torch.zeros(nb, dtype=torch_dtype)
+        union = torch.zeros(nb, dtype=torch.int32)
+        dup = torch.zeros(nb, dtype=torch.int32)
+        sliver = torch.zeros(1, dtype=torch.int32)
+        sheet_band_reduce(
+            band.contiguous(),
+            msk.contiguous(),
+            cov.contiguous(),
+            n,
+            int(MASK_ALL),
+            int(SLIVER_BIT),
+            area,
+            union,
+            dup,
+            sliver,
+            False,
+            ti_dtype,
+        )
+        areas[torch_dtype] = area.to(torch.float64)
+        unions[torch_dtype] = union
+
+    assert torch.equal(unions[torch.float64], unions[torch.float32])
+    wide, narrow = areas[torch.float64], areas[torch.float32]
+    assert wide.sum() > 0
+    assert torch.allclose(wide, narrow, rtol=1e-5, atol=1e-5)
+    # And it is genuinely the f32 sum rather than the f64 one relabelled --
+    # a band of many fragments cannot round identically at both widths.
+    assert not torch.equal(wide, narrow)
+
+
+# ------------------------------------------------- nothing reaches past it
+
+
+#: Spellings Metal cannot run, and the module that is allowed to say them
+#: because selecting between them is its job.
+_BANNED_ATTRIBUTES = {
+    "torch.float64": "float64 does not exist on Metal; use accumulate_dtype()",
+    "torch.double": "float64 does not exist on Metal; use accumulate_dtype()",
+    "ti.f64": "Taichi's SPIR-V codegen refuses f64; take it as a template arg",
+}
+#: Method spellings of the same thing, plus the two scans MPS lacks.
+_BANNED_METHODS = {
+    "double": "float64 does not exist on Metal; use accumulate_dtype()",
+    "cummax": "unimplemented on MPS; use mps_compat.cummax_values",
+    "cummin": "unimplemented on MPS; use mps_compat.cummin_values",
+}
+
+#: Renderer modules that may still say float64, and why each is not a
+#: violation. Both build a HOST tensor and never place it on the render
+#: device, and torch's CPU backend has float64 on a Mac like anywhere else.
+_HOST_ONLY = {
+    # A dice pattern's barycentric weights, built once on the CPU and cast to
+    # the render dtype by ``.to(dtype)`` before ``.to(device)`` ever runs.
+    "rendering/logical_pn.py",
+    # One import-time scalar: the PU-encoding normalisation constant.
+    "rendering/denoise/denoise.py",
+}
+
+
+def _dotted(node):
+    """``torch.float64`` for ``Attribute(Name('torch'), 'float64')``, else None."""
+    import ast
+
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+@pytest.mark.fast
+def test_the_renderer_reaches_float64_only_through_mps_compat():
+    """A new float64 accumulator in the renderer is an MPS render that aborts.
+
+    The walk is over the AST rather than the text, because the renderer's
+    comments say "float64" constantly -- §6.6.4 is the reason half these
+    accumulators exist, and the arguments for them are worth keeping even
+    where the mode narrows them.
+    """
+    import ast
+    from pathlib import Path
+
+    import algan
+
+    root = Path(algan.__file__).resolve().parent / "rendering"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root.parent).as_posix()
+        if path.name == "mps_compat.py" or relative in _HOST_ONLY:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            dotted = _dotted(node)
+            reason = _BANNED_ATTRIBUTES.get(dotted)
+            if reason is None and node.attr in _BANNED_METHODS:
+                dotted, reason = node.attr, _BANNED_METHODS[node.attr]
+            if reason is not None:
+                offenders.append(f"{relative}:{node.lineno}: {dotted} -- {reason}")
+    assert not offenders, "\n".join(
+        ["MPS-friendly mode cannot reach these:", *offenders]
+    )
+
+
+# ------------------------------------------------------------ end to end
+
+
+def _small_scene():
+    with Off():
+        Square(size=2.0).spawn()
+        Sphere(radius=0.6).move(RIGHT * 1.2 + UP * 0.4).spawn()
+        Sphere(radius=0.45).move(OUTWARD * 1.0).spawn()
+
+
+def _render(tmp_path, name):
+    from PIL import Image
+
+    path = tmp_path / name
+    with Scene() as scene:
+        _small_scene()
+        scene.save_frame(str(path), video_settings=LD)
+    return torch.from_numpy(
+        __import__("numpy").asarray(Image.open(path).convert("RGB")).copy()
+    ).to(torch.int16)
+
+
+def test_a_scene_renders_in_mps_friendly_mode(computing_settings, tmp_path):
+    """The whole renderer, with every float64 accumulator narrowed.
+
+    The tolerance is loose on purpose. What moves between the two arms is the
+    §6.6.4 accumulators, and they feed *thresholds* -- a coverage ceiling that
+    wobbles in its low bits flips borderline fragments in and out of being
+    clipped -- so the differences concentrate on silhouettes rather than
+    spreading over the image. Measured on the fast suite's own scene: 99.94%
+    of channels identical, 0.019% past a difference of 2, worst 34. So this
+    asserts on the SHAPE of that distribution, which a real breakage (a
+    corrupted buffer, a dropped clamp) violates immediately, rather than on a
+    per-pixel bound that would only be pinning noise.
+    """
+    computing_settings.set(mps_friendly=False)
+    wide = _render(tmp_path, "wide.png")
+    computing_settings.set(mps_friendly=True)
+    narrow = _render(tmp_path, "narrow.png")
+
+    assert wide.shape == narrow.shape
+    difference = (wide - narrow).abs()
+    channels = difference.numel()
+    assert float((difference == 0).sum()) / channels > 0.99
+    assert float((difference > 2).sum()) / channels < 0.005
+    assert int(difference.max()) <= 64

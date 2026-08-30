@@ -60,6 +60,7 @@ on:
           - all
           - capability
           - speed
+          - render
 
 # Queue behind an in-flight run rather than cancelling it, which is where this
 # differs from the test and code-quality workflows and why. Those cancel because
@@ -247,5 +248,152 @@ jobs:
           path: |
             benchmarks/mps_vs_cpu_speed.json
             speed-output.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The third question, and the only one that is a CHECK rather than a
+  # measurement: does the renderer actually run on the Apple GPU?
+  #
+  # It exists because DESIGN_mps_support.md's three blockers are being cleared
+  # one at a time and nothing on a Linux box can tell whether one is really
+  # gone. §1.1 (the 24-ndarray argument ceiling) was cleared by packing the
+  # megakernels' arguments into arena views, and §1.2 (no f64, no i64 atomics)
+  # by MPS-friendly mode -- but both were written against a measurement taken
+  # here, not against a machine, so until this job is green they are claims.
+  #
+  # Two arms, and the Linux one is not decoration. It runs the same suites with
+  # MPS-friendly mode forced on over a CPU render device, so it exercises every
+  # substitution -- the f32 accumulators, the int32 reductions, the scan that
+  # replaces cummax -- with no Apple GPU in the picture. If both arms fail the
+  # mode is broken; if only the macOS arm fails, what is left is Metal.
+  #
+  # Deliberately NOT part of the ordinary test matrix yet: test.yaml pins its
+  # macOS job to ALGAN_RENDER_DEVICE=cpu, and that pin comes off when this job
+  # has been green for a while, not before. A standing red job teaches nobody
+  # anything.
+  render:
+    name: mps render -- ${{ matrix.os }}
+    if: ${{ inputs.sections == 'all' || inputs.sections == 'render' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            device: mps
+            friendly: ""
+          - os: ubuntu-latest
+            device: cpu
+            friendly: "1"
+
+    env:
+      ALGAN_RENDER_DEVICE: ${{ matrix.device }}
+      # Empty on the macOS arm on purpose: there the mode has to switch itself
+      # on, because `mps_friendly` defaults to 'auto' and 'auto' means "follow
+      # the render device". An arm that forced it would prove the substitutions
+      # work and say nothing about whether a Mac user gets them.
+      ALGAN_MPS_FRIENDLY: ${{ matrix.friendly }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # The same system dependencies test.yaml installs, for the same reasons
+      # its comments give: the Pango stack needs a fontconfig to resolve the
+      # vendored test faces through, and the Tex tests need `latex` AND
+      # `dvisvgm` (BasicTeX ships neither dvisvgm nor the standalone/preview
+      # classes, and their absence surfaces minutes later as a rendering
+      # failure). This job renders, so unlike the probe jobs above it needs
+      # all of it.
+      - name: Install system dependencies for manimpango (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config ffmpeg
+
+      - name: Install system dependencies for manimpango (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pango cairo pkg-config
+
+      - name: Install LaTeX dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y \
+            texlive-latex-base \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            latexmk
+
+      - name: Install LaTeX dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install \
+            standalone preview amsfonts xkeyval dvisvgm
+
+      - name: Install uv
+        uses: ./.github/actions/install-uv
+
+      - name: Create venv
+        run: uv venv
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      # Reports the device Algan resolved and whether LaTeX is on PATH. On the
+      # macOS arm this is also the first thing that would fail if `mps` were
+      # refused outright, which is a different failure from a render that
+      # aborts inside Metal and is worth separating.
+      - name: Report the environment Algan resolved
+        run: uv run algan check
+
+      # One line, before the suites, so the log says in the clear which mode
+      # each arm is in. `mps_friendly` resolving False on the macOS arm would
+      # make everything after it meaningless, and it is the kind of thing a
+      # green run can hide.
+      - name: Report the MPS-friendly mode
+        run: |
+          uv run python -c "
+          import torch
+          from algan.rendering.mps_compat import (
+              accumulate_dtype, mps_friendly, reduction_index_dtype)
+          from algan.settings import SETTINGS
+          print('render_device   :', SETTINGS.computing.render_device)
+          print('mps_friendly    :', SETTINGS.computing.mps_friendly, '->', mps_friendly())
+          print('accumulate dtype:', accumulate_dtype())
+          print('reduction dtype :', reduction_index_dtype())
+          print('torch mps       :', torch.backends.mps.is_available())
+          "
+
+      # The smallest thing that exercises the whole renderer, run first so a
+      # total failure to render costs one minute rather than the suite's
+      # twenty. It writes a PNG through save_frame, so it needs no encoder.
+      - name: Render one frame
+        run: uv run python benchmarks/_mps_render_smoke.py
+
+      # The same scope test.yaml runs, so a pass here means the Apple GPU path
+      # is as covered as the CPU one -- minus tests/fast's pixel comparison,
+      # which skips on macOS for want of an Apple Silicon baseline (see
+      # tests/fast/test_fast_render.py). What it still covers there is that the
+      # kernels compile and the pipeline runs end to end.
+      - name: Run the test suite
+        run: uv run pytest tests/unit_tests tests/fast -n 1
+
+      - name: Upload what was rendered
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mps-render-${{ matrix.os }}
+          path: |
+            mps_render_smoke/
+            tests/fast/algan_outputs/
+            tests/fast/output_errors/
           if-no-files-found: warn
           retention-days: 14

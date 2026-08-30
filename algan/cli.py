@@ -46,6 +46,20 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             print("  [OK] Apple Silicon MPS acceleration available")
         else:
             print("  [INFO] Running on CPU (no CUDA/MPS GPU detected).")
+
+        # Which device Algan will actually use is a different question from
+        # which ones exist -- ALGAN_RENDER_DEVICE and
+        # SETTINGS.computing.render_device both sit between them -- and it is
+        # the one a "why is this slow" or "why did this fail" starts from.
+        from algan.rendering.mps_compat import mps_friendly
+        from algan.settings import SETTINGS
+
+        print(f"  Render device: {SETTINGS.computing.render_device}")
+        if mps_friendly():
+            print(
+                "  [INFO] MPS-friendly mode is ON: float32 accumulators and "
+                "int32 reductions, so renders are not bit-reproducible."
+            )
     except ImportError:
         print("  [ERROR] PyTorch is not installed.")
 
