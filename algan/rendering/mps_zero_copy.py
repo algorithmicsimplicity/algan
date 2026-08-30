@@ -341,7 +341,10 @@ def _note_left_on_the_bus(kernel, index, tensor):
     else:
         why = f"on {tensor.device.type}"
         STATS["host_arguments"] += 1
-    LEFT_ON_THE_BUS.add((getattr(kernel, "__name__", repr(kernel)), index, why))
+    # `Kernel` has no `__name__`; the Python function it wraps does, and that
+    # is the name every other diagnostic in the renderer uses for a kernel.
+    name = getattr(getattr(kernel, "func", None), "__name__", None) or repr(kernel)
+    LEFT_ON_THE_BUS.add((name, index, why))
 
 
 def report():

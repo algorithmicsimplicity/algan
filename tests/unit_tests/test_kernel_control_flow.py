@@ -25,6 +25,13 @@ can see it. Metal answers with a nil compute pipeline and Vulkan with
 GPU needs is not exposed either way; this stands because Algan should not need
 a forked Taichi to emit a valid module, and because the gated form
 (``if ti.static(not cond): <the rest>``) is the clearer kernel anyway.
+
+In the fast suite, by the rule ``tests/README.md`` states for
+``test_mps_friendly.py``'s AST walk and for the same reason: what it catches is
+a change made **elsewhere** -- a kernel written anywhere under ``algan/`` -- and
+the consequence is an Apple GPU that will not build a pipeline, which nothing
+else in the development loop can see. No Taichi and no render: about half a
+second.
 """
 
 import ast
@@ -76,11 +83,13 @@ def _static_gated_continues(tree):
     return found
 
 
+@pytest.mark.fast
 def test_kernel_modules_exist():
     """Guard the guard: a glob that matches nothing passes vacuously."""
     assert len(_KERNEL_MODULES) > 10
 
 
+@pytest.mark.fast
 @pytest.mark.parametrize("path", _KERNEL_MODULES, ids=lambda p: p.name)
 def test_no_continue_under_a_static_gate(path):
     offenders = _static_gated_continues(ast.parse(path.read_text()))
