@@ -1,4 +1,4 @@
-"""THE gate for turning analytic AA on: does it match super_sampling_anti_aliasing=2?
+"""THE gate for turning analytic AA on: does it match supersampling=2?
 
 The goal analytic AA has to clear before it can replace supersampling is not
 "better than no AA" -- that was ss13-ss17 -- but "at least as good as the shipped
@@ -171,7 +171,7 @@ def build_scene(cfg):
             ci = Circle(color=GREEN).scale(0.8).move(RIGHT * 1.3)
             ci.opacity = 0.55
             ci.spawn()
-            ring = Circle(color=BLUE, border_width=3).scale(0.6)
+            ring = Circle(color=BLUE, stroke_width=3).scale(0.6)
             ring.move(DOWN * 0.9)
             ring.spawn()
         sq.rotate(35, OUT)
@@ -184,7 +184,7 @@ def build_scene(cfg):
                 Line3D(
                     start=LEFT * 1.4 + UP * (0.7 - 0.7 * i),
                     end=RIGHT * 1.4 + UP * (0.7 - 0.7 * i),
-                    thickness=th,
+                    radius=th,
                     color=YELLOW,
                 ).spawn()
             sm = Sphere().scale(0.02).move(DOWN * 1.3).set_color(BLUE)
@@ -278,7 +278,7 @@ def render_once(cfg, aa_level, analytic, tag, reps=2):
         settings = VideoSettings(
             (BASE_W, BASE_H),
             frames_per_second=FPS,
-            super_sampling_anti_aliasing=aa_level,
+            supersampling=aa_level,
         )
         with Scene(video_settings=settings) as scene:
             build_scene(cfg)

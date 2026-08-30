@@ -253,11 +253,11 @@ def test_aov_guides_carry_surface_albedo_and_normal(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(location=UP * 2.0 + OUT * 4.0, color=WHITE, intensity=0.5).spawn(
             animate=False
         )
-        floor = Prism(dimensions=(7.0, 7.0, 0.2))
+        floor = Prism(width=7.0, height=7.0, depth=0.2)
         floor.set_material(MeshLambertMaterial(color=RED))
         floor.spawn(animate=False)
 
@@ -312,7 +312,7 @@ def test_byte_buffer_skips_the_denoiser(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        floor = Prism(dimensions=(4.0, 4.0, 0.2))
+        floor = Prism(width=4.0, height=4.0, depth=0.2)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
 
@@ -406,17 +406,17 @@ def test_denoising_moves_the_frame_toward_the_reference(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(
             location=UP * 2.5 + OUT * 3.5 + LEFT * 1.0,
             color=WHITE,
             intensity=2.0,
         ).spawn(animate=False)
-        floor = Prism(dimensions=(8.0, 0.2, 4.0))
+        floor = Prism(width=8.0, height=0.2, depth=4.0)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.move(DOWN * 1.4)
         floor.spawn(animate=False)
-        metal = Prism(dimensions=(1.2, 1.2, 1.2))
+        metal = Prism(width=1.2, height=1.2, depth=1.2)
         metal.set_material(
             MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.4)
         )

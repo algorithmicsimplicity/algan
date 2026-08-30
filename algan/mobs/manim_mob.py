@@ -171,8 +171,10 @@ class ManimMob(BezierCircuitCubic):
             control_points * manim_scale_factor,
             color=convert_manim_color(manim_mob.fill_color, opacity=fill_opacity),
             opacity=1,
-            border_color=convert_manim_color(manim_mob.stroke_color, stroke_opacity),
-            border_width=stroke_width / 2,
+            stroke_color=convert_manim_color(manim_mob.stroke_color, stroke_opacity),
+            # Manim's stroke width is twice Algan's; this is the import side of
+            # the conversion ``algan.manim`` owns.
+            stroke_width=stroke_width / 2,
             filled=(not hasattr(manim_mob, "end")) and has_visible_fill,
             empty=empty,
             **kwargs,

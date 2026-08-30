@@ -179,7 +179,7 @@ def test_every_light_class_appears_in_a_scene():
                 "orbit(",
                 "fit_to_screen(",
                 "move_center_to_screen_position(",
-                "move_out_of_screen(",
+                "move_off_screen(",
             ),
         ),
         (
@@ -192,12 +192,12 @@ def test_every_light_class_appears_in_a_scene():
                 "set_material(",
                 "set_fragment_shader(",
                 "ImageMob(",
-                "ThreeDModelMob(",
+                "Model3D(",
                 "glow",
                 "opacity",
             ),
         ),
-        ("rate functions", ("rate_funcs.linear", "rate_funcs.ease_out_expo")),
+        ("rate functions", ("easings.linear", "easings.ease_out_expo")),
         ("plots and tables", ("Axes(", ".plot(", "BarChart(", "Brace(")),
     ],
 )
@@ -211,7 +211,9 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
     """Scenes author a Scene; they never render one, and never import the world.
 
     ``torch`` is allowed because building raw primitives needs tensors, which is
-    exactly what a user would do.
+    exactly what a user would do, and so is ``algan.manim``: since the API
+    overhaul's Phase 1 that is the public spelling of the compatibility layer,
+    and a scene covering compat geometry has to reach it the way a user would.
     """
     source = scene_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(scene_path))
@@ -227,7 +229,7 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
             )
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
-    assert imported <= {"from algan import *", "torch"}, (
+    assert imported <= {"from algan import *", "torch", "algan.manim"}, (
         f"{scene_path.name} imports more than the public API: {sorted(imported)}"
     )
     assert "from algan import *" in imported, (
@@ -287,6 +289,20 @@ def test_scene_text_pins_a_vendored_font(scene_path):
 
 
 def test_every_exemption_names_something_that_still_exists():
-    """A stale exemption would silently excuse a class that was renamed."""
-    unknown = sorted(name for name in EXEMPT if not hasattr(algan, name))
-    assert not unknown, f"EXEMPT names that are no longer exported: {unknown}"
+    """A stale exemption would silently excuse a class that was renamed.
+
+    Both namespaces count. An exemption says "this class does not need render
+    coverage", which stays true wherever the class is reachable from -- the
+    point-cloud and OpenGL-alias bases live in ``algan.manim`` rather than the
+    root namespace, and are no less real for it.
+    """
+    import algan.manim as manim_namespace
+
+    unknown = sorted(
+        name
+        for name in EXEMPT
+        if not hasattr(algan, name) and not hasattr(manim_namespace, name)
+    )
+    assert not unknown, (
+        f"EXEMPT names that exist in neither algan nor algan.manim: {unknown}"
+    )

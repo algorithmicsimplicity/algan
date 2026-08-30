@@ -43,12 +43,12 @@ for step in range(len(STEPS) - 1):
             for index in range(step):
                 with Off():
                     nxt = STEPS[index + 1][1]()
-                with Sync(run_time=1.0):
+                with Sync(duration=1.0):
                     current = current.become(nxt)
             start = float(scene.animation_manager.context.timespan.current_time)
             with Off():
                 nxt = STEPS[step + 1][1]()
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 current = current.become(nxt)
             end = float(scene.animation_manager.context.timespan.current_time)
             at = min(start + (end - start) * sample, end - 1e-4)

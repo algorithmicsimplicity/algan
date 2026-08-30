@@ -70,9 +70,9 @@ def build_scene():
         Sphere().scale(0.7).move(UP * 0.5).spawn()
         cube = Cube().scale(0.5).move(DOWN * 1.5).spawn()
         Text("dedup").move(DOWN * 2.8).spawn()
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         img_a.wait()
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         cube.move(RIGHT)
         anim.color_texture = torch.rand(24, 24, 5).clamp(0.2, 1.0)
 

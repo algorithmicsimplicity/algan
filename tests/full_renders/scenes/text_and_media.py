@@ -101,17 +101,17 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Lag(0.18, run_time=1.6):
+    with Lag(0.18, duration=1.6):
         plain.spawn()
         bold.spawn()
         italic.spawn()
         markup.spawn()
         mesh_text.spawn()
         mesh_tex.spawn()
-    with Sync(run_time=0.9):
+    with Sync(duration=0.9):
         formula.spawn()
         matrix_tex.spawn()
-    with Sync(run_time=0.9):
+    with Sync(duration=0.9):
         paragraph.spawn()
         code.spawn()
     counter_label.spawn()
@@ -136,15 +136,15 @@ with Off():
     series.move(formula.get_center() - series.get_center())
 
 with Seq():
-    with Sync(run_time=0.5):
+    with Sync(duration=0.5):
         glyphs.spawn()
-    written.spawn(False).write(run_time=1.6)
+    written.spawn(False).write(duration=1.6)
     # Glyphs are individually addressable, so single letters animate on their
     # own while the rest of the word stays put.
-    with Lag(0.25, run_time=1.4):
+    with Lag(0.25, duration=1.4):
         for glyph in lifted:
             glyph.move(UP * 0.35)
-    with Lag(0.25, run_time=1.4):
+    with Lag(0.25, duration=1.4):
         for glyph in lifted:
             glyph.move(DOWN * 0.35)
     # ``minimize_movement`` pairs each triangle with the closest one in the
@@ -155,7 +155,7 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 3 -- imported media and the fragment shader stack.
 # --------------------------------------------------------------------------
-with Sync(run_time=0.8):
+with Sync(duration=0.8):
     for mob in (
         plain,
         bold,
@@ -178,7 +178,7 @@ with Off():
     image_frame = SurroundingRectangle(
         image,
         color=TEAL_A,
-        border_width=4,
+        stroke_width=4,
         filled=False,
         buffer=0.1,
     )
@@ -187,10 +187,9 @@ with Off():
         .scale(1.1)
         .move(LEFT * 3.7 + DOWN * 2.1)
     )
-    model = ThreeDModelMob(
+    model = Model3D(
         "assets/textured_icosphere.glb",
-        normalize=True,
-        normalize_size=2.6,
+        fit_to_size=2.6,
     ).move(UP * 0.2)
     shader_sphere = (
         Sphere(radius=0.95, color=BLUE)
@@ -210,19 +209,19 @@ with Off():
     )
 
 with Seq():
-    with Sync(run_time=0.8):
+    with Sync(duration=0.8):
         image.spawn()
         image_frame.spawn()
         flat_image.spawn()
         model.spawn()
         shader_sphere.spawn()
         media_labels.spawn()
-    with Sync(run_time=2.4):
+    with Sync(duration=2.4):
         image.rotate(28, UP)
         model.rotate(300, UP)
         shader_sphere.rotate(210, UP + RIGHT)
         shader_sphere.frequency = 4.5
         shader_sphere.phase = 1.0
-    ShowPassingFlash(image_frame, time_width=0.25, run_time=1.0)
-    Circumscribe(model, color=YELLOW, run_time=0.9)
+    ShowPassingFlash(image_frame, time_width=0.25, duration=1.0)
+    Circumscribe(model, color=YELLOW, duration=0.9)
     Scene.wait(0.3)

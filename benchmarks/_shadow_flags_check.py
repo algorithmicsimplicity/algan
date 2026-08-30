@@ -119,11 +119,11 @@ def build_scene(arm):
         # pixels B covers can be told from the pixels its shadow falls on.
         if arm != "silhouette":
             floor = Prism(
-                dimensions=(16, 0.5, 9), fill_color=GRAY, fill_opacity=1
+                width=16, height=0.5, depth=9, fill_color=GRAY, fill_opacity=1
             ).move(DOWN * 2.2)
             mobs.append(floor)
 
-            cube_a = Cube(side_length=1.5, fill_color=RED, fill_opacity=1).move(
+            cube_a = Cube(size=1.5, fill_color=RED, fill_opacity=1).move(
                 LEFT * 2.2 + UP * 0.4
             )
             mobs.append(cube_a)
@@ -131,7 +131,7 @@ def build_scene(arm):
             # C lies flat on the floor inside A's shadow, so "does not receive"
             # is visible as the plate lighting up.
             plate = Prism(
-                dimensions=(2.6, 0.12, 2.2), fill_color=YELLOW, fill_opacity=1
+                width=2.6, height=0.12, depth=2.2, fill_color=YELLOW, fill_opacity=1
             ).move(LEFT * 2.2 + DOWN * 1.9 + IN * 0.2)
             mobs.append(plate)
 
@@ -139,7 +139,7 @@ def build_scene(arm):
         # the oracle the ``noncaster`` arm's ground pixels must reproduce.
         cube_b = None
         if arm != "drop":
-            cube_b = Cube(side_length=1.5, fill_color=BLUE, fill_opacity=1).move(
+            cube_b = Cube(size=1.5, fill_color=BLUE, fill_opacity=1).move(
                 RIGHT * 2.2 + UP * 0.4
             )
             mobs.append(cube_b)

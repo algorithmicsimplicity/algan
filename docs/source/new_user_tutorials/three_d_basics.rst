@@ -23,11 +23,11 @@ default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving somethin
     from algan import *
 
     with Off():
-        cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+        cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
-    with Seq(run_time=3):
-        cubes.rotate(360, UP, about_point=ORIGIN)
+    with Seq(duration=3):
+        cubes.rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -48,14 +48,14 @@ So, we can animate a camera movement as follows:
     ball = Sphere(radius=1, color=BLUE).spawn()
 
     camera = Scene.get_camera()
-    with Sync(run_time=3, rate_func=rate_funcs.identity):
-        camera.rotate(180, UP, about_point=ORIGIN)
+    with Sync(duration=3, easing=easings.identity):
+        camera.rotate(180, UP, about=ORIGIN)
         ball.move(UP * 0.8)
 
     Scene.save_video()
 
 To aim the camera somewhere specific, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
-turns it to face a point, and :meth:`~.Camera.move_to_make_mob_center_of_view` frames a given Mob.
+turns it to face a point, and :meth:`~.Camera.center_on` frames a given Mob.
 
 .. seealso::
 
@@ -66,7 +66,7 @@ Lighting
 ========
 
 By default, every scene starts with one white :class:`~.PointLight` above and to the right of
-the camera. That is what gives 3-D shapes their shading, and it is why a :class:`~.Sphere`
+the camera. That is what gives 3-D shapes their shading, and it is why a :class:`~algan.mobs.shapes_3d.Sphere`
 reads as a ball rather than a flat disc.
 Lights are Mobs, so you animate them like anything else.
 :meth:`~algan.scene.Scene.get_light_sources` returns a list of all mobs in the scene
@@ -79,15 +79,15 @@ which act as light sources.
     ball = Sphere(radius=1.2, color=BLUE).spawn()
 
     light = Scene.get_light_sources()[0]
-    with Seq(run_time=4, rate_func=rate_funcs.identity):
-        light.orbit(360, OUT, about_point=ORIGIN)
+    with Seq(duration=4, easing=easings.identity):
+        light.orbit(360, OUT, about=ORIGIN)
 
     Scene.save_video()
 
 .. note::
 
     Flat 2-D shapes and text are drawn in their own color and are **not** lit.
-    This is why a :class:`~.Square` and a :class:`~.Cube` look different.
+    This is why a :class:`~algan.mobs.shapes_2d.Square` and a :class:`~algan.mobs.shapes_3d.Cube` look different.
 
 Casting Shadows
 ===============
@@ -102,13 +102,13 @@ You can turn them on with one setting:
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
                          color=WHITE, intensity=3).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
-        Cube(side_length=4, color=GREY).move(DOWN * 2.6).spawn()
+        Cube(size=4, color=GREY).move(DOWN * 2.6).spawn()
 
     Scene.wait(2)
 
@@ -116,7 +116,7 @@ You can turn them on with one setting:
 
 Two things worth noticing:
 
-* :meth:`~algan.scene.Scene.clear_light_sources` drops the default light first, so the
+* :meth:`~algan.scene.Scene.clear_lights` drops the default light first, so the
   lighting is entirely yours.
 * The shadow is hard-edged, because the light has no size. Giving the sun an
   angular size softens the edge.
@@ -129,7 +129,7 @@ Two things worth noticing:
 Curved Surfaces
 ===============
 
-:class:`~.Surface` allows you to define a manifold surface of any shape,
+:class:`~algan.mobs.surfaces.surface.Surface` allows you to define a manifold surface of any shape,
 by providing a function which maps two intrinsic coordinates ``u`` and ``v``
 (each in ``[0, 1]``) to a coordinate in 3-D space. The function you provide must
 handle batched tensors.
@@ -145,7 +145,7 @@ handle batched tensors.
         return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
 
     surface = Surface(saddle, checkered_color=BLUE).spawn()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         surface.rotate(60, RIGHT)
         surface.rotate(360, OUT)
 
@@ -175,7 +175,7 @@ so on, apply a material *before* spawning:
         metal.spawn()
         plastic.spawn()
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         metal.roughness = 0.9
 
     Scene.save_video()

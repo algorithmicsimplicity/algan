@@ -1,10 +1,10 @@
-"""Tests for the 3-D model import path (``ThreeDModelMob`` + ``TriangleMesh``).
+"""Tests for the 3-D model import path (``Model3D`` + ``TriangleMesh``).
 
 Run directly: python tests/unit_tests/test_fbx_import.py
 
 The importer is split so the mob-building logic is testable without any parser
 backend: the backend-independent :class:`SceneData` IR is hand-built here and
-fed to :class:`ThreeDModelMob` directly (the same entry alternative backends
+fed to :class:`Model3D` directly (the same entry alternative backends
 use). Layers checked:
 
 1. Pure logic (always runs): world-transform composition/baking and mob-tree
@@ -20,7 +20,7 @@ import pytest
 import torch
 
 from algan import SceneManager
-from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
+from algan.mobs.three_d_models import Model3D, TriangleMesh
 from algan.mobs.three_d_models.mesh import image_to_normal_map, image_to_texture_map
 from algan.mobs.three_d_models.scene_data import (
     AnimationData,
@@ -124,8 +124,8 @@ def _two_mesh_scene():
     )
 
 
-class _CheckerModel(ThreeDModelMob):
-    """ThreeDModelMob resolving the synthetic ``__CHECKER__`` texture in-memory."""
+class _CheckerModel(Model3D):
+    """Model3D resolving the synthetic ``__CHECKER__`` texture in-memory."""
 
     def _load_texture(self, path, device):
         if path == "__CHECKER__":
@@ -232,7 +232,7 @@ def _material_scene_with_maps():
 
 def test_pbr_and_normal_map_wiring():
     SceneManager.reset()
-    model = ThreeDModelMob(scene_data=_material_scene_with_maps())
+    model = Model3D(scene_data=_material_scene_with_maps())
     mesh = model.mesh_mobs[0]
     # Normal map wired through to the mesh.
     assert mesh.normal_texture_map is not None
@@ -249,7 +249,7 @@ def test_pbr_and_normal_map_wiring():
 
 def test_normal_maps_and_pbr_can_be_disabled():
     SceneManager.reset()
-    model = ThreeDModelMob(
+    model = Model3D(
         scene_data=_material_scene_with_maps(), normal_maps=False, pbr_materials=False
     )
     mesh = model.mesh_mobs[0]
@@ -343,8 +343,8 @@ def _spin_translate_scene():
 def test_bake_rigid_node_animation():
     """Baked per-frame corners match the analytic rotate-then-translate pose."""
     SceneManager.reset()
-    model = ThreeDModelMob(scene_data=_spin_translate_scene())
-    times, corners = model.bake_animation(times=[0.0, 0.5, 1.0])
+    model = Model3D(scene_data=_spin_translate_scene())
+    times, corners = model.precompute_animation(times=[0.0, 0.5, 1.0])
     mob = model.mesh_mobs[0]
     baked = corners[mob]  # [3, 3F, 3]
     v0 = torch.tensor([1.0, 0.0, 0.0])  # first triangle corner
@@ -380,8 +380,8 @@ def test_bake_hierarchy_animation():
         nodes=nodes,
         animations=[clip],
     )
-    model = ThreeDModelMob(scene_data=scene)
-    _, corners = model.bake_animation(times=[0.0, 1.0])
+    model = Model3D(scene_data=scene)
+    _, corners = model.precompute_animation(times=[0.0, 1.0])
     baked = corners[model.mesh_mobs[0]]
     v0 = torch.tensor([1.0, 0.0, 0.0])
     assert torch.allclose(baked[0, 0], v0, atol=1e-5)
@@ -394,8 +394,8 @@ def test_play_animation_sets_recompute_normals():
     """
     SceneManager.reset()
     with torch.inference_mode():
-        model = ThreeDModelMob(scene_data=_spin_translate_scene()).spawn()
-        model.play_animation(run_time=1.0)
+        model = Model3D(scene_data=_spin_translate_scene()).spawn()
+        model.play_animation(duration=1.0)
     assert model.mesh_mobs[0].recompute_normals is True
 
 
@@ -484,11 +484,11 @@ def test_glb_animation_roundtrip(tmp_path):
     path = tmp_path / "spinner.glb"
     _write_animated_glb(str(path))
 
-    model = ThreeDModelMob(str(path))
+    model = Model3D(str(path))
     assert len(model.animations) == 1
     assert model.animations[0].name == "spin"
     assert "spinner" in model.node_names
-    _, corners = model.bake_animation(times=[0.0, 1.0])
+    _, corners = model.precompute_animation(times=[0.0, 1.0])
     baked = corners[model.mesh_mobs[0]]
     # A corner at +x rotates 90 about Y to -z; check the pose moved as expected.
     rest = baked[0].reshape(-1, 3)
@@ -512,7 +512,7 @@ def test_glb_load_and_build():
     """
     _skip_if_no_dragon()
     SceneManager.reset()
-    model = ThreeDModelMob(str(DRAGON_GLB), normalize=True, normalize_size=2.0)
+    model = Model3D(str(DRAGON_GLB), fit_to_size=2.0)
     assert len(model.mesh_mobs) >= 1
     mesh = model.mesh_mobs[0]
     assert mesh.num_triangles > 1000  # a real, detailed mesh
@@ -531,10 +531,9 @@ def test_glb_load_and_build():
 
 def test_full_render_glb_fixture_retains_pbr_maps():
     SceneManager.reset()
-    model = ThreeDModelMob(
+    model = Model3D(
         str(FULL_RENDER_GLB),
-        normalize=True,
-        normalize_size=2.0,
+        fit_to_size=2.0,
     )
     mesh = model.mesh_mobs[0]
 

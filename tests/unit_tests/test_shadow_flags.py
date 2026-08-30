@@ -54,7 +54,7 @@ def _primitives(mob):
 
 def test_defaults_declare_casting_and_receiving(fresh_scene):
     """An untouched mob casts and receives, and says so in the packed value."""
-    cube = Cube(side_length=1.0, fill_opacity=1).spawn(animate=False)
+    cube = Cube(size=1.0, fill_opacity=1).spawn(animate=False)
     for p in _primitives(cube):
         assert float(p.no_shadow_cast.max()) == 0.0
         assert float(p.no_shadow_receive.max()) == 0.0
@@ -66,9 +66,9 @@ def test_flag_set_on_an_aggregate_reaches_the_geometry(fresh_scene, flag):
 
     A ``Cube`` is a ``Polyhedron`` whose FACES build the primitives, so reading
     the flag off the mob that builds them would silently ignore
-    ``cube.casts_shadows = False``. It did, before ``resolved_shadow_flags``.
+    ``cube.casts_shadows = False``. It did, before ``_resolved_shadow_flags``.
     """
-    cube = Cube(side_length=1.0, fill_opacity=1)
+    cube = Cube(size=1.0, fill_opacity=1)
     setattr(cube, flag, False)
     cube.spawn(animate=False)
     attr = "no_shadow_cast" if flag == "casts_shadows" else "no_shadow_receive"
@@ -82,8 +82,8 @@ def test_flag_set_on_an_aggregate_reaches_the_geometry(fresh_scene, flag):
 
 def test_flag_on_a_group_applies_to_the_whole_subtree(fresh_scene):
     """``group.casts_shadows = False`` means the group, not just the node."""
-    a = Cube(side_length=1.0, fill_opacity=1)
-    b = Prism(dimensions=(2, 0.5, 2), fill_opacity=1)
+    a = Cube(size=1.0, fill_opacity=1)
+    b = Prism(width=2, height=0.5, depth=2, fill_opacity=1)
     group = Group(a, b)
     group.casts_shadows = False
     group.spawn(animate=False)
@@ -96,9 +96,9 @@ def test_flag_on_a_group_applies_to_the_whole_subtree(fresh_scene):
 
 def test_a_sibling_is_unaffected(fresh_scene):
     """Resolution walks ANCESTORS, not the whole scene."""
-    quiet = Cube(side_length=1.0, fill_opacity=1)
+    quiet = Cube(size=1.0, fill_opacity=1)
     quiet.casts_shadows = False
-    loud = Cube(side_length=1.0, fill_opacity=1)
+    loud = Cube(size=1.0, fill_opacity=1)
     quiet.spawn(animate=False)
     loud.spawn(animate=False)
     assert all(float(p.no_shadow_cast.min()) == 1.0 for p in _primitives(quiet))
@@ -178,8 +178,8 @@ def test_a_morph_endpoint_adopts_the_flags(fresh_scene):
     source's shadow behaviour. ``_MORPH_ADOPTED_ATTRS`` is what stops that,
     beside ``two_sided`` and ``closed_shell``.
     """
-    source = Cube(side_length=1.0, fill_opacity=1).spawn(animate=False)
-    target = Cube(side_length=1.5, fill_opacity=1)
+    source = Cube(size=1.0, fill_opacity=1).spawn(animate=False)
+    target = Cube(size=1.5, fill_opacity=1)
     target.casts_shadows = False
     target.receives_shadows = False
     assert (source.casts_shadows, source.receives_shadows) == (True, True)
@@ -201,7 +201,7 @@ def test_the_kill_switch_stops_the_flag_reaching_the_primitive(
     from algan.rendering.raytracing import settings as rt_settings
 
     monkeypatch.setattr(rt_settings, "per_mob_shadow_flags", False)
-    cube = Cube(side_length=1.0, fill_opacity=1)
+    cube = Cube(size=1.0, fill_opacity=1)
     cube.casts_shadows = False
     cube.spawn(animate=False)
     for p in _primitives(cube):

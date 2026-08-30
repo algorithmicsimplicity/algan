@@ -99,6 +99,7 @@ _install_render_arch_guard()
 
 from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
+from algan.animation_timeline.animation_contexts import *
 from algan.manim_defaults import (
     from_manim_coordinates,
     manim_fov,
@@ -106,29 +107,17 @@ from algan.manim_defaults import (
 )
 from algan.mobs.bezier_circuit import *
 from algan.mobs.group import *
-from algan.mobs.image_compat import *
 from algan.mobs.image_mob import *
-from algan.mobs.manim_compat import *
+from algan.mobs.manim_adapters import *
 from algan.mobs.manim_mob import *
-from algan.mobs.manim_parity import *
-from algan.mobs.numeric_display import NumericDisplay
-from algan.mobs.opengl_compat import *
-from algan.mobs.point_cloud import *
+from algan.mobs.numeric_display import DecimalNumber
 from algan.mobs.shapes_2d import *
 from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
-from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
+from algan.mobs.three_d_models import Model3D, TriangleMesh
 from algan.project import Project
 from algan.rendering import camera
-
-# Manim names its root class Mobject; Algan's native equivalent is Mob.  Its
-# abstract graph and OpenGL renderer-specific bases likewise map to Algan's
-# renderer-independent classes.
-Mobject = Mob
-GenericGraph = Graph
-install_opengl_aliases(globals())
-from algan.animation_timeline.animation_contexts import *
 from algan.rendering.lights import *
 from algan.scene import Scene
 from algan.sound.audio_effect import AudioEffect, AudioManager
@@ -201,22 +190,41 @@ from algan.animations.indication import *
 from algan.animations.manim_animations import *
 from algan.animations.movement import *
 
+# The Manim compatibility layer is a separate surface, reached as
+# ``algan.manim`` rather than star-imported here: every name in it means
+# "Manim's version, by Manim's conventions", and mixing the two namespaces is
+# what made ``Square`` (degrees) and ``Arc`` (radians) indistinguishable. The
+# import is eager so ``import algan.manim as mn`` needs no second import, but
+# nothing it defines reaches ``algan.__all__``.
+#
+# It must stay *below* the Mob imports and behind this assignment, which keeps
+# isort from hoisting it into the block above: ``algan.manim`` imports ``Mob``,
+# which imports ``algan.animated_function``, so pulling it up leaves this module
+# half-initialised and the import fails.
+_MANIM_NAMESPACE_ANCHOR = None
+from algan import manim as _manim_namespace  # noqa: E402, F401
 
-def clear_cache(taichi_kernels=False):
+
+def clear_cache(include_kernels=False):
     """Delete Algan's content caches (tessellations, manim Tex/Text, audio).
 
     The Taichi offline kernel cache lives inside the cache directory too
     (the environment-selected Taichi cache directory) but is spared by default:
     it holds compiled kernels (minutes to rebuild), is version-keyed, and is
-    never invalidated by scene-content changes. Pass
-    ``taichi_kernels=True`` to wipe it as well (e.g. before
-    A/B-benchmarking kernel edits -- the offline cache does not invalidate on
-    ``@ti.func`` changes).
+    never invalidated by scene-content changes.
+
+    Parameters
+    ----------
+    include_kernels
+        Whether to wipe the compiled Taichi kernels as well. Defaults to False.
+        :func:`clear_cached_kernels` is the same thing said outright, and is
+        what to reach for before A/B-benchmarking a kernel edit -- the offline
+        cache does not invalidate on ``@ti.func`` changes.
     """
     f = SETTINGS.paths.cache_directory
     if not os.path.exists(f):
         return
-    if taichi_kernels:
+    if include_kernels:
         shutil.rmtree(f)
         return
     from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
@@ -230,6 +238,20 @@ def clear_cache(taichi_kernels=False):
             shutil.rmtree(p)
         else:
             os.remove(p)
+
+
+def clear_cached_kernels():
+    """Delete the compiled Taichi kernels, and Algan's content caches with them.
+
+    The offline kernel cache does not invalidate when an imported ``@ti.func``
+    changes, so a kernel edit A/B-benchmarked against a warm cache measures the
+    old kernel. Clearing costs a cold compile of minutes.
+
+    This is :func:`clear_cache` with ``include_kernels=True``; the kernel cache
+    lives inside the same directory, so there is no way to drop one without the
+    other.
+    """
+    clear_cache(include_kernels=True)
 
 
 def default_scene_initializer(scene):
@@ -312,6 +334,44 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "wiggle_step",
         "wiggle",
         "there_and_back",
+        # Video encoding: codec probing, encoder selection and the moviepy
+        # binary override. All internal to what save_video does; the user-facing
+        # controls are its ``codec``/``ffmpeg_params`` arguments and
+        # SETTINGS.paths.ffmpeg_binary.
+        "check_codec_is_available",
+        "resolve_encode_binary",
+        "select_video_encoder",
+        "override_moviepy_ffmpeg_binary",
+        # Surface topology and tessellation plumbing.
+        "wrap_pad_texture",
+        "surface_closed_axes",
+        "surface_weld_flags",
+        "orient_faces_outward",
+        # Timeline recording introspection, engine memory, version counters.
+        "attr_ranges_for_mob",
+        "release_torch_memory",
+        "ANIMATABLE_PROPERTY_VERSION",
+        # Colour coercion: deliberately passes tensors through untouched so a
+        # per-row colour buffer is not collapsed to one colour, which makes it
+        # the wrong shape for a user-facing constructor. Every public entry
+        # point (Mob colour kwargs, materials) already calls it for you.
+        "to_color",
+        # Raw Taichi shading functions: microfacet BSDF maths taking kernel
+        # memory arguments, unusable from an authoring script.
+        "fragment_light",
+        "fragment_light_vis",
+        "prep_normal",
+        "shading_normal",
+        "smith_geometry",
+        "ggx_distribution",
+        # NOTE: the fragment-shader callables (``phong_shader``,
+        # ``standard_shader``, ...) are deliberately NOT here. They look like
+        # engine internals and one tutorial passage imports them by module
+        # path, but the star import is their real contract: the executable
+        # ``.. algan::`` examples in shaders_and_materials.rst open with
+        # ``from algan import *`` and then pass ``standard_shader`` to
+        # ``set_fragment_shader``, and two unit tests assert their presence in
+        # ``__all__``. They are authoring vocabulary, not plumbing.
         # tooling and dev utilities
         "make_manim_dir",
         "missing_manim_mobjects",
@@ -349,14 +409,14 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "animate_lagged_by_location",  # algan.utils.animation_utils
         "render_all_funcs",  # algan.utils.algan_utils (or Scene.render_all_funcs)
         "null_shader",  # algan.rendering.shaders.pbr_shaders
-        "DEFAULT_RATE_FUNC",  # algan.animation_timeline.animation_contexts
+        "DEFAULT_EASING",  # algan.animation_timeline.animation_contexts
     }
 )
 
 # Public names that the rules above would otherwise miss.
 # FragmentStage instances are neither callable nor upper-case, so the rules
 # below do not pick them up.
-_EXTRA_EXPORTS = ("cosine_color", "fresnel_rim", "glass_ball", "rate_funcs")
+_EXTRA_EXPORTS = ("cosine_color", "fresnel_rim", "glass_ball", "easings")
 
 
 def _is_root_export(name, value):

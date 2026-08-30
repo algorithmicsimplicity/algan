@@ -65,14 +65,14 @@ def build_scene():
         solids.append(Cylinder(radius=0.55, height=1.8, color=RED).move(LEFT * 0.8))
         solids.append(Cone(radius=0.6, height=1.6, color=GREEN).move(RIGHT * 0.8))
         solids.append(
-            Torus(major_radius=0.7, minor_radius=0.22, color=BLUE).move(RIGHT * 2.4)
+            Torus(ring_radius=0.7, tube_radius=0.22, color=BLUE).move(RIGHT * 2.4)
         )
         # One flat-triangle solid, so the triangle tree is non-trivial too.
         solids.append(Cube(color=PURPLE).move(UP * 1.8))
         for solid in solids:
             solid.spawn(animate=False)
 
-    with Sync(run_time=2):
+    with Sync(duration=2):
         for i, solid in enumerate(solids):
             solid.rotate(90 * (i + 1), UP)
         Scene.get_camera().move(RIGHT * 0.5 + UP * 0.3)

@@ -8,7 +8,7 @@ from algan.utils.profiling_utils import profile_scene
 
 
 def scene():
-    run_time = 0.5
+    duration = 0.5
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
@@ -20,7 +20,7 @@ def scene():
             .spawn()
         )
 
-    with Sync(run_time=run_time):
+    with Sync(duration=duration):
         nn.move(UP)
         x.color_texture = x.color_texture * 0.5
         label.move(RIGHT * 2)

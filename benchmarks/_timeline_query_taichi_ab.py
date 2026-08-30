@@ -271,12 +271,12 @@ def _layout(mobs):
             m.move(RIGHT * (((i % 13) - 6) * 0.28))
 
 
-def _animate(block, run_time=6.0):
-    with Seq(run_time=run_time):
-        with Lag(0.15, run_time=2.5):
+def _animate(block, duration=6.0):
+    with Seq(duration=duration):
+        with Lag(0.15, duration=2.5):
             for i, m in enumerate(block):
                 m.move(UP * (((i % 7) - 3) * 0.22))
-        with Sync(run_time=2.0):
+        with Sync(duration=2.0):
             for i, m in enumerate(block[::2]):
                 m.rotate(150 * ((i % 5) - 2), OUT)
 
@@ -289,10 +289,10 @@ def build_full_width_scene(n_mobs):
             mobs.append(Square(color=BLUE if i % 2 else YELLOW).spawn())
     _layout(mobs)
     _animate(mobs)
-    with Sync(run_time=1.5):
+    with Sync(duration=1.5):
         for i, m in enumerate(mobs[1::3]):
             m.set(opacity=0.25 + 0.1 * (i % 4))
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         mobs[0].animate_function_of_time(_user_wave)
 
 
@@ -308,7 +308,7 @@ def build_working_set_scene(n_mobs):
     _layout(mobs)
     animated = mobs[::2]
     _animate(animated)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         for m in animated[1::3]:
             m.set(opacity=0.35)
 

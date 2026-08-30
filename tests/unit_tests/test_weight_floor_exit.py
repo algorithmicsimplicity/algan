@@ -82,7 +82,7 @@ def _render_one_reflective_frame(tmp_path, name):
         with Scene(video_settings=SMOKE_TEST) as scene:
             scene.set_background(BLACK)
             with Off():
-                Scene.clear_light_sources()
+                Scene.clear_lights()
                 PointLight(
                     location=UP * 3.0 + RIGHT * 2.0,
                     color=WHITE,
@@ -97,7 +97,7 @@ def _render_one_reflective_frame(tmp_path, name):
                     .spawn(animate=False)
                 )
                 (
-                    Prism(dimensions=(6.0, 6.0, 0.1))
+                    Prism(width=6.0, height=6.0, depth=0.1)
                     .set_material(MeshLambertMaterial(color=WHITE))
                     .spawn(animate=False)
                 )

@@ -10,7 +10,7 @@ contexts like any other change -- put several in a :class:`~.Sync` to indicate
 things together, or a :class:`~.Lag` to sweep across them.
 
 :func:`there_and_back` and :func:`wiggle` are the rate functions behind them, and
-are useful on their own as ``rate_func`` arguments.
+are useful on their own as ``easing`` arguments.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from algan.animation_timeline.animation_contexts import (
     animation_manager_for,
 )
 from algan.animations.movement import Homotopy
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
 from algan.constants.spatial import OUTWARD, UP
@@ -57,7 +57,7 @@ def there_and_back(t, inflection: float = 10.0):
     """
     t = cast_to_tensor(t)
     new_t = torch.where(t < 0.5, 2.0 * t, 2.0 * (1.0 - t))
-    return rate_funcs.smooth(new_t, inflection)
+    return easings.smooth(new_t, inflection)
 
 
 def wiggle(t, wiggles: int = 2):
@@ -96,7 +96,7 @@ def _indicate_scale_step(mobject, scale_factor, interpolation=1.0):
     return mobject
 
 
-def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float = 1.0):
+def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, duration: float = 1.0):
     """Draw attention to a Mob by briefly growing and recoloring it.
 
     The Mob swells and flashes color, then returns to exactly how it was -- the
@@ -104,7 +104,7 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float =
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. The scale pulse is relative to each part's own size, so a
     composite Mob whose parts were scaled separately keeps its proportions.
 
@@ -117,7 +117,7 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float =
         Defaults to ``1.2``.
     color
         Color to flash. Defaults to ``YELLOW``.
-    run_time
+    duration
         Duration of the whole gesture, in seconds. Defaults to ``1.0``.
 
     Returns
@@ -127,7 +127,7 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float =
     """
     color = cast_to_tensor(color)
     scale_factor = cast_to_tensor(scale_factor)
-    with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
+    with Sync(duration=duration, animation_manager=animation_manager_for(mobject)):
         mobject.pulse_color(color)
         _indicate_scale_step(mobject, scale_factor)
     return mobject
@@ -213,7 +213,7 @@ def Wiggle(
     n_wiggles: int = 6,
     scale_about_point=None,
     rotate_about_point=None,
-    run_time: float = 2.0,
+    duration: float = 2.0,
 ):
     """Shake a Mob back and forth, as if jostled.
 
@@ -223,7 +223,7 @@ def Wiggle(
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. Position and orientation are rebuilt each frame from the
     pre-wiggle state, so nothing accumulates.
 
@@ -245,7 +245,7 @@ def Wiggle(
     rotate_about_point
         Point to rock around, shape ``(*, 3)``. Defaults to ``None``, meaning rock in
         place.
-    run_time
+    duration
         Duration of the whole wiggle, in seconds. Defaults to ``2.0``.
 
     Returns
@@ -255,7 +255,7 @@ def Wiggle(
     """
     basis_0 = mobject.basis.clone()
     location_0 = mobject.location.clone()
-    with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
+    with Sync(duration=duration, animation_manager=animation_manager_for(mobject)):
         mobject.animate_function(
             wiggle_step,
             basis_0=basis_0,
@@ -321,7 +321,7 @@ def Blink(
     return mobject
 
 
-def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, run_time: float = 2.0):
+def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, duration: float = 2.0):
     """Contract a large translucent disc onto a point, like a closing spotlight.
 
     Draws the eye to one spot by shrinking a tinted circle down to nothing there. The
@@ -329,7 +329,7 @@ def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, run_time: float = 2.0
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. The spotlight is spawned and despawned instantly around it,
     so it costs no extra video time.
 
@@ -341,12 +341,12 @@ def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, run_time: float = 2.0
         Peak opacity of the disc as it closes in, ``0`` to ``1``. Defaults to ``0.2``.
     color
         Color of the disc. Defaults to ``GRAY``.
-    run_time
+    duration
         Duration of the contraction, in seconds. Defaults to ``2.0``.
 
     Returns
     -------
-    :class:`~.Circle`
+    :class:`~algan.mobs.shapes_2d.Circle`
         The spotlight Mob, already despawned.
     """
     from algan.animatable_base.mob import Mob
@@ -366,7 +366,7 @@ def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, run_time: float = 2.0
                 opacity=0.0,
                 location=focus_point,
             ).spawn()
-        with Sync(run_time=run_time, animation_manager=animation_manager):
+        with Sync(duration=duration, animation_manager=animation_manager):
             spotlight.scale(1e-4)
             spotlight.opacity = opacity
         with Off(animation_manager=animation_manager):
@@ -440,7 +440,7 @@ def undraw_step(mob, t, full_control_points):
 
 
 def _show_passing_flash_on_bezier(
-    mobject, time_width: float, run_time: float, *, clone_source: bool
+    mobject, time_width: float, duration: float, *, clone_source: bool
 ):
     animation_manager = animation_manager_for(mobject)
     with Seq(animation_manager=animation_manager):
@@ -450,7 +450,7 @@ def _show_passing_flash_on_bezier(
             flash = mobject.clone(spawn=False) if clone_source else mobject
             flash.filled = False
             if source_uses_fill and torch.any(source_color[..., -1] > 0):
-                flash.border_color = source_color
+                flash.stroke_color = source_color
 
             full_pts = flash.control_points.location.clone()
             flash.set_control_points_to_partial(full_pts, 0.0, 0.0)
@@ -463,7 +463,7 @@ def _show_passing_flash_on_bezier(
             if source_is_visible:
                 source_opacity = mobject.opacity.clone()
                 mobject.set_non_recursive(opacity=torch.zeros_like(mobject.opacity))
-        with Sync(run_time=run_time, animation_manager=animation_manager):
+        with Sync(duration=duration, animation_manager=animation_manager):
             flash.animate_function(
                 passing_flash_step,
                 time_width=time_width,
@@ -475,7 +475,7 @@ def _show_passing_flash_on_bezier(
                 mobject.set_non_recursive(opacity=source_opacity)
 
 
-def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
+def ShowPassingFlash(mobject, time_width: float = 0.1, duration: float = 1.0):
     """Run a bright segment along a curve, like a spark following a wire.
 
     A short piece of the curve is visible at a time and travels from one end to the
@@ -484,7 +484,7 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. A transient stroke-only clone is spawned and despawned
     around the flash, so the Mob does not need to be spawned beforehand. A visible
     source Mob is hidden during the traversal and restored exactly afterwards.
@@ -496,7 +496,7 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
     time_width
         Length of the travelling segment as a fraction of the curve. Defaults to
         ``0.1``; smaller values look like a sharper spark.
-    run_time
+    duration
         Duration of the traversal, in seconds. Defaults to ``1.0``.
 
     Returns
@@ -510,21 +510,21 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
         _show_passing_flash_on_bezier(
             mobject,
             time_width=time_width,
-            run_time=run_time,
+            duration=duration,
             clone_source=True,
         )
     else:
         beziers = [
             d for d in mobject.get_descendants() if isinstance(d, BezierCircuitCubic)
         ]
-        with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
+        with Sync(duration=duration, animation_manager=animation_manager_for(mobject)):
             for b in beziers:
-                ShowPassingFlash(b, time_width=time_width, run_time=run_time)
+                ShowPassingFlash(b, time_width=time_width, duration=duration)
     return mobject
 
 
 def ShowPassingFlashWithThinningStrokeWidth(
-    vmobject, n_segments: int = 10, time_width: float = 0.1, run_time: float = 1.0
+    vmobject, n_segments: int = 10, time_width: float = 0.1, duration: float = 1.0
 ):
     """Run a tapering flash along a curve, like a comet with a tail.
 
@@ -533,20 +533,20 @@ def ShowPassingFlashWithThinningStrokeWidth(
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. The layers are clones created instantly beforehand; the
     original Mob is untouched.
 
     Parameters
     ----------
     vmobject
-        The curve to flash along. Its ``border_width`` sets the thickest layer.
+        The curve to flash along. Its ``stroke_width`` sets the thickest layer.
     n_segments
         How many layers to draw. Defaults to ``10``; more is smoother and slower.
     time_width
         Length of the leading segment as a fraction of the curve. Defaults to
         ``0.1``.
-    run_time
+    duration
         Duration of the traversal, in seconds. Defaults to ``1.0``.
 
     Returns
@@ -554,24 +554,24 @@ def ShowPassingFlashWithThinningStrokeWidth(
     :class:`~.Mob`
         The Mob that was passed in.
     """
-    max_stroke_width = getattr(vmobject, "border_width", 5.0)
-    if isinstance(max_stroke_width, torch.Tensor):
-        max_stroke_width = max_stroke_width.item()
+    widest = getattr(vmobject, "stroke_width", 5.0)
+    if isinstance(widest, torch.Tensor):
+        widest = widest.item()
     clones = []
     with Off(animation_manager=animation_manager_for(vmobject)):
         for i in range(n_segments):
             factor = i / (n_segments - 1) if n_segments > 1 else 1.0
-            stroke_w = factor * max_stroke_width
+            stroke_w = factor * widest
             time_w = (1.0 - factor) * time_width
             clone = vmobject.clone(spawn=False)
-            clone.border_width = stroke_w
+            clone.stroke_width = stroke_w
             clones.append((clone, time_w))
-    with Sync(run_time=run_time, animation_manager=animation_manager_for(vmobject)):
+    with Sync(duration=duration, animation_manager=animation_manager_for(vmobject)):
         for clone, time_w in clones:
             _show_passing_flash_on_bezier(
                 clone,
                 time_width=time_w,
-                run_time=run_time,
+                duration=duration,
                 clone_source=False,
             )
     return vmobject
@@ -585,7 +585,7 @@ def Flash(
     line_stroke_width: float = 3,
     color=YELLOW,
     time_width: float = 1.0,
-    run_time: float = 1.0,
+    duration: float = 1.0,
 ):
     """Burst short lines outwards from a point, like a spark or a ping.
 
@@ -594,7 +594,7 @@ def Flash(
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. The lines are created instantly beforehand and removed by
     their own flashes.
 
@@ -617,7 +617,7 @@ def Flash(
     time_width
         Fraction of each line visible at a time. Defaults to ``1.0``, i.e. the whole
         line.
-    run_time
+    duration
         Duration of the burst, in seconds. Defaults to ``1.0``.
 
     Returns
@@ -646,16 +646,16 @@ def Flash(
                 start,
                 end,
                 scene=animation_manager.scene,
-                border_color=color,
-                border_width=line_stroke_width,
+                stroke_color=color,
+                stroke_width=line_stroke_width,
             )
             lines.append(line)
-    with Sync(run_time=run_time, animation_manager=animation_manager):
+    with Sync(duration=duration, animation_manager=animation_manager):
         for line in lines:
             _show_passing_flash_on_bezier(
                 line,
                 time_width=time_width,
-                run_time=run_time,
+                duration=duration,
                 clone_source=False,
             )
     return point_or_mobject
@@ -669,7 +669,7 @@ def Circumscribe(
     time_width: float = 0.3,
     buff: float = 0.2,
     color=YELLOW,
-    run_time: float = 1.0,
+    duration: float = 1.0,
     stroke_width: float = 3,
 ):
     """Trace an outline around a Mob to single it out.
@@ -682,7 +682,7 @@ def Circumscribe(
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration. The frame is created and despawned around it, so nothing is
     left in the scene.
 
@@ -705,7 +705,7 @@ def Circumscribe(
         Gap between the Mob and the outline, in world units. Defaults to ``0.2``.
     color
         Color of the outline. Defaults to ``YELLOW``.
-    run_time
+    duration
         Duration of the whole gesture, in seconds. Defaults to ``1.0``.
     stroke_width
         Thickness of the outline. Defaults to ``3``.
@@ -729,7 +729,7 @@ def Circumscribe(
             scene=mobject.scene,
             color=color,
             buffer=buff,
-            border_width=stroke_width,
+            stroke_width=stroke_width,
             filled=False,
         )
     elif shape == Circle:
@@ -743,8 +743,8 @@ def Circumscribe(
         frame = Circle(
             scene=mobject.scene,
             radius=radius,
-            border_color=color,
-            border_width=stroke_width,
+            stroke_color=color,
+            stroke_width=stroke_width,
             location=center,
             filled=False,
         )
@@ -756,10 +756,10 @@ def Circumscribe(
             with Off(animation_manager=animation_manager):
                 frame.spawn()
                 frame.opacity = 0.0
-            with Seq(run_time=run_time, animation_manager=animation_manager):
-                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
+            with Seq(duration=duration, animation_manager=animation_manager):
+                with Sync(duration=duration / 2, animation_manager=animation_manager):
                     frame.opacity = 1.0
-                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
+                with Sync(duration=duration / 2, animation_manager=animation_manager):
                     frame.opacity = 0.0
             with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
@@ -770,10 +770,10 @@ def Circumscribe(
                 frame.portion_of_curve_drawn = 1.0
                 full_pts = frame.control_points.location.clone()
                 frame.spawn()
-            with Seq(run_time=run_time, animation_manager=animation_manager):
-                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
+            with Seq(duration=duration, animation_manager=animation_manager):
+                with Sync(duration=duration / 2, animation_manager=animation_manager):
                     frame.opacity = 1.0
-                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
+                with Sync(duration=duration / 2, animation_manager=animation_manager):
                     frame.animate_function(undraw_step, full_control_points=full_pts)
             with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
@@ -784,10 +784,10 @@ def Circumscribe(
                 full_pts = frame.control_points.location.clone()
                 frame.set_control_points_to_partial(full_pts, 0.0, 0.0)
                 frame.spawn()
-            with Seq(run_time=run_time, animation_manager=animation_manager):
-                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
+            with Seq(duration=duration, animation_manager=animation_manager):
+                with Sync(duration=duration / 2, animation_manager=animation_manager):
                     frame.animate_function(draw_step, full_control_points=full_pts)
-                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
+                with Sync(duration=duration / 2, animation_manager=animation_manager):
                     frame.opacity = 0.0
             with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
@@ -795,7 +795,7 @@ def Circumscribe(
         _show_passing_flash_on_bezier(
             frame,
             time_width=time_width,
-            run_time=run_time,
+            duration=duration,
             clone_source=False,
         )
     return mobject
@@ -807,8 +807,8 @@ def ApplyWave(
     amplitude: float = 0.2,
     ripples: int = 1,
     time_width: float = 1.0,
-    run_time: float = 2.0,
-    wave_func=rate_funcs.smooth,
+    duration: float = 2.0,
+    wave_func=easings.smooth,
 ):
     """Ripple a wave across a Mob's geometry, left to right.
 
@@ -817,7 +817,7 @@ def ApplyWave(
 
     Animation
     ---------
-    Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
+    Recorded as an animation of ``duration`` seconds, regardless of the enclosing
     context's duration.
 
     Parameters
@@ -833,10 +833,10 @@ def ApplyWave(
         How many oscillations pass through the Mob. Defaults to ``1``.
     time_width
         Width of the wave as a fraction of the Mob. Defaults to ``1.0``.
-    run_time
+    duration
         Duration of the ripple, in seconds. Defaults to ``2.0``.
     wave_func
-        Easing applied to the wave's shape. Defaults to ``rate_funcs.smooth``.
+        Easing applied to the wave's shape. Defaults to ``easings.smooth``.
 
     Returns
     -------
@@ -883,4 +883,4 @@ def ApplyWave(
         nudge = w.unsqueeze(-1) * vect.to(points)
         return points + nudge
 
-    return Homotopy(mobject, wave_homotopy, run_time=run_time)
+    return Homotopy(mobject, wave_homotopy, duration=duration)

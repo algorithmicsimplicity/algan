@@ -17,7 +17,7 @@ About 400 cases across six sweeps, each in its own `Scene`:
 
 | Sweep | What it covered |
 | --- | --- |
-| Authoring surface | 143 cases: contexts (`Sync`/`Seq`/`Lag`/`Off`/`OnInit`/`ComposeRateFunc`), lifecycle, hierarchy, `become`, degenerate geometry, text, camera, lights, materials, updaters, multi-Scene |
+| Authoring surface | 143 cases: contexts (`Sync`/`Seq`/`Lag`/`Off`/`OnInit`/`ComposedEasing`), lifecycle, hierarchy, `become`, degenerate geometry, text, camera, lights, materials, updaters, multi-Scene |
 | Renderer robustness | 53 of those degenerate scenes rendered at `SMOKE_TEST`, with the output frame checked for blank/NaN |
 | Class sweep | Every one of the 170 `Mob` subclasses in `algan.__all__` constructed, spawned and rendered |
 | Output & settings | 67 cases: textures/images, `SETTINGS` mutation, `save_video`/`save_frame` arguments, post-processing, audio, encoders |
@@ -95,7 +95,7 @@ Measured with the same script, same Algan, same settings:
 | `Sync` of 3 | 1.00 s | 3.00 s |
 | `Lag(0)` of 3 | 1.00 s | 3.00 s |
 | `Lag(0.5)` of 3 | 2.00 s | 3.00 s |
-| `Sync(run_time=2)` of 3 | 2.00 s | 3.00 s |
+| `Sync(duration=2)` of 3 | 2.00 s | 3.00 s |
 | `Seq` of 3 | 3.00 s | 3.00 s |
 
 **Fix taken.** Make `__enter__` refuse a context that is already entered, with a
@@ -148,7 +148,7 @@ Scene.save_frame("out.png")
 # IndexError: index 248 is out of bounds for dimension 0 with size 248
 ```
 
-`DecimalNumber` and `Integer` both fail this way. Algan's own `NumericDisplay` works,
+`DecimalNumber` and `Integer` both fail this way. Algan's own `DecimalNumber` works,
 and so does a `ValueTracker` driving a `Square`'s location — it is Mob *creation* that
 breaks, not updaters or trackers.
 
@@ -170,7 +170,7 @@ be called twice and give the same video.
 What an updater still cannot do is *reshape* a Mob that existed before the render: row
 layout is fixed at authoring time and the batch's window was materialized against the
 rows it had. That now raises `UnsupportedFeatureError` naming the updater and pointing
-at `NumericDisplay`, which does count. Tests:
+at `DecimalNumber`, which does count. Tests:
 `tests/unit_tests/test_updater_mob_creation.py`. Checks: `F2`, `F2b`, `F2c`.
 
 ---
@@ -221,7 +221,7 @@ Check: `F3`.
 | README | Actual API |
 | --- | --- |
 | `sphere.spawn(duration=1.0)` | `spawn()` takes no `duration`; the enclosing context sets timing |
-| `with Sync(duration=2.0):` | the parameter is `run_time` |
+| `with Sync(duration=2.0):` | the parameter was `run_time` (the API overhaul's Phase 7 renamed it to `duration`, so this line is now correct) |
 | `sphere.shift([2, 0, 0])` | `Mob.move(...)` — there is no `shift` |
 
 `spawn(duration=` and `Sync(duration=` appear nowhere else in the repository, and
@@ -233,9 +233,9 @@ Corrected:
 
 ```python
 with Seq():
-    with Seq(run_time=1.0):
+    with Seq(duration=1.0):
         sphere.spawn()
-    with Sync(run_time=2.0):
+    with Sync(duration=2.0):
         sphere.rotate(180)
         sphere.move([2, 0, 0])
         sphere.color = RED
@@ -244,7 +244,7 @@ with Seq():
 **Fix taken.** Fix the README, and extend the doc-example collector to the root
 README so it cannot drift again.
 
-**Fixed.** The README now reads `sphere.spawn()`, `with Sync(run_time=2.0):` and
+**Fixed.** The README now reads `sphere.spawn()`, `with Sync(duration=2.0):` and
 `sphere.move([2, 0, 0])`, and `tests/unit_tests/test_doc_examples.py` collects
 `README.md`'s fenced Python alongside the docs' blocks, so it goes through the same
 tiers as every other example and cannot drift again. Check: `F4`.
@@ -338,8 +338,8 @@ Also `Sphere(radius=1e-9)`, `Cylinder(radius=0)` and a `Surface` with a degenera
 
 The `1e-9` case is the one that will actually be hit — a radius computed from data, or
 a value that shrinks toward zero. Neighbouring degenerate shapes are fine:
-`Sphere(radius=-1)`, `Cone(base_radius=0)`, `Cylinder(height=0)`, `Torus(minor_radius=0)`
-and `Cube(side_length=0)` all render (blank or mirrored), so the behaviour is also
+`Sphere(radius=-1)`, `Cone(base_radius=0)`, `Cylinder(height=0)`, `Torus(tube_radius=0)`
+and `Cube(size=0)` all render (blank or mirrored), so the behaviour is also
 inconsistent between primitives.
 
 **Fix taken.** Drop empty primitives before the merge, or reject a degenerate
@@ -384,7 +384,7 @@ likely a user is to meet it.
 | Trigger | What was reported | What it says now |
 | --- | --- | --- |
 | `Text("")` or `Text("   ")`, on `spawn()` | `RuntimeError: torch.cat(): expected a non-empty list of Tensors` | **Fixed.** It spawns. A string with no glyphs has nothing for the entrance wave to stagger, and `animate_lagged_by_location` now returns rather than reducing over an empty list (`F9`) |
-| `Seq(lag_ratio=0.5)`, `Sync(lag_ratio=0.5)` | `TypeError: algan...Lag.__init__() got multiple values for keyword argument 'lag_ratio'` | **Fixed.** *"Seq is Lag with lag_ratio=1, so it takes no lag_ratio of its own. Use Lag(0.5) for that overlap"* (`F10`) |
+| `Seq(lag_ratio=0.5)`, `Sync(lag_ratio=0.5)` | `TypeError: algan...Lag.__init__() got multiple values for keyword argument 'lag_ratio'` | **Fixed.** *"Seq is Lag with ratio=1, so it takes no lag_ratio of its own. Use Lag(0.5) for that overlap"* (`F10`) |
 | `save_video(codec="notacodec")` | after a full render, `FileNotFoundError: '..._temp.mp4' -> '....mp4'` | **Fixed.** The codec is checked against FFmpeg's encoder list before rendering: 0.2 s instead of 27 s, and the message names the codec (`F11`) |
 | `ImageMob(numpy_array)` | `TypeError: zeros_like(): argument 'input' must be Tensor, not numpy.ndarray` | **Fixed.** numpy arrays and nested sequences are accepted, uint8 scaled by 255 (`F12`) |
 | `ImageMob(torch.zeros(8, 8, 2))` | `ValueError: color_texture must have shape [W, H, 5], got (8, 8, 4).` | **Fixed.** `Color.add_defaults` widens only 3 and 4 channels, so the complaint reports `(8, 8, 2)` — the shape that was passed (`F13`) |
@@ -412,7 +412,7 @@ clamping — but nothing distinguishes them from a scene the user got right.
   user's own arithmetic yields a black video and no clue where it came from.
 * `opacity = 5.0` and `opacity = -1.0` clamp; `scale(-1)` mirrors; `scale(0)`,
   `scale(1e9)` and `rotate(90, ORIGIN)` (a zero axis) all render blank.
-* `Square(side_length=-1)`, `Circle(radius=-1)` construct and render mirrored.
+* `Square(size=-1)`, `Circle(radius=-1)` construct and render mirrored.
 * `Scene.get_camera().despawn()` produces a black video.
 * `Text("hi 🎉")` renders byte-identically to `Text("hi")` — the emoji is dropped with
   no warning. `Text("a\x00b")` fails with
@@ -477,7 +477,7 @@ is as short as it is.
   *"displacement must be a 3-D vector of shape (\*, 3), such as RIGHT, UP \* 2 or [1, 0, 0]; got [1, 2]"*.
   Python lists, tuples and numpy arrays all work where a vector is expected.
 * **Timing semantics are correct** — once finding 1 is not in play. `Seq`, `Sync`,
-  `Lag(r)`, `run_time`, `run_time_unit`, nested contexts, `Off` inside a timed context,
+  `Lag(r)`, `duration`, `duration_unit`, nested contexts, `Off` inside a timed context,
   `wait` including negative and zero, and rate functions were all measured against
   rendered frame counts and all matched.
 * **Context cleanup is otherwise sound.** An exception raised inside a `with Sync()`,

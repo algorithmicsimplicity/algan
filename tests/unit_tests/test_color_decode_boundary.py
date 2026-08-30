@@ -58,10 +58,10 @@ _AUTHORED_BYTES = (128, 64, 191)
 def _render_centre_pixel(tmp_path, material):
     """The centre pixel of a slab filling the frame, as (R, G, B) bytes."""
     SceneManager.instance().reset()
-    video = VideoSettings((48, 48), 30, super_sampling_anti_aliasing=1)
+    video = VideoSettings((48, 48), 30, supersampling=1)
     with rt_settings_off_tonemap():
         with Off():
-            slab = Prism(dimensions=(12.0, 12.0, 0.5))
+            slab = Prism(width=12.0, height=12.0, depth=0.5)
             slab.set_material(material)
             slab.move_to(torch.tensor((0.0, 0.0, 0.0)))
             slab.spawn(animate=False)

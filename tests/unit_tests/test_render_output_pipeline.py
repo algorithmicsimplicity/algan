@@ -29,7 +29,7 @@ def render_scene(tmp_path):
         scene = Scene()
         with scene:
             with Off():
-                Square(side_length=1.5, color=BLUE).spawn()
+                Square(size=1.5, color=BLUE).spawn()
             scene.wait(0.5)
         return scene
 
@@ -50,7 +50,7 @@ def glowing_scene(tmp_path):
         scene = Scene()
         with scene:
             with Off():
-                Square(side_length=1.0, color=BLUE, glow=0.6).spawn()
+                Square(size=1.0, color=BLUE, glow=0.6).spawn()
             scene.wait(0.5)
         return scene
 

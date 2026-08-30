@@ -31,7 +31,7 @@ Wrap any Manim Mobject in :class:`~.ManimMob` to turn it into an Algan Mob:
     plane = ManimMob(mn.ComplexPlane().add_coordinates()).spawn()
 
     # Now we have a Mob we can animate with Algan.
-    with Seq(run_time=5):
+    with Seq(duration=5):
         plane.scale(0.5)
         plane.rotate(90, OUT)
 
@@ -65,7 +65,7 @@ like any other.
         axes.spawn()
         graph.spawn()
 
-    with Seq(run_time=2):
+    with Seq(duration=2):
         graph.rotate(20, UP)
         graph.rotate(-20, UP)
 
@@ -127,7 +127,7 @@ far you push the camera in.
         # camera in Algan; stand them upright before animating.
         Group(ball, coil).rotate(-75, RIGHT).spawn()
 
-    with Sync(run_time=4):
+    with Sync(duration=4):
         ball.rotate(360, UP)
         coil.rotate(360, UP)
 

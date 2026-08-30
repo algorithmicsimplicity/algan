@@ -723,7 +723,7 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
     scene has only plain point lights) take the original point-light path with
     identical arithmetic. Extended rows (width 16) carry a type id + parameters
     (packed by ``scene_builder._pack_lights``; layout documented on
-    :meth:`algan.rendering.lights.Light.build_aux`).
+    :meth:`algan.rendering.lights.Light._build_aux`).
 
     Ambient-like types (ambient / hemisphere / env-SH) return ``ld = n`` so the
     material stages' ``n . ld`` diffuse factor becomes 1 -- they reuse the

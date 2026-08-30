@@ -57,7 +57,7 @@ def child(out_name):
         SpotLight(
             location=UP * 4 + LEFT * 2,
             target=ORIGIN,
-            angle=0.35,
+            cone_angle=0.35,
             penumbra=0.4,
             color=WHITE,
         ).spawn()

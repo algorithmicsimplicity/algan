@@ -233,18 +233,18 @@ class Light(Mob):
             self.scene.light_sources.append(self)
         return result
 
-    def is_extended(self):
+    def _is_extended(self):
         """Whether this light needs the extended (16-column) packed row.
         Plain point lights return False and keep the compact legacy packing
         (which keeps the no-new-features render byte-identical).
         """
         return True
 
-    def num_samples(self):
+    def _num_samples(self):
         """Number of emitter sample points (rows) this light packs to."""
         return 1
 
-    def get_sample_positions(self, location):
+    def _get_sample_positions(self, location):
         """World positions of the emitter samples, ``[T, K, 3]`` for per-frame
         light locations ``location [T, 3]``.
         """
@@ -252,7 +252,8 @@ class Light(Mob):
 
     def _blank_aux(self, location):
         aux = torch.zeros(
-            (location.shape[0], self.num_samples(), LIGHT_AUX_COLS), dtype=torch.float32
+            (location.shape[0], self._num_samples(), LIGHT_AUX_COLS),
+            dtype=torch.float32,
         )
         aux[..., 0] = self.light_type
         # Power fraction: the share of a whole light each packed row carries
@@ -262,10 +263,10 @@ class Light(Mob):
         # radiance-weighted (see shading_taichi._light_eval). Still packed: it
         # is part of the row layout, and it is the only place the split is
         # recorded.
-        aux[..., 12] = 1.0 / self.num_samples()
+        aux[..., 12] = 1.0 / self._num_samples()
         return aux
 
-    def build_aux(self, location):
+    def _build_aux(self, location):
         """Internal: pack this light's per-frame parameters for the renderer.
 
         Subclasses override this to fill in the columns they use. The layout is:
@@ -329,7 +330,7 @@ class PointLight(Light):
         self.shadow_radius = _finite_number("shadow_radius", shadow_radius, minimum=0.0)
         super().__init__(*args, intensity=intensity, **kwargs)
 
-    def is_extended(self):
+    def _is_extended(self):
         """Whether this light needs the extended packed row.
 
         Returns
@@ -341,7 +342,7 @@ class PointLight(Light):
         """
         return self.decay != 0.0 or self.distance != 0.0 or self.shadow_radius != 0.0
 
-    def build_aux(self, location):
+    def _build_aux(self, location):
         """Internal: pack this light's falloff, range and shadow radius.
 
         Parameters
@@ -426,7 +427,7 @@ class DirectionalLight(_TargetedLight):
         )
         super().__init__(*args, target=target, **kwargs)
 
-    def build_aux(self, location):
+    def _build_aux(self, location):
         """Internal: pack this light's emission direction and shadow softness.
 
         Parameters
@@ -479,10 +480,12 @@ class HemisphereLight(Light):
         if not args and "location" not in kwargs:
             kwargs["location"] = ORIGIN
         self.ground_color = ground_color
-        self.up = _as_direction_target(up)
+        # ``up`` is the constructor's name for it; the attribute is spelled
+        # differently because ``Mob.up`` is the mob's own up direction.
+        self.sky_direction = _as_direction_target(up)
         super().__init__(*args, **kwargs)
 
-    def build_aux(self, location):
+    def _build_aux(self, location):
         """Internal: pack this light's up direction and ground color.
 
         Parameters
@@ -496,7 +499,7 @@ class HemisphereLight(Light):
             Aux columns for the packed light row, shape ``[T, K, 13]``.
         """
         aux = self._blank_aux(location)
-        aux[..., 3:6] = F.normalize(self.up, p=2, dim=-1)
+        aux[..., 3:6] = F.normalize(self.sky_direction, p=2, dim=-1)
         gc = self.ground_color
         if gc is None:
             gc = torch.zeros(3)
@@ -523,8 +526,12 @@ class SpotLight(_TargetedLight):
     ----------
     target
         World point the cone is aimed at.
-    angle
-        Half-angle of the cone in degrees (default 30).
+    cone_angle
+        Half-angle of the cone, in degrees unless ``degrees`` is False
+        (default 30).
+    degrees
+        Whether ``cone_angle`` is in degrees. Defaults to True; pass False to
+        give it in radians.
     penumbra
         Portion ``[0, 1]`` of the cone over which the light fades to zero
         at the edge (0 = hard edge).
@@ -538,16 +545,21 @@ class SpotLight(_TargetedLight):
         self,
         *args,
         target=ORIGIN,
-        angle=30.0,
+        cone_angle=30.0,
         penumbra=0.0,
         decay=0.0,
         distance=0.0,
         shadow_radius=0.0,
+        degrees: bool = True,
         **kwargs,
     ):
-        self.angle = _finite_number(
-            "angle",
-            angle,
+        if not degrees:
+            cone_angle = math.degrees(
+                _finite_number("cone_angle", cone_angle, minimum=0.0)
+            )
+        self.cone_angle = _finite_number(
+            "cone_angle",
+            cone_angle,
             minimum=0.0,
             maximum=90.0,
             minimum_inclusive=False,
@@ -558,7 +570,7 @@ class SpotLight(_TargetedLight):
         self.shadow_radius = _finite_number("shadow_radius", shadow_radius, minimum=0.0)
         super().__init__(*args, target=target, **kwargs)
 
-    def build_aux(self, location):
+    def _build_aux(self, location):
         """Internal: pack this light's cone angles, falloff and shadow radius.
 
         Parameters
@@ -575,7 +587,7 @@ class SpotLight(_TargetedLight):
         aux[..., 1] = self.decay
         aux[..., 2] = self.distance
         aux[..., 3:6] = self._directions(location).unsqueeze(-2)
-        outer = math.radians(self.angle)
+        outer = math.radians(self.cone_angle)
         inner = outer * (1.0 - self.penumbra)
         aux[..., 6] = math.cos(outer)
         # Keep a minimal inner/outer separation so the smoothstep in the
@@ -601,7 +613,7 @@ class RectAreaLight(_TargetedLight):
     of testing only the cell's centre point. The penumbra is therefore
     continuous rather than a stack of hard shadows. This costs
     ``SOFT_SHADOW_SAMPLES`` shadow rays per row instead of one, i.e.
-    :meth:`num_samples` ``* SOFT_SHADOW_SAMPLES`` (default 8) per shaded
+    :meth:`_num_samples` ``* SOFT_SHADOW_SAMPLES`` (default 8) per shaded
     fragment while an area light is in the scene; ``samples`` stays the dial
     for both quality and cost. The integration can be turned off, restoring
     one hard ray per row, with
@@ -651,7 +663,7 @@ class RectAreaLight(_TargetedLight):
         """Internal: side ``k`` of the square emitter grid."""
         return int(math.ceil(math.sqrt(self.samples)))
 
-    def num_samples(self):
+    def _num_samples(self):
         """Number of emitter samples this area light packs to.
 
         Returns
@@ -676,7 +688,7 @@ class RectAreaLight(_TargetedLight):
         up = torch.linalg.cross(n, right, dim=-1)
         return right, up
 
-    def get_sample_positions(self, location):
+    def _get_sample_positions(self, location):
         """Get the world positions of this area light's emitter samples.
 
         The samples sit at the centres of a square grid covering the rectangle, which
@@ -691,7 +703,7 @@ class RectAreaLight(_TargetedLight):
         -------
         torch.Tensor
             Sample positions, shape ``[T, K, 3]`` where ``K`` is
-            :meth:`~.RectAreaLight.num_samples`.
+            :meth:`~.RectAreaLight._num_samples`.
         """
         k = self._grid_side()
         right, up = self._rect_axes(location)
@@ -706,7 +718,7 @@ class RectAreaLight(_TargetedLight):
             + offs[..., 1:] * self.height * up.unsqueeze(-2)
         )
 
-    def build_aux(self, location):
+    def _build_aux(self, location):
         """Internal: pack this light's falloff, range and surface normal, and
         -- when ``area_light_soft_shadows`` is on -- each emitter row's cell
         geometry for the soft-shadow fans: aux 6/7 the cell's half-extents
@@ -751,5 +763,5 @@ def light_is_extended(light):
     """True when ``light`` needs the extended packed-light row (any light
     beyond a plain, falloff-free point light).
     """
-    fn = getattr(light, "is_extended", None)
+    fn = getattr(light, "_is_extended", None)
     return bool(fn()) if fn is not None else False

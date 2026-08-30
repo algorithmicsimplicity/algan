@@ -53,7 +53,7 @@ def _legacy_cylinder_coords(mob: Cylinder, uv: torch.Tensor) -> torch.Tensor:
     v = uv[..., 1:]
     return (
         (u * math.pi * 2).sin() * mob.radius * mob.get_right_basis()
-        + (v - 0.5) * mob.height * mob.get_upwards_basis()
+        + (v - 0.5) * mob.height * mob.get_up_basis()
         + (u * math.pi * 2).cos() * mob.radius * mob.get_forward_basis()
     )
 

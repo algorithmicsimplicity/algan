@@ -2,7 +2,7 @@
 Importing 3-D Models
 ====================
 
-:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` loads a 3-D model file -- geometry, UVs, textures, PBR
+:class:`~algan.mobs.three_d_models.model_mob.Model3D` loads a 3-D model file -- geometry, UVs, textures, PBR
 materials, node hierarchy and rigid animation -- and gives you an ordinary Algan
 :class:`~algan.animatable_base.mob.Mob`.
 
@@ -12,8 +12,8 @@ materials, node hierarchy and rigid animation -- and gives you an ordinary Algan
 
     from algan import *
 
-    model = ThreeDModelMob('dragon.glb', normalize=True).scale(3).spawn()
-    with Seq(run_time=4, rate_func=rate_funcs.identity):
+    model = Model3D('dragon.glb', fit_to_size=2.0).scale(3).spawn()
+    with Seq(duration=4, easing=easings.identity):
         model.rotate(360, UP)
 
     Scene.save_video()
@@ -56,17 +56,17 @@ Scale and Position
 ==================
 
 Model files use wildly inconsistent unit scales -- one file's "1" is a metre,
-another's is a centimetre. ``normalize=True`` recentres the model and uniformly
-scales it to fit a box of ``normalize_size`` (default 2), which makes an unfamiliar
+another's is a centimetre. ``fit_to_size`` recentres the model and uniformly
+scales it so its bounding-box diagonal is that many world units, which makes an unfamiliar
 asset usable immediately:
 
 .. code-block:: python
 
     # Predictable size regardless of the file's units.
-    model = ThreeDModelMob('asset.glb', normalize=True, normalize_size=3).spawn()
+    model = Model3D('asset.glb', fit_to_size=3).spawn()
 
     # Or take the file's own scale and adjust by hand.
-    model = ThreeDModelMob('asset.glb').scale(0.01).spawn()
+    model = Model3D('asset.glb').scale(0.01).spawn()
 
 After that it is a normal Mob: :meth:`~algan.animatable_base.mob.Mob.scale`,
 :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`,
@@ -113,8 +113,8 @@ properties are animatable attributes like any other:
 
 .. code-block:: python
 
-    model = ThreeDModelMob('robot.glb', normalize=True).spawn()
-    with Seq(run_time=3):
+    model = Model3D('robot.glb', fit_to_size=2.0).spawn()
+    with Seq(duration=3):
         model.roughness = 0.1      # polish the whole model
 
 Working With Parts
@@ -125,17 +125,17 @@ part:
 
 .. code-block:: python
 
-    model = ThreeDModelMob('robot.glb', normalize=True).spawn()
+    model = Model3D('robot.glb', fit_to_size=2.0).spawn()
 
     print(model.node_names)              # what's in the file
 
     arm = model.get_part('LeftArm')      # one TriangleMesh, or a list of them
-    with Seq(run_time=2):
+    with Seq(duration=2):
         arm.rotate(45, OUT)
         arm.color = RED
 
-:attr:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob.node_names` lists the nodes that carry geometry, and
-:meth:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob.get_part` returns the mesh Mob (or list of them) for a named
+:attr:`~algan.mobs.three_d_models.model_mob.Model3D.node_names` lists the nodes that carry geometry, and
+:meth:`~algan.mobs.three_d_models.model_mob.Model3D.get_part` returns the mesh Mob (or list of them) for a named
 node. A part is a normal Mob, so everything in
 :doc:`../new_user_tutorials/basic_animations` applies -- and because it is a child of
 the model, moving the model still carries it along (see
@@ -144,16 +144,16 @@ the model, moving the model still carries it along (see
 Playing Baked Animations
 ========================
 
-If the file carries animation clips, :meth:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob.play_animation` records
+If the file carries animation clips, :meth:`~algan.mobs.three_d_models.model_mob.Model3D.play_animation` records
 one onto Algan's timeline:
 
 .. code-block:: python
 
-    model = ThreeDModelMob('walking.glb', normalize=True).spawn()
+    model = Model3D('walking.glb', fit_to_size=2.0).spawn()
 
     print(model.animation_names)         # available clips
 
-    model.play_animation('Walk', run_time=4, loop=2)
+    model.play_animation('Walk', duration=4, loop=2)
 
 .. list-table::
    :header-rows: 1
@@ -163,15 +163,15 @@ one onto Algan's timeline:
      - Meaning
    * - ``name``
      - Which clip. Defaults to the first one.
-   * - ``run_time``
+   * - ``duration``
      - Seconds per loop. Defaults to the clip's authored duration.
    * - ``loop``
      - How many times to repeat it.
    * - ``fps``
      - Sampling rate used when baking. Higher is smoother for fast rotation,
        because poses are interpolated linearly in between. Default 30.
-   * - ``rate_func``
-     - Easing. Defaults to ``rate_funcs.identity``, which is what you want --
+   * - ``easing``
+     - Easing. Defaults to ``easings.identity``, which is what you want --
        a walk cycle should not ease in and out.
 
 Because the clip is recorded on the timeline like any other animation, it composes
@@ -180,8 +180,8 @@ model across the frame:
 
 .. code-block:: python
 
-    with Sync(run_time=4):
-        model.play_animation('Walk', run_time=4)
+    with Sync(duration=4):
+        model.play_animation('Walk', duration=4)
         model.move(RIGHT * 6)
 
 .. important::
@@ -193,7 +193,7 @@ model across the frame:
     A model animated by moving rigid parts works; one animated by deforming a
     continuous skinned mesh will move at the node level only.
 
-:meth:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob.bake_animation` exposes the same computation without
+:meth:`~algan.mobs.three_d_models.model_mob.Model3D.precompute_animation` exposes the same computation without
 touching the scene, returning the sample times and per-frame geometry, if you want
 to inspect or post-process the poses yourself.
 
@@ -207,7 +207,7 @@ Troubleshooting
    * - Symptom
      - Likely cause
    * - Nothing appears
-     - The model's units. Try ``normalize=True``.
+     - The model's units. Try ``fit_to_size=2``.
    * - Faceted where it should be smooth
      - The file has no authored normals; they are being derived per face.
    * - Untextured / flat color

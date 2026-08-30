@@ -228,7 +228,7 @@ class Scene(RenderLoopMixin):
         self._context_depth = 0
         manager.push(self)
         try:
-            self.reset_scene()
+            self._rebuild_contents()
         except Exception:
             manager.terminate(self)
             raise
@@ -417,7 +417,7 @@ class Scene(RenderLoopMixin):
         return self.light_sources
 
     @active_scene_method
-    def add_light_source(self, light_source):
+    def add_light(self, light):
         """Add a light to this Scene.
 
         Lights only affect Mobs whose material responds to light -- a
@@ -431,7 +431,7 @@ class Scene(RenderLoopMixin):
 
         Parameters
         ----------
-        light_source
+        light
             The light to add.
 
         Returns
@@ -441,12 +441,12 @@ class Scene(RenderLoopMixin):
         """
         if not hasattr(self, "light_sources"):
             self.light_sources = []
-        if not any(light is light_source for light in self.light_sources):
-            self.light_sources.append(light_source)
-        return light_source
+        if not any(existing is light for existing in self.light_sources):
+            self.light_sources.append(light)
+        return light
 
     @active_scene_method
-    def remove_light_source(self, light_source):
+    def remove_light(self, light):
         """Remove a light from this Scene.
 
         Removing a light that is not registered does nothing.
@@ -458,7 +458,7 @@ class Scene(RenderLoopMixin):
 
         Parameters
         ----------
-        light_source
+        light
             The light to remove.
 
         Returns
@@ -467,12 +467,12 @@ class Scene(RenderLoopMixin):
             The light that was passed in.
         """
         self.light_sources[:] = [
-            light for light in self.light_sources if light is not light_source
+            existing for existing in self.light_sources if existing is not light
         ]
-        return light_source
+        return light
 
     @active_scene_method
-    def clear_light_sources(self):
+    def clear_lights(self):
         """Remove every light from this Scene.
 
         Lit materials go black afterwards unless a new light or an environment map
@@ -490,9 +490,6 @@ class Scene(RenderLoopMixin):
         """
         self.light_sources.clear()
         return self
-
-    add_light = add_light_source
-    remove_light = remove_light_source
 
     @active_scene_method
     def set_environment_map(self, source, intensity: float = 1.0, ambient: bool = True):
@@ -575,7 +572,7 @@ class Scene(RenderLoopMixin):
         self.environment_ambient = bool(ambient)
         return self
 
-    def length_to_num_pixels(self, length: float) -> float:
+    def length_to_pixels(self, length: float) -> float:
         """Convert a world-space length to a length in rendered pixels.
 
         Parameters
@@ -590,7 +587,7 @@ class Scene(RenderLoopMixin):
         """
         return length * 0.5 * self.num_pixels_screen_height
 
-    def num_pixels_to_length(self, length: float) -> float:
+    def pixels_to_length(self, length: float) -> float:
         """Convert a length in rendered pixels to a world-space length.
 
         Parameters
@@ -725,23 +722,12 @@ class Scene(RenderLoopMixin):
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
         return
 
-    def clear(self):
-        """Despawn everything in the Scene; an alias of :meth:`~.Scene.clear_scene`.
-
-        Animation
-        ---------
-        Recorded as an animation: every spawned Mob fades out together over 0.5
-        seconds.
-
-        Returns
-        -------
-        :class:`~.Scene`
-            This Scene, so calls can be chained.
-        """
-        self.clear_scene()
-        return self
-
-    def despawn_scene(self, **kwargs):
+    def despawn_mobs(
+        self,
+        retain_history: bool = False,
+        duration: float | None = None,
+        **kwargs,
+    ):
         """Despawn every spawned Mob in the Scene.
 
         Parents are despawned before their children, so composite Mobs disappear as a
@@ -750,14 +736,41 @@ class Scene(RenderLoopMixin):
         Animation
         ---------
         Recorded as an animation: all the despawns run together inside a
-        :class:`~.Sync`, over the current context's duration (1 second by default).
+        :class:`~.Sync`, over the current context's duration (1 second by default)
+        unless ``duration`` overrides it.
 
         Parameters
         ----------
+        retain_history
+            Whether to keep the fully despawned actors whose earlier lifespan still
+            has to render, and discard the rest. Defaults to False, which leaves
+            ``Scene.actors`` alone. True is what a scene-ending fade wants: actors
+            that never acquired a complete lifespan are dropped.
+        duration
+            Seconds the despawn takes, overriding the current context. Defaults to
+            ``None``, meaning use the context's duration.
         **kwargs
             Passed to each :meth:`~.Animatable.despawn` -- notably
             ``animate=False`` to remove everything without fading.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
         """
+        if duration is None:
+            self._despawn_spawned_mobs(**kwargs)
+        else:
+            with Seq(duration=duration, animation_manager=self.animation_manager):
+                self._despawn_spawned_mobs(**kwargs)
+        if retain_history:
+            self.actors = [
+                _ for _ in self.actors if (_.is_spawned() and _.is_despawned())
+            ]
+        return self
+
+    def _despawn_spawned_mobs(self, **kwargs):
+        """Despawn every spawned actor together, parents before children."""
         with Sync(animation_manager=self.animation_manager):
             for actor in sorted(
                 self.actors, key=lambda x: x.anchor_priority, reverse=True
@@ -765,31 +778,10 @@ class Scene(RenderLoopMixin):
                 if actor.is_spawned():
                     actor.despawn(**kwargs)
 
-    def clear_scene(self, **kwargs):
-        """Despawn everything and retain the Mobs with recorded history.
-
-        Like :meth:`~.Scene.despawn_scene`, then keeps the fully despawned actors
-        whose earlier lifespan still has to render. Actors which never acquired a
-        complete lifespan are discarded.
-
-        Animation
-        ---------
-        Recorded as an animation: everything fades out together over **0.5 seconds**,
-        regardless of the current context's duration.
-
-        Parameters
-        ----------
-        **kwargs
-            Passed to each :meth:`~.Animatable.despawn` -- notably ``animate=False``.
-        """
-        with Seq(run_time=0.5, animation_manager=self.animation_manager):
-            self.despawn_scene(**kwargs)
-        self.actors = [_ for _ in self.actors if (_.is_spawned() and _.is_despawned())]
-
-    def render_audio_to_file(
+    def save_audio(
         self,
         file_path: str | Path,
-        frames_per_second: int = 44100,
+        sample_rate: int = 44100,
         codec: str = "pcm_s32le",
         nbytes: int = 4,
     ):
@@ -803,7 +795,7 @@ class Scene(RenderLoopMixin):
         ----------
         file_path
             Where to write the audio.
-        frames_per_second
+        sample_rate
             Sample rate in Hz. Defaults to ``44100``.
         codec
             FFmpeg audio codec. Defaults to ``'pcm_s32le'`` (uncompressed).
@@ -831,54 +823,40 @@ class Scene(RenderLoopMixin):
         audio_clip = CompositeAudioClip(clips_to_compose)
         audio_clip.duration = self.animation_manager.context.timespan.original_end
         audio_clip.write_audiofile(
-            file_path, fps=frames_per_second, codec=codec, nbytes=nbytes
+            file_path, fps=sample_rate, codec=codec, nbytes=nbytes
         )
         audio_clip.close()
         return file_path
 
-    def reset_scene(self):
-        """Rebuild the Scene's contents from its initializer.
-
-        Drops all actors, audio effects, the camera and the lights, then re-runs the
-        Scene initializer, which puts the default camera and lighting back. The
-        timeline is **not** cleared -- use :meth:`~.Scene.reset` for that.
-
-        Animation
-        ---------
-        Not animated: everything is discarded rather than despawned, so nothing fades
-        out.
-        """
-        self.actors = []
-        self.effects = []
-        self.camera = None
-        self.light_sources = []
-        # The initializer below restores Algan's own camera and lighting, so the
-        # Manim viewpoint is gone; drop the coordinate convention that went with it.
-        self.manim_coordinates = False
-        with (
-            SceneManager.instance().activating(self),
-            animation_manager_context(self.animation_manager),
-        ):
-            self.scene_initializer(self)
-
-    def reset(self):
+    def reset(self, rebuild_timeline: bool = True):
         """Empty the Scene completely and start over.
 
-        Time returns to zero and the timeline, animation and audio managers are
-        rebuilt, so nothing recorded so far survives. **Mob references from before
-        the reset are invalid** and must not be reused. Other Scenes on the
-        SceneManager stack are untouched.
+        Drops all actors, audio effects, the camera and the lights, then re-runs the
+        Scene initializer, which puts the default camera and lighting back. With the
+        default ``rebuild_timeline=True`` time also returns to zero and the timeline,
+        animation and audio managers are rebuilt, so nothing recorded so far
+        survives, and **Mob references from before the reset are invalid** and must
+        not be reused. Other Scenes on the SceneManager stack are untouched.
 
         Animation
         ---------
         Not animated, and destructive: this discards the recording rather than
         animating anything out.
 
+        Parameters
+        ----------
+        rebuild_timeline
+            Whether to reset time and rebuild the timeline, animation and audio
+            managers as well as the contents. Defaults to True; False rebuilds the
+            contents only and leaves the recording in place.
+
         Returns
         -------
         :class:`~.Scene`
             This Scene, so calls can be chained.
         """
+        if not rebuild_timeline:
+            return self._rebuild_contents()
         self.current_time = 0
         self.min_time = 0
         self.max_time = 0
@@ -908,7 +886,27 @@ class Scene(RenderLoopMixin):
         self.timeline_manager = TimelineManager()
         self.animation_manager = AnimationManager(scene=self)
         self.audio_manager = AudioManager(scene=self)
-        self.reset_scene()
+        return self._rebuild_contents()
+
+    def _rebuild_contents(self):
+        """Drop the Scene's contents and re-run its initializer.
+
+        The half of :meth:`reset` that does not touch the timeline: actors, audio
+        effects, the camera and the lights go, and the initializer puts the default
+        camera and lighting back.
+        """
+        self.actors = []
+        self.effects = []
+        self.camera = None
+        self.light_sources = []
+        # The initializer below restores Algan's own camera and lighting, so the
+        # Manim viewpoint is gone; drop the coordinate convention that went with it.
+        self.manim_coordinates = False
+        with (
+            SceneManager.instance().activating(self),
+            animation_manager_context(self.animation_manager),
+        ):
+            self.scene_initializer(self)
         return self
 
     def _background_image_frame(self, path, not_a_color):
@@ -925,7 +923,7 @@ class Scene(RenderLoopMixin):
                 f"Color such as BLUE, a hex string ('#101820'), or the path of "
                 f"an image to use as the background."
             ) from not_a_color
-        a = self.video_settings.super_sampling_anti_aliasing
+        a = self.video_settings.supersampling
         # get_image returns [height, width, channels]; interpolate wants
         # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
         # the image's rows and columns instead, rendering it transposed.)
@@ -1033,7 +1031,7 @@ class Scene(RenderLoopMixin):
         """
         return "rgba" if self.background_is_transparent() else "rgb"
 
-    def show_frame(self, time_stamp: float | None = None):
+    def show_frame(self, at: float | None = None):
         """Render one frame and display it, for interactive work.
 
         Meant for a notebook or REPL: it plots the frame rather than writing a file.
@@ -1046,7 +1044,7 @@ class Scene(RenderLoopMixin):
 
         Parameters
         ----------
-        time_stamp
+        at
             Time to render, in seconds. Defaults to ``None``, meaning just after the
             current authoring time -- i.e. the scene as it stands.
 
@@ -1058,12 +1056,12 @@ class Scene(RenderLoopMixin):
         """
         from algan.utils.plotting_utils import plot_tensor
 
-        if time_stamp is None:
-            time_stamp = (
+        if at is None:
+            at = (
                 self.animation_manager.context.current_time
                 + 1.5 / self.video_settings.frames_per_second
             )
-        time_ind = self._frame_index_for_timestamp(time_stamp)
+        time_ind = self._frame_index_for_timestamp(at)
         frames = []
         # See Scene.save_frame: a render that leaves the Scene re-renderable
         # must not leave its replay-window resolution behind for the next one.
@@ -1237,7 +1235,7 @@ class Scene(RenderLoopMixin):
                 self.set_background(background)
             # Rendering resolves replay windows against the timings as they
             # stand. Mid-authoring those are not final -- an enclosing context
-            # with a run_time rescales its block when it exits -- so the
+            # with a duration rescales its block when it exits -- so the
             # resolution is restored rather than left on the timeline for the
             # next render to reuse.
             with self.timeline_manager.preserving_authoring_state(

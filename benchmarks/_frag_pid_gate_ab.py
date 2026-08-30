@@ -106,7 +106,7 @@ def build_scene(mixed):
             cubes.append(cube)
 
     # Optimizations must serve MOVING scenes, so everything animates.
-    with Sync(run_time=2):
+    with Sync(duration=2):
         for i, cube in enumerate(cubes):
             cube.rotate(120 * (i + 1), UP)
         for sphere in spheres:

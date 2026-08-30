@@ -317,7 +317,7 @@ def _bezier_to_pn_soup(circuit, *, add_to_scene=False):
             triangulated = TriangulatedBezierCircuit(
                 params,
                 invert=False,
-                border_width=0,
+                stroke_width=0,
                 tile_size=max(tile_size, 1e-4),
                 hash_keys=params,
                 use_cache=True,
@@ -411,7 +411,7 @@ def _aggregate_to_pn_soup(mob, *, add_to_scene=False):
     and ``become`` decomposed them into parts it then had to publish separately;
     ``Arrow3D().become(Sphere())`` raised outright.
     """
-    parts = mob.morph_soup_parts()
+    parts = mob._morph_soup_parts()
     soups = [convert_to_pn_soup(part, add_to_scene=False) for part in parts]
     soups = [soup for soup in soups if soup.location.shape[-2]]
     if not soups:
@@ -461,11 +461,11 @@ def _pn_soup_identity(mob, *, add_to_scene=False):
 
 
 def _border_to_zero(circuit, target=None):
-    circuit.set_non_recursive(border_width=torch.zeros_like(circuit.border_width))
+    circuit.set_non_recursive(stroke_width=torch.zeros_like(circuit.stroke_width))
 
 
 def _border_to_target(circuit, target):
-    circuit.set_non_recursive(border_width=target.border_width)
+    circuit.set_non_recursive(stroke_width=target.stroke_width)
 
 
 register_morph_conversion("grid", to_pn_soup=_grid_to_pn_soup)

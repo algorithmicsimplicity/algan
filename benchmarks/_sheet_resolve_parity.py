@@ -82,7 +82,7 @@ def build_scene(variant="basic"):
         ball.spawn(animate=False)
         movers.append(ball)
         ring = (
-            Torus(major_radius=0.9, minor_radius=0.3, color=YELLOW)
+            Torus(ring_radius=0.9, tube_radius=0.3, color=YELLOW)
             .rotate(78, RIGHT)
             .move(UP * 1.6 + IN * 0.5)
         )
@@ -134,7 +134,7 @@ def build_scene(variant="basic"):
         ys = torch.linspace(0.15, 0.9, h).view(h, 1, 1).expand(h, w, 1)
         env = torch.cat([xs * ys, ys, (1.0 - xs) * ys], dim=2).contiguous()
         Scene.set_environment_map(env, intensity=1.0, ambient=True)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         for i, mob in enumerate(movers):
             mob.rotate(10 + 3 * i, OUTV if i % 2 else UP)
 
@@ -250,7 +250,7 @@ def build_matte_scene():
         Sphere(radius=0.7, resolution=(96, 48), color=PURE_RED).move(
             RIGHT * 2.0 + UP * 1.3
         ).spawn(animate=False)
-        Torus(major_radius=0.9, minor_radius=0.3, color=YELLOW).rotate(78, RIGHT).move(
+        Torus(ring_radius=0.9, tube_radius=0.3, color=YELLOW).rotate(78, RIGHT).move(
             UP * 1.6 + IN * 0.5
         ).spawn(animate=False)
         Text("Sheets!").scale(0.8).move(IN * 0.2 + UP * 0.1).spawn(animate=False)

@@ -7,7 +7,7 @@ that produce no error at all:
   spotlight, ``Circumscribe``'s frame) has to be registered as an actor on the
   owning Scene -- the render loop iterates ``scene.actors`` rather than walking
   the hierarchy, so unregistered geometry is simply invisible;
-* they each take an explicit ``run_time`` that must win over the enclosing
+* they each take an explicit ``duration`` that must win over the enclosing
   context, and must leave the Mob in the state they found it (that is what
   makes them safe to drop into an existing animation).
 """
@@ -64,16 +64,16 @@ def scene():
 @pytest.mark.parametrize(
     "animation",
     [
-        lambda mob: Indicate(mob, run_time=0.75),
-        lambda mob: Wiggle(mob, n_wiggles=2, run_time=0.75),
-        lambda mob: Circumscribe(mob, run_time=0.75),
-        lambda mob: Flash(mob, num_lines=4, run_time=0.75),
-        lambda mob: FocusOn(mob, run_time=0.75),
-        lambda mob: ShowPassingFlash(mob, run_time=0.75),
+        lambda mob: Indicate(mob, duration=0.75),
+        lambda mob: Wiggle(mob, n_wiggles=2, duration=0.75),
+        lambda mob: Circumscribe(mob, duration=0.75),
+        lambda mob: Flash(mob, num_lines=4, duration=0.75),
+        lambda mob: FocusOn(mob, duration=0.75),
+        lambda mob: ShowPassingFlash(mob, duration=0.75),
         lambda mob: ShowPassingFlashWithThinningStrokeWidth(
-            mob, n_segments=3, run_time=0.75
+            mob, n_segments=3, duration=0.75
         ),
-        lambda mob: ApplyWave(mob, run_time=0.75),
+        lambda mob: ApplyWave(mob, duration=0.75),
     ],
     ids=[
         "Indicate",
@@ -86,11 +86,11 @@ def scene():
         "ApplyWave",
     ],
 )
-def test_indication_run_time_wins_over_the_enclosing_context(scene, animation):
+def test_indication_duration_wins_over_the_enclosing_context(scene, animation):
     with Off():
-        square = Square(border_width=4).spawn()
+        square = Square(stroke_width=4).spawn()
     start = _elapsed(scene)
-    with Seq(run_time=None):
+    with Seq(duration=None):
         animation(square)
     assert _elapsed(scene) - start == pytest.approx(0.75, abs=1e-6)
 
@@ -115,14 +115,14 @@ def test_flash_registers_every_spoke_it_draws(scene):
     with Off():
         square = Square().spawn()
     before = len(_actors_of_type(scene, Line))
-    Flash(square, num_lines=7, run_time=0.5)
+    Flash(square, num_lines=7, duration=0.5)
     assert len(_actors_of_type(scene, Line)) - before == 7
 
 
 def test_focus_on_registers_its_spotlight_and_leaves_it_despawned(scene):
     with Off():
         square = Square().spawn()
-    spotlight = FocusOn(square, run_time=0.5)
+    spotlight = FocusOn(square, duration=0.5)
     assert spotlight in scene.actors
     assert spotlight.is_despawned()
 
@@ -141,7 +141,7 @@ def test_circumscribe_registers_its_frame_for_every_fade_combination(scene, kwar
     with Off():
         square = Square().spawn()
     before = len(scene.actors)
-    Circumscribe(square, run_time=0.5, **kwargs)
+    Circumscribe(square, duration=0.5, **kwargs)
     assert len(scene.actors) > before, "the frame never became renderable"
 
 
@@ -149,27 +149,27 @@ def test_circumscribe_rejects_a_shape_it_cannot_build(scene):
     with Off():
         square = Square().spawn()
     with pytest.raises(ValueError, match="Rectangle or Circle"):
-        Circumscribe(square, shape=Group, run_time=0.5)
+        Circumscribe(square, shape=Group, duration=0.5)
 
 
 def test_flash_accepts_a_bare_point_as_well_as_a_mob(scene):
     with Off():
         Square().spawn()
     before = len(_actors_of_type(scene, Line))
-    Flash(torch.tensor([0.5, 0.5, 0.0]), num_lines=5, run_time=0.5)
+    Flash(torch.tensor([0.5, 0.5, 0.0]), num_lines=5, duration=0.5)
     assert len(_actors_of_type(scene, Line)) - before == 5
 
 
 def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
     with Off():
-        circle = Circle(color=BLUE, border_width=6).spawn()
+        circle = Circle(color=BLUE, stroke_width=6).spawn()
     start = _elapsed(scene)
     original_points = circle.control_points.location.clone()
     original_opacity = circle.opacity.clone()
     actors_before = set(scene.actors)
 
-    ShowPassingFlash(circle, time_width=0.2, run_time=0.5)
-    ShowPassingFlash(circle, time_width=0.2, run_time=0.5)
+    ShowPassingFlash(circle, time_width=0.2, duration=0.5)
+    ShowPassingFlash(circle, time_width=0.2, duration=0.5)
     end = _elapsed(scene)
 
     flashes = [
@@ -181,7 +181,7 @@ def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
     assert all(not flash.filled for flash in flashes)
     assert all(flash.is_despawned() for flash in flashes)
     for flash in flashes:
-        assert torch.allclose(flash.border_color, circle.color)
+        assert torch.allclose(flash.stroke_color, circle.color)
 
     assert circle.is_spawned()
     assert not circle.is_despawned()
@@ -210,9 +210,9 @@ def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
 @pytest.mark.parametrize(
     "animation",
     [
-        lambda mob: Indicate(mob, run_time=0.5),
-        lambda mob: Wiggle(mob, n_wiggles=2, run_time=0.5),
-        lambda mob: ApplyWave(mob, run_time=0.5),
+        lambda mob: Indicate(mob, duration=0.5),
+        lambda mob: Wiggle(mob, n_wiggles=2, duration=0.5),
+        lambda mob: ApplyWave(mob, duration=0.5),
     ],
     ids=["Indicate", "Wiggle", "ApplyWave"],
 )
@@ -234,7 +234,7 @@ def test_indicate_flashes_the_colour_in_the_middle(scene):
     with Off():
         square = Square(color=BLUE).spawn()
     start = _elapsed(scene)
-    Indicate(square, scale_factor=1.5, run_time=1.0)
+    Indicate(square, scale_factor=1.5, duration=1.0)
 
     scene.timeline_manager.set_state_to_times(torch.tensor([start, start + 0.5]))
     assert not torch.allclose(square.color[0], square.color[1], atol=1e-3)
@@ -244,7 +244,7 @@ def test_indicate_grows_the_mob_in_the_middle(scene):
     with Off():
         square = Square(color=BLUE).spawn()
     start = _elapsed(scene)
-    Indicate(square, scale_factor=1.5, run_time=1.0)
+    Indicate(square, scale_factor=1.5, duration=1.0)
 
     scene.timeline_manager.set_state_to_times(torch.tensor([start, start + 0.5]))
     assert float(square.basis[1].abs().max()) > float(square.basis[0].abs().max())
@@ -257,7 +257,7 @@ def test_indicate_scales_a_composite_around_its_anchor(scene):
             Square().move(torch.tensor([1.0, 0.0, 0.0])),
         ).spawn()
     start = _elapsed(scene)
-    Indicate(group, scale_factor=1.5, run_time=1.0)
+    Indicate(group, scale_factor=1.5, duration=1.0)
 
     scene.timeline_manager.set_state_to_times(torch.tensor([start, start + 0.5]))
     left = group[0].location[:, 0, 0]
@@ -299,6 +299,6 @@ def test_indication_animations_accept_a_group(scene):
             Circle(color=PURE_GREEN),
         ).spawn()
     start = _elapsed(scene)
-    Indicate(group, run_time=0.5)
-    ApplyWave(group, run_time=0.5)
+    Indicate(group, duration=0.5)
+    ApplyWave(group, duration=0.5)
     assert _elapsed(scene) - start == pytest.approx(1.0, abs=1e-6)

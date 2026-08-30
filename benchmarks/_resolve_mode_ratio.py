@@ -68,7 +68,7 @@ def main():
         ground.move(DOWN * 5.2)
         ground.spawn()
         mover = Cube().scale(0.5).move(DOWN * 0.8).spawn()
-    with Sync(run_time=2):
+    with Sync(duration=2):
         mover.move(RIGHT * 2)
 
     Scene.save_video(

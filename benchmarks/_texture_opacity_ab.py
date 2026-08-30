@@ -74,7 +74,7 @@ def build_scene():
             .spawn()
         )
         Cube().scale(0.5).move(DOWN * 1.5).spawn()
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         fading.opacity = 0.15
         proc.opacity = 0.3
 

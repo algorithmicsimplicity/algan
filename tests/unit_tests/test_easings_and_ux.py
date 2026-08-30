@@ -1,6 +1,5 @@
-"""Unit tests for newly added rate_funcs, color parsing, exception hierarchy, CLI, and RenderResult reprs."""
+"""Unit tests for newly added easings, color parsing, exception hierarchy, CLI, and RenderResult reprs."""
 
-import math
 import tempfile
 from pathlib import Path
 
@@ -8,13 +7,13 @@ import pytest
 import torch
 
 from algan.cli import main as cli_main
-from algan.constants import rate_funcs
-from algan.constants.color import BLUE, RED, WHITE, Color
+from algan.constants import easings
+from algan.constants.color import Color
 from algan.errors import (
     AlganError,
+    AudioTranscriptMismatchError,
     InvalidColorError,
     ModifiedProtectedAttributeError,
-    TranscriptAudioMismatchError,
 )
 from algan.utils.algan_utils import RenderResult
 
@@ -23,42 +22,42 @@ from algan.utils.algan_utils import RenderResult
 # ---------------------------------------------------------------------------
 
 
-def test_rate_funcs_endpoints():
+def test_easings_endpoints():
     """All easing curves should map 0 -> ~0 and 1 -> ~1 (within floating point precision)."""
     funcs = [
-        rate_funcs.identity,
-        rate_funcs.linear,
-        rate_funcs.smooth,
-        rate_funcs.ease_in_sine,
-        rate_funcs.ease_out_sine,
-        rate_funcs.ease_in_out_sine,
-        rate_funcs.ease_in_quad,
-        rate_funcs.ease_out_quad,
-        rate_funcs.ease_in_out_quad,
-        rate_funcs.ease_in_cubic,
-        rate_funcs.ease_out_cubic,
-        rate_funcs.ease_in_out_cubic,
-        rate_funcs.ease_in_quart,
-        rate_funcs.ease_out_quart,
-        rate_funcs.ease_in_out_quart,
-        rate_funcs.ease_in_quint,
-        rate_funcs.ease_out_quint,
-        rate_funcs.ease_out_quintic,
-        rate_funcs.ease_in_out_quint,
-        rate_funcs.ease_in_expo,
-        rate_funcs.ease_out_expo,
-        rate_funcs.ease_in_circ,
-        rate_funcs.ease_out_circ,
-        rate_funcs.ease_in_out_circ,
-        rate_funcs.ease_in_back,
-        rate_funcs.ease_out_back,
-        rate_funcs.ease_in_out_back,
-        rate_funcs.ease_in_elastic,
-        rate_funcs.ease_out_elastic,
-        rate_funcs.ease_in_out_elastic,
-        rate_funcs.ease_in_bounce,
-        rate_funcs.ease_out_bounce,
-        rate_funcs.ease_in_out_bounce,
+        easings.identity,
+        easings.linear,
+        easings.smooth,
+        easings.ease_in_sine,
+        easings.ease_out_sine,
+        easings.ease_in_out_sine,
+        easings.ease_in_quad,
+        easings.ease_out_quad,
+        easings.ease_in_out_quad,
+        easings.ease_in_cubic,
+        easings.ease_out_cubic,
+        easings.ease_in_out_cubic,
+        easings.ease_in_quart,
+        easings.ease_out_quart,
+        easings.ease_in_out_quart,
+        easings.ease_in_quint,
+        easings.ease_out_quint,
+        easings.ease_out_quintic,
+        easings.ease_in_out_quint,
+        easings.ease_in_expo,
+        easings.ease_out_expo,
+        easings.ease_in_circ,
+        easings.ease_out_circ,
+        easings.ease_in_out_circ,
+        easings.ease_in_back,
+        easings.ease_out_back,
+        easings.ease_in_out_back,
+        easings.ease_in_elastic,
+        easings.ease_out_elastic,
+        easings.ease_in_out_elastic,
+        easings.ease_in_bounce,
+        easings.ease_out_bounce,
+        easings.ease_in_out_bounce,
     ]
 
     t_0 = torch.tensor(0.0)
@@ -71,10 +70,10 @@ def test_rate_funcs_endpoints():
         assert abs(y1 - 1.0) < 1e-4, f"{fn.__name__}(1) was {y1}, expected ~1"
 
 
-def test_rate_funcs_tensor_broadcast():
+def test_easings_tensor_broadcast():
     """Rate functions should seamlessly process 1D/2D tensor inputs."""
     t = torch.linspace(0, 1, 11)
-    for name, fn in inspect_funcs(rate_funcs):
+    for name, fn in inspect_funcs(easings):
         out = fn(t)
         assert isinstance(out, torch.Tensor), f"{name} did not return a Tensor"
         assert out.shape == t.shape, f"{name} shape mismatch"
@@ -139,7 +138,7 @@ def test_invalid_color_raises_actionable_error():
 
 def test_exception_taxonomy():
     assert issubclass(ModifiedProtectedAttributeError, AlganError)
-    assert issubclass(TranscriptAudioMismatchError, AlganError)
+    assert issubclass(AudioTranscriptMismatchError, AlganError)
     assert issubclass(InvalidColorError, AlganError)
 
 

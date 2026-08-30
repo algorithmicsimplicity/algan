@@ -1407,10 +1407,10 @@ class AttributeTimeline:
                     f"reshape itself while frames are being rendered.\n\n"
                     f"Updaters can set any animatable attribute (location, "
                     f"color, opacity, ...) but not restructure a Mob. For a "
-                    f"value that counts up, use NumericDisplay, whose digits "
+                    f"value that counts up, use DecimalNumber, whose digits "
                     f"animate without rebuilding geometry:\n\n"
                     f"    tracker = ValueTracker(0).spawn()\n"
-                    f"    display = NumericDisplay(0.0).spawn()\n"
+                    f"    display = DecimalNumber(0.0).spawn()\n"
                     f"    display.add_updater(lambda m, t: m.set_value(tracker.get_value()))\n"
                 )
 
@@ -2110,14 +2110,14 @@ class FunctionApplicationEvent:
         caller,
         animated_args=None,
         kwargs=None,
-        rate_func=None,
+        easing=None,
         time=None,
     ):
         self.function = function
         self.caller = caller
         self.animated_args = animated_args
         self.kwargs = kwargs
-        self.rate_func = rate_func
+        self.easing = easing
         self.time = time
         # Resolved replay-window end (see
         # AnimationTimeline._resolve_replay_windows); None until resolved or
@@ -2786,14 +2786,14 @@ class AnimationTimeline:
     ):
         c = animation_context
         self.last_recorded_event = None
-        if c.run_time_unit <= 0 or not c.record_funcs:
+        if c.duration_unit <= 0 or not c.record_funcs:
             return kwargs
-        rate_func = c.rate_func
-        rate_func_compose = c.rate_func_compose
-        rf = rate_func
-        if rate_func_compose is not None:
+        easing = c.easing
+        composed_easing = c.composed_easing
+        rf = easing
+        if composed_easing is not None:
 
-            def rf(x, rf=rate_func, rfc=rate_func_compose):
+            def rf(x, rf=easing, rfc=composed_easing):
                 return rf(rfc(x))
 
         event = FunctionApplicationEvent(
@@ -3120,7 +3120,7 @@ class AnimationTimeline:
         event's context-rescaled end time into a plain ``replay_end`` float.
         That is correct once authoring is finished, but a render started from
         *inside* an unfinished context bakes in timestamps the enclosing
-        contexts have not rescaled yet (a ``run_time`` rescales its block
+        contexts have not rescaled yet (a ``duration`` rescales its block
         retroactively, on exit). Nothing invalidates those floats afterwards --
         only recording a new edit does -- so the stale, too-early ends survive
         into the next render, where :meth:`AttributeTimeline.prepare_for_queries`
@@ -3368,7 +3368,7 @@ class AnimationTimeline:
         initial = fev.animated_args or {}
         if set(initial) != {"interpolation"} or float(initial["interpolation"]) != 0.0:
             return False
-        if fev.rate_func is None or not torch.is_tensor(kwargs.get("change")):
+        if fev.easing is None or not torch.is_tensor(kwargs.get("change")):
             return False
         start, end = fev.time.start, fev.time.end
         if not end > start:
@@ -3524,9 +3524,7 @@ class AnimationTimeline:
                     # different shapes, so bit-parity of the weights requires
                     # bit-parity of the computation.
                     elapsed = times[in_span] - start
-                    a = ev.rate_func(
-                        (elapsed / (own_end - start + 1e-6)).view(-1, 1, 1)
-                    )
+                    a = ev.easing((elapsed / (own_end - start + 1e-6)).view(-1, 1, 1))
                     index0[in_span] = pre_slot
                     index1[in_span] = post_slot
                     weights[in_span] = a.view(-1).to(weights.dtype)
@@ -3716,7 +3714,7 @@ class AnimationTimeline:
                     elapsed.view(-1, 1, 1) >= duration, torch.ones_like(a), a
                 )
                 elapsed = elapsed.clamp(max=duration)
-            a = f.rate_func(a)
+            a = f.easing(a)
 
             kwargs = dict(f.kwargs.items())
             for k in f.animated_args:

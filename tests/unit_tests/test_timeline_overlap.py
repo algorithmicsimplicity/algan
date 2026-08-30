@@ -24,7 +24,7 @@ import torch
 
 from algan import Group, Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.scene_manager import SceneManager
 
 # In the fast suite: replay of overlapping edits is the hardest part of the
@@ -75,7 +75,7 @@ def test_sequential_edits():
     """Non-overlapping edits (the common case) must be unaffected."""
     m = Mob().spawn(animate=False)
     t0 = _now()
-    with Seq(rate_func=rate_funcs.identity):
+    with Seq(easing=easings.identity):
         m.move(R * 2)  # [t0, t0+1]
         m.move(U * 2)  # [t0+1, t0+2]
     offs = [0.25, 0.75, 1.0, 1.5, 2.0, 2.5]
@@ -93,10 +93,10 @@ def test_replay_window_resolution_extends_a_cached_prefix():
     a direct result-by-result reference.
     """
     m = Mob().spawn(animate=False)
-    with Sync(rate_func=rate_funcs.identity):
-        with Seq(run_time=2):
+    with Sync(easing=easings.identity):
+        with Seq(duration=2):
             m.move(R * 2)
-        with Seq(run_time=1):
+        with Seq(duration=1):
             m.move(U * 2)
 
     timeline = m.scene.timeline_manager
@@ -104,10 +104,10 @@ def test_replay_window_resolution_extends_a_cached_prefix():
     prefix_count = timeline._resolved_prefix_count
     assert prefix_count > 0
 
-    with Sync(rate_func=rate_funcs.identity):
-        with Seq(run_time=3):
+    with Sync(easing=easings.identity):
+        with Seq(duration=3):
             m.move(OUT * 2)
-        with Seq(run_time=0.5):
+        with Seq(duration=0.5):
             m.move(R)
     timeline._resolve_replay_windows()
     assert timeline._resolved_prefix_count > prefix_count
@@ -167,7 +167,7 @@ def test_edits_ending_at_same_time():
     """
     m = Mob().spawn(animate=False)
     t0 = _now()
-    with Sync(rate_func=rate_funcs.identity):
+    with Sync(easing=easings.identity):
         m.move(R * 2)  # [t0, t0+1]
         m.move(U * 2)  # [t0, t0+1]
     offs = [0.25, 0.5, 0.9, 1.0, 1.5]
@@ -183,10 +183,10 @@ def test_nested_overlap():
     """
     m = Mob().spawn(animate=False)
     t0 = _now()
-    with Sync(rate_func=rate_funcs.identity):
-        with Seq(run_time=1):
+    with Sync(easing=easings.identity):
+        with Seq(duration=1):
             m.move(R * 2)  # [t0, t0+1]
-        with Seq(run_time=0.5):
+        with Seq(duration=0.5):
             m.move(U * 2)  # [t0, t0+0.5]
     offs = [0.25, 0.4999, 0.5, 0.75, 1.0, 1.5]
     expected = [R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 0, 0.5) for dt in offs]
@@ -198,10 +198,10 @@ def test_three_overlapping_intervals():
     """Edits on [0,1], [0,0.5] and [0.5,1] applied together."""
     m = Mob().spawn(animate=False)
     t0 = _now()
-    with Sync(rate_func=rate_funcs.identity):
-        with Seq(run_time=1):
+    with Sync(easing=easings.identity):
+        with Seq(duration=1):
             m.move(R * 2)  # [t0, t0+1]
-        with Seq(run_time=1):
+        with Seq(duration=1):
             m.move(U * 2)  # [t0, t0+0.5]
             m.move(OUT * 2)  # [t0+0.5, t0+1]
     offs = [0.25, 0.4999, 0.5, 0.75, 0.9999, 1.0, 1.5]
@@ -223,10 +223,10 @@ def test_partial_row_overlap():
     m2 = Mob().spawn(animate=False)
     g = Group([m1, m2])
     t0 = _now()
-    with Sync(rate_func=rate_funcs.identity):
-        with Seq(run_time=2):
+    with Sync(easing=easings.identity):
+        with Seq(duration=2):
             m1.move(R * 2)  # [t0, t0+2], m1 rows only
-        with Seq(run_time=1):
+        with Seq(duration=1):
             g.move(U * 2)  # [t0, t0+1], m1+m2 rows
     offs = [0.5, 0.9999, 1.0, 1.5, 2.0, 2.5]
     exp1 = [R * 2 * _lin(dt, 0, 2) + U * 2 * _lin(dt, 0, 1) for dt in offs]
@@ -244,10 +244,10 @@ def test_overlapping_rotations_continuity():
     """
     m = Mob().spawn(animate=False)
     t0 = _now()
-    with Sync(rate_func=rate_funcs.identity):
-        with Seq(run_time=1):
+    with Sync(easing=easings.identity):
+        with Seq(duration=1):
             m.rotate(90, OUT)  # [t0, t0+1]
-        with Seq(run_time=0.5):
+        with Seq(duration=0.5):
             m.rotate(90, U)  # [t0, t0+0.5]
     offs = [0.4999, 0.5, 0.9999, 1.0, 1.5]
     (basis,) = _materialize([t0 + dt for dt in offs], [m], attr="basis")

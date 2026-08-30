@@ -100,7 +100,7 @@ def append_texture(tex, is_color=False):
 
 for T in (3, 6, 19):
     tex_off[0] = 0
-    scene.clear()
+    scene.despawn_mobs(retain_history=True, duration=0.5)
     keep, promo, meta = _split_promotable(
         make_p(T), append_texture, torch.device("cpu"), scene
     )

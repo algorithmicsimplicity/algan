@@ -2772,8 +2772,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         "corners",
         "colors",
         "normals",
-        "border_width",
-        "border_color",
+        "stroke_width",
+        "stroke_color",
         "mob_center",
         "grid_width",
         "grid_height",
@@ -2890,7 +2890,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         # Ratio of the internal render resolution to the output resolution: the
         # supersampling factor actually in force for this batch, which is 1 on
-        # the analytic-AA route regardless of the requested super_sampling_anti_aliasing.
+        # the analytic-AA route regardless of the requested supersampling.
         self._rt_projection_aa = float(camera.screen_height) / float(
             getattr(camera, "output_screen_height", camera.screen_height)
         )
@@ -3270,13 +3270,13 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             )
 
         basis1, basis2 = scaled(self.basis1), scaled(self.basis2)
-        # ``border_width`` is authored in OUTPUT pixels, but every consumer
+        # ``stroke_width`` is authored in OUTPUT pixels, but every consumer
         # scales it by ``pixel_world_scale``, which is world-per-INTERNAL-pixel
         # (built from ``camera.screen_height``).  Convert here, so a supersampled
         # render draws the same apparent border as an analytic one instead of a
         # 1/aa-thin sliver.
-        border_width = (
-            self.border_width.float().reshape(self.border_width.shape[0], C)
+        stroke_width = (
+            self.stroke_width.float().reshape(self.stroke_width.shape[0], C)
             * self._rt_projection_aa
         )
         grid_w = self.grid_width.float().reshape(self.grid_width.shape[0], C)
@@ -3310,7 +3310,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 basis_v,
                 basis1,
                 basis2,
-                border_width.unsqueeze(-1),
+                stroke_width.unsqueeze(-1),
                 grid_w.unsqueeze(-1),
                 grid_h.unsqueeze(-1),
                 reflectivity,
@@ -3353,11 +3353,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         if colors.dim() == 3:  # plain fills: a 1x1 "texture" grid
             colors = colors.unsqueeze(-2)
         self._rt_circuit_colors = colors.contiguous().as_subclass(Color)
-        border_colors = self.border_color.float()
+        border_colors = self.stroke_color.float()
         if border_colors.dim() == 3:
             border_colors = border_colors.unsqueeze(-2)
         self._rt_circuit_border_colors = border_colors.contiguous().as_subclass(Color)
-        self._rt_border_width = border_width
+        self._rt_border_width = stroke_width
 
     def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
         """Per-frame circuit AABBs (from control-point hulls, inflated by the

@@ -36,10 +36,10 @@ kernel::
 
 Sampling needs per-vertex UVs, so this reaches a
 :class:`~algan.mobs.surfaces.surface.Surface` (and its subclasses --
-:class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.Torus`, :class:`~.ImageMob`,
+:class:`~algan.mobs.shapes_3d.Sphere`, :class:`~algan.mobs.shapes_3d.Cylinder`, :class:`~algan.mobs.shapes_3d.Torus`, :class:`~.ImageMob`,
 ...) or a :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with
-``uvs``. On any other Mob -- a :class:`~.Polyhedron`, a
-:class:`~.Cube` -- the maps are ignored, with a warning saying so.
+``uvs``. On any other Mob -- a :class:`~algan.mobs.shapes_3d.Polyhedron`, a
+:class:`~algan.mobs.shapes_3d.Cube` -- the maps are ignored, with a warning saying so.
 
 A forwarded map is **static**: unlike the scalar properties a material installs
 (``mob.roughness`` and the rest), it is not an animatable attribute, and
@@ -110,7 +110,7 @@ DoubleSide = 2
 # ``metalnessMap`` from its BLUE one, so one packed occlusion/roughness/
 # metalness image drives both; a single-channel image is used as-is. Algan's
 # "reflectivity" is the same quantity Three.js calls metalness (see
-# ThreeDModelMob._apply_pbr_material, which already reads a glTF
+# Model3D._apply_pbr_material, which already reads a glTF
 # metallic-roughness map that way).
 _MAP_SLOT_PROPERTIES = {
     "roughness_map": ("roughness", 1),

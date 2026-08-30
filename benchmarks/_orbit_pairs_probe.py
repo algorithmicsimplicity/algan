@@ -59,17 +59,14 @@ SETTINGS.video.set({"LD": LD, "MD": MD, "HD": HD}[quality])
 with Off():
     if scene_name == "cubes":
         Group(
-            [
-                Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
-                for i in (-1, 0, 1)
-            ]
+            [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
         ).spawn()
     elif scene_name == "spheres":
         Group([Sphere(color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]).spawn()
     elif scene_name == "grid":
         Group(
             [
-                Cube(side_length=0.4, color=BLUE).move(
+                Cube(size=0.4, color=BLUE).move(
                     RIGHT * 0.8 * i + UP * 0.8 * j + OUT * 0.8 * k
                 )
                 for i in range(-2, 3)
@@ -80,11 +77,11 @@ with Off():
     elif scene_name == "text":
         Group([Text("Orbiting camera").move(UP * 1.2 * i) for i in (-1, 0, 1)]).spawn()
 
-with Seq(run_time=4, rate_func=rate_funcs.identity):
+with Seq(duration=4, easing=easings.identity):
     if mode == "rotate":
-        Scene.get_camera().rotate(360, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:
-        Scene.get_camera().orbit(360, UP, about_point=ORIGIN)
+        Scene.get_camera().orbit(360, UP, about=ORIGIN)
 
 out_dir = os.path.join(os.path.dirname(__file__), "_orbit_out")
 os.makedirs(out_dir, exist_ok=True)

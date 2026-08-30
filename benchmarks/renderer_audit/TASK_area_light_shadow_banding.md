@@ -215,14 +215,14 @@ understand it.
 * **`algan/rendering/lights.py`**, `class RectAreaLight` — the declaration.
   `samples=4` by default. `num_samples()` rounds up to the next square number
   ("the emitters are laid out on a square grid"), so 4 → a 2×2 grid.
-  `get_sample_positions(location)` returns `[T, K, 3]`, "the centres of a square
+  `_get_sample_positions(location)` returns `[T, K, 3]`, "the centres of a square
   grid covering the rectangle". `_rect_axes` builds the rectangle's basis.
 
 * **`algan/render_loop.py`**, around line 2439 — where an extended light becomes
   a list of point lights:
 
   ```python
-  pos_rows = light.get_sample_positions(loc_f)  # [T, K, 3]
+  pos_rows = light._get_sample_positions(loc_f)  # [T, K, 3]
   k = pos_rows.shape[-2]
   col_rows = (col_f / k if k > 1 else col_f).unsqueeze(-2).expand(-1, k, -1)
   ```
@@ -294,7 +294,7 @@ Read `CLAUDE.md` before changing kernel code. The ones that bite here:
   the first arm's code and reports its numbers as its own. **One process per
   arm.**
 * **The offline kernel cache does not invalidate on `@ti.func` edits.** Clear it
-  with `clear_cache(taichi_kernels=True)` before any kernel A/B.
+  with `clear_cached_kernels()` before any kernel A/B.
 * **Never edit a `*_taichi.py` file while a render is running.**
 * `algan_render.py` sets `ALGAN_USE_DAEMON=0`; keep it. A warm daemon does not
   adopt import-time environment variables and carries the previous run's state.

@@ -58,9 +58,7 @@ WIDE_KERNELS = {
         "raster_bez_count",
         "raster_bez_write",
     ),
-    "algan.rendering.raytracing.path_tracer_taichi": (
-        "pt_shade",
-    ),
+    "algan.rendering.raytracing.path_tracer_taichi": ("pt_shade",),
 }
 
 #: At least these must have run, or the render did not exercise the path this
@@ -170,8 +168,8 @@ def rendered(tmp_path_factory):
         out = tmp_path_factory.mktemp("arena_binding") / "frame"
         with Scene() as scene:
             with Off():
-                square = Square(side_length=1.5, color=RED).move(LEFT)
-                cube = Cube(side_length=1.2, color=BLUE).move(RIGHT)
+                square = Square(size=1.5, color=RED).move(LEFT)
+                cube = Cube(size=1.2, color=BLUE).move(RIGHT)
             square.spawn(animate=False)
             cube.spawn(animate=False)
             scene.save_frame(str(out), video_settings=LD)

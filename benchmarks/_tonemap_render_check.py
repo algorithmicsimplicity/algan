@@ -86,7 +86,7 @@ def run_patches():
         # nothing from the previous colour is still spawned.
         scene = Scene()
         # Far larger than the frame and face-on, so every pixel is interior.
-        Square(side_length=60, color=_col(rgb)).spawn()
+        Square(size=60, color=_col(rgb)).spawn()
         out = {}
         for tag, tonemapping in (("on", True), ("off", False)):
             SETTINGS.raytracing.set(tonemapping=tonemapping)
@@ -167,7 +167,7 @@ def run_agx():
     rows = []
     for name, rgb in PATCHES:
         scene = Scene()
-        Square(side_length=60, color=_col(rgb)).spawn()
+        Square(size=60, color=_col(rgb)).spawn()
         SETTINGS.raytracing.set(tonemapping=True, tonemap_method="agx")
         path = f"{OUT_DIR}/agx_{name}.png"
         scene.save_frame(
@@ -192,10 +192,10 @@ def run_scene():
     results = {}
     scene = Scene()
     # Flat 2-D fills: SDR only, nothing above 1.0 anywhere in them.
-    Square(side_length=1.6, color=_col((255, 255, 255))).move_to(
+    Square(size=1.6, color=_col((255, 255, 255))).move_to(
         np.array([-2.6, 1.4, 0.0])
     ).spawn()
-    Square(side_length=1.6, color=_col((128, 128, 128))).move_to(
+    Square(size=1.6, color=_col((128, 128, 128))).move_to(
         np.array([-0.8, 1.4, 0.0])
     ).spawn()
     Circle(radius=0.8, color=_col((255, 64, 32))).move_to(

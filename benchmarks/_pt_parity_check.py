@@ -65,7 +65,7 @@ def _build():
     Scene.set_background(BLACK)
     with Off():
         # Same depth, overlapping: author order is the only separator.
-        a = Square(side_length=3.2, color=RED).set_opacity(0.5)
+        a = Square(size=3.2, color=RED).set_opacity(0.5)
         a.move(LEFT * 0.9 + UP * 0.8)
         a.spawn(animate=False)
         b = Circle(radius=1.6, color=GREEN).set_opacity(0.5)
@@ -77,7 +77,7 @@ def _build():
         c.spawn(animate=False)
         # Spawned after the stack but placed behind it: depth beats author
         # order.
-        backdrop = Square(side_length=6.5, color=BLUE).set_opacity(0.6)
+        backdrop = Square(size=6.5, color=BLUE).set_opacity(0.6)
         backdrop.move(-OUT * 2.0)
         backdrop.spawn(animate=False)
         # An opaque occluder on top of everything.
@@ -86,7 +86,7 @@ def _build():
         cap.spawn(animate=False)
         # A bordered translucent shape (border compositing rides the same
         # peel).
-        ring = Circle(radius=1.0, color=ORANGE, border_color=WHITE)
+        ring = Circle(radius=1.0, color=ORANGE, stroke_color=WHITE)
         ring.set_opacity(0.5)
         ring.move(LEFT * 2.2 + DOWN * 0.6)
         ring.spawn(animate=False)

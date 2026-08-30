@@ -103,7 +103,7 @@ def _deep_nest():
 
 def _group_of_solids():
     return Group(
-        Cube(side_length=0.6).move(LEFT),
+        Cube(size=0.6).move(LEFT),
         Sphere(radius=0.35).move(RIGHT),
     )
 
@@ -135,7 +135,7 @@ CATALOGUE: list[tuple[str, callable]] = [
     ("Torus", lambda: Torus()),
     ("SurfacePlane", _surface_plane),
     # mesh family
-    ("Cube", lambda: Cube(side_length=0.8)),
+    ("Cube", lambda: Cube(size=0.8)),
     ("Tetrahedron", lambda: Tetrahedron()),
     ("TriangleVertices", _tri_vertices),
     # containers
@@ -261,7 +261,7 @@ def run_case(source_name, target_name, *, minimize_movement=False, strategy="aut
             source_lo, source_hi = _static_bounds(source)
 
             start = float(scene.animation_manager.context.timespan.current_time)
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 morphed = source.become(
                     target,
                     minimize_movement=minimize_movement,

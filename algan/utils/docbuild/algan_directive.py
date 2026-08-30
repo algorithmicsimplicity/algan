@@ -222,7 +222,7 @@ class AlganDirective(Directive):
             ):
                 SceneManager.reset()
                 try:
-                    run_time = timeit(
+                    duration = timeit(
                         lambda: exec(
                             compile(source, str(source_path), "exec"), namespace
                         ),
@@ -238,7 +238,7 @@ class AlganDirective(Directive):
 
         _write_rendering_stats(
             clsname,
-            run_time,
+            duration,
             environment.docname,
         )
 
@@ -317,13 +317,13 @@ rendering_times_file_path = (
 )
 
 
-def _write_rendering_stats(scene_name: str, run_time: float, file_name: str) -> None:
+def _write_rendering_stats(scene_name: str, duration: float, file_name: str) -> None:
     with rendering_times_file_path.open("a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(
             [
                 re.sub(r"^(reference/)|(algan\.)", "", file_name),
                 scene_name,
-                f"{run_time:.3f}",
+                f"{duration:.3f}",
             ]
         )
 

@@ -84,12 +84,14 @@ def _algan_bezier_to_manim(mob: BezierCircuitCubic):
     fill_opacity = float((color[-1] * mob.opacity[0].reshape(-1)[0]).detach().cpu())
     result.set_fill(fill_color, opacity=fill_opacity if mob.filled else 0.0)
 
-    border = mob.border_color[0].reshape(-1, mob.border_color.shape[-1])[0]
+    border = mob.stroke_color[0].reshape(-1, mob.stroke_color.shape[-1])[0]
     stroke_color = "#" + "".join(
         f"{round(float(x) * 255):02X}" for x in border[:3].detach().cpu().clamp(0, 1)
     )
     stroke_opacity = float(border[-1].detach().cpu())
-    stroke_width = float(mob.border_width[0].reshape(-1)[0].detach().cpu()) * 2
+    # Algan units out, Manim units in: twice, the export side of the
+    # conversion ``algan.manim`` owns.
+    stroke_width = float(mob.stroke_width[0].reshape(-1)[0].detach().cpu()) * 2
     result.set_stroke(stroke_color, width=stroke_width, opacity=stroke_opacity)
     return result
 
@@ -245,13 +247,12 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             )
 
         if styles_own_geometry and hasattr(manim_mob, "set_stroke"):
-            border_color = algan_mob.border_color
             border_opacity_source = algan_mob.border_texture_points.opacity
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
-                border_color, border_opacity_source
+                algan_mob.stroke_color, border_opacity_source
             )
             stroke_width = (
-                float(algan_mob.border_width.reshape(-1)[0].detach().cpu()) * 2
+                float(algan_mob.stroke_width.reshape(-1)[0].detach().cpu()) * 2
             )
             manim_mob.set_stroke(
                 stroke_color,
@@ -536,7 +537,7 @@ class ManimCompatMob(ManimMob):
         )
         return self._animate_to_manim(source, before_source=before)
 
-    def move(self, displacement, path_arc_angle=None, recursive=True, **kwargs):
+    def move(self, displacement, arc_angle=None, recursive=True, **kwargs):
         """Move by a displacement, applying it as a Manim ``shift``.
 
         Algan's generic implementation moves to ``self.location + displacement``,
@@ -545,21 +546,21 @@ class ManimCompatMob(ManimMob):
         also has submobjects (an :class:`Arrow`'s tip, for example).  Shifting
         the backing geometry instead keeps the travelled displacement exact for
         every Mob, and is what the relative-placement helpers
-        (:meth:`~.Mob.move_to_edge`, :meth:`~.Mob.move_next_to`, ...) are built
+        (:meth:`~.Mob.move_to_screen_edge`, :meth:`~.Mob.move_next_to`, ...) are built
         on.
         """
         displacement = cast_to_tensor(displacement)
-        if path_arc_angle is not None or not recursive or kwargs:
+        if arc_angle is not None or not recursive or kwargs:
             # Curved paths and non-recursive moves have no Manim equivalent.
             # Let Algan record the motion, then derive the backing geometry from
             # the resulting rows rather than trying to mirror the operation.
             target = self.location + displacement
-            if path_arc_angle is None:
+            if arc_angle is None:
                 self.set_location(target, recursive=recursive, **kwargs)
             else:
-                self.move_to_point_along_arc(
-                    target, path_arc_angle, recursive=recursive, **kwargs
-                )
+                # ``_move_along_arc``, not ``move_to``: this class overrides
+                # ``move_to`` with Manim's signature.
+                self._move_along_arc(target, arc_angle, recursive=recursive, **kwargs)
             self._sync_manim_from_algan()
             return self
         before, source = self._prepare_manim_edit()
@@ -576,15 +577,17 @@ class ManimCompatMob(ManimMob):
 
     def rotate(
         self,
-        num_degrees: float | torch.Tensor,
+        angle: float | torch.Tensor,
         axis: torch.Tensor = OUTWARD,
-        about_point: torch.Tensor | None = None,
+        about: torch.Tensor | None = None,
+        *,
+        degrees: bool = True,
     ) -> Mob:
         """Rotate the Mob, using Algan's rotation rather than Manim's.
 
         ``rotate`` is one of the names this class shares with :class:`~.Mob`,
         and the two libraries mean different things by it: Algan measures
-        ``num_degrees`` in degrees where Manim's angle is in radians, and an
+        ``angle`` in degrees where Manim's angle is in radians, and an
         explicit ``axis`` turns the opposite way in each (their default z axis
         are opposite vectors, which is exactly what makes the *default*
         rotation agree).  A compatibility Mob is animated as an Algan Mob, so
@@ -599,13 +602,13 @@ class ManimCompatMob(ManimMob):
         center, whereas Algan's generic implementation uses ``location``, the
         center of the backing Mobject's *own* points.  The two differ for every
         Mob that also has submobjects -- an :class:`Arrow` would otherwise turn
-        about its shaft rather than in place -- so ``about_point`` defaults to
+        about its shaft rather than in place -- so ``about`` defaults to
         :meth:`~.MobLayoutMixin.get_center`, which agrees with Manim's
         ``get_center`` for these objects.
         """
-        if about_point is None:
-            about_point = self.get_center()
-        return Mob.rotate(self, num_degrees, axis, about_point)
+        if about is None:
+            about = self.get_center()
+        return Mob.rotate(self, angle, axis, about, degrees=degrees)
 
     def set(self, **kwargs):
         # Algan's internal morphing path calls ``set`` with animatable state
@@ -842,7 +845,7 @@ against the edge.** Manim's frame is 8 world units tall and its ``to_edge``
 leaves a 0.5 gap, so the title's top comes to rest at ``y = 3.5`` -- which is
 exactly where Algan's default camera puts its top border. Nothing is cut off,
 but the text touches the frame edge with no margin at all. Call
-:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+:meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
 inset it by the usual buffer, or ``.move(DOWN * 1)`` to place it by hand.
 
 The default rule is sized from Manim's frame too, at ``frame_width - 2``, which
@@ -919,7 +922,16 @@ def _make_manim_wrapper(name: str):
 
 
 # Classes that are cubic-Bezier/image/composite Mobjects in the vendored Manim
-# implementation. Existing native Algan classes are intentionally omitted.
+# implementation.
+#
+# Names with a native Algan equivalent are wrapped too, and deliberately so:
+# this module is reached as ``algan.manim``, a namespace where every name means
+# "Manim's version, by Manim's conventions". ``Sphere`` is Algan's and
+# ``algan.manim.Sphere`` is Manim's; omitting the overlapping ones would leave
+# holes in that namespace whose only explanation is which classes Algan happened
+# to implement natively. Manim ``Surface`` subclasses (``Sphere``, ``Torus``,
+# ``Cone``) convert as well as the flat ones -- ManimMob turns their quad grids
+# into curved patches -- so there is nothing to exclude on capability grounds.
 _WRAPPED_MANIM_CLASS_NAMES = (
     "Angle",
     "AnnotationDot",
@@ -931,6 +943,7 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "ArcPolygon",
     "ArcPolygonFromArcs",
     "Arrow",
+    "Arrow3D",
     "ArrowCircleFilledTip",
     "ArrowCircleTip",
     "ArrowSquareFilledTip",
@@ -947,15 +960,21 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "BraceLabel",
     "BraceText",
     "BulletedList",
+    "Circle",
+    "Code",
     "ComplexPlane",
     "ComplexValueTracker",
+    "Cone",
     "ConvexHull",
+    "ConvexHull3D",
     "Cross",
+    "Cube",
     "CubicBezier",
     "CurvedArrow",
     "CurvedDoubleArrow",
     "CurvesAsSubmobjects",
     "Cutout",
+    "Cylinder",
     "DashedLine",
     "DashedVMobject",
     "DecimalMatrix",
@@ -963,6 +982,9 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "DecimalTable",
     "DiGraph",
     "Difference",
+    "Dodecahedron",
+    "Dot",
+    "Dot3D",
     "DoubleArrow",
     "Elbow",
     "Ellipse",
@@ -970,6 +992,8 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "FullScreenRectangle",
     "FunctionGraph",
     "Graph",
+    "Group",
+    "Icosahedron",
     "ImplicitFunction",
     "Integer",
     "IntegerMatrix",
@@ -980,7 +1004,10 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "LabeledDot",
     "LabeledLine",
     "LabeledPolygram",
+    "Line",
+    "Line3D",
     "ManimBanner",
+    "MarkupText",
     "MathTable",
     "MathTex",
     "Matrix",
@@ -988,9 +1015,17 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "MobjectTable",
     "NumberLine",
     "NumberPlane",
+    "Octahedron",
+    "Paragraph",
     "ParametricFunction",
+    "Point",
     "PolarPlane",
+    "Polygon",
     "Polygram",
+    "Polyhedron",
+    "Prism",
+    "Rectangle",
+    "RegularPolygon",
     "RegularPolygram",
     "RightAngle",
     "RoundedRectangle",
@@ -999,15 +1034,24 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "ScreenRectangle",
     "Sector",
     "SingleStringMathTex",
+    "Sphere",
+    "Square",
     "Star",
     "StealthTip",
     "StreamLines",
+    "Surface",
+    "SurroundingRectangle",
     "Table",
     "TangentLine",
+    "Tetrahedron",
+    "Tex",
+    "Text",
     "ThreeDAxes",
     "ThreeDVMobject",
     "TipableVMobject",
     "Title",
+    "Torus",
+    "Triangle",
     "Underline",
     "Union",
     "UnitInterval",

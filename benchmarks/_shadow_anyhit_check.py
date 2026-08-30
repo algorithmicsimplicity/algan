@@ -122,7 +122,7 @@ def build_tie_scene(gap=None):
         glass = Cube(color=BLUE, opacity=0.4).scale(1.5)
         glass.move(UP * (0.5 - gap))
         glass.spawn(animate=False)
-    with Sync(run_time=1):
+    with Sync(duration=1):
         Scene.get_camera().move(RIGHT * 0.2 + UP * 0.1)
     return ORIGIN
 
@@ -176,7 +176,7 @@ def build_stack_scene(count=None):
         blocker = Cube(color=RED).scale(0.35)
         blocker.move(UP * (0.2 + 0.004 * count + 0.1))
         blocker.spawn(animate=False)
-    with Sync(run_time=1):
+    with Sync(duration=1):
         Scene.get_camera().move(OUT * 0.2)
 
 

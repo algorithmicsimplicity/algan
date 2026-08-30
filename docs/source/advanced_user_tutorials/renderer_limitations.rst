@@ -45,7 +45,7 @@ row links to the section that explains it.
      - No
      - No
      - `Anti-aliasing`_
-   * - Supersampling (``super_sampling_anti_aliasing``)
+   * - Supersampling (``supersampling``)
      - Ignored
      - Yes
      - Ignored (jittered samples instead)
@@ -233,7 +233,7 @@ Within the deterministic renderer: two paths
 
 The deterministic renderer has an **analytic-coverage path** (the default, and
 the one every example in these docs uses) and a **supersampled fallback**. The
-fallback renders the frame at ``super_sampling_anti_aliasing`` (``ssaa``) times
+fallback renders the frame at ``supersampling`` (``ssaa``) times
 the output resolution and box-filters it back down, casting one primary ray per
 sub-pixel sample.
 
@@ -262,8 +262,8 @@ The fallback is a genuine quality *and* cost change, so it is worth knowing when
 you are on it:
 
 * Analytic coverage is off. Edge quality is whatever
-  ``super_sampling_anti_aliasing`` (default ``2``) buys.
-* The frame buffer is ``super_sampling_anti_aliasing ** 2`` times larger, so
+  ``supersampling`` (default ``2``) buys.
+* The frame buffer is ``supersampling ** 2`` times larger, so
   batches shrink by the same factor and the render takes correspondingly longer.
   At the default that is 4x.
 * Per-fragment shading, shadows, reflection and refraction all still work. Only
@@ -310,19 +310,19 @@ Only triangle geometry is lit
      - Casts shadows
      - Reflects / transmits
      - Image textures
-   * - Anything made of **triangles**: :class:`~.Surface` and its subclasses
-       (:class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.Cone`,
-       :class:`~.Torus`, :class:`~.ImageMob`, :class:`~.Dot3D`, point clouds,
-       …), :class:`~.Polyhedron`, imported 3-D models, and
+   * - Anything made of **triangles**: :class:`~algan.mobs.surfaces.surface.Surface` and its subclasses
+       (:class:`~algan.mobs.shapes_3d.Sphere`, :class:`~algan.mobs.shapes_3d.Cylinder`, :class:`~algan.mobs.shapes_3d.Cone`,
+       :class:`~algan.mobs.shapes_3d.Torus`, :class:`~.ImageMob`, :class:`~algan.mobs.shapes_3d.Dot3D`, point clouds,
+       …), :class:`~algan.mobs.shapes_3d.Polyhedron`, imported 3-D models, and
        :class:`~.TriangulatedBezierCircuit`
      - Yes
      - Yes
      - Yes
      - Yes
      - Yes
-   * - Anything made of **Bezier circuits**: :class:`~.Line`,
-       :class:`~.Polygon`, :class:`~.Circle`, :class:`~.Square`,
-       :class:`~.Dot`, :class:`~.Text`, :class:`~.Tex`, Manim vector mobs
+   * - Anything made of **Bezier circuits**: :class:`~algan.mobs.shapes_2d.Line`,
+       :class:`~algan.mobs.shapes_2d.Polygon`, :class:`~algan.mobs.shapes_2d.Circle`, :class:`~algan.mobs.shapes_2d.Square`,
+       :class:`~algan.mobs.shapes_2d.Dot`, :class:`~algan.mobs.text.Text`, :class:`~algan.mobs.text.Tex`, Manim vector mobs
      - **No**
      - **No**
      - Yes
@@ -473,17 +473,17 @@ channel, and only they can be animated.
      - How to set it
      - Notes
    * - Color (RGB + glow + alpha)
-     - :class:`~.Surface`'s ``color_texture``; :class:`~.ImageMob`; a glTF/FBX
+     - :class:`~algan.mobs.surfaces.surface.Surface`'s ``color_texture``; :class:`~.ImageMob`; a glTF/FBX
        base-color texture
      - Drives albedo and the glow lane. Alpha is honoured, including by shadow
        rays.
    * - Material properties
-     - :class:`~.Surface`'s ``reflectivity_texture``, ``roughness_texture``,
+     - :class:`~algan.mobs.surfaces.surface.Surface`'s ``reflectivity_texture``, ``roughness_texture``,
        ``refractive_index_texture``
      - Three channels only. There is **no way to author a transmission map**
        even though the kernel has a channel for one.
    * - Tangent-space normal
-     - :class:`~.Surface`'s ``normal_texture``; a glTF/FBX normal texture
+     - :class:`~algan.mobs.surfaces.surface.Surface`'s ``normal_texture``; a glTF/FBX normal texture
      - Tangents are derived per hit from positions and UVs, so a mesh with
        degenerate UVs falls back to the unperturbed normal.
 
@@ -497,7 +497,7 @@ Everything else about texturing:
 * **Bezier circuits carry a color grid, not a UV-mapped image.** A 2-D shape's
   ``texture_grid_width`` x ``texture_grid_height`` grid of color samples is
   laid over the shape's own frame. It is not an image sampler and it takes no
-  normal or material map. :class:`~.ImageMob` is a :class:`~.Surface`, so it is
+  normal or material map. :class:`~.ImageMob` is a :class:`~algan.mobs.surfaces.surface.Surface`, so it is
   the way to put a real image on screen.
 * **Imported models collapse two maps to a constant.** glTF base-color and
   normal maps are sampled per fragment; a packed **metallic-roughness** map and
@@ -654,7 +654,7 @@ Refraction
   the material's ``attenuation_color`` / ``attenuation_distance`` described
   above, and the shadow ray applies the same coefficient over its own chord.
 * Refraction needs both ``transmission > 0`` and ``ior > 1``. In practice that
-  means a :class:`~.MeshPhysicalMaterial`, a :class:`~.Surface` with a
+  means a :class:`~.MeshPhysicalMaterial`, a :class:`~algan.mobs.surfaces.surface.Surface` with a
   ``refractive_index_texture``, or an imported model whose material carries
   them. It routes the batch through the splitting ray path, which is the most
   expensive configuration Algan has.
@@ -711,7 +711,7 @@ What analytic coverage does and does not resolve
 Other anti-aliasing notes
 -------------------------
 
-* ``super_sampling_anti_aliasing`` is **ignored** on the analytic path, which
+* ``supersampling`` is **ignored** on the analytic path, which
   always renders at output resolution. It applies only on the supersampled
   fallback.
 * FXAA is available (``video_settings.fxaa``). It runs on linear HDR values
@@ -730,10 +730,9 @@ Camera
 ======
 
 * **True orthographic projection is not implemented.**
-  :meth:`Camera.set_to_orthographic <.Camera.set_to_orthographic>` raises an
-  ``ApproximationWarning`` and falls back to
-  :meth:`~.Camera.set_near_orthographic`, which is an ordinary perspective
-  camera moved 1e5 units back from its screen. It looks orthographic and is not:
+  :meth:`~.Camera.set_near_orthographic` is the only spelling, and it says what
+  it does: an ordinary perspective camera moved 1e5 units back from its screen.
+  It looks orthographic and is not:
   geometry spanning a large depth range still converges slightly, and the
   extreme camera distance puts every world-space epsilon in
   :ref:`limits-scale` a long way from the geometry it is meant to separate.
@@ -763,7 +762,7 @@ a plane cannot be resolved that way, so Algan classifies every circuit once, whe
 you construct it, and gives the non-planar ones real 3-D geometry instead:
 
 * **Filled** -- each closed sub-path becomes curved patches, the same primitive
-  :class:`~.Surface` produces. This is how a Manim ``Sphere`` imports.
+  :class:`~algan.mobs.surfaces.surface.Surface` produces. This is how a Manim ``Sphere`` imports.
 * **Unfilled** -- the path is split into near-straight runs, each drawn as its
   own circuit facing the camera, so a 3-D curve keeps its position in space and
   its stroke keeps a constant width on screen.
@@ -895,7 +894,7 @@ Hard limits
    * - Environment map width
      - 2048
      - Silently resampled down.
-   * - :class:`~.Surface` construction grid
+   * - :class:`~algan.mobs.surfaces.surface.Surface` construction grid
      - 200 vertices per axis
      - ``max_grid_resolution`` clamps the automatic search at construction.
        Render-time dicing is a separate budget, below.

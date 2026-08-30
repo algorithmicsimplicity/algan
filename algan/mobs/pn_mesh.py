@@ -44,7 +44,7 @@ class PNMesh(Mob):
 
         super().__init__(location=corners, **kwargs)
         self.register_attrs_as_animatable(["normals"], PNMesh)
-        self.generate_animatable_attr_set_get_methods()
+        self._generate_animatable_attr_set_get_methods()
         self._init_default_attr("normals", normals)
         self.num_points_per_object = 3
         self.render_tolerance = float(render_tolerance)
@@ -98,7 +98,7 @@ class PNMesh(Mob):
         # duration of its own morph and stop again at the far end -- both
         # endpoints honour the flag (``_MORPH_ADOPTED_ATTRS``), and the seam was
         # strictly interior to the transition.
-        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         return primitive
 
     def _get_memory_used_per_timestep(self):

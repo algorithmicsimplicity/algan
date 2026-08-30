@@ -108,7 +108,7 @@ Most of the time, these are what you will use.
     pentagon.move(RIGHT * 2)
     pentagon.rotate(360, OUT)
     pentagon.rotate(360, UP)
-    pentagon.rotate(360, OUT, about_point=ORIGIN)
+    pentagon.rotate(360, OUT, about=ORIGIN)
     pentagon.scale(2)
     pentagon = pentagon.become(Circle(add_to_scene=False))
     pentagon.wait(2)
@@ -121,8 +121,8 @@ The methods used above:
   one unit right. To move to an absolute point instead, use
   :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`.
 * :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` turns the Mob about an axis through its own centre.
-  Passing ``about_point`` turns it about *that* point instead, which sweeps the
-  Mob around in an arc: ``pentagon.rotate(180, OUT, about_point=ORIGIN)`` swings it
+  Passing ``about`` turns it about *that* point instead, which sweeps the
+  Mob around in an arc: ``pentagon.rotate(180, OUT, about=ORIGIN)`` swings it
   half way around the origin.
 * :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` morphs the Mob into a different Mob. It returns the
   resulting Mob, so assign it back: ``pentagon = pentagon.become(Circle(add_to_scene=False))``.

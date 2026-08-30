@@ -122,7 +122,7 @@ def _ground():
     frame. A Prism, not a Square: a 2-D circuit renders unlit and would receive
     no shadow at all.
     """
-    ground = _lit(Prism(dimensions=(14, 0.25, 8), color=GRAY), GRAY)
+    ground = _lit(Prism(width=14, height=0.25, depth=8, color=GRAY), GRAY)
     ground.move(DOWN * 1.7)
     ground.spawn(animate=False)
 
@@ -153,9 +153,7 @@ def build_scene(label):
             # Concave and single-mesh: a shadow ray leaving the tube can strike
             # the tube again, so the acne population and the legitimate
             # self-shadow population overlap here.
-            torus = _lit(
-                Torus(major_radius=1.5, minor_radius=0.38, color=BLUE_B), BLUE_B
-            )
+            torus = _lit(Torus(ring_radius=1.5, tube_radius=0.38, color=BLUE_B), BLUE_B)
             torus.rotate(58, RIGHT)
             torus.spawn(animate=False)
             return

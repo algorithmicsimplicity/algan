@@ -58,9 +58,9 @@ def build_scene(arm):
             intensity=1.0,
             shadow_angle=0.0,
         ).spawn(animate=False)
-        floor = Prism(dimensions=(16, 0.5, 9), fill_color=GRAY, fill_opacity=1).move(
-            DOWN * 2.2
-        )
+        floor = Prism(
+            width=16, height=0.5, depth=9, fill_color=GRAY, fill_opacity=1
+        ).move(DOWN * 2.2)
         floor.spawn(animate=False)
 
         # Curved surfaces, so both reach the renderer as logical-PN patches
@@ -82,7 +82,7 @@ def build_scene(arm):
 
     # Move the spheres toward and away from the camera so the adaptive dice
     # level changes frame to frame, which is what shuffles column ownership.
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         if arm != "onlyb":
             sphere_a.move(OUT * 1.6)
         sphere_b.move(IN * 1.2)

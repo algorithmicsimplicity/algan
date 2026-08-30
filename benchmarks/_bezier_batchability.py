@@ -63,9 +63,9 @@ def Boxed(mob, color=BLUE, buffer=0.1, *args, **kwargs):
             mob,
             *args,
             color=color.lerp(BLACK, 0.8).lerp(PURE_BLUE, 0.1).set_opacity(0.95),
-            border_color=torch.lerp(color, BLACK, 0.2),
+            stroke_color=torch.lerp(color, BLACK, 0.2),
             buffer=buffer,
-            border_width=1,
+            stroke_width=1,
             **kwargs,
         ),
     )
@@ -79,8 +79,8 @@ def GlowTex(c, *args, **kwargs):
         ManimMob(mn.MathTex(*args, **kwargs))
         .set(
             color=c + GLOW * 0.01,
-            border_color=torch.lerp(c, WHITE, 0.9),
-            border_width=0.8,
+            stroke_color=torch.lerp(c, WHITE, 0.9),
+            stroke_width=0.8,
         )
         .scale(0.75)
     )
@@ -94,7 +94,7 @@ def text_scene():
     with Off():
         nn = NeuralNetMLPV3([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=1):
+    with Sync(duration=1):
         mob.move(LEFT)
         nn.move(LEFT)
 
@@ -117,7 +117,7 @@ def clash_scene():
         for i in range(20):
             others.append(Circle(color=BLUE).move(RIGHT * (i - 10)).spawn())
             others.append(Square(color=RED).move(RIGHT * (i - 10) + UP * 2).spawn())
-    with Sync(run_time=1):
+    with Sync(duration=1):
         txt.move(LEFT)
         for m in others:
             m.move(UP)

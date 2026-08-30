@@ -20,7 +20,7 @@ from algan.utils.profiling_utils import profile_scene
 
 
 def scene():
-    run_time = 10
+    duration = 10
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
@@ -31,7 +31,7 @@ def scene():
         mover = Cube().scale(0.5).move(DOWN * 1.2).spawn()
         Text("static gallery").move(DOWN * 2.6).spawn()
 
-    with Sync(run_time=run_time):
+    with Sync(duration=duration):
         mover.rotate(360, UP)
 
 

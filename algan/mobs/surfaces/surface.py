@@ -374,8 +374,8 @@ def surface_closed_axes(grid):
 
     Returns ``(closed_u, closed_v)``: ``closed_u`` when column ``W-1``
     coincides with column 0 (a surface of revolution's u-seam -- a
-    :class:`~.Sphere`, a :class:`~.Cylinder`, a :class:`~.Cone`), ``closed_v``
-    when row ``H-1`` coincides with row 0 (a :class:`~.Torus` closes on both).
+    :class:`~algan.mobs.shapes_3d.Sphere`, a :class:`~algan.mobs.shapes_3d.Cylinder`, a :class:`~algan.mobs.shapes_3d.Cone`), ``closed_v``
+    when row ``H-1`` coincides with row 0 (a :class:`~algan.mobs.shapes_3d.Torus` closes on both).
 
     This is :func:`surface_weld_flags`'s ``wrap_x`` test on both axes, but it
     answers a different question -- how a *texture* must be sampled, not how
@@ -1285,6 +1285,25 @@ class Surface(Mob):
         self.ignore_wave_animations = True
         self._resolution_update_in_progress = False
 
+    @property
+    def vertices(self) -> torch.Tensor:
+        """The surface's vertex positions, shape ``(*, grid_width * grid_height, 3)``.
+
+        The live tensor the renderer tessellates from, laid out row-major over
+        the ``grid_height`` x ``grid_width`` sample grid. Writing it moves the
+        surface's vertices, and is recorded like any other Mob attribute.
+
+        Animation
+        ---------
+        Assignment is recorded, so the vertices travel to their new positions
+        over the current context's duration.
+        """
+        return self.grid.location
+
+    @vertices.setter
+    def vertices(self, value):
+        self.grid.location = value
+
     @classmethod
     def from_batches(cls, centers, *args, colors=None, **kwargs):
         """Build many independently indexable surfaces without per-surface mobs.
@@ -1908,14 +1927,14 @@ class Surface(Mob):
         camera_location = camera.location.reshape(-1, 3)[0]
         forward = camera.get_forward_direction().reshape(-1, 3)[0]
         right = camera.get_right_direction().reshape(-1, 3)[0]
-        upwards = camera.get_upwards_direction().reshape(-1, 3)[0]
+        upwards = camera.get_up_direction().reshape(-1, 3)[0]
         relative = points - camera_location
         depth = (relative * forward).sum(dim=-1)
 
         screen_vector = camera.screen.location.reshape(-1, 3)[0] - camera_location
         screen_distance = (screen_vector * forward).sum().abs().clamp_min(1e-8)
         pixel_scale = self.scene.video_settings.resolution[1] / (
-            2.0 * float(camera.screen_scale_factor)
+            2.0 * float(camera.screen_half_height)
         )
         safe_depth = depth.clamp_min(1e-8)
         x = (relative * right).sum(dim=-1) * screen_distance / safe_depth
@@ -3642,14 +3661,14 @@ class Surface(Mob):
                 packed, dtype=torch.int32, device=corners.device
             ).repeat_interleave(per_grid)
         # A solid built from several Surfaces -- a capped Cylinder is a tube
-        # plus two discs -- says so by giving every part the same ``mesh_key``,
+        # plus two discs -- says so by giving every part the same ``_mesh_key``,
         # which merges them into one surface for the analytic-AA run rule
         # instead of leaving each joint a boundary between two (see
         # ``primitives._mesh_ids_from_collection``). Only consecutive members
         # merge, which the authored draw order provides: it walks each tree
         # parent-first, so a part's own caps follow it.
-        if getattr(self, "mesh_key", None) is not None:
-            primitive.mesh_key = self.mesh_key
+        if getattr(self, "_mesh_key", None) is not None:
+            primitive.mesh_key = self._mesh_key
         # A plain Surface is a two-sided sheet; the shapes of revolution built
         # on it declare an outside (Mob.two_sided). A solid among them
         # (:class:`~algan.mobs.shapes_3d.Sphere` with full ranges, a capped
@@ -3659,15 +3678,15 @@ class Surface(Mob):
         # as does any partial sweep that cuts the shell.
         primitive.declare_one_sided(not self.two_sided)
         primitive.declare_closed_shell(bool(getattr(self, "closed_shell", False)))
-        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         return primitive
 
     def coord_function(self, uv: torch.Tensor):
         """Map the surface's ``(u, v)`` parameters to positions in space.
 
         This is what defines the surface's shape, and what each 3-D shape class
-        overrides: :class:`~.Sphere` maps the unit square onto a sphere,
-        :class:`~.Torus` onto a torus, and so on. The base implementation gives a flat
+        overrides: :class:`~algan.mobs.shapes_3d.Sphere` maps the unit square onto a sphere,
+        :class:`~algan.mobs.shapes_3d.Torus` onto a torus, and so on. The base implementation gives a flat
         plane spanning ``[-1, 1]`` on both axes.
 
         Parameters

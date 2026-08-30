@@ -70,7 +70,7 @@ Cost scales with pixels *and* frames, so ``HD`` at 30 fps is roughly ten times
 ``LD`` at 15 fps. Presets are immutable; ``HD.set(frames_per_second=60)`` returns a
 modified copy rather than changing ``HD``.
 
-``super_sampling_anti_aliasing`` -- ``ssaa`` for short -- defaults to ``2`` and
+``supersampling`` -- ``ssaa`` for short -- defaults to ``2`` and
 multiplies the rendered resolution in each axis, so it costs its square: level 2
 renders 4× the pixels. Dropping it to ``1`` and enabling ``fxaa`` is the single
 cheapest way to speed up a draft. See :doc:`backgrounds_and_post_processing`.
@@ -106,7 +106,7 @@ and text the deterministic renderer is not merely cheaper but *better*: it
 resolves those edges with exact analytic coverage, where the path tracer must
 estimate them by sampling. The path tracer renders at output resolution and
 anti-aliases by jittering its samples inside each pixel, so
-``super_sampling_anti_aliasing`` does not apply to it.
+``supersampling`` does not apply to it.
 
 ``SETTINGS.raytracing.experimental.pt_seed`` changes the noise pattern without
 changing what the render converges to -- useful for checking that a feature
@@ -249,7 +249,7 @@ What to try, in order:
    :class:`~.Surface` close to the camera. At ``PRODUCTION`` and above, raise
    ``render_tolerance_pixels`` with it -- otherwise it is the bound still in
    force and the change buys nothing.
-2. **Lower ``super_sampling_anti_aliasing``** (``ssaa``) to 1. Cuts the pixel
+2. **Lower ``supersampling``** (``ssaa``) to 1. Cuts the pixel
    count fourfold.
 3. **Drop to a smaller preset** for the draft.
 4. **Reduce geometry**: fewer Mobs on screen at once, coarser
@@ -315,7 +315,7 @@ Clear it with the helper rather than by hand:
     from algan import clear_cache
 
     clear_cache()                     # content caches; keeps compiled kernels
-    clear_cache(taichi_kernels=True)  # everything, including compiled kernels
+    clear_cached_kernels()  # everything, including compiled kernels
 
 The kernel cache is spared by default because it is expensive to rebuild and is never
 invalidated by anything you write in a scene.

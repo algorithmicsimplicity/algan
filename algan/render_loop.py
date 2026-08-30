@@ -224,7 +224,7 @@ def _projection_anti_alias_level(scene, primitives):
     material/legacy check falls back, Bezier tessellation remains at least as
     fine as the AA=2 reference and its bounds are merely more conservative.
     """
-    requested = max(1, int(scene.video_settings.super_sampling_anti_aliasing))
+    requested = max(1, int(scene.video_settings.supersampling))
     rt_settings = SETTINGS.raytracing
     from algan.rendering.raytracing.primitives import (
         RayTracedBezierCircuitPrimitive,
@@ -1122,7 +1122,7 @@ class RenderLoopMixin:
 
         aa = effective_anti_alias_level(
             merged_host,
-            self.video_settings.super_sampling_anti_aliasing,
+            self.video_settings.supersampling,
             light_sources=lights,
             environment_map=env_map,
             near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
@@ -1402,7 +1402,7 @@ class RenderLoopMixin:
 
             aa = effective_anti_alias_level(
                 merged_host,
-                self.video_settings.super_sampling_anti_aliasing,
+                self.video_settings.supersampling,
                 light_sources=render_lights,
                 environment_map=env_map,
                 near_clip=float(getattr(camera, "near", 0.0) or 0.0),
@@ -1496,7 +1496,7 @@ class RenderLoopMixin:
                     camera.ray_origin,
                     camera.screen_point,
                     camera.screen_basis,
-                    anti_alias_level=self.video_settings.super_sampling_anti_aliasing,
+                    anti_alias_level=self.video_settings.supersampling,
                     light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
@@ -1569,7 +1569,7 @@ class RenderLoopMixin:
             is_post_process_tonemap_enabled,
         )
 
-        aa = max(1, int(self.video_settings.super_sampling_anti_aliasing))
+        aa = max(1, int(self.video_settings.supersampling))
         # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
         # default super-sampled buffer averaged down in post-processing;
         # ALGAN_INPLACE_AA keeps the buffer at output resolution.
@@ -1727,7 +1727,7 @@ class RenderLoopMixin:
                 "opacity",
                 "basis",
                 "glow",
-                "border_width",
+                "stroke_width",
                 "location",
             ):
                 if (
@@ -2732,7 +2732,7 @@ class RenderLoopMixin:
             intensity = getattr(light, "intensity", None)
             if intensity is not None:
                 col = col * intensity
-            is_ext = getattr(light, "is_extended", None)
+            is_ext = getattr(light, "_is_extended", None)
             if is_ext is not None and is_ext():
                 # Extended light (see algan.rendering.lights): snapshot its
                 # emitter sample positions and packed aux parameter columns.
@@ -2740,12 +2740,12 @@ class RenderLoopMixin:
                 # light's power.
                 loc_f = loc.reshape(loc.shape[0], -1)[:, :3]  # [T, 3]
                 col_f = col.reshape(col.shape[0], -1)  # [T, C]
-                pos_rows = light.get_sample_positions(loc_f)  # [T, K, 3]
+                pos_rows = light._get_sample_positions(loc_f)  # [T, K, 3]
                 k = pos_rows.shape[-2]
                 col_rows = (
                     (col_f / k if k > 1 else col_f).unsqueeze(-2).expand(-1, k, -1)
                 )
-                aux = light.build_aux(loc_f)  # [T, K, 13]
+                aux = light._build_aux(loc_f)  # [T, K, 13]
                 radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
                 if radiance_cols is not None:
                     # Radiance-bearing aux columns (a hemisphere's ground
@@ -2754,7 +2754,7 @@ class RenderLoopMixin:
                     # outside the light's lifespan pack a genuinely all-zero
                     # (inert) row rather than a row that keeps emitting from
                     # its aux columns. Two SEPARATE multiplies, intensity then
-                    # opacity, because that is the order build_aux used to bake
+                    # opacity, because that is the order _build_aux used to bake
                     # in ((ground * intensity) * opacity); float multiplication
                     # is not associative, so folding the two scalars first
                     # could differ in the last bit and move a
@@ -2780,7 +2780,7 @@ class RenderLoopMixin:
         return {
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
-            "screen_basis": camera.get_render_screen_basis().to(device),
+            "screen_basis": camera._get_render_screen_basis().to(device),
             "lights": lights,
             "light_objects": light_objects,
         }
@@ -3393,7 +3393,7 @@ class RenderLoopMixin:
         active context is the innermost open one, whose window covers only its
         own block -- an enclosing :class:`~.Sync` can already hold animations
         running past it -- so the whole open chain is consulted. Every open
-        context shares one timeframe (a ``run_time`` rescales its block
+        context shares one timeframe (a ``duration`` rescales its block
         retroactively, on exit), so their ends are directly comparable.
         """
         end = 0.0

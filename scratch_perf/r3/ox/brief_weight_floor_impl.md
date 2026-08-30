@@ -88,7 +88,7 @@ with a measurement.
 - Taichi scopes a local to the block it is first assigned in — declare
   before branching.
 - The offline cache does not invalidate on `@ti.func` edits: clear it
-  (`clear_cache(taichi_kernels=True)`) after any kernel edit before
+  (`clear_cached_kernels()`) after any kernel edit before
   re-verifying.
 - Never edit `*_taichi.py` while one of your renders runs.
 - One process per arm for anything a module-global gate feeds.
