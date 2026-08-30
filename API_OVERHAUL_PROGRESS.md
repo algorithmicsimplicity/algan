@@ -287,6 +287,20 @@ bare class name, so no prose changed), and `reference_index/mobs.rst` now explai
 class names appear twice in the reference. The structural build is at **zero warnings**; the
 one non-ambiguity warning was a missing `dot` binary in this container.
 
+**The full build with examples cannot complete in a sandboxed container, and that is not this
+branch's doing.** It rendered **130 example videos with no Algan-side failure**, covering every
+`.rst` page that carries a `.. algan::` directive, and then died at 42% inside the
+auto-generated `manim_compat` reference pages: Manim's own `LabeledPolygram` docstring embeds a
+`.. manim::` example that does `requests.get('https://cdn.jsdelivr.net/...')`, and the proxy
+here refuses it. `LabeledPolygram` was already wrapped before Phase 1 (it is compat-only) and
+`algan.mobs.manim_compat` was already in `reference_index/mobs.rst` on the base commit, so this
+fails identically on `master`. It needs a machine with open outbound network; treat it the same
+way as the CUDA baselines.
+
+Algan's own examples are covered without it: `tests/unit_tests/test_doc_examples.py` executes
+every `.. algan::` directive on every run, and the full build rendering all of them to video
+before it hit the Manim page is the stronger confirmation.
+
 ---
 
 ## Plan changes made during implementation
@@ -465,6 +479,9 @@ Recorded here and in the design doc, so the two do not drift.
   the benchmarks or the scratch probes — and one of those scenes is pixel-compared, so it went
   from a known stale-baseline diff to a `TypeError`. When a phase renames a constructor
   parameter, grep the whole repository, not just `algan/` and `tests/unit_tests/`.
+- **The full docs build (`docs/make_and_open_docs.py` without `--skip-examples`) needs outbound
+  network** and cannot finish here. See the Phase 8 entry: the blocker is a Manim docstring
+  example that fetches a CDN, and it predates this branch. The structural build is clean.
 - **`tests/path_traced` has still not been run** on this branch. Note also that this is a
   CPU-only session, so the CUDA baselines cannot be spoken for either way.
 
