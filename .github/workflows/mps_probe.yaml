@@ -463,7 +463,7 @@ jobs:
       # costs.
       - name: Probe which torch ops MPS gets right
         continue-on-error: true
-        run: uv run python benchmarks/_mps_torch_op_probe.py
+        run: uv run python benchmarks/_mps_torch_op_probe.py | tee torch-op-probe.txt
 
       # The same render with every suspect torch op checked against the CPU as
       # it runs, which names the op behind a wrong frame instead of leaving it
@@ -497,6 +497,27 @@ jobs:
       - name: Run the test suite
         run: uv run pytest tests/unit_tests tests/fast -n 1
 
+      # The op probe's verdict again, at the END of the job. Not decoration:
+      # the GitHub API serves a fixed window at the tail of a job's log, so a
+      # table printed four steps earlier -- behind a render that emits a Taichi
+      # compile line per kernel -- cannot be read without downloading the whole
+      # log. Only the exactness ladder and the failure list are repeated, which
+      # is the part that says what to fix; the full table stays in its own step
+      # and in the artifact.
+      - name: Repeat the op probe's verdict where the log tail reaches
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f torch-op-probe.txt ]; then
+            echo "(the op probe wrote nothing)"
+            exit 0
+          fi
+          echo "== torch op probe: exactness ladder =="
+          sed -n '/where int64 exactness ends/,/^$/p' torch-op-probe.txt
+          echo "== torch op probe: disagreements =="
+          sed -n '/op(s) disagree with the CPU/,$p' torch-op-probe.txt \
+            || echo "(none)"
+
       - name: Upload what was rendered
         if: always()
         uses: actions/upload-artifact@v4
@@ -504,6 +525,7 @@ jobs:
           name: mps-render-${{ matrix.os }}
           path: |
             mps_render_smoke/
+            torch-op-probe.txt
             tests/fast/algan_outputs/
             tests/fast/output_errors/
           if-no-files-found: warn

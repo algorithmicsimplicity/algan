@@ -186,3 +186,7 @@ third_party/*
 benchmarks/renderer_audit/node_modules/
 benchmarks/renderer_audit/package.json
 benchmarks/renderer_audit/package-lock.json
+
+# What benchmarks/_mps_torch_op_probe.py writes in CI, for the artifact and
+# for the end-of-job replay. A measurement of the machine it ran on.
+torch-op-probe.txt
