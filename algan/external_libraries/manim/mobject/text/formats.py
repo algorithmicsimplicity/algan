@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Iterable, Sequence
 
 from algan.external_libraries.manim import Tex

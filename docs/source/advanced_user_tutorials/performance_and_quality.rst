@@ -200,7 +200,7 @@ What Makes a Scene Expensive
 In rough order of impact:
 
 1. **How much of the frame the geometry fills.** ``render_tolerance`` on a
-   :class:`~.Surface` is expressed as a fraction of screen height, so a surface
+   :class:`~algan.mobs.surfaces.surface.Surface` is expressed as a fraction of screen height, so a surface
    filling the frame is diced far more finely than the same surface in the distance.
    The dice is decided per curved triangle, per frame and per direction: the part of
    a surface that is close to the camera, or turned edge-on, is refined without the
@@ -223,7 +223,7 @@ In rough order of impact:
    wavefront tracer.
 4. **Shadows**, multiplied by the number of lights.
 5. **Triangle count.** Imported models and high-resolution
-   :class:`~.Surface` grids.
+   :class:`~algan.mobs.surfaces.surface.Surface` grids.
 6. **Glow and bloom**, which add a full-frame post-processing pass.
 7. **Distinct shaders and materials.** Mobs with different shaders are batched
    separately, so reusing one shader function across many Mobs batches better than
@@ -246,7 +246,7 @@ What to try, in order:
 
 1. **Raise ``render_tolerance``** on the surfaces that fill the frame, for the reason
    above. This is the first thing to reach for whenever the scene contains a
-   :class:`~.Surface` close to the camera. At ``PRODUCTION`` and above, raise
+   :class:`~algan.mobs.surfaces.surface.Surface` close to the camera. At ``PRODUCTION`` and above, raise
    ``render_tolerance_pixels`` with it -- otherwise it is the bound still in
    force and the change buys nothing.
 2. **Lower ``supersampling``** (``ssaa``) to 1. Cuts the pixel

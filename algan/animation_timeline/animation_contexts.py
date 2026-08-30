@@ -34,7 +34,7 @@ from __future__ import annotations
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Callable
 
@@ -254,7 +254,15 @@ def animation_manager_for(*owners):
     return managers[0] if managers else _active_animation_manager()
 
 
-@dataclass(kw_only=True)
+# Plain, rather than `@dataclass(kw_only=True)` with `duration` opted back out of
+# it. `kw_only` is 3.10, on both the decorator and `field()`, and it is evaluated
+# when the class body runs -- so it made `import algan` a TypeError on 3.9, which
+# `requires-python` claims to support. Every field here has a default, so nothing
+# but the keyword-only constraint is lost, and that constraint only ever applied
+# to this base class: `Sync`, `Lag`, `Seq`, `Off` and the rest declare their own
+# `__init__` and take `duration` positionally through it, which is the spelling
+# users actually write.
+@dataclass
 class AnimationContext:
     """Base class for the ``with`` blocks that control animation timing.
 
@@ -318,7 +326,7 @@ class AnimationContext:
         is not currently active.
     """
 
-    duration: float | None = field(default=None, kw_only=False)
+    duration: float | None = None
     duration_unit: float | None = None
     match_durations: bool | None = None
     lag_ratio: float | None = None

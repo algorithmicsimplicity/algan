@@ -160,7 +160,7 @@ diagram in the left half of the frame":
     Scene.save_video()
 
 It works on the bounding box of the whole hierarchy, so calling it on a
-:class:`~.Group` lays out the entire collection at once and preserves the
+:class:`~algan.mobs.group.Group` lays out the entire collection at once and preserves the
 members' relative positions.
 
 Relative Placement

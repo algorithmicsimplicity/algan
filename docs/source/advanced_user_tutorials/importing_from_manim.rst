@@ -104,7 +104,7 @@ children, so you can animate the whole diagram together or reach into
 ==================
 
 Manim's 3-D Mobjects import too, and they arrive as real 3-D geometry rather
-than as something flattened to face you. A :class:`~.Surface` (and everything
+than as something flattened to face you. A :class:`~algan.mobs.surfaces.surface.Surface` (and everything
 built on it e.g. ``Sphere``, ``Torus``, ``Cone``) is a grid of curved quad tiles
 in Manim, and each tile becomes one of the same curved patches Algan's own
 3-D shapes are made of: it is diced to triangles afresh in every frame, as
@@ -156,8 +156,8 @@ into other shapes:
 
 Each path in the file becomes its own Mob inside the result, reachable through
 :ref:`children <reference-mob-children>` (the top-level Mob holds a
-:class:`~.Group`, whose children are the paths), so you can animate an individual
-piece without disturbing the rest. Unlike a :class:`~.Group`, an
+:class:`~algan.mobs.group.Group`, whose children are the paths), so you can animate an individual
+piece without disturbing the rest. Unlike a :class:`~algan.mobs.group.Group`, an
 :class:`~.SVGMobject` is not itself indexable.
 
 The path is resolved by Manim, which looks for it relative to the working
