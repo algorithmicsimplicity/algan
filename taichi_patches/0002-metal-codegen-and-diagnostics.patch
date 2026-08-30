@@ -1,3 +1,45 @@
+diff --git a/taichi/codegen/spirv/spirv_codegen.cpp b/taichi/codegen/spirv/spirv_codegen.cpp
+index b81f0ab..28ecddd 100644
+--- a/taichi/codegen/spirv/spirv_codegen.cpp
++++ b/taichi/codegen/spirv/spirv_codegen.cpp
+@@ -1890,8 +1890,35 @@ class TaskCodegen : public IRVisitor {
+     } else {
+       ir_->make_inst(spv::OpBranch, current_continue_label());
+     }
+-    gen_label_ = true;  // Only ContinueStmt will cause duplicate OpBranch,
+-                        // which should be eliminated
++    // A `continue` terminates its block, and SPIR-V has no way to carry on
++    // inside a block that has already been terminated -- whatever follows
++    // needs a new OpLabel. Setting `gen_label_` here (and having
++    // `visit(IfStmt)` consume it) only opened that label because a
++    // ContinueStmt was ASSUMED to be the last statement of an if-branch,
++    // which is the shape Python's `if cond: continue` produces.
++    //
++    // `if ti.static(cond): continue` does not produce it. A static condition
++    // is resolved by the AST transformer, which emits the branch's statements
++    // inline and leaves no IfStmt at all -- so the ContinueStmt is a bare
++    // statement of the loop body, there is no boundary left to reach, and
++    // every statement after it is emitted into the terminated block:
++    //
++    //     %merge = OpLabel
++    //              OpBranch %return
++    //          %x = OpLoad %bool %y      <- "Load must appear in a block"
++    //
++    // The module is invalid, and only some consumers say so: LLVM does not
++    // care (the CPU and CUDA backends render it correctly), spirv-opt
++    // declines to optimize and Taichi carries on with the unoptimized
++    // module, Metal hands back a nil compute pipeline and Vulkan reports
++    // `vkCreateComputePipelines failed`.
++    //
++    // Opening the block here covers every shape rather than the one the flag
++    // assumed. When the ContinueStmt IS last in an if-branch this leaves an
++    // empty unreachable block, terminated by the OpBranch that
++    // `visit(IfStmt)` now emits because `gen_label_` is never set, and
++    // spirv-opt's dead-branch elimination removes it.
++    ir_->start_label(ir_->new_label());
+   }
+ 
+  private:
 diff --git a/taichi/codegen/spirv/spirv_ir_builder.cpp b/taichi/codegen/spirv/spirv_ir_builder.cpp
 index 8a9a696..352ad4e 100644
 --- a/taichi/codegen/spirv/spirv_ir_builder.cpp

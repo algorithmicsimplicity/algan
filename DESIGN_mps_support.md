@@ -216,7 +216,61 @@ widths and no kernel changed. It is applied to every array the kernels narrow
 per element — the CSR counts/starts pairs, the gather and depth-order
 permutations, the band ids, the sorted order.
 
-### 1.2c `sheet_resolve_shade_arena` will not compile for some scenes — OPEN
+### 1.2c `sheet_resolve_shade_arena` will not compile for some scenes — FOUND
+
+> **Resolved, and neither hypothesis below was right.** It is not a size limit
+> and not §1.2b's cast: `sheet_resolve_shade_arena`'s **shadow variant is
+> invalid SPIR-V**, and the invalid instruction is one Algan's own kernel asks
+> for.
+>
+> ```
+> error: line 301768: Load must appear in a block
+>   %tmp112365_u1 = OpLoad %bool %tmp670_unknown
+> ```
+>
+> `if ti.static(mode == 1): continue` (`sheet_resolve_taichi.py`, the end of
+> the sheet walk) is the source. `ti.static` is resolved by Taichi's AST
+> transformer, which emits the branch's statements inline and leaves **no
+> IfStmt at all** — so what reaches the SPIR-V codegen is a bare `ContinueStmt`
+> in the loop body followed by the whole rest of that body.
+> `visit(ContinueStmt)` emits an `OpBranch` and sets `gen_label_`, relying on
+> the *next IfStmt boundary* to open a new `OpLabel`; with no boundary left to
+> reach, every statement after it is emitted into a block that has already been
+> terminated.
+>
+> That is why it is scene-dependent: only `mode == 1`, the shadow event build,
+> takes that gate, so only a render with shadows on compiles the broken
+> variant. All six failures are shadow renders (the audit's `algan_render.py`
+> defaults `shadows=True`, which is what put the three glossy-prefilter arms in
+> the list).
+>
+> And it is why nothing said so. LLVM does not mind, so CPU and CUDA have been
+> rendering it correctly for as long as it existed; spirv-opt declines to
+> optimize (`SPIRV optimization failed`) and Taichi carries on with the
+> unoptimized module; Metal's `spirv_cross::CompilerMSL` **constructor** throws
+> while parsing it, which lands in `MetalDevice::create_pipeline`'s catch — the
+> one path that discarded the exception text and returned `success` with a null
+> pipeline (fixed in `taichi_patches/0002`).
+>
+> **Both halves are fixed.** The kernel gates the rest of the walk with
+> `if ti.static(mode != 1):` instead of skipping it with a `continue`, which is
+> the shape it wanted anyway; and `0002` opens a new block after every
+> `continue` rather than only after one that ends an if-branch, so a stray
+> `ti.static`-gated `continue` anywhere else cannot do this again.
+>
+> **Measured on Linux**, which is the other half of the finding: Taichi's
+> Metal and Vulkan backends share the SPIR-V codegen, so a software Vulkan
+> (`mesa-vulkan-drivers`' llvmpipe) reproduces it on a machine with no Apple
+> GPU — `TI_ARCH=vulkan` on the same test gives the same warning, at the same
+> launch site, and `vkCreateComputePipelines failed` where Metal gives a nil
+> pipeline. Extracting the module from Taichi's offline cache and running
+> `spirv-val` on it is what produced the error above; after the fix `spirv-val`
+> reports nothing. **That is the loop to use for the next codegen question**,
+> not a 30-minute round trip through the Apple runner.
+
+What follows is how the section read while it was open. Kept, because the two
+readings it got wrong are the ones anyone re-treading this path will get wrong
+in the same order.
 
 The one blocker still standing, and the only thing between the Apple GPU and a
 green suite. Seven tests fail with
@@ -237,7 +291,10 @@ earlier attempts got the assertion and nothing else:
 Assertion failed: (p != nullptr), function bind_pipeline, ...
 ```
 
-A `started` with **no matching `completed`**. So it is §1.1's 49-argument
+A `started` with **no matching `completed`** — which was itself a misreading,
+and the first thing the next trace corrected: the compile *does* complete
+(`frontend=2.371s, backend=5.510s`), and the abort lands after it, at the
+pipeline creation a launch does. So it is §1.1's 49-argument
 megakernel — and the interesting part is that the *same kernel compiles fine* in
 `benchmarks/_mps_render_smoke.py`, which logs `completed ... total=5.765s` for
 it. Whatever fails is scene-dependent, and every failing test is about **lights
