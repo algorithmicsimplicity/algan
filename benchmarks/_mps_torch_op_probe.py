@@ -216,9 +216,13 @@ def probe_scans(device):
             torch.cumsum(area_c.to(device), 0),
             exact=False,
             # A parallel scan reassociates, so this is a tolerance rather than
-            # an equality -- but it must still track, and 1e-2 over a sum that
-            # reaches n/2 is a very loose leash.
-            tol=1e-2,
+            # an equality. It has to be RELATIVE: the running sum reaches n * 0.5,
+            # and float32 carries ~7 significant digits, so an absolute leash
+            # that is generous at n = 60 k is below one ulp at n = 1 M -- which
+            # is exactly how this case first reported a failure (23475.7715 vs
+            # 23475.7598, a 5e-7 relative difference) that was the probe's bug
+            # and not the GPU's.
+            tol=1e-4 * n,
         )
 
 
@@ -339,6 +343,33 @@ def probe_int64_arithmetic(device):
     _check("int64 round trip", a_c, a_m)
     _check("int64 comparison", (a_c[1:] != a_c[:-1]), (a_m[1:] != a_m[:-1]))
     _check("int64 -> float32 cast", a_c.to(torch.float32), a_m.to(torch.float32))
+
+    # WHERE the int64 ops stop being exact, which is the actionable half. The
+    # two that fail above -- floor division and a gather of full-width values --
+    # look like a float round trip rather than true 64-bit integer work, and if
+    # that is what they are then the ceiling is a mantissa width and every value
+    # below it is safe. That distinction decides whether the renderer is
+    # affected at all: its int64s are a packed `pixel << 32 | depth` key
+    # (~2**50, but only ever shifted and masked) and a pile of small composite
+    # ids (~2**21, divided and gathered constantly).
+    print("\n  where int64 exactness ends (bits -> first failing op)")
+    for bits in (20, 24, 30, 40, 50, 62):
+        v_c = torch.randint(1 << (bits - 1), 1 << bits, (4096,), generator=g)
+        v_m = v_c.to(device)
+        pick_c = torch.randint(0, 4096, (4096,), generator=g, dtype=torch.int64)
+        broken = []
+        if not torch.equal(v_c // 16, (v_m // 16).cpu()):
+            broken.append("//")
+        if not torch.equal(
+            v_c.index_select(0, pick_c),
+            v_m.index_select(0, pick_c.to(device)).cpu(),
+        ):
+            broken.append("index_select")
+        if not torch.equal(v_c, v_m.cpu()):
+            broken.append("round trip")
+        if not torch.equal(v_c * 3 + 1, (v_m * 3 + 1).cpu()):
+            broken.append("mul/add")
+        print(f"    2**{bits}: {', '.join(broken) if broken else 'all exact'}")
 
 
 def main() -> int:
