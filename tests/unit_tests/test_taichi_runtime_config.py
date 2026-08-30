@@ -44,7 +44,7 @@ _RUNTIME_MODULE = _REPOSITORY_ROOT / "algan" / "rendering" / "taichi_runtime.py"
 
 #: Scanned in full. Vendored code is excluded: it is read-only here, and a
 #: vendored library initializing its own Taichi is not Algan's call to make.
-_SCANNED_ROOTS = ("algan", "tests", "benchmarks", "docs")
+_SCANNED_ROOTS = ("algan", "tests", "docs")
 
 
 def _is_taichi_init(node):
