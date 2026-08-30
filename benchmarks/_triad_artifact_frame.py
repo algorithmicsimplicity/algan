@@ -92,8 +92,7 @@ if args.recolor:
         # colour is not propagated, so this is the tint that survives.
         (
             "radius=0.03, color=GRAY_A)",
-            "radius=0.03, color=GRAY_A)"
-            ".set_material(MeshBasicMaterial(color=MAGENTA))",
+            "radius=0.03, color=GRAY_A).set_material(MeshBasicMaterial(color=MAGENTA))",
         ),
         (
             "radius=0.14, color=WHITE)",

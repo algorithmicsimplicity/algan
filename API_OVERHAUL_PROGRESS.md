@@ -184,7 +184,12 @@ multi-line constructor calls that a single-line regex could not see (`Line3D(` a
 spread over four lines in three benchmarks and a test), and *Manim's* `Square`/`Cube`, which
 keep `side_length` and must not be swept up with Algan's. `benchmarks/_triad_artifact_frame.py`
 was a third kind: it patches a render scene by string-replacing its **source text**, so renaming
-a parameter in that scene silently broke the benchmark's patch.
+a parameter in that scene silently broke the benchmark's patch -- a call site no grep for a
+Python identifier can find.
+
+**Verified**: full `tests/unit_tests` green on CPU (2409 passed, 139 skipped), `--fast` green
+(405 passed), lint and format at their pre-existing counts. The pixel-suite result is in the
+commit that follows.
 
 ---
 
