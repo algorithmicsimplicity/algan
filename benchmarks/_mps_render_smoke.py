@@ -44,12 +44,47 @@ from algan.settings import SETTINGS  # noqa: E402
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "mps_render_smoke"
 
 
+def _install_pipeline_report():
+    """Report what the raster pipeline found, so a black frame is localizable.
+
+    A frame that renders to completion and comes out flat says nothing about
+    where it went flat: no geometry reached the rasteriser, no fragment
+    survived, or the shading wrote somewhere the frame buffer is not. These
+    three numbers separate those, and they cost one print per chunk.
+    """
+    from algan.rendering.raytracing import raster_pipeline
+
+    original = raster_pipeline.prepare_sparse_raster_coverage
+
+    def reporting(*args, **kwargs):
+        coverage = original(*args, **kwargs)
+        if coverage is None:
+            print("  [pipeline] no coverage at all -- nothing rasterised")
+            return coverage
+        print(
+            f"  [pipeline] fragments={coverage.get('num_fragments')} "
+            f"covered_pixels={coverage.get('num_covered')} "
+            f"sheets={coverage.get('num_sheets')}"
+        )
+        cov = coverage.get("frag_cov")
+        if cov is not None and cov.numel():
+            print(
+                f"  [pipeline] frag_cov min={float(cov.min()):.6f} "
+                f"max={float(cov.max()):.6f} sum={float(cov.sum()):.3f}"
+            )
+        return coverage
+
+    raster_pipeline.prepare_sparse_raster_coverage = reporting
+
+
 def main() -> int:
     print(f"render device    : {SETTINGS.computing.render_device}")
     print(f"mps_friendly     : {SETTINGS.computing.mps_friendly} -> {mps_friendly()}")
     print(f"accumulate dtype : {accumulate_dtype()}")
     print(f"reduction dtype  : {reduction_index_dtype()}")
     print(f"torch            : {torch.__version__}")
+
+    _install_pipeline_report()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     frame_path = OUTPUT_DIR / "frame.png"

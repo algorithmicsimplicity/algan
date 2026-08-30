@@ -265,6 +265,87 @@ def case_lane_owner_real_i32():
     assert torch.equal(first_lane, want), first_lane
 
 
+# --------------------------------------- the launch-side staging questions
+#
+# Everything above passes CPU tensors, so it asks only what the MSL compiler
+# accepts. These allocate on the render device instead, which on Metal is the
+# staged path DESIGN_mps_support.md 1.3 measured: Taichi has no
+# ``Device::import_memory`` for its gfx device, so it copies every ndarray
+# argument to the host before the launch and copies it back after. Whether the
+# copy-back is *correct* is a separate question from whether it is slow, and
+# nothing had asked it.
+
+
+def _device_tensor(*args, **kwargs):
+    return torch.empty(0).new_zeros(*args, **kwargs).to(render_device())
+
+
+def case_device_tensor_roundtrip():
+    """A kernel writing to a tensor on the render device."""
+
+    @ti.kernel
+    def k(x: ti.types.ndarray(), out: ti.types.ndarray(), n: ti.i32):
+        for i in range(n):
+            out[i] = x[i] + 1
+
+    device = render_device()
+    x = torch.arange(N, dtype=torch.int32, device=device)
+    out = torch.zeros(N, dtype=torch.int32, device=device)
+    k(x, out, N)
+    assert torch.equal(out.cpu(), torch.arange(N, dtype=torch.int32) + 1), out.cpu()
+
+
+def case_device_view_roundtrip():
+    """The same, writing through a SLICE of a larger device allocation.
+
+    ``ManualMemory`` hands every render array out as a view of one buffer, so
+    this is the shape every kernel argument in the renderer really has.
+    """
+
+    @ti.kernel
+    def k(out: ti.types.ndarray(), n: ti.i32):
+        for i in range(n):
+            out[i] = 7
+
+    device = render_device()
+    big = torch.zeros(4 * N, dtype=torch.int32, device=device)
+    k(big[N : 2 * N], N)
+    got = big.cpu()
+    assert int((got == 7).sum()) == N, got
+    assert int(got[:N].sum()) == 0, got
+
+
+def case_device_two_typed_views_of_one_buffer():
+    """TWO arguments that are different dtype views of the SAME bytes.
+
+    This is the arena calling convention (``arena_args_taichi.pack``): a
+    converted kernel takes ``arena_f32`` and ``arena_i32``, and both are the
+    whole render arena reinterpreted, so they alias byte for byte. Direct
+    binding (CPU, CUDA) does not care. A backend that stages copies each
+    argument out and back independently, and the second copy-back would then
+    overwrite whatever the kernel wrote through the first -- which would leave
+    a render that runs to completion and draws nothing.
+    """
+
+    @ti.kernel
+    def k(af: ti.types.ndarray(), ai: ti.types.ndarray(), n: ti.i32):
+        for i in range(n):
+            af[i] = 1.5
+            ai[n + i] = 9
+
+    device = render_device()
+    # One allocation, two typed views of disjoint halves of it -- exactly what
+    # the arena does, and disjoint so that a correct backend keeps both.
+    raw = torch.zeros(2 * N, dtype=torch.int32, device=device)
+    as_f32 = raw.view(torch.float32)
+    as_i32 = raw
+    k(as_f32, as_i32, N)
+    got_f = raw.cpu().view(torch.float32)[:N]
+    got_i = raw.cpu()[N:]
+    assert torch.equal(got_f, torch.full((N,), 1.5)), got_f
+    assert torch.equal(got_i, torch.full((N,), 9, dtype=torch.int32)), got_i
+
+
 def case_i64_atomic_min():
     """§1.2's other Metal abort, re-asked now that the mode avoids it."""
 
@@ -324,6 +405,9 @@ CASES = {
     "named_cast_mul_temp": case_named_cast_mul_temp,
     "lane_owner_real_i64": case_lane_owner_real_i64,
     "lane_owner_real_i32": case_lane_owner_real_i32,
+    "device_tensor_roundtrip": case_device_tensor_roundtrip,
+    "device_view_roundtrip": case_device_view_roundtrip,
+    "device_two_typed_views": case_device_two_typed_views_of_one_buffer,
     "i64_atomic_min": case_i64_atomic_min,
     "i32_atomic_min": case_i32_atomic_min,
     "f32_accumulate": case_f32_accumulate,
