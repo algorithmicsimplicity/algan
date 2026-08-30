@@ -71,6 +71,10 @@ jobs:
         -DTI_BUILD_TESTS:BOOL=OFF
 
     steps:
+      # Algan itself, for `taichi_patches/`. The job did not need a checkout
+      # while it only timed a stock build, which is why it never had one.
+      - uses: actions/checkout@v4
+
       # Which machine produced the number. A build time is meaningless without
       # the core count, and the free runner's is not the 8-10 of a laptop.
       - name: Runner facts
@@ -109,8 +113,15 @@ jobs:
         if: ${{ inputs.apply_patches == null || inputs.apply_patches }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          patches=("$GITHUB_WORKSPACE"/taichi_patches/[0-9]*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "no patches found in taichi_patches/ -- refusing to build a"
+            echo "wheel that would look patched and not be"
+            exit 1
+          fi
           cd taichi-src
-          for patch in ../taichi_patches/[0-9]*.patch; do
+          for patch in "${patches[@]}"; do
             echo "--- applying $(basename "$patch")"
             git apply --verbose "$patch"
           done
