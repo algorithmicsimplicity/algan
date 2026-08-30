@@ -164,11 +164,11 @@ def ManimMobFor(manim_mob, scene):
     return ManimMob(manim_mob, scene=scene, add_to_scene=False).control_points.location
 
 
-def test_reset_scene_drops_the_manim_convention(scene):
+def test_reset_drops_the_manim_convention(scene):
     scene.use_manim_defaults()
     assert scene.manim_coordinates is True
-    scene.reset_scene()
-    # reset_scene() re-runs the initializer, restoring Algan's own camera and
+    scene.reset(rebuild_timeline=False)
+    # reset(rebuild_timeline=False) re-runs the initializer, restoring Algan's own camera and
     # lighting, so the coordinate convention that went with the Manim viewpoint
     # has to go with them.
     assert scene.manim_coordinates is False
@@ -181,5 +181,5 @@ def test_clear_keeps_the_manim_convention(scene):
     # clear() only despawns Mobs; it leaves the camera and lights in place, so
     # the convention that matches them must survive it.
     scene.use_manim_defaults()
-    scene.clear()
+    scene.despawn_mobs(retain_history=True, duration=0.5)
     assert scene.manim_coordinates is True

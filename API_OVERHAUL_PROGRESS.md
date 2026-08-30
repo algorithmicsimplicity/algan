@@ -16,7 +16,7 @@ Update it in the same commit as the work it describes.
 | 1b | Native adapters for the curated root subset | **Done** |
 | 2 | Remove leaked internals from `algan.__all__` | **Done** |
 | 3 | `Mob` surface: privatize, consolidate, rename | **Done** |
-| 4 | Scene, Camera, Lights, Group | Not started |
+| 4 | Scene, Camera, Lights, Group | **Done** |
 | 5 | Class and parameter naming | Not started |
 | 6 | `border_*` → `stroke_*` | Not started |
 | 7 | `run_time` → `duration`, `rate_func` → `easing` | Not started |
@@ -118,6 +118,30 @@ Also landed: `test_ux_regressions.py` gained
 `test_the_mob_positioning_surface_answers_to_its_public_names`, which calls every new name and
 asserts every removed one is gone, per Phase 0 step 3.
 
+### Phase 4 — Scene, Camera, Lights, Group
+
+**Scene.** `add_light` / `remove_light` / `clear_lights` (the first two existed already as
+aliases, so this deletes a duplication as well as renaming); `show_frame(at=None)`;
+`save_audio(file_path, sample_rate=44100, ...)`; `length_to_pixels` / `pixels_to_length`. Five
+lifecycle methods become two: `despawn_mobs(retain_history=False, duration=None, **kwargs)` and
+`reset(rebuild_timeline=True)`, with a private `_rebuild_contents()` carrying the half of
+`reset` that `Scene.__init__` needs.
+
+**Camera.** `center_on`; `set_euler_angles(yaw, pitch, roll, *, degrees=True)`;
+`_retroactive_center` and `_get_render_screen_basis` privatized;
+`screen_scale`/`screen_scale_factor` collapse into `screen_half_height`; `set_to_orthographic`
+deleted in favour of `set_near_orthographic`.
+
+**Lights.** `_build_aux`, `_is_extended`, `_num_samples`, `_get_sample_positions` privatized
+across `Light` and all five subclasses; `SpotLight(cone_angle=..., degrees=True)`.
+
+**Group.** `arrange_in_grid(row_buffer=, column_buffer=)` and
+`arrange_in_line(equal_widths=, align_to=)`.
+
+`test_ux_regressions.py` gained
+`test_the_scene_camera_light_and_group_surface_answers_to_its_public_names`, the Phase 4
+counterpart of the Phase 3 one.
+
 ---
 
 ## Plan changes made during implementation
@@ -204,6 +228,27 @@ Recorded here and in the design doc, so the two do not drift.
    attribute is now `sky_direction`. (`NeuralNetMLP.forward` also shadows the new `.forward`
    property, but it is an unexported class and a subclass attribute wins, so it still works;
    noted rather than changed.)
+
+
+12. **Camera's `screen_scale` becomes `screen_half_height`, not `frame_height`.** The design
+    table named `frame_height` while its own parenthetical said the value is a *half*-height —
+    and it is a half-height of the virtual screen at `screen_distance`, not of the frame: the
+    default 2.5 at distance 5 shows a half-height of 3.5 at the origin plane. `frame_height` is
+    also Manim's name for its full 8-unit frame, so that spelling would mislead exactly the
+    readers most likely to reach for it. The constructor parameter and the attribute it wrote
+    (`screen_scale` / `screen_scale_factor`) were themselves two spellings of one number, and
+    collapse into this one.
+
+13. **`set_orthographic(near=False, ...)` is not buildable; `set_near_orthographic` survives
+    alone.** The proposed flag's default value would name true parallel-ray projection, which
+    this renderer does not implement, so `near` would have had one usable setting.
+    `set_to_orthographic` was already a pure deprecation shim — it warned and called the other
+    method — so deleting it is the ordinary treatment of a second spelling, and the survivor is
+    the name that describes what actually happens.
+
+14. **`Scene.add_light` and `remove_light` already existed** as class-level aliases of
+    `add_light_source` / `remove_light_source`, contradicting the design appendix's "`add_light`
+    does not exist". Phase 4 therefore removes a duplication here rather than only renaming.
 
 ---
 

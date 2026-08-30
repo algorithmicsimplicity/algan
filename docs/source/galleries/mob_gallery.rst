@@ -25,7 +25,7 @@ which means they stay perfectly smooth however far you zoom in. A
         Rectangle(width=1.4, height=0.8), Line(LEFT * 0.5, RIGHT * 0.5),
         Dot(), Point(),
     ])
-    shapes.arrange_in_grid(2, buffer=0.9).scale(0.7).spawn()
+    shapes.arrange_in_grid(2, row_buffer=0.9).scale(0.7).spawn()
     shapes.wait()
 
     Scene.save_video()
@@ -142,7 +142,7 @@ how Algan turns them into triangles.
         Tetrahedron(edge_length=1.0), Octahedron(edge_length=0.6),
         Icosahedron(edge_length=0.5),
     ])
-    shapes.arrange_in_grid(2, buffer=0.6).spawn()
+    shapes.arrange_in_grid(2, row_buffer=0.6).spawn()
     shapes.wait()
 
     Scene.save_video()

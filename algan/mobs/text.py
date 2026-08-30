@@ -1017,7 +1017,7 @@ class Paragraph(Group):
             self.arrange_in_line(
                 DOWN,
                 buffer=buffer,
-                alignment_direction=align_direction,
+                align_to=align_direction,
             )
         self.lines_text = lines
         self.chars = self.children

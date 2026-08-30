@@ -248,7 +248,7 @@ def _lit_cube(intensities):
     """
 
     def build(scene):
-        scene.clear_light_sources()
+        scene.clear_lights()
         cube = Cube(side_length=4.0)
         cube.set_material(MeshLambertMaterial(color=WHITE_C))
         cube.spawn()

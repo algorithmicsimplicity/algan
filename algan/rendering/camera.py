@@ -7,7 +7,7 @@ moves usually want ``rate_func=rate_funcs.identity``, since easing in and out of
 pan reads as a wobble.
 
 It carries the projection: perspective or orthographic, field of view in degrees,
-and near/far planes. :meth:`Camera.move_to_make_mob_center_of_view` frames a
+and near/far planes. :meth:`Camera.center_on` frames a
 given Mob, and :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
 aims at a point.
 
@@ -21,14 +21,13 @@ See :doc:`/advanced_user_tutorials/cameras`.
 from __future__ import annotations
 
 import math
-import warnings
 
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
-from algan.errors import AlganConfigurationError, ApproximationWarning
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import intersect_line_with_plane_colinear
 from algan.utils.tensor_utils import (
     broadcast_gather,
@@ -67,14 +66,16 @@ class Camera(Mob):
         camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))
         camera.move_to(OUT * 70)  # was OUT * 7, so 10x the distance
 
-    Alternatively :meth:`set_to_orthographic` removes the projection entirely.
+    Alternatively :meth:`set_near_orthographic` flattens it almost completely --
+    it is an approximation, not true parallel projection; see
+    :doc:`/advanced_user_tutorials/renderer_limitations`.
     """
 
     def __init__(
         self,
         orthographic=False,
         screen_distance=5,
-        screen_scale=2.5,
+        screen_half_height=2.5,
         fov=None,
         near=0.0,
         far=0.0,
@@ -86,10 +87,12 @@ class Camera(Mob):
         # screen size. near/far are the clip distances (0 disables each);
         # near is a plane, far is a distance along the ray.
         screen_distance = self._validated_positive("screen_distance", screen_distance)
-        screen_scale = self._validated_positive("screen_scale", screen_scale)
+        screen_half_height = self._validated_positive(
+            "screen_half_height", screen_half_height
+        )
         if fov is not None:
             fov = self._validated_fov(fov)
-            screen_distance = screen_scale / math.tan(math.radians(fov) * 0.5)
+            screen_distance = screen_half_height / math.tan(math.radians(fov) * 0.5)
         self._near = self._validated_clip("near", near)
         self._far = self._validated_clip("far", far)
         self._validate_clip_order(self._near, self._far)
@@ -107,8 +110,10 @@ class Camera(Mob):
                 add_to_scene=False,
                 init=False,
             )
-            self.screen.scale(torch.tensor((1 / screen_scale, 1 / screen_scale, 1)))
-            self.screen_scale_factor = screen_scale
+            self.screen.scale(
+                torch.tensor((1 / screen_half_height, 1 / screen_half_height, 1))
+            )
+            self.screen_half_height = screen_half_height
             self.screen.is_primitive = True
             self.is_primitive = True
             self.add_children(self.screen)
@@ -170,23 +175,6 @@ class Camera(Mob):
                 "near clip distance must be less than far clip distance"
             )
 
-    def set_to_orthographic(self):
-        """Use Algan's legacy near-orthographic perspective approximation.
-
-        True parallel-ray orthographic projection is not implemented by the
-        current renderer.  This compatibility method is retained with an
-        explicit warning; new code should call :meth:`set_near_orthographic`
-        so the approximation is visible at the call site.
-        """
-        warnings.warn(
-            "Camera.set_to_orthographic() uses a far-distance perspective "
-            "approximation, not true parallel-ray projection. Use "
-            "set_near_orthographic() to opt into that approximation explicitly.",
-            ApproximationWarning,
-            stacklevel=2,
-        )
-        return self.set_near_orthographic()
-
     def set_near_orthographic(self, distance=1e5):
         """Flatten perspective by moving the camera far from its screen."""
         distance = self._validated_positive("distance", distance)
@@ -199,7 +187,7 @@ class Camera(Mob):
         camera-to-screen distance.
         """
         d = (self.screen.location - self.location).norm(p=2, dim=-1).flatten()[0].item()
-        return math.degrees(2.0 * math.atan(self.screen_scale_factor / max(d, 1e-9)))
+        return math.degrees(2.0 * math.atan(self.screen_half_height / max(d, 1e-9)))
 
     def set_fov(self, fov):
         """Set the vertical field of view (degrees). The camera stays where it
@@ -216,7 +204,7 @@ class Camera(Mob):
             Vertical field of view in degrees, in (0, 180).
         """
         fov = self._validated_fov(fov)
-        d = self.screen_scale_factor / math.tan(math.radians(fov) * 0.5)
+        d = self.screen_half_height / math.tan(math.radians(fov) * 0.5)
         self.orthographic = False
         self.screen.move_to(self.location + self.get_forward_direction() * d)
         return self
@@ -275,9 +263,11 @@ class Camera(Mob):
 
     def set_euler_angles(
         self,
-        angle_1: float | torch.Tensor,
-        angle_2: float | torch.Tensor,
-        angle_3: float | torch.Tensor,
+        yaw: float | torch.Tensor,
+        pitch: float | torch.Tensor,
+        roll: float | torch.Tensor,
+        *,
+        degrees: bool = True,
     ):
         """Point the camera using three Euler rotations about the origin.
 
@@ -293,12 +283,15 @@ class Camera(Mob):
 
         Parameters
         ----------
-        angle_1
-            Rotation about the world x axis (``RIGHT``), **in degrees**.
-        angle_2
-            Rotation about the world y axis (``UP``), **in degrees**.
-        angle_3
-            Rotation about the world z axis (``OUTWARD``), **in degrees**.
+        yaw
+            Rotation about the world x axis (``RIGHT``).
+        pitch
+            Rotation about the world y axis (``UP``).
+        roll
+            Rotation about the world z axis (``OUTWARD``).
+        degrees
+            Whether the three angles are in degrees. Defaults to True; pass False
+            to give them in radians.
 
         Returns
         -------
@@ -306,12 +299,12 @@ class Camera(Mob):
             This camera, so calls can be chained.
         """
         with Sync(animation_manager=self.animation_manager):
-            self.rotate(angle_1, RIGHT, about=ORIGIN)
-            self.rotate(angle_2, UP, about=ORIGIN)
-            self.rotate(angle_3, OUTWARD, about=ORIGIN)
+            self.rotate(yaw, RIGHT, about=ORIGIN, degrees=degrees)
+            self.rotate(pitch, UP, about=ORIGIN, degrees=degrees)
+            self.rotate(roll, OUTWARD, about=ORIGIN, degrees=degrees)
         return self
 
-    def get_render_screen_basis(self):
+    def _get_render_screen_basis(self):
         """Per-frame screen basis used by the renderers to project the scene.
 
         Derived from the camera's own basis -- which is purely rotational,
@@ -324,13 +317,13 @@ class Camera(Mob):
         (e.g. a sphere renders as an ellipse).
         """
         basis = unsquish(self.basis, -1, 3).clone()
-        basis[..., :2, :] = basis[..., :2, :] / self.screen_scale_factor
+        basis[..., :2, :] = basis[..., :2, :] / self.screen_half_height
         return basis
 
-    def retroactive_center(self, mob, **kwargs):
+    def _retroactive_center(self, mob, **kwargs):
         """Frame a Mob, with the camera move recorded earlier in the video.
 
-        The same framing as :meth:`~.Camera.move_to_make_mob_center_of_view`, but
+        The same framing as :meth:`~.Camera.center_on`, but
         recorded at the camera's retroactive timestamp -- so the camera has already
         arrived by the time the Mob does its thing, instead of chasing it.
 
@@ -344,7 +337,7 @@ class Camera(Mob):
         mob
             The Mob to frame.
         **kwargs
-            Passed to :meth:`~.Camera.move_to_make_mob_center_of_view` -- notably
+            Passed to :meth:`~.Camera.center_on` -- notably
             ``buffer_portion``.
 
         Returns
@@ -353,10 +346,10 @@ class Camera(Mob):
             This camera, so calls can be chained.
         """
         with self.retroactive():
-            self.move_to_make_mob_center_of_view(mob, **kwargs)
+            self.center_on(mob, **kwargs)
         return self
 
-    def move_to_make_mob_center_of_view(self, mob, buffer_portion: float = 0.7):
+    def center_on(self, mob, buffer_portion: float = 0.7):
         """Move the camera so a Mob fills the frame, centred.
 
         The camera slides sideways to centre the Mob and in or out until the Mob just

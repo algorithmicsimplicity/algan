@@ -19,7 +19,7 @@ def fresh_scene():
 
 def _screen_rectangle_at_z_zero(scene, bottom_left, top_right):
     camera = scene.camera
-    half_height = camera.screen_scale_factor * (
+    half_height = camera.screen_half_height * (
         -camera.location[..., 2:3] / camera.screen_distance
     )
     half_width = half_height * (
@@ -121,12 +121,14 @@ def test_screen_rectangle_fit_can_preserve_aspect_ratio():
 def _rendered_screen_coords(scene, points):
     """Normalized screen coords of world points, via the *renderer's* projection.
 
-    Deliberately built from ``get_render_screen_basis`` -- what the ray generator
+    Deliberately built from ``_get_render_screen_basis`` -- what the ray generator
     inverts -- rather than from the layout code's own screen frame, so these
     tests check the fit against what actually ends up on screen.
     """
     camera = scene.camera
-    right, up, forward = unsquish(camera.get_render_screen_basis(), -1, 3).reshape(3, 3)
+    right, up, forward = unsquish(camera._get_render_screen_basis(), -1, 3).reshape(
+        3, 3
+    )
     screen = camera.screen.location.reshape(-1)
     eye = camera.location.reshape(-1)
     aspect = scene.video_settings.resolution[0] / scene.video_settings.resolution[1]

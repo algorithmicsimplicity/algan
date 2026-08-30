@@ -55,7 +55,7 @@ So, we can animate a camera movement as follows:
     Scene.save_video()
 
 To aim the camera somewhere specific, :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
-turns it to face a point, and :meth:`~.Camera.move_to_make_mob_center_of_view` frames a given Mob.
+turns it to face a point, and :meth:`~.Camera.center_on` frames a given Mob.
 
 .. seealso::
 
@@ -102,7 +102,7 @@ You can turn them on with one setting:
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
                          color=WHITE, intensity=3).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
@@ -116,7 +116,7 @@ You can turn them on with one setting:
 
 Two things worth noticing:
 
-* :meth:`~algan.scene.Scene.clear_light_sources` drops the default light first, so the
+* :meth:`~algan.scene.Scene.clear_lights` drops the default light first, so the
   lighting is entirely yours.
 * The shadow is hard-edged, because the light has no size. Giving the sun an
   angular size softens the edge.

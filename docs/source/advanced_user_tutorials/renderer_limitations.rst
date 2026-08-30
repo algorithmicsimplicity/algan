@@ -730,10 +730,9 @@ Camera
 ======
 
 * **True orthographic projection is not implemented.**
-  :meth:`Camera.set_to_orthographic <.Camera.set_to_orthographic>` raises an
-  ``ApproximationWarning`` and falls back to
-  :meth:`~.Camera.set_near_orthographic`, which is an ordinary perspective
-  camera moved 1e5 units back from its screen. It looks orthographic and is not:
+  :meth:`~.Camera.set_near_orthographic` is the only spelling, and it says what
+  it does: an ordinary perspective camera moved 1e5 units back from its screen.
+  It looks orthographic and is not:
   geometry spanning a large depth range still converges slightly, and the
   extreme camera distance puts every world-space epsilon in
   :ref:`limits-scale` a long way from the geometry it is meant to separate.

@@ -205,7 +205,7 @@ def apply_manim_defaults(
             scene_camera.set_fov(manim_fov())
 
     if shading:
-        scene.clear_light_sources()
+        scene.clear_lights()
         PointLight(
             scene=scene,
             location=from_manim_coordinates(MANIM_LIGHT_SOURCE).view(1, 1, 3),

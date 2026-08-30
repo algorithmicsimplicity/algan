@@ -21,7 +21,7 @@ _env = 0.08 + 0.35 * (1.0 - _v) * torch.tensor([0.4, 0.6, 1.0]).view(1, 1, 3)
 _env = _env.expand(_H, _W, 3).clone()
 _env[10:18, 12:20] = 5.0
 Scene.set_environment_map(_env)
-Scene.clear_light_sources()
+Scene.clear_lights()
 
 with Off():
     floor = Prism(dimensions=(8.0, 2.5, 0.2))

@@ -403,7 +403,7 @@ through the Scene:
     ball = Sphere(radius=1, color=BLUE).spawn()
 
     camera = Scene.get_camera()
-    Scene.clear_light_sources()
+    Scene.clear_lights()
     PointLight(location=UP * 4 + LEFT * 4 + OUT * 4).spawn()
 
     with Seq(run_time=3, rate_func=rate_funcs.identity):

@@ -253,7 +253,7 @@ def test_aov_guides_carry_surface_albedo_and_normal(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(location=UP * 2.0 + OUT * 4.0, color=WHITE, intensity=0.5).spawn(
             animate=False
         )
@@ -406,7 +406,7 @@ def test_denoising_moves_the_frame_toward_the_reference(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(
             location=UP * 2.5 + OUT * 3.5 + LEFT * 1.0,
             color=WHITE,

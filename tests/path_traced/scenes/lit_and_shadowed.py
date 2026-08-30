@@ -14,7 +14,7 @@ from algan import *
 SETTINGS.raytracing.set(samples_per_pixel=48, shadows=True)
 
 Scene.set_background(BLACK)
-Scene.clear_light_sources()
+Scene.clear_lights()
 
 with Off():
     PointLight(

@@ -37,13 +37,13 @@ automatically**:
         PointLight(location=LEFT * 5 + OUT * 3, color=BLUE, intensity=2).spawn()
 
         # Remove the default light
-        Scene.remove_light_source(lights[0])
+        Scene.remove_light(lights[0])
 
     ball.rotate(180, UP)
 
     Scene.save_video()
 
-To start with a blank slate call :meth:`~algan.scene.Scene.clear_light_sources`,
+To start with a blank slate call :meth:`~algan.scene.Scene.clear_lights`,
 which removes all existing lights.
 
 .. important::
@@ -87,7 +87,7 @@ you can opt into physically-correct attenuation with ``decay`` and a finite
     from algan import *
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         # Inverse-square falloff (decay=2), fading out by 20 units
         PointLight(location=UP * 4, color=WHITE, intensity=30, decay=2,
                    distance=20).spawn()
@@ -114,7 +114,7 @@ Distance does not matter, only direction.
     from algan import *
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         DirectionalLight(location=UP * 10 + RIGHT * 6, target=ORIGIN,
                          color=WHITE, intensity=2).spawn()
 
@@ -137,7 +137,7 @@ Almost every rig wants a little of it.
     from algan import *
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 6 + OUT * 4, target=ORIGIN,
                          color=WHITE, intensity=2).spawn()
         AmbientLight(color=WHITE, intensity=0.4).spawn()
@@ -163,7 +163,7 @@ dim over a shot.
     from algan import *
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(location=UP * 4 + OUT * 2, color=WHITE).spawn()
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
@@ -194,7 +194,7 @@ the light's ``color`` (the "sky"), surfaces facing down receive its
     from algan import *
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         HemisphereLight(color=BLUE, ground_color=(0.4, 0.3, 0.1),
                         intensity=0.8).spawn()
 
@@ -217,7 +217,7 @@ light, it supports ``decay`` and ``distance``.
     from algan import *
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         SpotLight(location=UP * 5 + OUT * 2, target=ORIGIN, color=WHITE,
                   intensity=40, angle=28, penumbra=0.6, decay=2).spawn()
         HemisphereLight(color=BLUE, ground_color=(0.3, 0.2, 0.1), intensity=0.5).spawn()
@@ -245,7 +245,7 @@ a proportional cost.
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         RectAreaLight(location=UP * 5, target=ORIGIN, width=4, height=4,
                       samples=16, color=WHITE, intensity=1.2).spawn()
         AmbientLight(color=WHITE, intensity=0.2).spawn()
@@ -288,7 +288,7 @@ non-zero emitter size:
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
                          color=WHITE, intensity=3, shadow_angle=3).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
@@ -389,7 +389,7 @@ ambient:
     SETTINGS.raytracing.set(shadows=True)
 
     with Off():
-        Scene.clear_light_sources()             # drop the default light
+        Scene.clear_lights()             # drop the default light
 
         # Key light: bright, from above and to one side, with a soft shadow.
         SpotLight(location=UP * 6 + RIGHT * 4 + OUT * 4, target=ORIGIN,

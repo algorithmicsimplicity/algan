@@ -499,7 +499,7 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
         scene.audio_manager,
     )
     scene.audio_manager.video_transcript = "stale"
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(
         algan_utils,
         "get_file_writer",
@@ -537,7 +537,7 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
@@ -571,7 +571,7 @@ def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
@@ -667,7 +667,7 @@ def test_spawned_light_registers_once_and_add_light_is_chainable():
 
     assert light.spawn(animate=False) is light
     light.spawn(animate=False)
-    scene.add_light_source(light)
+    scene.add_light(light)
 
     assert len(scene.light_sources) == initial + 1
     assert sum(item is light for item in scene.light_sources) == 1
@@ -867,7 +867,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
 
     def fake_render_to_video(*_args, **render_kwargs):
@@ -1014,7 +1014,7 @@ def _stub_render(monkeypatch, scene):
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
@@ -1334,7 +1334,7 @@ def test_lifted_path_tracer_features_render(feature, tmp_path):
             sphere.spawn()
         elif feature == "extended_light":
             with algan.Off():
-                scene.clear_light_sources()
+                scene.clear_lights()
                 RectAreaLight(
                     location=UP * 3 + OUT * 3, color=WHITE, intensity=3
                 ).spawn()
@@ -1881,4 +1881,72 @@ def test_move_next_to_align_edge_only_moves_along_the_alignment_axis():
         torch.testing.assert_close(
             caption.get_boundary_point(algan.DOWN)[..., 1],
             chart.get_boundary_point(algan.DOWN)[..., 1],
+        )
+
+
+@pytest.mark.fast
+def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
+    """Phase 4 of the public API overhaul renamed the Scene, Camera, Light and
+    Group surfaces and collapsed the two lifecycle families. Every name below
+    is called here so a later rename fails at a call site.
+    """
+    with algan.Scene() as scene:
+        # Scene -- lights. `add_light` used to exist as an alias of
+        # `add_light_source`; now it is the only spelling.
+        light = PointLight(location=algan.UP * 3, add_to_scene=False)
+        assert scene.add_light(light) is light
+        assert scene.remove_light(light) is light
+        assert scene.clear_lights() is scene
+        for gone in ("add_light_source", "remove_light_source", "clear_light_sources"):
+            assert not hasattr(scene, gone), gone
+
+        # Scene -- pixel conversions round-trip.
+        assert scene.pixels_to_length(scene.length_to_pixels(2.0)) == pytest.approx(2.0)
+
+        # Scene -- one despawn method with flags, and one reset with a flag.
+        Square().spawn()
+        assert scene.despawn_mobs(retain_history=True, duration=0.5) is scene
+        assert scene.reset(rebuild_timeline=False) is scene
+        assert scene.reset() is scene
+        for gone in (
+            "clear_scene",
+            "despawn_scene",
+            "reset_scene",
+            "render_audio_to_file",
+        ):
+            assert not hasattr(scene, gone), gone
+        # `clear` was an alias of `clear_scene`; both are gone.
+        assert not hasattr(scene, "clear")
+
+        # Camera.
+        camera = scene.get_camera()
+        assert camera.screen_half_height > 0
+        assert camera.center_on(Square().spawn()) is camera
+        assert camera.set_euler_angles(5, 0, 0) is camera
+        assert camera.set_euler_angles(PI / 36, 0, 0, degrees=False) is camera
+        assert camera.set_near_orthographic() is camera
+        for gone in (
+            "move_to_make_mob_center_of_view",
+            "set_to_orthographic",
+            "screen_scale_factor",
+            "retroactive_center",
+            "get_render_screen_basis",
+        ):
+            assert not hasattr(camera, gone), gone
+
+        # Lights -- the packing hooks are private, and SpotLight's cone is named.
+        spot = SpotLight(cone_angle=20.0, add_to_scene=False)
+        assert spot.cone_angle == 20.0
+        assert SpotLight(
+            cone_angle=PI / 9, degrees=False, add_to_scene=False
+        ).cone_angle == (pytest.approx(20.0))
+        for gone in ("build_aux", "is_extended", "num_samples", "get_sample_positions"):
+            assert not hasattr(spot, gone), gone
+
+        # Group -- the two arrange parameters that were ambiguous.
+        group = Group(*[Square(add_to_scene=False) for _ in range(6)])
+        assert group.arrange_in_grid(2, row_buffer=0.4, column_buffer=0.2) is group
+        assert (
+            group.arrange_in_line(algan.RIGHT, equal_widths=True, align_to=algan.DOWN)
+            is group
         )

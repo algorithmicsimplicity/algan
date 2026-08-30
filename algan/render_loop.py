@@ -2732,7 +2732,7 @@ class RenderLoopMixin:
             intensity = getattr(light, "intensity", None)
             if intensity is not None:
                 col = col * intensity
-            is_ext = getattr(light, "is_extended", None)
+            is_ext = getattr(light, "_is_extended", None)
             if is_ext is not None and is_ext():
                 # Extended light (see algan.rendering.lights): snapshot its
                 # emitter sample positions and packed aux parameter columns.
@@ -2740,12 +2740,12 @@ class RenderLoopMixin:
                 # light's power.
                 loc_f = loc.reshape(loc.shape[0], -1)[:, :3]  # [T, 3]
                 col_f = col.reshape(col.shape[0], -1)  # [T, C]
-                pos_rows = light.get_sample_positions(loc_f)  # [T, K, 3]
+                pos_rows = light._get_sample_positions(loc_f)  # [T, K, 3]
                 k = pos_rows.shape[-2]
                 col_rows = (
                     (col_f / k if k > 1 else col_f).unsqueeze(-2).expand(-1, k, -1)
                 )
-                aux = light.build_aux(loc_f)  # [T, K, 13]
+                aux = light._build_aux(loc_f)  # [T, K, 13]
                 radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
                 if radiance_cols is not None:
                     # Radiance-bearing aux columns (a hemisphere's ground
@@ -2754,7 +2754,7 @@ class RenderLoopMixin:
                     # outside the light's lifespan pack a genuinely all-zero
                     # (inert) row rather than a row that keeps emitting from
                     # its aux columns. Two SEPARATE multiplies, intensity then
-                    # opacity, because that is the order build_aux used to bake
+                    # opacity, because that is the order _build_aux used to bake
                     # in ((ground * intensity) * opacity); float multiplication
                     # is not associative, so folding the two scalars first
                     # could differ in the last bit and move a
@@ -2780,7 +2780,7 @@ class RenderLoopMixin:
         return {
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
-            "screen_basis": camera.get_render_screen_basis().to(device),
+            "screen_basis": camera._get_render_screen_basis().to(device),
             "lights": lights,
             "light_objects": light_objects,
         }

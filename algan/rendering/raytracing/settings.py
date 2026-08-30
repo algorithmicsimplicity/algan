@@ -3032,13 +3032,13 @@ def set_fragment_shading(enabled):
 
 # What a RECT AREA LIGHT's shadow rays integrate. Each of its packed rows
 # stands for one cell of its emitter grid, but nothing downstream knew a cell
-# existed: RectAreaLight.build_aux left the shadow-radius column (packed
+# existed: RectAreaLight.__build_aux left the shadow-radius column (packed
 # column 11) at zero, so every row took the single-hard-ray path in both
 # shadow fans and the union of K hard shadows was a staircase with K+1 levels
 # (measured [0.01, 0.25, 0.52, 0.74] on a k/4 grid at samples=4) wherever a
 # continuous ramp belongs.
 #
-# ON, build_aux packs each row's CELL half-extents and the rectangle's right
+# ON, _build_aux packs each row's CELL half-extents and the rectangle's right
 # axis into columns the area type never used, and both shadow fans place
 # their SOFT_SHADOW_SAMPLES samples inside that cell, in the light's own
 # plane (an R2 low-discrepancy sequence whose s = 0 sample is exactly the
@@ -3062,7 +3062,7 @@ def set_fragment_shading(enabled):
 # fall back to the packed cell centres exactly as the fans do.
 #
 # OFF restores today's row bit-for-bit. The flag is read host-side ONLY, in
-# build_aux, which packs zeros to the extra columns when it is off -- the
+# _build_aux, which packs zeros to the extra columns when it is off -- the
 # kernels' ``radius`` stays 0.0 and takes the existing single-ray path. There
 # is deliberately no ``ti.static`` gate: a compile-time switch would fork the
 # shade kernels into per-arm variants (and need one process per arm, since a

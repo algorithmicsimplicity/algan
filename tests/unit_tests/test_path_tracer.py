@@ -265,7 +265,7 @@ def test_camera_clip_planes_apply_under_path_tracing(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         Square(side_length=3.0, color=RED).spawn(animate=False)
 
     def with_camera(**clip):
@@ -307,7 +307,7 @@ def test_lambert_furnace_is_lossless(tmp_path):
 
     def build(scene):
         scene.set_background(WHITE)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         sphere = Sphere(radius=1.0)
         sphere.set_material(MeshLambertMaterial(color=WHITE))
         sphere.spawn(animate=False)
@@ -328,7 +328,7 @@ def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
 
     def build(scene):
         scene.set_background(WHITE)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         sphere = Sphere(radius=1.0)
         sphere.set_material(
             MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.5)
@@ -356,7 +356,7 @@ def test_nee_direct_lighting_matches_deterministic(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(animate=False)
         plane = Prism(dimensions=(7.0, 7.0, 0.1))
         plane.set_material(MeshLambertMaterial(color=RED))
@@ -388,7 +388,7 @@ def test_point_light_shadow_under_path_tracing(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(animate=False)
         floor = Prism(dimensions=(7.0, 7.0, 0.1))
         floor.set_material(MeshLambertMaterial(color=WHITE))
@@ -426,7 +426,7 @@ def test_indirect_light_bleeds_color(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         PointLight(location=(UP * 2.0 + OUT * 5.0), color=WHITE, intensity=1.2).spawn(
             animate=False
         )
@@ -507,7 +507,7 @@ def test_area_light_matches_the_deterministic_grid_limit(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         RectAreaLight(
             location=OUT * 3.0,
             width=3.0,
@@ -566,7 +566,7 @@ def test_emissive_quad_matches_the_reference_integral(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         floor = Prism(dimensions=(8.0, 8.0, 0.2))
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
@@ -661,7 +661,7 @@ def test_env_map_lighting_matches_the_reference_integral(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         scene.set_environment_map(env, ambient=False)
         floor = Prism(dimensions=(5.0, 5.0, 0.2))
         floor.set_material(MeshLambertMaterial(color=WHITE))
@@ -862,7 +862,7 @@ def test_closed_shell_attenuates_once_at_authored_opacity(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         _emissive_shell_cube().spawn(animate=False)
 
     pt, result = _render_scene_result(
@@ -901,7 +901,7 @@ def test_closed_shell_ceiling_off_restores_per_crossing_attenuation(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         _emissive_shell_cube().spawn(animate=False)
 
     pt, _ = _render_scene_result(
@@ -931,7 +931,7 @@ def test_shell_ring_overflow_is_counted_not_silent(tmp_path):
 
     def build(scene):
         scene.set_background(BLACK)
-        Scene.clear_light_sources()
+        Scene.clear_lights()
         for k in range(5):
             _emissive_shell_cube(dimensions=(0.6 + 0.4 * k,) * 3, opacity=0.3).spawn(
                 animate=False

@@ -1915,7 +1915,7 @@ class Surface(Mob):
         screen_vector = camera.screen.location.reshape(-1, 3)[0] - camera_location
         screen_distance = (screen_vector * forward).sum().abs().clamp_min(1e-8)
         pixel_scale = self.scene.video_settings.resolution[1] / (
-            2.0 * float(camera.screen_scale_factor)
+            2.0 * float(camera.screen_half_height)
         )
         safe_depth = depth.clamp_min(1e-8)
         x = (relative * right).sum(dim=-1) * screen_distance / safe_depth

@@ -206,12 +206,12 @@ ordinary animations, so members slide into place rather than jumping.
     group.arrange_in_line(RIGHT)                    # a row
     group.arrange_in_line(DOWN, buffer=0.2)         # a tight column
     group.arrange_in_grid(3)                        # 3 rows
-    group.arrange_in_grid(3, buffer=1.0)            # 3 rows, generously spaced
+    group.arrange_in_grid(3, row_buffer=1.0)        # 3 rows, generously spaced
 
     Scene.save_video()
 
-``arrange_in_line`` also takes ``alignment_direction`` to line the members up on
-an edge rather than their centres, and ``equal_displacement`` to space centres
+``arrange_in_line`` also takes ``align_to`` to line the members up on
+an edge rather than their centres, and ``equal_widths`` to space centres
 evenly instead of leaving equal gaps. ``arrange_in_grid`` takes
 ``row_direction`` / ``column_direction`` to control which way the grid fills.
 

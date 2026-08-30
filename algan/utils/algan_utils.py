@@ -307,7 +307,7 @@ def _render_scene_to_file(
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)
 
-        # Must run before clear_scene below, which drops never-spawned actors
+        # Must run before despawn_mobs below, which drops never-spawned actors
         # from scene.actors and would leave nothing to report. Skipped when
         # nothing spawned at all, because EmptySceneWarning already covers that.
         if any(actor.is_spawned() for actor in scene.actors):
@@ -327,13 +327,13 @@ def _render_scene_to_file(
         # timeline whether or not the scene is being reset afterwards.
         if animate_fade_out:
             scene_finalized = True
-            scene.clear_scene()
+            scene.despawn_mobs(retain_history=True, duration=0.5)
         elif reset:
             # The scene is about to be discarded: keep the historical
             # instantaneous despawn so reset=True behaves exactly as before.
             scene_finalized = True
             with Off(animation_manager=scene.animation_manager):
-                scene.clear_scene(animate=False)
+                scene.despawn_mobs(retain_history=True, duration=0.5, animate=False)
         else:
             # Leave the authored scene re-renderable: no despawns, no actor
             # filtering. Mobs stay spawned and the timeline stays as written,
@@ -371,7 +371,7 @@ def _render_scene_to_file(
 
         logger.info(f"Began rendering {destination.name}")
         start_time = time.perf_counter()
-        audiofile = scene.render_audio_to_file(
+        audiofile = scene.save_audio(
             str(audio_file_path),
             video_settings.audio_frames_per_second,
             nbytes=4,

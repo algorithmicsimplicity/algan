@@ -38,7 +38,7 @@ ones that matter for camera work:
      - Turn to face a point without moving.
    * - ``camera.orbit(deg, UP, about=p)``
      - Swings along a circle around ``p`` *without* changing its pointing direction.
-   * - ``camera.move_to_make_mob_center_of_view(mob)``
+   * - ``camera.center_on(mob)``
      - Automatically reframes so the target Mob is centered.
 
 The turntable shot is the classic way to show off a 3-D scene. Notice that we use
@@ -120,7 +120,7 @@ any other property, making dramatic "dolly zoom" effects simple.
 
 Algan also exposes the underlying perspective controls directly:
 :meth:`~algan.rendering.camera.Camera.set_distance_to_screen` moves the focus point relative to the
-screen plane, and the constructor's ``screen_distance`` / ``screen_scale`` set
+screen plane, and the constructor's ``screen_distance`` / ``screen_half_height`` set
 them up front. ``fov`` is derived from these, so use one or the other, not both.
 
 .. _camera-orthographic:

@@ -82,7 +82,7 @@ def _render_one_reflective_frame(tmp_path, name):
         with Scene(video_settings=SMOKE_TEST) as scene:
             scene.set_background(BLACK)
             with Off():
-                Scene.clear_light_sources()
+                Scene.clear_lights()
                 PointLight(
                     location=UP * 3.0 + RIGHT * 2.0,
                     color=WHITE,

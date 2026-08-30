@@ -62,7 +62,7 @@ def _render_stills(name, animate_intensity, times):
     """Render ``times`` as stills from a one-sphere scene, return their means."""
     with Scene() as scene:
         with Off():
-            scene.clear_light_sources()
+            scene.clear_lights()
             AmbientLight(color=WHITE, intensity=0.05).spawn()
             key = PointLight(location=UP * 3 + OUT * 4, color=WHITE, intensity=0.5)
             key.spawn()

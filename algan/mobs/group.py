@@ -328,8 +328,8 @@ class Group(Mob):
         direction: torch.Tensor = RIGHT,
         buffer: float | None = None,
         start_at_first: bool = False,
-        equal_displacement: bool = False,
-        alignment_direction: torch.Tensor | None = None,
+        equal_widths: bool = False,
+        align_to: torch.Tensor | None = None,
     ):
         """Lay the members out in a line.
 
@@ -352,11 +352,11 @@ class Group(Mob):
         start_at_first
             Whether to keep the first member where it is and build the line out from
             it. Defaults to False, which centers the line on the Group's location.
-        equal_displacement
+        equal_widths
             Whether to space members by a constant pitch (that of the largest member)
             rather than by their own sizes. Defaults to False. True gives evenly
             spaced centers, which is what you want for a row of labelled cells.
-        alignment_direction
+        align_to
             Direction along which to additionally align members, e.g. ``DOWN`` to sit
             them all on a shared baseline. Defaults to ``None``, meaning no secondary
             alignment.
@@ -384,16 +384,14 @@ class Group(Mob):
             )
             for m in self.children
         ]
-        if alignment_direction is not None:
+        if align_to is not None:
             alignment_dists = [
-                (m.get_boundary_point(alignment_direction) - m.get_center()).norm(
-                    p=2, dim=-1
-                )
+                (m.get_boundary_point(align_to) - m.get_center()).norm(p=2, dim=-1)
                 for m in self.children
             ]
             max_dist = max(alignment_dists)
             alignment_offsets = [max_dist - _ for _ in alignment_dists]
-        if equal_displacement:
+        if equal_widths:
             max_size = max(mob_sizes)
             mob_sizes = [max_size for _ in range(len(mob_sizes))]
         total_size = sum(mob_sizes) + (buffer * (len(mob_sizes) - 1))
@@ -407,8 +405,8 @@ class Group(Mob):
             for i, mob in enumerate(self.children):
                 start = start + direction * (mob_sizes[i] / 2)
                 location = start
-                if alignment_direction is not None:
-                    location = location + alignment_offsets[i] * alignment_direction
+                if align_to is not None:
+                    location = location + alignment_offsets[i] * align_to
                 # loc + (disp_to_center) = l
                 mob.location = location + (mob.location - mob.get_center())
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
@@ -451,7 +449,7 @@ class Group(Mob):
         num_rows: int = None,
         row_direction: torch.Tensor = RIGHT,
         column_direction: torch.Tensor = DOWN,
-        buffer=None,
+        row_buffer=None,
         column_buffer=None,
         tight_axis=None,
     ):
@@ -477,12 +475,12 @@ class Group(Mob):
             Direction along which a row runs. Defaults to ``RIGHT``.
         column_direction
             Direction in which successive rows are stacked. Defaults to ``DOWN``.
-        buffer
+        row_buffer
             Gap between members within a row, in world units. Defaults to ``None``,
             meaning ``SETTINGS.style.buffer`` (``0.6``).
         column_buffer
             Gap between rows, in world units. Defaults to ``None``, meaning use
-            ``buffer``.
+            ``row_buffer``.
         tight_axis
             Which axis sizes its cells per row/column rather than uniformly across
             the whole grid: ``0`` for columns, ``1`` for rows. Defaults to ``None``,
@@ -518,10 +516,10 @@ class Group(Mob):
         """
         if not self.children:
             return self
-        if buffer is None:
-            buffer = SETTINGS.style.buffer
+        if row_buffer is None:
+            row_buffer = SETTINGS.style.buffer
         if column_buffer is None:
-            column_buffer = buffer
+            column_buffer = row_buffer
         if num_rows is None:
             num_rows = max(1, math.ceil(math.sqrt(len(self.children))))
         if not isinstance(num_rows, int) or isinstance(num_rows, bool) or num_rows <= 0:
@@ -533,7 +531,7 @@ class Group(Mob):
         column_direction = F.normalize(column_direction, p=2, dim=-1)
         buf_dist1 = [
             max([m.get_length_in_direction(row_direction) for m in self.children])
-            + buffer
+            + row_buffer
             for _ in range(num_cols)
         ]
         buf_dist2 = [
@@ -551,7 +549,7 @@ class Group(Mob):
                         for j in range(num_rows)
                         if i + j * num_cols < len(self.children)
                     )
-                    + buffer
+                    + row_buffer
                     for i in range(num_cols)
                 ]
             elif tight_axis == 1:

@@ -470,6 +470,20 @@ Scene.reset(rebuild_timeline=True)
 - `reset_scene()` becomes `reset(rebuild_timeline=False)`; today's `reset()` is
   `reset(rebuild_timeline=True)`, which is the default.
 
+**Resolved as:** `despawn_mobs(retain_history=False, duration=None, **kwargs)` and
+`reset(rebuild_timeline=True)`, exactly as proposed. `clear()`, `clear_scene()`,
+`despawn_scene()` and `reset_scene()` are all gone. The internal callers were checked and each
+was rewritten to the spelling that preserves its behaviour: `save_video`'s `animate_fade_out`
+path and its `reset=True` path both become
+`despawn_mobs(retain_history=True, duration=0.5)`, and `Scene.__init__` and `reset()` both
+reach the contents-only half through a private `_rebuild_contents()` rather than through the
+public method, so neither depends on the default.
+
+**Also found: `Scene.add_light` and `remove_light` already existed**, as plain
+`add_light = add_light_source` class-level aliases. The design appendix says "`add_light` does
+not exist"; it did. That makes this a duplication removal and not only a rename, which is what
+the API policy asks for either way.
+
 **Check the internal callers before picking the defaults.** `despawn_scene` is called by
 `clear_scene`, and `reset` calls `reset_scene` as its last step; both are also reached from
 `save_video`'s `animate_fade_out` path. A default that flips either behaviour silently changes
@@ -487,11 +501,28 @@ stack — a different concept that the review wrongly grouped with the reset fam
 | `set_euler_angles(angle_1, angle_2, angle_3)` | `set_euler_angles(yaw, pitch, roll, *, degrees=True)` |
 | `retroactive_center(mob)` | `_retroactive_center` |
 | `get_render_screen_basis()` | `_get_render_screen_basis` |
-| `screen_scale` | `frame_height` (it is the half-height of the virtual screen) |
+| `screen_scale` **and** the `screen_scale_factor` attribute it stores into | `screen_half_height` — **not** `frame_height` |
+
+**Corrected during implementation — `frame_height` would have been wrong twice.** The value is
+the half-height of the virtual screen *at `screen_distance`*: the default 2.5 at a screen
+distance of 5 gives `tan(fov/2) = 0.5`, and the visible half-height at the origin plane is 3.5,
+not 2.5. So it is neither a full height nor a frame measurement — and `frame_height` is exactly
+the name Manim uses for its full 8-unit frame, so that spelling would mislead the migration
+audience it is most likely to reach. `screen_half_height` says what it is and pairs with the
+`screen_distance` it is measured against. The constructor parameter and the attribute were
+already two spellings of one number (`screen_scale` / `screen_scale_factor`); they collapse into
+this one name.
 
 `set_to_orthographic()` and `set_near_orthographic(distance=1e5)` are two spellings of one
 concept — the same duplication being removed from `Scene`. Consolidate to
 `set_orthographic(near=False, distance=...)` or equivalent.
+
+**Resolved as: `set_near_orthographic(distance=1e5)` survives alone and `set_to_orthographic` is
+deleted.** The proposed `set_orthographic(near=False)` cannot work, because its default would
+name true parallel-ray projection, which this renderer does not implement — the flag would have
+one usable value. `set_to_orthographic` was already nothing but a deprecation shim that emitted
+an `ApproximationWarning` and called the other one; deleting it is what the API policy says to do
+with a second spelling, and the surviving name is the honest one.
 
 **Keep `screen_distance` and `fov` both.** `fov` already exists as a constructor parameter and
 as `get_fov`/`set_fov`; it is a derived spelling of `screen_distance` given `screen_scale`.
@@ -504,7 +535,8 @@ freedom. The review's `focal_distance`/`fov` proposal is withdrawn.
   (`_build_aux`, `_is_extended`, `_num_samples`, `_get_sample_positions`). All four are
   overridden across `PointLight`, `DirectionalLight`, `HemisphereLight`, `SpotLight` and
   `RectAreaLight` — rename every override in the same commit.
-- `SpotLight(angle=30.0)` → `SpotLight(cone_angle=30.0, ..., *, degrees=True)`.
+- `SpotLight(angle=30.0)` → `SpotLight(cone_angle=30.0, ..., degrees=True)`. (`degrees` is an
+  ordinary keyword rather than keyword-only: everything after `*args` on a Light already is.)
 
 **`DirectionalLight` keeps `target`.** It shares `_TargetedLight` with `SpotLight` and
 `RectAreaLight`, which legitimately have both a position and a target; giving it a `direction`

@@ -58,7 +58,7 @@ def _light(**kwargs):
 def _aux(light, loc=(0.0, 0.0, 3.0)):
     """Packed aux for one frame, ``[K, 13]``, with the light facing -z."""
     location = torch.tensor([loc], dtype=torch.float32)
-    return light.build_aux(location)[0]
+    return light._build_aux(location)[0]
 
 
 def test_cells_pack_half_extents_and_equal_area_radius():
@@ -80,7 +80,7 @@ def test_packed_right_axis_is_unit_and_orthogonal_to_the_normal():
     with Scene():
         light = _light(width=1.8, height=1.0, samples=4)
         location = torch.tensor([(0.0, 0.0, 3.0)])
-        aux = light.build_aux(location)[0]
+        aux = light._build_aux(location)[0]
         right, _up = light._rect_axes(location)
     normal = aux[0, 3:6]
     packed_right = aux[0, 9:12]
@@ -98,14 +98,14 @@ def test_cells_tile_the_rectangle():
     with Scene():
         light = _light(width=1.8, height=1.0, samples=4)
         location = torch.tensor([(0.2, -0.4, 3.0)])
-        aux = light.build_aux(location)[0]
+        aux = light._build_aux(location)[0]
         k = light._grid_side()
         hu, hv = aux[0, 6].item(), aux[0, 7].item()
         assert 2 * k * hu == pytest.approx(1.8)
         assert 2 * k * hv == pytest.approx(1.0)
 
         right, up = light._rect_axes(location)
-        positions = light.get_sample_positions(location)[0]  # [K, 3]
+        positions = light._get_sample_positions(location)[0]  # [K, 3]
         rel = positions - location[0]
         along_r = rel @ right[0]
         along_u = rel @ up[0]
@@ -142,12 +142,12 @@ def test_other_light_types_pack_aux_6_to_11_exactly_as_before():
     """
 
     def _row(light, loc=(0.0, 0.0, 0.0)):
-        return light.build_aux(torch.tensor([loc], dtype=torch.float32))[0, 0]
+        return light._build_aux(torch.tensor([loc], dtype=torch.float32))[0, 0]
 
     with Scene():
         point = _row(PointLight(decay=2, distance=5.0, shadow_radius=0.25))
         spot = _row(
-            SpotLight(angle=30.0, penumbra=0.5, shadow_radius=0.1),
+            SpotLight(cone_angle=30.0, penumbra=0.5, shadow_radius=0.1),
             loc=(0.0, 0.0, 3.0),
         )
         directional = _row(DirectionalLight(shadow_angle=10.0), loc=(0.0, 0.0, 3.0))
@@ -178,7 +178,7 @@ def test_other_light_types_pack_aux_6_to_11_exactly_as_before():
 
 
 def test_flag_off_packs_todays_row(monkeypatch):
-    """With the toggle off, build_aux writes zeros to aux 6-11: bit-for-bit
+    """With the toggle off, _build_aux writes zeros to aux 6-11: bit-for-bit
     today's row, so the kernels take their existing single-ray path.
     """
     monkeypatch.setattr(rt_settings, "area_light_soft_shadows", False)
@@ -193,7 +193,7 @@ def test_flag_off_packs_todays_row(monkeypatch):
 
 def test_experimental_setting_surfaces_and_drives_the_legacy_global():
     """``SETTINGS.raytracing.experimental.area_light_soft_shadows`` is the
-    supported way to flip the flag, and it writes the global build_aux reads.
+    supported way to flip the flag, and it writes the global _build_aux reads.
     """
     previous = SETTINGS.raytracing.experimental.area_light_soft_shadows
     try:
@@ -233,7 +233,7 @@ def _render_one_area_shadow_frame(tmp_path, name):
         with Scene(video_settings=SMOKE_TEST) as scene:
             scene.set_background(BLACK)
             with Off():
-                Scene.clear_light_sources()
+                Scene.clear_lights()
                 RectAreaLight(
                     location=UP * 5.0,
                     target=ORIGIN,

@@ -41,7 +41,7 @@ Here are the built-in ways to draw the viewer's eye to a specific Mob:
     from algan import *
 
     grid = Group([Square(color=BLUE).scale(0.35) for _ in range(9)])
-    grid.arrange_in_grid(3, buffer=0.5).spawn()
+    grid.arrange_in_grid(3, row_buffer=0.5).spawn()
 
     target = grid[4]
     Indicate(target)
@@ -199,7 +199,7 @@ vector flows:
     import torch
 
     grid = Group([Square(color=BLUE).scale(0.45) for _ in range(16)])
-    grid.arrange_in_grid(4, buffer=0.1).spawn()
+    grid.arrange_in_grid(4, row_buffer=0.1).spawn()
 
     ApplyMatrix(grid, torch.tensor([[1.0, 0.6], [0.0, 1.0]]), run_time=2)
 
@@ -214,7 +214,7 @@ deform continuously rather than just interpolate between two states:
     import torch
 
     grid = Group([Square(color=BLUE).scale(0.3) for _ in range(16)])
-    grid.arrange_in_grid(4, buffer=0.15).spawn()
+    grid.arrange_in_grid(4, row_buffer=0.15).spawn()
 
     def swirl(x, y, z, t):
         angle = t * 1.5 * torch.exp(-(x ** 2 + y ** 2) / 6)
@@ -235,7 +235,7 @@ natural way to visualise a differential equation:
     import torch
 
     dots = Group([Dot(color=YELLOW).scale(1.5) for _ in range(25)])
-    dots.arrange_in_grid(5, buffer=1.0).spawn()
+    dots.arrange_in_grid(5, row_buffer=1.0).spawn()
 
     def rotation_field(points):
         return torch.stack((-points[..., 1], points[..., 0],
