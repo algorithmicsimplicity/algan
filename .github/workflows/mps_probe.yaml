@@ -465,6 +465,19 @@ jobs:
         continue-on-error: true
         run: uv run python benchmarks/_mps_torch_op_probe.py
 
+      # The same render with every suspect torch op checked against the CPU as
+      # it runs, which names the op behind a wrong frame instead of leaving it
+      # to inference. FIRST, and separate from the check below, for two
+      # reasons: it perturbs what it measures -- every check moves a tensor to
+      # the host, and those syncs could hide exactly the torch/Taichi ordering
+      # hazard `mps_zero_copy` warns about -- so the honest render must not be
+      # this one; and it pays the cold Taichi compile, leaving the check warm.
+      - name: Attribute any wrong frame to a torch op
+        continue-on-error: true
+        env:
+          ALGAN_LOG_TAICHI_COMPILES: "1"
+        run: uv run python benchmarks/_mps_render_smoke.py --verify-torch-ops
+
       # The smallest thing that exercises the whole renderer, run before the
       # suite so a total failure to render costs one minute rather than the
       # suite's twenty. It writes a PNG through save_frame, so it needs no
