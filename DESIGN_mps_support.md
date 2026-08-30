@@ -411,18 +411,42 @@ arrives as a picture nobody can explain.
 
 `benchmarks/_mps_torch_op_probe.py` asks the second question — every op the
 compaction uses, run on MPS and on the CPU over the same input in one process, at
-the pipeline's real dtypes and magnitudes. Two ops disagree:
+the pipeline's real dtypes and magnitudes. Two ops disagree: `index_select` (and
+`torch.gather`) over integer **values**, and `//` on int64.
 
-| op | measured |
-| --- | --- |
-| `index_select` over int64 **values** near 2**62 | **every one** of 60000 elements changed, relative error 2.7e-8 |
-| `//` on int64 near 2**40 | disagrees with the CPU |
+**The gather round-trips integers through a float32.** That is not an
+impression, it is what the returned values are. The probe builds the values on
+the host, proves the move to the device is bit-exact, and only then gathers, so
+what it catches is the gather alone:
 
-2.7e-8 is about **25 significant bits** — a float round trip, not 64-bit integer
-work. Storing and moving the same values *is* exact (a device round trip returns
-them bit for bit), and `>>`, `&` and multiply-add are exact at 2**50, so it is
-those operations specifically rather than int64 as a whole. The index dtype is
-also fine: `index_select` over **float32 values** with an int64 *index* is exact.
+| width | int32 | int64 |
+| --- | --- | --- |
+| 2**16 … 2**24 | exact | exact |
+| 2**25 | **wrong** | **wrong** |
+| 2**30 / 2**40 / 2**62 | **wrong** | **wrong** |
+
+The boundary is 2**24 and it is *the same for both widths*, which already says
+this is not about int64. And every value that comes back is exactly
+`float32(correct_value)`, round-to-nearest:
+
+| correct | MPS returned | `float32(correct)` |
+| --- | --- | --- |
+| 18271053 | 18271052 | 18271052 |
+| 756440460 | 756440448 | 756440448 |
+| 976314890686 | 976314892288 | 976314892288 |
+| 3314435950399956755 | 3314436020488896512 | 3314436020488896512 |
+
+**It is a torch dispatch defect, not a Metal limit.** In the same run, over the
+same values at 2**40, `index_select` and `torch.gather` are wrong while
+**advanced indexing `v[i]` is exact**, and so is a `repeat_interleave` slice
+(`torch.take` is not implemented on MPS at all). The hardware moves those bits
+correctly through one aten path and not through another. Nothing here appears
+in any documentation we found; it was located by measurement, and it is worth an
+upstream report.
+
+Storing, moving, comparing, shifting, masking and multiply-add are exact at
+every width. The index dtype is fine too: `index_select` over **float32 values**
+with an int64 *index* is exact.
 
 Both of Algan's wide int64s are composite keys, so both were hit:
 
@@ -441,10 +465,19 @@ Both of Algan's wide int64s are composite keys, so both were hit:
   128 with it — and fixed by `mps_compat.band_class_groups`, which groups the
   pairs by a two-pass stable sort instead of forming the product.
 
-The general rule this leaves: **on MPS, do not put a value wider than about 2**24
-through an int64 gather, division or `unique`.** Composite keys are where a
-renderer builds such values, and they are exactly the values whose low bits carry
-the meaning.
+The general rule this leaves: **on MPS, do not put a value above 2**24 through a
+gather, a division or a `unique`, at any integer width.** Composite keys are
+where a renderer builds such values, and they are exactly the values whose low
+bits carry the meaning.
+
+`mps_compat.gather_packed_key` splits into four 16-bit lanes rather than using
+`v[i]`, which would be one gather instead of four and faster. The reason is that
+`v[i]`'s exactness is a property of which aten kernel this torch version
+dispatches it to — a silent dependency, on precisely the silent failure mode
+this section is about. A 16-bit lane cannot be wrong on any dispatch path, and
+`test_the_split_gather_keeps_every_lane_under_the_mps_ceiling` enforces the
+property by watching what the gathers are actually handed rather than trusting
+the arithmetic. Worth revisiting if the gather ever shows up in a profile.
 
 ### 2.4 How non-deterministic MPS actually is
 

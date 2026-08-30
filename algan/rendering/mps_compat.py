@@ -164,19 +164,36 @@ def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to(torch.int32) if mps_friendly() else tensor
 
 
-#: Where MPS's integer gather stops being exact. Measured, not assumed:
-#: ``benchmarks/_mps_torch_op_probe.py`` walks 2**20, 2**24, 2**30, 2**40,
-#: 2**50 and 2**62 on an Apple GPU and reports
+#: Where MPS's integer gather stops being exact, and **why**. Measured on an
+#: Apple GPU by ``benchmarks/_mps_torch_op_probe.py``, which builds the values
+#: on the host, proves the move to the device is bit-exact, and only then
+#: gathers -- so what it catches is the gather and nothing around it:
 #:
-#:     2**20: all exact        2**30: //, index_select
-#:     2**24: all exact        2**40: //, index_select
-#:                             2**50: //, index_select
-#:                             2**62: //, index_select
+#:     int32 2**16 ok    int32 2**24 ok    int32 2**25 FAIL   int32 2**30 FAIL
+#:     int64 2**24 ok    int64 2**25 FAIL  int64 2**40 FAIL   int64 2**62 FAIL
 #:
-#: which is a float32 mantissa to the bit, and is what ``index_select`` and
-#: ``//`` evidently run through. Storing, moving, comparing, shifting, masking
-#: and multiply-add stay exact at every rung, so it is those two operations
-#: rather than int64 as a whole.
+#: The boundary is 2**24 and it is the same for both widths, which already says
+#: this is not about int64. The returned values say what it *is*: every one of
+#: them is exactly ``float32(correct_value)``, round-to-nearest --
+#: 18271053 -> 18271052, 756440460 -> 756440448, 976314890686 -> 976314892288,
+#: 3314435950399956755 -> 3314436020488896512. So the gather round-trips
+#: integers through a float32, and 24 bits is its significand.
+#:
+#: **It is a torch dispatch defect, not a Metal limit.** In the same run, over
+#: the same values at 2**40, ``index_select`` and ``torch.gather`` are wrong
+#: while **advanced indexing ``v[i]`` is exact**, and so is a
+#: ``repeat_interleave`` slice (``torch.take`` is not implemented on MPS at
+#: all). The hardware can clearly move those bits; two particular aten paths
+#: do not. Storing, moving, comparing, shifting, masking and multiply-add are
+#: exact at every rung.
+#:
+#: Lanes are used below rather than ``v[i]`` deliberately. ``v[i]`` is one
+#: gather instead of four and would be faster, but it is exact only because of
+#: which aten kernel this torch version happens to dispatch it to -- a silent
+#: dependency, on the same silent failure mode this whole module exists to
+#: contain. Splitting to 16 bits cannot be wrong on any dispatch path, and
+#: ``test_the_split_gather_keeps_every_lane_under_the_mps_ceiling`` enforces
+#: that by watching what the gathers are handed.
 _MPS_EXACT_INT_BITS = 24
 
 #: Lane width for :func:`gather_packed_key`. Any value below 2**16 is far
