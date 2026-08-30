@@ -12,7 +12,7 @@ The Mob model, packing, and how geometry reaches the renderer. Read this before 
 - `../algan/mobs/shapes_2d.py` and `../algan/mobs/text.py` (`Text`/`Tex`) — cubic bezier circuits, built on
   `../algan/mobs/bezier_circuit.py`.
 - `../algan/mobs/shapes_3d.py` — triangle meshes via `Surface` (`../algan/mobs/surfaces/surface.py`).
-- `../algan/mobs/three_d_models/` — `ThreeDModelMob`, which imports .glb/.fbx.
+- `../algan/mobs/three_d_models/` — `Model3D`, which imports .glb/.fbx.
 - `ManimMob` wraps Manim mobjects.
 
 ## Animatable and Mob model
@@ -52,7 +52,7 @@ Important mob implementations include:
 
 - 2D shapes and text, represented primarily as cubic Bezier circuits;
 - `Surface` and 3D shapes, represented as flat triangle meshes (curved surfaces are diced from logical PN patches per frame);
-- `TriangleMesh` and `ThreeDModelMob` for imported 3D assets;
+- `TriangleMesh` and `Model3D` for imported 3D assets;
 - `PointCloud`/point-cloud mobs;
 - Manim compatibility wrappers and conversion helpers.
 

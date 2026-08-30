@@ -29,7 +29,7 @@ SETTINGS.video.set(LD)
 
 with Off():
     Group(
-        [Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
+        [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
     ).spawn()
 
 with Seq(run_time=4, rate_func=rate_funcs.identity):

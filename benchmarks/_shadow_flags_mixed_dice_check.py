@@ -58,9 +58,9 @@ def build_scene(arm):
             intensity=1.0,
             shadow_angle=0.0,
         ).spawn(animate=False)
-        floor = Prism(dimensions=(16, 0.5, 9), fill_color=GRAY, fill_opacity=1).move(
-            DOWN * 2.2
-        )
+        floor = Prism(
+            width=16, height=0.5, depth=9, fill_color=GRAY, fill_opacity=1
+        ).move(DOWN * 2.2)
         floor.spawn(animate=False)
 
         # Curved surfaces, so both reach the renderer as logical-PN patches

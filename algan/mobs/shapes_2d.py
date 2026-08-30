@@ -874,7 +874,7 @@ class Square(Rectangle):
 
     Parameters
     ----------
-    side_length
+    size
         Length of each side, in world units. Defaults to ``2``.
     **kwargs
         Passed to :class:`~.Rectangle` and on to :class:`~.BezierCircuitCubic` --
@@ -893,8 +893,8 @@ class Square(Rectangle):
         Scene.save_video()
     """
 
-    def __init__(self, side_length=2, **kwargs):
-        super().__init__(width=side_length, height=side_length, **kwargs)
+    def __init__(self, size=2, **kwargs):
+        super().__init__(width=size, height=size, **kwargs)
 
 
 class Circle(BezierCircuitCubic):

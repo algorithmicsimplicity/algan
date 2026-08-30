@@ -129,11 +129,11 @@ def build_scene():
             (ManimMaterial(), UP * 2.6),
         ]
         for mat, loc in mats:
-            cube = Cube(side_length=0.9).move(loc)
+            cube = Cube(size=0.9).move(loc)
             cube.set_material(mat)
             cube.spawn(animate=False)
 
-        custom = Cube(side_length=0.9).move(LEFT * 3.2 + UP * 0.4)
+        custom = Cube(size=0.9).move(LEFT * 3.2 + UP * 0.4)
         custom.set_fragment_shader(USER_STAGE)
         custom.spawn(animate=False)
 

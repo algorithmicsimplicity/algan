@@ -161,7 +161,7 @@ def test_a_cube_is_one_surface_not_one_per_triangle():
     """
     with Scene():
         with Off():
-            cube = Cube(side_length=1.0).spawn()
+            cube = Cube(size=1.0).spawn()
         prims = _primitives(cube)
         assert len(prims) > 1, "expected one member per triangle"
         ids, n = _tri_obj(prims)
@@ -173,7 +173,7 @@ def test_a_cube_is_one_surface_not_one_per_triangle():
 def test_two_polyhedra_in_one_collection_stay_two_surfaces():
     with Scene():
         with Off():
-            a = Cube(side_length=1.0).spawn()
+            a = Cube(size=1.0).spawn()
             b = Icosahedron(edge_length=1.0).move(RIGHT * 3).spawn()
         ids, n = _tri_obj(_primitives(a) + _primitives(b))
         assert n == 2, f"two solids must stay two surfaces, got {n}"
@@ -242,7 +242,7 @@ def test_surface_identity_survives_a_sliced_frame_window():
 _CAPPED_SOLIDS = {
     "cylinder": lambda: Cylinder(radius=0.4, height=1.0, show_ends=True),
     "cone": lambda: Cone(base_radius=0.5, height=1.0, show_base=True),
-    "line3d": lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.15),
+    "line3d": lambda: Line3D(start=LEFT, end=RIGHT, radius=0.15),
 }
 
 
@@ -276,7 +276,7 @@ def test_an_arrow_is_two_surfaces_each_with_its_own_discs():
     """
     with Scene():
         with Off():
-            arrow = Arrow3D(start=LEFT, end=RIGHT + UP, thickness=0.06).spawn()
+            arrow = Arrow3D(start=LEFT, end=RIGHT + UP, shaft_radius=0.06).spawn()
         prims = arrow.get_render_primitives()
         assert len(prims) == 5, "shaft + 2 discs + head + 1 disc"
         ids, n = _tri_obj(prims)
@@ -296,7 +296,7 @@ def test_mesh_identity_is_off_switchable():
 
     with Scene():
         with Off():
-            cube = Cube(side_length=1.0).spawn()
+            cube = Cube(size=1.0).spawn()
         prims = _primitives(cube)
         assert all(getattr(p, "mesh_key", None) is not None for p in prims)
 
@@ -323,7 +323,7 @@ def test_a_2d_circuit_mob_has_no_triangle_identity():
 
     with Scene():
         with Off():
-            square = Square(side_length=1.0).spawn()
+            square = Square(size=1.0).spawn()
         prims = _primitives(square)
         assert prims
         assert all(isinstance(p, RayTracedBezierCircuitPrimitive) for p in prims)

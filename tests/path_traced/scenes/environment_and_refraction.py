@@ -24,7 +24,7 @@ Scene.set_environment_map(_env)
 Scene.clear_lights()
 
 with Off():
-    floor = Prism(dimensions=(8.0, 2.5, 0.2))
+    floor = Prism(width=8.0, height=2.5, depth=0.2)
     floor.set_material(MeshLambertMaterial(color=WHITE))
     floor.move(DOWN * 1.6)
     floor.spawn(animate=False)
@@ -36,7 +36,7 @@ with Off():
     mirror.move(LEFT * 1.7 + UP * 0.2)
     mirror.spawn(animate=False)
 
-    glass = Prism(dimensions=(1.2, 1.2, 1.2))
+    glass = Prism(width=1.2, height=1.2, depth=1.2)
     glass.set_material(
         MeshPhysicalMaterial(color=WHITE, transmission=1.0, ior=1.5, roughness=0.0)
     )

@@ -1076,12 +1076,12 @@ class Arrow3D(Mob):
     start, end
         Tail and head of the arrow, shape ``(*, 3)`` in world units. Default to
         ``LEFT`` and ``RIGHT``.
-    thickness
+    shaft_radius
         Radius of the shaft, in world units. Defaults to ``0.02``.
-    height
+    tip_length
         Length of the conical tip, in world units, measured back from ``end``.
         Defaults to ``0.3``.
-    base_radius
+    tip_radius
         Radius of the tip's base, in world units. Defaults to ``0.08``.
     color
         An Algan :class:`~algan.constants.color.Color`, a named constant such as
@@ -1095,8 +1095,8 @@ class Arrow3D(Mob):
     Raises
     ------
     ValueError
-        If the distance from ``start`` to ``end`` is not greater than ``height``,
-        which would leave no room for a shaft.
+        If the distance from ``start`` to ``end`` is not greater than
+        ``tip_length``, which would leave no room for a shaft.
 
     Examples
     --------
@@ -1107,7 +1107,7 @@ class Arrow3D(Mob):
 
         from algan import *
 
-        Arrow3D(start=LEFT + DOWN, end=RIGHT + UP, thickness=0.04,
+        Arrow3D(start=LEFT + DOWN, end=RIGHT + UP, shaft_radius=0.04,
                 color=BLUE).spawn()
 
         Scene.save_video()
@@ -1117,9 +1117,9 @@ class Arrow3D(Mob):
         self,
         start=LEFT,
         end=RIGHT,
-        thickness: float = 0.02,
-        height: float = 0.3,
-        base_radius: float = 0.08,
+        shaft_radius: float = 0.02,
+        tip_length: float = 0.3,
+        tip_radius: float = 0.08,
         color=WHITE,
         resolution=24,
         *args,
@@ -1129,17 +1129,17 @@ class Arrow3D(Mob):
         end = cast_to_tensor(end)
         vector = end - start
         length = vector.norm(p=2, dim=-1, keepdim=True)
-        if float(length.reshape(-1)[0]) <= height:
-            raise ValueError("Arrow3D length must be greater than its tip height")
+        if float(length.reshape(-1)[0]) <= tip_length:
+            raise ValueError("Arrow3D length must be greater than its tip_length")
         direction = F.normalize(vector, p=2, dim=-1)
-        shaft_end = end - direction * height
+        shaft_end = end - direction * tip_length
         super().__init__(*args, location=(start + end) * 0.5, color=color, **kwargs)
         surface_resolution = (
             (resolution, resolution) if isinstance(resolution, int) else resolution
         )
         self.tail = Cylinder(
             scene=self.scene,
-            radius=thickness,
+            radius=shaft_radius,
             height=float((shaft_end - start).norm(p=2, dim=-1).reshape(-1)[0]),
             direction=direction,
             show_ends=True,
@@ -1150,15 +1150,15 @@ class Arrow3D(Mob):
         self.tail.move_to((start + shaft_end) * 0.5)
         self.head = Cone(
             scene=self.scene,
-            base_radius=base_radius,
-            height=height,
+            base_radius=tip_radius,
+            height=tip_length,
             direction=direction,
             show_base=True,
             resolution=surface_resolution,
             color=color,
             add_to_scene=False,
         )
-        self.head.move_to(end - direction * height * 0.5)
+        self.head.move_to(end - direction * tip_length * 0.5)
         self.cone = self.head
         # Markers, not geometry: they carry no primitives and exist so that
         # get_start/get_end report the arrow's ends. Children of this arrow, and
@@ -1305,7 +1305,7 @@ class Line3D(Cylinder):
     start, end
         The endpoints, shape ``(*, 3)`` in world units. The line is moved and
         oriented to span them. Default to ``(-1, 0, 0)`` and ``(1, 0, 0)``.
-    thickness
+    radius
         Radius of the tube, in world units. Defaults to ``0.02``.
     color
         An Algan :class:`~algan.constants.color.Color`, a named constant such as
@@ -1327,7 +1327,7 @@ class Line3D(Cylinder):
 
         from algan import *
 
-        Line3D(start=LEFT + DOWN, end=RIGHT + UP, thickness=0.05,
+        Line3D(start=LEFT + DOWN, end=RIGHT + UP, radius=0.05,
                color=BLUE).spawn()
 
         Scene.save_video()
@@ -1337,7 +1337,7 @@ class Line3D(Cylinder):
         self,
         start=torch.tensor((-1.0, 0.0, 0.0)),
         end=torch.tensor((1.0, 0.0, 0.0)),
-        thickness=0.02,
+        radius=0.02,
         color=None,
         resolution=24,
         **kwargs,
@@ -1354,8 +1354,8 @@ class Line3D(Cylinder):
             kwargs.setdefault("grid_width", int(resolution[1]))
         self.start = cast_to_tensor(start)
         self.end = cast_to_tensor(end)
-        self.thickness = thickness
-        super().__init__(radius=thickness, height=1, closed=True, **kwargs)
+        self.radius = radius
+        super().__init__(radius=radius, height=1, closed=True, **kwargs)
         self.move_between_points(self.start, self.end)
 
     def get_start(self):
@@ -1411,12 +1411,11 @@ class Torus(Surface):
 
     Parameters
     ----------
-    major_radius
+    ring_radius
         Distance from the torus's center to the center of its tube, in world
-        units. Defaults to ``3`` -- Manim's default, and wider than the visible
-        frame, so pass an explicit size when laying several shapes out together.
-    minor_radius
-        Radius of the tube itself, in world units. Defaults to ``1``.
+        units. Defaults to ``1.5``.
+    tube_radius
+        Radius of the tube itself, in world units. Defaults to ``0.5``.
     u_range
         Sweep around the ring, in radians -- a Manim-parity domain, which is why
         it contradicts Algan's usual degrees. ``(0, pi)`` gives half a ring.
@@ -1440,8 +1439,8 @@ class Torus(Surface):
 
         from algan import *
 
-        Torus(major_radius=1.2, minor_radius=0.35, color=BLUE).spawn()
-        Torus(major_radius=1.2, minor_radius=0.35, u_range=(0, PI),
+        Torus(ring_radius=1.2, tube_radius=0.35, color=BLUE).spawn()
+        Torus(ring_radius=1.2, tube_radius=0.35, u_range=(0, PI),
               color=YELLOW).move(UP * 0.1).spawn()
 
         Scene.save_video()
@@ -1458,15 +1457,15 @@ class Torus(Surface):
 
     def __init__(
         self,
-        major_radius=1.5,
-        minor_radius=0.5,
+        ring_radius=1.5,
+        tube_radius=0.5,
         u_range=(0, torch.pi * 2),
         v_range=(0, torch.pi * 2),
         resolution=None,
         **kwargs,
     ):
-        self.major_radius = self.R = major_radius
-        self.minor_radius = self.r = minor_radius
+        self.ring_radius = ring_radius
+        self.tube_radius = tube_radius
         if resolution is not None:
             if isinstance(resolution, int):
                 resolution = (resolution, resolution)
@@ -1487,12 +1486,12 @@ class Torus(Surface):
     def coord_function(self, uv):
         u = self.u_range[0] + uv[..., :1] * (self.u_range[1] - self.u_range[0])
         v = self.v_range[0] + uv[..., 1:] * (self.v_range[1] - self.v_range[0])
-        ring_radius = self.major_radius - self.minor_radius * torch.cos(v)
+        sweep_radius = self.ring_radius - self.tube_radius * torch.cos(v)
         return torch.cat(
             (
-                ring_radius * torch.cos(u),
-                ring_radius * torch.sin(u),
-                -self.minor_radius * torch.sin(v),
+                sweep_radius * torch.cos(u),
+                sweep_radius * torch.sin(u),
+                -self.tube_radius * torch.sin(v),
             ),
             -1,
         )
@@ -1512,28 +1511,28 @@ class Torus(Surface):
             self.location,
             self.get_forward_direction(),
         )
-        major_radius = torch.as_tensor(
-            self.major_radius,
+        ring_radius = torch.as_tensor(
+            self.ring_radius,
             device=pn_points.device,
             dtype=pn_points.dtype,
         ).abs()
-        minor_radius = torch.as_tensor(
-            self.minor_radius,
+        tube_radius = torch.as_tensor(
+            self.tube_radius,
             device=pn_points.device,
             dtype=pn_points.dtype,
         ).abs()
-        tube_distance = torch.sqrt((radial - major_radius).square() + axial.square())
-        return (tube_distance - minor_radius).abs()
+        tube_distance = torch.sqrt((radial - ring_radius).square() + axial.square())
+        return (tube_distance - tube_radius).abs()
 
     def func(self, u, v):
         u = torch.as_tensor(u)
         v = torch.as_tensor(v)
-        ring_radius = self.major_radius - self.minor_radius * torch.cos(v)
+        sweep_radius = self.ring_radius - self.tube_radius * torch.cos(v)
         return torch.stack(
             (
-                ring_radius * torch.cos(u),
-                ring_radius * torch.sin(u),
-                -self.minor_radius * torch.sin(v),
+                sweep_radius * torch.cos(u),
+                sweep_radius * torch.sin(u),
+                -self.tube_radius * torch.sin(v),
             ),
             -1,
         )
@@ -1822,10 +1821,14 @@ class Prism(Polyhedron):
 
     Parameters
     ----------
-    dimensions
-        Side lengths in ``[x, y, z]`` order, in world units. The box is centered
-        on the Mob's location, so each side extends half its length either way.
-        Defaults to ``(3, 2, 1)``.
+    width
+        Side length along the world x axis, in world units. Defaults to ``3``.
+    height
+        Side length along the world y axis, in world units. Defaults to ``2``.
+    depth
+        Side length along the world z axis, in world units. Defaults to ``1``.
+        The box is centered on the Mob's location, so each side extends half its
+        length either way.
     **kwargs
         Passed to :class:`~algan.mobs.shapes_3d.Polyhedron`. ``fill_color``,
         ``fill_opacity`` and ``stroke_width`` are Manim's face-styling names and
@@ -1840,16 +1843,18 @@ class Prism(Polyhedron):
 
         from algan import *
 
-        Prism(dimensions=(3, 0.2, 2), fill_color=BLUE).spawn()
+        Prism(width=3, height=0.2, depth=2, fill_color=BLUE).spawn()
 
         Scene.save_video()
     """
 
-    def __init__(self, dimensions=(3, 2, 1), **kwargs):
+    def __init__(self, width=3, height=2, depth=1, **kwargs):
         from algan.utils.tensor_utils import cast_to_tensor
 
-        self.dimensions = cast_to_tensor(dimensions).reshape(-1)
-        x, y, z = self.dimensions / 2
+        self.width = width
+        self.height = height
+        self.depth = depth
+        x, y, z = cast_to_tensor((width, height, depth)).reshape(-1) / 2
         vertices = [
             [-x, -y, -z],
             [x, -y, -z],
@@ -1887,7 +1892,7 @@ class Cube(Prism):
 
     Parameters
     ----------
-    side_length
+    size
         Length of each edge, in world units. Defaults to ``2``.
     fill_opacity
         Opacity of the faces, from ``0`` (invisible) to ``1`` (opaque). Defaults
@@ -1913,7 +1918,7 @@ class Cube(Prism):
 
         from algan import *
 
-        cube = Cube(side_length=1.2, fill_color=BLUE, fill_opacity=1).spawn()
+        cube = Cube(size=1.2, fill_color=BLUE, fill_opacity=1).spawn()
         cube.rotate(35, UP)
 
         Scene.save_video()
@@ -1921,7 +1926,7 @@ class Cube(Prism):
 
     def __init__(
         self,
-        side_length=2,
+        size=2,
         fill_opacity=0.75,
         fill_color=None,
         stroke_width=0,
@@ -1929,11 +1934,13 @@ class Cube(Prism):
     ):
         from algan.constants.color import BLUE
 
-        self.side_length = side_length
+        self.size = size
         if fill_color is None:
             fill_color = BLUE
         super().__init__(
-            dimensions=(side_length, side_length, side_length),
+            width=size,
+            height=size,
+            depth=size,
             fill_opacity=fill_opacity,
             fill_color=fill_color,
             stroke_width=stroke_width,

@@ -112,7 +112,7 @@ def test_morphing_into_a_polyhedron_does_not_publish_its_vertex_dots(scene):
     """
     with Off():
         sphere = Sphere(radius=0.8).spawn()
-        cube = Cube(side_length=1.0)
+        cube = Cube(size=1.0)
     with Sync(run_time=1.0):
         sphere.become(cube)
 
@@ -129,7 +129,7 @@ def test_a_polyhedron_speaks_only_for_the_geometry_it_built(scene):
     spawning the same hierarchy directly shows it.
     """
     with Off():
-        cube = Cube(side_length=1.0)
+        cube = Cube(size=1.0)
         extra = Sphere(radius=0.25).move(UP * 1.2)
         cube.add_children(extra)
         cube.spawn()
@@ -139,7 +139,7 @@ def test_a_polyhedron_speaks_only_for_the_geometry_it_built(scene):
     with Scene() as fresh:
         with Off():
             source = Sphere(radius=0.8).spawn()
-            target = Cube(side_length=1.0)
+            target = Cube(size=1.0)
             target.add_children(Sphere(radius=0.25).move(UP * 1.2))
         with Sync(run_time=1.0):
             result = source.become(target)
@@ -162,13 +162,13 @@ def test_a_morphed_polyhedron_draws_each_face_once(scene):
     up along every silhouette edge rather than as an obviously wrong picture.
     """
     with Off():
-        reference = Cube(side_length=1.0).spawn()
+        reference = Cube(size=1.0).spawn()
     expected = len(_rendering_actors(scene))
 
     with Scene() as fresh:
         with Off():
             sphere = Sphere(radius=0.8).spawn()
-            cube = Cube(side_length=1.0)
+            cube = Cube(size=1.0)
         with Sync(run_time=1.0):
             result = sphere.become(cube)
         live = [
@@ -370,7 +370,7 @@ def test_parts_that_need_not_move_do_not_travel(scene):
     places = [LEFT * 2 + UP, RIGHT * 2 + UP, RIGHT * 2 - UP, LEFT * 2 - UP]
 
     def build(order):
-        return Group(*[Square(side_length=0.7).move(places[i]) for i in order])
+        return Group(*[Square(size=0.7).move(places[i]) for i in order])
 
     with Off():
         source = build([0, 1, 2, 3]).spawn()
@@ -405,7 +405,7 @@ def test_parts_that_need_not_move_do_not_travel(scene):
     "build_target",
     [
         pytest.param(
-            lambda: Square(side_length=1.6, filled=False, border_width=0.06),
+            lambda: Square(size=1.6, filled=False, border_width=0.06),
             id="unfilled_square",
         ),
         pytest.param(
@@ -632,9 +632,9 @@ def test_a_fill_crossing_pair_is_ranked_below_a_like_filled_one(scene):
     """
     rank = MobMorphMixin._primitive_compatibility_rank
     with Off():
-        filled = Square(side_length=0.6, filled=True)
-        also_filled = Square(side_length=0.6, filled=True)
-        unfilled = Square(side_length=0.6, filled=False)
+        filled = Square(size=0.6, filled=True)
+        also_filled = Square(size=0.6, filled=True)
+        unfilled = Square(size=0.6, filled=False)
         filled_circle = Circle(radius=0.3, filled=True)
 
     assert rank(filled, also_filled) < rank(filled, unfilled)

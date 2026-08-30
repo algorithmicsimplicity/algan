@@ -160,7 +160,7 @@ def test_native_vector_style_and_surrounding_rectangle_api():
         stroke_width=4,
         add_to_scene=False,
     )
-    square = algan.Square(side_length=2, add_to_scene=False)
+    square = algan.Square(size=2, add_to_scene=False)
     surrounding = algan.SurroundingRectangle(
         circle,
         square,

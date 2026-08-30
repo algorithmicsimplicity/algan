@@ -173,7 +173,7 @@ def _flat_fill(rgb_bytes):
     def build(scene):
         # Far larger than the frame and face-on, so every pixel is interior:
         # no silhouette antialiasing anywhere near the readout.
-        Square(side_length=60, color=_col(rgb_bytes)).spawn()
+        Square(size=60, color=_col(rgb_bytes)).spawn()
 
     return build
 
@@ -192,7 +192,7 @@ def _flat_mesh_fill(rgb_bytes):
     """
 
     def build(scene):
-        Prism(dimensions=(60.0, 60.0, 1.0)).set_material(
+        Prism(width=60.0, height=60.0, depth=1.0).set_material(
             MeshBasicMaterial(color=_col(rgb_bytes))
         ).spawn()
 
@@ -249,7 +249,7 @@ def _lit_cube(intensities):
 
     def build(scene):
         scene.clear_lights()
-        cube = Cube(side_length=4.0)
+        cube = Cube(size=4.0)
         cube.set_material(MeshLambertMaterial(color=WHITE_C))
         cube.spawn()
         for intensity in intensities:

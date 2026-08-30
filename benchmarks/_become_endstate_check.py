@@ -78,7 +78,7 @@ BUILDERS = {
     "SphereGlow": lambda: Sphere(radius=0.8, glow=0.6),
     "Cylinder": lambda: Cylinder(radius=0.5, height=1.2),
     "Torus": lambda: Torus(),
-    "Cube": lambda: Cube(side_length=1.0),
+    "Cube": lambda: Cube(size=1.0),
     "Tetrahedron": lambda: Tetrahedron(),
     "Polyhedron": _polyhedron,
     "Group2": lambda: Group(

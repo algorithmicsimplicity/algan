@@ -150,10 +150,10 @@ def _render_stack_frame(tmp_path, name, samples_per_pixel):
         SETTINGS.raytracing.set(samples_per_pixel=samples_per_pixel, denoise=False)
         with Scene(video_settings=STACK_SETTINGS) as scene:
             with Off():
-                Square(side_length=6.0, color=BLUE).spawn(animate=False)
-                red = Square(side_length=4.0, color=RED).set_opacity(0.5)
+                Square(size=6.0, color=BLUE).spawn(animate=False)
+                red = Square(size=4.0, color=RED).set_opacity(0.5)
                 red.spawn(animate=False)
-                green = Square(side_length=2.0, color=GREEN).set_opacity(0.25)
+                green = Square(size=2.0, color=GREEN).set_opacity(0.25)
                 green.spawn(animate=False)
             result = scene.save_frame(
                 tmp_path / name,
@@ -266,7 +266,7 @@ def test_camera_clip_planes_apply_under_path_tracing(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
-        Square(side_length=3.0, color=RED).spawn(animate=False)
+        Square(size=3.0, color=RED).spawn(animate=False)
 
     def with_camera(**clip):
         def inner(scene):
@@ -281,9 +281,7 @@ def test_camera_clip_planes_apply_under_path_tracing(tmp_path):
 
     # A near plane in front of everything, and a far plane behind everything,
     # each leave the background alone.
-    near = _render_scene(
-        tmp_path, "clip_near.png", with_camera(near=100.0), 8
-    ).float()
+    near = _render_scene(tmp_path, "clip_near.png", with_camera(near=100.0), 8).float()
     assert near.max() == 0, f"near plane did not clip (max {int(near.max())})"
     far = _render_scene(tmp_path, "clip_far.png", with_camera(far=0.5), 8).float()
     assert far.max() == 0, f"far plane did not clip (max {int(far.max())})"
@@ -358,7 +356,7 @@ def test_nee_direct_lighting_matches_deterministic(tmp_path):
         scene.set_background(BLACK)
         Scene.clear_lights()
         PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(animate=False)
-        plane = Prism(dimensions=(7.0, 7.0, 0.1))
+        plane = Prism(width=7.0, height=7.0, depth=0.1)
         plane.set_material(MeshLambertMaterial(color=RED))
         plane.spawn(animate=False)
 
@@ -390,10 +388,10 @@ def test_point_light_shadow_under_path_tracing(tmp_path):
         scene.set_background(BLACK)
         Scene.clear_lights()
         PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(animate=False)
-        floor = Prism(dimensions=(7.0, 7.0, 0.1))
+        floor = Prism(width=7.0, height=7.0, depth=0.1)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
-        blocker = Square(side_length=2.0, color=BLUE)
+        blocker = Square(size=2.0, color=BLUE)
         blocker.move(OUT * 2.0)
         blocker.spawn(animate=False)
 
@@ -430,10 +428,10 @@ def test_indirect_light_bleeds_color(tmp_path):
         PointLight(location=(UP * 2.0 + OUT * 5.0), color=WHITE, intensity=1.2).spawn(
             animate=False
         )
-        floor = Prism(dimensions=(8.0, 8.0, 0.1))
+        floor = Prism(width=8.0, height=8.0, depth=0.1)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
-        wall = Prism(dimensions=(0.1, 8.0, 3.0))
+        wall = Prism(width=0.1, height=8.0, depth=3.0)
         wall.set_material(MeshLambertMaterial(color=RED))
         wall.move(RIGHT * 2.5 + OUT * 1.5)
         wall.spawn(animate=False)
@@ -516,7 +514,7 @@ def test_area_light_matches_the_deterministic_grid_limit(tmp_path):
             color=WHITE,
             intensity=1.0,
         ).spawn(animate=False)
-        floor = Prism(dimensions=(7.0, 7.0, 0.1))
+        floor = Prism(width=7.0, height=7.0, depth=0.1)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
 
@@ -567,12 +565,12 @@ def test_emissive_quad_matches_the_reference_integral(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
-        floor = Prism(dimensions=(8.0, 8.0, 0.2))
+        floor = Prism(width=8.0, height=8.0, depth=0.2)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
         # A thin prism, not a Square: the emitter must be triangle geometry
         # with a material block (a 2-D Square is a bezier circuit).
-        quad = Prism(dimensions=(2.0 * quad_half, 2.0 * quad_half, 0.02))
+        quad = Prism(width=2.0 * quad_half, height=2.0 * quad_half, depth=0.02)
         quad.set_material(
             MeshLambertMaterial(
                 color=BLACK,
@@ -663,7 +661,7 @@ def test_env_map_lighting_matches_the_reference_integral(tmp_path):
         scene.set_background(BLACK)
         Scene.clear_lights()
         scene.set_environment_map(env, ambient=False)
-        floor = Prism(dimensions=(5.0, 5.0, 0.2))
+        floor = Prism(width=5.0, height=5.0, depth=0.2)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
 
@@ -831,7 +829,7 @@ _RAW_KW = {"linear_color_space": False, "tonemapping": False}
 _RAW_EXP = {"post_process_tonemap": False}
 
 
-def _emissive_shell_cube(dimensions=(2.0, 2.0, 2.0), opacity=0.6):
+def _emissive_shell_cube(width=2.0, height=2.0, depth=2.0, opacity=0.6):
     """A translucent closed-shell cube whose only radiance is its emission.
 
     Black albedo kills the diffuse lobe (and every NEE response), emission is
@@ -843,7 +841,7 @@ def _emissive_shell_cube(dimensions=(2.0, 2.0, 2.0), opacity=0.6):
     occasional seam hits per sample (pre-existing, ring-independent), which
     would blur the doubled arm.
     """
-    cube = Prism(dimensions=dimensions)
+    cube = Prism(width=width, height=height, depth=depth)
     cube.set_material(
         MeshLambertMaterial(color=BLACK, emissive=WHITE, emissive_intensity=1.0)
     )
@@ -933,7 +931,7 @@ def test_shell_ring_overflow_is_counted_not_silent(tmp_path):
         scene.set_background(BLACK)
         Scene.clear_lights()
         for k in range(5):
-            _emissive_shell_cube(dimensions=(0.6 + 0.4 * k,) * 3, opacity=0.3).spawn(
+            _emissive_shell_cube(*((0.6 + 0.4 * k,) * 3), opacity=0.3).spawn(
                 animate=False
             )
 
@@ -964,12 +962,12 @@ def test_author_order_and_depth_compose_like_the_deterministic_route(tmp_path):
     def _order_scene(first, second):
         def build(scene):
             scene.set_background(BLACK)
-            a = Square(side_length=3.0, color=first).set_opacity(0.5)
+            a = Square(size=3.0, color=first).set_opacity(0.5)
             a.spawn(animate=False)
-            b = Square(side_length=3.0, color=second).set_opacity(0.5)
+            b = Square(size=3.0, color=second).set_opacity(0.5)
             b.move(RIGHT * 1.0 + UP * 1.0)
             b.spawn(animate=False)
-            back = Square(side_length=5.0, color=BLUE).set_opacity(0.5)
+            back = Square(size=5.0, color=BLUE).set_opacity(0.5)
             back.move(-OUT * 2.0)  # OUT is toward the camera; behind is -OUT
             back.spawn(animate=False)
 

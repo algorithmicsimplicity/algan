@@ -4,7 +4,7 @@ animation, Phase 3).
 The importer stores each animation clip as a set of per-node
 :class:`~algan.mobs.three_d_models.scene_data.NodeAnimation` tracks (keyframed local
 translation / rotation / scale). This module turns those tracks into concrete
-per-node local ``4x4`` transforms at any time ``t``; :class:`ThreeDModelMob`
+per-node local ``4x4`` transforms at any time ``t``; :class:`Model3D`
 then composes them down the node hierarchy and bakes the result into per-frame
 world-space vertex positions -- the representation the spatio-temporal BVH
 already renders, and the same substrate the later skeletal / morph phases feed.

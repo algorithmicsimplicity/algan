@@ -156,8 +156,8 @@ def test_profile_on_gives_the_curved_solids_manim_s_checkerboard():
 
 def test_profile_on_gives_the_flat_solids_manim_s_face_fill():
     SETTINGS.style.set(shape_style_profile="manim")
-    assert face_style(Cube(side_length=1)) == ("#58C4DD", 0.75)
-    assert face_style(Prism(dimensions=(1, 1, 1))) == ("#58C4DD", 0.75)
+    assert face_style(Cube(size=1)) == ("#58C4DD", 0.75)
+    assert face_style(Prism(width=1, height=1, depth=1)) == ("#58C4DD", 0.75)
 
 
 def test_enabling_resolves_the_snapshots_eagerly():

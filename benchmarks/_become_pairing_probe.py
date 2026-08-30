@@ -157,12 +157,12 @@ def main():
     report(
         "big+small -> small+big (size should decide)",
         lambda: Group(
-            Square(side_length=2.0).move(LEFT * 3),
-            Square(side_length=0.4).move(RIGHT * 3),
+            Square(size=2.0).move(LEFT * 3),
+            Square(size=0.4).move(RIGHT * 3),
         ),
         lambda: Group(
-            Square(side_length=0.4).move(LEFT * 3),
-            Square(side_length=2.0).move(RIGHT * 3),
+            Square(size=0.4).move(LEFT * 3),
+            Square(size=2.0).move(RIGHT * 3),
         ),
     )
 

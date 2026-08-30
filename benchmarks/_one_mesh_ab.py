@@ -79,7 +79,7 @@ def build_scene(shape):
             solids.append(Sphere(radius=0.8, color=YELLOW).move(LEFT * 2))
             solids.append(Cylinder(radius=0.5, height=1.6, color=RED))
             solids.append(
-                Torus(major_radius=0.7, minor_radius=0.22, color=BLUE).move(RIGHT * 2)
+                Torus(ring_radius=0.7, tube_radius=0.22, color=BLUE).move(RIGHT * 2)
             )
         if shape in ("flat", "mixed"):
             solids.append(Cube(color=GREEN).move(LEFT * 2 + DOWN * 1.6))

@@ -142,6 +142,6 @@ def test_line3d_caps_keep_their_inherited_count():
     """A thin tube's rim already meets tolerance at its inherited count, so
     the fix must leave it alone rather than churn geometry it need not touch.
     """
-    line = Line3D(thickness=0.02)
+    line = Line3D(radius=0.02)
     assert line.grid_width == 24
     assert line.bottom_cap.grid_width == line.top_cap.grid_width == 24

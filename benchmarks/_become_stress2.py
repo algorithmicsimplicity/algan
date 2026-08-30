@@ -131,7 +131,7 @@ def _group_mixed_families():
     return Group(
         Text("hi").move(UP),
         Sphere(radius=0.3).move(DOWN),
-        Cube(side_length=0.4).move(LEFT * 2),
+        Cube(size=0.4).move(LEFT * 2),
         _tri_vertices(),
     )
 
@@ -164,7 +164,7 @@ CATALOGUE: list[tuple[str, callable]] = [
     ("Torus", lambda: Torus()),
     ("SurfacePlane", _surface_plane),
     ("SurfaceWave", _surface_wave),
-    ("Cube", lambda: Cube(side_length=0.8)),
+    ("Cube", lambda: Cube(size=0.8)),
     ("Prism", lambda: Prism()),
     ("Tetrahedron", lambda: Tetrahedron()),
     ("Polyhedron", _polyhedron),

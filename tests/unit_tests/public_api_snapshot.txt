@@ -195,6 +195,7 @@ MeshToonMaterial
 Mob
 MobjectMatrix
 MobjectTable
+Model3D
 ModifiedProtectedAttributeError
 MoveAlongPath
 NUM_DIMENSIONS
@@ -305,7 +306,6 @@ TexTriangulated
 Text
 TextTriangulated
 ThreeDAxes
-ThreeDModelMob
 Title
 Torus
 TranscriptAudioMismatchError

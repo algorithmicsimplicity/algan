@@ -254,7 +254,7 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
                     # the recorded move propagates to the face geometry,
                     # which the location= constructor kwarg does not.
                     cube = Cube(
-                        side_length=_CUBE_SIDE,
+                        size=_CUBE_SIDE,
                         fill_color=Color(_ALBEDO_RGB),
                         fill_opacity=1.0,
                     )

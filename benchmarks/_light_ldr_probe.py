@@ -89,11 +89,11 @@ def measure(build, *, glow=0.0, light_intensity=None, ambient=None):
 
 def _lit_cube(scene, glow):
     """A white Lambert cube plus a white flat fill, under the scene's lights."""
-    cube = Cube(side_length=1.6)
+    cube = Cube(size=1.6)
     cube.set_material(MeshLambertMaterial(color=WHITE_C))
     cube.move(LEFT * 1.6 + DOWN * 0.2)
     cube.spawn()
-    sq = Square(side_length=1.2, color=WHITE_C)
+    sq = Square(size=1.2, color=WHITE_C)
     sq.move(RIGHT * 2.4 + UP * 0.2)
     if glow:
         sq.glow = glow
@@ -188,7 +188,7 @@ def scene_secondary_rays(scene, glow):
     glassy.move(RIGHT * 1.6)
     glassy.spawn()
 
-    backdrop = Square(side_length=12, color=WHITE_C)
+    backdrop = Square(size=12, color=WHITE_C)
     backdrop.move(OUT * -4)
     backdrop.spawn()
 

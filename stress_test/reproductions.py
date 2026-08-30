@@ -358,7 +358,7 @@ def f9():
 @check("F10", "Seq(lag_ratio=...) explains itself without naming an internal class")
 def f10():
     exc = _raised(lambda: Seq(lag_ratio=0.5))
-    good = isinstance(exc, TypeError) and "Seq is Lag with lag_ratio=1" in str(exc)
+    good = isinstance(exc, TypeError) and "Seq is Lag with ratio=1" in str(exc)
     return not good, f"{type(exc).__name__}: {str(exc)[:110] if exc else 'accepted'}"
 
 

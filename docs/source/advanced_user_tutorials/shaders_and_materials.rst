@@ -124,7 +124,7 @@ you constructed yourself:
     from algan import *
 
     with Off():
-        desk = Prism(dimensions=(7, 0.3, 4), color=GREY).move(DOWN * 1.6)
+        desk = Prism(width=7, height=0.3, depth=4, color=GREY).move(DOWN * 1.6)
         desk.set_material(WOOD).spawn()
         lens = Sphere(radius=0.9, color=BLUE_A).set_material(GLASS).spawn()
 

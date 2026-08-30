@@ -24,9 +24,7 @@ NOPOST = os.environ.get("NOPOST", "1") == "1"
 Scene.set_background(DARKER_GRAY)
 
 with Off():
-    model = ThreeDModelMob(
-        "assets/textured_icosphere.glb", normalize=True, normalize_size=7.0
-    ).move(UP * 0.2)
+    model = Model3D("assets/textured_icosphere.glb", fit_to_size=7.0).move(UP * 0.2)
     stack = [model]
     while stack:
         mob = stack.pop()

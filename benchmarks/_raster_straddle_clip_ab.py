@@ -34,7 +34,7 @@ def run(mode, clip):
     with Off():
         Group(
             [
-                Cube(side_length=0.4, color=BLUE).move(
+                Cube(size=0.4, color=BLUE).move(
                     RIGHT * 0.8 * i + UP * 0.8 * j + OUT * 0.8 * k
                 )
                 for i in range(-2, 3)

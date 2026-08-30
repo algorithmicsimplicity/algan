@@ -145,7 +145,7 @@ with Off():
     # The wall sits behind the probes only: nothing above it casts onto it, so
     # every shadow in frame belongs to a probe.
     wall = (
-        Prism(dimensions=(17.0, 5.2, 0.3))
+        Prism(width=17.0, height=5.2, depth=0.3)
         .set_material(MeshLambertMaterial(color=GRAY_D))
         .move(IN * 2.4 + DOWN * 0.9)
     )

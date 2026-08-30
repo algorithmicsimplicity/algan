@@ -54,7 +54,7 @@ DEFAULT_RATE_FUNC = rate_funcs.smooth
 _CONTEXT_ONLY_PARAMS = {
     "run_time": "Seq",
     "run_time_unit": "Seq",
-    "same_run_time": "Sync",
+    "match_durations": "Sync",
     "lag_ratio": "Lag",
     "rate_func": "Seq",
     "rate_func_compose": "ComposeRateFunc",
@@ -267,7 +267,7 @@ class AnimationContext:
         Duration of each individual animation inside, in seconds. Defaults to
         ``None``, meaning inherit from the parent context (``1.0`` at the top
         level). ``run_time`` overrides this.
-    same_run_time
+    match_durations
         Whether to stretch every animation inside to the duration of the longest one.
         Defaults to ``None`` (inherited; effectively False).
     lag_ratio
@@ -309,7 +309,7 @@ class AnimationContext:
 
     run_time: float | None = field(default=None, kw_only=False)
     run_time_unit: float | None = None
-    same_run_time: bool | None = None
+    match_durations: bool | None = None
     lag_ratio: float | None = None
     priority_level: float | None = None
     rate_func: Callable[[], float] | None = None
@@ -603,7 +603,7 @@ class AnimationContext:
                     child.timespan.end = rescale(child.timespan.end, s=scale)
                 return False
 
-            if self.same_run_time:
+            if self.match_durations:
                 durations = [
                     child.timespan.end - child.timespan.start
                     for child in self.child_contexts
@@ -935,18 +935,22 @@ class Off(AnimationContext):
 def _reject_fixed_lag_ratio(name, fixed, kwargs):
     """Explain that ``Sync`` and ``Seq`` are ``Lag`` with the ratio decided.
 
-    Both pass their own ``lag_ratio`` positionally to ``Lag``, so a caller's
-    keyword collided with it and Python reported "got multiple values for
-    keyword argument 'lag_ratio'" against ``Lag.__init__`` -- an internal class
-    the caller never mentioned.
+    Both fix their own ratio when they call ``Lag``, so a caller's keyword
+    collided with it and Python reported "got multiple values for keyword
+    argument" against ``Lag.__init__`` -- an internal class the caller never
+    mentioned. ``lag_ratio`` is caught alongside ``ratio`` because it is what a
+    reader arriving from Manim writes.
     """
-    if "lag_ratio" not in kwargs:
+    for spelling in ("ratio", "lag_ratio"):
+        if spelling in kwargs:
+            given = kwargs[spelling]
+            break
+    else:
         return
-    given = kwargs["lag_ratio"]
     raise TypeError(
-        f"{name} is Lag with lag_ratio={fixed}, so it takes no lag_ratio of "
+        f"{name} is Lag with ratio={fixed}, so it takes no {spelling} of "
         f"its own. Use Lag({given!r}) for that overlap, or {name}() for "
-        f"lag_ratio={fixed}."
+        f"ratio={fixed}."
     )
 
 
@@ -960,11 +964,12 @@ class Lag(AnimationContext):
 
     Parameters
     ----------
-    lag_ratio
+    ratio
         Fraction of one animation's duration to wait before starting the next.
         ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
         animation when the previous one is a tenth done. Can be larger than 1,
         in which case it introduces a pause (wait) after each animation finishes.
+        Defaults to ``0.5``.
     run_time
         Passed to :class:`~.AnimationContext` .
     **kwargs
@@ -980,12 +985,12 @@ class Lag(AnimationContext):
 
     See Also
     --------
-    :class:`~.Sync` : ``lag_ratio=0``.
-    :class:`~.Seq` : ``lag_ratio=1``.
+    :class:`~.Sync` : ``Lag(0)``.
+    :class:`~.Seq` : ``Lag(1)``.
     """
 
-    def __init__(self, lag_ratio: float, run_time: float | None = None, **kwargs):
-        super().__init__(run_time, lag_ratio=lag_ratio, new_animation=True, **kwargs)
+    def __init__(self, ratio: float = 0.5, run_time: float | None = None, **kwargs):
+        super().__init__(run_time, lag_ratio=ratio, new_animation=True, **kwargs)
 
 
 class Sync(Lag):
@@ -999,7 +1004,7 @@ class Sync(Lag):
     run_time
         Passed to :class:`~.AnimationContext` .
     **kwargs
-        Passed to :class:`~.Lag` with ``lag_ratio=0`` .
+        Passed to :class:`~.Lag` with ``ratio=0`` .
 
     Examples
     --------
@@ -1012,7 +1017,7 @@ class Sync(Lag):
 
     def __init__(self, run_time: float | None = None, **kwargs):
         _reject_fixed_lag_ratio("Sync", 0, kwargs)
-        super().__init__(lag_ratio=0, run_time=run_time, **kwargs)
+        super().__init__(ratio=0, run_time=run_time, **kwargs)
 
 
 class Seq(Lag):
@@ -1042,7 +1047,7 @@ class Seq(Lag):
 
     def __init__(self, run_time: float | None = None, **kwargs):
         _reject_fixed_lag_ratio("Seq", 1, kwargs)
-        super().__init__(lag_ratio=1, run_time=run_time, **kwargs)
+        super().__init__(ratio=1, run_time=run_time, **kwargs)
 
 
 class Audio(AnimationContext):
@@ -1055,7 +1060,7 @@ class Audio(AnimationContext):
 
     Parameters
     ----------
-    file_path_or_clip
+    source
         Path to an audio file, or an already-loaded moviepy audio clip.
     wait_at_end
         Extra seconds to hold after the audio finishes, before the block ends.
@@ -1073,15 +1078,15 @@ class Audio(AnimationContext):
 
     See Also
     --------
-    :class:`~.Speech` : The same, driven by a line of narration script.
+    :class:`~.Speech` : The same, driven by a line of narration transcript.
     """
 
-    def __init__(self, file_path_or_clip: str, wait_at_end: float = 0, **kwargs):
-        audio_clip = file_path_or_clip
-        if isinstance(file_path_or_clip, str):
+    def __init__(self, source: str, *, wait_at_end: float = 0.0, **kwargs):
+        audio_clip = source
+        if isinstance(source, str):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
-            audio_clip = AudioFileClip(file_path_or_clip)
+            audio_clip = AudioFileClip(source)
         kwargs["run_time"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
         self.audio_clip = audio_clip
@@ -1107,13 +1112,13 @@ class Speech(Audio):
 
     Parameters
     ----------
-    script
-        The line of narration to play. It is appended to the Scene's script and used
-        to select the matching audio.
+    transcript
+        The line of narration to play. It is appended to the Scene's transcript and
+        used to select the matching audio.
     wait_at_end
         Extra seconds to hold after the line finishes. Defaults to ``1``, leaving a
         beat between sentences.
-    *args, **kwargs
+    **kwargs
         Passed to :class:`~.Audio`.
 
     Examples
@@ -1124,14 +1129,16 @@ class Speech(Audio):
             square.scale(2)
     """
 
-    def __init__(self, script, wait_at_end: float = 1, *args, **kwargs):
+    def __init__(self, transcript, *, wait_at_end: float = 1.0, **kwargs):
         animation_manager = (
             kwargs.get("animation_manager") or _active_animation_manager()
         )
         kwargs["animation_manager"] = animation_manager
         audio_manager = animation_manager.scene.audio_manager
-        audio_manager.append_script(script)
-        super().__init__(audio_manager.get_speech(script), wait_at_end, *args, **kwargs)
+        audio_manager.append_script(transcript)
+        super().__init__(
+            audio_manager.get_speech(transcript), wait_at_end=wait_at_end, **kwargs
+        )
 
 
 class SlideShow(Seq):

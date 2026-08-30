@@ -50,7 +50,7 @@ The turntable shot is the classic way to show off a 3-D scene. Notice that we us
     from algan import *
 
     with Off():
-        Group([Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
+        Group([Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i)
                for i in (-1, 0, 1)]).spawn()
 
     with Seq(run_time=4, rate_func=rate_funcs.identity):
@@ -78,7 +78,7 @@ updater (see :doc:`../new_user_tutorials/updaters`):
 
     with Off():
         ball = Sphere(radius=0.6, color=YELLOW).spawn()
-        Group([Cube(side_length=0.5, color=BLUE).move(RIGHT * x + DOWN * 1.5)
+        Group([Cube(size=0.5, color=BLUE).move(RIGHT * x + DOWN * 1.5)
                for x in (-3, 0, 3)]).spawn()
 
     camera = Scene.get_camera()
@@ -104,7 +104,7 @@ wide-angle view with exaggerated perspective:
     from algan import *
 
     with Off():
-        Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+        Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                for i in range(4)]).spawn()
 
     camera = Scene.get_camera()
@@ -138,7 +138,7 @@ where you need exact parallel lines without perspective distortion, use
 
     with Off():
         Scene.get_camera().set_near_orthographic()
-        cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+        cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
     with Seq(run_time=3):
@@ -204,7 +204,7 @@ the camera as a child, or drive it with an updater:
     from algan import *
 
     with Off():
-        Group([Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
+        Group([Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i)
                for i in (-1, 0, 1)]).spawn()
 
         caption = Text("figure 1", font_size=32)

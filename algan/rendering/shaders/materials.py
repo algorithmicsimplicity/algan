@@ -110,7 +110,7 @@ DoubleSide = 2
 # ``metalnessMap`` from its BLUE one, so one packed occlusion/roughness/
 # metalness image drives both; a single-channel image is used as-is. Algan's
 # "reflectivity" is the same quantity Three.js calls metalness (see
-# ThreeDModelMob._apply_pbr_material, which already reads a glTF
+# Model3D._apply_pbr_material, which already reads a glTF
 # metallic-roughness map that way).
 _MAP_SLOT_PROPERTIES = {
     "roughness_map": ("roughness", 1),

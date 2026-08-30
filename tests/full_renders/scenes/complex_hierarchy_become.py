@@ -82,7 +82,7 @@ with Off():
 
     # Source branch 2: a framed Group inside another framed Group.
     source_center_inner_content = Group(
-        Square(side_length=0.75, color=BLUE_A).move(LEFT * 0.5 + UP * 0.55),
+        Square(size=0.75, color=BLUE_A).move(LEFT * 0.5 + UP * 0.55),
         Sphere(radius=0.4, color=TEAL_A).move(RIGHT * 0.48 + UP * 0.55),
     )
     source_center_inner = framed(source_center_inner_content, buffer=0.16)
@@ -105,7 +105,7 @@ with Off():
     # the hierarchy, so this branch need not inherit only source-left leaves.
     target_left_content = Group(
         Sphere(radius=0.43, color=TEAL_A).move(LEFT * 3.85 + UP * 0.48),
-        Square(side_length=0.72, color=BLUE_A).move(LEFT * 3.05 + UP * 0.48),
+        Square(size=0.72, color=BLUE_A).move(LEFT * 3.05 + UP * 0.48),
         Tetrahedron(edge_length=0.9, color=ORANGE)
         .rotate(22, RIGHT)
         .rotate(25, UP)
@@ -138,7 +138,7 @@ with Off():
     # than duplicating an already-visible source.
     target_right_content = Group(
         Sphere(radius=0.42, color=TEAL_A).move(RIGHT * 3.0 + UP * 0.42),
-        Square(side_length=0.72, color=BLUE_A).move(RIGHT * 3.72 + DOWN * 0.38),
+        Square(size=0.72, color=BLUE_A).move(RIGHT * 3.72 + DOWN * 0.38),
     )
     target_right = framed(target_right_content, buffer=0.2)
     target_extra = (

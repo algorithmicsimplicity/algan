@@ -338,8 +338,8 @@ Also `Sphere(radius=1e-9)`, `Cylinder(radius=0)` and a `Surface` with a degenera
 
 The `1e-9` case is the one that will actually be hit — a radius computed from data, or
 a value that shrinks toward zero. Neighbouring degenerate shapes are fine:
-`Sphere(radius=-1)`, `Cone(base_radius=0)`, `Cylinder(height=0)`, `Torus(minor_radius=0)`
-and `Cube(side_length=0)` all render (blank or mirrored), so the behaviour is also
+`Sphere(radius=-1)`, `Cone(base_radius=0)`, `Cylinder(height=0)`, `Torus(tube_radius=0)`
+and `Cube(size=0)` all render (blank or mirrored), so the behaviour is also
 inconsistent between primitives.
 
 **Fix taken.** Drop empty primitives before the merge, or reject a degenerate
@@ -384,7 +384,7 @@ likely a user is to meet it.
 | Trigger | What was reported | What it says now |
 | --- | --- | --- |
 | `Text("")` or `Text("   ")`, on `spawn()` | `RuntimeError: torch.cat(): expected a non-empty list of Tensors` | **Fixed.** It spawns. A string with no glyphs has nothing for the entrance wave to stagger, and `animate_lagged_by_location` now returns rather than reducing over an empty list (`F9`) |
-| `Seq(lag_ratio=0.5)`, `Sync(lag_ratio=0.5)` | `TypeError: algan...Lag.__init__() got multiple values for keyword argument 'lag_ratio'` | **Fixed.** *"Seq is Lag with lag_ratio=1, so it takes no lag_ratio of its own. Use Lag(0.5) for that overlap"* (`F10`) |
+| `Seq(lag_ratio=0.5)`, `Sync(lag_ratio=0.5)` | `TypeError: algan...Lag.__init__() got multiple values for keyword argument 'lag_ratio'` | **Fixed.** *"Seq is Lag with ratio=1, so it takes no lag_ratio of its own. Use Lag(0.5) for that overlap"* (`F10`) |
 | `save_video(codec="notacodec")` | after a full render, `FileNotFoundError: '..._temp.mp4' -> '....mp4'` | **Fixed.** The codec is checked against FFmpeg's encoder list before rendering: 0.2 s instead of 27 s, and the message names the codec (`F11`) |
 | `ImageMob(numpy_array)` | `TypeError: zeros_like(): argument 'input' must be Tensor, not numpy.ndarray` | **Fixed.** numpy arrays and nested sequences are accepted, uint8 scaled by 255 (`F12`) |
 | `ImageMob(torch.zeros(8, 8, 2))` | `ValueError: color_texture must have shape [W, H, 5], got (8, 8, 4).` | **Fixed.** `Color.add_defaults` widens only 3 and 4 channels, so the complaint reports `(8, 8, 2)` — the shape that was passed (`F13`) |
@@ -412,7 +412,7 @@ clamping — but nothing distinguishes them from a scene the user got right.
   user's own arithmetic yields a black video and no clue where it came from.
 * `opacity = 5.0` and `opacity = -1.0` clamp; `scale(-1)` mirrors; `scale(0)`,
   `scale(1e9)` and `rotate(90, ORIGIN)` (a zero axis) all render blank.
-* `Square(side_length=-1)`, `Circle(radius=-1)` construct and render mirrored.
+* `Square(size=-1)`, `Circle(radius=-1)` construct and render mirrored.
 * `Scene.get_camera().despawn()` produces a black video.
 * `Text("hi 🎉")` renders byte-identically to `Text("hi")` — the emoji is dropped with
   no warning. `Text("a\x00b")` fails with

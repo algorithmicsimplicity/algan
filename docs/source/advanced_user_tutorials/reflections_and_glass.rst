@@ -33,7 +33,7 @@ appear in the surface -- see `Glossy Reflections`_ for what a high one does.
     from algan import *
 
     with Off():
-        Prism(dimensions=(9, 0.2, 9), color=GREY).move(DOWN * 1.4).set_material(
+        Prism(width=9, height=0.2, depth=9, color=GREY).move(DOWN * 1.4).set_material(
             MeshStandardMaterial(metalness=0.8, roughness=0.1)).spawn()
         balls = Group([Sphere(radius=0.5, color=c).move(RIGHT * x + DOWN * 0.6)
                        for c, x in ((RED, -1.8), (YELLOW, 0), (BLUE, 1.8))]).spawn()

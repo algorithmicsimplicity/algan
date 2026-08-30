@@ -42,10 +42,7 @@ def build(cfg):
         # straddling the camera plane far off to one side.
         with Off():
             g = Group(
-                [
-                    Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
-                    for i in (-1, 0, 1)
-                ]
+                [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
             ).spawn()
         with Seq(run_time=1, rate_func=rate_funcs.identity):
             g.move(RIGHT * 14)
@@ -55,9 +52,7 @@ def build(cfg):
         with Off():
             Group(
                 [
-                    Cube(side_length=1.2, color=RED).move(
-                        RIGHT * 1.5 * i + UP * 1.5 * j
-                    )
+                    Cube(size=1.2, color=RED).move(RIGHT * 1.5 * i + UP * 1.5 * j)
                     for i in (-1, 0, 1)
                     for j in (-1, 0, 1)
                 ]
@@ -67,10 +62,7 @@ def build(cfg):
     elif cfg == "orbit":
         with Off():
             Group(
-                [
-                    Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
-                    for i in (-1, 0, 1)
-                ]
+                [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
             ).spawn()
         with Seq(run_time=1, rate_func=rate_funcs.identity):
             Scene.get_camera().orbit(360, UP, about=ORIGIN)

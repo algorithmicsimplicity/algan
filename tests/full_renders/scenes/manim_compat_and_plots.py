@@ -158,13 +158,13 @@ with Off():
         color=BLUE_A,
     ).move(RIGHT * 4.3 + UP * 1.3)
 
-    grid = Square(side_length=1.3, color=BLUE).move(LEFT * 4.2 + DOWN * 1.4)
+    grid = Square(size=1.3, color=BLUE).move(LEFT * 4.2 + DOWN * 1.4)
     traveller = Dot(radius=0.16, color=YELLOW).move(LEFT * 1.4 + DOWN * 1.4)
     path = Circle(radius=0.75, color=TRANSPARENT, border_color=GRAY_B, border_width=2)
     path.move(LEFT * 1.4 + DOWN * 1.4)
-    waved = Square(side_length=1.2, color=GREEN).move(RIGHT * 1.4 + DOWN * 1.4)
+    waved = Square(size=1.2, color=GREEN).move(RIGHT * 1.4 + DOWN * 1.4)
     waved_y = float(waved.get_center().flatten()[1])
-    bounded = Square(side_length=1.2, color=TRANSPARENT, border_width=0).move(
+    bounded = Square(size=1.2, color=TRANSPARENT, border_width=0).move(
         RIGHT * 4.2 + DOWN * 1.4
     )
     boundary = AnimatedBoundary(bounded, max_stroke_width=10, cycle_rate=1.0)

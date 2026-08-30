@@ -115,7 +115,7 @@ from algan.mobs.shapes_2d import *
 from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
-from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
+from algan.mobs.three_d_models import Model3D, TriangleMesh
 from algan.project import Project
 from algan.rendering import camera
 from algan.rendering.lights import *

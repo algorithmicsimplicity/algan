@@ -104,7 +104,7 @@ def build_scene():
         glyphs = Text("RETRY", font_size=54, color=BLUE).move(UP * 1.2)
         shapes = Group(
             Circle(radius=0.55, color=ORANGE),
-            Square(side_length=1.0, color=GREEN),
+            Square(size=1.0, color=GREEN),
             Tetrahedron(color=BLUE),
         ).arrange_in_line(RIGHT, buffer=0.7)
         shapes.move(DOWN * 0.9 - shapes.get_center())

@@ -103,7 +103,7 @@ def _deep_nest():
 
 def _group_of_solids():
     return Group(
-        Cube(side_length=0.6).move(LEFT),
+        Cube(size=0.6).move(LEFT),
         Sphere(radius=0.35).move(RIGHT),
     )
 
@@ -135,7 +135,7 @@ CATALOGUE: list[tuple[str, callable]] = [
     ("Torus", lambda: Torus()),
     ("SurfacePlane", _surface_plane),
     # mesh family
-    ("Cube", lambda: Cube(side_length=0.8)),
+    ("Cube", lambda: Cube(size=0.8)),
     ("Tetrahedron", lambda: Tetrahedron()),
     ("TriangleVertices", _tri_vertices),
     # containers

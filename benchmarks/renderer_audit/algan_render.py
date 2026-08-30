@@ -157,7 +157,7 @@ def _build_object(obj):
     if kind == "sphere":
         mob = Sphere(radius=float(geom.get("radius", 1.0)))
     elif kind == "box":
-        mob = Prism(dimensions=tuple(float(v) for v in geom["size"]))
+        mob = Prism(*(float(v) for v in geom["size"]))
     else:
         raise ValueError(f"unsupported geometry type {kind!r}")
 

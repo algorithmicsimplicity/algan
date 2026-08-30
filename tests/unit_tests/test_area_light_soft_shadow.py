@@ -244,12 +244,12 @@ def _render_one_area_shadow_frame(tmp_path, name):
                     intensity=1.2,
                 ).spawn(animate=False)
                 (
-                    Prism(dimensions=(6.0, 6.0, 0.1))
+                    Prism(width=6.0, height=6.0, depth=0.1)
                     .set_material(MeshLambertMaterial(color=WHITE))
                     .spawn(animate=False)
                 )
                 (
-                    Square(side_length=1.2, color=WHITE)
+                    Square(size=1.2, color=WHITE)
                     .move(RIGHT * 0.8 + OUT * 1.5)
                     .spawn(animate=False)
                 )

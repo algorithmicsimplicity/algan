@@ -66,7 +66,7 @@ with Off():
 
     filled = Group(
         Circle(radius=0.62, color=BLUE),
-        Square(side_length=1.2, color=GREEN),
+        Square(size=1.2, color=GREEN),
         RegularPolygon(5, radius=0.68, color=ORANGE),
         Polygon(*STAR_POINTS, color=YELLOW),
         Triangle(color=TEAL).scale(0.72),
@@ -90,7 +90,7 @@ with Off():
     outlined = Group(
         Circle(radius=0.6, color=TRANSPARENT, border_color=BLUE_A, border_width=6),
         Square(
-            side_length=1.15,
+            size=1.15,
             color=TRANSPARENT,
             border_color=GREEN_A,
             border_width=14,
@@ -209,7 +209,7 @@ with Sync(run_time=0.8):
 
 with Off():
     morph = Square(
-        side_length=1.3,
+        size=1.3,
         color=BLUE,
         border_color=WHITE,
         border_width=5,

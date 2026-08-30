@@ -71,8 +71,8 @@ def test_kernel_compile_notice_ignores_offline_cache_hits():
     assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
-def test_same_run_time_tolerates_zero_duration_children():
-    with Sync(same_run_time=True), algan.Off():
+def test_match_durations_tolerates_zero_duration_children():
+    with Sync(match_durations=True), algan.Off():
         pass
 
 
@@ -1358,7 +1358,9 @@ def test_arrow3d_endpoints_follow_the_arrow():
     way it was first built.
     """
     with algan.Scene() as scene, algan.Off():
-        arrow = algan.Arrow3D(start=algan.ORIGIN, end=algan.RIGHT * 1.1, thickness=0.05)
+        arrow = algan.Arrow3D(
+            start=algan.ORIGIN, end=algan.RIGHT * 1.1, shaft_radius=0.05
+        )
         arrow.spawn()
 
         assert arrow.start_point.scene is scene
@@ -1642,10 +1644,13 @@ def test_seq_and_sync_explain_that_their_lag_ratio_is_fixed():
     """
     from algan.animation_timeline.animation_contexts import Seq
 
-    with pytest.raises(TypeError, match=r"Seq is Lag with lag_ratio=1"):
+    with pytest.raises(TypeError, match=r"Seq is Lag with ratio=1"):
         Seq(lag_ratio=0.5)
-    with pytest.raises(TypeError, match=r"Sync is Lag with lag_ratio=0"):
+    with pytest.raises(TypeError, match=r"Sync is Lag with ratio=0"):
         Sync(lag_ratio=0.5)
+    # ``ratio`` is Lag's own spelling, and is caught the same way.
+    with pytest.raises(TypeError, match=r"Seq is Lag with ratio=1"):
+        Seq(ratio=0.5)
     assert algan.Lag(0.5) is not None
 
 

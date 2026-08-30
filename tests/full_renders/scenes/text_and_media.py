@@ -187,10 +187,9 @@ with Off():
         .scale(1.1)
         .move(LEFT * 3.7 + DOWN * 2.1)
     )
-    model = ThreeDModelMob(
+    model = Model3D(
         "assets/textured_icosphere.glb",
-        normalize=True,
-        normalize_size=2.6,
+        fit_to_size=2.6,
     ).move(UP * 0.2)
     shader_sphere = (
         Sphere(radius=0.95, color=BLUE)

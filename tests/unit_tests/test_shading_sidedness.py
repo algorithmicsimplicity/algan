@@ -65,15 +65,15 @@ def _one_sided(mob):
 _SOLIDS = {
     "sphere": lambda: Sphere(radius=0.5),
     "cylinder": lambda: Cylinder(radius=0.4, height=1.0),
-    "line3d": lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.1),
-    "torus": lambda: Torus(major_radius=0.6, minor_radius=0.2),
-    "cube": lambda: Cube(side_length=0.8),
+    "line3d": lambda: Line3D(start=LEFT, end=RIGHT, radius=0.1),
+    "torus": lambda: Torus(ring_radius=0.6, tube_radius=0.2),
+    "cube": lambda: Cube(size=0.8),
     "octahedron": lambda: Octahedron(edge_length=0.8),
 }
 
 _SHEETS = {
     "surface": lambda: Surface(grid_width=4, grid_height=4),
-    "square": lambda: Square(side_length=1.0),
+    "square": lambda: Square(size=1.0),
     "text": lambda: Text("hi", font_size=20),
 }
 

@@ -92,7 +92,7 @@ def _render_bar(tmp_path, name, color, lights):
             Line3D(
                 start=LEFT * 6,
                 end=RIGHT * 6,
-                thickness=2.0,
+                radius=2.0,
                 color=color,
             ).spawn(animate=False)
         scene.save_frame(str(output_path), overwrite=True)

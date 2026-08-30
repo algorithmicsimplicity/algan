@@ -23,7 +23,7 @@ default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving somethin
     from algan import *
 
     with Off():
-        cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+        cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
     with Seq(run_time=3):
@@ -108,7 +108,7 @@ You can turn them on with one setting:
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
-        Cube(side_length=4, color=GREY).move(DOWN * 2.6).spawn()
+        Cube(size=4, color=GREY).move(DOWN * 2.6).spawn()
 
     Scene.wait(2)
 

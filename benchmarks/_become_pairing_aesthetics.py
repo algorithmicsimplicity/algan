@@ -138,7 +138,7 @@ def scrambled_children():
     places = [LEFT * 2 + UP, RIGHT * 2 + UP, RIGHT * 2 + UP * -1, LEFT * 2 + UP * -1]
 
     def build(order):
-        return Group(*[Square(side_length=0.7).move(places[index]) for index in order])
+        return Group(*[Square(size=0.7).move(places[index]) for index in order])
 
     return build([0, 1, 2, 3]), build([2, 0, 3, 1])
 
@@ -187,7 +187,7 @@ def shape_row():
 
     def build(reverse):
         shapes = [
-            Square(side_length=0.7, color=BLUE),
+            Square(size=0.7, color=BLUE),
             Circle(radius=0.4, color=RED),
             Triangle(color=GREEN),
         ]

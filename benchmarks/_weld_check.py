@@ -93,7 +93,7 @@ def scene_plain():
         Cone(radius=0.55, height=1.5, color=GREEN).move(RIGHT * 0.8).spawn(
             animate=False
         )
-        Torus(major_radius=0.7, minor_radius=0.22, color=BLUE).move(RIGHT * 2.4).spawn(
+        Torus(ring_radius=0.7, tube_radius=0.22, color=BLUE).move(RIGHT * 2.4).spawn(
             animate=False
         )
 

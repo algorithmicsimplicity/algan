@@ -76,7 +76,7 @@ def build_mobjects(manim, t=0.0):
 
     mobs = [
         # --- 2-D vector geometry, on the z = 0 plane -------------------------
-        m.Square(side_length=1.6).shift(m.LEFT * 5.4 + m.UP * 2.6),
+        m.Square(size=1.6).shift(m.LEFT * 5.4 + m.UP * 2.6),
         m.Circle(radius=0.8).shift(m.LEFT * 3.2 + m.UP * 2.6),
         m.Triangle().scale(0.8).shift(m.LEFT * 1.1 + m.UP * 2.6),
         m.Star(outer_radius=0.85, color=m.YELLOW).shift(m.RIGHT * 1.1 + m.UP * 2.6),
@@ -87,7 +87,7 @@ def build_mobjects(manim, t=0.0):
             m.ORIGIN, m.RIGHT * 1.5, m.RIGHT * 0.9 + m.UP * 1.4, color=m.PURPLE
         ).shift(m.RIGHT * 4.8 + m.UP * 1.9),
         # --- 2-D shapes with fills, strokes and text ------------------------
-        m.Square(side_length=1.4, fill_color=m.GREEN, fill_opacity=0.9).shift(
+        m.Square(size=1.4, fill_color=m.GREEN, fill_opacity=0.9).shift(
             m.LEFT * 5.4 + m.UP * 0.4
         ),
         m.Circle(radius=0.7, fill_color=m.MAROON, fill_opacity=0.55).shift(
@@ -105,7 +105,7 @@ def build_mobjects(manim, t=0.0):
         m.Sphere(radius=0.75)
         .rotate((70 + spin) * DEG, axis=m.RIGHT)
         .shift(m.LEFT * 5.0 + m.DOWN * 2.2 + m.OUT * (1.2 + 1.6 * swing)),
-        m.Cube(side_length=1.3)
+        m.Cube(size=1.3)
         .rotate((35 + spin) * DEG, axis=m.UP)
         .rotate(20 * DEG, axis=m.RIGHT)
         .shift(m.LEFT * 2.6 + m.DOWN * 2.2 + m.IN * (1.5 + 1.6 * swing)),

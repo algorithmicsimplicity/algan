@@ -224,7 +224,7 @@ light, it supports ``decay`` and ``distance``.
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
                for x in (-1.8, 0, 1.8)]).spawn()
-        Cube(side_length=5, color=GREY).move(DOWN * 3.1).spawn()
+        Cube(size=5, color=GREY).move(DOWN * 3.1).spawn()
 
     Scene.wait(2)
 
@@ -251,7 +251,7 @@ a proportional cost.
         AmbientLight(color=WHITE, intensity=0.2).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
-        Cube(side_length=4, color=GREY).move(DOWN * 2.6).spawn()
+        Cube(size=4, color=GREY).move(DOWN * 2.6).spawn()
 
     Scene.wait(2)
 
@@ -294,7 +294,7 @@ non-zero emitter size:
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
-        Cube(side_length=4, color=GREY).move(DOWN * 2.6).spawn()
+        Cube(size=4, color=GREY).move(DOWN * 2.6).spawn()
 
     Scene.wait(2)
 
@@ -407,7 +407,7 @@ ambient:
         AmbientLight(color=WHITE, intensity=0.25).spawn()
 
         Sphere().spawn()
-        Cube(side_length=6, color=GREY).move(DOWN * 4).spawn()   # Ground floor
+        Cube(size=6, color=GREY).move(DOWN * 4).spawn()   # Ground floor
 
     Scene.wait(2)
 

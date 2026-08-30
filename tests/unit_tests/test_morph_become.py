@@ -145,15 +145,13 @@ def test_minimize_movement_keeps_parts_closer_to_where_they_started(scene):
         with Scene() as isolated:
             with Off():
                 source = Group(
-                    *[Square(side_length=0.4).move(RIGHT * x) for x in (-2, 0, 2)]
+                    *[Square(size=0.4).move(RIGHT * x) for x in (-2, 0, 2)]
                 ).spawn()
             start = float(isolated.animation_manager.context.timespan.current_time)
             with Sync(run_time=1.0):
                 # Same three squares, listed in reverse order.
                 morphed = source.become(
-                    Group(
-                        *[Square(side_length=0.4).move(RIGHT * x) for x in (2, 0, -2)]
-                    ),
+                    Group(*[Square(size=0.4).move(RIGHT * x) for x in (2, 0, -2)]),
                     minimize_movement=minimize,
                 )
             end = float(isolated.animation_manager.context.timespan.current_time)

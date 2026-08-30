@@ -97,7 +97,7 @@ def _render_one_reflective_frame(tmp_path, name):
                     .spawn(animate=False)
                 )
                 (
-                    Prism(dimensions=(6.0, 6.0, 0.1))
+                    Prism(width=6.0, height=6.0, depth=0.1)
                     .set_material(MeshLambertMaterial(color=WHITE))
                     .spawn(animate=False)
                 )

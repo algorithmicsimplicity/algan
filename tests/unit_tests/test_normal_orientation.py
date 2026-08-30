@@ -139,7 +139,7 @@ def _outward(mob, points):
         # Away from the nearest point on the major circle. The ring radius is
         # the authored one times whatever the mob has been scaled by, since
         # the grid holds world points.
-        ring = float(mob.major_radius) * _uniform_scale(mob)
+        ring = float(mob.ring_radius) * _uniform_scale(mob)
         return delta - F.normalize(radial, dim=-1) * ring
     if isinstance(mob, Cone):  # Cone before Cylinder: Line3D is a Cylinder
         return F.normalize(radial, dim=-1) * abs(float(mob.height)) + axis * abs(
@@ -245,11 +245,11 @@ _REVOLVED = {
     "cylinder-set-direction": lambda: Cylinder(radius=0.3, height=1.0).set_direction(
         (0.2, -1.0, 0.4)
     ),
-    "line3d-x": lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.12),
-    "line3d-y": lambda: Line3D(start=ORIGIN, end=UP * 1.4, thickness=0.1),
-    "line3d-z": lambda: Line3D(start=IN, end=OUT, thickness=0.1),
+    "line3d-x": lambda: Line3D(start=LEFT, end=RIGHT, radius=0.12),
+    "line3d-y": lambda: Line3D(start=ORIGIN, end=UP * 1.4, radius=0.1),
+    "line3d-z": lambda: Line3D(start=IN, end=OUT, radius=0.1),
     "line3d-diagonal": lambda: Line3D(
-        start=LEFT + IN * 0.7, end=RIGHT * 1.2 + UP * 0.6, thickness=0.09
+        start=LEFT + IN * 0.7, end=RIGHT * 1.2 + UP * 0.6, radius=0.09
     ),
     "cone": lambda: Cone(base_radius=0.6, height=1.0),
     "cone-capped": lambda: Cone(base_radius=0.6, height=1.0, show_base=True),
@@ -260,20 +260,20 @@ _REVOLVED = {
         radius=0.4, height=1.1, direction=(1.0, 0.3, -0.6), show_ends=True
     ),
     "line3d-capped-rebased": lambda: Line3D(
-        start=LEFT + IN * 0.4, end=RIGHT * 1.3 + UP * 0.5, thickness=0.15
+        start=LEFT + IN * 0.4, end=RIGHT * 1.3 + UP * 0.5, radius=0.15
     ).move_between_points(LEFT * 0.6 + UP, RIGHT + IN * 0.9),
     "cone-direction": lambda: Cone(base_radius=0.5, height=1.1, direction=RIGHT),
-    "torus": lambda: Torus(major_radius=0.6, minor_radius=0.25),
+    "torus": lambda: Torus(ring_radius=0.6, tube_radius=0.25),
     "torus-partial": lambda: Torus(
-        major_radius=0.6, minor_radius=0.25, u_range=(0, 3.0), v_range=(0.5, 4.0)
+        ring_radius=0.6, tube_radius=0.25, u_range=(0, 3.0), v_range=(0.5, 4.0)
     ),
-    "arrow3d": lambda: Arrow3D(start=ORIGIN, end=RIGHT * 1.1, thickness=0.06),
+    "arrow3d": lambda: Arrow3D(start=ORIGIN, end=RIGHT * 1.1, shaft_radius=0.06),
 }
 
 # The flat-sided family: closed, so their own winding is the reference.
 _POLYHEDRA = {
-    "cube": lambda: Cube(side_length=1.0),
-    "prism": lambda: Prism(dimensions=(1.0, 0.6, 0.7)),
+    "cube": lambda: Cube(size=1.0),
+    "prism": lambda: Prism(width=1.0, height=0.6, depth=0.7),
     "tetrahedron": lambda: Tetrahedron(edge_length=1.0),
     "octahedron": lambda: Octahedron(edge_length=0.9),
     "icosahedron": lambda: Icosahedron(edge_length=0.6),
@@ -326,7 +326,7 @@ _RIMS = {
         lambda m, g: ((m.base_circle, g[0]),),
     ),
     "line3d-rebased": (
-        lambda: Line3D(start=LEFT, end=RIGHT, thickness=0.2).move_between_points(
+        lambda: Line3D(start=LEFT, end=RIGHT, radius=0.2).move_between_points(
             LEFT * 0.7 + IN * 0.5, RIGHT * 1.2 + UP * 0.8
         ),
         lambda m, g: ((m.bottom_cap, g[:, 0]), (m.top_cap, g[:, -1])),
@@ -382,7 +382,7 @@ def test_moving_a_solid_does_not_reorient_it():
     the grid reverses.
     """
     with Scene(), Off():
-        torus = Torus(major_radius=0.7, minor_radius=0.2)
+        torus = Torus(ring_radius=0.7, tube_radius=0.2)
         torus.spawn(animate=False)
         torus.rotate(37, UP + RIGHT).scale(1.4).move(RIGHT * 1.3 + UP * 0.4)
         _assert_faces_outward(torus, "torus after transforms")
@@ -394,7 +394,7 @@ def test_surface_grid_orientation_reverses_only_the_v_axis():
     one.
     """
     with Scene(), Off():
-        torus = Torus(major_radius=0.7, minor_radius=0.2)
+        torus = Torus(ring_radius=0.7, tube_radius=0.2)
         torus.spawn(animate=False)
         assert torus._grid_orientation == -1
 
@@ -408,7 +408,7 @@ def test_unit_normals_stay_aligned_with_their_grid_rows():
     must not permute what it returns, only point the vectors outward.
     """
     with Scene(), Off():
-        torus = Torus(major_radius=0.7, minor_radius=0.25)
+        torus = Torus(ring_radius=0.7, tube_radius=0.25)
         torus.spawn(animate=False)
         points = torus.grid.location.reshape(-1, 3)
         normals = torus.get_unit_normals().reshape(-1, 3)

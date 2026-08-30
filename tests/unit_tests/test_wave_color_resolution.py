@@ -217,7 +217,7 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
     )
     glyphs = [
         Square(
-            side_length=0.25,
+            size=0.25,
             color=YELLOW,
             texture_grid_width=3,
         ).move(RIGHT * x)

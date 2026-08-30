@@ -59,14 +59,14 @@ def _clash_scene(scene):
     LD frame. A reordered merge here is loudly visible.
     """
     with Off():
-        first = Square(side_length=2.0, color=RED, border_width=0).move(LEFT * 0.4)
+        first = Square(size=2.0, color=RED, border_width=0).move(LEFT * 0.4)
         packed = batch_mobs(
             [
-                Square(side_length=2.0, color=GREEN, border_width=0),
-                Square(side_length=2.0, color=GREEN, border_width=0).move(UP * 0.4),
+                Square(size=2.0, color=GREEN, border_width=0),
+                Square(size=2.0, color=GREEN, border_width=0).move(UP * 0.4),
             ]
         )
-        last = Square(side_length=2.0, color=BLUE, border_width=0).move(RIGHT * 0.4)
+        last = Square(size=2.0, color=BLUE, border_width=0).move(RIGHT * 0.4)
     first.spawn(animate=False)
     packed.spawn(animate=False)
     last.spawn(animate=False)

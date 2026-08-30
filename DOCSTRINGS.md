@@ -22,7 +22,7 @@ Tier 1 — **full standard applies** (everything in this document):
 
 - Any name exported by `from algan import *` (i.e. present in `algan.__all__`).
 - Any public method or property on `Animatable`, `Mob` and its mixins, `Group`, `Scene`, mob
-  classes (`Square`, `Text`, `Surface`, `ThreeDModelMob`, ...), `AnimationContext` subclasses
+  classes (`Square`, `Text`, `Surface`, `Model3D`, ...), `AnimationContext` subclasses
   (`Seq`, `Sync`, `Lag`, `Off`, `Audio`, `Speech`), `Camera`, lights, `Material` classes, and the
   `SETTINGS` sections and presets.
 - Any function that appears in a tutorial, a docs example, or `README.md`.
@@ -198,7 +198,7 @@ The `Returns` section is the exception — see §5.
 
 ### 4.2 Defaults must be stated, in prose, in the description
 
-This is the rule that is most often broken. `Square.side_length` ("Length of each side of the
+This is the rule that is most often broken. `Square.size` ("Length of each side of the
 square.") never says it is 2; `Circle.radius` never says it is 1.
 
 State the default in the last sentence of the entry, as ``Defaults to X.``:
@@ -434,7 +434,7 @@ thing. Consequently:
 
 | Anti-pattern | Where it exists today |
 |---|---|
-| Default value not stated | `Square.side_length`, `Circle.radius`, `Rectangle.width/height` |
+| Default value not stated | `Square.size`, `Circle.radius`, `Rectangle.width/height` |
 | Angle without "degrees" | `Mob.rotate`, `Mob.orbit` (both fixed in the API overhaul's Phase 3) |
 | Returns `self`, says nothing | `Animatable.spawn` |
 | No docstring on a taught API | `Animatable.clone` (6 parameters, one deprecated), `Animatable.despawn` |

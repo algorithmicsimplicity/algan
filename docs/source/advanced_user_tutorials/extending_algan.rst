@@ -22,7 +22,7 @@ whether your goal can be achieved with existing extension hooks:
    * - Custom post-processing image filters
      - Post-processing passes (:doc:`backgrounds_and_post_processing`)
    * - External 2-D/3-D assets
-     - :class:`~.ManimMob` or :class:`~.ThreeDModelMob`
+     - :class:`~.ManimMob` or :class:`~.Model3D`
 
 Building Custom Mob Classes
 ===========================

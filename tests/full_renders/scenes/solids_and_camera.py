@@ -67,7 +67,7 @@ with Off():
         Cone(base_radius=0.55, height=1.1, show_base=True).set_material(
             MeshPhongMaterial(color=ORANGE, shininess=55)
         ),
-        Torus(major_radius=0.55, minor_radius=0.22).set_material(
+        Torus(ring_radius=0.55, tube_radius=0.22).set_material(
             MeshStandardMaterial(color=TEAL, roughness=0.4, metalness=0.2)
         ),
         # An odd grid makes the checkerboard read as diagonal banding, which is
@@ -96,8 +96,8 @@ with Off():
         label.move_to(solid.get_center() + DOWN * 1.05)
 
     flat = Group(
-        Cube(side_length=0.85).set_material(MeshBasicMaterial(color=RED)),
-        Prism(dimensions=(1.0, 0.65, 0.65)).set_material(
+        Cube(size=0.85).set_material(MeshBasicMaterial(color=RED)),
+        Prism(width=1.0, height=0.65, depth=0.65).set_material(
             MeshLambertMaterial(color=PURPLE)
         ),
         Tetrahedron(edge_length=1.05).set_material(MeshStandardMaterial(color=BLUE_B)),
@@ -176,22 +176,22 @@ with Sync(run_time=0.8):
 
 with Off():
     triad = Group(
-        Arrow3D(start=ORIGIN, end=RIGHT * 1.1, thickness=0.05, color=RED).set_material(
-            MeshBasicMaterial(color=RED)
-        ),
-        Arrow3D(start=ORIGIN, end=UP * 1.1, thickness=0.05, color=GREEN).set_material(
-            MeshBasicMaterial(color=GREEN)
-        ),
-        Arrow3D(start=ORIGIN, end=OUT * 1.1, thickness=0.05, color=BLUE).set_material(
-            MeshBasicMaterial(color=BLUE)
-        ),
+        Arrow3D(
+            start=ORIGIN, end=RIGHT * 1.1, shaft_radius=0.05, color=RED
+        ).set_material(MeshBasicMaterial(color=RED)),
+        Arrow3D(
+            start=ORIGIN, end=UP * 1.1, shaft_radius=0.05, color=GREEN
+        ).set_material(MeshBasicMaterial(color=GREEN)),
+        Arrow3D(
+            start=ORIGIN, end=OUT * 1.1, shaft_radius=0.05, color=BLUE
+        ).set_material(MeshBasicMaterial(color=BLUE)),
         # NOT a rendering artifact, though it reads as one: this line is
         # coaxial with the red arrow and ends exactly at its tip, so its
         # 0.03 radius shows past the cone's apex and again at the head's
         # shoulder, where the cone has tapered to about the same width. A
         # supersampled reference renders both the same way. Shorten the line
         # or thin it if the white on the red arrow is ever unwanted.
-        Line3D(start=LEFT * 1.1, end=RIGHT * 1.1, thickness=0.03, color=GRAY_A),
+        Line3D(start=LEFT * 1.1, end=RIGHT * 1.1, radius=0.03, color=GRAY_A),
         Dot3D(point=ORIGIN, radius=0.14, color=WHITE),
     )
     hull = ConvexHull3D(

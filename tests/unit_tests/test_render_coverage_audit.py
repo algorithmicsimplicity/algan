@@ -192,7 +192,7 @@ def test_every_light_class_appears_in_a_scene():
                 "set_material(",
                 "set_fragment_shader(",
                 "ImageMob(",
-                "ThreeDModelMob(",
+                "Model3D(",
                 "glow",
                 "opacity",
             ),

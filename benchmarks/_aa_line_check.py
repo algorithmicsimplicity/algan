@@ -692,7 +692,7 @@ def report_routes(video_settings):
     def with_shadows(scene):
         rt_settings.set_shadows(True)
         sphere(scene)
-        Square(side_length=6, color=WHITE, scene=scene).spawn()
+        Square(size=6, color=WHITE, scene=scene).spawn()
 
     def with_spp(scene):
         rt_settings.samples_per_pixel = 4

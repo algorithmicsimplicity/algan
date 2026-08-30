@@ -2,12 +2,12 @@
 
 An importer backend (:mod:`algan.mobs.three_d_models.gltf_loader` for glB/glTF via trimesh,
 or :mod:`algan.mobs.three_d_models.assimp_loader` for FBX via pyassimp) parses a model file
-into these plain dataclasses; :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`
+into these plain dataclasses; :class:`~algan.mobs.three_d_models.model_mob.Model3D`
 consumes them and builds the Algan mob tree. Keeping the IR separate from both
 the parser and the mob builder means:
 
 * the parsing backend is swappable (trimesh, FBX SDK, pyassimp, ...) without
-  touching :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`;
+  touching :class:`~algan.mobs.three_d_models.model_mob.Model3D`;
 * the IR can be hand-built in tests, so the mob builder is testable with no
   parser backend present.
 

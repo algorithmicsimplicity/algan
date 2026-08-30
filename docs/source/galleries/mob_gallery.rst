@@ -41,7 +41,7 @@ which means they stay perfectly smooth however far you zoom in. A
    * - :class:`~.Dot`
      - A small filled circle, for marking points.
    * - :class:`~.Square`
-     - ``side_length``.
+     - ``size``.
    * - :class:`~.Rectangle`
      - ``width``, ``height``.
    * - :class:`~.RegularPolygon`
@@ -137,8 +137,8 @@ how Algan turns them into triangles.
     from algan import *
 
     shapes = Group([
-        Sphere(radius=0.45), Cube(side_length=0.75), Cylinder(radius=0.35, height=0.8),
-        Cone(base_radius=0.45, height=0.8), Torus(major_radius=0.55, minor_radius=0.2),
+        Sphere(radius=0.45), Cube(size=0.75), Cylinder(radius=0.35, height=0.8),
+        Cone(base_radius=0.45, height=0.8), Torus(ring_radius=0.55, tube_radius=0.2),
         Tetrahedron(edge_length=1.0), Octahedron(edge_length=0.6),
         Icosahedron(edge_length=0.5),
     ])
@@ -162,7 +162,7 @@ Curved 3-D Shapes:
    * - :class:`~.Cone`
      - Sized with ``base_radius``, ``height``, and ``direction``.
    * - :class:`~.Torus`
-     - Sized with ``major_radius`` and ``minor_radius``.
+     - Sized with ``ring_radius`` and ``tube_radius``.
    * - :class:`~.Dot3D`, :class:`~.Line3D`
      - A small 3-D sphere and cylinder for marking points and 3-D segments.
    * - :class:`~.Arrow3D`
@@ -177,9 +177,9 @@ Faceted 3-D Shapes:
    * - Class
      - Notes
    * - :class:`~.Cube`
-     - Sized with ``side_length``.
+     - Sized with ``size``.
    * - :class:`~.Prism`
-     - A 3-D box sized with ``dimensions``. Great for walls, pedestals, or floors.
+     - A 3-D box sized with ``width`` / ``height`` / ``depth``. Great for walls, pedestals, or floors.
    * - :class:`~.Tetrahedron`, :class:`~.Octahedron`, :class:`~.Icosahedron`, :class:`~.Dodecahedron`
      - Platonic solids sized with ``edge_length``.
    * - :class:`~.Polyhedron`, :class:`~.ConvexHull3D`
@@ -254,7 +254,7 @@ Images and Imported Models
      - Notes
    * - :class:`~.ImageMob`
      - An image file or RGBA array as a flat, textured surface.
-   * - :class:`~.ThreeDModelMob`
+   * - :class:`~.Model3D`
      - A ``.glb`` / ``.gltf`` / ``.fbx`` model, with its materials and rigid
        node animation.
    * - :class:`~.ManimMob`

@@ -30,8 +30,8 @@ def _render(tmp_path, name, z_index):
     path = tmp_path / f"{name}.png"
     with Scene() as scene:
         with Off():
-            red = Square(side_length=2.0, color=RED, border_width=0)
-            blue = Square(side_length=2.0, color=BLUE, border_width=0)
+            red = Square(size=2.0, color=RED, border_width=0)
+            blue = Square(size=2.0, color=BLUE, border_width=0)
             blue.z_index = z_index
         red.spawn(animate=False)
         blue.spawn(animate=False)
@@ -105,7 +105,7 @@ def test_one_bin_of_bias_does_not_move_the_geometry(tmp_path):
         path = tmp_path / f"{name}.png"
         with Scene() as scene:
             with Off():
-                square = Square(side_length=2.0, color=WHITE, border_width=0)
+                square = Square(size=2.0, color=WHITE, border_width=0)
                 square.z_index = z_index
             square.spawn(animate=False)
             scene.save_frame(str(path), video_settings=LD)
@@ -133,7 +133,7 @@ def _stack_centre_pixel(tmp_path, name, order):
             mobs = []
             for kind, colour in order:
                 if kind == "fill":
-                    mobs.append(Square(side_length=1.6, color=colour, border_width=0))
+                    mobs.append(Square(size=1.6, color=colour, border_width=0))
                 else:
                     mobs.append(
                         Line(

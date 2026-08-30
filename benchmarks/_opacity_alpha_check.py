@@ -143,9 +143,7 @@ def _render(background, ambient, alpha, path):
                 "sphere": Sphere(radius=1.1).set_material(
                     MeshStandardMaterial(color=BLUE)
                 ),
-                "cube": Cube(side_length=1.9).set_material(
-                    MeshStandardMaterial(color=BLUE)
-                ),
+                "cube": Cube(size=1.9).set_material(MeshStandardMaterial(color=BLUE)),
             }
             for name, mob in shapes.items():
                 mob.move(RIGHT * _ARM_X[name])

@@ -48,13 +48,13 @@ def _render_shadow_luminance(tmp_path, name, blocker_opacities):
                 intensity=0.08,
             ).spawn(animate=False)
             (
-                Prism(dimensions=(6.0, 6.0, 0.1))
+                Prism(width=6.0, height=6.0, depth=0.1)
                 .set_material(MeshLambertMaterial(color=WHITE))
                 .spawn(animate=False)
             )
             for opacity, distance in zip(blocker_opacities, (1.0, 1.1)):
                 (
-                    Square(side_length=1.2, color=WHITE, opacity=opacity)
+                    Square(size=1.2, color=WHITE, opacity=opacity)
                     .move(RIGHT * distance + OUT * distance)
                     .spawn(animate=False)
                 )

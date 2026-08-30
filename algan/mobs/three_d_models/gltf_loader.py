@@ -9,7 +9,7 @@ normals / UVs / colors, the node-instance transforms, and PBR materials
 in-memory images).
 
 The output is the same backend-independent :class:`SceneData` the FBX loader
-produces, so :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` builds both
+produces, so :class:`~algan.mobs.three_d_models.model_mob.Model3D` builds both
 through one shared path.
 """
 

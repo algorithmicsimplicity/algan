@@ -96,7 +96,7 @@ with Off():
     circuits = Group(
         Circle(radius=0.5, color=BLUE),
         Square(
-            side_length=0.95,
+            size=0.95,
             color=TRANSPARENT,
             border_color=GREEN_A,
             border_width=10,
@@ -111,7 +111,7 @@ with Off():
     # Row 2 -- flat triangle meshes, one per shading path. Every solid here is
     # a Polyhedron, never a Surface: see the module docstring on why the PN
     # family is deliberately absent.
-    cube = Cube(side_length=0.95).set_material(MeshLambertMaterial(color=ORANGE))
+    cube = Cube(size=0.95).set_material(MeshLambertMaterial(color=ORANGE))
     cube.move(LEFT * 2.2 + DOWN * 0.5)
     metal = Icosahedron(edge_length=0.85).set_material(
         MeshStandardMaterial(color=RED, roughness=0.35, metalness=0.4)
@@ -120,7 +120,7 @@ with Off():
     unlit = Octahedron(edge_length=0.9).set_material(MeshBasicMaterial(color=TEAL))
     unlit.move(RIGHT * 1.8 + DOWN * 0.5)
     # Opacity is its own transport channel, not a shading term.
-    faded = Cube(side_length=0.85, opacity=0.45).set_material(
+    faded = Cube(size=0.85, opacity=0.45).set_material(
         MeshLambertMaterial(color=PURPLE)
     )
     faded.move(RIGHT * 3.6 + DOWN * 0.5)

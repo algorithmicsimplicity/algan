@@ -48,8 +48,8 @@ ARMS = ("default", "manim")
 def build_scene():
     """Three solids with no material of their own, spread across the frame."""
     Sphere(radius=0.9, color=BLUE).move(LEFT * 2.2).spawn()
-    Cube(side_length=1.4).move(ORIGIN).spawn()
-    Torus(major_radius=0.75, minor_radius=0.28).move(RIGHT * 2.2 + DOWN * 0.1).spawn()
+    Cube(size=1.4).move(ORIGIN).spawn()
+    Torus(ring_radius=0.75, tube_radius=0.28).move(RIGHT * 2.2 + DOWN * 0.1).spawn()
 
 
 def main(arm):
