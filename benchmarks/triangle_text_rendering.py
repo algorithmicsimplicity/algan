@@ -14,7 +14,7 @@ def render_static_triangulated_text():
     with Off():
         mobs = (
             Text("abcdefir\nsbmbbkl\nmbnmcllc\nqwereqtqet")
-            .set(border_color=RED, border_width=6)
+            .set(stroke_color=RED, stroke_width=6)
             .scale(2)
             .spawn()
         )

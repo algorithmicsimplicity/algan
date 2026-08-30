@@ -5,7 +5,7 @@
 :class:`Dot` and :class:`SurroundingRectangle` are all cubic bezier circuits
 (:class:`~algan.mobs.bezier_circuit.BezierCircuitCubic`), so they stay exactly
 smooth at any zoom and morph into one another. They take ``color``,
-``border_color`` and ``border_width``, plus ``texture_grid_width`` /
+``stroke_color`` and ``stroke_width``, plus ``texture_grid_width`` /
 ``texture_grid_height`` for shapes that carry a gradient or an image rather than
 one flat color.
 
@@ -64,9 +64,16 @@ def _translate_vector_style_kwargs(
     """Translate common VMobject style keywords to BezierCircuitCubic.
 
     Algan stores fill color on ``color`` and outline style on
-    ``border_color``/``border_width``.  Manim exposes the same concepts as
-    ``fill_*`` and ``stroke_*``.  Consuming the keywords here also prevents
-    renderer-only VMobject settings from leaking into ``Animatable``.
+    ``stroke_color``/``stroke_width``, which is what Manim calls them too --
+    so ``stroke_*`` now passes straight through, and the work here is
+    translating Manim's ``fill_*`` onto ``color`` and consuming the
+    renderer-only VMobject settings that would otherwise leak into
+    ``Animatable``.
+
+    **``stroke_width`` is in Algan's unit here, not Manim's.** Manim means
+    twice this by the same number, and that conversion lives in
+    ``algan.manim`` -- ``mn.Square(stroke_width=4)`` is the exact-parity
+    spelling.
 
     ``shape``, when given, is the Mob class being constructed; under the
     opt-in Manim shape profile (``SETTINGS.style.shape_style_profile``) its
@@ -91,12 +98,11 @@ def _translate_vector_style_kwargs(
         if (
             stroke_color is None
             and stroke_opacity is None
-            and "border_color" not in kwargs
-            and style["border_color"] is not None
+            and style["stroke_color"] is not None
         ):
-            kwargs["border_color"] = style["border_color"]
-        if stroke_width is None and "border_width" not in kwargs:
-            kwargs["border_width"] = style["border_width"]
+            kwargs["stroke_color"] = style["stroke_color"]
+        if stroke_width is None:
+            kwargs["stroke_width"] = style["stroke_width"]
         if "filled" not in kwargs:
             kwargs["filled"] = style["filled"]
 
@@ -106,7 +112,7 @@ def _translate_vector_style_kwargs(
         # The profile's own border color stands in for that stroke when it has
         # already been injected, so the (invisible) profile fill never leaks
         # into the stroke.
-        if stroke_color is None and has_color and "border_color" not in kwargs:
+        if stroke_color is None and has_color:
             stroke_color = color
         kwargs["filled"] = False
     else:
@@ -122,18 +128,17 @@ def _translate_vector_style_kwargs(
             kwargs["color"] = color
 
     if stroke_color is not None:
-        kwargs["border_color"] = _coerce_algan_color(
+        kwargs["stroke_color"] = _coerce_algan_color(
             stroke_color,
             stroke_opacity,
         )
     elif stroke_opacity is not None:
-        kwargs["border_color"] = _coerce_algan_color(
+        kwargs["stroke_color"] = _coerce_algan_color(
             WHITE if default_color is None else default_color,
             stroke_opacity,
         )
     if stroke_width is not None:
-        # ManimMob performs the inverse conversion when importing VMobjects.
-        kwargs["border_width"] = float(stroke_width) / 2
+        kwargs["stroke_width"] = float(stroke_width)
 
     # Accepted by Manim's VMobject/Mobject constructors but not represented by
     # Algan's ray-traced Bezier primitive.
@@ -186,7 +191,7 @@ class Line(BezierCircuitCubic):
         to ``0`` (a straight segment).
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``color``,
-        ``border_width`` and ``texture_grid_width``.
+        ``stroke_width`` and ``texture_grid_width``.
 
     Examples
     --------
@@ -313,7 +318,7 @@ class Line(BezierCircuitCubic):
             from algan import *
             import torch
 
-            line = Line(LEFT * 3, RIGHT * 3, border_width=20, texture_grid_width=64)
+            line = Line(LEFT * 3, RIGHT * 3, stroke_width=20, texture_grid_width=64)
             line.set_color_by_function(
                 lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
             )
@@ -737,7 +742,7 @@ class Rectangle(Quad):
         :meth:`~algan.animatable_base.animatable.Animatable.get_default_color`).
     **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
-        ``border_color``, ``border_width`` and ``filled``.
+        ``stroke_color``, ``stroke_width`` and ``filled``.
     """
 
     def __init__(self, width=2, height=2, color=None, **kwargs):
@@ -793,8 +798,8 @@ class SurroundingRectangle(Quad):
         Additional gap below the contents, in world units, for leaving room for a
         caption. Defaults to ``None``, meaning none.
     **kwargs
-        Passed to :class:`~.BezierCircuitCubic` -- notably ``border_color``,
-        ``border_width`` and ``filled=False`` for an outline-only frame.
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``stroke_color``,
+        ``stroke_width`` and ``filled=False`` for an outline-only frame.
 
     Raises
     ------
@@ -878,7 +883,7 @@ class Square(Rectangle):
         Length of each side, in world units. Defaults to ``2``.
     **kwargs
         Passed to :class:`~.Rectangle` and on to :class:`~.BezierCircuitCubic` --
-        notably ``color``, ``location``, ``border_color``, ``border_width`` and
+        notably ``color``, ``location``, ``stroke_color``, ``stroke_width`` and
         ``filled``.
 
     Examples
@@ -908,7 +913,7 @@ class Circle(BezierCircuitCubic):
         Fill color. Defaults to ``None``, meaning ``BLUE``.
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
-        ``border_color``, ``border_width`` and ``filled``.
+        ``stroke_color``, ``stroke_width`` and ``filled``.
     """
 
     def __init__(self, radius=1, color=None, *args, **kwargs):

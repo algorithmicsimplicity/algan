@@ -186,7 +186,7 @@ def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
 def test_circuit_wave_color_animates_fill_and_border_texture_grids():
     square = Square(
         color=YELLOW,
-        border_color=YELLOW,
+        stroke_color=YELLOW,
         texture_grid_width=2,
     ).spawn(animate=False)
 

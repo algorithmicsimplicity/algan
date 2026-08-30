@@ -82,11 +82,11 @@ def test_default_profile_is_algan():
 def test_profile_off_leaves_the_algan_defaults():
     square = Square()
     assert (hex_of(square.color), bool(square.filled)) == ("#FC6255", True)
-    assert float(square.border_width) == 5.0
+    assert float(square.stroke_width) == 5.0
     circle = Circle()
     assert hex_of(circle.color) == "#58C4DD"
     line = Line(LEFT, RIGHT)
-    assert float(line.border_width) == 5.0
+    assert float(line.stroke_width) == 5.0
 
 
 def test_switching_back_off_restores_the_algan_defaults():
@@ -95,7 +95,7 @@ def test_switching_back_off_restores_the_algan_defaults():
     square = Square()
     assert hex_of(square.color) == "#FC6255"
     assert bool(square.filled)
-    assert float(square.border_width) == 5.0
+    assert float(square.stroke_width) == 5.0
     assert hex_of(Sphere().color) == "#83C167"
 
 
@@ -123,8 +123,8 @@ def _build(shape_name):
 @pytest.mark.parametrize(
     ("shape_name", "expected"),
     [
-        # fill hex @ opacity, border hex, filled, border_width -- Algan units,
-        # i.e. border_width is Manim's stroke_width / 2.
+        # fill hex @ opacity, border hex, filled, stroke_width -- Algan units,
+        # i.e. stroke_width is Manim's stroke_width / 2.
         ("Square", ("#FFFFFF", 0.0, "#FFFFFF", False, 2.0)),
         ("Rectangle", ("#FFFFFF", 0.0, "#FFFFFF", False, 2.0)),
         ("Circle", ("#FC6255", 0.0, "#FC6255", False, 2.0)),
@@ -138,12 +138,12 @@ def _build(shape_name):
 def test_profile_on_adopts_manim_circuit_defaults(shape_name, expected):
     SETTINGS.style.set(shape_style_profile="manim")
     mob = _build(shape_name)
-    fill_hex, fill_opacity, border_hex, filled, border_width = expected
+    fill_hex, fill_opacity, border_hex, filled, stroke_width = expected
     assert hex_of(mob.color) == fill_hex
     assert fill_opacity_of(mob) == fill_opacity
-    assert hex_of(mob.border_color) == border_hex
+    assert hex_of(mob.stroke_color) == border_hex
     assert bool(mob.filled) is filled
-    assert float(mob.border_width) == border_width
+    assert float(mob.stroke_width) == stroke_width
 
 
 def test_profile_on_gives_the_curved_solids_manim_s_checkerboard():
@@ -173,9 +173,9 @@ def test_enabling_resolves_the_snapshots_eagerly():
 # --------------------------------------------------------------------------
 def test_explicit_kwargs_win_over_the_profile():
     SETTINGS.style.set(shape_style_profile="manim")
-    square = Square(color=BLUE, border_width=7, filled=True)
+    square = Square(color=BLUE, stroke_width=7, filled=True)
     assert hex_of(square.color) == "#58C4DD"
-    assert float(square.border_width) == 7.0
+    assert float(square.stroke_width) == 7.0
     assert bool(square.filled)
 
     circle = Circle(fill_opacity=0.5)
@@ -188,9 +188,9 @@ def test_explicit_kwargs_win_over_the_profile():
 
 def test_explicit_stroke_kwargs_win_over_the_profile():
     SETTINGS.style.set(shape_style_profile="manim")
-    circle = Circle(stroke_color=BLUE, stroke_width=8)
-    assert hex_of(circle.border_color) == "#58C4DD"
-    assert float(circle.border_width) == 4.0
+    circle = Circle(stroke_color=BLUE, stroke_width=4)
+    assert hex_of(circle.stroke_color) == "#58C4DD"
+    assert float(circle.stroke_width) == 4.0
 
 
 def test_unmapped_shapes_are_unchanged_under_the_profile():
@@ -200,7 +200,7 @@ def test_unmapped_shapes_are_unchanged_under_the_profile():
     SETTINGS.style.set(shape_style_profile="manim")
     point_on = Point()
     assert hex_of(point_on.color) == hex_of(point_off.color)
-    assert float(point_on.border_width) == float(point_off.border_width)
+    assert float(point_on.stroke_width) == float(point_off.stroke_width)
     assert bool(point_on.filled) is bool(point_off.filled)
 
 
@@ -233,8 +233,8 @@ def test_snapshot_matches_the_installed_manim():
     manim_square = manim.Square()
     style = styles["Square"]
     assert hex_of(style["color"]) == manim_square.fill_color.to_hex().upper()
-    assert hex_of(style["border_color"]) == manim_square.stroke_color.to_hex().upper()
-    assert style["border_width"] == float(manim_square.stroke_width) / 2
+    assert hex_of(style["stroke_color"]) == manim_square.stroke_color.to_hex().upper()
+    assert style["stroke_width"] == float(manim_square.stroke_width) / 2
     assert style["filled"] == (float(manim_square.fill_opacity) > 1e-5)
 
     manim_sphere = manim.Sphere()

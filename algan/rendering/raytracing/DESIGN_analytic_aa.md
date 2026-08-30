@@ -657,11 +657,11 @@ Two coupled changes:
 
   * **The border of a FILLED circuit now runs inward** (`_circuit_point_region`,
     shared by the raster and classic paths). It was a band `|d| < border_w/2`
-    straddling the outline, so raising `border_width` dilated the shape:
+    straddling the outline, so raising `stroke_width` dilated the shape:
     neighbouring glyphs fused and bordered text went pudgy. The drawn region is
     now the fill alone, and the border is the part of it with `d <= border_w`.
     `_M_BORDER_W` became the FULL stroke width (the host dropped its `/2`), so
-    apparent stroke weight is unchanged for a given `border_width`. Unfilled
+    apparent stroke weight is unchanged for a given `stroke_width`. Unfilled
     circuits have no interior to eat into and keep the centred band.
   * **The inner boundary gets its own box filter.** The fill-only region's
     coverage `clamp((d - border_w)/px + 0.5, 0, 1)` is subtracted from the total,
@@ -677,7 +677,7 @@ five kernels plus every memory estimator. `_terminal_z_hit` needs it too —
 full OUTER coverage is exactly the condition for reaching the z-prepass and says
 nothing about the inner edge, so an opaque glyph's stroke straddles it there.
 
-Circuits with `border_width = 0` (plain `Text`/`Tex`, plain fills) are
+Circuits with `stroke_width = 0` (plain `Text`/`Tex`, plain fills) are
 byte-identical: `outer_w = max(0, outline_w)` was already `outline_w`, and the
 border share is gated on a non-zero width.
 

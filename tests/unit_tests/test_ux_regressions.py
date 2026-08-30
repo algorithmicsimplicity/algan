@@ -888,7 +888,7 @@ def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     from algan.animations.manim_animations import DrawBorderThenFill
 
     squares = [Square(add_to_scene=True).spawn(animate=False) for _ in range(3)]
-    assert squares[0].border_color.shape[-1] == 5
+    assert squares[0].stroke_color.shape[-1] == 5
 
     animated = DrawBorderThenFill(squares)
 
@@ -904,18 +904,18 @@ def test_draw_border_then_fill_restores_the_original_style():
 
     square = Square(
         color=algan.BLUE,
-        border_color=algan.RED,
-        border_width=0.25,
+        stroke_color=algan.RED,
+        stroke_width=0.25,
         add_to_scene=True,
     ).spawn(False)
     original_colors = [
         descendant.color.clone() for descendant in square.get_descendants()
     ]
-    original_border_width = square.border_width.clone()
+    original_stroke_width = square.stroke_width.clone()
 
     DrawBorderThenFill(square for _ in range(1))
 
-    assert torch.allclose(square.border_width, original_border_width)
+    assert torch.allclose(square.stroke_width, original_stroke_width)
     assert all(
         torch.allclose(descendant.color, original)
         for descendant, original in zip(square.get_descendants(), original_colors)
@@ -955,14 +955,14 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
         torch.tensor([0.0, 0.5, 0.999]),
         atol=1e-4,
     )
-    assert torch.allclose(glyph.border_color[0, 0, :3], algan.WHITE[:3])
+    assert torch.allclose(glyph.stroke_color[0, 0, :3], algan.WHITE[:3])
     assert torch.allclose(
-        glyph.border_color[1, 0, :3],
+        glyph.stroke_color[1, 0, :3],
         torch.tensor([1.0, 1.0, 0.5]),
         atol=1e-4,
     )
     assert torch.allclose(
-        glyph.border_width[:, 0, 0],
+        glyph.stroke_width[:, 0, 0],
         torch.tensor([1.0, 0.5, 0.001]),
         atol=1e-4,
     )
@@ -982,22 +982,22 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
 
     def fake(
         mobs,
-        border_width=1,
+        stroke_width=1,
         run_time=None,
         lag_ratio=None,
-        border_color=None,
+        stroke_color=None,
         **kwargs,
     ):
         seen["mobs"] = list(mobs)
-        seen["border_width"] = border_width
-        seen["border_color"] = border_color
+        seen["stroke_width"] = stroke_width
+        seen["stroke_color"] = stroke_color
         return seen["mobs"]
 
     monkeypatch.setattr(manim_animations, "DrawBorderThenFill", fake)
 
     assert text.write() is text
     assert len(seen["mobs"]) == len(text.character_mobs)
-    assert torch.allclose(seen["border_color"], algan.WHITE)
+    assert torch.allclose(seen["stroke_color"], algan.WHITE)
 
 
 # --- UX audit fixes -------------------------------------------------------
@@ -1039,11 +1039,11 @@ def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
 
     with pytest.raises(AttributeError, match=r"Did you mean 'color'\?"):
         Square().spawn().set(colour=algan.RED)
-    # border_color is accepted by set(), so it must be advertised by the error.
+    # stroke_color is accepted by set(), so it must be advertised by the error.
     circle = Circle().spawn()
-    with pytest.raises(AttributeError, match="border_color"):
+    with pytest.raises(AttributeError, match="stroke_color"):
         circle.set(bordercolour=algan.RED)
-    circle.set(border_color=algan.PINK)
+    circle.set(stroke_color=algan.PINK)
 
 
 @pytest.mark.fast

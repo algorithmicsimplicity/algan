@@ -178,7 +178,7 @@ with Off():
     image_frame = SurroundingRectangle(
         image,
         color=TEAL_A,
-        border_width=4,
+        stroke_width=4,
         filled=False,
         buffer=0.1,
     )

@@ -59,14 +59,14 @@ def _clash_scene(scene):
     LD frame. A reordered merge here is loudly visible.
     """
     with Off():
-        first = Square(size=2.0, color=RED, border_width=0).move(LEFT * 0.4)
+        first = Square(size=2.0, color=RED, stroke_width=0).move(LEFT * 0.4)
         packed = batch_mobs(
             [
-                Square(size=2.0, color=GREEN, border_width=0),
-                Square(size=2.0, color=GREEN, border_width=0).move(UP * 0.4),
+                Square(size=2.0, color=GREEN, stroke_width=0),
+                Square(size=2.0, color=GREEN, stroke_width=0).move(UP * 0.4),
             ]
         )
-        last = Square(size=2.0, color=BLUE, border_width=0).move(RIGHT * 0.4)
+        last = Square(size=2.0, color=BLUE, stroke_width=0).move(RIGHT * 0.4)
     first.spawn(animate=False)
     packed.spawn(animate=False)
     last.spawn(animate=False)
@@ -162,7 +162,7 @@ def test_run_splitting_preserves_the_merged_circuit_layout(monkeypatch):
         return {
             "corners": torch.cat([c.corners for c in circuits], -3),
             "normals": torch.cat([c.normals for c in circuits], -2),
-            "border_width": torch.cat([c.border_width for c in circuits], -2),
+            "stroke_width": torch.cat([c.stroke_width for c in circuits], -2),
             "segments": torch.cat(
                 [c.num_segments_per_object.view(-1) for c in circuits]
             ),

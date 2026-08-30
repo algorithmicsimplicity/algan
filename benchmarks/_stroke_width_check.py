@@ -154,7 +154,7 @@ def main(argv=None):
     )
     levels, curve, _ = build_lut(out_dir, video_settings)
     lut = (levels, curve)
-    authored = 5 * height / 396  # Line's default border_width, in render pixels
+    authored = 5 * height / 396  # Line's default stroke_width, in render pixels
     print(f"authored Line width: 5 * {height}/396 = {authored:.3f} px\n")
 
     from algan.rendering.raytracing import settings as rt_settings
@@ -171,7 +171,7 @@ def main(argv=None):
     )
 
     scene = Scene(video_settings=video_settings)
-    Rectangle(width=80, height=0.09, color=WHITE, scene=scene, border_width=0).spawn()
+    Rectangle(width=80, height=0.09, color=WHITE, scene=scene, stroke_width=0).spawn()
     filled = _profile(scene, video_settings, out_dir / "stroke_filled.png", lut)
     # A fill's boundary is d > -min_half_width, so only that dilation scales,
     # once on each side.

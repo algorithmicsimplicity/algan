@@ -68,7 +68,7 @@ with Off():
     ).move(RIGHT * 3.6 + UP * 0.4)
     vector = Vector(RIGHT * 1.2 + UP * 1.0, color=ORANGE).move(RIGHT * 3.6 + UP * 0.4)
     dashed = DashedLine(
-        start=LEFT * 1.5, end=RIGHT * 1.5, color=GREEN_A, stroke_width=5
+        start=LEFT * 1.5, end=RIGHT * 1.5, color=GREEN_A, stroke_width=2.5
     ).move(RIGHT * 3.6 + DOWN * 1.5)
 
 with Seq():
@@ -150,7 +150,7 @@ with Off():
         start=LEFT * 0.7, end=RIGHT * 0.7, angle=1.6, color=GREEN_A, stroke_width=6
     ).move(UP * 1.3)
     compat_arrow = Arrow(
-        start=LEFT * 0.8, end=RIGHT * 0.8, color=ORANGE, stroke_width=8
+        start=LEFT * 0.8, end=RIGHT * 0.8, color=ORANGE, stroke_width=4
     ).move(RIGHT * 2.2 + UP * 1.3)
     right_angle = RightAngle(
         Line(start=ORIGIN, end=RIGHT, add_to_scene=False),
@@ -160,14 +160,14 @@ with Off():
 
     grid = Square(size=1.3, color=BLUE).move(LEFT * 4.2 + DOWN * 1.4)
     traveller = Dot(radius=0.16, color=YELLOW).move(LEFT * 1.4 + DOWN * 1.4)
-    path = Circle(radius=0.75, color=TRANSPARENT, border_color=GRAY_B, border_width=2)
+    path = Circle(radius=0.75, color=TRANSPARENT, stroke_color=GRAY_B, stroke_width=2)
     path.move(LEFT * 1.4 + DOWN * 1.4)
     waved = Square(size=1.2, color=GREEN).move(RIGHT * 1.4 + DOWN * 1.4)
     waved_y = float(waved.get_center().flatten()[1])
-    bounded = Square(size=1.2, color=TRANSPARENT, border_width=0).move(
+    bounded = Square(size=1.2, color=TRANSPARENT, stroke_width=0).move(
         RIGHT * 4.2 + DOWN * 1.4
     )
-    boundary = AnimatedBoundary(bounded, max_stroke_width=10, cycle_rate=1.0)
+    boundary = AnimatedBoundary(bounded, max_stroke_width=5, cycle_rate=1.0)
     anim_label = Text(
         "ApplyMatrix    MoveAlongPath    Homotopy    AnimatedBoundary",
         font_size=21,

@@ -57,7 +57,7 @@ which means they stay perfectly smooth however far you zoom in. A
    * - :class:`~.SurroundingRectangle`
      - A box drawn around another Mob, sized to fit it.
 
-All of them take ``color``, plus ``border_width`` and ``border_color`` for
+All of them take ``color``, plus ``stroke_width`` and ``stroke_color`` for
 their outline:
 
 .. algan:: GalleryBorders
@@ -65,7 +65,7 @@ their outline:
     from algan import *
 
     with Off():
-        Group([Circle(color=BLUE, border_color=WHITE, border_width=w).scale(0.8)
+        Group([Circle(color=BLUE, stroke_color=WHITE, stroke_width=w).scale(0.8)
                for w in (0, 4, 16)]).arrange_in_line(RIGHT, buffer=0.4).spawn()
 
     Scene.wait(1)
@@ -73,7 +73,7 @@ their outline:
     Scene.save_video()
 
 On a filled shape the border is drawn *inside* the outline, so raising
-``border_width`` eats into the fill instead of growing the silhouette.
+``stroke_width`` eats into the fill instead of growing the silhouette.
 This makes bordered text stay legible and neighbouring glyphs never fuse. An unfilled
 shape (``filled=False``, and :class:`~.Line`) has no interior to eat into, so
 its stroke stays centred on the path.
@@ -102,8 +102,9 @@ Mob, but they are constructed with Manim's arguments:
    * - :class:`~.Arrow`
      - An arrow from a start point to an end point, with a customizable head.
 
-These shapes use Manim's stroke naming: pass ``stroke_width`` and
-``stroke_color`` instead of ``border_width`` / ``border_color``:
+These come from the Manim compatibility layer, but they take the same
+``stroke_width`` and ``stroke_color`` in the same units as the native shapes
+above -- ``algan.manim`` is where Manim's own (double) stroke unit lives:
 
 .. algan:: GalleryCompatShapes
 
@@ -114,7 +115,7 @@ These shapes use Manim's stroke naming: pass ``stroke_width`` and
             Arc(radius=1, start_angle=0, angle=3.14),
             Annulus(inner_radius=0.5, outer_radius=1.0),
             Ellipse(width=2, height=1.2),
-            Star(n=6, color=BLUE, stroke_color=WHITE, stroke_width=4),
+            Star(n=6, color=BLUE, stroke_color=WHITE, stroke_width=2),
             Arrow(start=LEFT, end=RIGHT),
         ]).arrange_in_line(RIGHT, buffer=0.4).scale(0.8).spawn()
 

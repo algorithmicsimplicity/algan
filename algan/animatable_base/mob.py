@@ -78,7 +78,7 @@ _SETTABLE_PROPERTY_CACHE: dict[type, tuple[int, set[str]]] = {}
 #: "color" is a material shader parameter, packed as plain RGB (see
 #: ``materials._to_color3``), so a parsed color is trimmed for those instead
 #: of widened -- widening them silently changed the shader parameter layout.
-_FIVE_CHANNEL_COLOR_ATTRS = frozenset({"color", "border_color"})
+_FIVE_CHANNEL_COLOR_ATTRS = frozenset({"color", "stroke_color"})
 
 
 def _coerce_if_color(attr, value):
@@ -113,7 +113,7 @@ _MANIM_METHOD_HINTS = {
     "to_corner": "move_to_screen_corner(...)",
     "move_to": "move_to(...)",
     "set_fill": "set the `color` attribute, or set_material(...)",
-    "set_stroke": "set the `border_color` and `border_width` attributes",
+    "set_stroke": "set the `stroke_color` and `stroke_width` attributes",
     "set_opacity": "set the `opacity` attribute",
     "fade": "set the `opacity` attribute",
     "set_width": "scale_to_width(...)",
@@ -1268,7 +1268,7 @@ class Mob(
         attribute is chosen at runtime. To set several at once, use
         :meth:`~.Mob.set`. Attributes whose write is more than a row write --
         derived ones (``scale_coefficient``, ``Circle.radius``,
-        ``border_color``) and ``basis``, which carries the subtree's locations
+        ``stroke_color``) and ``basis``, which carries the subtree's locations
         with it -- are handed to their property setter, so every name behaves
         exactly as the assignment would.
 
@@ -1366,7 +1366,7 @@ class Mob(
             its per-row value, and two kinds are not, so both are rejected
             rather than silently half-applied. A *derived* property
             (``scale_coefficient``, the row norms of ``basis``;
-            ``Circle.radius``; ``border_color``) has no rows at all. A
+            ``Circle.radius``; ``stroke_color``) has no rows at all. A
             *hierarchical* one (``basis``) has rows, but they are only half the
             operation: a rotation or a scale has to carry the subtree's
             locations along, which is why :meth:`~.Mob.rotate`,
@@ -1875,7 +1875,7 @@ class Mob(
         than owning timeline rows of its own.
 
         ``scale_coefficient`` (the row norms of ``basis``), ``Circle.radius``
-        and ``border_color`` are all of this kind: assigning to one works,
+        and ``stroke_color`` are all of this kind: assigning to one works,
         because the property setter forwards the write to whatever really
         stores it, but there is no buffer for the by-name attribute API to
         address. A name that is not a settable property at all is not derived,
@@ -1916,7 +1916,7 @@ class Mob(
 
         The registered animatable attributes, plus every public property with a
         setter anywhere in this Mob's MRO. That second half is what surfaces
-        derived properties such as ``border_color``, which forwards to the
+        derived properties such as ``stroke_color``, which forwards to the
         border texture instead of owning a timeline of its own -- ``set`` has
         always accepted those, but never used to name them.
 

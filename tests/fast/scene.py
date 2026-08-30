@@ -98,11 +98,11 @@ with Off():
         Square(
             size=0.95,
             color=TRANSPARENT,
-            border_color=GREEN_A,
-            border_width=10,
+            stroke_color=GREEN_A,
+            stroke_width=10,
         ),
         RegularPolygon(
-            5, radius=0.55, color=MAROON_A, border_color=WHITE, border_width=4
+            5, radius=0.55, color=MAROON_A, stroke_color=WHITE, stroke_width=4
         ),
         Polygon(*STAR_POINTS, color=YELLOW),
     ).arrange_in_line(RIGHT, buffer=0.7)

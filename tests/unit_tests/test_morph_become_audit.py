@@ -252,8 +252,8 @@ def test_become_takes_the_targets_fill(scene, source_filled):
     of the frame, not a subtlety.
     """
     with Off():
-        source = Square(color=BLUE, filled=source_filled, border_width=0.05).spawn()
-        target = Square(color=BLUE, filled=not source_filled, border_width=0.05)
+        source = Square(color=BLUE, filled=source_filled, stroke_width=0.05).spawn()
+        target = Square(color=BLUE, filled=not source_filled, stroke_width=0.05)
     with Sync(run_time=1.0):
         result = source.become(target)
     assert result.filled is (not source_filled)
@@ -405,7 +405,7 @@ def test_parts_that_need_not_move_do_not_travel(scene):
     "build_target",
     [
         pytest.param(
-            lambda: Square(size=1.6, filled=False, border_width=0.06),
+            lambda: Square(size=1.6, filled=False, stroke_width=0.06),
             id="unfilled_square",
         ),
         pytest.param(
@@ -656,8 +656,8 @@ def test_a_fill_crossing_morph_does_not_play_in_the_endpoints_fill(
     which leaves the source holding its own fill for as long as it is visible.
     """
     with Off():
-        source = Square(color=BLUE, filled=source_filled, border_width=0.05).spawn()
-        target = Square(color=BLUE, filled=not source_filled, border_width=0.05)
+        source = Square(color=BLUE, filled=source_filled, stroke_width=0.05).spawn()
+        target = Square(color=BLUE, filled=not source_filled, stroke_width=0.05)
 
     with Sync(run_time=1.0):
         result = source.become(target)

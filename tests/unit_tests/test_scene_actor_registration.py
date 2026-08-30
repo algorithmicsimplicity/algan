@@ -69,9 +69,9 @@ def _spawned(mob):
 
 
 def test_animated_boundary_layers_are_registered():
-    source = _spawned(algan.Square(color=algan.TRANSPARENT, border_width=0))
+    source = _spawned(algan.Square(color=algan.TRANSPARENT, stroke_width=0))
     boundary = _spawned(
-        algan.AnimatedBoundary(source, max_stroke_width=14, cycle_rate=1.0)
+        algan.AnimatedBoundary(source, max_stroke_width=7, cycle_rate=1.0)
     )
 
     actors = {id(actor) for actor in source.scene.actors}
@@ -82,11 +82,11 @@ def test_animated_boundary_layers_are_registered():
 
 def test_animated_boundary_half_width_conversion():
     """Algan stores half-widths where Manim's public API takes full strokes."""
-    source = _spawned(algan.Square(color=algan.TRANSPARENT, border_width=0))
-    boundary = algan.AnimatedBoundary(source, max_stroke_width=14)
+    source = _spawned(algan.Square(color=algan.TRANSPARENT, stroke_width=0))
+    boundary = algan.AnimatedBoundary(source, max_stroke_width=7)
 
     assert boundary.max_stroke_width == 14
-    assert boundary.max_border_width == 7
+    assert boundary.max_stroke_width == 7
 
 
 def test_paragraph_lines_are_registered():

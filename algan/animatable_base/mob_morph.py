@@ -1229,11 +1229,11 @@ class MobMorphMixin:
         replacement = target.clone(add_to_scene=False, spawn=False)
         target_border = None
         if target_conversion.post_animate is not None and hasattr(
-            replacement, "border_width"
+            replacement, "stroke_width"
         ):
-            target_border = target.border_width.clone()
+            target_border = target.stroke_width.clone()
             replacement.set_non_recursive(
-                border_width=torch.zeros_like(replacement.border_width)
+                stroke_width=torch.zeros_like(replacement.stroke_width)
             )
 
         self._register_hierarchy_for_render(source_soup)
@@ -1242,8 +1242,8 @@ class MobMorphMixin:
 
         source_has_border = (
             source_conversion.pre_animate is not None
-            and hasattr(source, "border_width")
-            and bool((source.border_width.abs() > 1e-8).any())
+            and hasattr(source, "stroke_width")
+            and bool((source.stroke_width.abs() > 1e-8).any())
         )
         target_has_border = target_border is not None and bool(
             (target_border.abs() > 1e-8).any()

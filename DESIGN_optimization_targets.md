@@ -2075,7 +2075,7 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 >
 > * **`current_state` is `torch.empty`**, so a fingerprint over the whole
 >   buffer compares uninitialised rows -- it reported `glow` as NaN and
->   `border_width` as 8.5e31 in *both* arms and flagged spurious differences on
+>   `stroke_width` as 8.5e31 in *both* arms and flagged spurious differences on
 >   two more attributes. Compare only rows in `mob_id_to_inds`.
 > * **The whole-pass number is noise-dominated; the replay stage is not.** Arm
 >   A's rounds spread 6.35-10.35 s. The geometry-side residual duly shrank from

@@ -171,7 +171,7 @@ def build_scene(cfg):
             ci = Circle(color=GREEN).scale(0.8).move(RIGHT * 1.3)
             ci.opacity = 0.55
             ci.spawn()
-            ring = Circle(color=BLUE, border_width=3).scale(0.6)
+            ring = Circle(color=BLUE, stroke_width=3).scale(0.6)
             ring.move(DOWN * 0.9)
             ring.spawn()
         sq.rotate(35, OUT)

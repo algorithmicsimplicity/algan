@@ -8,7 +8,7 @@ at any zoom rather than a many-sided polygon, and why any of them can morph into
 any other.
 
 The class owns the fill/border model as well as the geometry: on a filled shape
-the border is drawn *inside* the outline, so raising ``border_width`` eats into
+the border is drawn *inside* the outline, so raising ``stroke_width`` eats into
 the fill instead of growing the silhouette -- which keeps bordered text legible
 and stops neighbouring glyphs fusing. An unfilled circuit has no interior to eat
 into, so its stroke stays centred on the path.
@@ -61,15 +61,15 @@ DIELECTRIC_IOR = 1.5
 _MAX_WAVE_TEXTURE_RESOLUTION = 64
 
 
-def _border_width_in_render_pixels(border_width, video_settings):
-    """Convert an authored ``border_width`` to the renderer's stroke width.
+def _stroke_width_in_render_pixels(stroke_width, video_settings):
+    """Convert an authored ``stroke_width`` to the renderer's stroke width.
 
-    ``border_width`` is authored against PREVIEW's frame height so a border keeps
+    ``stroke_width`` is authored against PREVIEW's frame height so a border keeps
     its apparent weight at any resolution.  The renderer wants the FULL stroke
     width in pixels: a filled circuit lays it inside the outline, an unfilled one
     centres it on the path (``_circuit_point_region``).
     """
-    return border_width * video_settings.resolution[1] / PREVIEW.resolution[1]
+    return stroke_width * video_settings.resolution[1] / PREVIEW.resolution[1]
 
 
 def _circuit_ior(ior, metalness):
@@ -225,7 +225,7 @@ class BezierCircuitCubic(Mob):
     The curves are evaluated analytically by the renderer rather than
     tessellated, so a circuit stays exactly smooth at any zoom, and any circuit
     can :meth:`~algan.animatable_base.mob.Mob.become` any other. On a filled
-    circuit the border is drawn *inside* the outline, so raising ``border_width``
+    circuit the border is drawn *inside* the outline, so raising ``stroke_width``
     eats into the fill instead of growing the silhouette; an unfilled circuit has
     no interior to eat into, so its stroke stays centred on the path.
 
@@ -256,14 +256,14 @@ class BezierCircuitCubic(Mob):
     normals
         Per-control-point normals, shape ``(*, 3)``, used for lighting. Defaults
         to ``None``, meaning the circuit's own plane normal is used.
-    border_width
+    stroke_width
         Width of the border stroke, in pixels against a 960-pixel-tall frame so
         it keeps its apparent weight at any resolution. Defaults to ``5``; pass
         ``0`` for no border.
-    border_color
+    stroke_color
         Color of the border stroke. Defaults to ``WHITE``. The circuit's
         ``color`` is its *fill* color and does not touch the border; see
-        :attr:`~.BezierCircuitCubic.border_color`.
+        :attr:`~.BezierCircuitCubic.stroke_color`.
     portion_of_curve_drawn
         How much of the path is drawn, from 0 (nothing) to 1 (all of it).
         Animating it is what draws a shape on. Defaults to ``1.0``.
@@ -326,7 +326,7 @@ class BezierCircuitCubic(Mob):
         from algan import *
         import torch
 
-        square = Square(texture_grid_width=32, texture_grid_height=32, border_width=0)
+        square = Square(texture_grid_width=32, texture_grid_height=32, stroke_width=0)
         square.set_color_by_function(
             lambda uv: torch.cat(
                 (uv[..., :1], uv[..., 1:], torch.zeros_like(uv[..., :1])), -1
@@ -397,8 +397,8 @@ class BezierCircuitCubic(Mob):
         self,
         control_points,
         normals=None,
-        border_width=5,
-        border_color=WHITE,
+        stroke_width=5,
+        stroke_color=WHITE,
         portion_of_curve_drawn=1.0,
         filled=True,
         add_texture_grid=True,
@@ -446,7 +446,7 @@ class BezierCircuitCubic(Mob):
         super().__init__(**kwargs2)
         kwargs["scene"] = self.scene
         self.register_attrs_as_animatable(
-            ["border_width", "portion_of_curve_drawn"],
+            ["stroke_width", "portion_of_curve_drawn"],
             BezierCircuitCubic,
         )
         self.filled = filled
@@ -482,20 +482,20 @@ class BezierCircuitCubic(Mob):
             self.num_texture_points = texture_triangle_vertices.shape[-2]
 
             # control_points = torch.cat((control_points, texture_triangle_vertices), -2)
-        self.border_width = cast_to_tensor(border_width)
-        border_color = cast_to_tensor(border_color)
+        self.stroke_width = cast_to_tensor(stroke_width)
+        stroke_color = cast_to_tensor(stroke_color)
         if self.empty:
-            border_color = border_color.as_subclass(Color).set_opacity(0)
+            stroke_color = stroke_color.as_subclass(Color).set_opacity(0)
 
         fill_texture_kwargs = dict(kwargs)
-        fill_texture_kwargs["color"] = self.color if self.filled else border_color
+        fill_texture_kwargs["color"] = self.color if self.filled else stroke_color
         self.texture_points = Mob(texture_triangle_vertices, **fill_texture_kwargs)
         self.texture_points.exclude_from_boundary = True
         self.texture_points.is_primitive = True
         self.add_children(self.texture_points)
 
         border_texture_kwargs = dict(kwargs)
-        border_texture_kwargs["color"] = border_color
+        border_texture_kwargs["color"] = stroke_color
         self.border_texture_points = Mob(
             texture_triangle_vertices, **border_texture_kwargs
         )
@@ -741,7 +741,7 @@ class BezierCircuitCubic(Mob):
         return self
 
     def get_animatable_attrs(self):
-        return {"border_width"}.union(super().get_animatable_attrs())
+        return {"stroke_width"}.union(super().get_animatable_attrs())
 
     #: ``filled`` and ``empty`` decide whether the circuit is a disc or a ring.
     #: ``get_render_primitives`` reads both live and neither is animatable, so a
@@ -770,12 +770,12 @@ class BezierCircuitCubic(Mob):
     )
 
     @property
-    def border_color(self):
+    def stroke_color(self):
         """Per-vertex colors sampled across the circuit's border texture grid."""
         return self.border_texture_points.color
 
-    @border_color.setter
-    def border_color(self, value):
+    @stroke_color.setter
+    def stroke_color(self, value):
         self.border_texture_points.color = value
 
     def get_base_grid(self) -> torch.Tensor:
@@ -873,7 +873,7 @@ class BezierCircuitCubic(Mob):
         The grid is the resolution of the result, and it is a single flat color
         unless you asked for more: build the shape with ``texture_grid_width`` /
         ``texture_grid_height`` (see :class:`~.BezierCircuitCubic`). On a filled
-        circuit this colors the fill, leaving ``border_color`` alone; on an
+        circuit this colors the fill, leaving ``stroke_color`` alone; on an
         unfilled one, where the stroke is all there is, it colors the stroke.
         A multi-circuit mob (a :class:`~algan.mobs.text.Text`, a
         :class:`~algan.mobs.text.Tex`) colors every circuit over its own frame,
@@ -1056,8 +1056,8 @@ class BezierCircuitCubic(Mob):
                 self.opacity,
                 self.basis,
                 self.glow,
-                _border_width_in_render_pixels(
-                    self.border_width, self.scene.video_settings
+                _stroke_width_in_render_pixels(
+                    self.stroke_width, self.scene.video_settings
                 ),
                 metalness,
                 roughness,
@@ -1471,8 +1471,8 @@ def build_render_primitives_batched(actors, scene):
     )
     basis = read("basis", actors)
     g = read("glow", actors)
-    bw = _border_width_in_render_pixels(
-        read("border_width", actors), scene.video_settings
+    bw = _stroke_width_in_render_pixels(
+        read("stroke_width", actors), scene.video_settings
     )
     loc = read("location", actors)
     o, basis, g, bw = broadcast_all([o, basis, g, bw], ignored_dims=[-1])
@@ -1583,8 +1583,8 @@ def build_render_primitives_batched(actors, scene):
         S_tot, device=device
     ).view(-1, 1, 1)
     mega.normals = normals.to(device)
-    mega.border_width = bw.to(device)
-    mega.border_color = bc.to(device)
+    mega.stroke_width = bw.to(device)
+    mega.stroke_color = bc.to(device)
 
     T = loc.shape[0]
 

@@ -56,7 +56,7 @@ def _circuit_z_index(primitive):
     """
     lane = getattr(primitive, "z_index", None)
     if lane is None:
-        return torch.zeros_like(primitive.border_width[:1])
+        return torch.zeros_like(primitive.stroke_width[:1])
     return lane
 
 
@@ -84,8 +84,8 @@ class BezierCircuitPrimitive(RenderPrimitive):
         colors=BLUE,
         opacity=1,
         normals=None,
-        border_width=None,
-        border_color=None,
+        stroke_width=None,
+        stroke_color=None,
         mob_center=None,
         grid_width=None,
         grid_height=None,
@@ -133,8 +133,8 @@ class BezierCircuitPrimitive(RenderPrimitive):
             self.normals = torch.cat(
                 [triangle.normals for triangle in triangle_collection], -2
             ).to(device)
-            self.border_width = torch.cat(
-                [triangle.border_width for triangle in triangle_collection], -2
+            self.stroke_width = torch.cat(
+                [triangle.stroke_width for triangle in triangle_collection], -2
             ).to(device)
             # Per-circuit coplanar draw order. Time-invariant by construction,
             # so members concatenate on the circuit axis with no time
@@ -147,12 +147,12 @@ class BezierCircuitPrimitive(RenderPrimitive):
                 [_circuit_z_index(t) for t in triangle_collection], -2
             ).to(device)
             border_colors = [
-                triangle.border_color.unsqueeze(-2)
-                if triangle.border_color.dim() == 3
-                else triangle.border_color
+                triangle.stroke_color.unsqueeze(-2)
+                if triangle.stroke_color.dim() == 3
+                else triangle.stroke_color
                 for triangle in triangle_collection
             ]
-            self.border_color = torch.cat(border_colors, -3).to(device)
+            self.stroke_color = torch.cat(border_colors, -3).to(device)
 
             (
                 self.mob_center,
@@ -180,7 +180,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
             )
             if self.num_texture_points > 0:
                 self.colors = self.colors[..., (-self.num_texture_points) :, :]
-                self.border_color = self.border_color[
+                self.stroke_color = self.stroke_color[
                     ..., (-self.num_texture_points) :, :
                 ]
             return
@@ -191,24 +191,24 @@ class BezierCircuitPrimitive(RenderPrimitive):
         self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
-        if border_color.dim() == 3:
-            border_color = border_color.unsqueeze(-2)
-        border_color, border_opacity, border_glow = broadcast_all(
-            [border_color, opacity.unsqueeze(-2), glow.unsqueeze(-2)],
+        if stroke_color.dim() == 3:
+            stroke_color = stroke_color.unsqueeze(-2)
+        stroke_color, border_opacity, border_glow = broadcast_all(
+            [stroke_color, opacity.unsqueeze(-2), glow.unsqueeze(-2)],
             ignored_dims=[-1],
         )
-        self.border_width = border_width
+        self.stroke_width = stroke_width
         # ``None`` means "every circuit at 0", which is the overwhelmingly
         # common case; keeping it a Python-level distinction is what lets the
         # renderer skip the bias without reading a tensor back off the device.
         self._has_z_index = z_index is not None
         self.z_index = (
-            z_index if z_index is not None else torch.zeros_like(border_width[:1])
+            z_index if z_index is not None else torch.zeros_like(stroke_width[:1])
         )
-        self.border_color = border_color.clone()
+        self.stroke_color = stroke_color.clone()
         self.glow = glow
-        self.border_color[..., -2:-1] += border_glow
-        self.border_color[..., -1:] *= border_opacity
+        self.stroke_color[..., -2:-1] += border_glow
+        self.stroke_color[..., -1:] *= border_opacity
         self.mob_center = mob_center
         self.grid_width = grid_width
         self.grid_height = grid_height

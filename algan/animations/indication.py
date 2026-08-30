@@ -450,7 +450,7 @@ def _show_passing_flash_on_bezier(
             flash = mobject.clone(spawn=False) if clone_source else mobject
             flash.filled = False
             if source_uses_fill and torch.any(source_color[..., -1] > 0):
-                flash.border_color = source_color
+                flash.stroke_color = source_color
 
             full_pts = flash.control_points.location.clone()
             flash.set_control_points_to_partial(full_pts, 0.0, 0.0)
@@ -540,7 +540,7 @@ def ShowPassingFlashWithThinningStrokeWidth(
     Parameters
     ----------
     vmobject
-        The curve to flash along. Its ``border_width`` sets the thickest layer.
+        The curve to flash along. Its ``stroke_width`` sets the thickest layer.
     n_segments
         How many layers to draw. Defaults to ``10``; more is smoother and slower.
     time_width
@@ -554,17 +554,17 @@ def ShowPassingFlashWithThinningStrokeWidth(
     :class:`~.Mob`
         The Mob that was passed in.
     """
-    max_stroke_width = getattr(vmobject, "border_width", 5.0)
-    if isinstance(max_stroke_width, torch.Tensor):
-        max_stroke_width = max_stroke_width.item()
+    widest = getattr(vmobject, "stroke_width", 5.0)
+    if isinstance(widest, torch.Tensor):
+        widest = widest.item()
     clones = []
     with Off(animation_manager=animation_manager_for(vmobject)):
         for i in range(n_segments):
             factor = i / (n_segments - 1) if n_segments > 1 else 1.0
-            stroke_w = factor * max_stroke_width
+            stroke_w = factor * widest
             time_w = (1.0 - factor) * time_width
             clone = vmobject.clone(spawn=False)
-            clone.border_width = stroke_w
+            clone.stroke_width = stroke_w
             clones.append((clone, time_w))
     with Sync(run_time=run_time, animation_manager=animation_manager_for(vmobject)):
         for clone, time_w in clones:
@@ -646,8 +646,8 @@ def Flash(
                 start,
                 end,
                 scene=animation_manager.scene,
-                border_color=color,
-                border_width=line_stroke_width,
+                stroke_color=color,
+                stroke_width=line_stroke_width,
             )
             lines.append(line)
     with Sync(run_time=run_time, animation_manager=animation_manager):
@@ -729,7 +729,7 @@ def Circumscribe(
             scene=mobject.scene,
             color=color,
             buffer=buff,
-            border_width=stroke_width,
+            stroke_width=stroke_width,
             filled=False,
         )
     elif shape == Circle:
@@ -743,8 +743,8 @@ def Circumscribe(
         frame = Circle(
             scene=mobject.scene,
             radius=radius,
-            border_color=color,
-            border_width=stroke_width,
+            stroke_color=color,
+            stroke_width=stroke_width,
             location=center,
             filled=False,
         )

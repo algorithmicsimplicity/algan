@@ -66,9 +66,9 @@ def _polyhedron():
 
 BUILDERS = {
     "Square": lambda: Square(color=BLUE),
-    "SquareUnfilled": lambda: Square(color=BLUE, filled=False, border_width=0.05),
+    "SquareUnfilled": lambda: Square(color=BLUE, filled=False, stroke_width=0.05),
     "Circle": lambda: Circle(radius=0.7, color=YELLOW),
-    "CircleBorder": lambda: Circle(radius=0.7, color=YELLOW, border_width=0.08),
+    "CircleBorder": lambda: Circle(radius=0.7, color=YELLOW, stroke_width=0.08),
     "Star": lambda: Star(color=GREEN),
     "Triangle": lambda: Triangle(color=GREEN),
     "Line": lambda: Line(LEFT, RIGHT),

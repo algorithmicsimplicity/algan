@@ -88,7 +88,7 @@ def scene():
 )
 def test_indication_run_time_wins_over_the_enclosing_context(scene, animation):
     with Off():
-        square = Square(border_width=4).spawn()
+        square = Square(stroke_width=4).spawn()
     start = _elapsed(scene)
     with Seq(run_time=None):
         animation(square)
@@ -162,7 +162,7 @@ def test_flash_accepts_a_bare_point_as_well_as_a_mob(scene):
 
 def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
     with Off():
-        circle = Circle(color=BLUE, border_width=6).spawn()
+        circle = Circle(color=BLUE, stroke_width=6).spawn()
     start = _elapsed(scene)
     original_points = circle.control_points.location.clone()
     original_opacity = circle.opacity.clone()
@@ -181,7 +181,7 @@ def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
     assert all(not flash.filled for flash in flashes)
     assert all(flash.is_despawned() for flash in flashes)
     for flash in flashes:
-        assert torch.allclose(flash.border_color, circle.color)
+        assert torch.allclose(flash.stroke_color, circle.color)
 
     assert circle.is_spawned()
     assert not circle.is_despawned()

@@ -32,8 +32,8 @@ def DrawBorderThenFill(
     mobs,
     run_time=None,
     lag_ratio=None,
-    border_width=1,
-    border_color=None,
+    stroke_width=1,
+    stroke_color=None,
     rate_func=rate_funcs.identity,
     reverse=False,
 ):
@@ -55,11 +55,11 @@ def DrawBorderThenFill(
     lag_ratio
         Fraction of one mob's animation that elapses before the next begins.
         Defaults to a value that keeps the whole sequence legible.
-    border_width
+    stroke_width
         Temporary outline width while the border is drawn. The original widths are
         restored as the fills appear. If None, the existing widths are used.
         Defaults to 1, equivalent to Manim's stroke width of 2.
-    border_color
+    stroke_color
         Temporary outline color. Defaults to each Mob's existing border color.
         :meth:`~algan.mobs.text.Text.write` supplies white for an ordinary
         stroke-free ``Text``, matching Manim's Pango text style.
@@ -110,18 +110,18 @@ def DrawBorderThenFill(
                 (descendant, descendant.color.clone())
                 for descendant in mob.get_descendants()
             ]
-            original_border_width = mob.border_width.clone()
-            original_border_color = mob.border_color.clone()
+            original_stroke_width = mob.stroke_width.clone()
+            original_stroke_color = mob.stroke_color.clone()
             outline_color = (
-                original_border_color if border_color is None else border_color
+                original_stroke_color if stroke_color is None else stroke_color
             )
-            original_styles.append((colors, original_border_width, outline_color))
+            original_styles.append((colors, original_stroke_width, outline_color))
 
             for descendant, color in colors:
                 descendant.set_non_recursive(color=_with_opacity(color, 0))
-            mob.border_color = _with_opacity(outline_color, 0)
-            if border_width is not None:
-                mob.border_width = border_width
+            mob.stroke_color = _with_opacity(outline_color, 0)
+            if stroke_width is not None:
+                mob.stroke_width = stroke_width
 
     with Lag(
         lag_ratio,
@@ -129,16 +129,16 @@ def DrawBorderThenFill(
         rate_func=rate_func,
         animation_manager=animation_manager,
     ):
-        for mob, (colors, original_border_width, outline_color) in zip(
+        for mob, (colors, original_stroke_width, outline_color) in zip(
             mobs, original_styles
         ):
             with Seq(animation_manager=animation_manager):
                 with Off(animation_manager=animation_manager):
-                    mob.border_color = outline_color
+                    mob.stroke_color = outline_color
                 mob.draw(1.0)
                 with Sync(animation_manager=animation_manager):
                     for descendant, color in colors:
                         descendant.set_non_recursive(color=color)
-                    mob.border_width = original_border_width
+                    mob.stroke_width = original_stroke_width
 
     return mobs

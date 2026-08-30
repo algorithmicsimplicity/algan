@@ -324,7 +324,7 @@ starts by asking for a grid:
     from algan import *
     import torch
 
-    square = Square(texture_grid_width=64, texture_grid_height=64, border_width=0)
+    square = Square(texture_grid_width=64, texture_grid_height=64, stroke_width=0)
     square.set_color_by_function(
         lambda uv: torch.cat((uv[..., :1], 1 - uv[..., :1], uv[..., 1:]), -1)
     )
@@ -369,7 +369,7 @@ left at ``(u, v) == (0, 0)``:
 
     from algan import *
 
-    circle = Circle(texture_grid_width=128, texture_grid_height=128, border_width=0)
+    circle = Circle(texture_grid_width=128, texture_grid_height=128, stroke_width=0)
     circle.set_color_by_image('world_map.png')
     circle.spawn()
 
@@ -398,7 +398,7 @@ colors cross-fade over the current context's duration:
         return torch.cat((torch.ones_like(uv[..., :1]), 1 - uv[..., 1:],
                           torch.zeros_like(uv[..., :1])), -1)
 
-    square = Square(texture_grid_width=64, border_width=0).scale(2)
+    square = Square(texture_grid_width=64, stroke_width=0).scale(2)
     square.set_color_by_function(cool)
     square.spawn()
 
@@ -407,7 +407,7 @@ colors cross-fade over the current context's duration:
 
     Scene.save_video()
 
-On a filled circuit these color the fill and leave ``border_color`` alone. On an
+On a filled circuit these color the fill and leave ``stroke_color`` alone. On an
 unfilled one, where the stroke is all there is, they color the stroke. And on a
 multi-circuit Mob (e.g. a :class:`~.Text`, a :class:`~.Tex`), which take the same
 grid arguments and pass them down to their packed glyphs, each circuit is
@@ -449,7 +449,7 @@ running from 0 at :meth:`~.Line.get_start` to 1 at :meth:`~.Line.get_end`:
     from algan import *
     import torch
 
-    line = Line(LEFT * 4, RIGHT * 4, border_width=30, texture_grid_width=64)
+    line = Line(LEFT * 4, RIGHT * 4, stroke_width=30, texture_grid_width=64)
     line.set_color_by_function(
         lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
     )

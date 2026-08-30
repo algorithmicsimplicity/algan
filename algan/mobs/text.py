@@ -143,15 +143,15 @@ class Tex(Mob):
         and opacity survive the round trip through Pango's SVG output (a hex
         string cannot carry either). Defaults to ``None``. Set for you by
         :class:`~algan.mobs.text.Text`.
-    sync_border_color
+    sync_stroke_color
         Whether a glyph colored by Pango styling also gets that color on its
         border. Only has an effect when a border is actually drawn
-        (``border_width`` above 0). Defaults to ``True``; pass an explicit
-        ``border_color`` to keep one outline color across styled glyphs.
+        (``stroke_width`` above 0). Defaults to ``True``; pass an explicit
+        ``stroke_color`` to keep one outline color across styled glyphs.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` and to the packed
         :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` -- notably
-        ``color`` (defaults to ``WHITE``), ``border_color``, ``border_width``
+        ``color`` (defaults to ``WHITE``), ``stroke_color``, ``stroke_width``
         (defaults to ``0``, no outline), ``location`` and ``scene``. One extra
         keyword is consumed here: ``preamble``, a string of LaTeX appended to
         Manim's default preamble, for ``\usepackage`` lines a formula needs.
@@ -217,7 +217,7 @@ class Tex(Mob):
         latex=True,
         pango_kwargs=None,
         pango_color_map=None,
-        sync_border_color=True,
+        sync_stroke_color=True,
         **kwargs,
     ):
         if kwargs.get("scene") is None:
@@ -319,8 +319,8 @@ class Tex(Mob):
             else:
                 bezier_kwargs = dict(kwargs)
                 bezier_kwargs.setdefault("color", WHITE)
-                bezier_kwargs.setdefault("border_color", bezier_kwargs["color"])
-                bezier_kwargs.setdefault("border_width", 0)
+                bezier_kwargs.setdefault("stroke_color", bezier_kwargs["color"])
+                bezier_kwargs.setdefault("stroke_width", 0)
                 character_batch = (
                     BezierCircuitCubic.from_batches(paths, **bezier_kwargs)
                     if paths
@@ -347,8 +347,8 @@ class Tex(Mob):
             # leaks into Animatable.__init__ and breaks ordinary Text
             # construction.
             mob_kwargs = dict(kwargs)
-            mob_kwargs.pop("border_width", None)
-            mob_kwargs.pop("border_color", None)
+            mob_kwargs.pop("stroke_width", None)
+            mob_kwargs.pop("stroke_color", None)
             mob_kwargs.pop("texture_grid_width", None)
             mob_kwargs.pop("texture_grid_height", None)
             super().__init__(**mob_kwargs)
@@ -367,8 +367,8 @@ class Tex(Mob):
                     if isinstance(base_color, torch.Tensor) and base_color.numel() >= 5
                     else 0.0
                 )
-                set_border = sync_border_color and bool(
-                    bezier_kwargs.get("border_width", 0)
+                set_stroke_color = sync_stroke_color and bool(
+                    bezier_kwargs.get("stroke_width", 0)
                 )
                 for i, (hex_c, fill_op) in enumerate(styled_fills):
                     styled = color_map.get(hex_c)
@@ -379,8 +379,8 @@ class Tex(Mob):
                         styled = Color(hex_c, glow=base_glow, opacity=fill_op)
                     view = self.character_mobs[i]
                     view.color = styled
-                    if set_border:
-                        view.border_color = styled
+                    if set_stroke_color:
+                        view.stroke_color = styled
             self.scale(font_size / base_font_size)
 
     def become(self, other_mob, *args, **kwargs):
@@ -653,9 +653,9 @@ class Text(Tex):
         Opacity of the glyph interiors, 0 for invisible and 1 for solid. Manim's
         spelling of Algan's ``opacity``. Defaults to ``1.0``.
     stroke_width
-        Width of the outline drawn around each glyph, in Manim's stroke units --
-        halved on the way in, because Algan's ``border_width`` is half of
-        Manim's for the same visual weight. Defaults to ``0``, no outline.
+        Width of the outline drawn around each glyph, in Algan's stroke units.
+        Manim means twice this by the same number; ``mn.Text`` is the
+        exact-parity spelling. Defaults to ``0``, no outline.
     color
         Color of the glyphs, and of their outline if one is drawn. Accepts an
         Algan :class:`~algan.constants.color.Color`, a named constant such as
@@ -719,7 +719,7 @@ class Text(Tex):
         to ``False``.
     **kwargs
         Passed to :class:`~algan.mobs.text.Tex` -- notably ``location``,
-        ``border_color``, ``scene`` and ``add_to_scene``.
+        ``stroke_color``, ``scene`` and ``add_to_scene``.
 
     Examples
     --------
@@ -779,13 +779,13 @@ class Text(Tex):
         self.gradient = gradient
         self.disable_ligatures = disable_ligatures
         self.use_svg_cache = use_svg_cache
-        explicit_border_color = "border_color" in kwargs
-        self._write_uses_default_pango_border = not explicit_border_color
+        explicit_stroke_color = "stroke_color" in kwargs
+        self._write_uses_default_pango_border = not explicit_stroke_color
         kwargs.setdefault("opacity", fill_opacity)
-        kwargs.setdefault("border_width", stroke_width / 2)
+        kwargs.setdefault("stroke_width", stroke_width)
         if color is not None:
             kwargs.setdefault("color", color)
-            kwargs.setdefault("border_color", color)
+            kwargs.setdefault("stroke_color", color)
 
         if hasattr(mn, "Text"):
             pango_kwargs = {
@@ -831,7 +831,7 @@ class Text(Tex):
                 latex=False,
                 pango_kwargs=pango_kwargs,
                 pango_color_map=pango_colors,
-                sync_border_color=not explicit_border_color,
+                sync_stroke_color=not explicit_stroke_color,
                 **kwargs,
             )
         else:
@@ -867,14 +867,14 @@ class Text(Tex):
 
         Manim's ``Text`` keeps a white stroke color when only its fill color is
         changed, so a stroke-free colored word is first traced in white. ``Tex``
-        instead traces in its own color. An explicit Algan ``border_color`` keeps
+        instead traces in its own color. An explicit Algan ``stroke_color`` keeps
         that custom outline behavior.
 
         Spawn the text without its ordinary entrance first:
         ``Text(...).spawn(False).write()``.
         """
-        if self._write_uses_default_pango_border and "border_color" not in kwargs:
-            kwargs["border_color"] = WHITE
+        if self._write_uses_default_pango_border and "stroke_color" not in kwargs:
+            kwargs["stroke_color"] = WHITE
         return super().write(*args, **kwargs)
 
 

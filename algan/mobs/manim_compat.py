@@ -84,12 +84,14 @@ def _algan_bezier_to_manim(mob: BezierCircuitCubic):
     fill_opacity = float((color[-1] * mob.opacity[0].reshape(-1)[0]).detach().cpu())
     result.set_fill(fill_color, opacity=fill_opacity if mob.filled else 0.0)
 
-    border = mob.border_color[0].reshape(-1, mob.border_color.shape[-1])[0]
+    border = mob.stroke_color[0].reshape(-1, mob.stroke_color.shape[-1])[0]
     stroke_color = "#" + "".join(
         f"{round(float(x) * 255):02X}" for x in border[:3].detach().cpu().clamp(0, 1)
     )
     stroke_opacity = float(border[-1].detach().cpu())
-    stroke_width = float(mob.border_width[0].reshape(-1)[0].detach().cpu()) * 2
+    # Algan units out, Manim units in: twice, the export side of the
+    # conversion ``algan.manim`` owns.
+    stroke_width = float(mob.stroke_width[0].reshape(-1)[0].detach().cpu()) * 2
     result.set_stroke(stroke_color, width=stroke_width, opacity=stroke_opacity)
     return result
 
@@ -245,13 +247,12 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             )
 
         if styles_own_geometry and hasattr(manim_mob, "set_stroke"):
-            border_color = algan_mob.border_color
             border_opacity_source = algan_mob.border_texture_points.opacity
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
-                border_color, border_opacity_source
+                algan_mob.stroke_color, border_opacity_source
             )
             stroke_width = (
-                float(algan_mob.border_width.reshape(-1)[0].detach().cpu()) * 2
+                float(algan_mob.stroke_width.reshape(-1)[0].detach().cpu()) * 2
             )
             manim_mob.set_stroke(
                 stroke_color,

@@ -18,7 +18,7 @@ Update it in the same commit as the work it describes.
 | 3 | `Mob` surface: privatize, consolidate, rename | **Done** |
 | 4 | Scene, Camera, Lights, Group | **Done** |
 | 5 | Class and parameter naming | **Done** |
-| 6 | `border_*` → `stroke_*` | Not started |
+| 6 | `border_*` → `stroke_*` | **Done** |
 | 7 | `run_time` → `duration`, `rate_func` → `easing` | Not started |
 | 8 | Documentation and baselines | Not started |
 
@@ -194,6 +194,30 @@ same deltas (14 @ 21, 26 @ 293, 200 @ 179) -- so Phase 5 moved no pixels, PN geo
 That last part is the one the design flagged: `Torus`, `Prism` and `Line3D` are invisible to
 `--fast`.
 
+### Phase 6 — `border_*` → `stroke_*`
+
+The `Mob` attributes `border_width` / `border_color` are now `stroke_width` / `stroke_color`,
+in Algan's unit, and the `/2` that converts to Manim's lives only where the two conventions
+actually meet: `manim_compat` (export), `manim_mob` (import), `manim_adapters` (the native
+spellings of Manim classes), and `shape_style_profiles` (reading Manim's own constructor
+defaults). `_FIVE_CHANNEL_COLOR_ATTRS` moved with the attribute.
+
+Three things the plan did not anticipate, all recorded in the design doc:
+
+- Its justification for deferring the conversion out of Phase 1b -- "no test or doc passes
+  `stroke_width` to any of the six affected classes" -- was wrong on both counts, and one of the
+  call sites is in a pixel-compared scene.
+- The adapter conversion could not be the declared per-class table Phase 1b planned: Manim
+  classes accept `stroke_width` through `**kwargs` whether or not their signature names it, so
+  the table would have split one parameter across two units. Every adapter doubles instead.
+- `_translate_vector_style_kwargs` had to stop halving. It is the Manim-kwarg translator on
+  *native* classes, and keeping the halving once both names are `stroke_width` would be exactly
+  the "one name, two meanings" the phase exists to prevent.
+
+Where a call site's unit changed rather than its name, its number is halved in the same commit
+so the frames do not move: `Arrow` and `DashedLine` in `manim_compat_and_plots`, a native `Line`
+in `shapes_and_timeline`, `Star` in the gallery, and every `AnimatedBoundary(max_stroke_width=)`.
+
 ---
 
 ## Plan changes made during implementation
@@ -202,7 +226,7 @@ Recorded here and in the design doc, so the two do not drift.
 
 1. **`stroke_width` conversion moved out of Phase 1b into Phase 6.** Converting it in 1b would
    change what `Arrow(stroke_width=6)` renders while the native attribute is still spelled
-   `border_width` and its unit is unsettled — and no phase in this plan may move a pixel.
+   `stroke_width` and its unit is unsettled — and no phase in this plan may move a pixel.
    Phase 6 renames the attribute and decides the unit, so the conversion belongs there. Costs
    nothing: no test or doc passes `stroke_width` to any of the six affected classes.
 

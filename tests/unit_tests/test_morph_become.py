@@ -547,7 +547,7 @@ def test_mesh_to_circuit_swaps_borderless_then_grows_the_border(scene):
         source = TriangleVertices(corners, scene=scene).spawn()
     target = Circle(
         radius=0.5,
-        border_width=4,
+        stroke_width=4,
         scene=scene,
         add_to_scene=False,
     )
@@ -558,7 +558,7 @@ def test_mesh_to_circuit_swaps_borderless_then_grows_the_border(scene):
     assert soup.lifespan.start() == pytest.approx(0.0)
     assert soup.lifespan.end() == pytest.approx(0.7)
     _at(scene, result, [0.7, 0.85, 1.0])
-    widths = result.border_width.reshape(3, -1)[:, 0]
+    widths = result.stroke_width.reshape(3, -1)[:, 0]
     assert widths[0].item() == pytest.approx(0.0)
     assert 0 < widths[1].item() < 4
     assert widths[2].item() == pytest.approx(4.0)

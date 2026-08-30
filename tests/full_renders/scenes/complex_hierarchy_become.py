@@ -32,7 +32,7 @@ def framed(content, *, buffer=0.2):
     frame = SurroundingRectangle(
         content,
         color=GRAY_B,
-        border_width=2,
+        stroke_width=2,
         filled=False,
         corner_radius=0.1,
         buffer=buffer,

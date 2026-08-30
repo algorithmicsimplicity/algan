@@ -23,10 +23,14 @@ it. Only two conventions differ; the second is not implemented yet:
     ``SpotLight``), Manim in radians.
 
 ``stroke_width``
-    Manim's stroke width is twice Algan's. **Not converted here** -- the
-    native attribute is still spelled ``border_width`` and its unit is settled
-    in the border/stroke rename, which is where that conversion belongs. No
-    adapter declares it yet.
+    Manim's stroke width is twice Algan's, so an adapter halves nothing and
+    **doubles** on the way in: ``Arrow(stroke_width=4)`` and
+    ``mn.Arrow(stroke_width=8)`` draw the same outline. Unlike the angle
+    conversions this is not declared per class, because a Manim class accepts
+    ``stroke_width`` whether or not its own signature names it -- ``Star`` and
+    ``DashedLine`` take it through ``**kwargs`` to ``VMobject`` -- and a
+    signature-driven table would give those two Manim's unit while the six
+    that declare it got Algan's.
 
 An adapter converts the conventions it declares and nothing else. Manim
 behaviour outside those parameters still shows through -- ``Title`` positions
@@ -178,28 +182,42 @@ def _converted_kwargs(signature, angle_params, args, kwargs):
     return tuple(positional), converted
 
 
+def _to_manim_stroke_width(kwargs):
+    """Double an Algan-unit ``stroke_width`` into Manim's, in place.
+
+    Applied to every adapter rather than to a declared list: a Manim class
+    accepts ``stroke_width`` whether or not its signature names it, so a
+    per-class table would leave ``Star`` and ``DashedLine`` -- which take it
+    through ``**kwargs`` to ``VMobject`` -- on Manim's unit while the classes
+    that declare it moved to Algan's.
+    """
+    width = kwargs.get("stroke_width")
+    if width is not None:
+        kwargs["stroke_width"] = width * 2
+    return kwargs
+
+
 def _make_adapter(name: str, angle_params: tuple[str, ...]):
     wrapper = _MANIM_WRAPPER_REGISTRY[name]
     signature = getattr(wrapper, "__signature__", None)
 
-    if not angle_params:
-        # Nothing to convert: the native spelling is the wrapper itself under a
-        # subclass, so ``type(mob)`` still reports the class the user named.
-        return type(
-            name, (wrapper,), {"__module__": __name__, "__doc__": wrapper.__doc__}
-        )
-
     def __init__(self, *args, **kwargs):
-        args, kwargs = _converted_kwargs(signature, angle_params, args, kwargs)
-        super(adapter, self).__init__(*args, **kwargs)
+        if angle_params:
+            args, kwargs = _converted_kwargs(signature, angle_params, args, kwargs)
+        super(adapter, self).__init__(*args, **_to_manim_stroke_width(kwargs))
 
-    listed = ", ".join(f"``{p}``" for p in angle_params)
+    converted = [
+        "``stroke_width`` is in Algan's unit, half Manim's for the same "
+        "visual weight"
+    ]
+    if angle_params:
+        listed = ", ".join(f"``{p}``" for p in angle_params)
+        converted.insert(0, f"{listed} are given in **degrees**")
     doc = (
         f"{wrapper.__doc__ or name}\n\n"
-        f"    Algan's spelling: {listed} are given in **degrees**, matching\n"
-        f"    :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`\n"
-        f"    and the rest of Algan. ``algan.manim.{name}`` is the same class\n"
-        f"    taking radians, as Manim does.\n"
+        f"    Algan's spelling: {'; '.join(converted)}.\n"
+        f"    ``algan.manim.{name}`` is the same class under Manim's\n"
+        f"    conventions -- radians, and Manim's stroke unit.\n"
     )
     adapter = type(
         name,

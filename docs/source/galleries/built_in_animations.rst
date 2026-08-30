@@ -93,7 +93,7 @@ region:
 
     from algan import *
 
-    outline = Circle(radius=2, color=BLUE, border_width=6).spawn()
+    outline = Circle(radius=2, color=BLUE, stroke_width=6).spawn()
     ShowPassingFlash(outline, run_time=2)
     ShowPassingFlash(outline, run_time=2)
 
@@ -135,8 +135,8 @@ it:
     from algan import *
 
     with Off():
-        square = Square(color=TRANSPARENT, border_width=0).scale(1.5).spawn()
-        boundary = AnimatedBoundary(square, max_stroke_width=10, cycle_rate=1.0).spawn()
+        square = Square(color=TRANSPARENT, stroke_width=0).scale(1.5).spawn()
+        boundary = AnimatedBoundary(square, max_stroke_width=5, cycle_rate=1.0).spawn()
 
     square.wait(3)
 

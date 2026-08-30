@@ -64,7 +64,7 @@ def _animated_boundary_update(boundary, elapsed):
 
     fade_width = torch.where(
         cycle_time >= 1.0,
-        (1.0 - fade_alpha) * boundary.max_border_width,
+        (1.0 - fade_alpha) * boundary.max_stroke_width,
         torch.zeros_like(fade_alpha),
     )
 
@@ -80,12 +80,12 @@ def _animated_boundary_update(boundary, elapsed):
         fading.set_control_points_to_partial(
             full_points, torch.zeros_like(draw_alpha), torch.ones_like(draw_alpha)
         )
-        growing.border_color = growing_color
-        fading.border_color = fading_color
-        growing.border_width = torch.full_like(
-            draw_alpha, float(boundary.max_border_width)
+        growing.stroke_color = growing_color
+        fading.stroke_color = fading_color
+        growing.stroke_width = torch.full_like(
+            draw_alpha, float(boundary.max_stroke_width)
         )
-        fading.border_width = fade_width
+        fading.stroke_width = fade_width
     return boundary
 
 
@@ -123,10 +123,10 @@ class AnimatedBoundary(Group):
 
         self.vmobject = vmobject
         self.colors = tuple(colors)
+        # Algan's own units, like every other stroke width in the root
+        # namespace. Manim's ``AnimatedBoundary`` means twice this by the same
+        # number; ``algan.manim`` is where that conversion lives.
         self.max_stroke_width = float(max_stroke_width)
-        # Manim's stroke_width unit is half an Algan border_width (the same
-        # calibration ManimMob and Text apply on import).
-        self.max_border_width = self.max_stroke_width / 2.0
         self.cycle_rate = float(cycle_rate)
         self.back_and_forth = bool(back_and_forth)
         self.draw_rate_func = draw_rate_func
@@ -147,7 +147,7 @@ class AnimatedBoundary(Group):
                 )
             for path in [*growing_paths, *fading_paths]:
                 path.color = path.color.as_subclass(Color).set_opacity(0.0)
-                path.border_width = 0.0
+                path.stroke_width = 0.0
             super().__init__(growing_copy, fading_copy, **kwargs)
 
         self.boundary_copies = (growing_copy, fading_copy)

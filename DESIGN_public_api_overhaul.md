@@ -695,6 +695,8 @@ This is why the phase is blocked on Phase 1 — the conversion has nowhere clean
    attribute name, keeping the `/2`.
 3. Update the removed-method hint at `mob.py:116` (`set_stroke` → "set the `stroke_color` and
    `stroke_width` attributes") — it now reads oddly, and may no longer be worth having.
+   **Kept, and it reads better than before**: Manim's `set_stroke(color, width)` maps onto
+   exactly those two attribute names now, so the hint is a straight translation.
 4. Sweep `bezier_circuit.py` (29), `text.py` (22), `bezier_circuit_primitive.py` (20),
    `raytrace_kernels_taichi.py` (20), `shapes_2d.py` (18), plus tests (112) and docs (14).
 
@@ -702,8 +704,42 @@ Kernel files carry 20+ occurrences: `*_taichi.py` are linted but never formatted
 there is a kernel edit, so expect a full cold recompile and clear the offline cache before any
 A/B timing.
 
+**Corrected during implementation — three things the plan did not anticipate.**
+
+1. **The design's own justification for deferring the conversion out of Phase 1b was wrong.**
+   "No test or doc currently passes `stroke_width` to any of the six affected classes" —
+   `manim_compat_and_plots` passes it to `Arrow` (one of the six) and to `DashedLine`, and
+   `mob_gallery.rst` passes it to `Star`. So Phase 6 has these call sites to convert, and one of
+   them is in a pixel-compared scene.
+
+2. **The adapter conversion cannot be a per-class table.** Phase 1b's plan was to add
+   `stroke_width` to `_ANGLE_PARAMS`'s sibling, declared per class from the Manim signatures.
+   But a Manim class accepts `stroke_width` whether or not its signature names it — `Star` and
+   `DashedLine` take it through `**kwargs` to `VMobject` — so a signature-driven table would
+   have given those two Manim's unit while the six that declare it got Algan's: the same
+   parameter meaning two things across one namespace. Every adapter doubles it instead.
+
+3. **`_translate_vector_style_kwargs` stops halving, and that is the point.** It is the
+   Manim-kwarg translator *on native classes*, and it used to accept `stroke_width` in Manim's
+   unit and write half of it to `border_width`. Once both are spelled `stroke_width` that is
+   exactly the "one name meaning two things depending on which door the value came through"
+   the decision above rejects. Native `stroke_width` is Algan's unit end to end;
+   `mn.Square(stroke_width=4)` is the exact-parity spelling Phase 1 created for this.
+
+   The same reasoning removes the halving from `Text(stroke_width=)` and from
+   `AnimatedBoundary(max_stroke_width=)`, which are Algan classes with Manim-derived parameter
+   names, and from `ImageMobject.add_display_frame`, which builds a native
+   `SurroundingRectangle`. It stays in `manim_compat`, `manim_mob`, `manim_adapters` and
+   `shape_style_profiles` — the four places that genuinely straddle the boundary.
+
+**Renderer-internal buffer names keep `border`.** `circuit_border_colors` and the
+`_rt_circuit_border_colors` that feeds it are Taichi kernel argument names, not the Mob
+attribute; renaming them is a kernel edit costing a full cold recompile for no API gain.
+
 **Verification**: full suite plus `tests/full_renders`. Output must be **byte-identical** — this
-is a rename, not a rendering change. If baselines move, something was converted twice.
+is a rename, not a rendering change. Where a call site's *unit* changed (native and adapter
+`stroke_width`, `max_stroke_width`), its number is halved in the same commit, which is what
+keeps the frames identical. If baselines move anyway, something was converted twice.
 
 ---
 

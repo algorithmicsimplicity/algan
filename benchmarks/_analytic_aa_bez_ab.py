@@ -146,7 +146,7 @@ def build_scene(name):
             ci.spawn()
             tr = Triangle(color=YELLOW).scale(0.9).move(DOWN * 1.0)
             tr.spawn()
-            ring = Circle(color=BLUE, border_width=3).scale(0.7)
+            ring = Circle(color=BLUE, stroke_width=3).scale(0.7)
             ring.move(UP * 1.2)
             ring.spawn()
         with Sync():

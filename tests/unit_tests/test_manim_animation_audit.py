@@ -395,7 +395,7 @@ def test_animated_boundary_tracks_source_and_can_stop():
         source,
         colors=("#FF0000", algan.BLUE),
         cycle_rate=1,
-        max_stroke_width=4,
+        max_stroke_width=2,
         back_and_forth=False,
         add_to_scene=False,
     ).spawn(False)
@@ -412,11 +412,11 @@ def test_animated_boundary_tracks_source_and_can_stop():
         atol=1e-6,
     )
     assert torch.allclose(
-        growing.border_width.reshape(3, -1)[:, 0],
+        growing.stroke_width.reshape(3, -1)[:, 0],
         torch.full((3,), 2.0),
     )
-    assert fading.border_width.reshape(3, -1)[0, 0] == 0
-    assert fading.border_width.reshape(3, -1)[2, 0] > 0
+    assert fading.stroke_width.reshape(3, -1)[0, 0] == 0
+    assert fading.stroke_width.reshape(3, -1)[2, 0] > 0
     assert growing.get_render_primitives() is not None
 
     SceneManager.reset()

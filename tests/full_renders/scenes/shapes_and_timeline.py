@@ -88,22 +88,22 @@ with Off():
     # Borders run inward from the silhouette, so a border regression changes
     # this row without touching the filled row above it.
     outlined = Group(
-        Circle(radius=0.6, color=TRANSPARENT, border_color=BLUE_A, border_width=6),
+        Circle(radius=0.6, color=TRANSPARENT, stroke_color=BLUE_A, stroke_width=6),
         Square(
             size=1.15,
             color=TRANSPARENT,
-            border_color=GREEN_A,
-            border_width=14,
+            stroke_color=GREEN_A,
+            stroke_width=14,
         ),
         RegularPolygon(
             6,
             radius=0.66,
             color=MAROON_A,
-            border_color=WHITE,
-            border_width=4,
+            stroke_color=WHITE,
+            stroke_width=4,
         ),
-        Polygon(*STAR_POINTS, color=TRANSPARENT, border_color=YELLOW, border_width=4),
-        Line(start=LEFT * 0.62, end=RIGHT * 0.62, color=ORANGE, stroke_width=8),
+        Polygon(*STAR_POINTS, color=TRANSPARENT, stroke_color=YELLOW, stroke_width=4),
+        Line(start=LEFT * 0.62, end=RIGHT * 0.62, color=ORANGE, stroke_width=4),
         Dot(radius=0.24, color=RED),
     ).arrange_in_line(RIGHT, buffer=0.74)
     outlined.move(DOWN * 0.65 - outlined.get_center())
@@ -165,7 +165,7 @@ with Seq():
             outlined[5].move(UP * 0.32)
     with Sync(run_time=1.2):
         filled[5].wave_color(GREEN, direction=RIGHT)
-        outlined[2].border_color = YELLOW
+        outlined[2].stroke_color = YELLOW
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
@@ -211,8 +211,8 @@ with Off():
     morph = Square(
         size=1.3,
         color=BLUE,
-        border_color=WHITE,
-        border_width=5,
+        stroke_color=WHITE,
+        stroke_width=5,
     ).move(LEFT * 4.2 + DOWN * 1.4)
     hub = RegularPolygon(3, radius=0.55, color=MAROON).move(LEFT * 1.4 + DOWN * 1.4)
     satellite = Dot(radius=0.17, color=YELLOW).move(LEFT * 1.4 + DOWN * 1.4)
@@ -229,7 +229,7 @@ with Off():
     counter_frame = SurroundingRectangle(
         counter,
         color=TEAL_A,
-        border_width=3,
+        stroke_width=3,
         filled=False,
         buffer=0.22,
     )
@@ -238,8 +238,8 @@ with Off():
             3,
             radius=0.8,
             color=GREEN,
-            border_color=WHITE,
-            border_width=4,
+            stroke_color=WHITE,
+            stroke_width=4,
         )
         .move(RIGHT * 4.5 + DOWN * 1.4)
         .spawn()
@@ -337,7 +337,7 @@ with Off():
         )
     )
     raw_circuit = BezierCircuitCubic(
-        leaf_controls, color=TEAL, border_color=WHITE, border_width=4
+        leaf_controls, color=TEAL, stroke_color=WHITE, stroke_width=4
     ).move(LEFT * 2.3 + UP * 0.5)
 
     quad = Quad(
@@ -363,7 +363,7 @@ with Off():
     surrounding = SurroundingRectangle(
         quad_triangulated,
         color=TEAL_A,
-        border_width=3,
+        stroke_width=3,
         filled=False,
         buffer=0.18,
     )

@@ -86,7 +86,7 @@ def _build():
         cap.spawn(animate=False)
         # A bordered translucent shape (border compositing rides the same
         # peel).
-        ring = Circle(radius=1.0, color=ORANGE, border_color=WHITE)
+        ring = Circle(radius=1.0, color=ORANGE, stroke_color=WHITE)
         ring.set_opacity(0.5)
         ring.move(LEFT * 2.2 + DOWN * 0.6)
         ring.spawn(animate=False)

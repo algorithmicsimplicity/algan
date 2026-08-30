@@ -157,7 +157,7 @@ def test_native_vector_style_and_surrounding_rectangle_api():
     circle = algan.Circle(
         fill_opacity=0.2,
         stroke_color=algan.RED,
-        stroke_width=4,
+        stroke_width=2,
         add_to_scene=False,
     )
     square = algan.Square(size=2, add_to_scene=False)
@@ -169,7 +169,9 @@ def test_native_vector_style_and_surrounding_rectangle_api():
         add_to_scene=False,
     )
     assert abs(float(circle.color[..., -1].reshape(-1)[0]) - 0.2) < 1e-6
-    assert float(circle.border_width.reshape(-1)[0]) == 2
+    # Native ``stroke_width`` is Algan's own unit now: it lands verbatim,
+    # where it used to be halved on the way in from Manim's.
+    assert float(circle.stroke_width.reshape(-1)[0]) == 2
     assert surrounding.corner_radius == 0.15
     assert surrounding.control_points.location.shape[-2] > 16
 

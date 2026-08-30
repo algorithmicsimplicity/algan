@@ -30,8 +30,8 @@ def _render(tmp_path, name, z_index):
     path = tmp_path / f"{name}.png"
     with Scene() as scene:
         with Off():
-            red = Square(size=2.0, color=RED, border_width=0)
-            blue = Square(size=2.0, color=BLUE, border_width=0)
+            red = Square(size=2.0, color=RED, stroke_width=0)
+            blue = Square(size=2.0, color=BLUE, stroke_width=0)
             blue.z_index = z_index
         red.spawn(animate=False)
         blue.spawn(animate=False)
@@ -105,7 +105,7 @@ def test_one_bin_of_bias_does_not_move_the_geometry(tmp_path):
         path = tmp_path / f"{name}.png"
         with Scene() as scene:
             with Off():
-                square = Square(size=2.0, color=WHITE, border_width=0)
+                square = Square(size=2.0, color=WHITE, stroke_width=0)
                 square.z_index = z_index
             square.spawn(animate=False)
             scene.save_frame(str(path), video_settings=LD)
@@ -133,14 +133,14 @@ def _stack_centre_pixel(tmp_path, name, order):
             mobs = []
             for kind, colour in order:
                 if kind == "fill":
-                    mobs.append(Square(size=1.6, color=colour, border_width=0))
+                    mobs.append(Square(size=1.6, color=colour, stroke_width=0))
                 else:
                     mobs.append(
                         Line(
                             start=(-1.5, 0.0, 0.0),
                             end=(1.5, 0.0, 0.0),
                             color=colour,
-                            border_width=40,
+                            stroke_width=40,
                         )
                     )
         for mob in mobs:
@@ -220,15 +220,15 @@ def test_draw_bias_costs_block_alternations_not_mobs():
     """
     with Scene() as scene:
         with Off():
-            same_block = [Square(border_width=0, color=RED) for _ in range(8)]
+            same_block = [Square(stroke_width=0, color=RED) for _ in range(8)]
             alternating = []
             from algan.mobs.shapes_2d import Line
 
             for i in range(8):
                 alternating.append(
-                    Square(border_width=0, color=RED)
+                    Square(stroke_width=0, color=RED)
                     if i % 2
-                    else Line(color=BLUE, border_width=4)
+                    else Line(color=BLUE, stroke_width=4)
                 )
         _, bias = scene._authored_draw_order()
 

@@ -1727,7 +1727,7 @@ class RenderLoopMixin:
                 "opacity",
                 "basis",
                 "glow",
-                "border_width",
+                "stroke_width",
                 "location",
             ):
                 if (
