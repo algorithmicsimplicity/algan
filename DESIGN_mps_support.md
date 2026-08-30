@@ -13,6 +13,18 @@ which nobody had looked at.
 
 Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do instead.
 
+**Status, added later.** Two of the three blockers are cleared and *measured
+cleared on the hardware*: §1.1 by packing kernel arguments into arena offsets,
+§1.2 by MPS-friendly mode. Every kernel in the renderer now compiles on Metal
+and a render runs end to end. It comes out **black**, and §1.3b -- added below,
+and the first thing here written from a machine rather than from a probe --
+says why: §1.3's staging cannot serve the arena convention §1.1's fix
+introduced, because a kernel that takes two dtype views of one allocation has
+one of them reverted on copy-back. So the verdict below is no longer NO-GO on
+the first two counts; the third has moved from "slow" to "wrong", which is a
+better problem than it sounds, because §3.3 step 1 was always the fix and now
+has a reason to be first.
+
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
 Taichi's interop and codegen rather than of Metal, and they do not survive
@@ -136,6 +148,115 @@ non-deterministic mode has a floor; a deterministic one does not, in a kernel.
 > test_mps_friendly.py` does, including both compiled kernel variants against
 > each other, and it walks the AST of `algan/rendering/` so a new f64
 > accumulator fails a test rather than a Mac.
+>
+> **Confirmed on the machine.** `benchmarks/_mps_metal_codegen_probe.py`, run
+> from the `render` job, puts `i64_atomic_min` at
+>
+> ```
+> RHI Error: (spirv-cross compiler) MSL currently does not support 64-bit atomics.
+> ```
+>
+> — this section's abort, now with a diagnostic instead of an assertion failure
+> — while the mode's `i32_atomic_min` and `f32_accumulate` replacements both
+> pass. Everything §1.2 said is Metal's limit is Metal's limit, and the mode
+> clears all of it: with it on, **every kernel in the renderer compiles and the
+> whole pipeline runs to completion on an Apple GPU**, including
+> `sheet_resolve_shade_arena`, the 49-argument megakernel §1.1 called blocked.
+
+### 1.2b Taichi's MSL generator writes a cast C++ parses as a declaration
+
+Not Metal's limit and not Algan's code: a **Taichi codegen bug**, found by the
+first render that got far enough to hit it, and cleared by narrowing an
+argument. It is here because anyone re-treading this path meets it.
+
+A narrowing cast of a 64-bit ndarray load, bound to a name and read more than
+once, comes out of Taichi's SPIR-V-to-MSL step as a nested functional cast:
+
+```
+program_source:67:42: error: indirection requires pointer operand ('int' invalid)
+        int tmp16_i32 = (int(long(_76))) * 8;
+                                         ^ ~
+program_source:67:13: error: cannot initialize a variable of type 'int' with an
+        rvalue of type 'int (long)'
+```
+
+C++'s most vexing parse: `int(long(_76))` is the function type `int(long)` with
+a parameter named `_76`, so the `* 8` after it parses as a dereference. Metal
+hands Taichi a nil function; Taichi builds a pipeline from it without checking;
+the process aborts with §1.1's `computeFunction must not be nil`, which is why
+the two look identical from outside and why the probe was needed to tell them
+apart.
+
+The probe's ladder is what makes the shape of it exact, and it is narrower than
+it first looks:
+
+| spelling | on Metal |
+| --- | --- |
+| `ti.cast(i64[i], ti.i32)`, used once (`i64_cast_mul`) | **compiles** |
+| the same **bound to a name and read twice** (`named_cast_mul_temp`) | **aborts** |
+| `sheet_lane_first_owner` with an i64 `band` (`lane_owner_real_i64`) | **aborts**, same source line |
+| the same kernel with `band` already i32 (`lane_owner_real_i32`) | **compiles** |
+
+So the fix is the argument dtype, not the kernel: `mps_compat.kernel_index`
+narrows an index array on its way into a kernel when the mode is on, and the
+kernel's own `ti.cast(..., ti.i32)` becomes a cast to the type the value
+already has, which Taichi emits nothing for. The same kernel source serves both
+widths and no kernel changed. It is applied to every array the kernels narrow
+per element — the CSR counts/starts pairs, the gather and depth-order
+permutations, the band ids, the sorted order.
+
+### 1.3b Two dtype views of one buffer cannot both be written — the arena
+
+**This is what stops an Apple GPU rendering today**, and it is §1.3's staging
+meeting §1.1's fix. It was not visible before, because until both of the
+blockers above were cleared nothing got far enough to render at all.
+
+`arena_args_taichi.pack` binds a converted kernel's cold arrays as offsets into
+the arena, which means the kernel takes `arena_f32` and `arena_i32` — **the same
+allocation, reinterpreted**. Direct binding does not care: CPU and CUDA hand the
+kernel one pointer twice. A backend that *stages* copies each argument to the
+host, runs, and copies each back, and the second copy-back then reverts
+everything the kernel wrote through the first. Measured, by the probe's
+`device_two_typed_views`:
+
+```
+device_two_typed_views   FAIL -- AssertionError: tensor([0., 0., 0., ..., 0.])
+```
+
+The kernel wrote 1.5 through the f32 view and 9 through the i32 view of a
+disjoint half of the same buffer; the f32 half came back **zero**. The plain
+cases either side of it pass — `device_tensor_roundtrip` and
+`device_view_roundtrip` — so staging is correct for an ordinary argument and
+for a slice, and wrong exactly for the aliasing pair the arena convention
+creates.
+
+A render on the machine bears that out and adds a second symptom the same
+staging could explain, in a stage that runs *before* any shading:
+
+| | CPU | Metal |
+| --- | --- | --- |
+| fragments | 59790 | 69738 |
+| covered pixels | 30929 | 10876 |
+| sheets | 40956 | **128** |
+| `frag_cov` min | 0.001000 | 0.000000 |
+
+The frame is uniformly black. 128 sheets out of 69738 fragments is not a
+rounding difference; something between the raster emission and the compaction
+is reading data that is not there. Whether that is the same aliasing (through a
+kernel this document has not yet traced) or a second defect is **not
+established**, and the numbers above are all that is known.
+
+Three ways out, in increasing order of what they buy:
+
+1. **Pack the arena arguments into a per-dtype staging buffer** at launch,
+   rewriting the offset table to match. The aliasing goes away because the
+   buffers are separate allocations, and the launch stops staging the *whole*
+   arena twice — which is also most of §1.3's cost on the converted kernels.
+   Contained in `pack`, and gated on the mode.
+2. **Per-dtype arenas in `ManualMemory`**, so the views are disjoint by
+   construction. Deeper, and it changes the allocator every backend uses.
+3. **Taichi-owned ndarrays** (§3.3 step 1), which removes staging altogether
+   and is the only one of the three that also fixes §1.3's bandwidth verdict.
 
 ### 1.3 Taichi stages every torch tensor through host memory
 
@@ -292,16 +413,25 @@ Not a port. In dependency order:
    non-deterministic mode, since the deterministic fixed-point form cannot run in
    a Metal kernel (§1.2). **Done**: MPS-friendly mode, per §1.2's amendment.
 
-Steps 2 and 3 are therefore code, and step 1 is not started. What neither of
-them is yet is *verified*: both were written against the measurements in this
-document, and the failures they clear are `SIGABRT`s inside Taichi rather than
-exceptions, so nothing short of an Apple GPU can say whether they are really
-gone. The `render` job in `.github/workflows/mps_probe.yaml` is what asks —
-`ALGAN_RENDER_DEVICE=mps` on `macos-latest`, one smoke frame and then
-`tests/unit_tests tests/fast`, beside a Linux control arm that forces the mode
-on over a CPU device so that a two-arm failure separates "the mode is broken"
-from "what is left is Metal". `test.yaml`'s macOS pin to
-`ALGAN_RENDER_DEVICE=cpu` stays until that job has been green for a while.
+Steps 2 and 3 are therefore code, and both are now **verified on an Apple GPU**:
+with MPS-friendly mode on, every kernel in the renderer compiles on Metal and a
+render runs end to end, 53-66 s for one 864x486 frame. The `render` job in
+`.github/workflows/mps_probe.yaml` is what asks —
+`ALGAN_RENDER_DEVICE=mps` on `macos-latest`, the codegen probe, one smoke frame
+and then `tests/unit_tests tests/fast`, beside a Linux control arm that forces
+the mode on over a CPU device so that a two-arm failure separates "the mode is
+broken" from "what is left is Metal".
+
+**Step 1 is now the blocker rather than the optimization**, which is the one
+thing this document had the wrong way round. §1.3 was written up as a
+performance finding with a fix worth doing "on its own merits"; §1.3b is the
+same staging producing a *wrong answer*, and the frame is black until it is
+addressed. Its option 1 -- packing each kernel's arena arguments into a
+per-dtype staging buffer -- is the small end of step 1 and is where to start.
+
+`test.yaml`'s macOS pin to `ALGAN_RENDER_DEVICE=cpu` stays until the render job
+is green, which it is not: it gets through kernel compilation and dies on the
+smoke frame's blackness check.
 
 The payoff even then is compute-bound scenes only: 52x on the path tracer,
 53x *worse* on the bandwidth-bound raster stages unless step 1 lands first.

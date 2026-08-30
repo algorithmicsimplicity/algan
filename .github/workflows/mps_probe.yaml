@@ -269,8 +269,20 @@ jobs:
   #
   # Deliberately NOT part of the ordinary test matrix yet: test.yaml pins its
   # macOS job to ALGAN_RENDER_DEVICE=cpu, and that pin comes off when this job
-  # has been green for a while, not before. A standing red job teaches nobody
-  # anything.
+  # has been green for a while, not before. A standing red job in a required
+  # matrix teaches nobody anything.
+  #
+  # WHAT IT SAYS TODAY, so a red run is read for what it is. The macOS arm gets
+  # through kernel compilation -- every kernel in the renderer, the 49-argument
+  # sheet_resolve_shade included -- and renders a frame in about a minute, and
+  # the frame is BLACK. DESIGN_mps_support.md 1.3b is the diagnosis and the
+  # probe step below is where it is measured: Taichi stages every ndarray
+  # argument through the host on Metal, the arena calling convention hands a
+  # converted kernel two dtype views of one allocation, and the second
+  # copy-back reverts what the kernel wrote through the first. So expect this
+  # arm to fail at "Render one frame" until the arena arguments are packed into
+  # per-dtype staging buffers. The Linux arm is expected GREEN throughout: it
+  # runs the same substitutions with no staging in the path.
   render:
     name: mps render -- ${{ matrix.os }}
     if: ${{ inputs.sections == 'all' || inputs.sections == 'render' }}
