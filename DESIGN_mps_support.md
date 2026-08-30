@@ -31,11 +31,10 @@ Algan's two wide int64s are composite keys — the packed fragment key at 2**50
 and the shading-class key at 2**40 — so both lost the low bits that carry their
 meaning. The verdict below is no longer NO-GO on any of the three counts.
 
-**What is not yet clear.** The macOS test suite still fails a handful of tests
-with Metal's `Assertion failed: (p != nullptr), function bind_pipeline` — a
-kernel that will not compile, in the glossy-prefilter and deterministic-shadow
-paths, reported as a SIGABRT with no name. That is a fresh §1.2-class finding
-rather than a regression, and it is the next thing to chase.
+**What is not yet clear** — §1.2c below. The macOS suite is at **7 failed, 2415
+passed, 167 skipped**; the Linux control arm, running the same suite with
+MPS-friendly mode forced on over a CPU render device, is **fully green**, which
+is what says the mode itself is sound and the remainder is Metal.
 
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
@@ -216,6 +215,54 @@ already has, which Taichi emits nothing for. The same kernel source serves both
 widths and no kernel changed. It is applied to every array the kernels narrow
 per element — the CSR counts/starts pairs, the gather and depth-order
 permutations, the band ids, the sorted order.
+
+### 1.2c `sheet_resolve_shade_arena` will not compile for some scenes — OPEN
+
+The one blocker still standing, and the only thing between the Apple GPU and a
+green suite. Seven tests fail with
+
+```
+Assertion failed: (p != nullptr), function bind_pipeline, file metal_device.mm, line 409.
+```
+
+which is a SIGABRT with no kernel name and no Python traceback — Metal's answer
+to a pipeline built from a shader that did not compile. The compile log names
+it, and the trace has to be taken with `pytest -s` and `PYTHONUNBUFFERED=1`,
+because pytest captures stdout per test and replays it only when a test *fails*
+— a SIGABRT is not a failure, so the buffer dies with the process and two
+earlier attempts got the assertion and nothing else:
+
+```
+[Taichi compile] started ...sheet_resolve_taichi.sheet_resolve_shade_arena[specialization=0] at 14:27:36.312
+Assertion failed: (p != nullptr), function bind_pipeline, ...
+```
+
+A `started` with **no matching `completed`**. So it is §1.1's 49-argument
+megakernel — and the interesting part is that the *same kernel compiles fine* in
+`benchmarks/_mps_render_smoke.py`, which logs `completed ... total=5.765s` for
+it. Whatever fails is scene-dependent, and every failing test is about **lights
+and shadows**: the glossy prefilter (3), the area-light soft shadow, the
+deterministic shadow opacity, and the shadow-cap truncation.
+
+Two hypotheses, neither tested:
+
+* the shader grows with the shadow-light count (`MAX_SHADOW_LIGHTS` unrolling)
+  until Metal's compiler refuses it — a size limit rather than a feature one;
+* a code path taken only with shadows enabled hits the §1.2b MSL codegen bug in
+  a form patch 0002 does not cover.
+
+The next measurement is the MSL error text, which patch 0002's
+`log_msl_source_context` exists to print and did **not** print here — so the
+failure is arriving as a nil pipeline at *bind* rather than as a Metal compile
+error at library creation, and the patch's guard is on the wrong side of it.
+Moving that check is a wheel rebuild, which is why it is written down rather
+than done.
+
+The seventh failure is unrelated and also open:
+`test_closed_shell_attenuates_once_at_authored_opacity` has the path-traced and
+deterministic routes agreeing everywhere except one column of the interior,
+where they differ by 86. It **passes on the CPU in both modes**, so it is
+Metal-specific rather than an MPS-friendly substitution.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
