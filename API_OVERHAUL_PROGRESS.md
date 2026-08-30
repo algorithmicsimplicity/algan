@@ -179,6 +179,13 @@ any case is accepted.
 The export snapshot moved by exactly the five names added and four removed, which is what the
 Phase 0 guard is for.
 
+The full suite caught seven call sites the repo-wide greps missed, all of the same two shapes:
+multi-line constructor calls that a single-line regex could not see (`Line3D(` and `Arrow3D(`
+spread over four lines in three benchmarks and a test), and *Manim's* `Square`/`Cube`, which
+keep `side_length` and must not be swept up with Algan's. `benchmarks/_triad_artifact_frame.py`
+was a third kind: it patches a render scene by string-replacing its **source text**, so renaming
+a parameter in that scene silently broke the benchmark's patch.
+
 ---
 
 ## Plan changes made during implementation

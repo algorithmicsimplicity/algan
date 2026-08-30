@@ -9,7 +9,7 @@ shapes like anything else.
 
 * :class:`~.Text` -- a string rendered with a font.
 * :class:`~.Tex` -- LaTeX.
-* :class:`~.NumericDisplay` -- a number you can animate.
+* :class:`~.DecimalNumber` -- a number you can animate.
 
 Plain Text
 ==========
@@ -182,10 +182,10 @@ on any iterable of Mobs, so you can use it on shapes too. See
 Animated Numbers
 ================
 
-:class:`~.NumericDisplay` renders a number and animates through the values
+:class:`~.DecimalNumber` renders a number and animates through the values
 in between when you change it:
 
-.. algan:: TextNumericDisplay
+.. algan:: TextDecimalNumber
 
     from algan import *
 

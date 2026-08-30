@@ -141,10 +141,10 @@ def test_manim_mob_mirrors_z_only_under_the_convention(scene):
     manim = pytest.importorskip("manim")
 
     depth = 1.5
-    source = manim.Square(size=2).shift(manim.OUT * depth)
+    source = manim.Square(side_length=2).shift(manim.OUT * depth)
 
     scene.manim_coordinates = False
-    plain = manim.Square(size=2).shift(manim.OUT * depth)
+    plain = manim.Square(side_length=2).shift(manim.OUT * depth)
     unmirrored = ManimMobFor(plain, scene)
     assert unmirrored[..., 2].flatten()[0].item() == pytest.approx(depth)
 

@@ -319,10 +319,10 @@ and provides :meth:`~.Group.arrange_in_line` and
 Animated Numbers
 ================
 
-:class:`~.NumericDisplay` shows a number you can animate, counting smoothly
+:class:`~.DecimalNumber` shows a number you can animate, counting smoothly
 between values:
 
-.. algan:: GalleryNumericDisplay
+.. algan:: GalleryDecimalNumber
 
     from algan import *
 

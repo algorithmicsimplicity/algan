@@ -91,8 +91,8 @@ if args.recolor:
         # both render white today whatever they were built with. A material
         # colour is not propagated, so this is the tint that survives.
         (
-            "thickness=0.03, color=GRAY_A)",
-            "thickness=0.03, color=GRAY_A)"
+            "radius=0.03, color=GRAY_A)",
+            "radius=0.03, color=GRAY_A)"
             ".set_material(MeshBasicMaterial(color=MAGENTA))",
         ),
         (

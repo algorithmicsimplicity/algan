@@ -124,7 +124,7 @@ def test_numeric_display_counts_inside_an_updater(tmp_path):
     """The alternative the error above points at has to actually work."""
     with algan.Scene(video_settings=SMOKE_TEST):
         tracker = mn.ValueTracker(0).spawn()
-        display = algan.NumericDisplay(0.0).spawn()
+        display = algan.DecimalNumber(0.0).spawn()
         display.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
         tracker.set_value(5)
         result = algan.Scene.save_video(str(tmp_path / "numeric.mp4"), SMOKE_TEST)

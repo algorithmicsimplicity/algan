@@ -188,7 +188,7 @@ def build_scene(cfg):
                 Line3D(
                     start=LEFT * 1.4 + UP * (0.7 - 0.7 * i),
                     end=RIGHT * 1.4 + UP * (0.7 - 0.7 * i),
-                    thickness=th,
+                    radius=th,
                     color=YELLOW,
                 ).spawn()
             sm = Sphere().scale(0.02).move(DOWN * 1.3).set_color(BLUE)

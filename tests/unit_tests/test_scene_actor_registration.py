@@ -146,7 +146,7 @@ def test_image_mobject_display_frame_is_registered():
     [
         pytest.param(lambda: algan.Text("ab"), id="Text"),
         pytest.param(lambda: algan.Tex("x^2"), id="Tex"),
-        pytest.param(lambda: algan.NumericDisplay(1.5), id="DecimalNumber"),
+        pytest.param(lambda: algan.DecimalNumber(1.5), id="DecimalNumber"),
         pytest.param(lambda: algan.Cube(), id="Cube"),
         pytest.param(lambda: algan.Dodecahedron(), id="Dodecahedron"),
         pytest.param(lambda: algan.Sphere(resolution=(4, 3)), id="Sphere"),
@@ -219,10 +219,10 @@ _CAPPED = {
     # Line3D is a capped Cylinder, and Arrow3D is one plus a capped Cone --
     # whose caps hang off parts that are not actors themselves.
     "line3d": lambda **kw: algan.Line3D(
-        start=algan.LEFT, end=algan.RIGHT, thickness=0.08, **kw
+        start=algan.LEFT, end=algan.RIGHT, radius=0.08, **kw
     ),
     "arrow3d": lambda **kw: algan.Arrow3D(
-        start=algan.ORIGIN, end=algan.RIGHT * 1.1, thickness=0.05, **kw
+        start=algan.ORIGIN, end=algan.RIGHT * 1.1, shaft_radius=0.05, **kw
     ),
 }
 
