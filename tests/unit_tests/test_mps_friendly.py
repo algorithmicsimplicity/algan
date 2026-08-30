@@ -42,6 +42,7 @@ from algan.errors import AlganConfigurationError
 from algan.rendering import mps_compat
 from algan.rendering.mps_compat import (
     accumulate_dtype,
+    band_class_groups,
     cummax_values,
     cummin_values,
     gather_packed_key,
@@ -279,6 +280,89 @@ def test_the_split_gather_leaves_narrow_dtypes_alone(computing_settings):
         assert torch.equal(
             gather_packed_key(source, order), source.index_select(0, order)
         )
+
+
+# ------------------------------------------------- the band/class grouping
+
+
+def _wide_key_reference(band, cls, base):
+    """What the composite key answers, which both arms must reproduce."""
+    uniq, inverse = torch.unique(band * base + cls, sorted=True, return_inverse=True)
+    return int(uniq.numel()), inverse, uniq // base
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(("bands", "classes"), [(1, 1), (7, 1), (40, 5), (400, 130)])
+def test_the_pair_grouping_matches_the_wide_composite_key(
+    computing_settings, bands, classes
+):
+    """The narrow grouping answers exactly what ``band * base + cls`` answers.
+
+    Count, per-fragment group id AND each group's band, because the group ids
+    are consumed as indices into per-group tables: an equivalent grouping in a
+    different ORDER would pass a count check and still mis-shade every sheet.
+    """
+    base = 1 << 25
+    g = torch.Generator().manual_seed(bands)
+    band = torch.randint(0, bands, (2000,), generator=g, dtype=torch.int64)
+    cls = torch.randint(0, classes, (2000,), generator=g, dtype=torch.int64)
+    want_n, want_inverse, want_band = _wide_key_reference(band, cls, base)
+
+    computing_settings.set(mps_friendly=True)
+    got_n, got_inverse, got_band = band_class_groups(band, cls, base)
+
+    assert got_n == want_n
+    assert torch.equal(got_inverse, want_inverse)
+    assert torch.equal(got_band, want_band)
+
+
+@pytest.mark.fast
+def test_the_pair_grouping_is_the_wide_key_off_the_mode(computing_settings):
+    """Off MPS-friendly mode the composite key is what runs, unchanged."""
+    base = 1 << 25
+    band = torch.tensor([0, 0, 1, 1, 2], dtype=torch.int64)
+    cls = torch.tensor([0, 3, 3, 3, 1], dtype=torch.int64)
+    computing_settings.set(mps_friendly=False)
+    got = band_class_groups(band, cls, base)
+    want = _wide_key_reference(band, cls, base)
+    assert got[0] == want[0]
+    assert torch.equal(got[1], want[1])
+    assert torch.equal(got[2], want[2])
+
+
+@pytest.mark.fast
+def test_the_pair_grouping_handles_an_empty_stream(computing_settings):
+    """A chunk can rasterise nothing; the grouping must not index into it."""
+    computing_settings.set(mps_friendly=True)
+    empty = torch.zeros(0, dtype=torch.int64)
+    count, inverse, band = band_class_groups(empty, empty, 1 << 25)
+    assert count == 0
+    assert inverse.numel() == 0
+    assert band.numel() == 0
+
+
+@pytest.mark.fast
+def test_the_pair_grouping_survives_a_band_count_that_overflows_the_wide_key():
+    """The whole point: a key the composite form could not represent.
+
+    With 2**20 bands the composite reaches 2**45, which is where the Apple
+    GPU's ``unique`` merged rows that differ only in their low bits and turned
+    40956 sheets into 128. The narrow form never builds that value, so this
+    stays exact -- and the reference below is computed on the CPU, where the
+    wide key is exact, so it is a real comparison rather than two wrong
+    answers agreeing.
+    """
+    base = 1 << 25
+    band = torch.arange(1 << 20, dtype=torch.int64).repeat_interleave(2)
+    cls = torch.arange(band.numel(), dtype=torch.int64) % 3
+    want_n, want_inverse, want_band = _wide_key_reference(band, cls, base)
+
+    SETTINGS.computing.set(mps_friendly=True)
+    got_n, got_inverse, got_band = band_class_groups(band, cls, base)
+
+    assert got_n == want_n
+    assert torch.equal(got_inverse, want_inverse)
+    assert torch.equal(got_band, want_band)
 
 
 # ------------------------------------------------- the narrowed kernel arms

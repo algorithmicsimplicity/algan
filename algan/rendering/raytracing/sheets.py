@@ -65,6 +65,7 @@ import torch
 from algan.environment import env_float
 from algan.rendering.mps_compat import (
     accumulate_dtype,
+    band_class_groups,
     cummax_values,
     gather_packed_key,
     kernel_index,
@@ -1265,13 +1266,10 @@ def compact_sheets(
             band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
         )
         del cls_o, band_split
-        skey = band_of_frag * _SHADE_CLASS_BASE + cls_eff
+        nb, band_id, sheet_band = band_class_groups(
+            band_of_frag, cls_eff, _SHADE_CLASS_BASE
+        )
         del cls_eff, band_of_frag
-        uniq_skey, band_id = torch.unique(skey, sorted=True, return_inverse=True)
-        del skey
-        nb = int(uniq_skey.numel())
-        sheet_band = uniq_skey // _SHADE_CLASS_BASE
-        del uniq_skey
 
     # The band's aggregates in one walk of the sorted stream: exact area
     # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,

@@ -201,6 +201,62 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     return (high.to(torch.int64) << 32) | (low.to(torch.int64) & 0xFFFFFFFF)
 
 
+def band_class_groups(band_of_frag, cls_eff, base):
+    """Group the fragments by ``(band, shading class)``, without a wide key.
+
+    ``compact_sheets`` subdivides each band by shading class with a composite
+    key, ``band * _SHADE_CLASS_BASE + cls``, and a ``unique`` over it
+    (``sheets.py`` §4.4). The base is ``1 << 25``, so for a 1080p frame with
+    40956 bands the key reaches **2**40** -- past where MPS int64 stops being
+    exact, and rows that differ only in their low bits merge.
+
+    Measured, and measured as the *only* thing left: with the split off the
+    same Apple GPU compaction produced 40956 sheets, exactly the CPU's, and
+    with it on, 128.
+
+    So this groups the pairs directly. It sorts by class and then stably by
+    band -- a two-pass LSD sort, the same trick ``sheets._lexsort`` uses -- and
+    walks the result for boundaries, which never multiplies the two together
+    and never handles a value wider than the larger of them. Returns what the
+    ``unique`` returned: the group count, the per-fragment group id, and each
+    group's band.
+
+    The group ORDER is the same. ``unique(..., sorted=True)`` orders by the
+    composite, and because ``base`` exceeds every class the composite orders by
+    ``(band, class)`` -- which is what the sort here produces, so the ids match
+    the wide-key ones exactly and every consumer downstream is unaffected.
+
+    Off the mode this is the wide key, unchanged: the composite form is one
+    sort where this is two, and CPU and CUDA have no reason to pay for that.
+    """
+    if not mps_friendly():
+        skey = band_of_frag * base + cls_eff
+        uniq_skey, inverse = torch.unique(skey, sorted=True, return_inverse=True)
+        return int(uniq_skey.numel()), inverse, uniq_skey // base
+
+    if band_of_frag.numel() == 0:
+        empty = band_of_frag.new_zeros(0)
+        return 0, empty, empty
+    # Least-significant key first, so the stable sort on the band leaves
+    # equal-band runs ordered by class.
+    order = torch.argsort(cls_eff, stable=True)
+    order = order.index_select(
+        0, torch.argsort(band_of_frag.index_select(0, order), stable=True)
+    )
+    bands = band_of_frag.index_select(0, order)
+    classes = cls_eff.index_select(0, order)
+    starts = torch.ones_like(bands, dtype=torch.bool)
+    if bands.numel() > 1:
+        starts[1:] = (bands[1:] != bands[:-1]) | (classes[1:] != classes[:-1])
+    del classes
+    group_sorted = torch.cumsum(starts.to(torch.int64), 0) - 1
+    inverse = torch.empty_like(group_sorted)
+    inverse.scatter_(0, order, group_sorted)
+    del group_sorted, order
+    band_of_group = bands[starts]
+    return int(band_of_group.numel()), inverse, band_of_group
+
+
 def taichi_accumulate_dtype():
     """:func:`accumulate_dtype`'s Taichi twin, for a kernel's ``acc_t``.
 
