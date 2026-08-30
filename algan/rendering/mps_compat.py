@@ -187,18 +187,16 @@ def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
 #: do not. Storing, moving, comparing, shifting, masking and multiply-add are
 #: exact at every rung.
 #:
-#: Lanes are used below rather than ``v[i]`` deliberately. ``v[i]`` is one
-#: gather instead of four and would be faster, but it is exact only because of
-#: which aten kernel this torch version happens to dispatch it to -- a silent
-#: dependency, on the same silent failure mode this whole module exists to
-#: contain. Splitting to 16 bits cannot be wrong on any dispatch path, and
-#: ``test_the_split_gather_keeps_every_lane_under_the_mps_ceiling`` enforces
-#: that by watching what the gathers are handed.
+#: So :func:`gather_packed_key` uses ``v[i]``: one gather, exact, and the
+#: narrowest possible change. What it costs is a **dependency on a dispatch**
+#: -- ``v[i]`` is right because of which aten kernel torch routes it to, and
+#: nothing in torch's API promises that stays true. That dependency is made
+#: loud rather than left implicit:
+#: ``tests/unit_tests/test_mps_friendly.py::test_advanced_indexing_is_exact_above_the_mps_ceiling``
+#: gathers values past this ceiling on MPS whenever the machine has one and
+#: fails the suite if the answer ever stops being exact. It is the guard that
+#: makes the fast path safe to take.
 _MPS_EXACT_INT_BITS = 24
-
-#: Lane width for :func:`gather_packed_key`. Any value below 2**16 is far
-#: enough under the ceiling above to be gathered exactly, whatever the dtype.
-_GATHER_LANE_BITS = 16
 
 
 def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
@@ -217,14 +215,31 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     one depth the compaction cannot order or band them, and 40956 sheets
     collapsed to 128.
 
-    So this gathers the key in **four 16-bit lanes** and reassembles it. The
-    obvious cheaper split -- two 32-bit halves -- does not work, and the probe
-    caught it doing so: a 32-bit half still reaches 2**32, which is above the
-    ceiling, and the render that shipped it came back with the low word rounded
-    from ``40e68475`` to ``40e68480`` and its distinct depths down from 37899 to
-    22292. Better than the 2.0 it replaced and still wrong. A 16-bit lane is
-    below 2**24 by a wide margin, and reassembly uses only shifts and ors, which
-    are exact.
+    **The defect is the dispatch, not the hardware**, which is what makes the
+    fix a one-liner: over the same values at 2**40, ``index_select`` and
+    ``torch.gather`` are wrong while ``v[i]`` -- advanced indexing, which lands
+    on ``aten::index`` -- is exact. So the mode gathers with ``v[i]``. For a
+    1-D index that selects along dim 0 and copies, which is ``index_select``'s
+    contract exactly.
+
+    Two earlier attempts are worth knowing about, because they say why the
+    ceiling is 2**24 and not something more convenient. Splitting the key into
+    two 32-bit halves does **not** work: a half still reaches 2**32, and the
+    render that shipped it came back with the low word rounded from ``40e68475``
+    to ``40e68480`` and its distinct depths down from 37899 to 22292 -- better
+    than the 2.0 it replaced and still wrong. Splitting into four 16-bit lanes
+    does work, and was what shipped before this: correct on any dispatch path,
+    at four gathers instead of one. ``v[i]`` replaced it because the guard below
+    makes the cheaper form safe.
+
+    **What this costs is a dependency on a dispatch.** Nothing in torch's API
+    promises ``v[i]`` keeps routing to a kernel that is exact here, and if it
+    ever stops the failure is silent -- the same shape of failure this module
+    exists to contain. That is why
+    ``test_advanced_indexing_is_exact_above_the_mps_ceiling`` exists: it gathers
+    past the ceiling on MPS whenever the machine has one, and fails the suite
+    loudly if the answer changes. The fast path is only safe with that guard in
+    place; do not drop one without the other.
 
     Off the mode, and for any dtype that is not int64, this is exactly
     ``index_select``.
@@ -238,15 +253,7 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     """
     if not mps_friendly() or tensor.dtype is not torch.int64:
         return tensor.index_select(0, index)
-    mask = (1 << _GATHER_LANE_BITS) - 1
-    gathered = None
-    for shift in range(0, 64, _GATHER_LANE_BITS):
-        # Masked before the narrowing, so every lane is in [0, 2**16) and no
-        # cast has to wrap and no lane carries a sign.
-        lane = ((tensor >> shift) & mask).to(torch.int32).index_select(0, index)
-        part = lane.to(torch.int64) << shift
-        gathered = part if gathered is None else (gathered | part)
-    return gathered
+    return tensor[index]
 
 
 def band_class_groups(band_of_frag, cls_eff, base):

@@ -464,12 +464,12 @@ def probe_lookup(device):
         return out
 
     _check(
-        "two-half gather of the same key (the REJECTED fix)",
+        "two-half gather of the same key (rejected: still over 2**24)",
         key_c.index_select(0, pick_c),
         halves_gather(key_m, pick_m),
     )
     _check(
-        "four-lane gather of the same key (the fix)",
+        "four-lane gather of the same key (correct, superseded by v[i])",
         key_c.index_select(0, pick_c),
         lane_gather(key_m, pick_m),
     )
@@ -477,6 +477,11 @@ def probe_lookup(device):
         "four-lane gather recovers the depths",
         depth_c.index_select(0, pick_c),
         (lane_gather(key_m, pick_m) & 0xFFFFFFFF).to(torch.int32).view(torch.float32),
+    )
+    _check(
+        "v[i] gather of the same key (THE SHIPPED FIX)",
+        key_c.index_select(0, pick_c),
+        key_m[pick_m],
     )
     _check(
         "index_select(int32 values near 2**30)",

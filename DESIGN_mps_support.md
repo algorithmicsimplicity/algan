@@ -470,14 +470,24 @@ gather, a division or a `unique`, at any integer width.** Composite keys are
 where a renderer builds such values, and they are exactly the values whose low
 bits carry the meaning.
 
-`mps_compat.gather_packed_key` splits into four 16-bit lanes rather than using
-`v[i]`, which would be one gather instead of four and faster. The reason is that
-`v[i]`'s exactness is a property of which aten kernel this torch version
-dispatches it to — a silent dependency, on precisely the silent failure mode
-this section is about. A 16-bit lane cannot be wrong on any dispatch path, and
-`test_the_split_gather_keeps_every_lane_under_the_mps_ceiling` enforces the
-property by watching what the gathers are actually handed rather than trusting
-the arithmetic. Worth revisiting if the gather ever shows up in a profile.
+`mps_compat.gather_packed_key` gathers with `v[i]`, which is one operation and
+exact. Two earlier forms are worth knowing about because they bound the problem:
+splitting the key into two 32-bit halves does **not** work (a half still reaches
+2\*\*32, and the render that shipped it came back with the low word rounded from
+`40e68475` to `40e68480` and its distinct depths down from 37899 to 22292), while
+four 16-bit lanes does work at four gathers instead of one.
+
+What `v[i]` costs is a **dependency on a dispatch**: nothing in torch's API
+promises it keeps routing to a kernel that is exact here, and if it stops, every
+Algan render on an Apple GPU goes quietly wrong. So the dependency is guarded
+rather than assumed —
+`test_mps_friendly.py::test_advanced_indexing_is_exact_above_the_mps_ceiling`
+gathers past the ceiling on MPS whenever the machine has one, and fails loudly
+if the answer changes, naming the lane split as the fallback. It selects its
+device from `torch.backends.mps.is_available()` rather than from Algan's render
+device, so it guards on any Apple machine including one without the patched
+Taichi; on everything else it degenerates to a correctness check of the helper,
+which is why a green Linux run does not clear it.
 
 ### 2.4 How non-deterministic MPS actually is
 

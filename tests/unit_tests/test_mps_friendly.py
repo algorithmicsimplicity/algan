@@ -41,6 +41,7 @@ from algan import LD, OUTWARD, RIGHT, UP, Off, Scene, Sphere, Square
 from algan.errors import AlganConfigurationError
 from algan.rendering import mps_compat
 from algan.rendering.mps_compat import (
+    _MPS_EXACT_INT_BITS,
     accumulate_dtype,
     band_class_groups,
     cummax_values,
@@ -228,12 +229,12 @@ def _packed_keys(n, seed=0):
 
 @pytest.mark.fast
 @pytest.mark.parametrize("friendly", [False, True])
-def test_the_split_gather_matches_index_select(computing_settings, friendly):
+def test_the_packed_gather_matches_index_select(computing_settings, friendly):
     """Both arms answer exactly what ``index_select`` answers.
 
-    The point of the split form is that it never handles a value wider than
-    32 bits; the point of this test is that doing so costs nothing -- the
-    packed key comes back bit for bit, pixel and depth both.
+    The substituted form must be ``index_select``'s answer exactly -- the
+    packed key back bit for bit, pixel word and depth word both -- or the
+    compaction cannot order fragments by depth.
     """
     computing_settings.set(mps_friendly=friendly)
     keys, pixel, depth = _packed_keys(4096)
@@ -250,15 +251,13 @@ def test_the_split_gather_matches_index_select(computing_settings, friendly):
 
 
 @pytest.mark.fast
-def test_the_split_gather_is_exact_across_the_whole_int64_range():
-    """Every lane boundary, both sign bits, and the extremes.
+def test_the_packed_gather_is_exact_across_the_whole_int64_range():
+    """Word boundaries, both sign bits, and the extremes.
 
-    The key is carried in four 16-bit lanes, so the values that could go wrong
-    are the ones straddling a lane edge or setting a sign bit somewhere -- bit
-    15 of a lane, bit 31 of a half, bit 63 of the whole. Algan's keys are
-    non-negative and its low words are float32 depth bits, but a gather that
-    silently drops one bit in one corner is exactly the class of defect this
-    function exists to fix, so it should not depend on the caller's range.
+    Algan's keys are non-negative and their low words are float32 depth bits,
+    but a gather that silently drops one bit in one corner is exactly the class
+    of defect this function exists to fix, so it should not depend on the
+    caller's range staying polite.
     """
     keys = torch.tensor(
         [
@@ -282,35 +281,76 @@ def test_the_split_gather_is_exact_across_the_whole_int64_range():
 
 
 @pytest.mark.fast
-def test_the_split_gather_keeps_every_lane_under_the_mps_ceiling(monkeypatch):
-    """No value handed to ``index_select`` may reach 2**24.
+def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
+    """The dispatch ``gather_packed_key`` bets on, checked on real hardware.
 
-    The whole point of the lane split, and the thing the first attempt got
-    wrong: two 32-bit halves are still above the ceiling, so the gather still
-    rounded and the render still came back wrong -- just less wrong. This
-    asserts the property directly rather than trusting the arithmetic, by
-    watching what the gathers are actually handed.
+    MPS's ``index_select`` and ``torch.gather`` round integer values through a
+    float32 -- exact below 2**24, silently wrong above (``mps_compat``'s
+    ``_MPS_EXACT_INT_BITS`` has the measurement). Advanced indexing ``v[i]``
+    lands on a different aten kernel and is exact, which is the whole reason
+    the mode can gather the packed fragment key in one operation instead of
+    four 16-bit lanes.
+
+    Nothing in torch's API promises that. If a future version routes ``v[i]``
+    to the rounding kernel, every Algan render on an Apple GPU goes quietly
+    wrong -- the fragment key loses its depth word, the compaction cannot band
+    anything, and the frame comes back flat. This is what turns that into a
+    loud test failure instead.
+
+    **It only bites on a Mac**, and deliberately so: it selects the device from
+    ``torch.backends.mps.is_available()`` rather than from Algan's configured
+    render device, so it guards on any Apple machine -- including one without
+    the patched Taichi, where Algan itself would render on the CPU. A green run
+    anywhere else does NOT clear this; on those machines it degenerates to a
+    correctness check of the helper, because advanced indexing is exact on CPU
+    and CUDA whatever the width.
     """
-    SETTINGS.computing.set(mps_friendly=True)
-    seen = []
-    original = torch.Tensor.index_select
+    computing_settings.set(mps_friendly=True)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-    def watching(self, dim, index):
-        if not self.is_floating_point():
-            seen.append(int(self.abs().max()) if self.numel() else 0)
-        return original(self, dim, index)
+    # The real key magnitude (~2**50) plus the corners: the ceiling itself and
+    # one past it, the widths the probe measured wrong, and both sign bits.
+    keys, _, _ = _packed_keys(2048)
+    corners = torch.tensor(
+        [
+            (1 << 24),
+            (1 << 24) + 1,
+            (1 << 25) + 1,
+            18271053,  # the probe's own int32 2**25 counter-example
+            976314890686,  # ... and its int64 2**40 one
+            (1 << 62) + 6789,
+            (1 << 63) - 1,
+            -1,
+            -(1 << 62) - 1,
+            -(1 << 63),
+        ],
+        dtype=torch.int64,
+    )
+    values = torch.cat((keys, corners))
+    index = torch.randperm(values.numel(), generator=torch.Generator().manual_seed(3))
+    # The reference is computed on the CPU, where every gather is exact.
+    want = values.index_select(0, index)
 
-    monkeypatch.setattr(torch.Tensor, "index_select", watching)
-    keys, _, _ = _packed_keys(512)
-    gather_packed_key(keys, torch.randperm(512))
+    on_device = values.to(device)
+    moved = index.to(device)
+    assert torch.equal(values, on_device.cpu()), (
+        "the values changed on the way to the device, so nothing below is "
+        "attributable to the gather"
+    )
 
-    assert seen, "the split gather did no integer gather at all"
-    assert max(seen) < (1 << 24), f"a gather saw {max(seen)}, at or past 2**24"
+    raw = on_device[moved].cpu()
+    assert torch.equal(raw, want), (
+        f"advanced indexing v[i] is no longer exact on {device} for values "
+        f"above 2**{_MPS_EXACT_INT_BITS}. mps_compat.gather_packed_key depends "
+        "on it; switch that back to the 16-bit lane split (see its docstring) "
+        "and report the regression upstream"
+    )
+    assert torch.equal(gather_packed_key(on_device, moved).cpu(), want)
 
 
 @pytest.mark.fast
-def test_the_split_gather_leaves_narrow_dtypes_alone(computing_settings):
-    """Only int64 takes the split path; everything else is ``index_select``."""
+def test_the_packed_gather_leaves_narrow_dtypes_alone(computing_settings):
+    """Only int64 takes the substituted path; everything else is ``index_select``."""
     computing_settings.set(mps_friendly=True)
     order = torch.tensor([2, 0, 1])
     for source in (
