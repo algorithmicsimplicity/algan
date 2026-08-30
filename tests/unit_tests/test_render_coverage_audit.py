@@ -211,7 +211,9 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
     """Scenes author a Scene; they never render one, and never import the world.
 
     ``torch`` is allowed because building raw primitives needs tensors, which is
-    exactly what a user would do.
+    exactly what a user would do, and so is ``algan.manim``: since the API
+    overhaul's Phase 1 that is the public spelling of the compatibility layer,
+    and a scene covering compat geometry has to reach it the way a user would.
     """
     source = scene_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(scene_path))
@@ -227,7 +229,7 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
             )
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
-    assert imported <= {"from algan import *", "torch"}, (
+    assert imported <= {"from algan import *", "torch", "algan.manim"}, (
         f"{scene_path.name} imports more than the public API: {sorted(imported)}"
     )
     assert "from algan import *" in imported, (

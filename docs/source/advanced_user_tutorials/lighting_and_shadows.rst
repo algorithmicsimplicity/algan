@@ -208,8 +208,8 @@ the light's ``color`` (the "sky"), surfaces facing down receive its
 Spot Light
 ----------
 
-:class:`~.SpotLight` is a cone of light aimed at a ``target``. ``angle`` sets the
-cone's half-angle in degrees and ``penumbra`` (0-1) softens its edge. Like a point
+:class:`~.SpotLight` is a cone of light aimed at a ``target``. ``cone_angle`` sets
+the cone's half-angle in degrees and ``penumbra`` (0-1) softens its edge. Like a point
 light, it supports ``decay`` and ``distance``.
 
 .. algan:: LightingSpotHemisphere
@@ -219,7 +219,7 @@ light, it supports ``decay`` and ``distance``.
     with Off():
         Scene.clear_lights()
         SpotLight(location=UP * 5 + OUT * 2, target=ORIGIN, color=WHITE,
-                  intensity=40, angle=28, penumbra=0.6, decay=2).spawn()
+                  intensity=40, cone_angle=28, penumbra=0.6, decay=2).spawn()
         HemisphereLight(color=BLUE, ground_color=(0.3, 0.2, 0.1), intensity=0.5).spawn()
 
         Group([Sphere(radius=0.55, color=WHITE).move(RIGHT * x)
@@ -393,7 +393,7 @@ ambient:
 
         # Key light: bright, from above and to one side, with a soft shadow.
         SpotLight(location=UP * 6 + RIGHT * 4 + OUT * 4, target=ORIGIN,
-                  color=WHITE, intensity=60, angle=30, penumbra=0.5,
+                  color=WHITE, intensity=60, cone_angle=30, penumbra=0.5,
                   decay=2, shadow_radius=0.3).spawn()
 
         # Fill: dimmer, from the opposite side, no shadow.

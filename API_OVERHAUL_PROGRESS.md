@@ -142,6 +142,13 @@ across `Light` and all five subclasses; `SpotLight(cone_angle=..., degrees=True)
 `test_the_scene_camera_light_and_group_surface_answers_to_its_public_names`, the Phase 4
 counterpart of the Phase 3 one.
 
+Two guards had to move with the work, and both were caught by the full suite rather than by
+`--fast`. `test_render_coverage_audit`'s "never import the world" rule allowed only
+`from algan import *` and `torch`; since Phase 1 made `algan.manim` the public spelling of the
+compat layer, a scene covering compat geometry has to reach it the way a user would, so
+`algan.manim` joins that allowlist. And two `.. algan::` examples in
+`lighting_and_shadows.rst` build a `SpotLight(angle=...)`.
+
 ---
 
 ## Plan changes made during implementation
