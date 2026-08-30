@@ -144,8 +144,9 @@ counterpart of the Phase 3 one.
 
 **Verified**: full `tests/unit_tests` green on CPU (2409 passed, 139 skipped), `--fast` green
 (405 passed), lint and format at their pre-existing counts. The pixel suites are recorded under
-follow-ups; the pixel suites were still running when this was written and the result is
-recorded in the commit that follows.
+follow-ups: `tests/fast` green, and `tests/full_renders` back to exactly the three
+stale-baseline failures `master` has, with the same deltas (14 @ 21, 26 @ 293, 200 @ 179) --
+so Phase 4 moved no pixels either.
 
 Two guards had to move with the work, and both were caught by the full suite rather than by
 `--fast`. `test_render_coverage_audit`'s "never import the world" rule allowed only
@@ -304,6 +305,11 @@ Recorded here and in the design doc, so the two do not drift.
   verified until the pixel suites have run**, and **`--fast` cannot see any of this** — it has no
   compat geometry and no PN geometry.
 
+- **A rename that only the pixel suites can see will be missed.** Phase 4's `SpotLight.angle`
+  → `cone_angle` reached the library, the docs and the unit tests, but not the render scenes,
+  the benchmarks or the scratch probes — and one of those scenes is pixel-compared, so it went
+  from a known stale-baseline diff to a `TypeError`. When a phase renames a constructor
+  parameter, grep the whole repository, not just `algan/` and `tests/unit_tests/`.
 - **`tests/path_traced` has still not been run** on this branch. Note also that this is a
   CPU-only session, so the CUDA baselines cannot be spoken for either way.
 
