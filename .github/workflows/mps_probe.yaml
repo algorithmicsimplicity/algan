@@ -146,6 +146,16 @@ jobs:
       - name: Run the MPS capability probe
         run: uv run python benchmarks/_mps_capability_probe.py | tee probe-output.txt
 
+      # The torch-op probe belongs here as well as in the render job, and this
+      # is the copy to reach for: no Taichi, no render, no test suite, so a
+      # question about what MPS gets right is answered in three minutes rather
+      # than thirteen. It is a capability measurement, which is this job.
+      # `continue-on-error` for the same reason every probe here is: it takes a
+      # reading, it does not guard anything.
+      - name: Probe which torch ops MPS gets right
+        continue-on-error: true
+        run: uv run python -u benchmarks/_mps_torch_op_probe.py | tee torch-op-probe.txt
+
       # The report is the deliverable, so put it where it can be read without
       # opening the log.
       - name: Publish the report to the job summary
@@ -160,6 +170,19 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # At the END of the job, where the log tail reaches. The API serves a
+      # fixed window there, so a table printed mid-job cannot be read without
+      # downloading the whole log.
+      - name: Repeat the torch-op probe where the log tail reaches
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f torch-op-probe.txt ]; then
+            echo "(the op probe wrote nothing)"
+            exit 0
+          fi
+          sed -n '/isolated gathers/,$p' torch-op-probe.txt
+
       - name: Upload the raw results
         if: always()
         uses: actions/upload-artifact@v4
@@ -168,6 +191,7 @@ jobs:
           path: |
             mps_probe_results.json
             probe-output.txt
+            torch-op-probe.txt
           if-no-files-found: warn
           retention-days: 14
 
