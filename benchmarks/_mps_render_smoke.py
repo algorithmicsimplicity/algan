@@ -44,7 +44,18 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from algan import LD, OUTWARD, RIGHT, UP, Off, Scene, Sphere, Square  # noqa: E402
+from algan import (  # noqa: E402
+    LD,
+    OUTWARD,
+    RIGHT,
+    UP,
+    WHITE,
+    Off,
+    PointLight,
+    Scene,
+    Sphere,
+    Square,
+)
 from algan.rendering.mps_compat import (  # noqa: E402
     accumulate_dtype,
     mps_friendly,
@@ -406,8 +417,20 @@ def main() -> int:
     frame_path = OUTPUT_DIR / "frame.png"
     frame_path.unlink(missing_ok=True)
 
+    # Shadows on, and not for the shading: they are what makes this render
+    # launch a kernel that takes a BVH (`raster_shadow_trace`), whose node
+    # array is the one argument class the zero-copy import could not represent
+    # until it learned vector element types. Without them the bus check below
+    # passes on a kernel set that never carries one, which is a green light for
+    # exactly the thing that was broken. They also compile
+    # `sheet_resolve_shade`'s mode-1 event walk, the variant whose invalid
+    # SPIR-V was DESIGN_mps_support.md 1.2c.
+    SETTINGS.raytracing.set(shadows=True)
     with Scene() as scene:
         with Off():
+            PointLight(
+                location=RIGHT * 3.0 + OUTWARD * 3.0, color=WHITE, intensity=0.6
+            ).spawn(animate=False)
             Square(size=2.4).spawn()
             Sphere(radius=0.65).move(RIGHT * 1.1 + UP * 0.35).spawn()
             Sphere(radius=0.5).move(OUTWARD * 1.2 + RIGHT * 0.3).spawn()

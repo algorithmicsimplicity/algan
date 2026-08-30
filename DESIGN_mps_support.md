@@ -31,10 +31,20 @@ Algan's two wide int64s are composite keys — the packed fragment key at 2**50
 and the shading-class key at 2**40 — so both lost the low bits that carry their
 meaning. The verdict below is no longer NO-GO on any of the three counts.
 
-**What is not yet clear** — §1.2c below. The macOS suite is at **7 failed, 2415
+**What is not yet clear** — §1.2c below. The macOS suite is at **1 failed, 2425
 passed, 167 skipped**; the Linux control arm, running the same suite with
 MPS-friendly mode forced on over a CPU render device, is **fully green**, which
 is what says the mode itself is sound and the remainder is Metal.
+
+The six that were §1.2c are fixed, and they were one defect: a `continue` under
+a `ti.static` gate, which emits a block Taichi never reopens and so produces
+invalid SPIR-V. It is Algan's kernel rather than Metal's limit, it has been in
+`sheet_resolve_shade`'s shadow variant the whole time, and LLVM's indifference
+to it is why CPU and CUDA never said so. §1.2c has the mechanism and the
+Linux-only reproduction that found it.
+
+The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) is what
+is left, and it is now localized rather than open: see the end of §1.2c.
 
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
@@ -320,6 +330,39 @@ The seventh failure is unrelated and also open:
 deterministic routes agreeing everywhere except one column of the interior,
 where they differ by 86. It **passes on the CPU in both modes**, so it is
 Metal-specific rather than an MPS-friendly substitution.
+
+> **Localized**, by `benchmarks/_mps_closed_shell_probe.py`, which renders both
+> routes and prints them side by side over a window wider than the assertion's:
+>
+> ```
+> path traced (8 spp)   : interior mean  153.00 min 153 max 153   -- the oracle
+> det, ceiling kernel   : interior mean  159.57 min 153 max 239
+> columns > 2 across the window's rows: [21, 37, 44]   (CPU: [21, 44])
+> ```
+>
+> Three facts fall out. **The path tracer is exactly right** — 153 is
+> `0.6 * 255`, the authored opacity, uniform. **It is the deterministic route
+> that moved**, which the assertion's wording hides. And the disagreement is at
+> **column 37 only**: 21 and 44 are the cube's two silhouette edges and are
+> there on the CPU too, while 37 is inside the window and its neighbours 38..43
+> are clean — so this is not an edge the window clips, it is an isolated
+> interior column.
+>
+> 239 is not a wobble, it is a specific composite: `1 - 0.4**3 = 0.936`, and
+> `0.936 * 255 = 238.7`. That is **three** shell crossings each compositing at
+> full coverage, where the closed-shell ceiling should have collapsed them to
+> one attenuation of 0.6. So the question is why the ceiling
+> (`sheet_compact_taichi.solid_shell_ceiling`) does not group those fragments
+> into one segment on this backend — its segment key is
+> `pix * K + shell_sid`, the arm that spends the allowance differences a global
+> exclusive prefix, and in MPS-friendly mode that prefix is an **f32** cumsum
+> rather than f64 (the kernel's own docstring says the exactness argument
+> lapses there).
+>
+> The probe renders the deterministic route through **both** arms of that
+> ceiling — the fused kernel and the torch block it replaced, which share every
+> input — so the next run says whether the defect is in the kernel or in what
+> the kernel was handed. That is the measurement to take next.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 

@@ -629,10 +629,9 @@ jobs:
               compile-trace.txt | tail -20 || true
           fi
           if [ -f closed-shell-probe.txt ]; then
-            echo "== closed shell: where the two routes disagree =="
-            sed -n '/assertion window/,/columns differing/p' \
+            echo "== closed shell: where the routes disagree, and which arm =="
+            grep -E 'assertion window|interior mean|truncations' \
               closed-shell-probe.txt || true
-            sed -n '/interior:/p' closed-shell-probe.txt || true
           fi
 
       - name: Upload what was rendered
