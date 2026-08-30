@@ -218,6 +218,14 @@ Where a call site's unit changed rather than its name, its number is halved in t
 so the frames do not move: `Arrow` and `DashedLine` in `manim_compat_and_plots`, a native `Line`
 in `shapes_and_timeline`, `Star` in the gallery, and every `AnimatedBoundary(max_stroke_width=)`.
 
+**Verified byte-identical**, which is this phase's actual bar. Full `tests/unit_tests` green on
+CPU (2409 passed, 139 skipped), `--fast` green (405 passed), `tests/fast` green, and
+`tests/full_renders` at exactly the three stale-baseline failures `master` has with unchanged
+deltas (14 @ 21, 26 @ 293, 200 @ 179). The strongest single check is that
+**`manim_compat_and_plots` passes**: it is the scene carrying `Arrow`, `DashedLine`,
+`AnimatedBoundary` and a native `Circle` outline all at once, so a double conversion or a missed
+halving anywhere in the four boundary sites would have shown up there.
+
 ---
 
 ## Plan changes made during implementation
