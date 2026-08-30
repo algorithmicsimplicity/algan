@@ -101,6 +101,37 @@ def _install_pipeline_report():
 
     raster_pipeline.prepare_sparse_raster_coverage = reporting
 
+    # The compaction's INPUT, which is what separates "the sheet count is
+    # wrong" from "what the sheet count was computed from is wrong". Every
+    # band boundary is a change in ``frag_key >> 32``, so the number of
+    # distinct pixels in the key is a floor on the sheet count: if it is
+    # ~30929 and the sheets are 128, the compaction lost them; if it is itself
+    # ~128, the key arrived broken and the rasteriser or the buffer binding
+    # under it is what to look at, not a torch op.
+    from algan.rendering.raytracing import sheets as _sheets
+
+    original_compact = _sheets.compact_sheets
+
+    def reporting_compact(coverage, *args, **kwargs):
+        n = int(coverage["num_fragments"])
+        key = coverage["frag_key"][:n]
+        pixels = key >> 32
+        depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+        print(
+            f"  [compact-in] key n={n} distinct_pixels={int(torch.unique(pixels).numel())} "
+            f"pixel_min={int(pixels.min())} pixel_max={int(pixels.max())}"
+        )
+        print(
+            f"  [compact-in] depth min={float(depth.min()):.6f} "
+            f"max={float(depth.max()):.6f} distinct={int(torch.unique(depth).numel())}"
+        )
+        return original_compact(coverage, *args, **kwargs)
+
+    # The module attribute is the only binding to patch: ``raster_pipeline``
+    # imports the name inside the function that calls it, so it resolves this
+    # attribute per call rather than having captured the original at import.
+    _sheets.compact_sheets = reporting_compact
+
 
 #: name -> [calls checked, mismatching calls, first mismatch detail]
 _OP_STATS: dict = {}
@@ -255,6 +286,23 @@ def main() -> int:
             Sphere(radius=0.65).move(RIGHT * 1.1 + UP * 0.35).spawn()
             Sphere(radius=0.5).move(OUTWARD * 1.2 + RIGHT * 0.3).spawn()
         scene.save_frame(str(frame_path), video_settings=LD)
+
+    # Whether the fork was in the path at all. A wrapper that installed and
+    # converted nothing leaves every argument on Taichi's host-staging path,
+    # which is not slow-but-correct for the arena convention -- it is wrong
+    # (DESIGN_mps_support.md 1.3b) -- so "0 converted launches" and "the frame
+    # is wrong" is one finding rather than two.
+    from algan.rendering.mps_zero_copy import STATS, installed, zero_copy_available
+
+    print(
+        f"\nzero copy        : available={zero_copy_available()} "
+        f"installed={installed()}"
+    )
+    print(
+        f"                   converted={STATS['converted_launches']} launches "
+        f"({STATS['arguments']} args), "
+        f"passthrough={STATS['passthrough_launches']}"
+    )
 
     # Before the frame verdict, because every verdict below can return early
     # and the attribution table is the thing worth having when one does: a

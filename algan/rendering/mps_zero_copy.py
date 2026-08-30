@@ -59,6 +59,15 @@ _IMPORTS: dict = {}
 _AVAILABLE = None
 _INSTALLED = False
 
+#: Engagement telemetry, read by ``benchmarks/_mps_render_smoke.py`` and by
+#: anything else asking whether the fork is actually in the path. This module's
+#: whole job is a silent substitution, so a silently DISENGAGED one -- the
+#: wrapper installed but converting nothing -- looks exactly like a working
+#: render right up until the frame comes out wrong. The same reason
+#: ``taichi_fast_launch`` keeps its ``STATS``: a fast path nobody can see is a
+#: fast path nobody can prove ran.
+STATS = {"converted_launches": 0, "passthrough_launches": 0, "arguments": 0}
+
 
 def zero_copy_available() -> bool:
     """Whether the running Taichi can adopt a torch MPS buffer.
@@ -89,6 +98,17 @@ def zero_copy_available() -> bool:
     except Exception:
         _AVAILABLE = False
     return _AVAILABLE
+
+
+def installed() -> bool:
+    """Whether the conversion is actually wrapping kernel launches.
+
+    Distinct from :func:`zero_copy_available`, which only says the patched
+    build is importable. The two can disagree -- the install is a no-op when
+    the patch is absent -- and reporting availability as though it were
+    engagement is how a disengaged path stays invisible.
+    """
+    return _INSTALLED
 
 
 def unavailable_reason() -> str:
@@ -201,6 +221,7 @@ def install_zero_copy_launch():
 
     def zero_copy_call(self, *args, **kwargs):
         converted = None
+        count = 0
         for index, argument in enumerate(args):
             array = import_tensor(argument)
             if array is None:
@@ -208,8 +229,12 @@ def install_zero_copy_launch():
             if converted is None:
                 converted = list(args)
             converted[index] = array
+            count += 1
         if converted is None:
+            STATS["passthrough_launches"] += 1
             return previous_call(self, *args, **kwargs)
+        STATS["converted_launches"] += 1
+        STATS["arguments"] += count
         # Both fences, per launch. Torch's queue has to have drained before a
         # kernel reads what it wrote, and the kernel has to have finished
         # before torch reads back -- separate command queues over untracked

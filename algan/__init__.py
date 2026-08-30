@@ -302,6 +302,7 @@ _INTERNAL_EXPORT_MODULES = (
     "algan.mobs.nonplanar_circuit",
     "algan.rendering.logical_pn",
     "algan.rendering.mps_compat",
+    "algan.rendering.mps_zero_copy",
     "algan.utils.file_utils",
     "algan.utils.lazy_import",
     "algan.utils.python_utils",
