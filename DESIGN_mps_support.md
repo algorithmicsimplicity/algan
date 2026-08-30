@@ -13,17 +13,29 @@ which nobody had looked at.
 
 Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do instead.
 
-**Status, added later.** Two of the three blockers are cleared and *measured
-cleared on the hardware*: §1.1 by packing kernel arguments into arena offsets,
-§1.2 by MPS-friendly mode. Every kernel in the renderer now compiles on Metal
-and a render runs end to end. It comes out **black**, and §1.3b -- added below,
-and the first thing here written from a machine rather than from a probe --
-says why: §1.3's staging cannot serve the arena convention §1.1's fix
-introduced, because a kernel that takes two dtype views of one allocation has
-one of them reverted on copy-back. So the verdict below is no longer NO-GO on
-the first two counts; the third has moved from "slow" to "wrong", which is a
-better problem than it sounds, because §3.3 step 1 was always the fix and now
-has a reason to be first.
+**Status, added later.** All three blockers are cleared and *measured cleared on
+the hardware*: §1.1 by packing kernel arguments into arena offsets, §1.2 by
+MPS-friendly mode, and §1.3/§1.3b by the forked Taichi in `taichi_patches/`,
+which lets a kernel bind torch's own `MTLBuffer` instead of staging it through
+the host. Every kernel in the renderer compiles on Metal, the zero-copy path is
+engaged (40 converted launches, 244 arguments, nothing left on the staging
+path), and **`benchmarks/_mps_render_smoke.py` draws a real frame** — the
+fragment stream matching the CPU's to the unit: 59790 fragments, pixels
+`[137724..282179]` over 30929 distinct, `frag_cov` summing to 40133.251 against
+40133.251.
+
+Getting from "black" to that took two defects nobody had looked for, both of
+them **torch on MPS answering wrongly rather than failing**, and both in the
+same place: §2.3b. MPS gathers an integer through 24 bits of mantissa, and
+Algan's two wide int64s are composite keys — the packed fragment key at 2**50
+and the shading-class key at 2**40 — so both lost the low bits that carry their
+meaning. The verdict below is no longer NO-GO on any of the three counts.
+
+**What is not yet clear.** The macOS test suite still fails a handful of tests
+with Metal's `Assertion failed: (p != nullptr), function bind_pipeline` — a
+kernel that will not compile, in the glossy-prefilter and deterministic-shadow
+paths, reported as a SIGABRT with no name. That is a fresh §1.2-class finding
+rather than a regression, and it is the next thing to chase.
 
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
@@ -207,9 +219,14 @@ permutations, the band ids, the sorted order.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
-**This is what stops an Apple GPU rendering today**, and it is §1.3's staging
-meeting §1.1's fix. It was not visible before, because until both of the
-blockers above were cleared nothing got far enough to render at all.
+**Cleared** by the forked Taichi (`taichi_patches/0001`), which removes the
+mechanism rather than working around it: a kernel binds torch's own `MTLBuffer`,
+so there is no copy-back to revert anything. What follows is the measurement
+that identified it, kept because it is the argument for the fork.
+
+It is §1.3's staging meeting §1.1's fix, and it was not visible before, because
+until both of the blockers above were cleared nothing got far enough to render
+at all.
 
 `arena_args_taichi.pack` binds a converted kernel's cold arrays as offsets into
 the arena, which means the kernel takes `arena_f32` and `arena_i32` — **the same
@@ -242,11 +259,19 @@ staging could explain, in a stage that runs *before* any shading:
 
 The frame is uniformly black. 128 sheets out of 69738 fragments is not a
 rounding difference; something between the raster emission and the compaction
-is reading data that is not there. Whether that is the same aliasing (through a
-kernel this document has not yet traced) or a second defect is **not
-established**, and the numbers above are all that is known.
+is reading data that is not there.
 
-Three ways out, in increasing order of what they buy:
+**Resolved, and it was two things, not one.** The fork fixed the aliasing and
+the coverage column with it — `covered pixels` and `frag_cov min` came back
+equal to the CPU's on the next run. The sheet count did not, and it was never
+this section's defect: it was **§2.3b**, torch's own gather losing the low bits
+of a composite key, which had been corrupting the fragment key underneath all
+of this. Both are fixed; the render draws. The row this table should be read
+for now is `sheets`, which is the one that outlived the staging fix and pointed
+somewhere else entirely.
+
+Three ways out were on the table, in increasing order of what they buy, and the
+third is what shipped:
 
 1. **Pack the arena arguments into a per-dtype staging buffer** at launch,
    rewriting the offset table to match. The aliasing goes away because the
@@ -255,8 +280,9 @@ Three ways out, in increasing order of what they buy:
    Contained in `pack`, and gated on the mode.
 2. **Per-dtype arenas in `ManualMemory`**, so the views are disjoint by
    construction. Deeper, and it changes the allocator every backend uses.
-3. **Taichi-owned ndarrays** (§3.3 step 1), which removes staging altogether
-   and is the only one of the three that also fixes §1.3's bandwidth verdict.
+3. **Taichi-owned ndarrays** (§3.3 step 1) — **done**, as `taichi_patches/0001`
+   plus `algan/rendering/mps_zero_copy.py`. It removes staging altogether and is
+   the only one of the three that also fixes §1.3's bandwidth verdict.
 
 ### 1.3 Taichi stages every torch tensor through host memory
 
