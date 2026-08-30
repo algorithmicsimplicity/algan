@@ -494,8 +494,15 @@ jobs:
       # which skips on macOS for want of an Apple Silicon baseline (see
       # tests/fast/test_fast_render.py). What it still covers there is that the
       # kernels compile and the pipeline runs end to end.
+      # `-rf` for a one-line-per-failure summary, and `set -o pipefail` so the
+      # tee cannot swallow pytest's exit code -- GitHub runs this with `bash -e`,
+      # where a pipeline reports only its last command, so without it a red
+      # suite would report green.
       - name: Run the test suite
-        run: uv run pytest tests/unit_tests tests/fast -n 1
+        run: |
+          set -o pipefail
+          uv run pytest tests/unit_tests tests/fast -n 1 -rf \
+            | tee pytest-output.txt
 
       # The op probe's verdict again, at the END of the job. Not decoration:
       # the GitHub API serves a fixed window at the tail of a job's log, so a
@@ -517,6 +524,11 @@ jobs:
           echo "== torch op probe: disagreements =="
           sed -n '/op(s) disagree with the CPU/,$p' torch-op-probe.txt \
             || echo "(none)"
+          if [ -f pytest-output.txt ]; then
+            echo "== test suite: failures =="
+            sed -n '/^=* short test summary/,$p' pytest-output.txt \
+              | head -40 || true
+          fi
 
       - name: Upload what was rendered
         if: always()
@@ -526,6 +538,7 @@ jobs:
           path: |
             mps_render_smoke/
             torch-op-probe.txt
+            pytest-output.txt
             tests/fast/algan_outputs/
             tests/fast/output_errors/
           if-no-files-found: warn
