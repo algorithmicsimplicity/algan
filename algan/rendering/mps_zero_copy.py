@@ -197,6 +197,49 @@ def clear_import_cache():
         _IMPORTS.clear()
 
 
+def _scalar_ndarray_positions(kernel):
+    """Which of ``kernel``'s positional arguments may be imported.
+
+    Only the ones annotated as a **scalar-element** ndarray. A vector- or
+    matrix-element annotation -- ``ndarray(dtype=vector(4, f16))``, which is
+    every BVH-taking kernel's node array -- must not be converted: the import
+    builds an ndarray of the element dtype, and Taichi rejects it on arrival
+    with ``Invalid value for argument t_nodes - required element type:
+    VectorType[4, f16], but f16 is provided``. Measured on the Apple GPU, where
+    it took down fourteen tests across the path tracer, the denoiser and the
+    fast render.
+
+    The distinction is the same one ``taichi_fast_launch._build_meta`` draws
+    between its ``_EXT`` and ``_EXT_V`` kinds, and read off the same place --
+    the annotation, not the tensor, because the tensor cannot tell you which
+    of its dimensions Taichi considers element dimensions.
+
+    Cached per kernel: annotations are fixed once a kernel object exists, and
+    this runs on every launch.
+    """
+    cached = kernel.__dict__.get("_algan_zero_copy_positions")
+    if cached is not None:
+        return cached
+    positions = set()
+    try:
+        from taichi.lang import kernel_impl as _ki
+
+        ndarray_annotation = _ki.ndarray_type.NdarrayType
+        scalar_type_ids = _ki.primitive_types.type_ids
+        for index, argument in enumerate(kernel.arguments):
+            annotation = argument.annotation
+            if isinstance(annotation, ndarray_annotation) and (
+                annotation.dtype is None or id(annotation.dtype) in scalar_type_ids
+            ):
+                positions.add(index)
+    except Exception:
+        # An annotation shape this does not understand means "import nothing",
+        # which is the stock path and always safe.
+        positions = set()
+    kernel._algan_zero_copy_positions = positions
+    return positions
+
+
 def install_zero_copy_launch():
     """Convert torch MPS tensors to imported ndarrays in front of every launch.
 
@@ -220,9 +263,12 @@ def install_zero_copy_launch():
     previous_call = Kernel.__call__
 
     def zero_copy_call(self, *args, **kwargs):
+        positions = _scalar_ndarray_positions(self)
         converted = None
         count = 0
         for index, argument in enumerate(args):
+            if index not in positions:
+                continue
             array = import_tensor(argument)
             if array is None:
                 continue

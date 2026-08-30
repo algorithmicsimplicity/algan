@@ -408,6 +408,29 @@ def test_the_pair_grouping_survives_a_band_count_that_overflows_the_wide_key():
 # ------------------------------------------------- the narrowed kernel arms
 
 
+def _skip_without_the_wide_arm():
+    """Skip a narrow-vs-wide comparison where the wide arm cannot exist.
+
+    These tests are A/B: they run the float64 / int64 arm and the narrowed one
+    and assert the second answers the first. That only works on a device that
+    HAS the first. Metal has no f64 at all and no int64 atomic
+    (``DESIGN_mps_support.md`` §1.2), so on an MPS render device the wide
+    launch does not produce a worse answer, it aborts inside Taichi -- which is
+    the very thing the narrowing exists to avoid, and not a regression to
+    report.
+
+    Skipping loses nothing. The narrow arm is what MPS runs, and the comparison
+    that validates it runs on every CPU and CUDA machine, which is where the
+    wide arm is available to compare against.
+    """
+    if str(SETTINGS.computing.render_device) == "mps":
+        pytest.skip(
+            "the float64 / int64 arm cannot compile on Metal, so there is "
+            "nothing here to compare the narrowed arm against; the comparison "
+            "runs on CPU and CUDA"
+        )
+
+
 def _band_stats_arrays(nb, n, dtype):
     return (
         torch.full((nb,), n, dtype=dtype),
@@ -434,6 +457,7 @@ def test_the_int32_band_stats_kernel_answers_the_int64_one():
     )
     from algan.rendering.taichi_runtime import init_taichi
 
+    _skip_without_the_wide_arm()
     init_taichi()
     generator = torch.Generator().manual_seed(17)
     n, nb = 4096, 512
@@ -494,6 +518,7 @@ def test_the_float32_area_kernel_tracks_the_float64_one():
     from algan.rendering.raytracing.sheet_compact_taichi import sheet_band_reduce
     from algan.rendering.taichi_runtime import init_taichi
 
+    _skip_without_the_wide_arm()
     init_taichi()
     generator = torch.Generator().manual_seed(23)
     n, nb = 8192, 256
@@ -647,6 +672,7 @@ def test_a_scene_renders_in_mps_friendly_mode(computing_settings, tmp_path):
     corrupted buffer, a dropped clamp) violates immediately, rather than on a
     per-pixel bound that would only be pinning noise.
     """
+    _skip_without_the_wide_arm()
     computing_settings.set(mps_friendly=False)
     wide = _render(tmp_path, "wide.png")
     computing_settings.set(mps_friendly=True)

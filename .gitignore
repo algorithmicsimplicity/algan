@@ -191,3 +191,4 @@ benchmarks/renderer_audit/package-lock.json
 # for the end-of-job replay. A measurement of the machine it ran on.
 torch-op-probe.txt
 pytest-output.txt
+compile-trace.txt
