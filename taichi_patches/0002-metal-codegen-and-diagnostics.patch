@@ -1,0 +1,169 @@
+diff --git a/taichi/codegen/spirv/spirv_ir_builder.cpp b/taichi/codegen/spirv/spirv_ir_builder.cpp
+index 8a9a696..352ad4e 100644
+--- a/taichi/codegen/spirv/spirv_ir_builder.cpp
++++ b/taichi/codegen/spirv/spirv_ir_builder.cpp
+@@ -1224,7 +1224,28 @@ Value IRBuilder::cast(const SType &dst_type, Value value) {
+                          get_primitive_type(get_unsigned_type(to)), ret);
+       }
+ 
+-      ret = make_value(spv::OpBitcast, dst_type, ret);
++      // Step 2 is a no-op whenever `to` already has the signedness step 1
++      // produced -- i64 -> i32, the commonest narrowing there is -- and
++      // emitting OpBitcast between two identical type ids is not harmless on
++      // every consumer. SPIRV-Cross renders the pair as a NESTED functional
++      // cast, `int(long(x))`, and MSL then cannot parse the result where it
++      // is bound to a temporary and used in an expression:
++      //
++      //     int tmp16_i32 = (int(long(_76))) * 8;
++      //     error: indirection requires pointer operand ('int' invalid)
++      //
++      // `int(long(_76))` is C++'s most vexing parse -- the function type
++      // `int(long)` with a parameter named `_76` -- so `(...) * 8` reads as a
++      // cast applied to a dereference. With the redundant bitcast gone the
++      // expression is `int(_76)`, which cannot be a type-id because `_76` is
++      // not a type name, and it parses as the conversion it is.
++      //
++      // The guard is the same one this function already opens with (`if
++      // (value.stype.id == dst_type.id) return value;`), applied to the
++      // second step as well.
++      if (ret.stype.id != dst_type.id) {
++        ret = make_value(spv::OpBitcast, dst_type, ret);
++      }
+     }
+ 
+     return ret;
+diff --git a/taichi/rhi/metal/metal_device.mm b/taichi/rhi/metal/metal_device.mm
+index f66716b..412e22f 100644
+--- a/taichi/rhi/metal/metal_device.mm
++++ b/taichi/rhi/metal/metal_device.mm
+@@ -4,6 +4,13 @@
+ #include "taichi/rhi/device_capability.h"
+ #include "taichi/rhi/impl_support.h"
+ 
++// For log_msl_source_context below.
++#include <algorithm>
++#include <cctype>
++#include <set>
++#include <string>
++#include <vector>
++
+ namespace taichi::lang {
+ namespace metal {
+ 
+@@ -148,9 +155,29 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+   }
+ 
+   MTLLibrary_id mtl_library = device.get_mtl_library(msl);
++  if (mtl_library == nil) {
++    RHI_LOG_ERROR("cannot build a compute pipeline: the shader did not compile");
++    return nullptr;
++  }
+ 
+   MTLFunction_id mtl_function =
+       device.get_mtl_function(mtl_library, std::string("main0"));
++  // Checked, because `newComputePipelineStateWithFunction:nil` does not
++  // return an error -- it trips an assertion inside Metal and takes the
++  // process down:
++  //
++  //   -[MTLComputePipelineDescriptorInternal setComputeFunction:withType:]:866:
++  //   failed assertion `computeFunction must not be nil.'
++  //
++  // Every way of failing to produce a shader (an over-wide kernel, an
++  // unsupported atomic, a codegen bug) arrives here as a nil function, so
++  // without this check they are all one SIGABRT with no Python traceback.
++  if (mtl_function == nil) {
++    RHI_LOG_ERROR(
++        "cannot build a compute pipeline: the shader has no 'main0' entry "
++        "point (it did not compile)");
++    return nullptr;
++  }
+ 
+   MTLComputePipelineState_id mtl_compute_pipeline_state = nil;
+   {
+@@ -1471,6 +1498,65 @@ MetalDevice::get_mtl_function(MTLLibrary_id mtl_lib,
+   return mtl_function;
+ }
+ 
++namespace {
++
++// Print the lines of `source` that `diagnostic` names, with context.
++//
++// Metal's messages carry `program_source:<line>:<col>`; each one gets a
++// numbered +/-6 line window. A message that names no line at all falls back to
++// the first 40 lines, which at least identifies the shader.
++void log_msl_source_context(const std::string &source,
++                            const std::string &diagnostic) {
++  std::vector<std::string> lines;
++  std::string current;
++  for (char c : source) {
++    if (c == '\n') {
++      lines.push_back(current);
++      current.clear();
++    } else {
++      current.push_back(c);
++    }
++  }
++  lines.push_back(current);
++
++  std::set<int> wanted;
++  const std::string marker = "program_source:";
++  for (size_t at = diagnostic.find(marker); at != std::string::npos;
++       at = diagnostic.find(marker, at + marker.size())) {
++    size_t digits = at + marker.size();
++    int line = 0;
++    while (digits < diagnostic.size() && isdigit((unsigned char)diagnostic[digits])) {
++      line = line * 10 + (diagnostic[digits] - '0');
++      ++digits;
++    }
++    if (line > 0) {
++      for (int i = std::max(1, line - 6);
++           i <= std::min((int)lines.size(), line + 6); ++i) {
++        wanted.insert(i);
++      }
++    }
++  }
++  if (wanted.empty()) {
++    for (int i = 1; i <= std::min((int)lines.size(), 40); ++i) {
++      wanted.insert(i);
++    }
++  }
++
++  std::string report = "the MSL Metal rejected (" +
++                       std::to_string(lines.size()) + " lines total):";
++  int previous = 0;
++  for (int line : wanted) {
++    if (previous != 0 && line != previous + 1) {
++      report += "\n  ...";
++    }
++    report += "\n  " + std::to_string(line) + " | " + lines[line - 1];
++    previous = line;
++  }
++  RHI_LOG_ERROR(report.c_str());
++}
++
++}  // namespace
++
+ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
+   MTLLibrary_id mtl_library = nil;
+   NSError *err = nil;
+@@ -1482,11 +1568,19 @@ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
+ 
+   if (mtl_library == nil) {
+     if (err != nil) {
++      std::string description = err.localizedDescription.UTF8String;
+       std::array<char, 4096> msgbuf;
+       snprintf(msgbuf.data(), msgbuf.size(),
+                "cannot compile metal library from source: %s (code=%d)",
+-               err.localizedDescription.UTF8String, (int)err.code);
++               description.c_str(), (int)err.code);
+       RHI_LOG_ERROR(msgbuf.data());
++      // And the source it is complaining about. Metal reports
++      // `program_source:<line>:<col>` against generated MSL that nothing has
++      // ever printed, so a codegen bug otherwise surfaces as an error message
++      // with no way to see what produced it. Print a window around every line
++      // the message names rather than the whole shader, which runs to
++      // thousands of lines for a Taichi megakernel.
++      log_msl_source_context(source, description);
+     }
+     return nil;
+   }

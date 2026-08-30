@@ -1,0 +1,278 @@
+diff --git a/python/taichi/lang/_ndarray.py b/python/taichi/lang/_ndarray.py
+index 796366a..152b582 100644
+--- a/python/taichi/lang/_ndarray.py
++++ b/python/taichi/lang/_ndarray.py
+@@ -283,6 +283,56 @@ class ScalarNdarray(Ndarray):
+         return "<ti.ndarray>"
+ 
+ 
++class ExternalMetalNdarray(Ndarray):
++    """A Taichi ndarray over an ``MTLBuffer`` this process did not allocate.
++
++    Built to let a torch MPS tensor reach a kernel without the host round trip
++    ``kernel_impl`` otherwise does for it: an argument that arrives as an
++    ``Ndarray`` is bound by device allocation, while a torch tensor on a
++    non-matching arch is copied to the host before the launch and copied back
++    after (``set_arg_ext_array``).
++
++    Args:
++        dtype (DataType): element type.
++        arr_shape (Tuple[int]): shape, in elements.
++        buffer_handle (int): the ``id<MTLBuffer>`` as an integer. For torch,
++            ``tensor.untyped_storage().data_ptr()`` -- **not** ``data_ptr()``,
++            which is that object pointer with the storage offset added to it.
++        byte_offset (int): where the array starts inside the buffer. For torch,
++            ``tensor.storage_offset() * tensor.element_size()``.
++
++    The buffer is **adopted, not owned**: Taichi will not free it, and the
++    caller has to keep the owning object alive for at least as long as this
++    ndarray, or the allocator underneath may recycle the buffer while a kernel
++    is reading it.
++    """
++
++    def __init__(self, dtype, arr_shape, buffer_handle, byte_offset=0):
++        super().__init__()
++        self.dtype = cook_dtype(dtype)
++        self.arr = impl.get_runtime().prog.create_ndarray_from_metal_buffer(
++            self.dtype, list(arr_shape), int(buffer_handle), int(byte_offset)
++        )
++        self.shape = tuple(self.arr.shape)
++        self.element_type = dtype
++
++    def __del__(self):
++        if impl is not None and impl.get_runtime() is not None and impl.get_runtime().prog is not None:
++            impl.get_runtime().prog.delete_ndarray(self.arr)
++
++    @property
++    def element_shape(self):
++        return ()
++
++    def _fill_by_kernel(self, val):
++        from taichi._kernels import fill_ndarray  # pylint: disable=C0415
++
++        fill_ndarray(self, val)
++
++    def __repr__(self):
++        return "<ti.ndarray (imported MTLBuffer)>"
++
++
+ class NdarrayHostAccessor:
+     def __init__(self, ndarray):
+         dtype = ndarray.element_data_type()
+diff --git a/taichi/program/launch_context_builder.cpp b/taichi/program/launch_context_builder.cpp
+index 02b1ac4..c48ebf7 100644
+--- a/taichi/program/launch_context_builder.cpp
++++ b/taichi/program/launch_context_builder.cpp
+@@ -247,6 +247,10 @@ void LaunchContextBuilder::set_arg_ndarray(const std::vector<int> &arg_id,
+   TI_ASSERT_INFO(arr.shape.size() <= taichi_max_num_indices,
+                  "External array cannot have > {max_num_indices} indices");
+   set_arg_ndarray_impl(arg_id, ptr, arr.shape);
++  if (arr.buffer_offset != 0) {
++    array_byte_offsets[arg_id] = arr.buffer_offset;
++    array_byte_sizes[arg_id] = arr.get_element_size() * arr.get_nelement();
++  }
+ }
+ 
+ void LaunchContextBuilder::set_arg_argpack(const std::vector<int> &arg_id,
+diff --git a/taichi/program/launch_context_builder.h b/taichi/program/launch_context_builder.h
+index 48a657f..bc8012b 100644
+--- a/taichi/program/launch_context_builder.h
++++ b/taichi/program/launch_context_builder.h
+@@ -134,6 +134,17 @@ class LaunchContextBuilder {
+   std::
+       unordered_map<std::vector<int>, void *, hashing::Hasher<std::vector<int>>>
+           array_ptrs;
++  // Byte offset and byte size of each ndarray argument inside its
++  // DeviceAllocation. Empty for every argument whose offset is zero, which is
++  // all of them unless the ndarray was built over an imported buffer that
++  // holds more than the array (see `Ndarray::buffer_offset`). Read only by
++  // the gfx runtime, which is the only backend that can bind at an offset.
++  std::
++      unordered_map<std::vector<int>, uint64, hashing::Hasher<std::vector<int>>>
++          array_byte_offsets;
++  std::
++      unordered_map<std::vector<int>, uint64, hashing::Hasher<std::vector<int>>>
++          array_byte_sizes;
+   std::unordered_map<std::vector<int>,
+                      const ArgPack *,
+                      hashing::Hasher<std::vector<int>>>
+diff --git a/taichi/program/ndarray.h b/taichi/program/ndarray.h
+index b5eeb5a..ab1d0ee 100644
+--- a/taichi/program/ndarray.h
++++ b/taichi/program/ndarray.h
+@@ -48,6 +48,16 @@ class TI_DLL_EXPORT Ndarray {
+                    const DebugInfo &dbg_info = DebugInfo());
+ 
+   DeviceAllocation ndarray_alloc_{kDeviceNullAllocation};
++  // Byte offset of this ndarray's data inside `ndarray_alloc_`.
++  //
++  // Zero for every ndarray Taichi allocates itself, which is why nothing else
++  // reads it. It is non-zero only for one built over an *imported* buffer that
++  // holds more than this array -- torch hands out views of one allocation, so
++  // an imported torch tensor is a slice of the buffer that was imported. Only
++  // the gfx runtime honours it (it binds `alloc.get_ptr(offset)`); a backend
++  // that cannot take an offset should refuse a non-zero one rather than
++  // silently bind the wrong bytes.
++  std::size_t buffer_offset{0};
+   DataType dtype;
+   // Invariant: Since ndarray indices are flattened for vector/matrix, this is
+   // always true:
+diff --git a/taichi/program/program.cpp b/taichi/program/program.cpp
+index 52a6b51..9e6ebda 100644
+--- a/taichi/program/program.cpp
++++ b/taichi/program/program.cpp
+@@ -40,6 +40,7 @@
+ #ifdef TI_WITH_METAL
+ #include "taichi/runtime/program_impls/metal/metal_program.h"
+ #include "taichi/rhi/metal/metal_api.h"
++#include "taichi/rhi/metal/metal_device.h"
+ #endif  // TI_WITH_METAL
+ 
+ #if defined(_M_X64) || defined(__x86_64)
+@@ -400,6 +401,30 @@ Ndarray *Program::create_ndarray(const DataType type,
+   return arr_ptr;
+ }
+ 
++Ndarray *Program::create_ndarray_from_metal_buffer(
++    const DataType type,
++    const std::vector<int> &shape,
++    uint64_t buffer_handle,
++    uint64_t byte_offset) {
++#ifdef TI_WITH_METAL
++  Device *device = program_impl_->get_compute_device();
++  TI_ERROR_IF(device == nullptr,
++              "no compute device: cannot import a Metal buffer");
++  DeviceAllocation devalloc =
++      metal::import_external_mtl_buffer(device, buffer_handle);
++  TI_ERROR_IF(devalloc.device == nullptr,
++              "the compute device is not a Metal device, or the buffer handle "
++              "was null: cannot import a Metal buffer");
++  auto arr = std::make_unique<Ndarray>(devalloc, type, shape);
++  arr->buffer_offset = byte_offset;
++  auto arr_ptr = arr.get();
++  ndarrays_.insert({arr_ptr, std::move(arr)});
++  return arr_ptr;
++#else
++  TI_ERROR("this Taichi was built without the Metal backend");
++#endif
++}
++
+ ArgPack *Program::create_argpack(const DataType dt) {
+   auto pack = std::make_unique<ArgPack>(this, dt);
+   auto pack_ptr = pack.get();
+diff --git a/taichi/program/program.h b/taichi/program/program.h
+index 2573639..87840ad 100644
+--- a/taichi/program/program.h
++++ b/taichi/program/program.h
+@@ -275,6 +275,22 @@ class TI_DLL_EXPORT Program {
+       const ArgPackType *old_ty,
+       const std::string &layout);
+ 
++  /* Constructs an Ndarray over a buffer this process did not allocate.
++   *
++   * `buffer_handle` is an `id<MTLBuffer>` as an integer and `byte_offset` is
++   * where this array starts inside it, which is how torch describes an MPS
++   * tensor: the storage is one MTLBuffer and the tensor is a view at an
++   * offset. The buffer is adopted, not owned -- Taichi will not free it -- so
++   * the caller must keep it alive for as long as the Ndarray is used.
++   *
++   * Only available on a Metal-enabled build with a Metal compute device;
++   * raises otherwise.
++   */
++  Ndarray *create_ndarray_from_metal_buffer(const DataType type,
++                                            const std::vector<int> &shape,
++                                            uint64_t buffer_handle,
++                                            uint64_t byte_offset);
++
+   void delete_ndarray(Ndarray *ndarray);
+ 
+   void delete_argpack(ArgPack *argpack);
+diff --git a/taichi/python/export_lang.cpp b/taichi/python/export_lang.cpp
+index 4715b51..e379c76 100644
+--- a/taichi/python/export_lang.cpp
++++ b/taichi/python/export_lang.cpp
+@@ -448,6 +448,16 @@ void export_lang(py::module &m) {
+           py::arg("layout") = ExternalArrayLayout::kNull,
+           py::arg("zero_fill") = false, py::arg("dbg_info") = DebugInfo(),
+           py::return_value_policy::reference)
++      .def(
++          "create_ndarray_from_metal_buffer",
++          [&](Program *program, const DataType &dt,
++              const std::vector<int> &shape, uint64_t buffer_handle,
++              uint64_t byte_offset) -> Ndarray * {
++            return program->create_ndarray_from_metal_buffer(
++                dt, shape, buffer_handle, byte_offset);
++          },
++          py::arg("dt"), py::arg("shape"), py::arg("buffer_handle"),
++          py::arg("byte_offset") = 0, py::return_value_policy::reference)
+       .def("delete_ndarray", &Program::delete_ndarray)
+       .def(
+           "create_argpack",
+diff --git a/taichi/rhi/metal/metal_device.h b/taichi/rhi/metal/metal_device.h
+index 755836c..b610b0b 100644
+--- a/taichi/rhi/metal/metal_device.h
++++ b/taichi/rhi/metal/metal_device.h
+@@ -582,5 +582,18 @@ class MetalDevice final : public GraphicsDevice {
+   bool is_destroyed_{false};
+ };
+ 
++// Adopt an externally-owned MTLBuffer (torch's, say) as a DeviceAllocation.
++//
++// A thin wrapper around MetalDevice::import_mtl_buffer, and it exists for a
++// linkage reason rather than a design one. `MTLBuffer_id` is `id<MTLBuffer>`
++// in an Objective-C++ translation unit and `struct MTLBuffer_t *` in a plain
++// C++ one (see DEFINE_METAL_ID_TYPE at the top of this header), so the two
++// spellings of `import_mtl_buffer` mangle differently and a .cpp caller would
++// not link against the .mm definition. Taking the buffer as an integer handle
++// gives both sides the same signature.
++//
++// Returns kDeviceNullAllocation if `device` is not a MetalDevice.
++DeviceAllocation import_external_mtl_buffer(Device *device, uint64_t handle);
++
+ }  // namespace metal
+ }  // namespace taichi::lang
+diff --git a/taichi/rhi/metal/metal_device.mm b/taichi/rhi/metal/metal_device.mm
+index a5d72a5..f66716b 100644
+--- a/taichi/rhi/metal/metal_device.mm
++++ b/taichi/rhi/metal/metal_device.mm
+@@ -1228,6 +1228,14 @@ DeviceAllocation MetalDevice::import_mtl_buffer(MTLBuffer_id buffer) {
+   out.alloc_id = reinterpret_cast<uint64_t>(&alloc);
+   return out;
+ }
++DeviceAllocation import_external_mtl_buffer(Device *device, uint64_t handle) {
++  MetalDevice *metal_device = dynamic_cast<MetalDevice *>(device);
++  if (metal_device == nullptr || handle == 0) {
++    return kDeviceNullAllocation;
++  }
++  return metal_device->import_mtl_buffer((MTLBuffer_id)(void *)handle);
++}
++
+ void MetalDevice::dealloc_memory(DeviceAllocation handle) {
+   RHI_ASSERT(handle.device == this);
+   memory_allocs_.release(&get_memory(handle.alloc_id));
+diff --git a/taichi/runtime/gfx/runtime.cpp b/taichi/runtime/gfx/runtime.cpp
+index b596f71..0094d68 100644
+--- a/taichi/runtime/gfx/runtime.cpp
++++ b/taichi/runtime/gfx/runtime.cpp
+@@ -510,7 +510,20 @@ void GfxRuntime::launch_kernel(KernelHandle handle,
+       // We might have to bind a invalid buffer (this is fine as long as
+       // shader don't do anything with it)
+       if (bind.buffer.type == BufferType::ExtArr) {
+-        bindings->rw_buffer(bind.binding, any_arrays.at(bind.buffer.root_id));
++        // An ndarray built over an imported buffer may start part-way into
++        // it -- torch's tensors are views of one allocation -- so bind at the
++        // offset when there is one. The zero-offset case keeps the
++        // DeviceAllocation overload it always used, so nothing changes for an
++        // ndarray Taichi allocated itself.
++        auto offset_it = host_ctx.array_byte_offsets.find(bind.buffer.root_id);
++        if (offset_it != host_ctx.array_byte_offsets.end()) {
++          bindings->rw_buffer(
++              bind.binding,
++              any_arrays.at(bind.buffer.root_id).get_ptr(offset_it->second),
++              host_ctx.array_byte_sizes.at(bind.buffer.root_id));
++        } else {
++          bindings->rw_buffer(bind.binding, any_arrays.at(bind.buffer.root_id));
++        }
+       } else if (bind.buffer.type == BufferType::Args) {
+         bindings->buffer(bind.binding,
+                          args_buffer ? *args_buffer : kDeviceNullAllocation);
