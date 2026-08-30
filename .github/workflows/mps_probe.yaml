@@ -61,6 +61,10 @@ on:
           - capability
           - speed
           - render
+      taichi_wheel_run_id:
+        description: "Run id of a taichi_build.yaml run whose patched wheel to install (blank = stock Taichi)"
+        type: string
+        default: ""
 
 # Queue behind an in-flight run rather than cancelling it, which is where this
 # differs from the test and code-quality workflows and why. Those cancel because
@@ -299,6 +303,11 @@ jobs:
             device: cpu
             friendly: "1"
 
+    # To fetch the patched wheel from another workflow run's artifacts.
+    permissions:
+      contents: read
+      actions: read
+
     env:
       ALGAN_RENDER_DEVICE: ${{ matrix.device }}
       # Empty on the macOS arm on purpose: there the mode has to switch itself
@@ -359,6 +368,42 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
+      # The forked Taichi, when a build run is named. Without it the macOS arm
+      # runs stock Taichi, where the render device refuses to be MPS at all
+      # (`mps_zero_copy.unavailable_reason`) -- so a blank run id is not a
+      # weaker version of this job, it is a different one: it checks that an
+      # unpatched Mac falls back to the CPU instead of drawing a black frame.
+      #
+      # `--no-deps` because the wheel's dependencies are already resolved and
+      # installed by `uv sync`; `--reinstall-package` because it has the same
+      # version as the wheel it replaces, so a plain install would consider the
+      # requirement already satisfied and do nothing.
+      - name: Install the patched Taichi wheel
+        if: ${{ inputs.taichi_wheel_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: taichi-build-macos-arm64
+          run-id: ${{ inputs.taichi_wheel_run_id }}
+          github-token: ${{ github.token }}
+          path: patched-taichi
+
+      - name: Put the patched Taichi in the environment
+        if: ${{ inputs.taichi_wheel_run_id != '' }}
+        run: |
+          set -euo pipefail
+          wheel=$(find patched-taichi -name 'taichi*.whl' | head -1)
+          if [ -z "$wheel" ]; then
+            echo "the build run produced no wheel"
+            exit 1
+          fi
+          echo "installing $wheel"
+          uv pip install --no-deps --reinstall-package taichi "$wheel"
+          uv run python -c "
+          import taichi as ti
+          from taichi.lang._ndarray import ExternalMetalNdarray
+          print('taichi', ti.__version__, 'patched: ExternalMetalNdarray present')
+          "
+
       # Reports the device Algan resolved and whether LaTeX is on PATH. On the
       # macOS arm this is also the first thing that would fail if `mps` were
       # refused outright, which is a different failure from a render that
@@ -382,6 +427,8 @@ jobs:
           print('accumulate dtype:', accumulate_dtype())
           print('reduction dtype :', reduction_index_dtype())
           print('torch mps       :', torch.backends.mps.is_available())
+          from algan.rendering.mps_zero_copy import zero_copy_available
+          print('zero copy       :', zero_copy_available())
           "
 
       # Before the renderer, the kernel spellings it is built out of. Every
