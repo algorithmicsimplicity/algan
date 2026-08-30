@@ -420,17 +420,9 @@ def main() -> int:
     # which is not slow-but-correct for the arena convention -- it is wrong
     # (DESIGN_mps_support.md 1.3b) -- so "0 converted launches" and "the frame
     # is wrong" is one finding rather than two.
-    from algan.rendering.mps_zero_copy import STATS, installed, zero_copy_available
+    from algan.rendering.mps_zero_copy import STATS, installed, report
 
-    print(
-        f"\nzero copy        : available={zero_copy_available()} "
-        f"installed={installed()}"
-    )
-    print(
-        f"                   converted={STATS['converted_launches']} launches "
-        f"({STATS['arguments']} args), "
-        f"passthrough={STATS['passthrough_launches']}"
-    )
+    print("\nzero copy        : " + report().replace("\n", "\n                   "))
 
     # Before the frame verdict, because every verdict below can return early
     # and the attribution table is the thing worth having when one does: a
@@ -457,6 +449,18 @@ def main() -> int:
 
     if not ops_clean:
         print("FAIL: the frame drew, but a torch op disagrees with the CPU")
+        return 1
+
+    # A correct frame is not the whole claim. An argument left on Taichi's
+    # staging path is four copies and an MPS stream sync per launch, and the
+    # render looks exactly the same either way -- so the only way that stays
+    # fixed is for a run to fail when one reappears. Checked last, because a
+    # wrong frame is the more important finding and this must not mask it.
+    if installed() and (STATS["staged_arguments"] or STATS["host_arguments"]):
+        print(
+            "FAIL: the frame drew, but arguments are still crossing the bus "
+            "-- see the zero copy report above"
+        )
         return 1
 
     print(f"OK: rendered {frame_path}")

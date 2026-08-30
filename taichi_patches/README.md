@@ -41,7 +41,7 @@ all, so this removes the mechanism rather than working around it.
 | `program/launch_context_builder.{h,cpp}` | carries the offset and byte size of any argument whose offset is non-zero. Both maps stay empty on every existing path. |
 | `runtime/gfx/runtime.cpp` | binds `alloc.get_ptr(offset)` with a size when there is an offset, and keeps the `DeviceAllocation` overload when there is not — so nothing changes for an ndarray Taichi allocated itself. Metal already honours the offset (`MetalShaderResourceSet::rw_buffer` sets `rsc.buffer.offset = ptr.offset`). |
 | `python/export_lang.cpp` | one pybind. |
-| `python/taichi/lang/_ndarray.py` | `ExternalMetalNdarray`, a thin `Ndarray` subclass so the existing launch path finds `.arr`. |
+| `python/taichi/lang/_ndarray.py` | `ExternalMetalNdarray`, a thin `Ndarray` subclass so the existing launch path finds `.arr`. It takes an `element_shape`, so an array a kernel annotates `ndarray(dtype=vector(4, f16))` imports as the vector-element ndarray Taichi type-checks for rather than being rejected as `f16`. The C++ side needed nothing for that: `Ndarray`'s `DeviceAllocation` constructor already reads the element shape off a tensor `DataType`, which is exactly how `VectorNdarray` builds its own. |
 
 **The offset is not optional.** `DESIGN_mps_zero_copy.md` §3.2 predicted that
 argument packing would leave one imported buffer at offset 0 and let this row
@@ -81,24 +81,43 @@ single-cast forms compile, the nested one does not, and the kernel it took down
 (`sheet_lane_first_owner`) compiles when its argument is narrowed so no cast is
 emitted at all.
 
-**Two diagnostics**, in `rhi/metal/metal_device.mm`, because this bug cost more
-to *find* than to fix:
+**The diagnostics**, in `rhi/metal/metal_device.mm` and
+`runtime/gfx/runtime.cpp`, because this bug cost more to *find* than to fix.
+Every way of failing to produce a shader — an over-wide kernel
+(`DESIGN_mps_support.md` §1.1), an unsupported atomic (§1.2), a codegen bug
+(§1.2b) — ends at `bind_pipeline`'s `assert(p != nullptr)`, which is a
+`SIGABRT` naming a line of `metal_device.mm` and neither the kernel nor the
+reason. So:
 
-* When Metal refuses to compile the generated MSL, print it. Metal reports
-  `program_source:<line>:<col>` against a shader nothing has ever shown you, so
-  a codegen bug arrives as a complaint about source you cannot read. A numbered
-  ±6-line window around every line the message names, not the whole shader — a
-  Taichi megakernel runs to thousands of lines.
-* Refuse to build a pipeline from a nil library or function.
-  `newComputePipelineStateWithFunction:nil` does not return an error, it trips
-  an assertion inside Metal and takes the process down. Every way of failing to
-  produce a shader — an over-wide kernel (`DESIGN_mps_support.md` §1.1), an
-  unsupported atomic (§1.2), a codegen bug (§1.2b) — arrives here as a nil
-  function, so without this check they are one indistinguishable `SIGABRT` with
-  no Python traceback. This turns them into an RHI error.
+* **Name every failure and let none of them be silent.** The first version of
+  this patch guarded the nil library and the nil function, and
+  `DESIGN_mps_support.md` §1.2c is what that missed: `sheet_resolve_shade_arena`
+  reached `bind_pipeline` null having printed *nothing*, because three of the
+  paths to a null pipeline carry no message at all — `newComputePipelineState`
+  returning nil with `err` nil, an exception from the `CompilerMSL`
+  **constructor** (which parses the module, and sits outside
+  `create_compute_pipeline`'s own `try`), and `MetalDevice::create_pipeline`
+  catching that exception, discarding its text, and returning `success` with
+  the out-pointer left null. All three now report, all of them name the task,
+  and `create_pipeline` returns `error` when it produced nothing.
+* **Raise instead of aborting.** `CompiledTaichiKernel`'s constructor dropped
+  the `RhiResult` on the floor and pushed the null pipeline. It now raises,
+  naming the task and the kernel, so a shader the backend cannot build is a
+  Python traceback and one failed test rather than a dead process and a lost
+  suite.
+* **Print the MSL Metal rejected.** Metal reports `program_source:<line>:<col>`
+  against a shader nothing has ever shown you, so a codegen bug arrives as a
+  complaint about source you cannot read. A numbered ±6-line window around
+  every line the message names, not the whole shader — a Taichi megakernel runs
+  to thousands of lines.
+* **`TI_SHADER_DUMP_DIR`**, when set, writes each task's SPIR-V and generated
+  MSL there and every failure says where they went. The window above is no help
+  for the failures that happen *before* MSL exists, and the `.spv` is then the
+  only artifact there is.
 
-That second one is worth having whatever happens to the rest: it is the
-difference between "the process died" and "this kernel would not compile".
+That last group is worth having whatever happens to the rest: it is the
+difference between "the process died" and "this kernel would not compile, and
+here is how far it got".
 
 ## What Algan does without them
 

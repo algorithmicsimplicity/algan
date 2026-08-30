@@ -512,59 +512,87 @@ jobs:
       # encoder. The compile log names each kernel as Taichi starts on it,
       # which is the only way to tell WHICH kernel an abort was inside: the
       # abort itself prints Metal's complaint and no name.
+      #
+      # It also fails when an argument is still crossing the bus -- an ndarray
+      # this Taichi staged through the host rather than binding. That is not a
+      # cosmetic check: staging is four copies and an MPS stream sync per
+      # launch, and it renders the same frame, so nothing else in this job
+      # could notice it coming back.
       - name: Render one frame
         env:
           ALGAN_LOG_TAICHI_COMPILES: "1"
         run: uv run python benchmarks/_mps_render_smoke.py
 
-      # The same scope test.yaml runs, so a pass here means the Apple GPU path
-      # is as covered as the CPU one -- minus tests/fast's pixel comparison,
-      # which skips on macOS for want of an Apple Silicon baseline (see
-      # tests/fast/test_fast_render.py). What it still covers there is that the
-      # kernels compile and the pipeline runs end to end.
-      # Metal answers a kernel it cannot compile with `Assertion failed: (p !=
-      # nullptr), function bind_pipeline` -- a SIGABRT with no kernel name and
-      # no Python traceback, which is how the glossy-prefilter and
-      # deterministic-shadow tests fail on the Apple GPU. The compile log names
-      # each kernel as Taichi starts on it, so the LAST "started" line before
-      # the abort is the culprit. Run over just those tests, because switching
-      # the log on for the whole suite buries everything else.
-      - name: Name the kernel behind any bind_pipeline abort
-        if: runner.os == 'macOS'
+      # Which kernel the Metal backend cannot build a pipeline for, and the
+      # shader it could not build. Until the patched Taichi grew the
+      # diagnostics in taichi_patches/0002, this arrived as `Assertion failed:
+      # (p != nullptr), function bind_pipeline` -- a SIGABRT naming a line of
+      # metal_device.mm, with no kernel, no reason and no Python traceback --
+      # and DESIGN_mps_support.md 1.2c is what that cost. It is now an
+      # exception naming the task, preceded by an RHI error saying how far the
+      # backend got, so this step is about keeping the SHADER: TI_SHADER_DUMP_DIR
+      # writes each task's SPIR-V and generated MSL, which is the only artifact
+      # a failure BEFORE any MSL exists leaves behind.
+      #
+      # Scoped to the three tests that render in-process, because a whole-suite
+      # dump would be gigabytes. test_glossy_prefilter is deliberately not here:
+      # it renders each arm in a subprocess and keeps only `proc.stderr`, so its
+      # compile lines -- which go to stdout -- are discarded before pytest sees
+      # them. No `-x`, so one failure cannot hide the rest.
+      - name: Name the kernel Metal will not build, and keep its shader
+        # `always()` because this is the step that explains a red render above,
+        # and skipping it exactly when the render failed is the wrong way
+        # round. Same for the suite below: this job is a measurement, and one
+        # red step should not cost the whole reading.
+        if: ${{ always() && runner.os == 'macOS' }}
         continue-on-error: true
         env:
           ALGAN_LOG_TAICHI_COMPILES: "1"
-          # Without this the compile lines sit in Python's block buffer when
-          # the abort lands and are lost with the process -- which is exactly
-          # the tail that names the kernel.
+          # Without this the compile lines sit in Python's block buffer if the
+          # process does die, and are lost with it -- which is exactly the tail
+          # that names the kernel.
           PYTHONUNBUFFERED: "1"
+          TI_SHADER_DUMP_DIR: shader-dumps
         run: |
-          # These three run the failing render IN-PROCESS, so the compile log
-          # lands in this step's own output. test_glossy_prefilter is
-          # deliberately NOT here: it renders each arm in a subprocess and
-          # keeps only `proc.stderr`, so its compile lines -- which go to
-          # stdout -- are discarded before pytest ever sees them. No `-x`, so
-          # one abort cannot hide the rest.
-          #
+          mkdir -p shader-dumps
           # `-s` is the part that took two rounds to get right: pytest captures
           # stdout per test and replays it only when the test FAILS, and a
           # SIGABRT is not a failure -- the process is gone and the buffer with
-          # it. Both earlier attempts got Metal's assertion (stderr, unbuffered)
+          # it. Two earlier attempts got Metal's assertion (stderr, unbuffered)
           # and not one compile line.
           uv run pytest -q -s \
             tests/unit_tests/test_deterministic_shadow_opacity.py \
             tests/unit_tests/test_render_truncations.py \
             tests/unit_tests/test_area_light_soft_shadow.py \
             > compile-trace.txt 2>&1 || true
-          echo "last kernels Taichi started on, and the abort:"
-          grep -E 'compile\] started|Assertion failed|error:' compile-trace.txt \
-            | tail -25 || echo "(no compile lines and no abort)"
+          echo "== what the backend said =="
+          grep -E 'compile\] started|cannot build a compute pipeline|could not build a compute pipeline|Assertion failed|program_source|error:' \
+            compile-trace.txt | tail -40 || echo "(nothing matched)"
+          echo "== shaders dumped =="
+          du -sh shader-dumps 2>/dev/null || true
+          ls -S shader-dumps | head -20 || true
+          # Only the megakernels' own artifacts are worth carrying out of the
+          # job; the rest is tens of megabytes of shaders that compiled fine.
+          find shader-dumps -type f \
+            ! -name '*sheet_resolve*' ! -name '*shadow_trace*' -delete || true
+          du -sh shader-dumps 2>/dev/null || true
+
+      # Where the closed-shell frame's two routes disagree, which the seventh
+      # failure (test_closed_shell_attenuates_once_at_authored_opacity) reports
+      # only as a magnitude. Cheap -- two 64x64 frames -- and it runs on both
+      # arms, because the reading is macOS against the Linux control.
+      - name: Localize the closed-shell disagreement
+        if: always()
+        continue-on-error: true
+        run: uv run python -u benchmarks/_mps_closed_shell_probe.py \
+          | tee closed-shell-probe.txt
 
       # `-rf` for a one-line-per-failure summary, and `set -o pipefail` so the
       # tee cannot swallow pytest's exit code -- GitHub runs this with `bash -e`,
       # where a pipeline reports only its last command, so without it a red
       # suite would report green.
       - name: Run the test suite
+        if: always()
         run: |
           set -o pipefail
           uv run pytest tests/unit_tests tests/fast -n 1 -rf \
@@ -596,9 +624,15 @@ jobs:
               | head -40 || true
           fi
           if [ -f compile-trace.txt ]; then
-            echo "== last kernels before any bind_pipeline abort =="
-            grep -E 'compile\] started|Assertion failed|program_source' \
-              compile-trace.txt | tail -12 || true
+            echo "== what the Metal backend refused, and how far it got =="
+            grep -E 'cannot build a compute pipeline|could not build a compute pipeline|Assertion failed|program_source' \
+              compile-trace.txt | tail -20 || true
+          fi
+          if [ -f closed-shell-probe.txt ]; then
+            echo "== closed shell: where the two routes disagree =="
+            sed -n '/assertion window/,/columns differing/p' \
+              closed-shell-probe.txt || true
+            sed -n '/interior:/p' closed-shell-probe.txt || true
           fi
 
       - name: Upload what was rendered
@@ -611,6 +645,8 @@ jobs:
             torch-op-probe.txt
             pytest-output.txt
             compile-trace.txt
+            closed-shell-probe.txt
+            shader-dumps/
             tests/fast/algan_outputs/
             tests/fast/output_errors/
           if-no-files-found: warn

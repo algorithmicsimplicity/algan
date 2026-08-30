@@ -1,8 +1,8 @@
 diff --git a/python/taichi/lang/_ndarray.py b/python/taichi/lang/_ndarray.py
-index 796366a..152b582 100644
+index 796366a..8c1730f 100644
 --- a/python/taichi/lang/_ndarray.py
 +++ b/python/taichi/lang/_ndarray.py
-@@ -283,6 +283,56 @@ class ScalarNdarray(Ndarray):
+@@ -283,6 +283,78 @@ class ScalarNdarray(Ndarray):
          return "<ti.ndarray>"
  
  
@@ -16,13 +16,24 @@ index 796366a..152b582 100644
 +    after (``set_arg_ext_array``).
 +
 +    Args:
-+        dtype (DataType): element type.
-+        arr_shape (Tuple[int]): shape, in elements.
++        dtype (DataType): SCALAR element type -- ``ti.f16``, not
++            ``ti.types.vector(4, ti.f16)``. A vector or matrix element is asked
++            for through ``element_shape``, exactly as ``VectorNdarray`` and
++            ``MatrixNdarray`` build theirs.
++        arr_shape (Tuple[int]): OUTER shape, in elements. For a vector-element
++            array this excludes the element dimensions, so an array a kernel
++            annotates ``ndarray(dtype=vector(4, f16), ndim=2)`` has a 2-tuple
++            here and ``element_shape=(4,)``.
 +        buffer_handle (int): the ``id<MTLBuffer>`` as an integer. For torch,
 +            ``tensor.untyped_storage().data_ptr()`` -- **not** ``data_ptr()``,
 +            which is that object pointer with the storage offset added to it.
 +        byte_offset (int): where the array starts inside the buffer. For torch,
 +            ``tensor.storage_offset() * tensor.element_size()``.
++        element_shape (Tuple[int]): the element's own dimensions, ``()`` for a
++            scalar element. Taichi type-checks an ndarray argument against the
++            annotation's element type, so an array a kernel wants as
++            ``vector(4, f16)`` is rejected outright when it arrives as ``f16``
++            -- which is why this cannot be inferred from the buffer.
 +
 +    The buffer is **adopted, not owned**: Taichi will not free it, and the
 +    caller has to keep the owning object alive for at least as long as this
@@ -30,14 +41,25 @@ index 796366a..152b582 100644
 +    is reading it.
 +    """
 +
-+    def __init__(self, dtype, arr_shape, buffer_handle, byte_offset=0):
++    def __init__(self, dtype, arr_shape, buffer_handle, byte_offset=0, element_shape=()):
 +        super().__init__()
 +        self.dtype = cook_dtype(dtype)
++        self._element_shape = tuple(int(d) for d in element_shape)
++        if self._element_shape:
++            # The same construction VectorNdarray/MatrixNdarray use: the
++            # element type is a tensor type over the scalar dtype, and it is
++            # what `create_ndarray` is handed. `Ndarray`'s DeviceAllocation
++            # constructor reads the element shape back off it, so the C++ side
++            # needs nothing beyond a tensor DataType here.
++            self.element_type = _ti_core.get_type_factory_instance().get_tensor_type(
++                self._element_shape, self.dtype
++            )
++        else:
++            self.element_type = dtype
 +        self.arr = impl.get_runtime().prog.create_ndarray_from_metal_buffer(
-+            self.dtype, list(arr_shape), int(buffer_handle), int(byte_offset)
++            cook_dtype(self.element_type), list(arr_shape), int(buffer_handle), int(byte_offset)
 +        )
 +        self.shape = tuple(self.arr.shape)
-+        self.element_type = dtype
 +
 +    def __del__(self):
 +        if impl is not None and impl.get_runtime() is not None and impl.get_runtime().prog is not None:
@@ -45,7 +67,7 @@ index 796366a..152b582 100644
 +
 +    @property
 +    def element_shape(self):
-+        return ()
++        return self._element_shape
 +
 +    def _fill_by_kernel(self, val):
 +        from taichi._kernels import fill_ndarray  # pylint: disable=C0415

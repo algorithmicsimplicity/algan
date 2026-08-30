@@ -33,16 +33,18 @@ index 8a9a696..352ad4e 100644
  
      return ret;
 diff --git a/taichi/rhi/metal/metal_device.mm b/taichi/rhi/metal/metal_device.mm
-index f66716b..412e22f 100644
+index f66716b..c013938 100644
 --- a/taichi/rhi/metal/metal_device.mm
 +++ b/taichi/rhi/metal/metal_device.mm
-@@ -4,6 +4,13 @@
+@@ -4,9 +4,88 @@
  #include "taichi/rhi/device_capability.h"
  #include "taichi/rhi/impl_support.h"
  
-+// For log_msl_source_context below.
++// For log_msl_source_context and dump_shader_artifact below.
 +#include <algorithm>
 +#include <cctype>
++#include <cstdlib>
++#include <fstream>
 +#include <set>
 +#include <string>
 +#include <vector>
@@ -50,12 +52,111 @@ index f66716b..412e22f 100644
  namespace taichi::lang {
  namespace metal {
  
-@@ -148,9 +155,29 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
++namespace {
++
++// Where a generated shader may be written for inspection, or "" if nobody
++// asked. Metal reports `program_source:<line>:<col>` against MSL that nothing
++// has ever printed, and a shader that fails BEFORE any MSL exists -- SPIR-V
++// spirv-cross declines to parse, say -- leaves even less than that behind. So
++// when TI_SHADER_DUMP_DIR names a directory, both halves go to disk under the
++// task's own name and every failure below says where.
++std::string shader_dump_dir() {
++  const char *dir = std::getenv("TI_SHADER_DUMP_DIR");
++  return dir == nullptr ? std::string() : std::string(dir);
++}
++
++std::string sanitize_shader_name(const std::string &name) {
++  std::string out;
++  for (char c : name) {
++    const bool keep = isalnum((unsigned char)c) || c == '_' || c == '.' ||
++                      c == '-';
++    out.push_back(keep ? c : '_');
++  }
++  return out;
++}
++
++// Write `size` bytes to <TI_SHADER_DUMP_DIR>/<name><suffix>; returns the path
++// written, or "" when no directory was named or the write failed. Never
++// raises: a diagnostic that can take down the thing it instruments is worse
++// than no diagnostic.
++std::string dump_shader_artifact(const std::string &name,
++                                 const char *suffix,
++                                 const void *bytes,
++                                 size_t size) {
++  const std::string dir = shader_dump_dir();
++  if (dir.empty()) {
++    return std::string();
++  }
++  const std::string path = dir + "/" + sanitize_shader_name(name) + suffix;
++  std::ofstream out(path, std::ios::binary);
++  if (!out) {
++    return std::string();
++  }
++  out.write(reinterpret_cast<const char *>(bytes),
++            static_cast<std::streamsize>(size));
++  return out ? path : std::string();
++}
++
++// One line naming the task, how far it got, and where its shader was written.
++// Every "could not build a pipeline" path ends here, because the failure this
++// exists for arrives at `bind_pipeline` as a null pointer with no name
++// attached and the name is most of what a reader needs.
++void log_pipeline_failure(const std::string &name,
++                          const char *stage,
++                          const std::string &detail,
++                          size_t msl_bytes,
++                          const std::string &dump_path) {
++  std::string report = "cannot build a compute pipeline for task '" + name +
++                       "': " + stage;
++  if (!detail.empty()) {
++    report += ": " + detail;
++  }
++  if (msl_bytes != 0) {
++    report += " [msl " + std::to_string(msl_bytes) + " bytes]";
++  }
++  if (!dump_path.empty()) {
++    report += " [dumped to " + dump_path + "]";
++  }
++  RHI_LOG_ERROR(report.c_str());
++}
++
++}  // namespace
++
+ #include "taichi/rhi/metal/metal_rhi_enum_mappings.h"
+ 
+ MetalMemory::MetalMemory(MTLBuffer_id mtl_buffer, bool can_map)
+@@ -111,6 +190,12 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+                                                       const std::string &name) {
+   RHI_ASSERT((size_t)spv_data % sizeof(uint32_t) == 0);
+   RHI_ASSERT(spv_size % sizeof(uint32_t) == 0);
++  // Before anything can throw. The CompilerMSL constructor parses the module,
++  // and a parse error there propagates out of this function to a caller that
++  // used to swallow it -- so the SPIR-V has to be on disk already or the one
++  // failure with nothing else to show for it also has nothing to show.
++  const std::string spv_dump =
++      dump_shader_artifact(name, ".spv", spv_data, spv_size);
+   spirv_cross::CompilerMSL compiler(spv_data, spv_size / sizeof(uint32_t));
+   spirv_cross::CompilerMSL::Options options{};
+   options.enable_decoration_binding = true;
+@@ -140,17 +225,37 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+   try {
+     msl = compiler.compile();
+   } catch (const spirv_cross::CompilerError &e) {
+-    std::array<char, 4096> msgbuf;
+-    snprintf(msgbuf.data(), msgbuf.size(), "(spirv-cross compiler) %s: %s",
+-             name.c_str(), e.what());
+-    RHI_LOG_ERROR(msgbuf.data());
++    log_pipeline_failure(name, "spirv-cross would not lower it to MSL",
++                         e.what(), 0, spv_dump);
+     return nullptr;
    }
++  const std::string msl_dump =
++      dump_shader_artifact(name, ".metal", msl.data(), msl.size());
  
    MTLLibrary_id mtl_library = device.get_mtl_library(msl);
 +  if (mtl_library == nil) {
-+    RHI_LOG_ERROR("cannot build a compute pipeline: the shader did not compile");
++    log_pipeline_failure(name, "Metal would not compile the MSL", "",
++                         msl.size(), msl_dump);
 +    return nullptr;
 +  }
  
@@ -72,15 +173,69 @@ index f66716b..412e22f 100644
 +  // unsupported atomic, a codegen bug) arrives here as a nil function, so
 +  // without this check they are all one SIGABRT with no Python traceback.
 +  if (mtl_function == nil) {
-+    RHI_LOG_ERROR(
-+        "cannot build a compute pipeline: the shader has no 'main0' entry "
-+        "point (it did not compile)");
++    log_pipeline_failure(name, "the library has no 'main0' entry point", "",
++                         msl.size(), msl_dump);
 +    return nullptr;
 +  }
  
    MTLComputePipelineState_id mtl_compute_pipeline_state = nil;
    {
-@@ -1471,6 +1498,65 @@ MetalDevice::get_mtl_function(MTLLibrary_id mtl_lib,
+@@ -159,14 +264,17 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+         [device.mtl_device() newComputePipelineStateWithFunction:mtl_function
+                                                            error:&err];
+ 
++    // Reported whether or not Metal filled in `err`. It usually does; when it
++    // does not, the original code returned nullptr in total silence, and that
++    // silence is indistinguishable at `bind_pipeline` from every other way of
++    // failing to produce a shader.
+     if (mtl_compute_pipeline_state == nil) {
+-      if (err != nil) {
+-        std::array<char, 4096> msgbuf;
+-        snprintf(msgbuf.data(), msgbuf.size(),
+-                 "cannot create compute pipeline state: %s (code=%d)",
+-                 err.localizedDescription.UTF8String, (int)err.code);
+-        RHI_LOG_ERROR(msgbuf.data());
+-      }
++      log_pipeline_failure(
++          name, "Metal would not build a pipeline state from 'main0'",
++          err != nil ? std::string(err.localizedDescription.UTF8String) +
++                           " (code=" + std::to_string((int)err.code) + ")"
++                     : std::string("Metal reported no error"),
++          msl.size(), msl_dump);
+       return nullptr;
+     }
+   }
+@@ -1319,10 +1427,29 @@ RhiResult MetalDevice::create_pipeline(Pipeline **out_pipeline,
+                                        std::string name,
+                                        PipelineCache *cache) noexcept {
+   RHI_ASSERT(src.type == PipelineSourceType::spirv_binary);
++  // Everything below used to be silent, and that is why an unbuildable kernel
++  // reached `bind_pipeline` as a bare null pointer: the catch swallowed the
++  // exception's text, and returning `success` with `*out_pipeline` left null
++  // meant the caller had nothing to test either. Both halves are reported now,
++  // and the failure is returned as one.
++  *out_pipeline = nullptr;
+   try {
+     *out_pipeline = MetalPipeline::create_compute_pipeline(
+         *this, (const uint32_t *)src.data, src.size, name);
+   } catch (const std::exception &e) {
++    // The spirv-cross MSL *constructor* runs outside create_compute_pipeline's
++    // own try -- it parses the module, and a module it cannot parse throws
++    // from there -- so this is the only place that failure is visible at all.
++    log_pipeline_failure(name, "the backend raised while building it", e.what(),
++                         0, std::string());
++    return RhiResult::error;
++  } catch (...) {
++    log_pipeline_failure(name, "the backend raised a non-std exception while "
++                               "building it",
++                         "", 0, std::string());
++    return RhiResult::error;
++  }
++  if (*out_pipeline == nullptr) {
+     return RhiResult::error;
+   }
+   return RhiResult::success;
+@@ -1471,6 +1598,65 @@ MetalDevice::get_mtl_function(MTLLibrary_id mtl_lib,
    return mtl_function;
  }
  
@@ -146,7 +301,7 @@ index f66716b..412e22f 100644
  MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
    MTLLibrary_id mtl_library = nil;
    NSError *err = nil;
-@@ -1482,11 +1568,19 @@ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
+@@ -1482,11 +1668,19 @@ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
  
    if (mtl_library == nil) {
      if (err != nil) {
@@ -167,3 +322,24 @@ index f66716b..412e22f 100644
      }
      return nil;
    }
+diff --git a/taichi/runtime/gfx/runtime.cpp b/taichi/runtime/gfx/runtime.cpp
+index 0094d68..6ab34e0 100644
+--- a/taichi/runtime/gfx/runtime.cpp
++++ b/taichi/runtime/gfx/runtime.cpp
+@@ -250,6 +250,16 @@ CompiledTaichiKernel::CompiledTaichiKernel(const Params &ti_params)
+                                    spirv_bins[i].size() * sizeof(uint32_t)};
+     auto [vp, res] = ti_params.device->create_pipeline_unique(
+         source_desc, task_attribs[i].name, ti_params.backend_cache);
++    // `res` used to be dropped on the floor and a null pipeline pushed in its
++    // place. Nothing looked at it again until `bind_pipeline`, whose
++    // `RHI_ASSERT(p != nullptr)` is a bare `assert` -- so a kernel the backend
++    // could not build took the process down with a SIGABRT naming a line of
++    // metal_device.mm and neither the kernel nor the reason. Raising here
++    // names both and leaves a Python traceback behind.
++    TI_ERROR_IF(res != RhiResult::success || vp == nullptr,
++                "the backend could not build a compute pipeline for task '{}' "
++                "of kernel '{}' (the RHI error above says how far it got)",
++                task_attribs[i].name, ti_kernel_attribs_.name);
+     pipelines_.push_back(std::move(vp));
+   }
+ }
