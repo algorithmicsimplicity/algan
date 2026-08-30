@@ -207,8 +207,7 @@ def _make_adapter(name: str, angle_params: tuple[str, ...]):
         super(adapter, self).__init__(*args, **_to_manim_stroke_width(kwargs))
 
     converted = [
-        "``stroke_width`` is in Algan's unit, half Manim's for the same "
-        "visual weight"
+        "``stroke_width`` is in Algan's unit, half Manim's for the same visual weight"
     ]
     if angle_params:
         listed = ", ".join(f"``{p}``" for p in angle_params)

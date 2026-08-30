@@ -80,13 +80,23 @@ def test_animated_boundary_layers_are_registered():
     assert invisible_geometry(boundary) == []
 
 
-def test_animated_boundary_half_width_conversion():
-    """Algan stores half-widths where Manim's public API takes full strokes."""
+def test_animated_boundary_width_is_in_algan_units():
+    """``max_stroke_width`` is Algan's unit, and reaches the layers verbatim.
+
+    It used to be Manim's and be halved on the way in, which made
+    ``AnimatedBoundary`` the one place in the root namespace where a stroke
+    width meant something different from every other. Manim means twice this
+    number by the same argument; ``algan.manim`` is where that lives.
+    """
     source = _spawned(algan.Square(color=algan.TRANSPARENT, stroke_width=0))
     boundary = algan.AnimatedBoundary(source, max_stroke_width=7)
 
-    assert boundary.max_stroke_width == 14
     assert boundary.max_stroke_width == 7
+    widest = max(
+        float(layer.stroke_width.reshape(-1).max())
+        for layer in boundary.boundary_copies
+    )
+    assert widest == 7
 
 
 def test_paragraph_lines_are_registered():
