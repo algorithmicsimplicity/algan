@@ -65,7 +65,7 @@ class ModifiedProtectedAttributeError(AlganError, ValueError):
     code = "ALGAN_MODIFIED_PROTECTED_ATTRIBUTE"
 
 
-class TranscriptAudioMismatchError(AlganError, ValueError):
+class AudioTranscriptMismatchError(AlganError, ValueError):
     """Raised when audio duration and transcript mismatch during alignment."""
 
     code = "ALGAN_TRANSCRIPT_AUDIO_MISMATCH"
@@ -139,7 +139,7 @@ __all__ = [
     "UnsupportedFeatureError",
     "HierarchyError",
     "ModifiedProtectedAttributeError",
-    "TranscriptAudioMismatchError",
+    "AudioTranscriptMismatchError",
     "InvalidColorError",
     "ContextReuseError",
     "AlganWarning",

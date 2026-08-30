@@ -283,7 +283,7 @@ class Animatable:
         if not hasattr(self, "animatable_attrs"):
             self.animatable_attrs = []
 
-        self.generate_animatable_attr_set_get_methods()
+        self._generate_animatable_attr_set_get_methods()
 
         if scene is None:
             scene = active_scene_for_new_mob()
@@ -631,17 +631,12 @@ class Animatable:
             if event.caller is self:
                 self.remove_updater(i)
 
-    def set_to_retroactive(self):
-        """Rewind authoring time to this Mob's retroactive timestamp.
+    def _set_to_retroactive(self):
+        """Internal: rewind authoring time to this Mob's retroactive timestamp.
 
-        Animation recorded after this call is inserted *earlier* in the video,
-        which is how you go back and add something you only realised was needed
-        later. Prefer the :meth:`~.Animatable.retroactive` context manager, which
-        restores the timestamp even if the block raises.
-
-        Animation
-        ---------
-        Not animated: this moves the authoring cursor, not the Mob.
+        Animation recorded after this call is inserted *earlier* in the video.
+        The public spelling is the :meth:`~.Animatable.retroactive` context
+        manager, which restores the timestamp even if the block raises.
 
         Returns
         -------
@@ -654,14 +649,10 @@ class Animatable:
         self.previous_retroactive_time = previous_time
         return self
 
-    def set_to_current(self):
-        """Return authoring time to where it was before rewinding.
+    def _set_to_current(self):
+        """Internal: return authoring time to where it was before rewinding.
 
-        The counterpart of :meth:`~.Animatable.set_to_retroactive`.
-
-        Animation
-        ---------
-        Not animated: this moves the authoring cursor, not the Mob.
+        The counterpart of :meth:`~.Animatable._set_to_retroactive`.
 
         Returns
         -------
@@ -692,11 +683,11 @@ class Animatable:
             with mob.retroactive():
                 mob.color = BLUE  # happens earlier in the video
         """
-        self.set_to_retroactive()
+        self._set_to_retroactive()
         try:
             yield self
         finally:
-            self.set_to_current()
+            self._set_to_current()
 
     @property
     def animation_manager(self):
@@ -728,7 +719,7 @@ class Animatable:
             self.animation_manager.context.record_funcs and self.is_spawned_in_subtree()
         )
 
-    def generate_animatable_attr_set_get_methods(self):
+    def _generate_animatable_attr_set_get_methods(self):
         """Internal: install ``set_<attr>`` / ``get_<attr>`` helpers on this object.
 
         Gives every animatable attribute a matching pair of accessors, so a
@@ -740,7 +731,7 @@ class Animatable:
 
             def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
                 if kwargs:
-                    # ``mob.move(RIGHT, run_time=2)`` lands here via
+                    # ``mob.move(RIGHT, duration=2)`` lands here via
                     # move -> move_to -> set_location. Catch the Manim timing
                     # idiom with a message that names the fix; re-raise anything
                     # else so genuine typos keep failing.
@@ -938,7 +929,7 @@ class Animatable:
         ts = context.timespan
         # Reached only for mobs that are on screen (themselves or through a
         # descendant), so the edit always spans the context's animation.
-        nt = ts.current_time + context.run_time_unit
+        nt = ts.current_time + context.duration_unit
         ts.original_end = max(ts.original_end, nt)
         timeline.modify_attribute_and_record(
             key, self.id, where, inds, value, ts.get_time(nt)
@@ -1346,7 +1337,7 @@ class Animatable:
                 v = defaultdict(list)
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
-        clone.generate_animatable_attr_set_get_methods()
+        clone._generate_animatable_attr_set_get_methods()
         if clone_data:
             for attr in self.animatable_attrs:
                 setattr(clone, attr, getattr(self, attr, None))

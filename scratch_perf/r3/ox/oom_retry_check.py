@@ -143,7 +143,7 @@ def build_scene():
     with Off():
         light = PointLight().spawn()
         blocks = [
-            Cube(side_length=0.5).move(RIGHT * ((i % 8) - 4) + UP * (i // 8)).spawn()
+            Cube(size=0.5).move(RIGHT * ((i % 8) - 4) + UP * (i // 8)).spawn()
             for i in range(24)
         ]
     with Sync(run_time=5):

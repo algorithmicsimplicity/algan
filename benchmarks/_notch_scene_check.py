@@ -932,7 +932,7 @@ def _row_split_demo(stats, quality, memory_mb):
             # Orbiting the camera is what makes the DICE levels move, and the
             # levels are what re-lay the rows. Driven from the camera rather
             # than the pack because a packed grid's location is per point.
-            Scene.get_camera().orbit(25, RIGHT, about_point=ORIGIN)
+            Scene.get_camera().orbit(25, RIGHT, about=ORIGIN)
             with _Spy(stats):
                 scene.save_video(
                     str(REPO / "algan_outputs" / "_notch_row_split.mp4"),

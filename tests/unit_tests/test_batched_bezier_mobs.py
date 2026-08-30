@@ -34,14 +34,14 @@ def test_direct_bezier_batch_matches_object_batch():
     color = torch.tensor([0.2, 0.4, 0.6, 1.0, 0.0])
     with Off(record_funcs=False, record_attr_modifications=False):
         individual = [
-            BezierCircuitCubic(path, color=color, border_width=2, add_to_scene=False)
+            BezierCircuitCubic(path, color=color, stroke_width=2, add_to_scene=False)
             for path in paths
         ]
         expected = batch_mobs(individual, add_to_scene=False)
         actual = BezierCircuitCubic.from_batches(
             paths,
             color=color,
-            border_width=2,
+            stroke_width=2,
             add_to_scene=False,
         )
 
@@ -50,8 +50,8 @@ def test_direct_bezier_batch_matches_object_batch():
         "basis",
         "color",
         "opacity",
-        "border_width",
-        "border_color",
+        "stroke_width",
+        "stroke_color",
     ):
         assert torch.equal(getattr(actual, attr), getattr(expected, attr))
     assert torch.equal(actual.control_points.location, expected.control_points.location)
@@ -75,8 +75,8 @@ def test_direct_bezier_batch_matches_object_batch():
         "colors",
         "next_segment_inds",
         "normals",
-        "border_width",
-        "border_color",
+        "stroke_width",
+        "stroke_color",
         "mob_center",
         "basis1",
         "basis2",
@@ -92,8 +92,8 @@ def test_border_texture_grid_is_independent_from_fill_texture_grid():
     mob = BezierCircuitCubic(
         _square(0.0),
         color=WHITE,
-        border_color=YELLOW,
-        border_width=8,
+        stroke_color=YELLOW,
+        stroke_width=8,
         texture_grid_width=2,
         add_to_scene=False,
     )
@@ -105,17 +105,17 @@ def test_border_texture_grid_is_independent_from_fill_texture_grid():
     primitive = mob.get_render_primitives()
 
     assert torch.allclose(primitive.colors, fill_colors.unsqueeze(-3))
-    assert torch.allclose(primitive.border_color, border_colors.unsqueeze(-3))
-    assert torch.allclose(mob.border_color, border_colors)
+    assert torch.allclose(primitive.stroke_color, border_colors.unsqueeze(-3))
+    assert torch.allclose(mob.stroke_color, border_colors)
 
     # The circuit's ordinary color remains the fill API and must not overwrite
     # the independently-authored border child.
     mob.color = YELLOW
     assert torch.allclose(mob.border_texture_points.color, border_colors)
 
-    # The compatibility-facing border_color property now aliases the border
+    # The compatibility-facing stroke_color property now aliases the border
     # texture child, so a uniform write still works as it did before.
-    mob.border_color = RED
+    mob.stroke_color = RED
     assert torch.allclose(mob.texture_points.color, YELLOW.expand(1, 4, 5))
     assert torch.allclose(mob.border_texture_points.color, RED.expand(1, 4, 5))
 

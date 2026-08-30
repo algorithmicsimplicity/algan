@@ -4,7 +4,7 @@ Unlike :class:`~algan.mobs.surfaces.surface.Surface` (which is parametric -- a
 ``coord_function`` sampled on a regular UV grid), :class:`TriangleMesh` renders
 an arbitrary triangle soup: explicit per-corner positions, normals and UVs plus
 an optional texture map. This is the geometry container that
-:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` builds each imported mesh node
+:class:`~algan.mobs.three_d_models.model_mob.Model3D` builds each imported mesh node
 from, but it is usable on its own for any hand-built or procedurally generated
 mesh.
 
@@ -480,8 +480,8 @@ class TriangleMesh(Mob):
             primitive.mesh_ids = shells
         # An imported model honours the shadow flags like anything else. The
         # declaration is resolved through the hierarchy, so setting it on the
-        # ThreeDModelMob covers the TriangleMesh children it holds.
-        primitive.declare_shadow_flags(*self.resolved_shadow_flags())
+        # Model3D covers the TriangleMesh children it holds.
+        primitive.declare_shadow_flags(*self._resolved_shadow_flags())
         return primitive
 
     def triangle_shell_ids(self):

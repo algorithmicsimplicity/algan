@@ -95,19 +95,19 @@ def build_acts_1_2():
 
     with Seq():
         title.spawn()
-        with Lag(0.14, run_time=1.3):
+        with Lag(0.14, duration=1.3):
             for mob in lit:
                 mob.spawn()
-        with Sync(run_time=0.4):
+        with Sync(duration=0.4):
             lit_labels.spawn()
-        with Lag(0.14, run_time=1.3):
+        with Lag(0.14, duration=1.3):
             for mob in exotic:
                 mob.spawn()
-        with Sync(run_time=0.4):
+        with Sync(duration=0.4):
             exotic_labels.spawn()
 
     with Seq():
-        with Sync(run_time=2.0):
+        with Sync(duration=2.0):
             lit[2].shininess = 12
             lit[3].roughness = 0.85
             lit[3].metalness = 0.15
@@ -118,7 +118,7 @@ def build_acts_1_2():
                 mob.rotate(150, UP)
             for mob in exotic:
                 mob.rotate(-150, UP)
-        with Sync(run_time=1.4):
+        with Sync(duration=1.4):
             key_light.move(RIGHT * 9)
             lit[3].roughness = 0.2
             lit[3].metalness = 0.75

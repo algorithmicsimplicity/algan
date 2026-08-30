@@ -245,9 +245,9 @@ class ImageMobjectFromCamera(ImageMobject):
         if "buff" in config:
             config["buffer"] = config.pop("buff")
         if "stroke_width" in config:
-            config["border_width"] = config.pop("stroke_width") / 2
-        if "stroke_color" in config:
-            config["border_color"] = config.pop("stroke_color")
+            # Manim units in, Algan units out -- half, as everywhere on this
+            # boundary.
+            config["stroke_width"] = config["stroke_width"] / 2
         # The frame is added as a child but Algan renders registered actors
         # rather than walking the hierarchy, so it has to join the scene to be
         # drawn at all.

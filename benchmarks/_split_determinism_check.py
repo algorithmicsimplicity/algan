@@ -168,7 +168,7 @@ def _build_scene(mode: str) -> None:
         ).spawn(animate=False)
 
         # The reflective floor: this is where the reported differences sit.
-        ground = Square(side_length=14).set_material(
+        ground = Square(size=14).set_material(
             material(
                 GRAY,
                 roughness=0.02 if stress else 0.08,
@@ -178,11 +178,11 @@ def _build_scene(mode: str) -> None:
         ground.rotate(-90, RIGHT).move(DOWN * 1.6)
 
         # One PBR cube, two plain ones, so the mixed batch really is mixed.
-        cube_pbr = Cube(side_length=1.1).set_material(material(RED))
+        cube_pbr = Cube(size=1.1).set_material(material(RED))
         cube_pbr.move(LEFT * 2.2 + UP * 0.2)
-        cube_a = Cube(side_length=1.0).set_material(MeshBasicMaterial(color=YELLOW))
+        cube_a = Cube(size=1.0).set_material(MeshBasicMaterial(color=YELLOW))
         cube_a.move(UP * 0.1)
-        cube_b = Cube(side_length=0.9).set_material(MeshBasicMaterial(color=BLUE))
+        cube_b = Cube(size=0.9).set_material(MeshBasicMaterial(color=BLUE))
         cube_b.move(RIGHT * 2.2 + UP * 0.05)
 
         radius_a, radius_b = (1.75, 1.5) if stress else (0.62, 0.52)
@@ -203,7 +203,7 @@ def _build_scene(mode: str) -> None:
 
     # The reported differences GROW as the reflected cubes rotate, so the
     # animation has to move what the floor reflects.
-    with Sync(run_time=FRAMES / FPS):
+    with Sync(duration=FRAMES / FPS):
         cube_pbr.rotate(150, UP)
         cube_a.rotate(-120, UP)
         cube_b.rotate(100, RIGHT)
@@ -327,7 +327,7 @@ def _render(tag: str, mode: str) -> np.ndarray:
         _build_scene(mode)
         scene.save_video(
             path,
-            # MD unmodified: its default super_sampling_anti_aliasing supersamples, which
+            # MD unmodified: its default supersampling supersamples, which
             # multiplies both the ray count and the continuation-pool pressure.
             video_settings=MD.set(resolution=RES, frames_per_second=FPS),
             overwrite=True,

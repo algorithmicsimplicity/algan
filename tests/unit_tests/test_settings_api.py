@@ -347,8 +347,8 @@ def test_set_rejects_a_settings_object_of_the_wrong_section():
 ALIASES = (
     ("fps", "frames_per_second", 24),
     ("FPS", "frames_per_second", 48),
-    ("ssaa", "super_sampling_anti_aliasing", 3),
-    ("SSAA", "super_sampling_anti_aliasing", 4),
+    ("ssaa", "supersampling", 3),
+    ("SSAA", "supersampling", 4),
 )
 
 
@@ -383,7 +383,7 @@ def test_an_alias_is_a_spelling_rather_than_a_second_field():
     assert "fps" not in section.to_dict()
     assert "ssaa" not in section.to_dict()
     assert section.to_dict()["frames_per_second"] == 24
-    assert section.to_dict()["super_sampling_anti_aliasing"] == 3
+    assert section.to_dict()["supersampling"] == 3
     assert {field.name for field in dataclasses.fields(section)}.isdisjoint(
         {"fps", "FPS", "ssaa", "SSAA"}
     )
@@ -396,7 +396,7 @@ def test_an_alias_is_a_spelling_rather_than_a_second_field():
 
 
 def test_an_alias_is_validated_like_the_field_it_names():
-    with pytest.raises(AlganConfigurationError, match="super_sampling_anti_aliasing"):
+    with pytest.raises(AlganConfigurationError, match="supersampling"):
         VideoSettings((16, 16), ssaa=0)
     with pytest.raises(AlganConfigurationError, match="frames_per_second"):
         VideoSettings((16, 16)).set(fps=0)

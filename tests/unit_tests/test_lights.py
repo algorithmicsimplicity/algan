@@ -57,7 +57,7 @@ def test_intensity_assignment_records_an_animation():
         with Seq():
             light.spawn(animate=False)
             start = scene.animation_manager.context.timespan.current_time
-            with Sync(run_time=2.0):
+            with Sync(duration=2.0):
                 light.intensity = 3
         end = start + 2.0
 
@@ -149,7 +149,7 @@ def test_animated_intensity_reaches_the_renderer_per_frame():
         with Seq():
             light.spawn(animate=False)
             start = scene.animation_manager.context.timespan.current_time
-            with Sync(run_time=2.0):
+            with Sync(duration=2.0):
                 light.intensity = 3
 
         fps = scene.frames_per_second
@@ -185,7 +185,7 @@ def test_hemisphere_ground_colour_tracks_animated_intensity_exactly_once():
         )
         with Seq():
             light.spawn(animate=False)
-            with Sync(run_time=2.0):
+            with Sync(duration=2.0):
                 light.intensity = 4
 
         fps = scene.frames_per_second

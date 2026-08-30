@@ -36,8 +36,8 @@ def test_grouped_bezier_stays_on_its_source_device():
         colors=torch.zeros((1, 1, 1, 5)),
         next_segment_inds=torch.zeros((1, 1, 1, 1), dtype=torch.long),
         normals=torch.zeros((1, 1, 3)),
-        border_width=torch.zeros((1, 1, 1)),
-        border_color=torch.zeros((1, 1, 5)),
+        stroke_width=torch.zeros((1, 1, 1)),
+        stroke_color=torch.zeros((1, 1, 5)),
         glow_radius=torch.zeros((1, 1, 1)),
         mob_center=torch.zeros((1, 1, 3)),
         grid_width=torch.ones((1, 1, 1)),
@@ -57,7 +57,7 @@ def test_render_state_snapshot_uses_camera_source_device():
     camera = SimpleNamespace(
         location=torch.zeros((2, 1, 3)),
         screen=SimpleNamespace(location=torch.zeros((2, 1, 3))),
-        get_render_screen_basis=lambda: torch.eye(3).expand(2, -1, -1),
+        _get_render_screen_basis=lambda: torch.eye(3).expand(2, -1, -1),
     )
     # frames_per_second converts the frame window to times for the light
     # lifespan filter (lights outside the window are left out of the snapshot).

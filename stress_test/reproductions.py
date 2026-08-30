@@ -179,11 +179,11 @@ def f2b():
     )
 
 
-@check("F2c", "NumericDisplay counts inside an updater")
+@check("F2c", "DecimalNumber counts inside an updater")
 def f2c():
     def build():
         with Scene(video_settings=SMOKE_TEST):
-            display = NumericDisplay(0.0).spawn()
+            display = DecimalNumber(0.0).spawn()
             tracker = ValueTracker(0).spawn()
             display.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))
             tracker.set_value(5)
@@ -246,8 +246,8 @@ def f4():
         with Seq():
             if _raised(sphere.spawn):
                 broken.append("spawn()")
-            if _raised(lambda: Sync(run_time=2.0)):
-                broken.append("Sync(run_time=)")
+            if _raised(lambda: Sync(duration=2.0)):
+                broken.append("Sync(duration=)")
             if _raised(lambda: sphere.move([2, 0, 0])):
                 broken.append("Mob.move()")
     return bool(broken), "unsupported: " + (", ".join(broken) or "nothing")
@@ -358,7 +358,7 @@ def f9():
 @check("F10", "Seq(lag_ratio=...) explains itself without naming an internal class")
 def f10():
     exc = _raised(lambda: Seq(lag_ratio=0.5))
-    good = isinstance(exc, TypeError) and "Seq is Lag with lag_ratio=1" in str(exc)
+    good = isinstance(exc, TypeError) and "Seq is Lag with ratio=1" in str(exc)
     return not good, f"{type(exc).__name__}: {str(exc)[:110] if exc else 'accepted'}"
 
 

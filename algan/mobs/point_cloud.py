@@ -85,7 +85,7 @@ class PMobject(Group):
     _morph_family = "aggregate"
     draws_descendants = True
 
-    def morph_soup_parts(self):
+    def _morph_soup_parts(self):
         return self._primitive_children()
 
     def __init__(
@@ -238,7 +238,7 @@ class PMobject(Group):
         if len(self.rgbas):
             self.rgbas[:] = _as_rgba(color).to(self.rgbas.device)
         if family:
-            for mob in self.mobs:
+            for mob in self.children:
                 if isinstance(mob, PMobject):
                     mob.set_color(color, family=True)
         return self._rebuild_geometry()
@@ -258,7 +258,7 @@ class PMobject(Group):
         if old_radius != self.point_radius:
             self._rebuild_geometry()
         if family:
-            for mob in self.mobs:
+            for mob in self.children:
                 if isinstance(mob, PMobject):
                     mob.set_stroke_width(width, family=True)
         return self
@@ -340,7 +340,7 @@ class PMobject(Group):
     def ingest_submobjects(self):
         point_arrays = [self.points]
         rgba_arrays = [self.rgbas]
-        for mob in self.mobs:
+        for mob in self.children:
             if isinstance(mob, PMobject):
                 point_arrays.append(mob.points)
                 rgba_arrays.append(mob.rgbas)
@@ -433,7 +433,7 @@ class PGroup(PMobject):
 
     def fade_to(self, color, alpha, family=True):
         if family:
-            for mob in self.mobs:
+            for mob in self.children:
                 mob.fade_to(color, alpha, family=True)
         return self
 

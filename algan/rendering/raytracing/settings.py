@@ -1799,7 +1799,7 @@ def set_sheet_shell_ceiling_kernel(enabled):
 
 
 # Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
-# ``super_sampling_anti_aliasing`` times the output resolution and box-filtering back down
+# ``supersampling`` times the output resolution and box-filtering back down
 # (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE
 # PIXEL SQUARE its primitive covers, and the resolve folds that into the
 # fragment's alpha. One shade per fragment, coverage resolved continuously.
@@ -1815,12 +1815,12 @@ def set_sheet_shell_ceiling_kernel(enabled):
 # coverage cannot express analytically -- shadow-edge visibility and the image
 # seen inside a reflection or refraction -- are handled by taking N sub-pixel
 # samples of those specific queries (analytic_aa_secondary_samples). Measured
-# against the supersampled super_sampling_anti_aliasing=2 default across
+# against the supersampled supersampling=2 default across
 # eleven feature-specific scenes, analytic AA at aa=1 is better on eight and
 # 7-9% short on three (specular highlights, a flat mirror's reflected image, a
 # lens's refracted image), where the residual is the CONTENT of a minified
 # secondary image. Read DESIGN_analytic_aa.md ss19 before dropping
-# ``super_sampling_anti_aliasing`` to 1; what is still untouched is texture
+# ``supersampling`` to 1; what is still untouched is texture
 # minification (no mip chain).
 analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
@@ -1840,7 +1840,7 @@ analytic_aa_bez = env_flag("ALGAN_ANALYTIC_AA_BEZ", True)
 # lattice, int64 edge functions and a top-left fill rule) partitions eight
 # sub-pixel samples among the triangles covering a pixel, the seam rule sums the
 # disjoint sub-areas of one object, and per-sample occlusion keeps a mesh's back
-# faces out of its own silhouette. Against a super_sampling_anti_aliasing=4
+# faces out of its own silhouette. Against a supersampling=4
 # reference it beats the plain aliased render on every config -- a subdivided
 # sphere, a translucent one, sub-pixel rods, a slanted quad -- at 40-78% less
 # error, with essentially the reference's own edge gradation (588 distinct edge
@@ -2342,7 +2342,7 @@ def set_bez_bvh_split(enabled):
 # of one: each is the primary ray re-generated through a different sub-pixel
 # position and re-intersected with that hit's own plane, so the reflected image
 # is sampled at N sub-pixel positions, each carrying 1/N of the throughput. At
-# N=4 those positions are the 2x2 grid super_sampling_anti_aliasing=2
+# N=4 those positions are the 2x2 grid supersampling=2
 # supersamples at, which is the arm this is meant to match.
 #
 # The split happens ONCE, at the primary hit; deeper bounces continue as single
@@ -2932,13 +2932,13 @@ def set_fragment_shading(enabled):
 
 # What a RECT AREA LIGHT's shadow rays integrate. Each of its packed rows
 # stands for one cell of its emitter grid, but nothing downstream knew a cell
-# existed: RectAreaLight.build_aux left the shadow-radius column (packed
+# existed: RectAreaLight.__build_aux left the shadow-radius column (packed
 # column 11) at zero, so every row took the single-hard-ray path in both
 # shadow fans and the union of K hard shadows was a staircase with K+1 levels
 # (measured [0.01, 0.25, 0.52, 0.74] on a k/4 grid at samples=4) wherever a
 # continuous ramp belongs.
 #
-# ON, build_aux packs each row's CELL half-extents and the rectangle's right
+# ON, _build_aux packs each row's CELL half-extents and the rectangle's right
 # axis into columns the area type never used, and both shadow fans place
 # their SOFT_SHADOW_SAMPLES samples inside that cell, in the light's own
 # plane (an R2 low-discrepancy sequence whose s = 0 sample is exactly the
@@ -2961,7 +2961,7 @@ def set_fragment_shading(enabled):
 # fall back to the packed cell centres exactly as the fans do.
 #
 # OFF restores today's row bit-for-bit. The flag is read host-side ONLY, in
-# build_aux, which packs zeros to the extra columns when it is off -- the
+# _build_aux, which packs zeros to the extra columns when it is off -- the
 # kernels' ``radius`` stays 0.0 and takes the existing single-ray path. There
 # is deliberately no ``ti.static`` gate: a compile-time switch would fork the
 # shade kernels into per-arm variants (and need one process per arm, since a

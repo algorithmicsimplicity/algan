@@ -34,7 +34,7 @@ def run(mode, clip):
     with Off():
         Group(
             [
-                Cube(side_length=0.4, color=BLUE).move(
+                Cube(size=0.4, color=BLUE).move(
                     RIGHT * 0.8 * i + UP * 0.8 * j + OUT * 0.8 * k
                 )
                 for i in range(-2, 3)
@@ -42,12 +42,12 @@ def run(mode, clip):
                 for k in range(-2, 3)
             ]
         ).spawn()
-    with Seq(run_time=2, rate_func=rate_funcs.identity):
+    with Seq(duration=2, easing=easings.identity):
         camera = Scene.get_camera()
         if mode == "rotate":
-            camera.rotate(360, UP, about_point=ORIGIN)
+            camera.rotate(360, UP, about=ORIGIN)
         else:
-            camera.orbit(360, UP, about_point=ORIGIN)
+            camera.orbit(360, UP, about=ORIGIN)
     start = time.perf_counter()
     Scene.save_video(os.path.join(OUT_DIR, f"ab_{mode}_{int(clip)}"), reset=True)
     return time.perf_counter() - start

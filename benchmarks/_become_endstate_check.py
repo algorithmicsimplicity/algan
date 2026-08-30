@@ -66,9 +66,9 @@ def _polyhedron():
 
 BUILDERS = {
     "Square": lambda: Square(color=BLUE),
-    "SquareUnfilled": lambda: Square(color=BLUE, filled=False, border_width=0.05),
+    "SquareUnfilled": lambda: Square(color=BLUE, filled=False, stroke_width=0.05),
     "Circle": lambda: Circle(radius=0.7, color=YELLOW),
-    "CircleBorder": lambda: Circle(radius=0.7, color=YELLOW, border_width=0.08),
+    "CircleBorder": lambda: Circle(radius=0.7, color=YELLOW, stroke_width=0.08),
     "Star": lambda: Star(color=GREEN),
     "Triangle": lambda: Triangle(color=GREEN),
     "Line": lambda: Line(LEFT, RIGHT),
@@ -78,7 +78,7 @@ BUILDERS = {
     "SphereGlow": lambda: Sphere(radius=0.8, glow=0.6),
     "Cylinder": lambda: Cylinder(radius=0.5, height=1.2),
     "Torus": lambda: Torus(),
-    "Cube": lambda: Cube(side_length=1.0),
+    "Cube": lambda: Cube(size=1.0),
     "Tetrahedron": lambda: Tetrahedron(),
     "Polyhedron": _polyhedron,
     "Group2": lambda: Group(
@@ -163,7 +163,7 @@ def render_morph_end(source_name, target_name, path):
         with Off():
             source = BUILDERS[source_name]().spawn()
             target = BUILDERS[target_name]()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             source.become(target)
         end = float(scene.animation_manager.context.timespan.current_time)
         scene.save_frame(str(path), LD, at=end - 1e-4, overwrite=True)
@@ -174,7 +174,7 @@ def render_target_only(target_name, path):
         scene.use_manim_defaults()
         with Off():
             BUILDERS[target_name]().spawn()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             pass
         end = float(scene.animation_manager.context.timespan.current_time)
         scene.save_frame(str(path), LD, at=end - 1e-4, overwrite=True)

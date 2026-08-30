@@ -71,7 +71,7 @@ Geometry types:
 | `type`   | fields                                | meaning |
 | -------- | ------------------------------------- | ------- |
 | `sphere` | `radius`, `segments` (default 64)     | Three.js `SphereGeometry(radius, segments, segments/2)`; Algan `Sphere(radius=...)` |
-| `box`    | `size` `[x, y, z]`                    | Three.js `BoxGeometry`; Algan `Prism(dimensions=...)` |
+| `box`    | `size` `[x, y, z]`                    | Three.js `BoxGeometry`; Algan `Prism(width=, height=, depth=)` |
 
 Every material field is optional; the defaults above are the defaults both back
 ends apply. Fields both engines ignore are still allowed in the file so that one

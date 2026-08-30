@@ -94,7 +94,7 @@ def build_scene():
             animate=False
         )
 
-    with Sync(run_time=2):
+    with Sync(duration=2):
         for i, mob in enumerate(shapes):
             mob.rotate(60 * (1 + i % 5), OUT)
         Scene.get_camera().move(RIGHT * 0.25)

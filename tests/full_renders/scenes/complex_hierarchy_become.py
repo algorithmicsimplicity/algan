@@ -32,7 +32,7 @@ def framed(content, *, buffer=0.2):
     frame = SurroundingRectangle(
         content,
         color=GRAY_B,
-        border_width=2,
+        stroke_width=2,
         filled=False,
         corner_radius=0.1,
         buffer=buffer,
@@ -82,7 +82,7 @@ with Off():
 
     # Source branch 2: a framed Group inside another framed Group.
     source_center_inner_content = Group(
-        Square(side_length=0.75, color=BLUE_A).move(LEFT * 0.5 + UP * 0.55),
+        Square(size=0.75, color=BLUE_A).move(LEFT * 0.5 + UP * 0.55),
         Sphere(radius=0.4, color=TEAL_A).move(RIGHT * 0.48 + UP * 0.55),
     )
     source_center_inner = framed(source_center_inner_content, buffer=0.16)
@@ -105,7 +105,7 @@ with Off():
     # the hierarchy, so this branch need not inherit only source-left leaves.
     target_left_content = Group(
         Sphere(radius=0.43, color=TEAL_A).move(LEFT * 3.85 + UP * 0.48),
-        Square(side_length=0.72, color=BLUE_A).move(LEFT * 3.05 + UP * 0.48),
+        Square(size=0.72, color=BLUE_A).move(LEFT * 3.05 + UP * 0.48),
         Tetrahedron(edge_length=0.9, color=ORANGE)
         .rotate(22, RIGHT)
         .rotate(25, UP)
@@ -138,7 +138,7 @@ with Off():
     # than duplicating an already-visible source.
     target_right_content = Group(
         Sphere(radius=0.42, color=TEAL_A).move(RIGHT * 3.0 + UP * 0.42),
-        Square(side_length=0.72, color=BLUE_A).move(RIGHT * 3.72 + DOWN * 0.38),
+        Square(size=0.72, color=BLUE_A).move(RIGHT * 3.72 + DOWN * 0.38),
     )
     target_right = framed(target_right_content, buffer=0.2)
     target_extra = (
@@ -153,19 +153,19 @@ with Off():
     )
 
 with Seq():
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         title.spawn()
         subtitle.spawn()
         legend.spawn()
         source_tree.spawn()
     Scene.wait(0.4)
-    with Sync(run_time=2.6):
+    with Sync(duration=2.6):
         source_tree = source_tree.become(target_tree, minimize_movement=True)
     Scene.wait(0.6)
 
     # Prove that target-class replacements now belong to the returned root.
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         source_tree.rotate(18, UP)
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         source_tree.rotate(-18, UP)
     Scene.wait(0.4)

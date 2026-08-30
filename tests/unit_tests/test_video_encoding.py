@@ -305,3 +305,36 @@ def test_small_or_odd_outputs_stay_on_software_even_when_nvenc_is_usable(
     monkeypatch.setenv("ALGAN_VIDEO_ENCODER", "nvenc")
     assert select_video_encoder(None, None, False, (64, 36)) == SOFTWARE_PAIR
     assert select_video_encoder(None, None, False, None) == NVENC_PAIR
+
+
+def test_configured_ffmpeg_binary_outranks_every_other_candidate():
+    """``SETTINGS.paths.ffmpeg_binary`` pins the binary for every codec.
+
+    The usual reason to name one is that the build moviepy found lacks a codec
+    the named one has, so an explicit setting has to beat the probe rather than
+    join it -- and it applies to software codecs too, where the probe would
+    otherwise return ``None`` and leave the writer on moviepy's binary.
+    """
+    from algan.settings import SETTINGS
+
+    previous = SETTINGS.paths.ffmpeg_binary
+    try:
+        SETTINGS.paths.set(ffmpeg_binary="/opt/custom/ffmpeg")
+        assert video_encoding.resolve_encode_binary(None) == "/opt/custom/ffmpeg"
+        assert video_encoding.resolve_encode_binary("libx264") == "/opt/custom/ffmpeg"
+        assert video_encoding._candidate_binaries()[0] == "/opt/custom/ffmpeg"
+    finally:
+        SETTINGS.paths.set(ffmpeg_binary=previous)
+
+
+def test_unset_ffmpeg_binary_leaves_the_existing_resolution_alone():
+    """The default must stay exactly what it was before the setting existed."""
+    from algan.settings import SETTINGS
+
+    previous = SETTINGS.paths.ffmpeg_binary
+    try:
+        SETTINGS.paths.set(ffmpeg_binary=None)
+        assert video_encoding.resolve_encode_binary("libx264") is None
+        assert "/opt/custom/ffmpeg" not in video_encoding._candidate_binaries()
+    finally:
+        SETTINGS.paths.set(ffmpeg_binary=previous)

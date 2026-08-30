@@ -317,11 +317,11 @@ _CLOSED = {
     "sphere": lambda: Sphere(radius=0.5),
     "dot3d": lambda: Dot3D(radius=0.15),
     "cylinder-capped": lambda: Cylinder(radius=0.35, height=0.9, show_ends=True),
-    "line3d": lambda: Line3D(thickness=0.08),
+    "line3d": lambda: Line3D(radius=0.08),
     "cone-capped": lambda: Cone(base_radius=0.45, height=0.9, show_base=True),
-    "torus": lambda: Torus(major_radius=0.55, minor_radius=0.22),
-    "prism": lambda: Prism(dimensions=(0.9, 0.6, 0.7)),
-    "cube": lambda: Cube(side_length=0.8),
+    "torus": lambda: Torus(ring_radius=0.55, tube_radius=0.22),
+    "prism": lambda: Prism(width=0.9, height=0.6, depth=0.7),
+    "cube": lambda: Cube(size=0.8),
     "tetrahedron": lambda: Tetrahedron(edge_length=0.9),
     "octahedron": lambda: Octahedron(edge_length=0.8),
     "icosahedron": lambda: Icosahedron(edge_length=0.6),
@@ -344,7 +344,7 @@ _OPEN = {
         lambda: Cone(base_radius=0.45, height=0.9, show_base=True, v_range=(0.4, 3.0))
     ),
     "torus-partial": (
-        lambda: Torus(major_radius=0.55, minor_radius=0.22, v_range=(0.5, 4.0))
+        lambda: Torus(ring_radius=0.55, tube_radius=0.22, v_range=(0.5, 4.0))
     ),
     "polyhedron-single-quad": (
         lambda: Polyhedron([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], [[0, 1, 2, 3]])
@@ -526,7 +526,7 @@ def test_the_compound_arrow_declares_per_part():
     each part closes itself (capped shaft, capped head) independently.
     """
     with Scene(), Off():
-        arrow = Arrow3D(start=ORIGIN, end=RIGHT * 1.2, thickness=0.06)
+        arrow = Arrow3D(start=ORIGIN, end=RIGHT * 1.2, shaft_radius=0.06)
         arrow.spawn(animate=False)
         shaft = _forms_closed_shell(_triangle_prims(arrow.tail))
         head = _forms_closed_shell(_triangle_prims(arrow.head))
@@ -539,7 +539,7 @@ def test_the_compound_arrow_declares_per_part():
 def test_2d_geometry_has_no_shell_to_declare():
     """A circuit carries no triangle primitive and no declaration either way."""
     with Scene(), Off():
-        square = Square(side_length=0.8)
+        square = Square(size=0.8)
         square.spawn(animate=False)
         assert square.closed_shell is False
         assert _triangle_prims(square) == []

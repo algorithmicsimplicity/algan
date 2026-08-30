@@ -1,7 +1,7 @@
 """Import a 3-D model file (glB/glTF, FBX, OBJ, ...) as an Algan
 :class:`~algan.animatable_base.mob.Mob`.
 
-:class:`ThreeDModelMob` parses the file into the backend-independent
+:class:`Model3D` parses the file into the backend-independent
 :class:`~algan.mobs.three_d_models.scene_data.SceneData` IR and builds one
 :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` child per mesh instance, with
 geometry baked into the model's world space.
@@ -30,7 +30,7 @@ import torch
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
-from algan.constants.rate_funcs import identity
+from algan.constants.easings import identity
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
@@ -124,7 +124,7 @@ def _load_image_hwc(path):
         return None
 
 
-class ThreeDModelMob(Mob):
+class Model3D(Mob):
     """Load a 3-D model file and build its geometry/textures as a Mob.
 
     Parameters
@@ -141,12 +141,11 @@ class ThreeDModelMob(Mob):
         Load and apply diffuse texture maps referenced by materials
         (default True). When False (or a texture fails to load) meshes fall
         back to their material's flat base color.
-    normalize : bool
-        Recenter and uniformly scale the whole model to fit a box of
-        ``normalize_size`` (handy since model files use wildly different unit
-        scales). Off by default.
-    normalize_size : float
-        Target bounding-box diagonal when ``normalize`` is True.
+    fit_to_size : float, optional
+        Recenter the model and uniformly scale it so its bounding-box diagonal
+        is this many world units -- handy, since model files use wildly
+        different unit scales. Defaults to ``None``, which leaves the model at
+        the size the file gives it.
     smooth_normals : bool
         Use the mesh's authored / generated per-vertex normals for smooth
         shading (default True). When False, flat per-face normals are derived
@@ -170,8 +169,7 @@ class ThreeDModelMob(Mob):
         file_path=None,
         scene_data: SceneData | None = None,
         load_textures: bool = True,
-        normalize: bool = False,
-        normalize_size: float = 2.0,
+        fit_to_size: float | None = None,
         smooth_normals: bool = True,
         normal_maps: bool = True,
         pbr_materials: bool = True,
@@ -184,7 +182,7 @@ class ThreeDModelMob(Mob):
 
         if scene_data is None:
             if file_path is None:
-                raise ValueError("ThreeDModelMob requires a file_path or scene_data")
+                raise ValueError("Model3D requires a file_path or scene_data")
             scene_data = _load_scene_for(file_path)
         self.scene_data = scene_data
         self.source_path = scene_data.source_path or (file_path or "")
@@ -236,8 +234,8 @@ class ThreeDModelMob(Mob):
 
         self.add_children(self.mesh_mobs)
 
-        if normalize:
-            self._normalize(normalize_size)
+        if fit_to_size is not None:
+            self._normalize(fit_to_size)
 
     def _build_mesh_mob(
         self, scene_data, mesh, matrix, device, load_textures, smooth_normals
@@ -417,7 +415,7 @@ class ThreeDModelMob(Mob):
         with Off(animation_manager=self.animation_manager):
             for mob in self.mesh_mobs:
                 mob.grid.location = (mob.grid.location - center) * scale
-        # Record so bake_animation lands baked poses in the same space.
+        # Record so precompute_animation lands baked poses in the same space.
         self._norm_center = center
         self._norm_scale = scale
         return self
@@ -465,7 +463,7 @@ class ThreeDModelMob(Mob):
             f"no animation named {name!r}; available: {self.animation_names}"
         )
 
-    def bake_animation(self, name=None, times=None, fps=30):
+    def precompute_animation(self, name=None, times=None, fps=30):
         """Bake an animation clip to per-frame world-space corner positions.
 
         Evaluates every node's animated local transform at each sample time,
@@ -519,13 +517,11 @@ class ThreeDModelMob(Mob):
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
-    def play_animation(
-        self, name=None, run_time=None, fps=30, loop=1, rate_func=identity
-    ):
+    def play_animation(self, name=None, duration=None, fps=30, loop=1, easing=identity):
         """Play a baked node-keyframe animation on the timeline.
 
         The clip is baked to per-frame world corners (see
-        :meth:`bake_animation`) and each mesh instance's corners are driven
+        :meth:`precompute_animation`) and each mesh instance's corners are driven
         through those poses, so rigid node motion (a bone/part translating,
         rotating or scaling, composed down the hierarchy) plays back. Meshes
         with authored normals are switched to per-frame smooth-normal
@@ -535,7 +531,7 @@ class ThreeDModelMob(Mob):
         ----------
         name : str, optional
             Clip name; defaults to the first clip.
-        run_time : float, optional
+        duration : float, optional
             Playback duration in seconds (per loop). Defaults to the clip's
             authored duration.
         fps : int
@@ -543,15 +539,15 @@ class ThreeDModelMob(Mob):
             are linearly interpolated between baked poses).
         loop : int
             Number of times to repeat the clip.
-        rate_func : callable
+        easing : callable
             Timeline rate function; defaults to linear playback.
         """
         clip = self._resolve_clip(name)
-        times, corners = self.bake_animation(name, fps=fps)
+        times, corners = self.precompute_animation(name, fps=fps)
         if len(times) < 2:
             return self
-        if run_time is None:
-            run_time = clip.duration or float(times[-1]) or 1.0
+        if duration is None:
+            duration = clip.duration or float(times[-1]) or 1.0
 
         # Recompute smooth normals per frame so authored-normal meshes shade
         # correctly under the deformation.
@@ -561,14 +557,14 @@ class ThreeDModelMob(Mob):
 
         # Frame 0 is set instantly, then the geometry is swept through the
         # remaining baked poses; each Sync step moves every mesh together and
-        # Seq sequences the steps (rescaled to run_time).
+        # Seq sequences the steps (rescaled to duration).
         with Off(animation_manager=self.animation_manager):
             for mob in self.mesh_mobs:
                 mob.grid.set_location(corners[mob][0])
         for _lap in range(max(1, int(loop))):
             with Seq(
-                run_time=run_time,
-                rate_func=rate_func,
+                duration=duration,
+                easing=easing,
                 animation_manager=self.animation_manager,
             ):
                 for k in range(1, len(times)):

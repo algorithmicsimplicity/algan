@@ -32,29 +32,29 @@ ones that matter for camera work:
      - Effect
    * - ``camera.move(OUT * 2)``
      - Dolly back, keeping the same aim.
-   * - ``camera.rotate(deg, UP, about_point=ORIGIN)``
+   * - ``camera.rotate(deg, UP, about=ORIGIN)``
      - Turntable: swing around the scene, staying pointed at it.
    * - ``camera.look_at(point)``
      - Turn to face a point without moving.
-   * - ``camera.orbit(deg, UP, about_point=p)``
+   * - ``camera.orbit(deg, UP, about=p)``
      - Swings along a circle around ``p`` *without* changing its pointing direction.
-   * - ``camera.move_to_make_mob_center_of_view(mob)``
+   * - ``camera.center_on(mob)``
      - Automatically reframes so the target Mob is centered.
 
 The turntable shot is the classic way to show off a 3-D scene. Notice that we use
 :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` with
-``about_point``:
+``about``:
 
 .. algan:: CameraTurntable
 
     from algan import *
 
     with Off():
-        Group([Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
+        Group([Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i)
                for i in (-1, 0, 1)]).spawn()
 
-    with Seq(run_time=4, rate_func=rate_funcs.identity):
-        Scene.get_camera().rotate(360, UP, about_point=ORIGIN)
+    with Seq(duration=4, easing=easings.identity):
+        Scene.get_camera().rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -63,7 +63,7 @@ stays pointed straight at the center throughout the turn.
 
 .. tip::
 
-    For continuous camera rotations, pass ``rate_func=rate_funcs.identity`` so
+    For continuous camera rotations, pass ``easing=easings.identity`` so
     the speed stays constant rather than easing in and out.
 
 Tracking a Moving Target
@@ -78,13 +78,13 @@ updater (see :doc:`../new_user_tutorials/updaters`):
 
     with Off():
         ball = Sphere(radius=0.6, color=YELLOW).spawn()
-        Group([Cube(side_length=0.5, color=BLUE).move(RIGHT * x + DOWN * 1.5)
+        Group([Cube(size=0.5, color=BLUE).move(RIGHT * x + DOWN * 1.5)
                for x in (-3, 0, 3)]).spawn()
 
     camera = Scene.get_camera()
     camera.add_updater(lambda self, t: self.look_at(ball.location))
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         ball.move(RIGHT * 3 + UP * 1.5)
         ball.move(LEFT * 6)
 
@@ -104,11 +104,11 @@ wide-angle view with exaggerated perspective:
     from algan import *
 
     with Off():
-        Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+        Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                for i in range(4)]).spawn()
 
     camera = Scene.get_camera()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         camera.set_fov(20)
         camera.set_fov(90)
 
@@ -120,7 +120,7 @@ any other property, making dramatic "dolly zoom" effects simple.
 
 Algan also exposes the underlying perspective controls directly:
 :meth:`~algan.rendering.camera.Camera.set_distance_to_screen` moves the focus point relative to the
-screen plane, and the constructor's ``screen_distance`` / ``screen_scale`` set
+screen plane, and the constructor's ``screen_distance`` / ``screen_half_height`` set
 them up front. ``fov`` is derived from these, so use one or the other, not both.
 
 .. _camera-orthographic:
@@ -138,11 +138,11 @@ where you need exact parallel lines without perspective distortion, use
 
     with Off():
         Scene.get_camera().set_near_orthographic()
-        cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
+        cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
-    with Seq(run_time=3):
-        cubes.rotate(360, UP, about_point=ORIGIN)
+    with Seq(duration=3):
+        cubes.rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -188,8 +188,8 @@ these Mob methods all resolve against it:
 * :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position` and
   :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.move_center_to_screen_position` -- place a Mob at fractional
   screen coordinates.
-* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` and
-  :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner` -- rest against a
+* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` and
+  :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner` -- rest against a
   screen border.
 * :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen` -- scale and move to fill a screen
   rectangle.
@@ -204,7 +204,7 @@ the camera as a child, or drive it with an updater:
     from algan import *
 
     with Off():
-        Group([Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i)
+        Group([Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i)
                for i in (-1, 0, 1)]).spawn()
 
         caption = Text("figure 1", font_size=32)
@@ -212,8 +212,8 @@ the camera as a child, or drive it with an updater:
         caption.move_to_screen_position(0.15, 0.1)
         caption.spawn()
 
-    with Seq(run_time=3, rate_func=rate_funcs.identity):
-        Scene.get_camera().rotate(90, UP, about_point=ORIGIN)
+    with Seq(duration=3, easing=easings.identity):
+        Scene.get_camera().rotate(90, UP, about=ORIGIN)
 
     Scene.save_video()
 

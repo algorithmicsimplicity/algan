@@ -90,7 +90,7 @@ def report(title, build_source, build_target, minimize_movement=False):
         with Off():
             source = build_source().spawn()
             target = build_target()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             source.become(target, minimize_movement=minimize_movement)
     print(f"\n=== {title}  (minimize_movement={minimize_movement}) ===")
     if not _LOG:
@@ -157,12 +157,12 @@ def main():
     report(
         "big+small -> small+big (size should decide)",
         lambda: Group(
-            Square(side_length=2.0).move(LEFT * 3),
-            Square(side_length=0.4).move(RIGHT * 3),
+            Square(size=2.0).move(LEFT * 3),
+            Square(size=0.4).move(RIGHT * 3),
         ),
         lambda: Group(
-            Square(side_length=0.4).move(LEFT * 3),
-            Square(side_length=2.0).move(RIGHT * 3),
+            Square(size=0.4).move(LEFT * 3),
+            Square(size=2.0).move(RIGHT * 3),
         ),
     )
 

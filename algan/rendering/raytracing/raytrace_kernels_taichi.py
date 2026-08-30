@@ -501,7 +501,7 @@ def _circuit_point_region(border_w, outline_w, filled, crossings, min_dist_sq):
     A FILLED circuit's border runs INWARD -- the drawn region is the fill itself
     (dilated by ``outline_w`` so hairlines and degenerate fills survive) and the
     border is the part of it within ``border_w`` of the outline, i.e. ``d <=
-    border_w``. Raising ``border_width`` therefore eats into the shape instead
+    border_w``. Raising ``stroke_width`` therefore eats into the shape instead
     of dilating it, which is what keeps neighbouring glyphs from fusing.
 
     An UNFILLED circuit has no interior to eat into, so its stroke stays centred

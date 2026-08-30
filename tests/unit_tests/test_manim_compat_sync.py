@@ -3,7 +3,8 @@ import math
 import numpy as np
 import torch
 
-from algan import BLUE, RIGHT, UP, Axes, Group, Off, Scene, Star
+from algan import BLUE, RIGHT, UP, Group, Off, Scene
+from algan.manim import Axes, Star
 
 
 def _tensor(value):

@@ -46,10 +46,9 @@ with Off():
             color=WHITE,
             intensity=1.0,
         ).spawn(animate=False)
-    model = ThreeDModelMob(
+    model = Model3D(
         "assets/textured_icosphere.glb",
-        normalize=True,
-        normalize_size=float(os.environ.get("SPECKLE_SIZE", "2.6")),
+        fit_to_size=float(os.environ.get("SPECKLE_SIZE", "2.6")),
         pbr_materials=os.environ.get("SPECKLE_PBR", "1") == "1",
     ).move(UP * 0.2)
     if not KEEP_NMAP:
@@ -102,7 +101,7 @@ with Off():
 
 with Seq():
     model.spawn(animate=False)
-    with Sync(run_time=2.4):
+    with Sync(duration=2.4):
         model.rotate(300, UP)
 
 times = [float(t) for t in sys.argv[1:]] or [0.0, 0.6, 1.2, 1.8, 2.3]

@@ -157,7 +157,7 @@ def test_set_color_by_function_returns_self_and_accepts_rgba():
 
 def test_filled_circuit_colors_its_fill_and_unfilled_one_its_stroke():
     SceneManager.reset()
-    filled = Square(texture_grid_width=2, border_color=RED, add_to_scene=False)
+    filled = Square(texture_grid_width=2, stroke_color=RED, add_to_scene=False)
     border_before = filled.border_texture_points.color.clone()
     with Off(animation_manager=filled.animation_manager):
         filled.set_color_by_function(_rgb)

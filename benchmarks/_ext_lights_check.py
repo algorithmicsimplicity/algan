@@ -60,7 +60,7 @@ def ground(y=-1.5, half=8.0):
 def tilt_camera(deg=-25, dolly=0.0):
     cam = Scene.get_camera()
     with Off():
-        cam.rotate(deg, RIGHT, about_point=ORIGIN)
+        cam.rotate(deg, RIGHT, about=ORIGIN)
         if dolly:
             cam.move(cam.get_forward_direction() * dolly)
 
@@ -123,7 +123,7 @@ def scene_spot():
             target=DOWN * 1.5,
             color=WHITE,
             intensity=40.0,
-            angle=22.0,
+            cone_angle=22.0,
             penumbra=0.6,
             decay=2.0,
         ).spawn(animate=False),

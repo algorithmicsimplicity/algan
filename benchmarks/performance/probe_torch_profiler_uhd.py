@@ -24,7 +24,7 @@ from algan.scene_manager import SceneManager
 frames = int(sys.argv[1]) if len(sys.argv) > 1 else 6
 
 
-def scene(run_time):
+def scene(duration):
     SETTINGS.raytracing.set(shadows=True)
     with Off():
         nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
@@ -34,7 +34,7 @@ def scene(run_time):
             .move_next_to(nn, DOWN)
             .spawn()
         )
-    with Sync(run_time=run_time):
+    with Sync(duration=duration):
         nn.move(UP)
         x.color_texture = x.color_texture * 0.5
         label.move(RIGHT * 2)

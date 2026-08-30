@@ -82,12 +82,23 @@ class PathSettings(Settings):
     ``ALGAN_HOME`` and the Taichi offline-cache path are initialization-only
     environment configuration. ``cache_directory`` remains public because
     Algan's content caches are consulted lazily and can safely move at runtime.
+
+    Attributes
+    ----------
+    ffmpeg_binary
+        Path to the FFmpeg executable video encoding runs. Defaults to
+        ``None``, meaning Algan picks one: the ``FFMPEG_BINARY`` environment
+        variable if set, else moviepy's configured binary (often imageio-ffmpeg's
+        static build, which carries no NVENC encoders), else ``ffmpeg`` on the
+        PATH. Setting it pins that choice -- useful when the build moviepy found
+        lacks a codec the system FFmpeg has.
     """
 
     cache_directory: str = str(_CACHE_DIRECTORY)
     output_root: str = field(default_factory=_default_output_root)
     output_directory: str = "algan_outputs"
     output_filename: str = field(default_factory=_default_output_filename)
+    ffmpeg_binary: str | None = None
 
     def __post_init__(self):
         for name in (
@@ -97,3 +108,6 @@ class PathSettings(Settings):
             "output_filename",
         ):
             object.__setattr__(self, name, os.fspath(getattr(self, name)))
+        # Optional, so it is normalised only when set -- os.fspath(None) raises.
+        if self.ffmpeg_binary is not None:
+            object.__setattr__(self, "ffmpeg_binary", os.fspath(self.ffmpeg_binary))

@@ -624,7 +624,7 @@ def reference_errors(angle_deg, width_px, shape, rng, trials=2):
     Computed against the same exact analytic coverage the renderer is measured
     against, at the same angle and width, and passed through the SAME two
     metrics -- so the yardstick is measured the way the subject is. An
-    ``super_sampling_anti_aliasing = k`` supersampler cannot beat ``box(k)``, and ``none``
+    ``supersampling = k`` supersampler cannot beat ``box(k)``, and ``none``
     is what no anti-aliasing at all scores.
     """
     out = {}
@@ -692,7 +692,7 @@ def report_routes(video_settings):
     def with_shadows(scene):
         rt_settings.set_shadows(True)
         sphere(scene)
-        Square(side_length=6, color=WHITE, scene=scene).spawn()
+        Square(size=6, color=WHITE, scene=scene).spawn()
 
     def with_spp(scene):
         rt_settings.samples_per_pixel = 4
@@ -798,7 +798,7 @@ def main(argv=None):
     instrument_route()
 
     print(f"resolution   {video_settings.resolution}")
-    print(f"anti_alias   {video_settings.super_sampling_anti_aliasing} (requested)")
+    print(f"anti_alias   {video_settings.supersampling} (requested)")
     print(
         f"analytic AA  master={rt_settings.analytic_aa} "
         f"bez={rt_settings.analytic_aa_bez_active()} "

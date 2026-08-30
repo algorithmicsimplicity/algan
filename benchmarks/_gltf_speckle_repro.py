@@ -27,10 +27,9 @@ with Off():
         color=WHITE,
         intensity=1.0,
     ).spawn(animate=False)
-    model = ThreeDModelMob(
+    model = Model3D(
         "assets/textured_icosphere.glb",
-        normalize=True,
-        normalize_size=2.6,
+        fit_to_size=2.6,
     ).move(UP * 0.2)
     model.spawn(animate=False)
     model.rotate(angle, UP)

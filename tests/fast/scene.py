@@ -96,13 +96,13 @@ with Off():
     circuits = Group(
         Circle(radius=0.5, color=BLUE),
         Square(
-            side_length=0.95,
+            size=0.95,
             color=TRANSPARENT,
-            border_color=GREEN_A,
-            border_width=10,
+            stroke_color=GREEN_A,
+            stroke_width=10,
         ),
         RegularPolygon(
-            5, radius=0.55, color=MAROON_A, border_color=WHITE, border_width=4
+            5, radius=0.55, color=MAROON_A, stroke_color=WHITE, stroke_width=4
         ),
         Polygon(*STAR_POINTS, color=YELLOW),
     ).arrange_in_line(RIGHT, buffer=0.7)
@@ -111,7 +111,7 @@ with Off():
     # Row 2 -- flat triangle meshes, one per shading path. Every solid here is
     # a Polyhedron, never a Surface: see the module docstring on why the PN
     # family is deliberately absent.
-    cube = Cube(side_length=0.95).set_material(MeshLambertMaterial(color=ORANGE))
+    cube = Cube(size=0.95).set_material(MeshLambertMaterial(color=ORANGE))
     cube.move(LEFT * 2.2 + DOWN * 0.5)
     metal = Icosahedron(edge_length=0.85).set_material(
         MeshStandardMaterial(color=RED, roughness=0.35, metalness=0.4)
@@ -120,7 +120,7 @@ with Off():
     unlit = Octahedron(edge_length=0.9).set_material(MeshBasicMaterial(color=TEAL))
     unlit.move(RIGHT * 1.8 + DOWN * 0.5)
     # Opacity is its own transport channel, not a shading term.
-    faded = Cube(side_length=0.85, opacity=0.45).set_material(
+    faded = Cube(size=0.85, opacity=0.45).set_material(
         MeshLambertMaterial(color=PURPLE)
     )
     faded.move(RIGHT * 3.6 + DOWN * 0.5)
@@ -135,10 +135,10 @@ with Seq():
     title.spawn()
     # Lag staggers the spawns, so a replay regression moves geometry between
     # frames rather than changing a single still.
-    with Lag(0.25, run_time=1.0):
+    with Lag(0.25, duration=1.0):
         for shape in circuits:
             shape.spawn()
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         cube.spawn()
         metal.spawn()
         unlit.spawn()
@@ -149,16 +149,16 @@ with Seq():
     # An updater writes every frame; a rate function makes two equal
     # displacements arrive at different times.
     spin = cube.add_updater(lambda mob, time: mob.rotate(time * 120.0, UP))
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         metal.rotate(60, RIGHT)
         circuits[3].rotate(180, OUT)
-        with Sync(rate_func=rate_funcs.linear):
+        with Sync(easing=easings.linear):
             circuits[0].move(UP * 0.3)
-        with Sync(rate_func=rate_funcs.ease_out_expo):
+        with Sync(easing=easings.ease_out_expo):
             circuits[1].move(UP * 0.3)
     cube.remove_updater(spin)
 
     # Part of the scene leaves, so the despawn half of the lifecycle is drawn.
-    with Sync(run_time=0.4):
+    with Sync(duration=0.4):
         unlit.despawn()
         circuits[2].despawn()

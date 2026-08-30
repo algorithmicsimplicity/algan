@@ -6,9 +6,9 @@ triangulation, inward borders, and the analytic anti-aliasing on both the
 silhouette and the border/fill seam.
 
 On top of that geometry it exercises the recording side of the engine end to
-end -- the four animation contexts and their nesting, ``run_time`` rescaling,
+end -- the four animation contexts and their nesting, ``duration`` rescaling,
 rate functions, every indication animation, ``become`` morphing, updaters,
-``wave_color``, ``draw_border_then_fill`` and the spawn/despawn lifecycle.
+``wave_color``, ``DrawBorderThenFill`` and the spawn/despawn lifecycle.
 
 Only native :mod:`algan.mobs.shapes_2d` geometry appears here; the
 Manim-compatibility shapes live in ``manim_compat_and_plots`` so a regression in
@@ -18,6 +18,9 @@ labelled, non-overlapping rows so a regression reads as a diff in one column.
 
 import torch
 
+# The point-cloud family is Manim-compat, so Phase 1 of the API overhaul moved
+# it out of the root namespace and behind ``algan.manim``.
+import algan.manim as mn
 from algan import *
 
 # Pinned so the render does not depend on the host's fonts;
@@ -63,7 +66,7 @@ with Off():
 
     filled = Group(
         Circle(radius=0.62, color=BLUE),
-        Square(side_length=1.2, color=GREEN),
+        Square(size=1.2, color=GREEN),
         RegularPolygon(5, radius=0.68, color=ORANGE),
         Polygon(*STAR_POINTS, color=YELLOW),
         Triangle(color=TEAL).scale(0.72),
@@ -85,22 +88,22 @@ with Off():
     # Borders run inward from the silhouette, so a border regression changes
     # this row without touching the filled row above it.
     outlined = Group(
-        Circle(radius=0.6, color=TRANSPARENT, border_color=BLUE_A, border_width=6),
+        Circle(radius=0.6, color=TRANSPARENT, stroke_color=BLUE_A, stroke_width=6),
         Square(
-            side_length=1.15,
+            size=1.15,
             color=TRANSPARENT,
-            border_color=GREEN_A,
-            border_width=14,
+            stroke_color=GREEN_A,
+            stroke_width=14,
         ),
         RegularPolygon(
             6,
             radius=0.66,
             color=MAROON_A,
-            border_color=WHITE,
-            border_width=4,
+            stroke_color=WHITE,
+            stroke_width=4,
         ),
-        Polygon(*STAR_POINTS, color=TRANSPARENT, border_color=YELLOW, border_width=4),
-        Line(start=LEFT * 0.62, end=RIGHT * 0.62, color=ORANGE, stroke_width=8),
+        Polygon(*STAR_POINTS, color=TRANSPARENT, stroke_color=YELLOW, stroke_width=4),
+        Line(start=LEFT * 0.62, end=RIGHT * 0.62, color=ORANGE, stroke_width=4),
         Dot(radius=0.24, color=RED),
     ).arrange_in_line(RIGHT, buffer=0.74)
     outlined.move(DOWN * 0.65 - outlined.get_center())
@@ -118,17 +121,17 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Lag(0.18, run_time=1.6):
+    with Lag(0.18, duration=1.6):
         for shape in filled:
             shape.spawn()
-    with Sync(run_time=0.7):
+    with Sync(duration=0.7):
         filled_labels.spawn()
-    with Sync(run_time=0.9):
+    with Sync(duration=0.9):
         outlined.spawn()
         outlined_labels.spawn()
 
 # --------------------------------------------------------------------------
-# Act 2 -- nested contexts, retroactive run_time rescaling and rate functions.
+# Act 2 -- nested contexts, retroactive duration rescaling and rate functions.
 # --------------------------------------------------------------------------
 with Off():
     rate_label = Text(
@@ -140,9 +143,9 @@ with Off():
 
 with Seq():
     rate_label.spawn()
-    # The outer run_time rescales every child retroactively: the Seq below runs
+    # The outer duration rescales every child retroactively: the Seq below runs
     # three edits back to back inside the same 2 seconds the Sync spends on one.
-    with Sync(run_time=2.0):
+    with Sync(duration=2.0):
         with Seq():
             filled[0].move(UP * 0.5)
             filled[0].color = RED
@@ -156,13 +159,13 @@ with Seq():
             filled[4].rotate(120, OUT)
         # Two rate functions over the same span read as two different arrival
         # times for the same displacement.
-        with Sync(rate_func=rate_funcs.linear):
+        with Sync(easing=easings.linear):
             outlined[4].move(UP * 0.32)
-        with Sync(rate_func=rate_funcs.ease_out_expo):
+        with Sync(easing=easings.ease_out_expo):
             outlined[5].move(UP * 0.32)
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         filled[5].wave_color(GREEN, direction=RIGHT)
-        outlined[2].border_color = YELLOW
+        outlined[2].stroke_color = YELLOW
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
@@ -179,25 +182,25 @@ with Off():
 
 with Seq():
     indication_label.spawn()
-    with Lag(0.55, run_time=3.4):
-        Indicate(filled[0], color=WHITE, run_time=0.8)
-        Wiggle(filled[1], scale_value=1.2, n_wiggles=4, run_time=0.8)
-        Circumscribe(filled[2], color=TEAL_A, buff=0.15, run_time=0.9)
-        Flash(filled[3], color=ORANGE, num_lines=10, flash_radius=0.75, run_time=0.9)
-        FocusOn(filled[4], run_time=0.9)
+    with Lag(0.55, duration=3.4):
+        Indicate(filled[0], color=WHITE, duration=0.8)
+        Wiggle(filled[1], scale_value=1.2, n_wiggles=4, duration=0.8)
+        Circumscribe(filled[2], color=TEAL_A, buff=0.15, duration=0.9)
+        Flash(filled[3], color=ORANGE, num_lines=10, flash_radius=0.75, duration=0.9)
+        FocusOn(filled[4], duration=0.9)
         Blink(filled[5], time_on=0.2, time_off=0.15, blinks=2)
-    with Sync(run_time=1.5):
-        ShowPassingFlash(outlined[0], time_width=0.3, run_time=1.5)
+    with Sync(duration=1.5):
+        ShowPassingFlash(outlined[0], time_width=0.3, duration=1.5)
         ShowPassingFlashWithThinningStrokeWidth(
-            outlined[1], n_segments=6, time_width=0.35, run_time=1.5
+            outlined[1], n_segments=6, time_width=0.35, duration=1.5
         )
-        ApplyWave(filled_labels, direction=UP, amplitude=0.18, run_time=1.5)
+        ApplyWave(filled_labels, direction=UP, amplitude=0.18, duration=1.5)
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
-# Act 4 -- become morphing, updaters, NumericDisplay and hand-drawing.
+# Act 4 -- become morphing, updaters, DecimalNumber and hand-drawing.
 # --------------------------------------------------------------------------
-with Sync(run_time=0.8):
+with Sync(duration=0.8):
     filled_labels.despawn()
     outlined_labels.despawn()
     outlined.despawn()
@@ -206,18 +209,18 @@ with Sync(run_time=0.8):
 
 with Off():
     morph = Square(
-        side_length=1.3,
+        size=1.3,
         color=BLUE,
-        border_color=WHITE,
-        border_width=5,
+        stroke_color=WHITE,
+        stroke_width=5,
     ).move(LEFT * 4.2 + DOWN * 1.4)
     hub = RegularPolygon(3, radius=0.55, color=MAROON).move(LEFT * 1.4 + DOWN * 1.4)
     satellite = Dot(radius=0.17, color=YELLOW).move(LEFT * 1.4 + DOWN * 1.4)
     counter = (
-        NumericDisplay(
+        DecimalNumber(
             0.0,
-            num_decimal_places=1,
-            num_integer_places=2,
+            decimal_places=1,
+            integer_places=2,
             color=WHITE,
         )
         .scale(2.2)
@@ -226,7 +229,7 @@ with Off():
     counter_frame = SurroundingRectangle(
         counter,
         color=TEAL_A,
-        border_width=3,
+        stroke_width=3,
         filled=False,
         buffer=0.22,
     )
@@ -235,8 +238,8 @@ with Off():
             3,
             radius=0.8,
             color=GREEN,
-            border_color=WHITE,
-            border_width=4,
+            stroke_color=WHITE,
+            stroke_width=4,
         )
         .move(RIGHT * 4.5 + DOWN * 1.4)
         .spawn()
@@ -249,7 +252,7 @@ with Off():
     ).move(DOWN * 3.0)
 
 with Seq():
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         morph.spawn()
         hub.spawn()
         satellite.spawn()
@@ -265,21 +268,21 @@ with Seq():
     )
     # ``become`` morphs position as well as shape, so the targets are built
     # where the morphing Mob already is.
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         morph.become(
             Circle(radius=0.7, color=TEAL, add_to_scene=False).move(
                 LEFT * 4.2 + DOWN * 1.4
             )
         )
         counter.set_value(37.5)
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         morph.become(
             Polygon(*STAR_POINTS, color=ORANGE, add_to_scene=False).move(
                 LEFT * 4.2 + DOWN * 1.4
             )
         )
         counter.set_value(-4.0)
-    draw_border_then_fill([drawn], run_time=1.4)
+    DrawBorderThenFill([drawn], duration=1.4)
     satellite.remove_updater(orbit_id)
     hub.remove_updater(spin_id)
     Scene.wait(0.3)
@@ -287,15 +290,15 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 5 -- lifecycle: part of the scene leaves the frame, the rest despawns.
 # --------------------------------------------------------------------------
-with Sync(run_time=1.4):
-    filled[0].move_out_of_screen(LEFT, despawn=False)
-    filled[5].move_out_of_screen(RIGHT, despawn=False)
-    filled[2].move_out_of_screen(UP, despawn=False)
+with Sync(duration=1.4):
+    filled[0].move_off_screen(LEFT, despawn=False)
+    filled[5].move_off_screen(RIGHT, despawn=False)
+    filled[2].move_off_screen(UP, despawn=False)
     morph.rotate(180, OUT)
     hub.scale(1.4)
     counter.set_value(0.0)
 
-with Sync(run_time=0.8):
+with Sync(duration=0.8):
     hub.despawn()
     satellite.despawn()
     drawn.despawn()
@@ -334,7 +337,7 @@ with Off():
         )
     )
     raw_circuit = BezierCircuitCubic(
-        leaf_controls, color=TEAL, border_color=WHITE, border_width=4
+        leaf_controls, color=TEAL, stroke_color=WHITE, stroke_width=4
     ).move(LEFT * 2.3 + UP * 0.5)
 
     quad = Quad(
@@ -360,7 +363,7 @@ with Off():
     surrounding = SurroundingRectangle(
         quad_triangulated,
         color=TEAL_A,
-        border_width=3,
+        stroke_width=3,
         filled=False,
         buffer=0.18,
     )
@@ -379,15 +382,15 @@ with Off():
     )
 
 with Seq():
-    with Lag(0.15, run_time=1.4):
+    with Lag(0.15, duration=1.4):
         gradient_triangle.spawn()
         raw_circuit.spawn()
         quad.spawn()
         quad_triangulated.spawn()
-    with Sync(run_time=0.5):
+    with Sync(duration=0.5):
         primitive_labels.spawn()
         surrounding.spawn()
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         gradient_triangle.rotate(180, UP)
         raw_circuit.rotate(45, OUT)
         quad.rotate(-30, OUT)
@@ -398,7 +401,7 @@ with Seq():
 # PGroup's members are intentionally not separate Scene actors: this exercises
 # the composite's own primitive delegation as well as the three leaf classes.
 # --------------------------------------------------------------------------
-with Sync(run_time=0.6):
+with Sync(duration=0.6):
     gradient_triangle.despawn()
     raw_circuit.despawn()
     quad.despawn()
@@ -407,7 +410,7 @@ with Sync(run_time=0.6):
     primitive_labels.despawn()
 
 with Off():
-    dot_cloud = DotCloud(
+    dot_cloud = mn.DotCloud(
         points=torch.stack(
             (
                 LEFT * 0.55 + DOWN * 0.45,
@@ -419,21 +422,21 @@ with Off():
         stroke_width=10,
         color=YELLOW,
     ).move(LEFT * 4.2 + UP * 0.55)
-    point_cloud_dot = PointCloudDot(
+    point_cloud_dot = mn.PointCloudDot(
         radius=0.62,
         density=5,
         stroke_width=7,
         color=BLUE_A,
     ).move(LEFT * 1.4 + UP * 0.55)
-    true_dot = TrueDot(stroke_width=16, color=GREEN_A).move(RIGHT * 1.4 + UP * 0.55)
-    point_group = PGroup(
-        DotCloud(
+    true_dot = mn.TrueDot(stroke_width=16, color=GREEN_A).move(RIGHT * 1.4 + UP * 0.55)
+    point_group = mn.PGroup(
+        mn.DotCloud(
             points=torch.stack((LEFT * 0.42, RIGHT * 0.42, UP * 0.5)),
             stroke_width=9,
             color=ORANGE,
             add_to_scene=False,
         ),
-        TrueDot(
+        mn.TrueDot(
             center=DOWN * 0.48,
             stroke_width=14,
             color=PURPLE,
@@ -456,14 +459,14 @@ with Off():
     )
 
 with Seq():
-    with Lag(0.15, run_time=1.2):
+    with Lag(0.15, duration=1.2):
         dot_cloud.spawn()
         point_cloud_dot.spawn()
         true_dot.spawn()
         point_group.spawn()
-    with Sync(run_time=0.5):
+    with Sync(duration=0.5):
         point_labels.spawn()
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         dot_cloud.rotate(90, OUT)
         point_cloud_dot.scale(1.25)
         true_dot.move(UP * 0.35)

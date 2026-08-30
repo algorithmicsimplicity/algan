@@ -29,7 +29,6 @@ from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import broadcast_gather, dot_product
 
 
 def midpoint(x):
@@ -137,19 +136,6 @@ class Group(Mob):
         ):
             self.spawn(animate=False)
 
-    @property
-    def mobs(self):
-        """The Mobs in this Group -- an alias of
-        :attr:`~algan.animatable_base.mob.Mob.children`.
-
-        The live list, not a copy: mutating it changes the Group. Prefer
-        :meth:`~algan.mobs.group.Group.add` and
-        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_child`,
-        which keep the Group's
-        own location and parent links in step.
-        """
-        return self.children
-
     @staticmethod
     def _midpoint_for(mobs):
         if not mobs:
@@ -172,7 +158,7 @@ class Group(Mob):
         )
         return midpoint(locations) if locations else ORIGIN
 
-    def get_mob_midpoint(self) -> torch.Tensor:
+    def _get_mob_midpoint(self) -> torch.Tensor:
         """Get the middle of the Group's members' combined extent.
 
         The center of the box enclosing every member, which is where the Group
@@ -321,7 +307,7 @@ class Group(Mob):
                 self.children[:] = new_children
                 self._note_hierarchy_change()
         with Off(animation_manager=self.animation_manager):
-            self.set_non_recursive(location=self.get_mob_midpoint())
+            self.set_non_recursive(location=self._get_mob_midpoint())
         return self
 
     def get_parts_as_mobs(self):
@@ -335,35 +321,15 @@ class Group(Mob):
             the Group itself is
             not included -- it carries no geometry of its own.
         """
-        return self.mobs
-
-    def get_boundary_edge_point2(self, direction: torch.Tensor) -> torch.Tensor:
-        """Get the outermost point of any member along a direction.
-
-        Parameters
-        ----------
-        direction
-            Direction to search along, shape ``(*, 3)``.
-
-        Returns
-        -------
-        torch.Tensor
-            The extreme boundary point across all members, shape ``(*, 3)``.
-        """
-        points = torch.stack(
-            [(m.get_boundary_edge_point(direction)) for m in self.mobs]
-        )
-        dots = dot_product(points, direction)
-        furthest_ind = dots.argmax(0, keepdim=True)
-        return broadcast_gather(points, 0, furthest_ind, keepdim=False)
+        return self.children
 
     def arrange_in_line(
         self,
         direction: torch.Tensor = RIGHT,
         buffer: float | None = None,
         start_at_first: bool = False,
-        equal_displacement: bool = False,
-        alignment_direction: torch.Tensor | None = None,
+        equal_widths: bool = False,
+        align_to: torch.Tensor | None = None,
     ):
         """Lay the members out in a line.
 
@@ -386,11 +352,11 @@ class Group(Mob):
         start_at_first
             Whether to keep the first member where it is and build the line out from
             it. Defaults to False, which centers the line on the Group's location.
-        equal_displacement
+        equal_widths
             Whether to space members by a constant pitch (that of the largest member)
             rather than by their own sizes. Defaults to False. True gives evenly
             spaced centers, which is what you want for a row of labelled cells.
-        alignment_direction
+        align_to
             Direction along which to additionally align members, e.g. ``DOWN`` to sit
             them all on a shared baseline. Defaults to ``None``, meaning no secondary
             alignment.
@@ -413,37 +379,34 @@ class Group(Mob):
             buffer = SETTINGS.style.buffer
 
         mob_sizes = [
-            (
-                m.get_boundary_in_direction(direction)
-                - m.get_boundary_in_direction(-direction)
-            ).norm(p=2, dim=-1, keepdim=True)
-            for m in self.mobs
+            (m.get_boundary_point(direction) - m.get_boundary_point(-direction)).norm(
+                p=2, dim=-1, keepdim=True
+            )
+            for m in self.children
         ]
-        if alignment_direction is not None:
+        if align_to is not None:
             alignment_dists = [
-                (
-                    m.get_boundary_in_direction(alignment_direction) - m.get_center()
-                ).norm(p=2, dim=-1)
-                for m in self.mobs
+                (m.get_boundary_point(align_to) - m.get_center()).norm(p=2, dim=-1)
+                for m in self.children
             ]
             max_dist = max(alignment_dists)
             alignment_offsets = [max_dist - _ for _ in alignment_dists]
-        if equal_displacement:
+        if equal_widths:
             max_size = max(mob_sizes)
             mob_sizes = [max_size for _ in range(len(mob_sizes))]
         total_size = sum(mob_sizes) + (buffer * (len(mob_sizes) - 1))
 
         start = (
-            (self.mobs[0].location - direction * (mob_sizes[0] / 2))
+            (self.children[0].location - direction * (mob_sizes[0] / 2))
             if start_at_first
             else (self.location - direction * total_size / 2)
         )
         with Sync(animation_manager=self.animation_manager):
-            for i, mob in enumerate(self.mobs):
+            for i, mob in enumerate(self.children):
                 start = start + direction * (mob_sizes[i] / 2)
                 location = start
-                if alignment_direction is not None:
-                    location = location + alignment_offsets[i] * alignment_direction
+                if align_to is not None:
+                    location = location + alignment_offsets[i] * align_to
                 # loc + (disp_to_center) = l
                 mob.location = location + (mob.location - mob.get_center())
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
@@ -477,8 +440,8 @@ class Group(Mob):
             return self
         dif = end - start
         with Sync(animation_manager=self.animation_manager):
-            for i, mob in enumerate(self.mobs):
-                mob.location = start + dif * ((i + 1) / (len(self.mobs) + 1))
+            for i, mob in enumerate(self.children):
+                mob.location = start + dif * ((i + 1) / (len(self.children) + 1))
         return self
 
     def arrange_in_grid(
@@ -486,7 +449,7 @@ class Group(Mob):
         num_rows: int = None,
         row_direction: torch.Tensor = RIGHT,
         column_direction: torch.Tensor = DOWN,
-        buffer=None,
+        row_buffer=None,
         column_buffer=None,
         tight_axis=None,
     ):
@@ -512,12 +475,12 @@ class Group(Mob):
             Direction along which a row runs. Defaults to ``RIGHT``.
         column_direction
             Direction in which successive rows are stacked. Defaults to ``DOWN``.
-        buffer
+        row_buffer
             Gap between members within a row, in world units. Defaults to ``None``,
             meaning ``SETTINGS.style.buffer`` (``0.6``).
         column_buffer
             Gap between rows, in world units. Defaults to ``None``, meaning use
-            ``buffer``.
+            ``row_buffer``.
         tight_axis
             Which axis sizes its cells per row/column rather than uniformly across
             the whole grid: ``0`` for columns, ``1`` for rows. Defaults to ``None``,
@@ -553,25 +516,26 @@ class Group(Mob):
         """
         if not self.children:
             return self
-        if buffer is None:
-            buffer = SETTINGS.style.buffer
+        if row_buffer is None:
+            row_buffer = SETTINGS.style.buffer
         if column_buffer is None:
-            column_buffer = buffer
+            column_buffer = row_buffer
         if num_rows is None:
             num_rows = max(1, math.ceil(math.sqrt(len(self.children))))
         if not isinstance(num_rows, int) or isinstance(num_rows, bool) or num_rows <= 0:
             raise AlganConfigurationError("num_rows must be a positive integer")
         num_cols = len(self.children) // num_rows
-        if num_rows * num_cols < len(self.mobs):
+        if num_rows * num_cols < len(self.children):
             num_cols += 1
         row_direction = F.normalize(row_direction, p=2, dim=-1)
         column_direction = F.normalize(column_direction, p=2, dim=-1)
         buf_dist1 = [
-            max([m.get_length_in_direction(row_direction) for m in self.mobs]) + buffer
+            max([m.get_length_in_direction(row_direction) for m in self.children])
+            + row_buffer
             for _ in range(num_cols)
         ]
         buf_dist2 = [
-            max([m.get_length_in_direction(column_direction) for m in self.mobs])
+            max([m.get_length_in_direction(column_direction) for m in self.children])
             + column_buffer
             for _ in range(num_rows)
         ]
@@ -579,27 +543,27 @@ class Group(Mob):
             if tight_axis == 0:
                 buf_dist1 = [
                     max(
-                        self.mobs[i + j * num_cols].get_length_in_direction(
+                        self.children[i + j * num_cols].get_length_in_direction(
                             row_direction
                         )
                         for j in range(num_rows)
-                        if i + j * num_cols < len(self.mobs)
+                        if i + j * num_cols < len(self.children)
                     )
-                    + buffer
+                    + row_buffer
                     for i in range(num_cols)
                 ]
             elif tight_axis == 1:
                 buf_dist2 = [
                     max(
-                        self.mobs[i + j * num_cols].get_length_in_direction(
+                        self.children[i + j * num_cols].get_length_in_direction(
                             column_direction
                         )
                         for i in range(num_cols)
-                        if i + j * num_cols < len(self.mobs)
+                        if i + j * num_cols < len(self.children)
                     )
                     + column_buffer
                     for j in range(num_rows)
-                    if j * num_cols < len(self.mobs)
+                    if j * num_cols < len(self.children)
                 ]
             else:
                 raise ValueError("tight_axis must be 0, 1, or None")
@@ -609,7 +573,7 @@ class Group(Mob):
             + column_direction * sum(buf_dist2) * 0.5
         )
         with Sync(animation_manager=self.animation_manager):
-            for i, mob in enumerate(self.mobs):
+            for i, mob in enumerate(self.children):
                 x = i % num_cols
                 y = i // num_cols
                 x_dist = sum(buf_dist1[:x]) + buf_dist1[x] * 0.5

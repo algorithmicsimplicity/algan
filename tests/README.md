@@ -52,7 +52,7 @@ render:
 | --- | --- |
 | `test_timeline_overlap.py`, `test_timeline_state_query.py`, `test_active_timeline_materialization.py` | Recording, the per-row state query and materialization at frame times. Nothing reaches the screen except through these. |
 | `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
-| `test_rate_functions.py` | Every animation is evaluated through one of these curves. |
+| `test_easings.py` | Every animation is evaluated through one of these curves. |
 | `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
 | `test_mob_reparenting.py` | That the hierarchy is read when an animation is *recorded*, not when it plays: a parent transform resolves the descendant union to rows and the event keeps them, so re-parenting afterwards redirects the next animation without rewriting the last one. That contract lives in the timeline (`modify_attribute_and_record`, `replay_inds`) and in two version-keyed descendant caches, none of which are in this file — a mutation that forgets to bump a version does not error, it silently drops a member from a transform. Tensor-only, no render. |
 | `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
@@ -63,6 +63,7 @@ render:
 | `test_batched_surface_mobs.py` (per test) | Indexing into a packed Mob -- `Mob.__getitem__`, `_set_data_sub_inds` and `__len__` resolving one member's rows out of a shared batch. Every packed Mob (all `Text`, every point cloud) depends on it, and it breaks from the Mob base or the timeline rather than from the surface code. Only the two indexing tests are marked; the equivalence tests beside them fail only when `surface.py` changes. |
 | `test_bezier_group_runs.py` (per test) | That the vectorized bezier build is still *reached*, and that splitting a clashing group into runs leaves the merged collection unchanged. The batchability gate reads timeline internals (`mob_id_to_inds`, `ranges_for`, `parent_batch_sizes`), so a timeline or packing change can silently send every circuit back to the per-actor build -- output stays correct and nothing else notices. Two tensor-only tests are marked; the frame comparison beside them renders and is not. |
 | `test_neural_net_idle.py` | The batched idle-updater fast path (`ALGAN_BATCHED_IDLE_UPDATER`) must write exactly what the per-mob loops it replaced write. It reads rows through the same timeline machinery as any updater (`trace_updater_mob_access`, `_compact_index`, `modify`), so a change to replay or materialization can silently desync the two arms; the marked test materializes one window under each arm on a freshly built net and requires bit-equal buffers. Tensor-only, no render; the file's other two tests stay unmarked. |
+| `test_public_api_surface.py` | `algan.__all__` is assembled by rules over every exported module, not written by hand, so it moves from anywhere: adding a module-level helper to an exported module publishes a new name, and moving a class between the native and `algan.manim` surfaces withdraws one. The snapshot catches both at the commit that causes them rather than at release. It also holds the native/`algan.manim` boundary — no Manim adapter may shadow a native class — which a rename in either direction can break. Pure Python, no Taichi, no render: about half a second. |
 | `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
 
 ### What is not in it, and where that is covered instead
@@ -74,7 +75,7 @@ anyway.
 
 | Left out | Why | Covered by |
 | --- | --- | --- |
-| Per-feature behaviour: the indication animations, `become`, `wave_color`, `NumericDisplay`, materials, fragment shaders, neural nets, the Manim compatibility layer, glTF/FBX import | Breaks when that feature is worked on, not when anything else is | Its own file, plus `tests/full_renders/` for pixels |
+| Per-feature behaviour: the indication animations, `become`, `wave_color`, `DecimalNumber`, materials, fragment shaders, neural nets, the Manim compatibility layer, glTF/FBX import | Breaks when that feature is worked on, not when anything else is | Its own file, plus `tests/full_renders/` for pixels |
 | Renderer internals: PN tessellation, surface autotune, bezier sampling, BVH refit, wavefront compaction, the frag-pid gate | Same, one subsystem each | Its own file |
 | Batch sizing, the arena, texture memory, post-processing memory | Cheap, but they only move when their own module does; the fast render exercises the real path | `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py`, … |
 | Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the full suite and CI catch before a push | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
@@ -171,7 +172,7 @@ a diff in one column rather than as a mystery.
 | Scene | Covers |
 | --- | --- |
 | `complex_hierarchy_become` | Arbitrary hierarchy-to-hierarchy `become`: primitive-aware pairing across different tree shapes, cubic-bezier/Surface/mesh conversion, collapsed-target growth and surplus-source collapse for unequal leaf counts, Image-only dissolve, and parent transforms after target-tree reconstruction. |
-| `shapes_and_timeline` | 2-D bezier circuits (fills, non-convex triangulation, inward borders, analytic AA), all four animation contexts and their nesting, rate functions, every indication animation, `become`, updaters, `wave_color`, `draw_border_then_fill`, `NumericDisplay`, the spawn/despawn lifecycle, and the raw primitives underneath it all. |
+| `shapes_and_timeline` | 2-D bezier circuits (fills, non-convex triangulation, inward borders, analytic AA), all four animation contexts and their nesting, rate functions, every indication animation, `become`, updaters, `wave_color`, `DrawBorderThenFill`, `DecimalNumber`, the spawn/despawn lifecycle, and the raw primitives underneath it all. |
 | `solids_and_camera` | Analytic PN surfaces vs. flat meshes side by side, the Platonic solids, `Surface`, `Arrow3D`/`Line3D`/`Dot3D`/`ConvexHull3D`, parent-and-child transforms in one block, the movement helpers, screen-relative layout, and every camera motion. |
 | `materials_and_lighting` | All nine `Mesh*Material` classes and the presets, animated material parameters, all six light types, shadows, glow through bloom and tonemapping, opacity, and the reflection/refraction paths of the wavefront tracer. |
 | `text_and_media` | `Text`/`MarkupText`/`Tex`/`MathTex`/`Paragraph`/`Code` and the triangulated variants, `write()`, per-glyph addressing, Tex-to-Tex morphing, `ImageMob` (textured and per-pixel), glTF import with PBR and normal maps, and composed fragment shaders. |
@@ -420,7 +421,7 @@ Organised by subsystem. The files worth knowing about (★ = in the fast suite):
   `ALGAN_` variables parse, and the rule that the package reaches them only
   through `algan/environment.py`'s accessors, which is what keeps its registry
   of declared names honest — and is an audit, so it is not in the fast suite.
-- ★ `test_ux_regressions.py`, `test_rate_functions.py` — the authoring surface
+- ★ `test_ux_regressions.py`, `test_easings.py` — the authoring surface
   users touch most. `test_materials.py`, `test_fragment_shaders.py` and
   `test_indication_animations.py` are per-feature and stay out.
 - `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py` —

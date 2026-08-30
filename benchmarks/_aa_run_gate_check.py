@@ -282,7 +282,7 @@ def _cases():
         # facing bit really does name a sheet and the exact reference holds.
         # fill_opacity is explicit: a Cube is 0.75 by default (Manim's value),
         # and the replay's coverage question is an OPAQUE one.
-        Cube(side_length=1.5, fill_opacity=1.0).rotate(24, RIGHT).rotate(31, UP).spawn()
+        Cube(size=1.5, fill_opacity=1.0).rotate(24, RIGHT).rotate(31, UP).spawn()
 
     def polyhedron():
         # A Polyhedron arrives as one collection member per TRIANGLE. With
@@ -316,7 +316,7 @@ def _cases():
         # here (masks of the two sheets overlap, sums pass 255).
         from algan import Torus
 
-        Torus(major_radius=1.1, minor_radius=0.35).rotate(78, RIGHT).spawn()
+        Torus(ring_radius=1.1, tube_radius=0.35).rotate(78, RIGHT).spawn()
 
     def _pack(spacing, depth):
         # ``batch_mobs`` flattens several INDEPENDENT Sphere grids into one

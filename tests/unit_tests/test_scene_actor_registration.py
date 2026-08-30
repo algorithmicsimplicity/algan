@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 import algan
+import algan.manim as mn
 
 
 @pytest.fixture(autouse=True)
@@ -68,9 +69,9 @@ def _spawned(mob):
 
 
 def test_animated_boundary_layers_are_registered():
-    source = _spawned(algan.Square(color=algan.TRANSPARENT, border_width=0))
+    source = _spawned(algan.Square(color=algan.TRANSPARENT, stroke_width=0))
     boundary = _spawned(
-        algan.AnimatedBoundary(source, max_stroke_width=14, cycle_rate=1.0)
+        algan.AnimatedBoundary(source, max_stroke_width=7, cycle_rate=1.0)
     )
 
     actors = {id(actor) for actor in source.scene.actors}
@@ -79,13 +80,23 @@ def test_animated_boundary_layers_are_registered():
     assert invisible_geometry(boundary) == []
 
 
-def test_animated_boundary_half_width_conversion():
-    """Algan stores half-widths where Manim's public API takes full strokes."""
-    source = _spawned(algan.Square(color=algan.TRANSPARENT, border_width=0))
-    boundary = algan.AnimatedBoundary(source, max_stroke_width=14)
+def test_animated_boundary_width_is_in_algan_units():
+    """``max_stroke_width`` is Algan's unit, and reaches the layers verbatim.
 
-    assert boundary.max_stroke_width == 14
-    assert boundary.max_border_width == 7
+    It used to be Manim's and be halved on the way in, which made
+    ``AnimatedBoundary`` the one place in the root namespace where a stroke
+    width meant something different from every other. Manim means twice this
+    number by the same argument; ``algan.manim`` is where that lives.
+    """
+    source = _spawned(algan.Square(color=algan.TRANSPARENT, stroke_width=0))
+    boundary = algan.AnimatedBoundary(source, max_stroke_width=7)
+
+    assert boundary.max_stroke_width == 7
+    widest = max(
+        float(layer.stroke_width.reshape(-1).max())
+        for layer in boundary.boundary_copies
+    )
+    assert widest == 7
 
 
 def test_paragraph_lines_are_registered():
@@ -131,7 +142,7 @@ def test_code_built_detached_registers_nothing():
 
 
 def test_image_mobject_display_frame_is_registered():
-    mob = algan.ImageMobjectFromCamera(algan.Scene.get_camera())
+    mob = mn.ImageMobjectFromCamera(algan.Scene.get_camera())
     mob.add_display_frame()
     _spawned(mob)
 
@@ -145,7 +156,7 @@ def test_image_mobject_display_frame_is_registered():
     [
         pytest.param(lambda: algan.Text("ab"), id="Text"),
         pytest.param(lambda: algan.Tex("x^2"), id="Tex"),
-        pytest.param(lambda: algan.NumericDisplay(1.5), id="NumericDisplay"),
+        pytest.param(lambda: algan.DecimalNumber(1.5), id="DecimalNumber"),
         pytest.param(lambda: algan.Cube(), id="Cube"),
         pytest.param(lambda: algan.Dodecahedron(), id="Dodecahedron"),
         pytest.param(lambda: algan.Sphere(resolution=(4, 3)), id="Sphere"),
@@ -218,10 +229,10 @@ _CAPPED = {
     # Line3D is a capped Cylinder, and Arrow3D is one plus a capped Cone --
     # whose caps hang off parts that are not actors themselves.
     "line3d": lambda **kw: algan.Line3D(
-        start=algan.LEFT, end=algan.RIGHT, thickness=0.08, **kw
+        start=algan.LEFT, end=algan.RIGHT, radius=0.08, **kw
     ),
     "arrow3d": lambda **kw: algan.Arrow3D(
-        start=algan.ORIGIN, end=algan.RIGHT * 1.1, thickness=0.05, **kw
+        start=algan.ORIGIN, end=algan.RIGHT * 1.1, shaft_radius=0.05, **kw
     ),
 }
 

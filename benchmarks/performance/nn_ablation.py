@@ -35,7 +35,7 @@ QUALITY = sys.argv[2].upper() if len(sys.argv) > 2 else "UHD"
 
 
 def scene():
-    run_time = 5.0 if QUALITY == "PREVIEW" else 0.5
+    duration = 5.0 if QUALITY == "PREVIEW" else 0.5
     SETTINGS.raytracing.set(shadows=(ARM != "noshadow"))
     if ARM == "b1":
         SETTINGS.raytracing.set(max_bounces=1)
@@ -51,7 +51,7 @@ def scene():
             .spawn()
         )
 
-    with Sync(run_time=run_time):
+    with Sync(duration=duration):
         nn.move(UP)
         x.color_texture = x.color_texture * 0.5
         label.move(RIGHT * 2)

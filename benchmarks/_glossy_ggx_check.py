@@ -258,9 +258,7 @@ def _render_edge(roughness, tag):
     _build_edge_scene(roughness)
     render_to_file(
         file_path=path,
-        video_settings=RenderSettings(
-            (MIRROR_W, MIRROR_H), 1, super_sampling_anti_aliasing=1
-        ),
+        video_settings=RenderSettings((MIRROR_W, MIRROR_H), 1, supersampling=1),
     )
     cap = cv2.VideoCapture(path)
     ok, frame = cap.read()

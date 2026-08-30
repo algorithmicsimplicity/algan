@@ -327,7 +327,7 @@ def test_bounding_box_queries_follow_the_live_graph(scene):
     parent, child = _mob([0, 0, 0]), _mob([0, 3, 0])
 
     def top():
-        return parent.get_boundary_in_direction(UP).reshape(-1)[1].item()
+        return parent.get_boundary_point(UP).reshape(-1)[1].item()
 
     assert top() == pytest.approx(0.0)
     parent.add_children(child)

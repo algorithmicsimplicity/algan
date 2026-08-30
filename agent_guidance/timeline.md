@@ -39,7 +39,7 @@ Mob methods decorated with `@animated_function` bind their Scene's `AnimationMan
 Critical timeline rule: events must be recorded against a context that is entered and exited. Context exit finalizes retroactively rescaled timestamps. Do not manually record events against the top-level context's raw timespan. `add_updater` and `remove_updater` demonstrate the correct pattern by opening an `Off(record_funcs=False, ...)` context.
 
 The context classes live in `../algan/animation_timeline/animation_contexts.py`. `AnimationContext`s nest and inherit
-unset parameters, and `run_time` rescales all child timestamps retroactively on `__exit__`.
+unset parameters, and `duration` rescales all child timestamps retroactively on `__exit__`.
 
 **CRITICAL:** only `__exit__` syncs a context's rescaled timestamps, so events recorded against the top-level context
 all evaluate to time 0. The `animated_function` wrapper enters a child context automatically; anything recording events

@@ -1,7 +1,7 @@
 """Decisive test for the rim speckle: is the offending fragment on a
 BACK-FACING facet of the closed sphere?
 
-Renders the real ``ThreeDModelMob`` (same PBR material, normal map, textures)
+Renders the real ``Model3D`` (same PBR material, normal map, textures)
 twice at HD.  ``CULL=1`` monkeypatches the glTF loader so every triangle whose
 geometric normal points away from the camera is dropped before the mesh mob is
 built -- the front shell alone.  Everything else is identical.
@@ -66,10 +66,9 @@ with Off():
         color=WHITE,
         intensity=1.0,
     ).spawn(animate=False)
-    model = ThreeDModelMob(
+    model = Model3D(
         "assets/textured_icosphere.glb",
-        normalize=True,
-        normalize_size=SIZE,
+        fit_to_size=SIZE,
         smooth_normals=not FLAT,
     ).move(UP * 0.2)
     # Flat albedo so any variation is shading, not texture.

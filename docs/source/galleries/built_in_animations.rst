@@ -28,7 +28,7 @@ timeline, so they compose seamlessly with :doc:`animation contexts
 
     Scene.save_video()
 
-Most animation functions take an optional ``run_time`` argument, which overrides
+Most animation functions take an optional ``duration`` argument, which overrides
 the enclosing context's timing for that specific animation.
 
 Drawing Attention
@@ -41,7 +41,7 @@ Here are the built-in ways to draw the viewer's eye to a specific Mob:
     from algan import *
 
     grid = Group([Square(color=BLUE).scale(0.35) for _ in range(9)])
-    grid.arrange_in_grid(3, buffer=0.5).spawn()
+    grid.arrange_in_grid(3, row_buffer=0.5).spawn()
 
     target = grid[4]
     Indicate(target)
@@ -93,9 +93,9 @@ region:
 
     from algan import *
 
-    outline = Circle(radius=2, color=BLUE, border_width=6).spawn()
-    ShowPassingFlash(outline, run_time=2)
-    ShowPassingFlash(outline, run_time=2)
+    outline = Circle(radius=2, color=BLUE, stroke_width=6).spawn()
+    ShowPassingFlash(outline, duration=2)
+    ShowPassingFlash(outline, duration=2)
 
     Scene.save_video()
 
@@ -103,7 +103,7 @@ region:
 whole outline. :func:`~.ShowPassingFlashWithThinningStrokeWidth` does the same
 with a tapering stroke.
 
-To draw a shape on screen as if by hand, use :func:`~.draw_border_then_fill`. It
+To draw a shape on screen as if by hand, use :func:`~.DrawBorderThenFill`. It
 first traces the outer border and then animates the fill:
 
 .. algan:: AnimationsDrawBorderThenFill
@@ -113,7 +113,7 @@ first traces the outer border and then animates the fill:
     circle = Circle(color=BLUE).scale(0.8).move(LEFT * 2).spawn(False)
     square = Square(color=YELLOW).scale(0.8).move(RIGHT * 2).spawn(False)
 
-    draw_border_then_fill([circle, square], run_time=2)
+    DrawBorderThenFill([circle, square], duration=2)
 
     Scene.save_video()
 
@@ -135,8 +135,8 @@ it:
     from algan import *
 
     with Off():
-        square = Square(color=TRANSPARENT, border_width=0).scale(1.5).spawn()
-        boundary = AnimatedBoundary(square, max_stroke_width=10, cycle_rate=1.0).spawn()
+        square = Square(color=TRANSPARENT, stroke_width=0).scale(1.5).spawn()
+        boundary = AnimatedBoundary(square, max_stroke_width=5, cycle_rate=1.0).spawn()
 
     square.wait(3)
 
@@ -158,7 +158,7 @@ outline. Any curve, line, or polygon can serve as the path:
 
     path = Circle(radius=2, color=GREY).spawn()
     dot = Dot(color=YELLOW).spawn()
-    MoveAlongPath(dot, path, run_time=3)
+    MoveAlongPath(dot, path, duration=3)
 
     Scene.save_video()
 
@@ -199,9 +199,9 @@ vector flows:
     import torch
 
     grid = Group([Square(color=BLUE).scale(0.45) for _ in range(16)])
-    grid.arrange_in_grid(4, buffer=0.1).spawn()
+    grid.arrange_in_grid(4, row_buffer=0.1).spawn()
 
-    ApplyMatrix(grid, torch.tensor([[1.0, 0.6], [0.0, 1.0]]), run_time=2)
+    ApplyMatrix(grid, torch.tensor([[1.0, 0.6], [0.0, 1.0]]), duration=2)
 
     Scene.save_video()
 
@@ -214,7 +214,7 @@ deform continuously rather than just interpolate between two states:
     import torch
 
     grid = Group([Square(color=BLUE).scale(0.3) for _ in range(16)])
-    grid.arrange_in_grid(4, buffer=0.15).spawn()
+    grid.arrange_in_grid(4, row_buffer=0.15).spawn()
 
     def swirl(x, y, z, t):
         angle = t * 1.5 * torch.exp(-(x ** 2 + y ** 2) / 6)
@@ -222,7 +222,7 @@ deform continuously rather than just interpolate between two states:
                 x * torch.sin(angle) + y * torch.cos(angle),
                 z)
 
-    Homotopy(grid, swirl, run_time=3)
+    Homotopy(grid, swirl, duration=3)
 
     Scene.save_video()
 
@@ -235,18 +235,18 @@ natural way to visualise a differential equation:
     import torch
 
     dots = Group([Dot(color=YELLOW).scale(1.5) for _ in range(25)])
-    dots.arrange_in_grid(5, buffer=1.0).spawn()
+    dots.arrange_in_grid(5, row_buffer=1.0).spawn()
 
     def rotation_field(points):
         return torch.stack((-points[..., 1], points[..., 0],
                             torch.zeros_like(points[..., 2])), -1) * 0.5
 
-    PhaseFlow(dots, rotation_field, run_time=3, virtual_time=2.0)
+    PhaseFlow(dots, rotation_field, duration=3, virtual_time=2.0)
 
     Scene.save_video()
 
 ``virtual_time`` is how much of the field's own time to integrate over, and
-``integration_steps`` how finely. Both are independent of ``run_time``, which is
+``integration_steps`` how finely. Both are independent of ``duration``, which is
 only how long the viewer watches it.
 
 .. important::
@@ -263,7 +263,7 @@ only how long the viewer watches it.
     from algan import *
 
     text = Text("wave me", font_size=72).spawn()
-    ApplyWave(text, run_time=2)
+    ApplyWave(text, duration=2)
 
     Scene.save_video()
 

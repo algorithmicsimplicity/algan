@@ -63,11 +63,11 @@ SETTINGS.video.set({"LD": LD, "MD": MD, "HD": HD}[quality])
 with Off():
     Group([Sphere(color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]).spawn()
 
-with Seq(run_time=4, rate_func=rate_funcs.identity):
+with Seq(duration=4, easing=easings.identity):
     if mode == "rotate":
-        Scene.get_camera().rotate(360, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:
-        Scene.get_camera().orbit(360, UP, about_point=ORIGIN)
+        Scene.get_camera().orbit(360, UP, about=ORIGIN)
 
 out_dir = os.path.join(os.path.dirname(__file__), "_orbit_out")
 os.makedirs(out_dir, exist_ok=True)

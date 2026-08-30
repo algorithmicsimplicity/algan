@@ -131,7 +131,7 @@ def _group_mixed_families():
     return Group(
         Text("hi").move(UP),
         Sphere(radius=0.3).move(DOWN),
-        Cube(side_length=0.4).move(LEFT * 2),
+        Cube(size=0.4).move(LEFT * 2),
         _tri_vertices(),
     )
 
@@ -164,7 +164,7 @@ CATALOGUE: list[tuple[str, callable]] = [
     ("Torus", lambda: Torus()),
     ("SurfacePlane", _surface_plane),
     ("SurfaceWave", _surface_wave),
-    ("Cube", lambda: Cube(side_length=0.8)),
+    ("Cube", lambda: Cube(size=0.8)),
     ("Prism", lambda: Prism()),
     ("Tetrahedron", lambda: Tetrahedron()),
     ("Polyhedron", _polyhedron),
@@ -307,7 +307,7 @@ def run_case(
             source_points = _static_visible_rows(source)
 
             start = float(scene.animation_manager.context.timespan.current_time)
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 morphed = source.become(
                     target,
                     minimize_movement=minimize_movement,
@@ -508,7 +508,7 @@ def mode_chain(args):
                             RIGHT * (step % 3 - 1) * 1.2
                         )
                     reference = _static_visible_rows(target)
-                    with Sync(run_time=1.0):
+                    with Sync(duration=1.0):
                         current = current.become(target)
                     if current is None:
                         raise RuntimeError(f"step {step} returned None")

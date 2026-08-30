@@ -113,7 +113,7 @@ def _video_settings():
     return VideoSettings(
         resolution=_RESOLUTION,
         frames_per_second=1,
-        super_sampling_anti_aliasing=1,
+        supersampling=1,
     )
 
 
@@ -235,7 +235,7 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
                     scene.use_manim_defaults()
                 else:
                     # Not Algan's stock rig: this test states its own light.
-                    scene.clear_light_sources()
+                    scene.clear_lights()
                     PointLight(location=torch.tensor(_TEST_LIGHT), color=WHITE).spawn(
                         animate=False
                     )
@@ -254,7 +254,7 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
                     # the recorded move propagates to the face geometry,
                     # which the location= constructor kwarg does not.
                     cube = Cube(
-                        side_length=_CUBE_SIDE,
+                        size=_CUBE_SIDE,
                         fill_color=Color(_ALBEDO_RGB),
                         fill_opacity=1.0,
                     )
@@ -292,7 +292,7 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
             camera = scene.get_camera()
             ro = camera.location.detach().reshape(3).double()
             sp = camera.screen.location.detach().reshape(3).double()
-            sb = camera.get_render_screen_basis().detach().reshape(3, 3).double()
+            sb = camera._get_render_screen_basis().detach().reshape(3, 3).double()
             dual = torch.linalg.inv(sb)
             d0, d1 = dual[:, 0], dual[:, 1]
             n2 = sb[2]

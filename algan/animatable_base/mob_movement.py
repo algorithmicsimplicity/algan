@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from algan import animated_function
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.spatial import *
-from algan.geometry.geometry import project_point_onto_line
+from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
@@ -32,7 +32,7 @@ class MobMovementMixin:
     :class:`~algan.animatable_base.mob.Mob`.
     """
 
-    def move_between(self, loc1: Mob | torch.Tensor, loc2: Mob | torch.Tensor) -> Mob:
+    def move_between(self, start: Mob | torch.Tensor, end: Mob | torch.Tensor) -> Mob:
         """Move the Mob to the midpoint between two locations.
 
         Animation
@@ -43,33 +43,33 @@ class MobMovementMixin:
 
         Parameters
         ----------
-        loc1
+        start
             First endpoint: a 3-D point of shape ``(*, 3)``, or a Mob, in which
             case its center is used.
-        loc2
-            Second endpoint, in the same forms as ``loc1``.
+        end
+            Second endpoint, in the same forms as ``start``.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        loc1, loc2 = [
-            _.get_center() if hasattr(_, "get_center") else _ for _ in [loc1, loc2]
+        start, end = [
+            _.get_center() if hasattr(_, "get_center") else _ for _ in [start, end]
         ]
-        return self.move_to((loc1 + loc2) / 2)
+        return self.move_to((start + end) / 2)
 
-    def move_to_point_along_arc(
+    def _move_along_arc(
         self,
         point: torch.Tensor,
-        arc_angle_degrees: float | torch.Tensor,
+        arc_angle: float | torch.Tensor,
         arc_normal: torch.Tensor = OUTWARD,
         recursive: bool = True,
     ) -> Mob:
         """Move the Mob to ``point`` along a signed circular arc.
 
         The start and target points form the chord of the arc. ``arc_normal``
-        fixes the plane of the circle, and ``arc_angle_degrees`` is the signed
+        fixes the plane of the circle, and ``arc_angle`` is the signed
         sweep from the start to the target. Its sign follows the same rotation
         convention as
         :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`;
@@ -84,13 +84,13 @@ class MobMovementMixin:
         ---------
         Recorded as an animation: the Mob sweeps along the arc over the current
         context's duration (1 second by default). Wrap the call to retime it --
-        ``with Seq(run_time=3): mob.move_to_point_along_arc(RIGHT, 90)``.
+        ``with Seq(duration=3): mob.move_to_point_along_arc(RIGHT, 90)``.
 
         Parameters
         ----------
         point
             The target location, shape ``(*, 3)``.
-        arc_angle_degrees
+        arc_angle
             Signed arc sweep **in degrees**. Sweeps outside ``[-360, 360]`` are
             supported, except exact non-zero multiples of 360 degrees when the
             endpoints differ; such a path would require an infinite radius.
@@ -121,12 +121,12 @@ class MobMovementMixin:
 
         target = cast_to_tensor(point).to(device=device, dtype=dtype)
         normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
-        angle_degrees = cast_to_tensor(arc_angle_degrees).to(device=device, dtype=dtype)
+        angle_degrees = cast_to_tensor(arc_angle).to(device=device, dtype=dtype)
 
         if not torch.all(torch.isfinite(target)):
             raise ValueError("point must contain only finite values")
         if not torch.all(torch.isfinite(angle_degrees)):
-            raise ValueError("arc_angle_degrees must contain only finite values")
+            raise ValueError("arc_angle must contain only finite values")
         if not torch.all(torch.isfinite(normal)):
             raise ValueError("arc_normal must contain only finite values")
 
@@ -172,7 +172,7 @@ class MobMovementMixin:
     def _move_along_arc_displacement(
         self,
         chord: torch.Tensor,
-        arc_angle_degrees: torch.Tensor,
+        arc_angle: torch.Tensor,
         arc_normal: torch.Tensor,
         recursive: bool = True,
         interpolation: float | torch.Tensor = 1.0,
@@ -182,7 +182,7 @@ class MobMovementMixin:
         device = self.location.device
         chord = cast_to_tensor(chord).to(device=device, dtype=dtype)
         normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
-        angle_degrees = cast_to_tensor(arc_angle_degrees).to(device=device, dtype=dtype)
+        angle_degrees = cast_to_tensor(arc_angle).to(device=device, dtype=dtype)
         interpolation = cast_to_tensor(interpolation).to(device=device, dtype=dtype)
 
         # Let h be half the total sweep. Direct circular interpolation can be
@@ -243,11 +243,11 @@ class MobMovementMixin:
         return self
 
     def move_to(
-        self, location: torch.Tensor, path_arc_angle: float | None = None, **kwargs
+        self, location: torch.Tensor, arc_angle: float | None = None, **kwargs
     ) -> Mob:
         """Move the Mob to an absolute location.
 
-        The path is a straight line unless ``path_arc_angle`` is given, in which
+        The path is a straight line unless ``arc_angle`` is given, in which
         case the Mob swings to the target along a circular arc.
 
         Animation
@@ -261,14 +261,14 @@ class MobMovementMixin:
         ----------
         location
             The target location, shape ``(*, 3)``.
-        path_arc_angle
+        arc_angle
             Signed sweep of the curved path, **in degrees**. Defaults to
             ``None``, meaning travel in a straight line.
         **kwargs
             Passed to :meth:`~algan.animatable_base.mob.Mob.set_location` (notably
             ``recursive``), or to
             :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_point_along_arc`
-            when ``path_arc_angle`` is
+            when ``arc_angle`` is
             given (notably ``arc_normal``).
 
         Returns
@@ -283,9 +283,9 @@ class MobMovementMixin:
         :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position`
             Place the Mob in screen space.
         """
-        if path_arc_angle is None:
+        if arc_angle is None:
             return self.set_location(location, **kwargs)
-        return self.move_to_point_along_arc(location, path_arc_angle, **kwargs)
+        return self._move_along_arc(location, arc_angle, **kwargs)
 
     def move(self, displacement: torch.Tensor, **kwargs) -> Mob:
         """Move the Mob by a displacement from wherever it currently is.
@@ -294,7 +294,7 @@ class MobMovementMixin:
         ---------
         Recorded as an animation: the Mob travels the displacement over the
         current context's duration (1 second by default). Retime it with
-        ``with Seq(run_time=2): mob.move(RIGHT)``, or apply it instantly with
+        ``with Seq(duration=2): mob.move(RIGHT)``, or apply it instantly with
         ``with Off(): mob.move(RIGHT)``. Applies to this Mob and its descendants.
 
         Parameters
@@ -306,7 +306,7 @@ class MobMovementMixin:
         **kwargs
             Passed to
             :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`
-            -- notably ``path_arc_angle`` to
+            -- notably ``arc_angle`` to
             travel along a curve rather than a straight line.
 
         Returns
@@ -323,7 +323,7 @@ class MobMovementMixin:
             square = Square().spawn()
             square.move(RIGHT)
             square.move(UP * 2 + LEFT)
-            square.move(DOWN, path_arc_angle=120)
+            square.move(DOWN, arc_angle=120)
 
             Scene.save_video()
         """
@@ -365,7 +365,7 @@ class MobMovementMixin:
         align_edge
             Direction along which to additionally align the two Mobs' boundaries
             (see
-            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_boundary`),
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.align_with`),
             so e.g. two Mobs
             placed side by side can also share a bottom edge. Defaults to
             ``None``, meaning no secondary alignment.
@@ -380,22 +380,21 @@ class MobMovementMixin:
 
         See Also
         --------
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_center`
-            Align centers along one axis without changing the others.
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_edge`
-            Align edges along one axis without changing the others.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.align_with`
+            Align centers, edges or boundaries along one axis without changing
+            the others.
         """
         buffer = _resolve_buffer(buffer)
         direction = cast_to_direction("direction", direction)
         normalized_direction = F.normalize(direction, p=2, dim=-1)
         # Get the boundary point of the target_mob along the given direction
         target_edge_point = (
-            target_mob.get_boundary_in_direction(normalized_direction)
+            target_mob.get_boundary_point(normalized_direction)
             if not isinstance(target_mob, torch.Tensor)
             else target_mob
         )
         # Get the boundary point of this mob in the opposite direction
-        my_edge_point = self.get_boundary_in_direction(-normalized_direction)
+        my_edge_point = self.get_boundary_point(-normalized_direction)
 
         # Calculate the required displacement to move 'my_edge_point' to 'target_edge_point'
         # plus the buffer distance, and then apply it to the Mob's current location.
@@ -404,22 +403,23 @@ class MobMovementMixin:
         )
         self.move(displacement_to_align_edges, **kwargs)
         if align_edge is not None:
-            self.move_inline_with_boundary(target_mob, align_edge)
+            self.align_with(target_mob, align_edge, anchor="boundary")
         return self
 
-    def move_inline_with_edge(
+    def align_with(
         self,
         mob: Mob,
         direction: torch.Tensor,
-        edge: torch.Tensor | None = None,
+        anchor: str = "center",
         buffer: float | None = None,
-        **kwargs,
+        from_mob: Mob | None = None,
     ) -> Mob:
-        """Line this Mob's edge up with another Mob's edge along one axis.
+        """Line this Mob up with another along one axis.
 
         Only the component of the movement along ``direction`` is applied, so
-        this aligns the two Mobs on that axis and leaves their positions on the
-        other axes untouched.
+        the two end up aligned on that axis with their positions on the other
+        axes untouched: ``a.align_with(b, UP)`` puts them at the same height
+        without changing how far apart they are horizontally.
 
         Animation
         ---------
@@ -431,177 +431,56 @@ class MobMovementMixin:
         mob
             The Mob to align with.
         direction
-            Axis to align along, and which of ``mob``'s edges to use (e.g.
-            ``RIGHT``, ``UP``).
-        edge
-            Which of *this* Mob's edges to align. Defaults to ``None``, meaning
-            use ``direction`` for both.
+            Axis to align along, and which of ``mob``'s sides to measure from
+            (e.g. ``RIGHT``, ``UP``); need not be normalized.
+        anchor
+            Which point on each Mob is brought into line, matched
+            case-insensitively. ``'center'`` (the default) aligns the two
+            anchors. ``'boundary'`` aligns the two ``direction``-side
+            boundaries, so the Mobs end up flush -- sharing a bottom edge, say.
+            ``'edge'`` brings this Mob's opposite side up against ``mob``'s
+            ``direction`` side, so the two abut rather than overlap.
         buffer
-            Gap to leave between the aligned edges, in world units. Defaults to
-            ``SETTINGS.style.buffer`` (``0.6``).
-        **kwargs
-            Passed to
-            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move`.
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
-        """
-        from algan.animatable_base.mob import Mob
-
-        # Calculate the target location for this Mob if it were moved next to itself
-        # using the specified `edge` direction and `buffer`. This acts as a reference point.
-        old_location_reference = (
-            Mob(scene=self.scene, add_to_scene=False)
-            .move_next_to(self, direction if edge is None else edge, buffer)
-            .location
-        )
-        # Calculate the target location for this Mob if it were moved next to the `mob`
-        # using the primary `direction` and `buffer`.
-        new_location_target = (
-            Mob(scene=self.scene, add_to_scene=False)
-            .move_next_to(mob, direction, buffer)
-            .location
-        )
-        # Calculate the displacement needed to move from the reference point to the target point,
-        # projected onto the `direction` to ensure alignment only along that axis.
-        displacement = project_point_onto_line(
-            new_location_target - old_location_reference, direction
-        )
-        self.move(displacement, **kwargs)
-        return self
-
-    def move_inline_with_center(self, mob: Mob, direction: torch.Tensor) -> Mob:
-        """Line this Mob's center up with another Mob's center along one axis.
-
-        Only the component of the movement along ``direction`` is applied:
-        ``mob_a.move_inline_with_center(mob_b, UP)`` puts the two at the same
-        height without changing how far apart they are horizontally.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second
-        by default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        mob
-            The Mob whose center to align with.
-        direction
-            Axis to align along; need not be normalized.
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
-        """
-        # Calculate the displacement vector from this Mob's center to the target Mob's center.
-        displacement_to_target_center = mob.location - self.location
-        # Project this displacement onto the `direction` to get the movement needed for alignment.
-        alignment_displacement = project_point_onto_line(
-            displacement_to_target_center, direction
-        )
-        self.move(alignment_displacement)
-        return self
-
-    def move_inline_with_mob(
-        self,
-        mob: Mob,
-        align_direction: torch.Tensor,
-        center: bool = False,
-        from_mob: Mob | None = None,
-        buffer: float | None = None,
-    ) -> Mob:
-        """Align this Mob with another along one axis, by edge or by center.
-
-        The general form of
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_edge`
-        and
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_center`:
-        ``center`` picks which of the two
-        behaviours you get, and ``from_mob`` lets a third Mob supply the
-        reference point being moved into place.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second
-        by default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        mob
-            The Mob to align with.
-        align_direction
-            Axis to align along; only movement along this axis is applied.
-        center
-            Whether to align centers rather than edges. Defaults to False,
-            meaning this Mob's boundary is brought to ``mob``'s boundary.
+            Extra gap along ``direction``, in world units. Defaults to ``None``,
+            which means ``SETTINGS.style.buffer`` (``0.6``) for
+            ``anchor='edge'`` and no gap for the other two.
         from_mob
             Mob supplying the reference point that is moved into alignment,
             useful when aligning a group by one of its members. Defaults to
             ``None``, meaning use this Mob.
-        buffer
-            Accepted for symmetry with the other alignment methods and **has no
-            effect** here. Defaults to ``None``.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``anchor`` is not one of the three names above.
         """
-        if center:
-            # Align centers
-            mob_reference_point = mob.location
-            from_mob_reference_point = (
-                self.location if from_mob is None else from_mob.location
+        anchor = str(anchor).lower()
+        if anchor not in ("center", "edge", "boundary"):
+            raise AlganConfigurationError(
+                f"anchor must be 'center', 'edge' or 'boundary', got {anchor!r}"
             )
+        direction = F.normalize(cast_to_direction("direction", direction), p=2, dim=-1)
+        source = self if from_mob is None else from_mob
+        if buffer is None:
+            buffer = SETTINGS.style.buffer if anchor == "edge" else 0.0
+
+        if anchor == "center":
+            target_point = mob.location
+            source_point = source.location
+        elif anchor == "boundary":
+            target_point = mob.get_boundary_point(direction)
+            source_point = source.get_boundary_point(direction)
         else:
-            # Align edges
-            mob_reference_point = mob.get_boundary_in_direction(align_direction)
-            from_mob_reference_point = (
-                self.get_boundary_in_direction(-align_direction)
-                if from_mob is None
-                else from_mob.get_boundary_in_direction(-align_direction)
-            )
+            target_point = mob.get_boundary_point(direction)
+            source_point = source.get_boundary_point(-direction)
 
-        # Calculate the overall displacement needed for alignment
-        displacement = mob_reference_point - from_mob_reference_point
-        # Normalize the alignment direction
-        normalized_align_direction = F.normalize(align_direction, p=2, dim=-1)
-        # Project the displacement onto the normalized direction to ensure movement only along that axis
-        return self.move(
-            dot_product(displacement, normalized_align_direction)
-            * normalized_align_direction
-        )
-
-    def move_inline_with_boundary(self, mob: Mob, direction: torch.Tensor) -> Mob:
-        """Align this Mob's boundary flush with another Mob's boundary.
-
-        Unlike
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_next_to`,
-        no gap is left: the two boundaries end
-        up coincident along ``direction``, which is what makes two Mobs share a
-        bottom edge or a left edge.
-
-        Animation
-        ---------
-        Recorded as an animation over the current context's duration (1 second
-        by default). Applies to this Mob and its descendants.
-
-        Parameters
-        ----------
-        mob
-            The Mob whose boundary to align with.
-        direction
-            Which boundary to align (e.g. ``DOWN`` for bottom edges).
-
-        Returns
-        -------
-        :class:`~algan.animatable_base.mob.Mob`
-            This Mob, so calls can be chained.
-        """
-        return self.move(self.get_displacement_to_boundary(mob, direction))
+        displacement = target_point + direction * buffer - source_point
+        return self.move(dot_product(displacement, direction) * direction)
 
     def move_to_screen_position(
         self, x: float | torch.Tensor, y: float | torch.Tensor
@@ -637,20 +516,22 @@ class MobMovementMixin:
         """
         with Off(animation_manager=self.animation_manager):
             clone = self.clone(add_to_scene=False)
-            clone.move_to_corner(DOWN, LEFT)
+            clone.move_to_screen_corner((DOWN, LEFT))
             bottom_left = clone.location.clone()
-            clone.move_to_corner(UP, LEFT)
+            clone.move_to_screen_corner((UP, LEFT))
             top_left = clone.location.clone()
-            clone.move_to_corner(UP, RIGHT)
+            clone.move_to_screen_corner((UP, RIGHT))
             top_right = clone.location.clone()
-            clone.move_to_corner(DOWN, RIGHT)
+            clone.move_to_screen_corner((DOWN, RIGHT))
             bottom_right = clone.location.clone()
             bottom = bottom_left * (1 - x) + x * bottom_right
             top = top_left * (1 - x) + x * top_right
             new_loc = bottom * (1 - y) + y * top
         return self.move_to(new_loc)
 
-    def move_to_edge(self, edge: torch.Tensor, buffer: float | None = None) -> Mob:
+    def move_to_screen_edge(
+        self, direction: torch.Tensor, buffer: float | None = None
+    ) -> Mob:
         """Move the Mob against one edge of the screen.
 
         The Mob's own boundary is what comes to rest ``buffer`` *inside* the
@@ -667,7 +548,7 @@ class MobMovementMixin:
 
         Parameters
         ----------
-        edge
+        direction
             Which screen edge to move to: ``RIGHT``, ``LEFT``, ``UP`` or
             ``DOWN``.
         buffer
@@ -681,16 +562,16 @@ class MobMovementMixin:
 
         See Also
         --------
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner`
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_corner`
             Move against two edges at once.
-        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_out_of_screen`
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_off_screen`
             Move all the way off-screen.
         """
         buffer = _resolve_buffer(buffer)
-        edge = cast_to_direction("edge", edge)
-        normalized_edge = F.normalize(edge, p=2, dim=-1)
+        direction = cast_to_direction("direction", direction)
+        normalized_edge = F.normalize(direction, p=2, dim=-1)
         # Get the boundary point of this Mob that is furthest towards the 'edge' direction
-        mob_boundary_point = self.get_boundary_in_direction(normalized_edge)
+        mob_boundary_point = self.get_boundary_point(normalized_edge)
         # Project this point onto the screen border to find the target point on the border
         edge_point_on_screen = self.scene.camera.project_point_onto_screen_border(
             mob_boundary_point, normalized_edge
@@ -710,13 +591,11 @@ class MobMovementMixin:
         self.move(displacement)
         return self
 
-    def move_to_corner(
-        self, edge1: torch.Tensor, edge2: torch.Tensor, buffer: float | None = None
-    ) -> Mob:
+    def move_to_screen_corner(self, directions, buffer: float | None = None) -> Mob:
         """Move the Mob into a corner of the screen.
 
-        The corner is named by the two edges that meet there, e.g.
-        ``mob.move_to_corner(UP, RIGHT)`` for the top-right.
+        The corner is named by the edges that meet there, e.g.
+        ``mob.move_to_screen_corner((UP, RIGHT))`` for the top-right.
 
         Animation
         ---------
@@ -728,27 +607,27 @@ class MobMovementMixin:
 
         Parameters
         ----------
-        edge1
-            First screen edge of the corner (e.g. ``UP``).
-        edge2
-            Second screen edge of the corner (e.g. ``RIGHT``).
+        directions
+            The screen edges meeting at the corner, as an iterable of direction
+            vectors -- ``(UP, RIGHT)`` for the top-right.
         buffer
-            Gap to leave from both screen borders, in world units. Defaults to
-            ``SETTINGS.style.buffer`` (``0.6``).
+            Gap to leave from every screen border named, in world units.
+            Defaults to ``SETTINGS.style.buffer`` (``0.6``).
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        # Chain two calls to move_to_edge to reach the corner
+        # Chained move_to_screen_edge calls, run together so the whole corner
+        # move still takes one context duration.
         with Sync(animation_manager=self.animation_manager):
-            return self.move_to_edge(edge1, buffer=buffer).move_to_edge(
-                edge2, buffer=buffer
-            )
+            for direction in directions:
+                self.move_to_screen_edge(direction, buffer=buffer)
+        return self
 
-    def move_out_of_screen(
-        self, edge: torch.Tensor, buffer: float | None = None, despawn: bool = True
+    def move_off_screen(
+        self, direction: torch.Tensor, buffer: float | None = None, despawn: bool = True
     ) -> Mob:
         """Slide the Mob off the screen, and by default despawn it there.
 
@@ -765,7 +644,7 @@ class MobMovementMixin:
 
         Parameters
         ----------
-        edge
+        direction
             Which way to leave: ``RIGHT``, ``LEFT``, ``UP`` or ``DOWN``.
         buffer
             Extra distance to travel beyond the screen border, in world units.
@@ -784,7 +663,7 @@ class MobMovementMixin:
         bbox = self.get_bounding_box()
 
         points_on_screen_edge = self.scene.camera.project_point_onto_screen_border(
-            bbox, edge
+            bbox, direction
         )
 
         disps = points_on_screen_edge - bbox
@@ -798,12 +677,12 @@ class MobMovementMixin:
         with Seq(
             animation_manager=self.animation_manager
         ):  # Ensure movement and despawn happen sequentially
-            self.move(largest_disp + buffer * F.normalize(edge, p=2, dim=-1))
+            self.move(largest_disp + buffer * F.normalize(direction, p=2, dim=-1))
             if despawn:
                 self.despawn(animate=False)
         return self
 
-    def move_to_point_along_square(
+    def move_to_point_with_displacement(
         self, destination: torch.Tensor, displacement: torch.Tensor
     ) -> Mob:
         """Move the Mob to a destination along a right-angled, three-leg path.
@@ -816,7 +695,7 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation. All three legs run inside a
-        ``Seq(run_time=1)``, so the whole path takes 1 second regardless of the
+        ``Seq(duration=1)``, so the whole path takes 1 second regardless of the
         current context's duration. Applies to this Mob and its descendants.
 
         Parameters
@@ -843,7 +722,7 @@ class MobMovementMixin:
             * normalized_displacement_direction
         )
 
-        with Seq(run_time=1, animation_manager=self.animation_manager):
+        with Seq(duration=1, animation_manager=self.animation_manager):
             self.move(displacement)
             self.move(orthogonal_displacement)
             self.location = destination

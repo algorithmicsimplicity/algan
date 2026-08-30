@@ -2,7 +2,7 @@
 
 A rate function maps a normalized time ``t`` in ``[0, 1]`` to a normalized
 progress, also usually in ``[0, 1]``. Every animation context takes one as
-``rate_func``, and it decides the *feel* of a movement without changing its
+``easing``, and it decides the *feel* of a movement without changing its
 duration or its endpoints.
 
 ``smooth`` is the default: it eases in and out, so things start and stop gently.
@@ -327,3 +327,53 @@ def tan(t, scale=10):
     return m * ease_out_expo(t_tensor) * 0.5 + (1 - m) * (
         ease_in_expo(t_tensor) * 0.5 + 0.5
     )
+
+
+# Explicit, so ``from algan.easings import *`` brings in the curves and not
+# this module's own ``math`` and ``torch`` imports, and so the documentation
+# tooling has a definitive roster to render. (``dir()`` still lists the imports
+# -- ``__all__`` governs star-imports and autodoc, not attribute listing.)
+__all__ = [
+    "delay_fade",
+    "ease_in_back",
+    "ease_in_bounce",
+    "ease_in_circ",
+    "ease_in_cubic",
+    "ease_in_elastic",
+    "ease_in_expo",
+    "ease_in_out_back",
+    "ease_in_out_bounce",
+    "ease_in_out_circ",
+    "ease_in_out_cubic",
+    "ease_in_out_elastic",
+    "ease_in_out_quad",
+    "ease_in_out_quart",
+    "ease_in_out_quint",
+    "ease_in_out_sine",
+    "ease_in_quad",
+    "ease_in_quart",
+    "ease_in_quint",
+    "ease_in_sine",
+    "ease_out_back",
+    "ease_out_bounce",
+    "ease_out_circ",
+    "ease_out_cubic",
+    "ease_out_elastic",
+    "ease_out_exp",
+    "ease_out_exp_square",
+    "ease_out_expo",
+    "ease_out_quad",
+    "ease_out_quart",
+    "ease_out_quint",
+    "ease_out_quintic",
+    "ease_out_sine",
+    "identity",
+    "inversed",
+    "linear",
+    "pulse_fade",
+    "rush_from",
+    "rush_into",
+    "slow_into",
+    "smooth",
+    "tan",
+]

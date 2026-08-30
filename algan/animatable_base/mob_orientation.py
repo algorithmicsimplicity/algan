@@ -6,6 +6,8 @@ into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 
 from __future__ import annotations
 
+import math
+
 import torch.nn.functional as F
 
 from algan import animated_function
@@ -22,6 +24,12 @@ from algan.utils.tensor_utils import (
     squish,
     unsquish,
 )
+
+_RADIANS_TO_DEGREES = 180.0 / math.pi
+
+#: Local axis names accepted by ``look`` / ``look_at``, mapped to the basis row
+#: they select.
+_AXIS_NAMES = {"right": 0, "up": 1, "forward": 2}
 
 
 class MobOrientationMixin:
@@ -52,44 +60,49 @@ class MobOrientationMixin:
         return self
 
     @animated_function(
-        animated_args={"num_degrees": 0},
-        unique_args=["axis", "about_point"],
+        animated_args={"angle": 0},
+        unique_args=["axis", "about", "degrees"],
     )
     def rotate(
         self,
-        num_degrees: float | torch.Tensor,
+        angle: float | torch.Tensor,
         axis: torch.Tensor = OUTWARD,
-        about_point: torch.Tensor | None = None,
+        about: torch.Tensor | None = None,
+        *,
+        degrees: bool = True,
     ) -> Mob:
         """Rotate the Mob about an axis, optionally around a point in space.
 
-        With the default ``about_point=None`` only the Mob's orientation changes
-        and it stays where it is. Given an ``about_point``, the Mob also travels
+        With the default ``about=None`` only the Mob's orientation changes
+        and it stays where it is. Given an ``about`` point, the Mob also travels
         around the axis through that point, like a planet spinning as it orbits.
         To move around a point *without* re-orienting the Mob, use
         :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.orbit`.
 
         Animation
         ---------
-        Recorded as an animation: the rotation sweeps from 0 to ``num_degrees``
+        Recorded as an animation: the rotation sweeps from 0 to ``angle``
         over the current context's duration (1 second by default), so the Mob
         turns rather than snapping. Retime it with
-        ``with Seq(run_time=3): mob.rotate(90)``, or apply it instantly with
+        ``with Seq(duration=3): mob.rotate(90)``, or apply it instantly with
         ``with Off(): mob.rotate(90)``. Applies to this Mob and its descendants.
 
         Parameters
         ----------
-        num_degrees
-            How far to rotate, in degrees, counter-clockwise when looking
-            down ``axis``. Accepts a tensor of shape ``(*, 1)`` to give each Mob
-            of a batch its own angle.
+        angle
+            How far to rotate, counter-clockwise when looking down ``axis``, in
+            degrees unless ``degrees`` is False. Accepts a tensor of shape
+            ``(*, 1)`` to give each Mob of a batch its own angle.
         axis
             Axis to rotate around; need not be normalized. Defaults to ``OUTWARD``
             (the -z axis, pointing out of the screen), which spins a flat 2-D
             shape in the screen plane.
-        about_point
+        about
             Point to rotate around, shape ``(*, 3)``. Defaults to ``None``,
             meaning rotate in place about the Mob's own center.
+        degrees
+            Whether ``angle`` is in degrees. Defaults to True; pass False to give
+            it in radians.
 
         Returns
         -------
@@ -105,35 +118,40 @@ class MobOrientationMixin:
             square = Square().spawn()
             square.rotate(90)
             square.rotate(180, axis=UP)
-            square.rotate(90, about_point=RIGHT * 2)
+            square.rotate(90, about=RIGHT * 2)
 
             Scene.save_video()
         """
-        # num_degrees has already been through cast_to_tensor in prepare_kwargs,
+        # angle has already been through cast_to_tensor in prepare_kwargs,
         # so a swapped rotate(OUTWARD, 90) arrives here as a (*, 3) angle and a
         # scalar axis. Catching it here names the parameters; left alone it
         # surfaces as an IndexError from deep inside the rotation matrix build.
-        if isinstance(num_degrees, torch.Tensor) and num_degrees.shape[-1] != 1:
+        if isinstance(angle, torch.Tensor) and angle.shape[-1] != 1:
             raise AlganConfigurationError(
-                "num_degrees must be an angle in degrees, not a vector; the "
-                "signature is rotate(num_degrees, axis)"
+                "angle must be an angle, not a vector; the "
+                "signature is rotate(angle, axis)"
             )
+        # Scaling commutes with the decorator's interpolation from 0, so
+        # converting the already-interpolated value here is exact.
+        num_degrees = angle if degrees else angle * _RADIANS_TO_DEGREES
         axis = F.normalize(cast_to_direction("axis", axis), p=2, dim=-1)
         rotation_matrix = get_rotation_around_axis(num_degrees, axis, dim=-1)
         self.basis = squish(unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1)
-        if about_point is not None:
-            self.orbit(num_degrees, axis, cast_to_direction("about_point", about_point))
+        if about is not None:
+            self.orbit(num_degrees, axis, cast_to_direction("about", about))
         return self
 
     @animated_function(
-        animated_args={"num_degrees": 0},
-        unique_args=["axis", "about_point"],
+        animated_args={"angle": 0},
+        unique_args=["axis", "about", "degrees"],
     )
     def orbit(
         self,
-        num_degrees: float | torch.Tensor,
+        angle: float | torch.Tensor,
         axis: torch.Tensor = OUTWARD,
-        about_point: torch.Tensor | None = None,
+        about: torch.Tensor | None = None,
+        *,
+        degrees: bool = True,
     ) -> Mob:
         """Move the Mob around a point without turning it.
 
@@ -141,44 +159,48 @@ class MobOrientationMixin:
         unchanged.
         For an orbit that also turns the object as it moves, use
         :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` with an
-        ``about_point``.
+        ``about`` point.
 
         Animation
         ---------
-        Recorded as an animation: the orbit sweeps from 0 to ``num_degrees`` over
+        Recorded as an animation: the orbit sweeps from 0 to ``angle`` over
         the current context's duration (1 second by default). Applies to this Mob
         and its descendants.
 
         Parameters
         ----------
-        num_degrees
-            How far around to travel, in degrees, counter-clockwise when
-            looking down ``axis``.
+        angle
+            How far around to travel, counter-clockwise when looking down
+            ``axis``, in degrees unless ``degrees`` is False.
         axis
             Axis to orbit around; need not be normalized. Defaults to ``OUTWARD``
             (the -z axis, out of the screen).
-        about_point
+        about
             Point to orbit around, shape ``(*, 3)``. Defaults to ``None``, which
             makes the call a **no-op** -- orbiting the Mob's own center would not
             move it, since its orientation is held fixed.
+        degrees
+            Whether ``angle`` is in degrees. Defaults to True; pass False to give
+            it in radians.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        if about_point is None:
+        if about is None:
             return self
+        num_degrees = angle if degrees else angle * _RADIANS_TO_DEGREES
         axis = F.normalize(cast_to_direction("axis", axis), p=2, dim=-1)
-        about_point = cast_to_direction("about_point", about_point)
+        about = cast_to_direction("about", about)
         self.location = (
             rotate_vector_around_axis(
-                self.location - about_point,
+                self.location - about,
                 num_degrees,
                 axis,
                 dim=-1,
             )
-            + about_point
+            + about
         )
         return self
 
@@ -212,13 +234,13 @@ class MobOrientationMixin:
         """
         return unsquish(self.basis, -1, 3)[..., 0, :]
 
-    def get_upwards_basis(self) -> torch.Tensor:
+    def get_up_basis(self) -> torch.Tensor:
         """Get the Mob's upward basis vector, scale included.
 
         This is the second row of the Mob's basis matrix, so its length is the
         Mob's scale along that axis rather than 1. For a unit-length direction,
         use
-        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_upwards_direction`.
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_up_direction`.
 
         Returns
         -------
@@ -255,7 +277,7 @@ class MobOrientationMixin:
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 0, :], p=2, dim=-1)
 
-    def get_upwards_direction(self) -> torch.Tensor:
+    def get_up_direction(self) -> torch.Tensor:
         """Get the Mob's own upward direction.
 
         The normalized second row of the Mob's basis, i.e. its local +y axis in
@@ -268,7 +290,26 @@ class MobOrientationMixin:
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 1, :], p=2, dim=-1)
 
-    def look(self, direction: torch.Tensor, axis: int = 2) -> Mob:
+    #: The three direction getters also answer to a bare property, so
+    #: ``mob.up`` reads as well as ``mob.get_up_direction()``. This is the one
+    #: place ``Mob`` carries a deliberate alias (see ``CLAUDE.md``); the basis
+    #: getters have no property spelling on purpose, because they carry the
+    #: Mob's scale and a scaled vector reads wrongly as ``mob.up``.
+    right = property(get_right_direction)
+    up = property(get_up_direction)
+    forward = property(get_forward_direction)
+
+    @staticmethod
+    def _resolve_axis(with_axis: str) -> int:
+        """Map ``'right'`` / ``'up'`` / ``'forward'`` onto a basis row index."""
+        try:
+            return _AXIS_NAMES[str(with_axis).lower()]
+        except KeyError:
+            raise AlganConfigurationError(
+                f"with_axis must be one of {sorted(_AXIS_NAMES)}, got {with_axis!r}"
+            ) from None
+
+    def look(self, direction: torch.Tensor, with_axis: str = "forward") -> Mob:
         """Turn the Mob so one of its own axes points a given way.
 
         The rotation taken is the shortest one that lines the chosen local axis
@@ -287,14 +328,20 @@ class MobOrientationMixin:
         direction
             World-space direction the chosen axis should point along, shape
             ``(*, 3)``; need not be normalized.
-        axis
-            Which of the Mob's local axes to aim: ``0`` for right, ``1`` for up,
-            ``2`` for forward. Defaults to ``2``, the forward axis.
+        with_axis
+            Which of the Mob's local axes to aim: ``'right'``, ``'up'`` or
+            ``'forward'``, matched case-insensitively. Defaults to
+            ``'forward'``.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``with_axis`` is not one of the three axis names.
 
         See Also
         --------
@@ -305,7 +352,7 @@ class MobOrientationMixin:
         # with the target direction.
         rotation_angle_degrees, rotation_axis = get_rotation_between_3d_vectors(
             unsquish(self.normalized_basis, -1, 3)[
-                ..., axis, :
+                ..., self._resolve_axis(with_axis), :
             ],  # Current orientation of specified axis
             F.normalize(direction, p=2, dim=-1),  # Normalized target direction
             dim=-1,
@@ -313,7 +360,7 @@ class MobOrientationMixin:
         # Apply the rotation
         return self.rotate(rotation_angle_degrees, rotation_axis)
 
-    def look_at(self, point: torch.Tensor, axis: int = 2) -> Mob:
+    def look_at(self, point: torch.Tensor, with_axis: str = "forward") -> Mob:
         """Turn the Mob to face a point in space.
 
         Equivalent to
@@ -332,15 +379,21 @@ class MobOrientationMixin:
         ----------
         point
             World-space point to face, shape ``(*, 3)``.
-        axis
-            Which of the Mob's local axes to aim at ``point``: ``0`` for right,
-            ``1`` for up, ``2`` for forward. Defaults to ``2``, the forward axis.
+        with_axis
+            Which of the Mob's local axes to aim at ``point``: ``'right'``,
+            ``'up'`` or ``'forward'``, matched case-insensitively. Defaults to
+            ``'forward'``.
 
         Returns
         -------
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``with_axis`` is not one of the three axis names.
         """
         # Calculate the direction vector from the Mob's current location to the target point
         direction_to_look = point - self.location
-        return self.look(direction_to_look, axis=axis)
+        return self.look(direction_to_look, with_axis=with_axis)

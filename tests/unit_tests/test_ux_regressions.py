@@ -11,6 +11,7 @@ import torch
 import algan
 from algan import render_loop
 from algan.animation_timeline.animation_contexts import Sync
+from algan.constants.math import PI
 from algan.errors import (
     AlganConfigurationError,
     HierarchyError,
@@ -66,8 +67,8 @@ def test_kernel_compile_notice_ignores_offline_cache_hits():
     assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
-def test_same_run_time_tolerates_zero_duration_children():
-    with Sync(same_run_time=True), algan.Off():
+def test_match_durations_tolerates_zero_duration_children():
+    with Sync(match_durations=True), algan.Off():
         pass
 
 
@@ -83,7 +84,7 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
         "width": scene.num_pixels_screen_width,
         "height": scene.num_pixels_screen_height,
     }
-    temporary = VideoSettings((17, 13), 2, super_sampling_anti_aliasing=1)
+    temporary = VideoSettings((17, 13), 2, supersampling=1)
 
     def fake_frames(*_args, **_kwargs):
         yield torch.zeros(
@@ -130,9 +131,7 @@ def test_save_frame_resolves_negative_at_from_current_context_time(
     monkeypatch, tmp_path
 ):
     scene = SceneManager.instance().current_scene
-    scene.set_video_settings(
-        VideoSettings((17, 13), 10, super_sampling_anti_aliasing=1)
-    )
+    scene.set_video_settings(VideoSettings((17, 13), 10, supersampling=1))
     scene.animation_manager.context.timespan.current_time = 3.0
     requested_windows = []
 
@@ -164,9 +163,7 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
     algan_logger.addHandler(caplog.handler)
     try:
         scene = SceneManager.instance().current_scene
-        scene.set_video_settings(
-            VideoSettings((17, 13), 10, super_sampling_anti_aliasing=1)
-        )
+        scene.set_video_settings(VideoSettings((17, 13), 10, supersampling=1))
         _stub_out_frame_writing(monkeypatch, scene)
 
         scene.save_frame(tmp_path / "single_still", at=0.0)
@@ -301,7 +298,7 @@ def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
     _stub_out_frame_writing(monkeypatch, scene, on_render=prepare_transient_queries)
 
     square = Square().spawn()
-    with algan.Seq(run_time=8):
+    with algan.Seq(duration=8):
         square.move(algan.RIGHT)
         square.move(algan.UP)
         # Last statement in the block: nothing after it records an edit, so
@@ -347,7 +344,7 @@ def test_save_frame_leaves_a_finished_scene_s_replay_windows_alone(
     )
 
     square = Square().spawn()
-    with algan.Seq(run_time=8):
+    with algan.Seq(duration=8):
         square.move(algan.RIGHT)
 
     # Timings are final here, so resolving is legitimate and must survive.
@@ -407,7 +404,7 @@ def test_render_window_covers_the_whole_open_context_chain(monkeypatch, tmp_path
 
     square = Square().spawn()
     with algan.Sync():
-        with algan.Seq(run_time=5):
+        with algan.Seq(duration=5):
             square.move(algan.RIGHT)
             square.move(algan.UP)
         with algan.Seq():
@@ -435,7 +432,7 @@ def test_save_video_reset_false_rolls_back_derived_state_mid_block(
     scene_times_before = [list(pair) for pair in scene.scene_times]
 
     square = Square().spawn()
-    with algan.Seq(run_time=8):
+    with algan.Seq(duration=8):
         square.move(algan.RIGHT)
         square.move(algan.UP)
         # Last statement in the block, so nothing afterwards invalidates a
@@ -461,7 +458,7 @@ def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path
 
     result = algan.Scene.save_video(
         tmp_path / "scene",
-        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 1, supersampling=1),
         overwrite=False,
     )
 
@@ -478,7 +475,7 @@ def test_transparent_mp4_fails_before_render_and_preserves_scene(tmp_path):
     with pytest.raises(AlganConfigurationError, match="MP4"):
         algan.Scene.save_video(
             tmp_path / "scene.mp4",
-            video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 1, supersampling=1),
             background=algan.TRANSPARENT,
         )
     assert SceneManager.instance().current_scene is scene
@@ -494,7 +491,7 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
         scene.audio_manager,
     )
     scene.audio_manager.video_transcript = "stale"
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(
         algan_utils,
         "get_file_writer",
@@ -504,7 +501,7 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="writer failed"):
         algan.Scene.save_video(
             tmp_path / "failure.mp4",
-            video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 1, supersampling=1),
             animate_fade_out=False,
             reset=True,
         )
@@ -532,13 +529,13 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
     result = algan.Scene.save_video(
         tmp_path / "keep.mp4",
-        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 1, supersampling=1),
         animate_fade_out=False,
     )
 
@@ -566,13 +563,13 @@ def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
     algan.Scene.save_video(
         tmp_path / "discard.mp4",
-        video_settings=VideoSettings((8, 8), 1, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 1, supersampling=1),
         animate_fade_out=False,
         reset=True,
     )
@@ -588,7 +585,7 @@ def test_group_uses_one_member_store_and_repairs_parent_links():
     replacement = Square(add_to_scene=False)
     group = Group(first, second, add_to_scene=False)
 
-    assert group.mobs is group.children
+    assert not hasattr(group, "mobs")  # `children` is the one spelling
     group[0] = replacement
 
     assert group.children == [replacement, second]
@@ -662,7 +659,7 @@ def test_spawned_light_registers_once_and_add_light_is_chainable():
 
     assert light.spawn(animate=False) is light
     light.spawn(animate=False)
-    scene.add_light_source(light)
+    scene.add_light(light)
 
     assert len(scene.light_sources) == initial + 1
     assert sum(item is light for item in scene.light_sources) == 1
@@ -752,7 +749,7 @@ def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
     def helper():
         calls.append("helper")
 
-    @algan_utils.scene_function(name="main")
+    @algan_utils.algan_scene(name="main")
     def entry_point():
         calls.append("scene")
 
@@ -773,7 +770,7 @@ def test_root_star_exports_exclude_dependency_modules_and_typing_helpers():
     exec("from algan import *", namespace)
     for leaked in ("os", "sys", "torch", "np", "F", "Any", "Callable"):
         assert leaked not in namespace
-    for expected in ("Square", "Scene", "SETTINGS", "HD", "RED", "Sync", "rate_funcs"):
+    for expected in ("Square", "Scene", "SETTINGS", "HD", "RED", "Sync", "easings"):
         assert expected in namespace
 
 
@@ -804,7 +801,7 @@ def test_root_star_exports_exclude_internal_helpers():
     ):
         assert leaked not in namespace, f"{leaked} leaked into the star namespace"
     # Still importable from their real home.
-    from algan.utils.algan_utils import scene_function  # noqa: F401
+    from algan.utils.algan_utils import algan_scene  # noqa: F401
     from algan.utils.tensor_utils import mean  # noqa: F401
 
 
@@ -827,9 +824,9 @@ def test_camera_validates_projection_and_clip_parameters():
     assert camera.orthographic is True
     assert camera.set_fov(45) is camera
     assert camera.orthographic is False
-    scene.set_video_settings(VideoSettings((20, 10), 1, super_sampling_anti_aliasing=1))
+    scene.set_video_settings(VideoSettings((20, 10), 1, supersampling=1))
     assert camera.pixel_height == pytest.approx(0.2)
-    scene.set_video_settings(VideoSettings((40, 20), 1, super_sampling_anti_aliasing=1))
+    scene.set_video_settings(VideoSettings((40, 20), 1, supersampling=1))
     assert camera.pixel_height == pytest.approx(0.1)
 
 
@@ -853,7 +850,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
 
     def fake_render_to_video(*_args, **render_kwargs):
@@ -863,7 +860,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
     monkeypatch.setattr(scene, "render_to_video", fake_render_to_video)
     result = algan.Scene.save_video(
         tmp_path / "static.mp4",
-        video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
         animate_fade_out=False,
     )
 
@@ -875,37 +872,37 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
 @pytest.mark.fast
 def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     """Border-textured Mobs still animate when supplied through any iterable."""
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
     squares = [Square(add_to_scene=True).spawn(animate=False) for _ in range(3)]
-    assert squares[0].border_color.shape[-1] == 5
+    assert squares[0].stroke_color.shape[-1] == 5
 
-    animated = draw_border_then_fill(squares)
+    animated = DrawBorderThenFill(squares)
 
     assert animated == squares
     # A generator is an iterable too, and must not be consumed twice.
-    assert draw_border_then_fill(mob for mob in squares) == squares
+    assert DrawBorderThenFill(mob for mob in squares) == squares
 
 
 @pytest.mark.fast
 def test_draw_border_then_fill_restores_the_original_style():
     """The temporary outline must not become the Mob's permanent style."""
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
     square = Square(
         color=algan.BLUE,
-        border_color=algan.RED,
-        border_width=0.25,
+        stroke_color=algan.RED,
+        stroke_width=0.25,
         add_to_scene=True,
     ).spawn(False)
     original_colors = [
         descendant.color.clone() for descendant in square.get_descendants()
     ]
-    original_border_width = square.border_width.clone()
+    original_stroke_width = square.stroke_width.clone()
 
-    draw_border_then_fill(square for _ in range(1))
+    DrawBorderThenFill(square for _ in range(1))
 
-    assert torch.allclose(square.border_width, original_border_width)
+    assert torch.allclose(square.stroke_width, original_stroke_width)
     assert all(
         torch.allclose(descendant.color, original)
         for descendant, original in zip(square.get_descendants(), original_colors)
@@ -913,7 +910,7 @@ def test_draw_border_then_fill_restores_the_original_style():
 
 
 def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
     squares = [Square(add_to_scene=True).spawn(False) for _ in range(3)]
     drawn = []
@@ -925,7 +922,7 @@ def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
             lambda _t=1.0, square=square: drawn.append(square) or square,
         )
 
-    assert draw_border_then_fill(squares, reverse=True) == list(reversed(squares))
+    assert DrawBorderThenFill(squares, reverse=True) == list(reversed(squares))
     assert drawn == list(reversed(squares))
 
 
@@ -935,7 +932,7 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
     text = algan.Text("A", color=algan.YELLOW, add_to_scene=True).spawn(False)
     glyph = text.character_mobs[0]
 
-    text.write(run_time=2)
+    text.write(duration=2)
     text.scene.timeline_manager.set_state_to_times(
         torch.tensor([0.5, 1.5, 1.999], dtype=torch.get_default_dtype())
     )
@@ -945,23 +942,23 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
         torch.tensor([0.0, 0.5, 0.999]),
         atol=1e-4,
     )
-    assert torch.allclose(glyph.border_color[0, 0, :3], algan.WHITE[:3])
+    assert torch.allclose(glyph.stroke_color[0, 0, :3], algan.WHITE[:3])
     assert torch.allclose(
-        glyph.border_color[1, 0, :3],
+        glyph.stroke_color[1, 0, :3],
         torch.tensor([1.0, 1.0, 0.5]),
         atol=1e-4,
     )
     assert torch.allclose(
-        glyph.border_width[:, 0, 0],
+        glyph.stroke_width[:, 0, 0],
         torch.tensor([1.0, 0.5, 0.001]),
         atol=1e-4,
     )
 
 
 def test_draw_border_then_fill_tolerates_an_empty_iterable():
-    from algan.animations.manim_animations import draw_border_then_fill
+    from algan.animations.manim_animations import DrawBorderThenFill
 
-    assert draw_border_then_fill([]) == []
+    assert DrawBorderThenFill([]) == []
 
 
 def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
@@ -972,22 +969,22 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
 
     def fake(
         mobs,
-        border_width=1,
-        run_time=None,
+        stroke_width=1,
+        duration=None,
         lag_ratio=None,
-        border_color=None,
+        stroke_color=None,
         **kwargs,
     ):
         seen["mobs"] = list(mobs)
-        seen["border_width"] = border_width
-        seen["border_color"] = border_color
+        seen["stroke_width"] = stroke_width
+        seen["stroke_color"] = stroke_color
         return seen["mobs"]
 
-    monkeypatch.setattr(manim_animations, "draw_border_then_fill", fake)
+    monkeypatch.setattr(manim_animations, "DrawBorderThenFill", fake)
 
     assert text.write() is text
     assert len(seen["mobs"]) == len(text.character_mobs)
-    assert torch.allclose(seen["border_color"], algan.WHITE)
+    assert torch.allclose(seen["stroke_color"], algan.WHITE)
 
 
 # --- UX audit fixes -------------------------------------------------------
@@ -1000,18 +997,18 @@ def _stub_render(monkeypatch, scene):
         def close(self):
             return None
 
-    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
     monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
 
 
 def test_context_kwargs_on_a_method_point_at_the_context():
-    """``mob.move(RIGHT, run_time=2)`` is the Manim reflex; say what to write."""
+    """``mob.move(RIGHT, duration=2)`` is the Manim reflex; say what to write."""
     square = Square().spawn()
-    with pytest.raises(TypeError, match=r"with Seq\(run_time=2\)"):
-        square.move(algan.RIGHT, run_time=2)
-    with pytest.raises(TypeError, match=r"with Seq\(run_time=2\)"):
-        square.set(color=algan.BLUE, run_time=2)
+    with pytest.raises(TypeError, match=r"with Seq\(duration=2\)"):
+        square.move(algan.RIGHT, duration=2)
+    with pytest.raises(TypeError, match=r"with Seq\(duration=2\)"):
+        square.set(color=algan.BLUE, duration=2)
     # lag_ratio must suggest Lag, which takes it positionally.
     with pytest.raises(TypeError, match=r"with Lag\(0\.3\)"):
         square.set(lag_ratio=0.3)
@@ -1029,11 +1026,11 @@ def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
 
     with pytest.raises(AttributeError, match=r"Did you mean 'color'\?"):
         Square().spawn().set(colour=algan.RED)
-    # border_color is accepted by set(), so it must be advertised by the error.
+    # stroke_color is accepted by set(), so it must be advertised by the error.
     circle = Circle().spawn()
-    with pytest.raises(AttributeError, match="border_color"):
+    with pytest.raises(AttributeError, match="stroke_color"):
         circle.set(bordercolour=algan.RED)
-    circle.set(border_color=algan.PINK)
+    circle.set(stroke_color=algan.PINK)
 
 
 @pytest.mark.fast
@@ -1129,7 +1126,7 @@ def test_vector_arguments_reject_scalars():
         lambda: square.move_to(1),
         lambda: square.rotate(90, 1),
         lambda: square.rotate(algan.OUT, 90),
-        lambda: square.move_to_edge(1),
+        lambda: square.move_to_screen_edge(1),
     ):
         with pytest.raises(AlganConfigurationError):
             call()
@@ -1155,7 +1152,7 @@ def test_never_spawned_mob_warns(monkeypatch, tmp_path):
     with pytest.warns(NeverSpawnedMobWarning, match="Circle"):
         algan.Scene.save_video(
             tmp_path / "forgot.mp4",
-            video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 4, supersampling=1),
         )
 
 
@@ -1178,7 +1175,7 @@ def test_add_to_scene_false_is_the_only_way_to_mark_reference_geometry(
     _stub_render(monkeypatch, scene)
     algan.Scene.save_video(
         tmp_path / "become.mp4",
-        video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+        video_settings=VideoSettings((8, 8), 4, supersampling=1),
     )
     assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
 
@@ -1194,7 +1191,7 @@ def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
     with pytest.warns(NeverSpawnedMobWarning, match="add_to_scene=False"):
         algan.Scene.save_video(
             tmp_path / "become_unflagged.mp4",
-            video_settings=VideoSettings((8, 8), 4, super_sampling_anti_aliasing=1),
+            video_settings=VideoSettings((8, 8), 4, supersampling=1),
         )
 
 
@@ -1320,7 +1317,7 @@ def test_lifted_path_tracer_features_render(feature, tmp_path):
             sphere.spawn()
         elif feature == "extended_light":
             with algan.Off():
-                scene.clear_light_sources()
+                scene.clear_lights()
                 RectAreaLight(
                     location=UP * 3 + OUT * 3, color=WHITE, intensity=3
                 ).spawn()
@@ -1344,7 +1341,9 @@ def test_arrow3d_endpoints_follow_the_arrow():
     way it was first built.
     """
     with algan.Scene() as scene, algan.Off():
-        arrow = algan.Arrow3D(start=algan.ORIGIN, end=algan.RIGHT * 1.1, thickness=0.05)
+        arrow = algan.Arrow3D(
+            start=algan.ORIGIN, end=algan.RIGHT * 1.1, shaft_radius=0.05
+        )
         arrow.spawn()
 
         assert arrow.start_point.scene is scene
@@ -1362,7 +1361,7 @@ def test_arrow3d_endpoints_follow_the_arrow():
             atol=1e-5,
         )
 
-        arrow.rotate(90, algan.OUT, about_point=arrow.get_start())
+        arrow.rotate(90, algan.OUT, about=arrow.get_start())
         assert torch.allclose(
             arrow.get_vector().reshape(-1),
             torch.tensor((0.0, 1.1, 0.0)),
@@ -1456,7 +1455,7 @@ def test_the_scenes_own_video_settings_reach_both_render_calls(tmp_path):
     """
     import cv2
 
-    tiny = VideoSettings((32, 32), 2, super_sampling_anti_aliasing=1)
+    tiny = VideoSettings((32, 32), 2, supersampling=1)
 
     with algan.Scene(video_settings=tiny):
         Square(color=algan.BLUE).spawn()
@@ -1494,9 +1493,7 @@ def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
     try:
         with algan.Scene():
             Square(color=algan.BLUE).spawn()
-            algan.SETTINGS.video.set(
-                VideoSettings((64, 48), 3, super_sampling_anti_aliasing=1)
-            )
+            algan.SETTINGS.video.set(VideoSettings((64, 48), 3, supersampling=1))
             clip = algan.Scene.save_video(str(tmp_path / "clip.mp4"))
     finally:
         algan.SETTINGS.video.set(restore)
@@ -1628,10 +1625,13 @@ def test_seq_and_sync_explain_that_their_lag_ratio_is_fixed():
     """
     from algan.animation_timeline.animation_contexts import Seq
 
-    with pytest.raises(TypeError, match=r"Seq is Lag with lag_ratio=1"):
+    with pytest.raises(TypeError, match=r"Seq is Lag with ratio=1"):
         Seq(lag_ratio=0.5)
-    with pytest.raises(TypeError, match=r"Sync is Lag with lag_ratio=0"):
+    with pytest.raises(TypeError, match=r"Sync is Lag with ratio=0"):
         Sync(lag_ratio=0.5)
+    # ``ratio`` is Lag's own spelling, and is caught the same way.
+    with pytest.raises(TypeError, match=r"Seq is Lag with ratio=1"):
+        Seq(ratio=0.5)
     assert algan.Lag(0.5) is not None
 
 
@@ -1754,3 +1754,185 @@ def test_image_pixels_may_arrive_as_a_numpy_array():
         # the one padding produced.
         with pytest.raises(ValueError, match=r"got \(8, 8, 2\)"):
             algan.ImageMob(torch.zeros(8, 8, 2))
+
+
+@pytest.mark.fast
+def test_the_mob_positioning_surface_answers_to_its_public_names():
+    """Phase 3 of the public API overhaul renamed most of ``Mob``'s
+    positioning surface and privatized the rest. Every name below is called
+    here so a later rename fails at a call site and not only in the export
+    snapshot.
+    """
+    with algan.Scene():
+        square = Square().spawn()
+        other = Square().spawn()
+
+        # 3b -- one edge-point query, and the center-projected boundary beside
+        # it under a name that says they are a pair.
+        assert square.get_edge_point(algan.RIGHT) is not None
+        assert square.get_edge_point(algan.RIGHT, recursive=False) is not None
+        assert square.get_boundary_point(algan.RIGHT) is not None
+
+        # 3c -- the bounding-box trio all describe the same box.
+        torch.testing.assert_close(
+            square.get_bounding_box_max() - square.get_bounding_box_min(),
+            square.get_bounding_box_size(),
+        )
+        assert len(square.sample_points_in_direction(algan.UP, count=4)) == 4
+        assert square.move_to_screen_edge(algan.RIGHT) is square
+        assert square.move_to_screen_corner((algan.UP, algan.RIGHT)) is square
+        assert square.move_between(algan.ORIGIN, algan.RIGHT) is square
+        assert square.move_to_point_with_displacement(algan.ORIGIN, algan.UP) is square
+        assert square.move_to(algan.RIGHT, arc_angle=90) is square
+        assert square.rotate(90, algan.OUT, about=algan.ORIGIN) is square
+        assert square.orbit(90, algan.OUT, about=algan.ORIGIN) is square
+
+        # A radian spelling of the same turn is available on both.
+        assert square.rotate(PI / 2, algan.OUT, degrees=False) is square
+        assert (
+            square.orbit(PI / 2, algan.OUT, about=algan.ORIGIN, degrees=False) is square
+        )
+
+        # 3d -- the direction getters and their property spellings agree, and
+        # the basis getters have no property spelling.
+        for name in ("right", "up", "forward"):
+            torch.testing.assert_close(
+                getattr(square, name), getattr(square, f"get_{name}_direction")()
+            )
+            assert getattr(square, f"get_{name}_basis")() is not None
+
+        # 3e -- coordinates are properties, and assigning one is recorded like
+        # any other Mob attribute.
+        with algan.Off():
+            square.x = 3.0
+        torch.testing.assert_close(square.x, torch.full_like(square.x, 3.0))
+        with algan.Off():
+            square.xy = (1.0, 2.0)
+        torch.testing.assert_close(square.y, torch.full_like(square.y, 2.0))
+        assert square.get_coord([0, 2]) is not None
+        assert square.set_coord(2, 1.0) is square
+
+        # 3f -- one alignment method with three anchors.
+        for anchor in ("center", "edge", "boundary", "BOUNDARY"):
+            assert square.align_with(other, algan.UP, anchor=anchor) is square
+        with pytest.raises(AlganConfigurationError, match="anchor must be"):
+            square.align_with(other, algan.UP, anchor="middle")
+
+        # 3g -- look's axis is named, not an index.
+        assert square.look(algan.UP, with_axis="up") is square
+        assert square.look_at(algan.ORIGIN, with_axis="Forward") is square
+        with pytest.raises(AlganConfigurationError, match="with_axis must be"):
+            square.look(algan.UP, with_axis=2)
+
+        # 3a/3b -- the privatized and deleted names are gone.
+        for gone in (
+            "get_boundary_edge_point",
+            "get_boundary_in_direction",
+            "set_x_coord",
+            "get_x_coord",
+            "set_individual_coords",
+            "set_x_y_coord",
+            "move_to_edge",
+            "move_out_of_screen",
+            "move_inline_with_center",
+            "get_upwards_direction",
+            "morph_soup_parts",
+            "resolved_shadow_flags",
+            "check_properties_are_valid",
+        ):
+            assert not hasattr(square, gone), gone
+
+
+@pytest.mark.fast
+def test_move_next_to_align_edge_only_moves_along_the_alignment_axis():
+    """``align_edge`` refines a placement; it used to undo it.
+
+    It was implemented on ``move_inline_with_boundary``, which moved the whole
+    boundary-to-boundary displacement rather than its component along the
+    alignment axis -- so ``move_next_to(chart, RIGHT, align_edge=DOWN)`` lined
+    the bottoms up *and* slid the caption back on top of the chart in x.
+    """
+    with algan.Scene():
+        chart = Square().scale(1.5).spawn()
+        caption = Square().scale(0.3).spawn()
+
+        with algan.Off():
+            caption.move_next_to(chart, algan.RIGHT)
+            beside = caption.get_center().clone()
+            caption.move_next_to(chart, algan.RIGHT, align_edge=algan.DOWN)
+
+        # x is untouched by the secondary alignment ...
+        torch.testing.assert_close(caption.get_center()[..., 0], beside[..., 0])
+        # ... and the bottoms now agree.
+        torch.testing.assert_close(
+            caption.get_boundary_point(algan.DOWN)[..., 1],
+            chart.get_boundary_point(algan.DOWN)[..., 1],
+        )
+
+
+@pytest.mark.fast
+def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
+    """Phase 4 of the public API overhaul renamed the Scene, Camera, Light and
+    Group surfaces and collapsed the two lifecycle families. Every name below
+    is called here so a later rename fails at a call site.
+    """
+    with algan.Scene() as scene:
+        # Scene -- lights. `add_light` used to exist as an alias of
+        # `add_light_source`; now it is the only spelling.
+        light = PointLight(location=algan.UP * 3, add_to_scene=False)
+        assert scene.add_light(light) is light
+        assert scene.remove_light(light) is light
+        assert scene.clear_lights() is scene
+        for gone in ("add_light_source", "remove_light_source", "clear_light_sources"):
+            assert not hasattr(scene, gone), gone
+
+        # Scene -- pixel conversions round-trip.
+        assert scene.pixels_to_length(scene.length_to_pixels(2.0)) == pytest.approx(2.0)
+
+        # Scene -- one despawn method with flags, and one reset with a flag.
+        Square().spawn()
+        assert scene.despawn_mobs(retain_history=True, duration=0.5) is scene
+        assert scene.reset(rebuild_timeline=False) is scene
+        assert scene.reset() is scene
+        for gone in (
+            "clear_scene",
+            "despawn_scene",
+            "reset_scene",
+            "render_audio_to_file",
+        ):
+            assert not hasattr(scene, gone), gone
+        # `clear` was an alias of `clear_scene`; both are gone.
+        assert not hasattr(scene, "clear")
+
+        # Camera.
+        camera = scene.get_camera()
+        assert camera.screen_half_height > 0
+        assert camera.center_on(Square().spawn()) is camera
+        assert camera.set_euler_angles(5, 0, 0) is camera
+        assert camera.set_euler_angles(PI / 36, 0, 0, degrees=False) is camera
+        assert camera.set_near_orthographic() is camera
+        for gone in (
+            "move_to_make_mob_center_of_view",
+            "set_to_orthographic",
+            "screen_scale_factor",
+            "retroactive_center",
+            "get_render_screen_basis",
+        ):
+            assert not hasattr(camera, gone), gone
+
+        # Lights -- the packing hooks are private, and SpotLight's cone is named.
+        spot = SpotLight(cone_angle=20.0, add_to_scene=False)
+        assert spot.cone_angle == 20.0
+        assert SpotLight(
+            cone_angle=PI / 9, degrees=False, add_to_scene=False
+        ).cone_angle == (pytest.approx(20.0))
+        for gone in ("build_aux", "is_extended", "num_samples", "get_sample_positions"):
+            assert not hasattr(spot, gone), gone
+
+        # Group -- the two arrange parameters that were ambiguous.
+        group = Group(*[Square(add_to_scene=False) for _ in range(6)])
+        assert group.arrange_in_grid(2, row_buffer=0.4, column_buffer=0.2) is group
+        assert (
+            group.arrange_in_line(algan.RIGHT, equal_widths=True, align_to=algan.DOWN)
+            is group
+        )

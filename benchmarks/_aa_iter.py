@@ -3,7 +3,7 @@
 Rebuilt for DESIGN_analytic_aa_v2.md (the ss21 original was lost to a truncated
 write). One ``save_frame`` per scene under the LIVE settings (arms are selected
 by env vars before launch, so switching arms never edits code), compared
-against a cached ``super_sampling_anti_aliasing=4`` supersampled reference and a cached
+against a cached ``supersampling=4`` supersampled reference and a cached
 aliased (analytic off, aa=1) arm. ~12s warm for all scenes, vs ~15min for the
 video gates -- use those (``_analytic_aa_bez_check.py``, ``_aa_match_aa2.py``)
 before shipping, and this in the loop.
@@ -158,7 +158,7 @@ def build_scene(name):
                 Line3D(
                     start=LEFT * 1.4 + UP * (0.7 - 0.7 * i),
                     end=RIGHT * 1.4 + UP * (0.7 - 0.7 * i),
-                    thickness=th,
+                    radius=th,
                     color=YELLOW,
                 ).spawn()
             sm = Sphere().scale(0.02).move(DOWN * 1.3 + RIGHT * 0.4)
@@ -176,9 +176,7 @@ def render_frame(name, path, aa_level, analytic):
         rt_settings.analytic_aa_tri,
     )
     rt_settings.set_analytic_aa(analytic, triangles=analytic and prev[1])
-    settings = VideoSettings(
-        (W, H), frames_per_second=4, super_sampling_anti_aliasing=aa_level
-    )
+    settings = VideoSettings((W, H), frames_per_second=4, supersampling=aa_level)
     try:
         with Scene(video_settings=settings) as scene:
             build_scene(name)

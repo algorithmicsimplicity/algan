@@ -39,7 +39,7 @@ Both still and video output use the same resolver, `_resolve_output_destination`
 
 `save_frame` never mutates the Scene: nothing is despawned and the timeline is untouched, so it is safe to call repeatedly while authoring. When no timestamp is supplied it renders just after the current authored context time, offset by 1.5 frames. Explicit timestamps must be finite and non-negative.
 
-Keeping the timeline untouched takes more than not recording anything: rendering *resolves* replay windows (`AnimationTimeline._resolve_replay_windows`), freezing each edit's and event's context-rescaled end time into a plain `replay_end` float. From inside an unfinished context those ends are pre-rescale — a `run_time` rescales its block retroactively, on exit — and only recording a new edit invalidates them, so a resolution left behind by a mid-authoring render silently truncates the animations of a later render. `save_frame` and `show_frame` therefore wrap their render in `AnimationTimeline.preserving_authoring_state()`, which restores the resolution state (and drops lifespans created for a render's transient mobs). Any render that leaves the Scene re-renderable must do the same — see the `reset` contract below.
+Keeping the timeline untouched takes more than not recording anything: rendering *resolves* replay windows (`AnimationTimeline._resolve_replay_windows`), freezing each edit's and event's context-rescaled end time into a plain `replay_end` float. From inside an unfinished context those ends are pre-rescale — a `duration` rescales its block retroactively, on exit — and only recording a new edit invalidates them, so a resolution left behind by a mid-authoring render silently truncates the animations of a later render. `save_frame` and `show_frame` therefore wrap their render in `AnimationTimeline.preserving_authoring_state()`, which restores the resolution state (and drops lifespans created for a render's transient mobs). Any render that leaves the Scene re-renderable must do the same — see the `reset` contract below.
 
 ### `save_video` and the `reset` contract
 
@@ -63,7 +63,7 @@ Transparent output cannot use MP4. Use MOV or WebM, or an opaque background.
 
 ### Scene-function discovery
 
-Use the `@scene_function` decorator for zero-argument scene entry points consumed by `render_all_funcs`. It is deliberately not named `scene`, which would collide with the conventional variable name for a Scene instance. Legacy implicit discovery of every zero-argument function remains as a warning-producing fallback and may accidentally render helpers.
+Use the `@algan_scene` decorator for zero-argument scene entry points consumed by `render_all_funcs`. It is deliberately not named `scene`, which would collide with the conventional variable name for a Scene instance. Legacy implicit discovery of every zero-argument function remains as a warning-producing fallback and may accidentally render helpers.
 
 `render_all_funcs` creates an isolated Scene for each function. Scene functions should either rely on that active Scene or accept no arguments and explicitly obtain it; helper constructors should still propagate Scene ownership from their inputs.
 
@@ -76,6 +76,10 @@ Runtime-adjustable public configuration is rooted at the stable process-global `
 - `SETTINGS.style`;
 - `SETTINGS.video`;
 - `SETTINGS.raytracing`.
+
+`SETTINGS.video`'s fields are `resolution`, `frames_per_second`, `supersampling`, `fxaa` and `audio_sample_rate`. `SETTINGS.paths`'s are `cache_directory`, `output_root`, `output_directory`, `output_filename` and `ffmpeg_binary`.
+
+`ffmpeg_binary` **outranks every other candidate, for every codec**. The reason to pin a binary is that moviepy's bundled build lacks a codec yours has, so it has to beat the probe rather than join it; leave it `None` (the default) and encoder selection is byte-for-byte what it was before the setting existed. It replaces a monkey-patching `override_moviepy_ffmpeg_binary()` function that used to be star-imported — configuration belongs in `SETTINGS`, not in a global-mutating call.
 
 Section objects have stable identity and must not be replaced. Mutate them in place with `set`:
 
@@ -93,9 +97,9 @@ HD_60 = HD.set(frames_per_second=60)
 
 Unknown field names are rejected with a close-match suggestion by both `set(...)` and direct attribute assignment — `SETTINGS.video.frame_rate = 60` raises rather than silently attaching a junk attribute.
 
-A field may declare **aliases**, and `SETTINGS.video` is the one section that does: `fps`/`FPS` for `frames_per_second`, and `ssaa`/`SSAA` for `super_sampling_anti_aliasing`. The mechanism is the `settings_aliases` class decorator in `algan/settings/abstract_settings.py`, applied outside `@dataclass` so it wraps the generated `__init__`; the alias is resolved to the declared name once, at each entry point (`__init__`, `set`, `__setattr__`), and everything downstream — validation, `dataclasses.replace`, the write-back loop — sees declared names only. So an alias is a *spelling*, not a field: it is absent from `to_dict()`, from `dataclasses.fields` and from `SETTINGS.snapshot()`, which is what lets state saved through one spelling restore through the other. Naming one field by two spellings in a single call raises rather than resolving to whichever came last.
+A field may declare **aliases**, and `SETTINGS.video` is the one section that does: `fps`/`FPS` for `frames_per_second`, and `ssaa`/`SSAA` for `supersampling`. The mechanism is the `settings_aliases` class decorator in `algan/settings/abstract_settings.py`, applied outside `@dataclass` so it wraps the generated `__init__`; the alias is resolved to the declared name once, at each entry point (`__init__`, `set`, `__setattr__`), and everything downstream — validation, `dataclasses.replace`, the write-back loop — sees declared names only. So an alias is a *spelling*, not a field: it is absent from `to_dict()`, from `dataclasses.fields` and from `SETTINGS.snapshot()`, which is what lets state saved through one spelling restore through the other. Naming one field by two spellings in a single call raises rather than resolving to whichever came last.
 
-This is the **one** deliberate exception to "there is one Algan name for each Algan thing", alongside `IN`/`OUT`. Do not add an alias for a field because its name is long; these two exist because the abbreviations are what the rest of the world calls them. Library code writes the declared name.
+This is one of the four deliberate exceptions to "there is one Algan name for each Algan thing" — the others being the `algan.manim` layer, `IN`/`OUT`, and `Mob`'s `.right`/`.up`/`.forward` direction properties. Do not add an alias for a field because its name is long; these two exist because the abbreviations are what the rest of the world calls them. Library code writes the declared name.
 
 `SETTINGS.raytracing` is split by stability. Directly on the section are the settings that describe what the renderer *produces*: `samples_per_pixel`, `max_bounces`, `shadows`, `ambient_light`, `light_intensity`, `indirect_bounce_strength`, `glossy_reflection`, `analytic_aa`, `tonemapping`, `tonemap_method`, `tonemap_exposure`, `unsupported_feature_policy`. Every other switch is a kernel/performance gate and lives on `SETTINGS.raytracing.experimental`; writing one through the parent raises an error naming the right location. **Reads are deliberately unrestricted** — engine modules bind `rt_settings = SETTINGS.raytracing` once and read experimental switches off it on the hot path — so only mutation is gated. `to_dict()`, `as_preset()`, `_restore()` and `SETTINGS.snapshot()` continue to cover every field.
 
@@ -144,8 +148,11 @@ Algan has removed its transitional aliases ahead of public release. The canonica
 - one `file_path` rather than separate filename/directory arguments;
 - `SETTINGS` sections rather than the old defaults globals;
 - Scene-owned managers rather than singleton managers;
-- `@scene_function` rather than `@scene`;
-- `draw_border_then_fill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand.
+- `@algan_scene` rather than `@scene`;
+- `DrawBorderThenFill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand;
+- `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `CLAUDE.md`, "The `algan.manim` boundary");
+- `duration` rather than `run_time`, and `easing` / `easings` rather than `rate_func` / `rate_funcs`;
+- `stroke_width` / `stroke_color` rather than `border_width` / `border_color`, in Algan's unit — Manim's is twice it, and that conversion exists only at the `algan.manim` boundary.
 
 Do not add a second spelling for something that already has a name. If a rename is genuinely warranted, rename in place and update every call site — the project is pre-release specifically so this stays cheap.
 
@@ -155,12 +162,14 @@ The one Algan-side pair that stays is `IN = INWARD` / `OUT = OUTWARD`, and it ea
 
 `from algan import *` is the documented entry point, so `algan.__all__` is effectively the public surface. `algan/__init__.py` builds it from a rule plus two deny-lists (`_INTERNAL_EXPORT_MODULES`, `_INTERNAL_EXPORT_NAMES`) and one allow-list (`_EXTRA_EXPORTS`). Generic helper names must not leak: `mean`, `interpolate`, `offset`, `shuffle`, `broadcast*`, `traverse`, `squish` and friends would shadow whatever the user imported before Algan.
 
+A name that belongs to the Manim compatibility layer goes in `algan/manim/` and stays out of `algan.__all__` entirely; if it is something an author reaches for directly and Algan has no native version, give it a root spelling through `algan/mobs/manim_adapters.py` instead of exporting the wrapper.
+
 When you add a name, decide which side it is on. Public mobs, animations, contexts, materials, shaders, constants and settings belong in the namespace; tensor utilities, mixins, primitive builders, registries and dev tooling do not. `../tests/unit_tests/test_ux_regressions.py` asserts both directions.
 
 When changing a public class, method, setting, material field, or render argument:
 
 - update root exports in `algan/__init__.py` as needed;
-- update docs and checked-in autosummary stubs;
+- update the docs; the `docs/source/reference/` autosummary stubs are generated at build time and gitignored, so there is nothing to hand-edit there, but a renamed symbol still breaks any `:meth:`/`:class:` cross-reference that names it;
 - search docs, tests, examples and benchmarks for stale call sites and fix all of them, since nothing keeps the old name working;
 - add or update tests for the new behavior.
 

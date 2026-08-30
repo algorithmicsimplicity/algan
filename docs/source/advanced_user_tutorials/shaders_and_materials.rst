@@ -51,7 +51,7 @@ Manim-compatible variant.
         plastic = Sphere().move(RIGHT * 2).set_material(
             MeshPhongMaterial(color=BLUE, shininess=80)).spawn()
 
-    with Seq(run_time_unit=5):
+    with Seq(duration_unit=5):
         metal.roughness = 1.0
         metal.metalness = 0.0
 
@@ -124,7 +124,7 @@ you constructed yourself:
     from algan import *
 
     with Off():
-        desk = Prism(dimensions=(7, 0.3, 4), color=GREY).move(DOWN * 1.6)
+        desk = Prism(width=7, height=0.3, depth=4, color=GREY).move(DOWN * 1.6)
         desk.set_material(WOOD).spawn()
         lens = Sphere(radius=0.9, color=BLUE_A).set_material(GLASS).spawn()
 
@@ -226,15 +226,15 @@ as-is.
     installs -- ``mob.roughness``, ``mob.metalness`` and the rest, which are
     animatable attributes -- a material property map is fixed once the Mob
     spawns, and setting one warns to that effect. The exception is ``map`` on a
-    :class:`~.Surface`, which lands on the animatable
+    :class:`~algan.mobs.surfaces.surface.Surface`, which lands on the animatable
     :attr:`~algan.mobs.surfaces.surface.Surface.color_texture` and so warns not
     at all.
 
-Sampling needs per-vertex UVs, which means a :class:`~.Surface` (and its
-subclasses -- :class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.Torus`,
+Sampling needs per-vertex UVs, which means a :class:`~algan.mobs.surfaces.surface.Surface` (and its
+subclasses -- :class:`~algan.mobs.shapes_3d.Sphere`, :class:`~algan.mobs.shapes_3d.Cylinder`, :class:`~algan.mobs.shapes_3d.Torus`,
 :class:`~.ImageMob`, ...) or a
 :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with ``uvs``. On
-anything else -- a :class:`~.Cube`, a :class:`~.Polyhedron` -- the maps are
+anything else -- a :class:`~algan.mobs.shapes_3d.Cube`, a :class:`~algan.mobs.shapes_3d.Polyhedron` -- the maps are
 ignored with a warning, and ignored *wholesale*: a Cube's faces cannot be
 textured even though the decorative dot at each of its corners is a Sphere that
 could be, and texturing the corners instead would be worse than refusing.
@@ -247,7 +247,7 @@ with a warning naming them. ``wireframe``, ``vertexColors`` and non-default
 documented approximations (matcap has no image; normals are world-space rather
 than view-space).
 
-Going through the geometry directly gives you more: :class:`~.Surface` takes
+Going through the geometry directly gives you more: :class:`~algan.mobs.surfaces.surface.Surface` takes
 ``color_texture``, ``roughness_texture``, ``reflectivity_texture``,
 ``refractive_index_texture``, ``normal_texture`` and ``glow_texture``, in the
 ``[W, H, C]`` ``(u, v)`` layout rather than as images. See

@@ -6,7 +6,7 @@
 ``duration_seconds`` and ``render_plan`` describe what was written and how it was
 rendered.
 
-The rest is scene-level tooling: ``scene_function`` for declaring a renderable
+The rest is scene-level tooling: ``algan_scene`` for declaring a renderable
 scene, ``combine_scenes`` and ``concatenate_videos`` for assembling a long video
 out of separately authored parts (see
 :doc:`/advanced_user_tutorials/multi_scene_projects`), and ``profile_func`` for
@@ -50,20 +50,20 @@ from algan.utils.video_encoding import (
 logger = get_logger()
 
 
-def scene_function(function=None, *, name=None):
+def algan_scene(function=None, *, name=None):
     """Mark a zero-argument function as an Algan scene entry point.
 
     ``render_all_funcs`` prefers explicitly decorated functions and falls back
     to its historical zero-argument scan only when a module has no decorated
     scenes.
 
-    Named ``scene_function`` rather than ``scene`` so that the decorator does
+    Named ``algan_scene`` rather than ``scene`` so that the decorator does
     not collide with the conventional variable name for a Scene instance.
     """
 
     def decorate(func):
         if not callable(func):
-            raise TypeError("@scene can only decorate callables")
+            raise TypeError("@algan_scene can only decorate callables")
         func.name = name or func.__name__
         func.__algan_scene__ = True
         func.__algan_scene_name__ = func.name
@@ -307,7 +307,7 @@ def _render_scene_to_file(
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)
 
-        # Must run before clear_scene below, which drops never-spawned actors
+        # Must run before despawn_mobs below, which drops never-spawned actors
         # from scene.actors and would leave nothing to report. Skipped when
         # nothing spawned at all, because EmptySceneWarning already covers that.
         if any(actor.is_spawned() for actor in scene.actors):
@@ -327,13 +327,13 @@ def _render_scene_to_file(
         # timeline whether or not the scene is being reset afterwards.
         if animate_fade_out:
             scene_finalized = True
-            scene.clear_scene()
+            scene.despawn_mobs(retain_history=True, duration=0.5)
         elif reset:
             # The scene is about to be discarded: keep the historical
             # instantaneous despawn so reset=True behaves exactly as before.
             scene_finalized = True
             with Off(animation_manager=scene.animation_manager):
-                scene.clear_scene(animate=False)
+                scene.despawn_mobs(retain_history=True, duration=0.5, animate=False)
         else:
             # Leave the authored scene re-renderable: no despawns, no actor
             # filtering. Mobs stay spawned and the timeline stays as written,
@@ -371,9 +371,9 @@ def _render_scene_to_file(
 
         logger.info(f"Began rendering {destination.name}")
         start_time = time.perf_counter()
-        audiofile = scene.render_audio_to_file(
+        audiofile = scene.save_audio(
             str(audio_file_path),
-            video_settings.audio_frames_per_second,
+            video_settings.audio_sample_rate,
             nbytes=4,
             codec="pcm_s32le",
         )
@@ -496,7 +496,7 @@ def render_all_funcs(
                 if scene_funcs:
                     warnings.warn(
                         "render_all_funcs is using legacy implicit zero-argument "
-                        "function discovery. Decorate scene entry points with @scene_function "
+                        "function discovery. Decorate scene entry points with @algan_scene "
                         "to prevent helper functions from rendering accidentally.",
                         LegacySceneDiscoveryWarning,
                         stacklevel=2,

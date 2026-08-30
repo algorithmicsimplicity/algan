@@ -59,7 +59,7 @@ def _geometry(mob):
 def test_become_hands_back_a_spawned_registered_mob_to_keep_animating(scene):
     with Off():
         square = Square(color=BLUE).spawn()
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         morphed = square.become(Circle(radius=0.6, color=YELLOW))
 
     # ``detach_history=True`` may re-batch onto fresh rows and hand back a
@@ -74,7 +74,7 @@ def test_become_reaches_the_targets_appearance_and_travels_to_get_there(scene):
     with Off():
         square = Square(color=BLUE).spawn()
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         morphed = square.become(Circle(radius=0.6, color=YELLOW))
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -97,7 +97,7 @@ def test_become_morphs_position_as_well_as_shape(scene):
     with Off():
         square = Square().move(LEFT * 2).spawn()
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         morphed = square.become(Circle(radius=0.6).move(RIGHT * 2))
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -128,7 +128,7 @@ def test_become_pads_whichever_side_has_fewer_parts(scene, minimize_movement):
         # Measured before the timeline is materialized: authoring and
         # materialized state cannot be interleaved.
         target_width = float(target.get_width().reshape(-1)[0])
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         morphed = short.become(target, minimize_movement=minimize_movement)
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -145,15 +145,13 @@ def test_minimize_movement_keeps_parts_closer_to_where_they_started(scene):
         with Scene() as isolated:
             with Off():
                 source = Group(
-                    *[Square(side_length=0.4).move(RIGHT * x) for x in (-2, 0, 2)]
+                    *[Square(size=0.4).move(RIGHT * x) for x in (-2, 0, 2)]
                 ).spawn()
             start = float(isolated.animation_manager.context.timespan.current_time)
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 # Same three squares, listed in reverse order.
                 morphed = source.become(
-                    Group(
-                        *[Square(side_length=0.4).move(RIGHT * x) for x in (2, 0, -2)]
-                    ),
+                    Group(*[Square(size=0.4).move(RIGHT * x) for x in (2, 0, -2)]),
                     minimize_movement=minimize,
                 )
             end = float(isolated.animation_manager.context.timespan.current_time)
@@ -187,7 +185,7 @@ def test_become_does_not_spawn_or_mutate_the_target(scene):
         target = Circle(radius=0.6)
     target_center_before = target.get_center().clone()
 
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         square.become(target)
 
     assert not target.is_spawned()
@@ -199,9 +197,9 @@ def test_chained_becomes_keep_animating(scene):
     with Off():
         mob = Square(color=BLUE).spawn()
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         mob = mob.become(Circle(radius=0.6))
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         mob = mob.become(RegularPolygon(6, radius=0.6, color=YELLOW))
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -526,7 +524,7 @@ def test_pn_swap_uses_half_open_lifespans_with_no_gap_or_double_draw(scene):
     with Off():
         source = Square(scene=scene).spawn()
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(Sphere(radius=0.5, scene=scene, add_to_scene=False))
     end = float(scene.animation_manager.context.timespan.current_time)
     soup = next(actor for actor in scene.actors if isinstance(actor, PNMesh))
@@ -549,18 +547,18 @@ def test_mesh_to_circuit_swaps_borderless_then_grows_the_border(scene):
         source = TriangleVertices(corners, scene=scene).spawn()
     target = Circle(
         radius=0.5,
-        border_width=4,
+        stroke_width=4,
         scene=scene,
         add_to_scene=False,
     )
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     soup = next(actor for actor in scene.actors if isinstance(actor, PNMesh))
 
     assert soup.lifespan.start() == pytest.approx(0.0)
     assert soup.lifespan.end() == pytest.approx(0.7)
     _at(scene, result, [0.7, 0.85, 1.0])
-    widths = result.border_width.reshape(3, -1)[:, 0]
+    widths = result.stroke_width.reshape(3, -1)[:, 0]
     assert widths[0].item() == pytest.approx(0.0)
     assert 0 < widths[1].item() < 4
     assert widths[2].item() == pytest.approx(4.0)
@@ -569,9 +567,9 @@ def test_mesh_to_circuit_swaps_borderless_then_grows_the_border(scene):
 def test_chained_become_crosses_a_primitive_family_hop(scene):
     with Off():
         mob = Square(scene=scene).spawn()
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         mob = mob.become(Sphere(radius=0.5, scene=scene, add_to_scene=False))
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         mob = mob.become(Circle(radius=0.5, scene=scene, add_to_scene=False))
 
     assert isinstance(mob, Circle)

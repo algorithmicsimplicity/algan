@@ -29,13 +29,13 @@ def main():
         text = Text("e").spawn().scale(20)
         for mob in text.character_mobs:
             mob.set_opacity_via_color(0)
-            mob.border_width = 5
-            mob.border_color = _with_opacity(mob.border_color, 1)
+            mob.stroke_width = 5
+            mob.stroke_color = _with_opacity(mob.stroke_color, 1)
     Scene.wait()
     out = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "_bez_border_aa_out", f"{MODE}"
     )
-    Scene.save_frame(out, PREVIEW.set(super_sampling_anti_aliasing=4))
+    Scene.save_frame(out, PREVIEW.set(supersampling=4))
 
     from PIL import Image
 

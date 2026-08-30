@@ -19,7 +19,7 @@ from algan import *
 
 
 def build(opacity):
-    Scene.instance().reset_scene()
+    Scene.instance().reset(rebuild_timeline=False)
     with Off():
         Square(color=GREEN).look(UP).move(DOWN).scale(10).spawn()
         Square(color=WHITE).look(LEFT + OUT * 0.5).move(RIGHT * 2).set_material(

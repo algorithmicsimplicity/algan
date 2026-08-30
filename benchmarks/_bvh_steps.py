@@ -702,7 +702,7 @@ def _scene_bez():
         mirror = Sphere(color=WHITE).scale(0.9).move(IN * 2.2)
         mirror.set_material(MeshStandardMaterial(metalness=1.0, roughness=0.0))
         mirror.spawn(animate=False)
-    with Sync(run_time=0.4):
+    with Sync(duration=0.4):
         for i, mob in enumerate(shapes):
             mob.rotate(20 * (1 + i % 5), OUT)
 
@@ -748,7 +748,7 @@ def _scene_tri():
         mirror.set_material(MeshStandardMaterial(metalness=1.0, roughness=0.0))
         mirror.spawn(animate=False)
         solids.append(mirror)
-    with Sync(run_time=0.4):
+    with Sync(duration=0.4):
         for i, mob in enumerate(solids):
             mob.rotate(25 * (1 + i % 4), OUT)
 

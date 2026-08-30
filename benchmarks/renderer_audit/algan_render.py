@@ -157,7 +157,7 @@ def _build_object(obj):
     if kind == "sphere":
         mob = Sphere(radius=float(geom.get("radius", 1.0)))
     elif kind == "box":
-        mob = Prism(dimensions=tuple(float(v) for v in geom["size"]))
+        mob = Prism(*(float(v) for v in geom["size"]))
     else:
         raise ValueError(f"unsupported geometry type {kind!r}")
 
@@ -233,7 +233,7 @@ def _build_light(light):
             target=_vec(light["target"]),
             color=color,
             intensity=intensity,
-            angle=float(light["angle"]),
+            cone_angle=float(light["angle"]),
             penumbra=float(light.get("penumbra", 0.0)),
             decay=float(light.get("decay", 0.0)),
             distance=float(light.get("distance", 0.0)),
@@ -290,7 +290,7 @@ def render(
     r = spec.get("render", {})
     width = int(r.get("width", 640))
     height = int(r.get("height", 480))
-    video = VideoSettings((width, height), 30, super_sampling_anti_aliasing=aa)
+    video = VideoSettings((width, height), 30, supersampling=aa)
     SETTINGS.video.set(video)
     SETTINGS.raytracing.set(shadows=shadows, tonemapping=tonemap)
     if bounces is not None:
@@ -365,7 +365,7 @@ def main(argv=None):
         nargs="+",
         help="output suffix; give one, or one per scene",
     )
-    ap.add_argument("--aa", type=int, default=3, help="super_sampling_anti_aliasing")
+    ap.add_argument("--aa", type=int, default=3, help="supersampling")
     ap.add_argument(
         "--no-tonemap",
         dest="tonemap",

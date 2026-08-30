@@ -74,7 +74,7 @@ def build_cylfine():
             ).move(RIGHT * x)
             rod.rotate(33 + 12 * i, OUT)
             rod.spawn(animate=False)
-    with Sync(run_time=2):
+    with Sync(duration=2):
         Scene.get_camera().move(RIGHT * 0.4 + UP * 0.2)
 
 

@@ -19,7 +19,7 @@ def fresh_scene():
 
 def _screen_rectangle_at_z_zero(scene, bottom_left, top_right):
     camera = scene.camera
-    half_height = camera.screen_scale_factor * (
+    half_height = camera.screen_half_height * (
         -camera.location[..., 2:3] / camera.screen_distance
     )
     half_width = half_height * (
@@ -80,7 +80,7 @@ def test_none_screen_rectangle_corners_default_to_whole_screen():
 def test_exact_screen_rectangle_fit_animates_scale_and_position_together():
     scene = SceneManager.instance().current_scene
     square = Square().spawn(animate=False)
-    source_size = square.get_axis_aligned_size()
+    source_size = square.get_bounding_box_size()
     expected_lower, expected_upper = _screen_rectangle_at_z_zero(scene, (0, 0), (1, 1))
     target_size = expected_upper - expected_lower
 
@@ -88,7 +88,7 @@ def test_exact_screen_rectangle_fit_animates_scale_and_position_together():
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
 
     torch.testing.assert_close(
-        square.get_axis_aligned_size(), (source_size + target_size) * 0.5
+        square.get_bounding_box_size(), (source_size + target_size) * 0.5
     )
     torch.testing.assert_close(
         square.get_center(), (expected_lower + expected_upper) * 0.5
@@ -121,12 +121,14 @@ def test_screen_rectangle_fit_can_preserve_aspect_ratio():
 def _rendered_screen_coords(scene, points):
     """Normalized screen coords of world points, via the *renderer's* projection.
 
-    Deliberately built from ``get_render_screen_basis`` -- what the ray generator
+    Deliberately built from ``_get_render_screen_basis`` -- what the ray generator
     inverts -- rather than from the layout code's own screen frame, so these
     tests check the fit against what actually ends up on screen.
     """
     camera = scene.camera
-    right, up, forward = unsquish(camera.get_render_screen_basis(), -1, 3).reshape(3, 3)
+    right, up, forward = unsquish(camera._get_render_screen_basis(), -1, 3).reshape(
+        3, 3
+    )
     screen = camera.screen.location.reshape(-1)
     eye = camera.location.reshape(-1)
     aspect = scene.video_settings.resolution[0] / scene.video_settings.resolution[1]
@@ -145,7 +147,7 @@ def test_screen_rectangle_fit_keeps_a_mob_with_depth_inside_the_frame(camera_rot
     scene = SceneManager.instance().current_scene
     if camera_rotation:
         with Off():
-            scene.camera.rotate(camera_rotation, UP, about_point=ORIGIN)
+            scene.camera.rotate(camera_rotation, UP, about=ORIGIN)
     cube = Cube(add_to_scene=False)
 
     cube.fit_to_screen()
@@ -167,7 +169,7 @@ def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
     # camera turned away from them.
     scene = SceneManager.instance().current_scene
     with Off():
-        scene.camera.rotate(30, UP, about_point=ORIGIN)
+        scene.camera.rotate(30, UP, about=ORIGIN)
     square = Square(add_to_scene=False)
 
     square.fit_to_screen((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
@@ -186,10 +188,10 @@ def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
 def test_screen_rectangle_fit_uses_a_camera_aligned_bounding_box():
     scene = SceneManager.instance().current_scene
     with Off():
-        scene.camera.rotate(30, UP, about_point=ORIGIN)
+        scene.camera.rotate(30, UP, about=ORIGIN)
     square = Square(add_to_scene=False)
     with Off():
-        square.rotate(30, UP, about_point=ORIGIN)
+        square.rotate(30, UP, about=ORIGIN)
 
     square.fit_to_screen((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
 
@@ -206,7 +208,7 @@ def test_layout_size_scale_and_center_helpers_are_chainable():
     square = Square(add_to_scene=False)
 
     torch.testing.assert_close(
-        square.get_axis_aligned_size(), torch.tensor([[[2.0, 2.0, 0.0]]])
+        square.get_bounding_box_size(), torch.tensor([[[2.0, 2.0, 0.0]]])
     )
     assert square.move_center_to((1, 2, 3)) is square
     torch.testing.assert_close(square.get_center(), torch.tensor([[[1.0, 2.0, 3.0]]]))

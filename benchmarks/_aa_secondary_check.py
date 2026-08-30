@@ -11,12 +11,12 @@ the metric that matters is therefore mean L1 over INTERIOR pixels (the lit regio
 eroded by three pixels, so the reflector's own antialiased silhouette cannot
 carry the result). Scored against a supersampled aa=4 reference.
 
-Arms, all at super_sampling_anti_aliasing=1 except the reference:
+Arms, all at supersampling=1 except the reference:
 
     aliased        no analytic AA at all                  (the floor)
     sec=1          analytic AA, one continuation          (what shipped before)
     sec=2/4/8      analytic AA, N jittered continuations
-    aa2            super_sampling_anti_aliasing=2 supersampled        (what this replaces)
+    aa2            supersampling=2 supersampled        (what this replaces)
 
 Run: .venv/Scripts/python.exe benchmarks/_aa_secondary_check.py [configs...]
 """
@@ -159,7 +159,7 @@ def render_once(cfg, aa_level, analytic, secondary, tag, reps=2):
             output_dir=OUT_DIR,
             output_path="",
             render_settings=RenderSettings(
-                (BASE_W, BASE_H), FPS, super_sampling_anti_aliasing=aa_level
+                (BASE_W, BASE_H), FPS, supersampling=aa_level
             ),
             file_extension="mp4",
         )

@@ -48,7 +48,7 @@ def build_scene():
         ImageMob(str(IMAGE)).scale(0.7).move(RIGHT * 2.5).spawn()
         cube = Cube().scale(0.5).move(DOWN * 2).spawn()
     # The fade spans the whole clip: every batch carries an animating opacity.
-    with Sync(run_time=3.0):
+    with Sync(duration=3.0):
         fading.opacity = 0.1
         cube.move(RIGHT * 2)
 

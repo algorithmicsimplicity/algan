@@ -5,7 +5,7 @@ See ``algan/rendering/raytracing/DESIGN_analytic_aa.md``.  Phase 1 gives every
 circuit fragment the fraction of the pixel square its drawn region covers
 (a box filter of the outline SDF that ``_bezier_point_metrics`` already
 computes) and folds that into the fragment's alpha, so a render at
-``super_sampling_anti_aliasing = 1`` resolves circuit edges continuously instead of
+``supersampling = 1`` resolves circuit edges continuously instead of
 all-or-nothing.
 
 Three things are checked, per config:
@@ -188,7 +188,7 @@ def build_scene(cfg):
                 Line3D(
                     start=LEFT * 1.4 + UP * (0.7 - 0.7 * i),
                     end=RIGHT * 1.4 + UP * (0.7 - 0.7 * i),
-                    thickness=th,
+                    radius=th,
                     color=YELLOW,
                 ).spawn()
             sm = Sphere().scale(0.02).move(DOWN * 1.3).set_color(BLUE)
@@ -251,20 +251,20 @@ def build_scene(cfg):
                     LEFT * 1.3 + UP * (0.8 - 0.5 * i),
                     RIGHT * 1.3 + UP * (0.8 - 0.5 * i),
                     color=BLUE,
-                    border_width=bw,
+                    stroke_width=bw,
                 ).spawn()
             arc = Line(
                 LEFT * 1.2 + DOWN * 0.5,
                 RIGHT * 0.2 + DOWN * 0.5,
                 path_arc=1.4,
                 color=GREEN,
-                border_width=3,
+                stroke_width=3,
             )
             arc.spawn()
             Arrow(
                 LEFT * 0.2 + DOWN * 1.2, RIGHT * 1.3 + DOWN * 1.2, color=YELLOW
             ).spawn()
-            ci = Circle(color=RED, border_color=RED, border_width=3, filled=False)
+            ci = Circle(color=RED, stroke_color=RED, stroke_width=3, filled=False)
             ci.scale(0.45).move(RIGHT * 1.0 + UP * 0.3)
             ci.spawn()
         # Move a stroke: a static-only result would say nothing about the
@@ -274,10 +274,10 @@ def build_scene(cfg):
     if cfg == "border":
         # Bordered + unfilled circuits: the band form of the coverage filter.
         with Off():
-            ci = Circle(color=GREEN, border_width=4).scale(0.9)
+            ci = Circle(color=GREEN, stroke_width=4).scale(0.9)
             ci.move(LEFT * 1.0)
             ci.spawn()
-            sq = Square(color=BLUE, border_width=2).scale(0.7)
+            sq = Square(color=BLUE, stroke_width=2).scale(0.7)
             sq.move(RIGHT * 1.0).rotate(15, OUT)
             sq.spawn()
         ci.move(UP * 0.2)
@@ -305,7 +305,7 @@ def render_once(cfg, aa_level, analytic, tag, seam=True, sliver=None, exact=None
     name = f"aaBez_{cfg}_{tag}"
     path = os.path.join(OUT_DIR, name + ".mp4")
     settings = VideoSettings(
-        (BASE_W, BASE_H), frames_per_second=FPS, super_sampling_anti_aliasing=aa_level
+        (BASE_W, BASE_H), frames_per_second=FPS, supersampling=aa_level
     )
     with Scene(video_settings=settings) as scene:
         build_scene(cfg)

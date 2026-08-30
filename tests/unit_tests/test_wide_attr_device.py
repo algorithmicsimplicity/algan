@@ -62,7 +62,7 @@ def _build_scene():
     image[..., 4] = 1.0
     with Off():
         mob = ImageMob(image).spawn()
-    with Sync(run_time=1):
+    with Sync(duration=1):
         mob.color_texture = mob.color_texture * 0.5
     return scene, mob
 

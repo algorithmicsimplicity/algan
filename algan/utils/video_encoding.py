@@ -215,6 +215,18 @@ def _moviepy_ffmpeg_binary() -> str:
     return moviepy.config.FFMPEG_BINARY
 
 
+def _configured_ffmpeg_binary() -> str | None:
+    """The binary the user pinned via ``SETTINGS.paths.ffmpeg_binary``.
+
+    Read live rather than captured, so a script that sets it between renders
+    is honoured by the next one. It outranks every other candidate: naming a
+    binary is an explicit instruction, not a hint.
+    """
+    from algan.settings import SETTINGS
+
+    return SETTINGS.paths.ffmpeg_binary or None
+
+
 def _env_ffmpeg_binary() -> str | None:
     # moviepy's own variable: when the user set it, it names exactly the
     # binary moviepy will run, so it is the most specific candidate. The
@@ -232,15 +244,21 @@ def _system_ffmpeg_binary() -> str | None:
 def _candidate_binaries() -> list[str]:
     """The FFmpeg binaries worth probing, most specific first.
 
-    In order: the ``FFMPEG_BINARY`` environment variable if set (it points
-    moviepy at that binary too), moviepy's configured binary -- often
-    imageio-ffmpeg's static build, which carries no NVENC encoders even on
-    machines with a working NVENC driver -- and finally whatever ``ffmpeg``
-    is on the PATH. Duplicates are probed once.
+    In order: ``SETTINGS.paths.ffmpeg_binary`` if the user pinned one, the
+    ``FFMPEG_BINARY`` environment variable if set (it points moviepy at that
+    binary too), moviepy's configured binary -- often imageio-ffmpeg's static
+    build, which carries no NVENC encoders even on machines with a working
+    NVENC driver -- and finally whatever ``ffmpeg`` is on the PATH. Duplicates
+    are probed once.
     """
-    candidates = [_env_ffmpeg_binary(), None, _system_ffmpeg_binary()]
+    candidates = [
+        _configured_ffmpeg_binary(),
+        _env_ffmpeg_binary(),
+        None,
+        _system_ffmpeg_binary(),
+    ]
     try:
-        candidates[1] = _moviepy_ffmpeg_binary()
+        candidates[2] = _moviepy_ffmpeg_binary()
     except Exception:
         logger.debug(
             "NVENC probe: could not resolve moviepy's ffmpeg binary",
@@ -347,7 +365,14 @@ def resolve_encode_binary(codec: str | None) -> str | None:
     fallback, and for a forced ``nvenc`` it fails loudly at encode time
     exactly as it did before binaries were selectable, which is the honest
     outcome of forcing what the machine cannot serve.
+
+    ``SETTINGS.paths.ffmpeg_binary`` overrides all of this when set, for every
+    codec: naming a binary is an explicit instruction, and the usual reason to
+    name one is that the build moviepy found lacks a codec the chosen one has.
     """
+    configured = _configured_ffmpeg_binary()
+    if configured is not None:
+        return configured
     if codec != _NVENC_CODEC:
         return None
     if _resolve_encoder_mode() == "software":

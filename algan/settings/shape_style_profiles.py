@@ -149,14 +149,15 @@ def _resolve_shape_style(name, manim_name):
                 if fill_color is not None
                 else None
             ),
-            "border_color": (
+            "stroke_color": (
                 _to_algan_color(stroke_color, stroke_opacity)
                 if stroke_color is not None
                 else None
             ),
-            # Algan's border_width convention is half Manim's stroke_width --
-            # the same conversion ManimMob performs when importing VMobjects.
-            "border_width": stroke_width_value / 2,
+            # These are Manim's own constructor defaults, read off a Manim
+            # instance, so the value arriving here is in Manim's unit: half it
+            # for Algan's, the same conversion ManimMob performs on import.
+            "stroke_width": stroke_width_value / 2,
             "filled": (
                 fill_opacity_value is not None
                 and fill_opacity_value > _VISIBLE_OPACITY_THRESHOLD

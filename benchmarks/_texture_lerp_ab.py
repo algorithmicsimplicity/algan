@@ -81,7 +81,7 @@ def build_scene():
     # Crossfades spanning most of the clip, so the pinned 5-frame windows cut
     # them mid-animation; the image also fades, so the opacity region rides
     # beside its lerp region.
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         crossfading.color_texture = crossfading.color_texture.flip(0)
         crossfading.opacity = 0.35
         sphere.color_texture = torch.rand(24, 20, 5).clamp(0.2, 1.0)

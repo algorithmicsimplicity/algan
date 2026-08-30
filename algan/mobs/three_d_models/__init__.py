@@ -1,6 +1,6 @@
 """Importing 3-D model files.
 
-:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` loads a ``.glb``,
+:class:`~algan.mobs.three_d_models.model_mob.Model3D` loads a ``.glb``,
 ``.gltf`` or ``.fbx`` file -- its meshes, its materials, and its rigid node
 animation -- and presents it as an ordinary Algan Mob you can spawn, move and
 light with everything else in the Scene.
@@ -18,7 +18,7 @@ See :doc:`/advanced_user_tutorials/three_d_models`.
 from __future__ import annotations
 
 from algan.mobs.three_d_models.mesh import TriangleMesh, image_to_texture_map
-from algan.mobs.three_d_models.model_mob import ThreeDModelMob
+from algan.mobs.three_d_models.model_mob import Model3D
 from algan.mobs.three_d_models.scene_data import (
     AnimationData,
     MaterialData,

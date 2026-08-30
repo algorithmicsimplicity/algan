@@ -370,7 +370,7 @@ visibly divergent from three whenever a baked material meets >1 light.
 Packed-row layout reference: `scene_builder._pack_lights`
 (`raytracing/scene_builder.py:1984-1988`) — RGB radiance 0:3 (intensity
 premultiplied), type id 3, decay 4, range 5, direction 6:9, spot cos outer /
-cos inner at packed columns 9/10 (= aux cols 6/7 of `Light.build_aux`,
+cos inner at packed columns 9/10 (= aux cols 6/7 of `Light._build_aux`,
 `rendering/lights.py:185-198`), ground RGB / SH at 12:15, power fraction 15.
 Intensity is multiplied in once, with no pi, at the ingest point
 (`render_loop.py:2411-2430`); three likewise packs `color * intensity` per

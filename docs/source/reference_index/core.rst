@@ -10,6 +10,6 @@ Core
    ~algan.constants.material_presets
    ~algan.constants.spatial
    ~algan.constants.math
-   ~algan.constants.rate_funcs
+   ~algan.constants.easings
    ~algan.geometry.geometry
    ~algan.logging.logger

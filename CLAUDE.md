@@ -69,19 +69,26 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 
 Algan is in private beta and carries **no compatibility aliases for its own
 API**. There is one Algan name for each Algan thing; if you find a second, it is
-a bug — with exactly three deliberate exceptions, all exported and supported:
+a bug — with exactly four deliberate exceptions, all exported and supported:
 
-- The Manim compatibility layer (`Mobject = Mob`, `GenericGraph = Graph`,
-  `install_opengl_aliases()`, the `manim_compat` / `manim_parity` / `point_cloud` wrappers).
-  It is a separate surface, not a second spelling of Algan's.
+- The Manim compatibility layer, which since the API overhaul lives behind
+  `import algan.manim as mn` and is **not** star-imported (`mn.Mobject = Mob`,
+  `mn.GenericGraph = Graph`, `mn.install_opengl_aliases()`, and a wrapper for every Manim
+  class). It is a separate surface under Manim's conventions, not a second spelling of
+  Algan's — see "The `algan.manim` boundary" below.
 - **`IN = INWARD` and `OUT = OUTWARD`.** `in` and `out` are ordinary enough words that a
   script will want them for something of its own, so the short names are the script's to
   keep or to shadow. Algan's own source therefore says `INWARD`/`OUTWARD` throughout and
   **never reads `IN` or `OUT`** — `tests/unit_tests/test_spatial_constants.py` walks the
   package's AST and fails if any module does. Write `OUTWARD` in library code; `OUT` is
   fine in docs, tests and examples, which is where it stays exercised.
+- **`Mob.right` / `Mob.up` / `Mob.forward`** are property spellings of
+  `get_right_direction()` / `get_up_direction()` / `get_forward_direction()`. Reading a
+  direction is common enough in a positioning expression that the call parentheses get in the
+  way. The *basis* getters (`get_up_basis()` and friends) deliberately have no property
+  spelling: they carry the Mob's scale, and a scaled vector reads wrongly as `mob.up`.
 - **Two `SETTINGS.video` fields take a short spelling**: `fps`/`FPS` for
-  `frames_per_second`, and `ssaa`/`SSAA` for `super_sampling_anti_aliasing`. These are
+  `frames_per_second`, and `ssaa`/`SSAA` for `supersampling`. These are
   what the rest of the world calls them, and they are written often enough that the long
   names get in the way. An alias is a spelling and not a field — it never appears in
   `to_dict()`, `dataclasses.fields` or a snapshot — so state saved through one spelling
@@ -91,6 +98,32 @@ a bug — with exactly three deliberate exceptions, all exported and supported:
 
 Do not add an Algan-side alias for an Algan name, and do not delete a
 Manim-side name because it duplicates one.
+
+### The `algan.manim` boundary
+
+`algan.manim` wraps **every** Manim class, natives included, so `mn.Sphere` exists beside
+Algan's `Sphere`. The rule is uniform: **a name in `mn.` follows Manim's conventions; the same
+name at the root follows Algan's.** Three conventions actually differ, and all three are
+converted at that boundary and nowhere else:
+
+| | root (Algan) | `mn.` (Manim) |
+| :--- | :--- | :--- |
+| Angles | degrees — `Arc(angle=90)` | radians — `mn.Arc(angle=PI/2)` |
+| Stroke width | `Arrow(stroke_width=4)` | twice that — `mn.Arrow(stroke_width=8)` |
+| z axis | `OUTWARD` is `-z` | `OUT` is `+z` (`Scene.manim_coordinates`) |
+
+99 compat-only classes (`Axes`, `Brace`, `Table`, `Arrow`, ...) have no native implementation,
+so `algan/mobs/manim_adapters.py` gives a curated subset a root spelling that converts and
+delegates. Adding one is a table entry, not a constructor: `_ADAPTED` lists the classes and
+`_ANGLE_PARAMS` the angle arguments; stroke width is doubled for every adapter unconditionally,
+because a Manim class accepts `stroke_width` whether or not its signature names it. A class
+with a native implementation must stay out of `_ADAPTED` — the module asserts this, since two
+root spellings of one thing is what the boundary exists to prevent.
+
+The `/2` stroke conversion exists in exactly four places, all of which genuinely straddle the
+boundary: `manim_compat` (export), `manim_mob` (import), `manim_adapters` (the root spellings),
+and `shape_style_profiles` (reading Manim's own constructor defaults). Native classes take
+Algan's unit end to end.
 
 ```python
 from algan import *
@@ -108,9 +141,11 @@ Scene.save_video("example", HD)  # one-off quality override
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background_color, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background_color, post_processes)`. Both return `RenderResult`; `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
 - **`reset` defaults to False**, so `save_video` leaves the Scene exactly as authored and you can render again — including a preview from inside a `with` block that has not finished yet. `save_frame` never mutates the Scene.
-- **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `super_sampling_anti_aliasing` (`ssaa`/`SSAA`), `fxaa` and `audio_frames_per_second`.
+- **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `supersampling` (`ssaa`/`SSAA`), `fxaa` and `audio_sample_rate`.
 - **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The ~55 kernel/perf switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
+- **Scene lifecycle is two methods with flags**, not five: `despawn_mobs(retain_history=False, duration=None, **kwargs)` and `reset(rebuild_timeline=True)`. A scene-ending fade is `despawn_mobs(retain_history=True, duration=0.5)`, which is what `save_video(animate_fade_out=True)` records. `Scene.terminate()` is unrelated — it pops the SceneManager's active-scene stack.
+- **A `Mob`'s position reads as attributes**: `.x` / `.y` / `.z` / `.xy` for coordinates and `.right` / `.up` / `.forward` for its own axes. Assigning a coordinate is recorded like any other Mob attribute, so `mob.x = 3` slides it over the context duration and `with Off(): mob.x = 3` teleports it. `get_coord(indices)` / `set_coord(indices, value)` are the general forms; there are no `get_x_coord`-style methods.
 - **Paths**: `SETTINGS.paths.output_root / output_directory / name`. A bare filename goes to the output directory; anything with a directory in it is used as given.
 - **`from algan import *` is curated.** Internal helpers are excluded via `_INTERNAL_EXPORT_MODULES` / `_INTERNAL_EXPORT_NAMES` in `algan/__init__.py`. When adding a public name, check it lands in `algan.__all__`; when adding a helper, check it does not.
 - Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, ...) rather than ad-hoc reflectivity/roughness APIs. Shader/material setup (`set_shader`, `set_fragment_shader`, `set_material`) and the geometry declarations (`two_sided`, `casts_shadows`, `receives_shadows`) must all be set **before spawning**.
@@ -121,7 +156,7 @@ API-change discipline — are in `agent_guidance/api_settings.md`.
 ## Development Notes
 
 ### Taichi gotchas (these cost real debugging time)
-- The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cache(taichi_kernels=True)`.
+- The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cached_kernels()`.
 - Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.
 - Keep Taichi debug mode off (`ALGAN_TI_DEBUG=1` opts in); debug mode makes the megakernels ~11x slower.
@@ -172,10 +207,11 @@ The whole package runs under a process-global `torch.inference_mode()` entered a
 - `algan/animation_timeline/` — contexts, per-Scene timeline, event replay, updaters
 - `algan/animatable_base/` — `Animatable`, `Mob` and its mixins
 - `algan/animations/` — built-in composable animations
-- `algan/mobs/` — all renderable object classes
+- `algan/mobs/` — all renderable object classes; `manim_compat` and friends implement the compatibility layer, `manim_adapters` gives a curated subset a native root spelling
+- `algan/manim/` — the public face of that layer, reached as `import algan.manim as mn`
 - `algan/rendering/` — camera, lights, ray tracer + Taichi kernels, shaders, post-processing
 - `algan/rendering/memory_model.py` — runtime chunk-peak model that sizes render batches
-- `algan/constants/` — spatial (UP, RIGHT, ORIGIN...), colors, rate functions
+- `algan/constants/` — spatial (UP, RIGHT, ORIGIN...), colors, easing curves (`easings`)
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration
 - `algan/utils/` — tensor helpers, memory arena, profiling, doc-build tooling
 - `algan/external_libraries/` — vendored manim/ground/sect (do not modify)

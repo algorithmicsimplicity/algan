@@ -1,6 +1,6 @@
 """Reproduce the camera.orbit() OOM and confirm the raster fallback fixes it.
 
-``camera.rotate(deg, UP, about_point=ORIGIN)`` keeps the scene in frame; the
+``camera.rotate(deg, UP, about=ORIGIN)`` keeps the scene in frame; the
 same circle travelled with ``camera.orbit`` leaves the camera pointing in its
 original direction, so the geometry sweeps out of frame -- and, crucially, past
 the camera plane. Primitives that straddle the camera plane get a full-window
@@ -29,14 +29,14 @@ SETTINGS.video.set(LD)
 
 with Off():
     Group(
-        [Cube(side_length=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
+        [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
     ).spawn()
 
-with Seq(run_time=4, rate_func=rate_funcs.identity):
+with Seq(duration=4, easing=easings.identity):
     if mode == "rotate":
-        Scene.get_camera().rotate(360, UP, about_point=ORIGIN)
+        Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:
-        Scene.get_camera().orbit(360, UP, about_point=ORIGIN)
+        Scene.get_camera().orbit(360, UP, about=ORIGIN)
 
 try:
     res = Scene.save_video(os.path.join(OUT_DIR, f"camera_{mode}"))

@@ -804,7 +804,7 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
     # 288 independent quads, not a closed orientable mesh -- so a back-facing hit
     # keeps the viewer-facing flip rather than being shaded as an inside.
     primitive.declare_one_sided(False)
-    primitive.declare_shadow_flags(*circuit.resolved_shadow_flags())
+    primitive.declare_shadow_flags(*circuit._resolved_shadow_flags())
     # One shell per sub-path: a tile's own coverage must not be summed with the
     # neighbour it merely touches.
     primitive.mesh_ids = (
@@ -820,7 +820,7 @@ def build_stroke_primitive(
     border_colors,
     opacity,
     glow,
-    border_width,
+    stroke_width,
     reflectivity,
     roughness,
     refractive_index,
@@ -866,7 +866,7 @@ def build_stroke_primitive(
         per_run(colors).unsqueeze(-2),
         per_run(opacity),
         normal,
-        per_run(border_width),
+        per_run(stroke_width),
         per_run(border_colors).unsqueeze(-2),
         centre,
         grid,
@@ -887,7 +887,7 @@ def build_stroke_primitive(
         ),
     )
     primitive.num_texture_points = 0
-    primitive.declare_shadow_flags(*circuit.resolved_shadow_flags())
+    primitive.declare_shadow_flags(*circuit._resolved_shadow_flags())
     return primitive
 
 
@@ -898,7 +898,7 @@ def build_render_primitives(
     border_colors,
     opacity,
     glow,
-    border_width,
+    stroke_width,
     reflectivity,
     roughness,
     refractive_index,
@@ -927,7 +927,7 @@ def build_render_primitives(
                 border,
                 opacity,
                 glow,
-                border_width,
+                stroke_width,
                 reflectivity,
                 roughness,
                 refractive_index,
@@ -941,7 +941,7 @@ def build_render_primitives(
             circuit, x, fill, opacity, glow, circuit.get_shader_params()
         )
     ]
-    if bool((border_width.abs() > 1e-6).any()) and bool(
+    if bool((stroke_width.abs() > 1e-6).any()) and bool(
         (border[..., -1:] > 1e-5).any()
     ):
         primitives.append(
@@ -952,7 +952,7 @@ def build_render_primitives(
                 border,
                 opacity,
                 glow,
-                border_width,
+                stroke_width,
                 reflectivity,
                 roughness,
                 refractive_index,

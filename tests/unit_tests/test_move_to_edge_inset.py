@@ -1,6 +1,6 @@
-"""``move_to_edge`` insets the boundary *inside* the border, from anywhere.
+"""``move_to_screen_edge`` insets the boundary *inside* the border, from anywhere.
 
-The sign is the whole point of this file. ``move_to_edge`` used to take its
+The sign is the whole point of this file. ``move_to_screen_edge`` used to take its
 inset direction from ``normalize(boundary - border)`` -- read off where the Mob
 happens to be rather than off the edge that was asked for. The border is cast
 from the boundary along the edge, so that difference is antiparallel to the edge
@@ -50,7 +50,7 @@ def _signed_inset(mob, edge) -> float:
     that ``.norm()`` throws away.
     """
     edge = F.normalize(edge.to(torch.get_default_dtype()), p=2, dim=-1)
-    boundary = mob.get_boundary_in_direction(edge)
+    boundary = mob.get_boundary_point(edge)
     border = mob.scene.camera.project_point_onto_screen_border(boundary, edge)
     return float(((border - boundary) * edge).sum(-1).reshape(-1)[0])
 
@@ -58,7 +58,7 @@ def _signed_inset(mob, edge) -> float:
 @pytest.mark.parametrize("edge_name", sorted(EDGES))
 def test_move_to_edge_insets_a_mob_that_starts_inside(edge_name):
     edge = EDGES[edge_name]
-    mob = Square().move_to_edge(edge)
+    mob = Square().move_to_screen_edge(edge)
 
     assert _signed_inset(mob, edge) == pytest.approx(_buffer(), abs=2e-5)
 
@@ -69,7 +69,7 @@ def test_move_to_edge_brings_back_a_mob_that_starts_outside(edge_name):
     # *outside* the border -- still off-screen -- because the inset direction
     # flipped with the Mob's position.
     edge = EDGES[edge_name]
-    mob = Square().move(edge * 8).move_to_edge(edge)
+    mob = Square().move(edge * 8).move_to_screen_edge(edge)
 
     assert _signed_inset(mob, edge) == pytest.approx(_buffer(), abs=2e-5)
 
@@ -80,12 +80,12 @@ def test_move_to_edge_insets_a_boundary_resting_exactly_on_the_border(edge_name)
     # direction term was a zero vector normalized into noise.
     edge = EDGES[edge_name]
     mob = Square()
-    boundary = mob.get_boundary_in_direction(edge)
+    boundary = mob.get_boundary_point(edge)
     border = mob.scene.camera.project_point_onto_screen_border(boundary, edge)
     mob.move(border - boundary)
     assert _signed_inset(mob, edge) == pytest.approx(0.0, abs=1e-4)
 
-    mob.move_to_edge(edge)
+    mob.move_to_screen_edge(edge)
 
     assert _signed_inset(mob, edge) == pytest.approx(_buffer(), abs=2e-5)
 
@@ -93,18 +93,18 @@ def test_move_to_edge_insets_a_boundary_resting_exactly_on_the_border(edge_name)
 @pytest.mark.parametrize("edge_name", sorted(EDGES))
 def test_move_to_edge_is_idempotent(edge_name):
     edge = EDGES[edge_name]
-    mob = Square().move_to_edge(edge)
+    mob = Square().move_to_screen_edge(edge)
     once = mob.get_center().reshape(-1, 3)[0].clone()
 
-    mob.move_to_edge(edge)
+    mob.move_to_screen_edge(edge)
 
     torch.testing.assert_close(
         mob.get_center().reshape(-1, 3)[0], once, atol=2e-5, rtol=0
     )
 
 
-def test_move_to_corner_insets_both_edges_from_outside():
-    mob = Square().move(UP * 8 + RIGHT * 12).move_to_corner(UP, RIGHT)
+def test_move_to_screen_corner_insets_both_edges_from_outside():
+    mob = Square().move(UP * 8 + RIGHT * 12).move_to_screen_corner((UP, RIGHT))
 
     assert _signed_inset(mob, UP) == pytest.approx(_buffer(), abs=2e-5)
     assert _signed_inset(mob, RIGHT) == pytest.approx(_buffer(), abs=2e-5)
@@ -116,7 +116,7 @@ def test_move_to_edge_leaves_the_other_axes_alone(edge_name):
     mob = Square().move(UP * 0.4 + RIGHT * 0.3)
     start = mob.get_center().reshape(-1, 3)[0].clone()
 
-    mob.move_to_edge(edge)
+    mob.move_to_screen_edge(edge)
 
     off_axis = edge.abs().reshape(-1) < 0.5
     torch.testing.assert_close(

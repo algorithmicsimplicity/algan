@@ -72,7 +72,7 @@ if args.tol is not None:
     def _tight_init(self, *a, **kw):
         # geometry_tolerance is deliberately left alone: it sets the
         # construction grid, which moves a mob's centre and so breaks Act 2's
-        # move_to_point_along_arc. Only the per-frame dice is tightened.
+        # move_to's arc path. Only the per-frame dice is tightened.
         kw["render_tolerance"] = args.tol
         kw["render_tolerance_pixels"] = args.tol
         return _surface_init(self, *a, **kw)
@@ -91,9 +91,8 @@ if args.recolor:
         # both render white today whatever they were built with. A material
         # colour is not propagated, so this is the tint that survives.
         (
-            "thickness=0.03, color=GRAY_A)",
-            "thickness=0.03, color=GRAY_A)"
-            ".set_material(MeshBasicMaterial(color=MAGENTA))",
+            "radius=0.03, color=GRAY_A)",
+            "radius=0.03, color=GRAY_A).set_material(MeshBasicMaterial(color=MAGENTA))",
         ),
         (
             "radius=0.14, color=WHITE)",
@@ -111,7 +110,7 @@ runpy.run_path(_scene_path, run_name="__algan_scene__")
 
 kw = {"resolution": (704 * args.scale, 396 * args.scale)}
 if args.aa is not None:
-    kw["super_sampling_anti_aliasing"] = args.aa
+    kw["supersampling"] = args.aa
 if args.video:
     r = Scene.save_video(
         args.name,

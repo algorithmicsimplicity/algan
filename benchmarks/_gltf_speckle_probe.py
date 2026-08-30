@@ -84,9 +84,7 @@ with Off():
         color=WHITE,
         intensity=1.0,
     ).spawn(animate=False)
-    model = ThreeDModelMob(
-        "assets/textured_icosphere.glb", normalize=True, normalize_size=SIZE
-    ).move(UP * 0.2)
+    model = Model3D("assets/textured_icosphere.glb", fit_to_size=SIZE).move(UP * 0.2)
     stack = [model]
     while stack:
         mob = stack.pop()

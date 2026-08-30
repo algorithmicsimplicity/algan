@@ -9,15 +9,15 @@ refraction, and surface normals.
 There are four ways to use images in Algan:
 
 1. **ImageMob:** A flat, textured plane for displaying photos or graphics on screen.
-2. ** :class:`~.Surface` texture maps:** Per-texel material and color maps sampled inside the GPU raytracer.
-3. **2-D shape texture grids:** Color gradients and image fills across 2-D shapes (:class:`~.Circle`, :class:`~.Square`, text glyphs).
+2. ** :class:`~algan.mobs.surfaces.surface.Surface` texture maps:** Per-texel material and color maps sampled inside the GPU raytracer.
+3. **2-D shape texture grids:** Color gradients and image fills across 2-D shapes (:class:`~algan.mobs.shapes_2d.Circle`, :class:`~algan.mobs.shapes_2d.Square`, text glyphs).
 4. **Background images:** A static backdrop behind your entire scene (see :doc:`backgrounds_and_post_processing`).
 
 .. note::
 
     The Three.js material classes accept Three.js's image slots (``map``,
     ``normalMap``, ``roughnessMap``, ...) for API parity but **do not sample them**.
-    Texturing goes through :class:`~.Surface`, as described below.
+    Texturing goes through :class:`~algan.mobs.surfaces.surface.Surface`, as described below.
 
 Showing an Image
 ================
@@ -30,7 +30,7 @@ textured surface:
     from algan import *
 
     photo = ImageMob('world_map.png').scale(2).spawn()
-    with Seq(run_time=2):
+    with Seq(duration=2):
         photo.rotate(30, UP)
         photo.rotate(-30, UP)
 
@@ -41,7 +41,7 @@ directory holding your script, so an image sitting beside your ``.py`` file load
 regardless of where you launch Python from. The same resolution applies to
 :meth:`~algan.scene.Scene.set_background`,
 :meth:`~algan.scene.Scene.set_environment_map` and
-:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`.
+:class:`~algan.mobs.three_d_models.model_mob.Model3D`.
 
 Instead of a path you can pass a ``[H, W, 4]`` or ``[H, W, 5]`` tensor, which is how
 you texture something with data you computed rather than loaded.
@@ -67,7 +67,7 @@ you texture something with data you computed rather than loaded.
 Reshaping a textured surface
 ============================
 
-:class:`~.ImageMob` is itself a :class:`~.Surface`, so you can change its *shape*
+:class:`~.ImageMob` is itself a :class:`~algan.mobs.surfaces.surface.Surface`, so you can change its *shape*
 while it keeps its texture. That is how you wrap a map onto a globe:
 
 .. algan:: TexturesReshaping
@@ -78,7 +78,7 @@ while it keeps its texture. That is how you wrap a map onto a globe:
     world = ImageMob('world_map.png').scale(2).spawn()
     world.wait()
 
-    with Seq(run_time_unit=5, rate_func=rate_funcs.identity):
+    with Seq(duration_unit=5, easing=easings.identity):
         for shape in (Sphere(radius=2, add_to_scene=False),
                       Cylinder(radius=1, height=2, add_to_scene=False)):
             # Change the surface shape; the texture comes along.
@@ -88,8 +88,8 @@ while it keeps its texture. That is how you wrap a map onto a globe:
 
     Scene.save_video()
 
-:meth:`~.Surface.set_shape_to` re-maps the surface's intrinsic (UV) coordinates onto
-a new shape, and the texture follows them. Any :class:`~.Surface` works as a
+:meth:`~algan.mobs.surfaces.surface.Surface.set_shape_to` re-maps the surface's intrinsic (UV) coordinates onto
+a new shape, and the texture follows them. Any :class:`~algan.mobs.surfaces.surface.Surface` works as a
 target. Build the target with ``add_to_scene=False``, as above: it only says what
 shape to become and is never drawn, and without the flag Algan registers it as a
 Mob you meant to show and warns that you never spawned it.
@@ -103,8 +103,8 @@ Mob you meant to show and warns that you never spawned it.
 Texturing Any Surface
 =====================
 
-:class:`~.Surface` and everything built on it (:class:`~.Sphere`,
-:class:`~.Cylinder`, :class:`~.Cone`, :class:`~.Torus`, your own surface functions)
+:class:`~algan.mobs.surfaces.surface.Surface` and everything built on it (:class:`~algan.mobs.shapes_3d.Sphere`,
+:class:`~algan.mobs.shapes_3d.Cylinder`, :class:`~algan.mobs.shapes_3d.Cone`, :class:`~algan.mobs.shapes_3d.Torus`, your own surface functions)
 take texture arguments at construction:
 
 .. algan:: TexturesColorTexture
@@ -120,7 +120,7 @@ take texture arguments at construction:
     checker[..., 4] = 1.0           # opacity
 
     globe = Sphere(radius=1.5, color_texture=checker).spawn()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         globe.rotate(360, UP)
 
     Scene.save_video()
@@ -161,8 +161,8 @@ are resampled to a common one.
 Wrapping around a closed surface
 --------------------------------
 
-On a surface that closes on itself -- a :class:`~.Sphere`, a :class:`~.Cylinder`
-and a :class:`~.Cone` close around ``u``, a :class:`~.Torus` around both -- the
+On a surface that closes on itself -- a :class:`~algan.mobs.shapes_3d.Sphere`, a :class:`~algan.mobs.shapes_3d.Cylinder`
+and a :class:`~algan.mobs.shapes_3d.Cone` close around ``u``, a :class:`~algan.mobs.shapes_3d.Torus` around both -- the
 map **wraps**: the last column of texels is a neighbour of the first, and Algan
 blends across that meridian the same way it blends anywhere else. So the
 checkerboard above meets itself where the sphere comes back around, and a map
@@ -173,7 +173,7 @@ Each texel column therefore spans exactly ``1 / W`` of the way around, not
 ``1 / (W - 1)``: with a 16-wide map, column 0 is centred at the seam and column
 8 faces the other side, whichever direction the surface is spun. Algan works out
 which axes close from the geometry, so a surface of your own written with
-:class:`~.Surface` and a ``coord_function`` wraps too, without saying so.
+:class:`~algan.mobs.surfaces.surface.Surface` and a ``coord_function`` wraps too, without saying so.
 
 An **open** surface -- a flat plane, an :class:`~.ImageMob`, the pole-to-pole
 ``v`` axis of a sphere -- has no far side to blend into, so its first and last
@@ -247,7 +247,7 @@ texture to the new one per texel over the current context's duration.
         return texture
 
     globe = Sphere(radius=1.5, color_texture=stripes(True)).spawn()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         globe.color_texture = stripes(False)   # cross-fades, texel by texel
 
     Scene.save_video()
@@ -307,8 +307,8 @@ not already agree shows its seam. Make the first and last column of a
 Coloring a 2-D Shape
 ====================
 
-Algan's 2-D shapes -- :class:`~.Square`, :class:`~.Circle`, :class:`~.Polygon`,
-:class:`~.Line`, the glyphs of :class:`~.Text` and :class:`~.Tex` -- are not
+Algan's 2-D shapes -- :class:`~algan.mobs.shapes_2d.Square`, :class:`~algan.mobs.shapes_2d.Circle`, :class:`~algan.mobs.shapes_2d.Polygon`,
+:class:`~algan.mobs.shapes_2d.Line`, the glyphs of :class:`~algan.mobs.text.Text` and :class:`~algan.mobs.text.Tex` -- are not
 meshes. They are cubic bezier circuits (:class:`~.BezierCircuitCubic`), evaluated
 analytically by the renderer, so there are no vertices to hang colors off.
 
@@ -324,7 +324,7 @@ starts by asking for a grid:
     from algan import *
     import torch
 
-    square = Square(texture_grid_width=64, texture_grid_height=64, border_width=0)
+    square = Square(texture_grid_width=64, texture_grid_height=64, stroke_width=0)
     square.set_color_by_function(
         lambda uv: torch.cat((uv[..., :1], 1 - uv[..., :1], uv[..., 1:]), -1)
     )
@@ -341,7 +341,7 @@ The ``(u, v)`` domain
 
 :meth:`~.BezierCircuitCubic.set_color_by_function` hands your function a
 ``[..., 2]`` tensor of ``(u, v)`` coordinates -- the same convention
-:class:`~.Surface` uses, so a color function written for one works on the other.
+:class:`~algan.mobs.surfaces.surface.Surface` uses, so a color function written for one works on the other.
 ``u`` runs from 0 to 1 along the circuit's first basis row and ``v`` along its
 second, which for an upright 2-D shape means ``u`` left to right and ``v`` top to
 bottom. Return RGB, RGBA, or Algan's five-channel RGB + glow + alpha; the
@@ -351,7 +351,7 @@ function is called once on the whole grid, so write it with tensor operations.
 
     Both basis rows are as long as the distance from the circuit's centre to its
     furthest control point, so the domain covers the square that *circumscribes*
-    the shape. A :class:`~.Square` therefore occupies the middle of it rather
+    the shape. A :class:`~algan.mobs.shapes_2d.Square` therefore occupies the middle of it rather
     than all of it: a gradient across ``u`` has already run through part of its
     range by the time it reaches the square's left edge, and finishes the rest
     beyond its right one. :meth:`~.BezierCircuitCubic.get_base_grid` returns the
@@ -369,7 +369,7 @@ left at ``(u, v) == (0, 0)``:
 
     from algan import *
 
-    circle = Circle(texture_grid_width=128, texture_grid_height=128, border_width=0)
+    circle = Circle(texture_grid_width=128, texture_grid_height=128, stroke_width=0)
     circle.set_color_by_image('world_map.png')
     circle.spawn()
 
@@ -398,18 +398,18 @@ colors cross-fade over the current context's duration:
         return torch.cat((torch.ones_like(uv[..., :1]), 1 - uv[..., 1:],
                           torch.zeros_like(uv[..., :1])), -1)
 
-    square = Square(texture_grid_width=64, border_width=0).scale(2)
+    square = Square(texture_grid_width=64, stroke_width=0).scale(2)
     square.set_color_by_function(cool)
     square.spawn()
 
-    with Seq(run_time=2):
+    with Seq(duration=2):
         square.set_color_by_function(hot)   # cross-fades from whatever it was
 
     Scene.save_video()
 
-On a filled circuit these color the fill and leave ``border_color`` alone. On an
+On a filled circuit these color the fill and leave ``stroke_color`` alone. On an
 unfilled one, where the stroke is all there is, they color the stroke. And on a
-multi-circuit Mob (e.g. a :class:`~.Text`, a :class:`~.Tex`), which take the same
+multi-circuit Mob (e.g. a :class:`~algan.mobs.text.Text`, a :class:`~algan.mobs.text.Tex`), which take the same
 grid arguments and pass them down to their packed glyphs, each circuit is
 colored over its own frame, so the pattern repeats per glyph:
 
@@ -433,7 +433,7 @@ colored over its own frame, so the pattern repeats per glyph:
 Coloring along a line
 ---------------------
 
-A :class:`~.Line` is one-dimensional, and its texture grid follows: its control
+A :class:`~algan.mobs.shapes_2d.Line` is one-dimensional, and its texture grid follows: its control
 points are collinear, so the second basis row is synthesized perpendicular to the
 path and carries none of the shape's extent. ``texture_grid_height`` therefore
 defaults to a single row and ``texture_grid_width`` alone is the number of color
@@ -441,7 +441,7 @@ samples *along* the line.
 
 :meth:`Line.set_color_by_function <algan.mobs.shapes_2d.Line.set_color_by_function>`
 drops the second coordinate to match, handing your function a single ``t``
-running from 0 at :meth:`~.Line.get_start` to 1 at :meth:`~.Line.get_end`:
+running from 0 at :meth:`~algan.mobs.shapes_2d.Line.get_start` to 1 at :meth:`~algan.mobs.shapes_2d.Line.get_end`:
 
 .. algan:: TexturesLineGradient
     :save_last_frame:
@@ -449,7 +449,7 @@ running from 0 at :meth:`~.Line.get_start` to 1 at :meth:`~.Line.get_end`:
     from algan import *
     import torch
 
-    line = Line(LEFT * 4, RIGHT * 4, border_width=30, texture_grid_width=64)
+    line = Line(LEFT * 4, RIGHT * 4, stroke_width=30, texture_grid_width=64)
     line.set_color_by_function(
         lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
     )
@@ -469,7 +469,7 @@ Choosing a resolution
 
 A surface's texture detail is limited by two independent things: the resolution of
 the image you supply, and (for glow) the surface's own grid resolution.
-:class:`~.Surface` sizes its grid automatically between ``min_grid_resolution`` and
+:class:`~algan.mobs.surfaces.surface.Surface` sizes its grid automatically between ``min_grid_resolution`` and
 ``max_grid_resolution``, and dices curved triangles at render time to whichever of
 ``render_tolerance`` (a fraction of screen height, so a surface that fills the frame
 gets more triangles than one in the distance) and ``render_tolerance_pixels`` (an
@@ -482,7 +482,7 @@ the texture resolution before reducing anything else; see
 See Also
 ========
 
-- :doc:`../galleries/mob_gallery` -- :class:`~.ImageMob`, :class:`~.Surface` and
+- :doc:`../galleries/mob_gallery` -- :class:`~.ImageMob`, :class:`~algan.mobs.surfaces.surface.Surface` and
   the shapes these textures go on.
 - :doc:`three_d_models` -- imported models bring their own textures and materials.
 - :doc:`shaders_and_materials` -- what each material property does.

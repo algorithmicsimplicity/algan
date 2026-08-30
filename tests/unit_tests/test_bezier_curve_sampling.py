@@ -316,7 +316,7 @@ def test_open_subpath_polyline_carries_its_own_endpoint():
     start = torch.tensor([-1.0, -0.5, 0.0])
     end = torch.tensor([1.0, 0.5, 0.0])
     with Off(record_funcs=False, record_attr_modifications=False):
-        line = Line(start, end, border_width=2, add_to_scene=False)
+        line = Line(start, end, stroke_width=2, add_to_scene=False)
 
     edges = _polyline(line)
 
@@ -338,7 +338,7 @@ def test_closed_circuit_polyline_is_unchanged_by_the_endpoint_rule():
     """
     SceneManager.reset()
     with Off(record_funcs=False, record_attr_modifications=False):
-        square = Square(border_width=2, add_to_scene=False)
+        square = Square(stroke_width=2, add_to_scene=False)
 
     edges = _polyline(square)
     segments = square.get_render_primitives().corners.shape[1]

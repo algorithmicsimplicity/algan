@@ -7,9 +7,9 @@ LaTeX first-class treatment. Both are cubic Bezier circuits underneath -- real
 outlines, not bitmaps -- so they stay crisp at any zoom and morph into other
 shapes like anything else.
 
-* :class:`~.Text` -- a string rendered with a font.
-* :class:`~.Tex` -- LaTeX.
-* :class:`~.NumericDisplay` -- a number you can animate.
+* :class:`~algan.mobs.text.Text` -- a string rendered with a font.
+* :class:`~algan.mobs.text.Tex` -- LaTeX.
+* :class:`~algan.mobs.numeric_display.DecimalNumber` -- a number you can animate.
 
 Plain Text
 ==========
@@ -21,13 +21,13 @@ Plain Text
     title = Text("Euler's identity", font_size=64).move(UP * 1.5).spawn()
     formula = Tex(r"e^{i\pi} + 1 = 0", font_size=80).spawn()
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         formula.color = YELLOW
         title.move(UP * 0.5)
 
     Scene.save_video()
 
-:class:`~.Text` accepts the styling arguments you would expect:
+:class:`~algan.mobs.text.Text` accepts the styling arguments you would expect:
 
 .. algan:: TextStyles
 
@@ -37,7 +37,7 @@ Plain Text
         Text("plain", font_size=44),
         Text("bold", font_size=44, weight="BOLD"),
         Text("italic", font_size=44, slant="ITALIC"),
-        Text("colored words", font_size=44, t2c={"colored": YELLOW}),
+        Text("colored words", font_size=44, color_map={"colored": YELLOW}),
     ])
     lines.arrange_in_line(DOWN, buffer=0.35).move_to(ORIGIN).spawn()
     lines.wait()
@@ -61,9 +61,10 @@ Plain Text
      - ``"NORMAL"``, ``"BOLD"``, ...
    * - ``slant``
      - ``"NORMAL"`` or ``"ITALIC"``.
-   * - ``t2c``
+   * - ``color_map``
      - Text-to-color: ``{"word": YELLOW}`` colors just that substring.
-       ``t2f``, ``t2s``, ``t2w`` do the same for font, slant and weight.
+       ``font_map``, ``slant_map``, ``weight_map`` do the same for font, slant
+       and weight.
    * - ``line_spacing``
      - Gap between lines of a multi-line string.
    * - ``gradient``
@@ -76,7 +77,7 @@ one and stay with it. ``font_size`` is usually clearer for a fixed label;
 LaTeX
 =====
 
-:class:`~.Tex` compiles LaTeX in **math mode**, so you never have to wrap
+:class:`~algan.mobs.text.Tex` compiles LaTeX in **math mode**, so you never have to wrap
 anything in ``$``:
 
 .. algan:: TextMathTex
@@ -84,7 +85,7 @@ anything in ``$``:
     from algan import *
 
     formula = Tex(r"\frac{d}{dx}\left(x^2\right) = 2x", font_size=60).spawn()
-    with Seq(run_time=2):
+    with Seq(duration=2):
         formula.color = YELLOW
         formula.scale(1.3)
 
@@ -105,7 +106,7 @@ backslashes.
 Animating parts of a formula
 ============================
 
-Pass several strings to :class:`~.Tex` and each becomes a separate **segment**,
+Pass several strings to :class:`~algan.mobs.text.Tex` and each becomes a separate **segment**,
 retrieved with :meth:`~algan.mobs.text.Tex.get_segment` and animated
 independently:
 
@@ -125,7 +126,7 @@ formula where you want the seams, then animate that segment.
 
 .. note::
 
-    Segments are not ``children``. A multi-part :class:`~.Tex` keeps every glyph
+    Segments are not ``children``. A multi-part :class:`~algan.mobs.text.Tex` keeps every glyph
     in one packed batch, so ``formula.children`` has a single entry -- looping
     over it colors the whole formula at once and any surrounding
     :class:`~.Lag` has nothing to stagger. Reach for
@@ -135,7 +136,7 @@ formula where you want the seams, then animate that segment.
 Per-glyph animation
 ===================
 
-Every :class:`~.Text` and :class:`~.Tex` exposes its individual glyphs as
+Every :class:`~algan.mobs.text.Text` and :class:`~algan.mobs.text.Tex` exposes its individual glyphs as
 ``character_mobs``, a list of Mobs you can animate one at a time:
 
 .. algan:: TextGlyphs
@@ -163,7 +164,7 @@ another, for the classic "written by hand" look:
 
     from algan import *
 
-    Text("Hand written", font_size=64).spawn(False).write(run_time=3)
+    Text("Hand written", font_size=64).spawn(False).write(duration=3)
 
     Scene.save_video()
 
@@ -172,30 +173,30 @@ first play its ordinary fade-in and *then* be written. ``write()`` deliberately
 does not change the text's spawned state; Algan keeps lifespan management
 separate from animations.
 
-``write()`` takes ``run_time`` for the whole sequence and ``lag_ratio`` for how
+``write()`` takes ``duration`` for the whole sequence and ``lag_ratio`` for how
 much each glyph overlaps the next (``0`` writes them all at once). It is shorthand
-for :func:`~.draw_border_then_fill` applied to the glyphs -- that function works
+for :func:`~.DrawBorderThenFill` applied to the glyphs -- that function works
 on any iterable of Mobs, so you can use it on shapes too. See
 :doc:`../galleries/built_in_animations` for that.
 
 Animated Numbers
 ================
 
-:class:`~.NumericDisplay` renders a number and animates through the values
+:class:`~algan.mobs.numeric_display.DecimalNumber` renders a number and animates through the values
 in between when you change it:
 
-.. algan:: TextNumericDisplay
+.. algan:: TextDecimalNumber
 
     from algan import *
 
-    counter = NumericDisplay(0.0, num_decimal_places=2).scale(2).spawn()
-    with Seq(run_time=3):
+    counter = DecimalNumber(0.0, decimal_places=2).scale(2).spawn()
+    with Seq(duration=3):
         counter.value = 100.0
 
     Scene.save_video()
 
-``num_decimal_places`` fixes the digits after the point and
-``num_integer_places`` sets an initial minimum width before it. If the value later
+``decimal_places`` fixes the digits after the point and
+``integer_places`` sets an initial minimum width before it. If the value later
 needs more integer digits, the display grows automatically; the extra slots remain
 available so its width stays stable afterwards.
 

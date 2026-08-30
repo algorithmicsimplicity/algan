@@ -131,7 +131,7 @@ Context                    What it does to the changes inside it
 ``Off()``                  Instantly, in a single frame, recording no animation.
 =========================  ====================================================
 
-``run_time`` sets a context's total duration; ``run_time_unit`` sets the default
+``duration`` sets a context's total duration; ``duration_unit`` sets the default
 duration of each child animation inside it. Contexts nest, and a nested context
 counts as one animation to its parent, which is what makes a complex multi-Mob
 sequence readable:
@@ -216,7 +216,7 @@ wants radians -- the Manim-compatibility mobs (``Axes``, ``NumberPlane``,
 ``Arc``, ``Brace``, ``VGroup`` and everything else deriving from
 :class:`~algan.mobs.manim_compat.ManimCompatMob`) included.
 
-Everything else -- including ``rotate``, ``orbit``, ``move(path_arc_angle=...)``,
+Everything else -- including ``rotate``, ``orbit``, ``move(arc_angle=...)``,
 camera field of view and Euler angles, and light cone angles -- is in degrees.
 
 .. _migrating-manim-defaults:
@@ -331,7 +331,7 @@ outlines: ``MathTex("x^2")`` matches ``Tex("x^2", font_size=48)``.
     below its own frame top, putting the title's top at ``y = 3.5`` -- exactly
     Algan's top border. Nothing is cut off, but it sits flush against the frame
     edge with no margin. Call
-    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_edge` to
+    :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_edge` to
     inset it by Algan's usual buffer, or place it by hand with
     ``.move(DOWN * 1)``.
 
@@ -403,11 +403,11 @@ through the Scene:
     ball = Sphere(radius=1, color=BLUE).spawn()
 
     camera = Scene.get_camera()
-    Scene.clear_light_sources()
+    Scene.clear_lights()
     PointLight(location=UP * 4 + LEFT * 4 + OUT * 4).spawn()
 
-    with Seq(run_time=3, rate_func=rate_funcs.identity):
-        camera.rotate(180, UP, about_point=ORIGIN)
+    with Seq(duration=3, easing=easings.identity):
+        camera.rotate(180, UP, about=ORIGIN)
 
     Scene.save_video()
 
@@ -453,7 +453,7 @@ Built-in presets are immutable, so this creates a modified copy:
 
 .. code-block:: python
 
-    fast_hd = HD.set(frames_per_second=24, super_sampling_anti_aliasing=1)
+    fast_hd = HD.set(frames_per_second=24, supersampling=1)
 
 The render device is a setting: ``SETTINGS.computing.set(render_device="cuda")``,
 at the top of the script. The animation device is not -- set

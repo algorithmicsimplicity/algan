@@ -88,9 +88,9 @@ Timing
 
 Two arguments control how long a context takes:
 
-* ``run_time`` -- the total duration of the whole block, in seconds. The
+* ``duration`` -- the total duration of the whole block, in seconds. The
   animations inside are rescaled to fit.
-* ``run_time_unit`` -- the duration of each individual animation inside.
+* ``duration_unit`` -- the duration of each individual animation inside.
 
 .. algan:: ControllingTiming
 
@@ -98,20 +98,20 @@ Two arguments control how long a context takes:
 
     circle = Circle().spawn()
 
-    with Seq(run_time=1):
+    with Seq(duration=1):
         circle.move(LEFT)
         circle.move(UP)
         circle.move(RIGHT * 2)
         circle.move(DOWN)
 
-    with Seq(run_time_unit=5):
+    with Seq(duration_unit=5):
         circle.rotate(360, UP)
         circle.move_to(ORIGIN)
 
     Scene.save_video()
 
 The first block squeezes four moves into one second total; the second gives each
-of its two animations five seconds. If you set both, ``run_time`` overrides ``run_time_unit``.
+of its two animations five seconds. If you set both, ``duration`` overrides ``duration_unit``.
 
 Nesting Contexts
 ================
@@ -119,7 +119,7 @@ Nesting Contexts
 Contexts nest, and this is where they get really useful. A nested context is treated
 by its parent as a *single* animation, so you can build up a complex piece of
 choreography out of small, readable (and reusable!) blocks. A nested context also inherits every
-parameter you did not set (``run_time_unit``, ``lag_ratio``, ``rate_func``)
+parameter you did not set (``duration_unit``, ``lag_ratio``, ``easing``)
 so you can set a house style on the outside and only override the exceptions.
 
 .. algan:: ControllingNesting
@@ -163,11 +163,11 @@ whole choreography as one animation.
 Easing With Rate Functions
 ==========================
 
-A ``rate_func`` maps progress through an animation (``0`` to ``1``) to how far
+A ``easing`` maps progress through an animation (``0`` to ``1``) to how far
 along the change should be at that moment. It is what makes motion feel like it
 accelerates and settles rather than snapping between states.
 
-Algan's default is ``rate_funcs.smooth``: a gentle ease in and out.
+Algan's default is ``easings.smooth``: a gentle ease in and out.
 You can pass a different one to any context:
 
 .. algan:: ControllingRateFuncs
@@ -178,10 +178,10 @@ You can pass a different one to any context:
         squares = [Square(color=c).scale(0.4).move((i-1)*DOWN*1.5 + LEFT*3).spawn()
                         for i, c in enumerate((BLUE, GREEN, YELLOW))]
 
-    funcs = (rate_funcs.identity, rate_funcs.smooth, rate_funcs.ease_out_quintic)
-    with Sync(run_time=2):
+    funcs = (easings.identity, easings.smooth, easings.ease_out_quintic)
+    with Sync(duration=2):
         for square, func in zip(squares, funcs):
-            with Seq(rate_func=func):
+            with Seq(easing=func):
                 square.move(RIGHT * 6)
 
     Scene.save_video()
@@ -195,17 +195,17 @@ differently. Here are some useful rate functions:
 
    * - Function
      - Feel
-   * - ``rate_funcs.smooth``
+   * - ``easings.smooth``
      - Ease in and out. The default, and the right choice most of the time.
-   * - ``rate_funcs.identity``
+   * - ``easings.identity``
      - Constant speed. Use it for anything that should look mechanical (a
        rotating turntable, a camera orbit, a clock hand).
-   * - ``rate_funcs.ease_out_quintic``
+   * - ``easings.ease_out_quintic``
      - Fast start, long settle. Good for things arriving on screen.
-   * - ``rate_funcs.ease_in_expo`` / ``rate_funcs.ease_out_expo``
+   * - ``easings.ease_in_expo`` / ``easings.ease_out_expo``
      - Sharp acceleration / deceleration.
 
-The :mod:`~algan.constants.rate_funcs` reference lists the whole catalogue.
+The :mod:`~algan.constants.easings` reference lists the whole catalogue.
 
 Writing your own rate function
 ------------------------------
@@ -221,19 +221,19 @@ A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
         return 1 - (1 - t) ** 2
 
     square = Square(color=BLUE).spawn()
-    with Seq(rate_func=bounce_out, run_time=2):
+    with Seq(easing=bounce_out, duration=2):
         square.move(DOWN * 2)
 
     Scene.save_video()
 
-``rate_funcs.inversed(f)`` gives you the time-reversed version of any rate
-function, and passing ``rate_func_compose`` instead of ``rate_func`` composes
+``easings.inversed(f)`` gives you the time-reversed version of any rate
+function, and passing ``composed_easing`` instead of ``easing`` composes
 with the parent context's easing rather than replacing it.
 
 .. note::
 
-    A context that uses ``rate_func`` applies it across the *whole block*. If
-    you want a long orbit to run at constant speed, put ``rate_func`` on the
+    A context that uses ``easing`` applies it across the *whole block*. If
+    you want a long orbit to run at constant speed, put ``easing`` on the
     context that owns the orbit, not on an enclosing one that also holds other
     animations.
 
@@ -243,7 +243,7 @@ with the parent context's easing rather than replacing it.
       :class:`~algan.animation_timeline.animation_contexts.Audio` and
       :class:`~algan.animation_timeline.animation_contexts.Speech` are contexts
       too, and they take their duration from a sound file rather than from
-      ``run_time``.
+      ``duration``.
     * :doc:`../advanced_user_tutorials/animating_out_of_order` -- writing
       animations to a point on the timeline of your own choosing, for when each
       Mob's start time is a function of something about that Mob.
