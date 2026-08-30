@@ -382,12 +382,18 @@ jobs:
       # weaker version of this job, it is a different one: it checks that an
       # unpatched Mac falls back to the CPU instead of drawing a black frame.
       #
+      # macOS only, and not because Linux merely does not need it: the artifact
+      # is an `arm64-macos` wheel, so on the Linux arm `uv pip install` fails
+      # outright ("has no wheels with a matching platform tag") and takes the
+      # control arm down before it has run anything. A run with a wheel id used
+      # to lose both arms to that.
+      #
       # `--no-deps` because the wheel's dependencies are already resolved and
       # installed by `uv sync`; `--reinstall-package` because it has the same
       # version as the wheel it replaces, so a plain install would consider the
       # requirement already satisfied and do nothing.
       - name: Install the patched Taichi wheel
-        if: ${{ inputs.taichi_wheel_run_id != '' }}
+        if: ${{ runner.os == 'macOS' && inputs.taichi_wheel_run_id != '' }}
         uses: actions/download-artifact@v4
         with:
           name: taichi-build-macos-arm64
@@ -396,7 +402,7 @@ jobs:
           path: patched-taichi
 
       - name: Put the patched Taichi in the environment
-        if: ${{ inputs.taichi_wheel_run_id != '' }}
+        if: ${{ runner.os == 'macOS' && inputs.taichi_wheel_run_id != '' }}
         run: |
           set -euo pipefail
           wheel=$(find patched-taichi -name 'taichi*.whl' | head -1)
@@ -446,6 +452,18 @@ jobs:
       # nothing behind, and this leaves a table.
       - name: Probe what Metal will compile
         run: uv run python benchmarks/_mps_metal_codegen_probe.py
+
+      # And before that, the torch half. The sheet compaction is almost
+      # entirely torch, so a wrong sheet count is as likely to be an op that
+      # answers differently on MPS as a kernel that miscompiled -- and this
+      # tells the two apart in one process by running each op on both devices
+      # over the same input. `continue-on-error` because it is a measurement:
+      # the render below is the check, and a named-and-understood torch defect
+      # should not stop the job from producing the frame that shows what it
+      # costs.
+      - name: Probe which torch ops MPS gets right
+        continue-on-error: true
+        run: uv run python benchmarks/_mps_torch_op_probe.py
 
       # The smallest thing that exercises the whole renderer, run before the
       # suite so a total failure to render costs one minute rather than the
