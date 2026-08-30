@@ -251,6 +251,29 @@ No fork involvement, roughly 100 lines:
 * fall back to the stock copying path whenever the patched build is absent, so a
   stock wheel keeps working.
 
+> **One thing this list missed, found by running it: the element type.** Taichi
+> type-checks an ndarray argument against the *annotation's* element type, so an
+> array a kernel declares as `ndarray(dtype=vector(bvh_arity, f16))` — every
+> BVH-taking kernel's node array, and the widest arrays in the renderer — is
+> refused outright when it arrives as plain `f16` (`required element type:
+> VectorType[4, f16], but f16 is provided`). The first version of the glue
+> excluded them and left them on the staging path, which is not an error and not
+> visible in a frame: it is four copies and an MPS stream sync per launch, on a
+> render that looks exactly right.
+>
+> The C++ side never needed anything for this. `Ndarray`'s `DeviceAllocation`
+> constructor reads the element shape off a tensor `DataType`, which is how
+> `VectorNdarray` builds its own, so `ExternalMetalNdarray` takes an
+> `element_shape` and `mps_zero_copy` reads it off the annotation — the only
+> place it exists, since nothing about a torch tensor says which of its
+> dimensions Taichi considers element dimensions.
+>
+> And the fallback stops being silent, which is the more durable half:
+> `mps_zero_copy.STATS` counts every ndarray argument still crossing the bus,
+> `LEFT_ON_THE_BUS` names the kernel and position, and
+> `benchmarks/_mps_render_smoke.py` **fails** a frame that drew correctly while
+> paying for one.
+
 ### 3.4 What it does not fix
 
 Nothing else. The ~24-argument limit (§1.1), f64 (§1.2) and i64 atomics (§1.2)
