@@ -1752,7 +1752,7 @@ class Mob(
         that despawns at this moment -- while this Mob continues with a clean
         history from here. Use it before a change that cannot be interpolated
         from the old value, because the two states have different shapes: for
-        example raising a :class:`~.Surface`'s resolution, or a ``become`` between
+        example raising a :class:`~algan.mobs.surfaces.surface.Surface`'s resolution, or a ``become`` between
         Mobs with different numbers of parts. Without detaching, the render-time
         replay tries to interpolate mismatched shapes and raises.
 

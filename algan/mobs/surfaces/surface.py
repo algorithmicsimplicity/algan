@@ -374,8 +374,8 @@ def surface_closed_axes(grid):
 
     Returns ``(closed_u, closed_v)``: ``closed_u`` when column ``W-1``
     coincides with column 0 (a surface of revolution's u-seam -- a
-    :class:`~.Sphere`, a :class:`~.Cylinder`, a :class:`~.Cone`), ``closed_v``
-    when row ``H-1`` coincides with row 0 (a :class:`~.Torus` closes on both).
+    :class:`~algan.mobs.shapes_3d.Sphere`, a :class:`~algan.mobs.shapes_3d.Cylinder`, a :class:`~algan.mobs.shapes_3d.Cone`), ``closed_v``
+    when row ``H-1`` coincides with row 0 (a :class:`~algan.mobs.shapes_3d.Torus` closes on both).
 
     This is :func:`surface_weld_flags`'s ``wrap_x`` test on both axes, but it
     answers a different question -- how a *texture* must be sampled, not how
@@ -3685,8 +3685,8 @@ class Surface(Mob):
         """Map the surface's ``(u, v)`` parameters to positions in space.
 
         This is what defines the surface's shape, and what each 3-D shape class
-        overrides: :class:`~.Sphere` maps the unit square onto a sphere,
-        :class:`~.Torus` onto a torus, and so on. The base implementation gives a flat
+        overrides: :class:`~algan.mobs.shapes_3d.Sphere` maps the unit square onto a sphere,
+        :class:`~algan.mobs.shapes_3d.Torus` onto a torus, and so on. The base implementation gives a flat
         plane spanning ``[-1, 1]`` on both axes.
 
         Parameters

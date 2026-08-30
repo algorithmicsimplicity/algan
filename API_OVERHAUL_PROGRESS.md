@@ -20,7 +20,7 @@ Update it in the same commit as the work it describes.
 | 5 | Class and parameter naming | **Done** |
 | 6 | `border_*` → `stroke_*` | **Done** |
 | 7 | `run_time` → `duration`, `rate_func` → `easing` | **Done** |
-| 8 | Documentation and baselines | Not started |
+| 8 | Documentation and baselines | **Done** |
 
 **Export count**: 471 at the start → 379 after Phase 1b → 361 after Phase 2. Phase 3 moves no
 exports: everything it touches is a `Mob` method or property, not a module-level name.
@@ -53,7 +53,7 @@ exports: everything it touches is a `Mob` method or property, not a module-level
 
 ### Phase 1b — native adapters
 
-- New `algan/mobs/manim_adapters.py`: 65 curated classes get a native root spelling that
+- New `algan/mobs/manim_adapters.py`: 66 curated classes get a native root spelling that
   converts Algan's conventions and delegates to the compat wrapper.
 - Angle conversion is declared per class in `_ANGLE_PARAMS` (8 classes), applied only to
   arguments the caller actually supplied.
@@ -256,6 +256,36 @@ README wrote `Sync(duration=2.0)` while the parameter was `run_time`. Sweeping t
 turned it into "the parameter is `duration`" against a call that says `duration` -- a finding
 with its finding removed. Prose that deliberately quotes an old name is the one thing a
 mechanical rename cannot be trusted with.
+
+### Phase 8 — documentation
+
+**`CLAUDE.md`.** The compatibility-layer bullet described `Mobject`, `GenericGraph` and
+`install_opengl_aliases` as root names; Phase 1 moved all three behind `algan.manim` and the
+bullet had never been updated. It now says so, and a new "The `algan.manim` boundary" subsection
+gives the rule (`mn.X` is Manim's conventions, root `X` is Algan's), the three conventions that
+actually differ in a table, and where the four stroke conversions live. Two API-shape bullets
+were added: the two-method Scene lifecycle, and the `.x`/`.y`/`.z`/`.xy` and
+`.right`/`.up`/`.forward` property surface. The settings names in that section were already
+correct -- the Phase 5 and 7 sweeps had caught them, which is worth knowing before assuming a
+doc is stale.
+
+**`agent_guidance/api_settings.md`.** Documents `SETTINGS.paths.ffmpeg_binary` and why it
+outranks the probe rather than joining it, enumerates the `video` and `paths` fields, adds the
+four post-overhaul entries to the API-change discipline list, and says where a compat name
+belongs. Its "checked-in autosummary stubs" instruction was wrong: `docs/source/reference/` is
+gitignored and generated at build time, so there is nothing to hand-edit there -- but a renamed
+symbol still breaks any cross-reference naming it, which is the part worth saying.
+
+**The docs build, which had never been run on this branch.** It succeeded, with **144
+warnings**, and 143 of them were one problem the overhaul caused: Phase 1 dropped the
+native-omission carve-out, so `manim_compat` now defines `Square`, `Surface`, `Text` and 17 more
+beside the native classes, and every short `:class:`~.Square`` reference became ambiguous.
+Sphinx does not fail on that -- it warns and picks a target -- and **it was picking the compat
+wrapper**, so the native-shape gallery was linking readers to the Manim page. Fixed by
+qualifying the ambiguous references to their native module (the `~` prefix still renders as the
+bare class name, so no prose changed), and `reference_index/mobs.rst` now explains why several
+class names appear twice in the reference. The structural build is at **zero warnings**; the
+one non-ambiguity warning was a missing `dot` binary in this container.
 
 ---
 

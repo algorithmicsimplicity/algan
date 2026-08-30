@@ -46,8 +46,8 @@ def DrawBorderThenFill(
     Parameters
     ----------
     mobs
-        Any iterable of Mobs: the glyphs of a :class:`~.Text`, a
-        :class:`~.Group`'s children, or a list you assembled yourself. Drawn in
+        Any iterable of Mobs: the glyphs of a :class:`~algan.mobs.text.Text`, a
+        :class:`~algan.mobs.group.Group`'s children, or a list you assembled yourself. Drawn in
         iteration order.
     duration
         Total seconds for the whole sequence. Defaults to 1 second, or 2 for

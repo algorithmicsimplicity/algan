@@ -16,7 +16,7 @@ whether your goal can be achieved with existing extension hooks:
    * - Continuous real-time behavior
      - Updaters (:doc:`../new_user_tutorials/updaters`)
    * - A new parametric 3-D surface
-     - :class:`~.Surface` with a custom coordinate function
+     - :class:`~algan.mobs.surfaces.surface.Surface` with a custom coordinate function
    * - Custom lighting / shading effects
      - Materials or fragment shader pipelines (:doc:`shaders_and_materials`)
    * - Custom post-processing image filters
@@ -29,9 +29,9 @@ Building Custom Mob Classes
 
 If you need a new shape, subclass an existing Mob base class:
 
-* **2-D Outlines & Shapes:** Subclass :class:`~.BezierCircuitCubic`. (See :class:`~.Circle` or :class:`~.Polygon` for reference implementations).
-* **3-D Curved Surfaces:** Subclass :class:`~.Surface` and provide a parametric coordinate function ``(u, v) -> (x, y, z)``.
-* **Polyhedral Meshes:** Subclass :class:`~.Polyhedron` and supply vertex and face arrays.
+* **2-D Outlines & Shapes:** Subclass :class:`~.BezierCircuitCubic`. (See :class:`~algan.mobs.shapes_2d.Circle` or :class:`~algan.mobs.shapes_2d.Polygon` for reference implementations).
+* **3-D Curved Surfaces:** Subclass :class:`~algan.mobs.surfaces.surface.Surface` and provide a parametric coordinate function ``(u, v) -> (x, y, z)``.
+* **Polyhedral Meshes:** Subclass :class:`~algan.mobs.shapes_3d.Polyhedron` and supply vertex and face arrays.
 
 Registering Custom Animatable Attributes
 ----------------------------------------

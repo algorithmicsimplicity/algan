@@ -346,7 +346,7 @@ def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, duration: float = 2.0
 
     Returns
     -------
-    :class:`~.Circle`
+    :class:`~algan.mobs.shapes_2d.Circle`
         The spotlight Mob, already despawned.
     """
     from algan.animatable_base.mob import Mob

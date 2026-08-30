@@ -7,9 +7,9 @@ LaTeX first-class treatment. Both are cubic Bezier circuits underneath -- real
 outlines, not bitmaps -- so they stay crisp at any zoom and morph into other
 shapes like anything else.
 
-* :class:`~.Text` -- a string rendered with a font.
-* :class:`~.Tex` -- LaTeX.
-* :class:`~.DecimalNumber` -- a number you can animate.
+* :class:`~algan.mobs.text.Text` -- a string rendered with a font.
+* :class:`~algan.mobs.text.Tex` -- LaTeX.
+* :class:`~algan.mobs.numeric_display.DecimalNumber` -- a number you can animate.
 
 Plain Text
 ==========
@@ -27,7 +27,7 @@ Plain Text
 
     Scene.save_video()
 
-:class:`~.Text` accepts the styling arguments you would expect:
+:class:`~algan.mobs.text.Text` accepts the styling arguments you would expect:
 
 .. algan:: TextStyles
 
@@ -77,7 +77,7 @@ one and stay with it. ``font_size`` is usually clearer for a fixed label;
 LaTeX
 =====
 
-:class:`~.Tex` compiles LaTeX in **math mode**, so you never have to wrap
+:class:`~algan.mobs.text.Tex` compiles LaTeX in **math mode**, so you never have to wrap
 anything in ``$``:
 
 .. algan:: TextMathTex
@@ -106,7 +106,7 @@ backslashes.
 Animating parts of a formula
 ============================
 
-Pass several strings to :class:`~.Tex` and each becomes a separate **segment**,
+Pass several strings to :class:`~algan.mobs.text.Tex` and each becomes a separate **segment**,
 retrieved with :meth:`~algan.mobs.text.Tex.get_segment` and animated
 independently:
 
@@ -126,7 +126,7 @@ formula where you want the seams, then animate that segment.
 
 .. note::
 
-    Segments are not ``children``. A multi-part :class:`~.Tex` keeps every glyph
+    Segments are not ``children``. A multi-part :class:`~algan.mobs.text.Tex` keeps every glyph
     in one packed batch, so ``formula.children`` has a single entry -- looping
     over it colors the whole formula at once and any surrounding
     :class:`~.Lag` has nothing to stagger. Reach for
@@ -136,7 +136,7 @@ formula where you want the seams, then animate that segment.
 Per-glyph animation
 ===================
 
-Every :class:`~.Text` and :class:`~.Tex` exposes its individual glyphs as
+Every :class:`~algan.mobs.text.Text` and :class:`~algan.mobs.text.Tex` exposes its individual glyphs as
 ``character_mobs``, a list of Mobs you can animate one at a time:
 
 .. algan:: TextGlyphs
@@ -182,7 +182,7 @@ on any iterable of Mobs, so you can use it on shapes too. See
 Animated Numbers
 ================
 
-:class:`~.DecimalNumber` renders a number and animates through the values
+:class:`~algan.mobs.numeric_display.DecimalNumber` renders a number and animates through the values
 in between when you change it:
 
 .. algan:: TextDecimalNumber

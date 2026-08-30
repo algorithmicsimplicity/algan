@@ -443,7 +443,7 @@ class Tex(Mob):
 
         Returns
         -------
-        :class:`~.Group`
+        :class:`~algan.mobs.group.Group`
             A Group of the glyphs in that segment, sharing data with this text.
         """
         return self[self.segment_starts[index] : self.segment_ends[index]]
@@ -461,7 +461,7 @@ class Tex(Mob):
 
         Returns
         -------
-        :class:`~.Group`
+        :class:`~algan.mobs.group.Group`
             A Group of the selected glyphs.
         """
         return Group([self.character_mobs[item]], scene=self.scene)

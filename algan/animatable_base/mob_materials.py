@@ -219,7 +219,7 @@ class MobMaterialsMixin:
         each take a file path or an ``[H, W, C]`` image and are sampled
         bilinearly per fragment. That needs per-vertex UVs, so it reaches a
         :class:`~algan.mobs.surfaces.surface.Surface` (a
-        :class:`~.Sphere`, :class:`~.Cylinder`, :class:`~.ImageMob`, ...) or a
+        :class:`~algan.mobs.shapes_3d.Sphere`, :class:`~algan.mobs.shapes_3d.Cylinder`, :class:`~.ImageMob`, ...) or a
         :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with
         ``uvs``; on anything else the maps are ignored, with a warning. A
         forwarded map is **static** -- unlike the scalar properties above it is

@@ -367,7 +367,7 @@ class Point(BezierCircuitCubic):
 
     It is a degenerate bezier circuit -- four control points stacked on the same
     location -- so it occupies no area and renders as nothing at the default
-    black. Reach for it to give a :class:`~.Group` a reference position, or as a
+    black. Reach for it to give a :class:`~algan.mobs.group.Group` a reference position, or as a
     :meth:`~algan.animatable_base.mob.Mob.become` target that collapses a shape
     to a dot. Use :class:`Dot` when you want something visible.
 

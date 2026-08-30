@@ -66,7 +66,7 @@ Lighting
 ========
 
 By default, every scene starts with one white :class:`~.PointLight` above and to the right of
-the camera. That is what gives 3-D shapes their shading, and it is why a :class:`~.Sphere`
+the camera. That is what gives 3-D shapes their shading, and it is why a :class:`~algan.mobs.shapes_3d.Sphere`
 reads as a ball rather than a flat disc.
 Lights are Mobs, so you animate them like anything else.
 :meth:`~algan.scene.Scene.get_light_sources` returns a list of all mobs in the scene
@@ -87,7 +87,7 @@ which act as light sources.
 .. note::
 
     Flat 2-D shapes and text are drawn in their own color and are **not** lit.
-    This is why a :class:`~.Square` and a :class:`~.Cube` look different.
+    This is why a :class:`~algan.mobs.shapes_2d.Square` and a :class:`~algan.mobs.shapes_3d.Cube` look different.
 
 Casting Shadows
 ===============
@@ -129,7 +129,7 @@ Two things worth noticing:
 Curved Surfaces
 ===============
 
-:class:`~.Surface` allows you to define a manifold surface of any shape,
+:class:`~algan.mobs.surfaces.surface.Surface` allows you to define a manifold surface of any shape,
 by providing a function which maps two intrinsic coordinates ``u`` and ``v``
 (each in ``[0, 1]``) to a coordinate in 3-D space. The function you provide must
 handle batched tensors.

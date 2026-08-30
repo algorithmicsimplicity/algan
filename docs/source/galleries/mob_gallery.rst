@@ -14,7 +14,7 @@ The complete list, with every constructor argument, is in the
 
 Algan's 2-D shapes are cubic Bezier circuits (:class:`~.BezierCircuitCubic`),
 which means they stay perfectly smooth however far you zoom in. A
-:class:`~.Circle` is a real circle, not a many-sided polygon.
+:class:`~algan.mobs.shapes_2d.Circle` is a real circle, not a many-sided polygon.
 
 .. algan:: GalleryShapes2D
 
@@ -36,25 +36,25 @@ which means they stay perfectly smooth however far you zoom in. A
 
    * - Class
      - Notes
-   * - :class:`~.Circle`
+   * - :class:`~algan.mobs.shapes_2d.Circle`
      - ``radius``.
-   * - :class:`~.Dot`
+   * - :class:`~algan.mobs.shapes_2d.Dot`
      - A small filled circle, for marking points.
-   * - :class:`~.Square`
+   * - :class:`~algan.mobs.shapes_2d.Square`
      - ``size``.
-   * - :class:`~.Rectangle`
+   * - :class:`~algan.mobs.shapes_2d.Rectangle`
      - ``width``, ``height``.
-   * - :class:`~.RegularPolygon`
-     - ``n`` sides. :class:`~.Triangle` is ``RegularPolygon(3)``.
-   * - :class:`~.Polygon`
+   * - :class:`~algan.mobs.shapes_2d.RegularPolygon`
+     - ``n`` sides. :class:`~algan.mobs.shapes_2d.Triangle` is ``RegularPolygon(3)``.
+   * - :class:`~algan.mobs.shapes_2d.Polygon`
      - An arbitrary closed outline through the points you give it.
    * - :class:`~.Quad`
      - A four-cornered shape from four explicit corners.
-   * - :class:`~.Line`
+   * - :class:`~algan.mobs.shapes_2d.Line`
      - From a start point to an end point.
-   * - :class:`~.Point`
+   * - :class:`~algan.mobs.shapes_2d.Point`
      - A single point; mostly useful as an invisible anchor.
-   * - :class:`~.SurroundingRectangle`
+   * - :class:`~algan.mobs.shapes_2d.SurroundingRectangle`
      - A box drawn around another Mob, sized to fit it.
 
 All of them take ``color``, plus ``stroke_width`` and ``stroke_color`` for
@@ -75,7 +75,7 @@ their outline:
 On a filled shape the border is drawn *inside* the outline, so raising
 ``stroke_width`` eats into the fill instead of growing the silhouette.
 This makes bordered text stay legible and neighbouring glyphs never fuse. An unfilled
-shape (``filled=False``, and :class:`~.Line`) has no interior to eat into, so
+shape (``filled=False``, and :class:`~algan.mobs.shapes_2d.Line`) has no interior to eat into, so
 its stroke stays centred on the path.
 
 More 2-D shapes from the compatibility layer
@@ -129,7 +129,7 @@ above -- ``algan.manim`` is where Manim's own (double) stroke unit lives:
 3-D shapes are triangle meshes, and they come in two families that differ in
 how Algan turns them into triangles.
 
-* **Curved shapes:** Built on :class:`~.Surface`. These are tessellated
+* **Curved shapes:** Built on :class:`~algan.mobs.surfaces.surface.Surface`. These are tessellated
   dynamically so they stay smooth even when the camera moves close.
 * **Faceted polyhedra:** Flat-sided solids built from explicit polygon faces.
 
@@ -156,17 +156,17 @@ Curved 3-D Shapes:
 
    * - Class
      - Notes
-   * - :class:`~.Sphere`
+   * - :class:`~algan.mobs.shapes_3d.Sphere`
      - Sized with ``radius``.
-   * - :class:`~.Cylinder`
+   * - :class:`~algan.mobs.shapes_3d.Cylinder`
      - Sized with ``radius``, ``height``, and ``direction``.
-   * - :class:`~.Cone`
+   * - :class:`~algan.mobs.shapes_3d.Cone`
      - Sized with ``base_radius``, ``height``, and ``direction``.
-   * - :class:`~.Torus`
+   * - :class:`~algan.mobs.shapes_3d.Torus`
      - Sized with ``ring_radius`` and ``tube_radius``.
-   * - :class:`~.Dot3D`, :class:`~.Line3D`
+   * - :class:`~algan.mobs.shapes_3d.Dot3D`, :class:`~algan.mobs.shapes_3d.Line3D`
      - A small 3-D sphere and cylinder for marking points and 3-D segments.
-   * - :class:`~.Arrow3D`
+   * - :class:`~algan.mobs.shapes_3d.Arrow3D`
      - A 3-D arrow combining a cylinder shaft and cone tip.
 
 Faceted 3-D Shapes:
@@ -177,13 +177,13 @@ Faceted 3-D Shapes:
 
    * - Class
      - Notes
-   * - :class:`~.Cube`
+   * - :class:`~algan.mobs.shapes_3d.Cube`
      - Sized with ``size``.
-   * - :class:`~.Prism`
+   * - :class:`~algan.mobs.shapes_3d.Prism`
      - A 3-D box sized with ``width`` / ``height`` / ``depth``. Great for walls, pedestals, or floors.
-   * - :class:`~.Tetrahedron`, :class:`~.Octahedron`, :class:`~.Icosahedron`, :class:`~.Dodecahedron`
+   * - :class:`~algan.mobs.shapes_3d.Tetrahedron`, :class:`~algan.mobs.shapes_3d.Octahedron`, :class:`~algan.mobs.shapes_3d.Icosahedron`, :class:`~algan.mobs.shapes_3d.Dodecahedron`
      - Platonic solids sized with ``edge_length``.
-   * - :class:`~.Polyhedron`, :class:`~.ConvexHull3D`
+   * - :class:`~algan.mobs.shapes_3d.Polyhedron`, :class:`~algan.mobs.shapes_3d.ConvexHull3D`
      - Custom 3-D solids constructed from your own vertices and faces, or point clouds.
 
 Unlike 2-D shapes, 3-D shapes respond to light. See :doc:`../new_user_tutorials/three_d_basics` to
@@ -194,7 +194,7 @@ model.
 Parametric Surfaces
 ===================
 
-:class:`~.Surface` lets you build any custom curved 3-D surface by defining a
+:class:`~algan.mobs.surfaces.surface.Surface` lets you build any custom curved 3-D surface by defining a
 function that maps 2-D coordinates ``(u, v)`` in ``[0, 1]`` to 3-D points in
 space:
 
@@ -216,13 +216,13 @@ space:
 The function receives a batched tensor of ``(u, v)`` pairs and must return the
 matching points, so write it with torch operations rather than a Python loop.
 :doc:`../new_user_tutorials/three_d_basics` works through this in more detail, and
-:class:`~.Surface` also accepts texture maps -- see
+:class:`~algan.mobs.surfaces.surface.Surface` also accepts texture maps -- see
 :doc:`../advanced_user_tutorials/images_and_textures`.
 
 Text and Mathematics
 ====================
 
-:class:`~.Text` renders a string with a font; :class:`~.Tex` and
+:class:`~algan.mobs.text.Text` renders a string with a font; :class:`~algan.mobs.text.Tex` and
 :class:`~.MathTex` render LaTeX. Both are cubic Bezier circuits, so they scale
 and morph like any other 2-D shape.
 
@@ -313,14 +313,14 @@ compatibility layer does not expose.
 Grouping
 ========
 
-:class:`~.Group` collects Mobs so you can move, scale and color them as one,
+:class:`~algan.mobs.group.Group` collects Mobs so you can move, scale and color them as one,
 and provides :meth:`~.Group.arrange_in_line` and
 :meth:`~.Group.arrange_in_grid` for layout. See :doc:`../new_user_tutorials/child_mobs`.
 
 Animated Numbers
 ================
 
-:class:`~.DecimalNumber` shows a number you can animate, counting smoothly
+:class:`~algan.mobs.numeric_display.DecimalNumber` shows a number you can animate, counting smoothly
 between values:
 
 .. algan:: GalleryDecimalNumber
