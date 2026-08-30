@@ -77,7 +77,7 @@ with Off():
     elif scene_name == "text":
         Group([Text("Orbiting camera").move(UP * 1.2 * i) for i in (-1, 0, 1)]).spawn()
 
-with Seq(duration=4, rate_func=rate_funcs.identity):
+with Seq(duration=4, easing=easings.identity):
     if mode == "rotate":
         Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:

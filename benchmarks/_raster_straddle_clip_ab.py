@@ -42,7 +42,7 @@ def run(mode, clip):
                 for k in range(-2, 3)
             ]
         ).spawn()
-    with Seq(duration=2, rate_func=rate_funcs.identity):
+    with Seq(duration=2, easing=easings.identity):
         camera = Scene.get_camera()
         if mode == "rotate":
             camera.rotate(360, UP, about=ORIGIN)

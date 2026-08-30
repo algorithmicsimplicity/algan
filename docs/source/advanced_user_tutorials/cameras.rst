@@ -53,7 +53,7 @@ The turntable shot is the classic way to show off a 3-D scene. Notice that we us
         Group([Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i)
                for i in (-1, 0, 1)]).spawn()
 
-    with Seq(duration=4, rate_func=rate_funcs.identity):
+    with Seq(duration=4, easing=easings.identity):
         Scene.get_camera().rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
@@ -63,7 +63,7 @@ stays pointed straight at the center throughout the turn.
 
 .. tip::
 
-    For continuous camera rotations, pass ``rate_func=rate_funcs.identity`` so
+    For continuous camera rotations, pass ``easing=easings.identity`` so
     the speed stays constant rather than easing in and out.
 
 Tracking a Moving Target
@@ -212,7 +212,7 @@ the camera as a child, or drive it with an updater:
         caption.move_to_screen_position(0.15, 0.1)
         caption.spawn()
 
-    with Seq(duration=3, rate_func=rate_funcs.identity):
+    with Seq(duration=3, easing=easings.identity):
         Scene.get_camera().rotate(90, UP, about=ORIGIN)
 
     Scene.save_video()

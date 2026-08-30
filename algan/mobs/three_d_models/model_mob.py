@@ -30,7 +30,7 @@ import torch
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
-from algan.constants.rate_funcs import identity
+from algan.constants.easings import identity
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
@@ -517,9 +517,7 @@ class Model3D(Mob):
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
-    def play_animation(
-        self, name=None, duration=None, fps=30, loop=1, rate_func=identity
-    ):
+    def play_animation(self, name=None, duration=None, fps=30, loop=1, easing=identity):
         """Play a baked node-keyframe animation on the timeline.
 
         The clip is baked to per-frame world corners (see
@@ -541,7 +539,7 @@ class Model3D(Mob):
             are linearly interpolated between baked poses).
         loop : int
             Number of times to repeat the clip.
-        rate_func : callable
+        easing : callable
             Timeline rate function; defaults to linear playback.
         """
         clip = self._resolve_clip(name)
@@ -566,7 +564,7 @@ class Model3D(Mob):
         for _lap in range(max(1, int(loop))):
             with Seq(
                 duration=duration,
-                rate_func=rate_func,
+                easing=easing,
                 animation_manager=self.animation_manager,
             ):
                 for k in range(1, len(times)):

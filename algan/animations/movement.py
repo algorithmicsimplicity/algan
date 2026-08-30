@@ -20,7 +20,7 @@ import torch
 from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Sync, animation_manager_for
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.constants.spatial import ORIGIN
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.surfaces.surface import Surface
@@ -193,7 +193,7 @@ def ApplyPointwiseFunction(
     *,
     about_point=ORIGIN,
     duration: float = 1.0,
-    rate_func=None,
+    easing=None,
 ):
     """Animate an arbitrary point mapping over all renderable geometry.
 
@@ -207,7 +207,7 @@ def ApplyPointwiseFunction(
     about_point = cast_to_tensor(about_point)
     with Sync(
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
         animation_manager=animation_manager_for(mobject),
     ):
         for owner in _geometry_point_owners(mobject):
@@ -228,7 +228,7 @@ def ApplyMatrix(
     *,
     about_point=ORIGIN,
     duration: float = 1.0,
-    rate_func=None,
+    easing=None,
 ):
     """Animate a 2×2 or 3×3 linear transform about ``about_point``.
 
@@ -252,7 +252,7 @@ def ApplyMatrix(
         lambda points: points @ matrix.to(points).transpose(-1, -2),
         about_point=about_point,
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
     )
 
 
@@ -279,7 +279,7 @@ def ApplyComplexFunction(
     *,
     about_point=ORIGIN,
     duration: float = 1.0,
-    rate_func=None,
+    easing=None,
 ):
     """Animate a complex map on the x-y plane while preserving z."""
     mobject, function = _resolve_mobject_and_callable(
@@ -290,7 +290,7 @@ def ApplyComplexFunction(
         lambda points: _apply_complex_function(function, points),
         about_point=about_point,
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
     )
 
 
@@ -315,7 +315,7 @@ def Homotopy(
     homotopy_func=None,
     *,
     duration: float = 2.0,
-    rate_func=None,
+    easing=None,
 ):
     """Animate a continuous point deformation.
 
@@ -329,7 +329,7 @@ def Homotopy(
     )
     with Sync(
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
         animation_manager=animation_manager_for(mobject),
     ):
         for owner in _geometry_point_owners(mobject):
@@ -346,7 +346,7 @@ def ComplexHomotopy(
     complex_homotopy=None,
     *,
     duration: float = 2.0,
-    rate_func=None,
+    easing=None,
 ):
     """Animate ``f(z, t)`` on the x-y plane while preserving z."""
     mobject, complex_homotopy = _resolve_mobject_and_callable(
@@ -375,7 +375,7 @@ def ComplexHomotopy(
         mobject,
         homotopy,
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
     )
 
 
@@ -413,7 +413,7 @@ def PhaseFlow(
     virtual_time: float = 1.0,
     integration_steps: int = 32,
     duration: float = 1.0,
-    rate_func=rate_funcs.identity,
+    easing=easings.identity,
 ):
     """Flow geometry through a vector field using deterministic RK4 integration.
 
@@ -427,7 +427,7 @@ def PhaseFlow(
         raise ValueError("integration_steps must be at least 1")
     with Sync(
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
         animation_manager=animation_manager_for(mobject),
     ):
         for owner in _geometry_point_owners(mobject):
@@ -548,7 +548,7 @@ def MoveAlongPath(
     path: Mob,
     *,
     duration: float = 1.0,
-    rate_func=None,
+    easing=None,
     samples_per_curve: int = 24,
 ):
     """Move ``mobject`` along the arc length of a cubic Bezier path.
@@ -565,7 +565,7 @@ def MoveAlongPath(
     _path_control_points(path)
     with Sync(
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
         animation_manager=animation_manager_for(mobject, path),
     ):
         mobject.animate_function(

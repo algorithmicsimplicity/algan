@@ -6,7 +6,7 @@ import torch
 from algan import Mob, Scene
 from algan.animation_timeline.animation_contexts import Off, Seq
 from algan.animation_timeline.timeline import AttributeTimeline, Lifespan, TimelineSpan
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.constants.spatial import OUT, RIGHT
 from algan.scene_manager import SceneManager
 
@@ -19,14 +19,14 @@ def test_selected_materialization_matches_full_state_for_active_mob():
     scene = SceneManager.reset()
     active = Mob().spawn(animate=False)
     start = scene.animation_manager.context.timespan.current_time
-    with Seq(rate_func=rate_funcs.identity):
+    with Seq(easing=easings.identity):
         active.move(RIGHT * 2)
 
     # A later mob contributes rows and edits to the global timeline but cannot
     # affect the queried render window.
     scene.wait(4)
     future = Mob().spawn(animate=False)
-    with Seq(rate_func=rate_funcs.identity):
+    with Seq(easing=easings.identity):
         future.move(RIGHT * 3)
 
     times = torch.tensor([start + 0.25, start + 0.75])

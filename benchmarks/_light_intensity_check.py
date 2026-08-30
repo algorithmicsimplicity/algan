@@ -39,7 +39,7 @@ from algan import (
     Scene,
     Seq,
     Sphere,
-    rate_funcs,
+    easings,
 )
 
 OUT_DIR = Path(__file__).resolve().parent / "_light_intensity_check_out"
@@ -69,7 +69,7 @@ def _render_stills(name, animate_intensity, times):
             Sphere(radius=1.1, color=WHITE).spawn()
 
         if animate_intensity:
-            with Seq(duration=2, rate_func=rate_funcs.identity):
+            with Seq(duration=2, easing=easings.identity):
                 key.intensity = 4.0
         else:
             # Same recorded extent, so the same frame times mean the same thing

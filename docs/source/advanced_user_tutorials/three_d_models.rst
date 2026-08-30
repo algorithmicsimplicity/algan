@@ -13,7 +13,7 @@ materials, node hierarchy and rigid animation -- and gives you an ordinary Algan
     from algan import *
 
     model = Model3D('dragon.glb', fit_to_size=2.0).scale(3).spawn()
-    with Seq(duration=4, rate_func=rate_funcs.identity):
+    with Seq(duration=4, easing=easings.identity):
         model.rotate(360, UP)
 
     Scene.save_video()
@@ -170,8 +170,8 @@ one onto Algan's timeline:
    * - ``fps``
      - Sampling rate used when baking. Higher is smoother for fast rotation,
        because poses are interpolated linearly in between. Default 30.
-   * - ``rate_func``
-     - Easing. Defaults to ``rate_funcs.identity``, which is what you want --
+   * - ``easing``
+     - Easing. Defaults to ``easings.identity``, which is what you want --
        a walk cycle should not ease in and out.
 
 Because the clip is recorded on the timeline like any other animation, it composes

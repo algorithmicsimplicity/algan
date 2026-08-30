@@ -61,7 +61,7 @@ Because lights are standard Mobs, you can animate them directly on the timeline:
     ball = Sphere(radius=1.2, color=WHITE).spawn()
 
     light = Scene.get_light_sources()[0]
-    with Seq(duration=4, rate_func=rate_funcs.identity):
+    with Seq(duration=4, easing=easings.identity):
         light.orbit(360, OUT, about=ORIGIN)
         light.color = BLUE
 

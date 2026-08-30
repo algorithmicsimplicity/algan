@@ -79,7 +79,7 @@ def test_move_along_path_uses_arc_length_and_materializes_batches():
         dot,
         path,
         duration=1,
-        rate_func=algan.rate_funcs.identity,
+        easing=algan.easings.identity,
     )
     materialize(0, 0.5, 0.999999)
 
@@ -92,9 +92,9 @@ def test_move_along_path_uses_arc_length_and_materializes_batches():
     SceneManager.reset()
     path = algan.Line(algan.LEFT, algan.RIGHT, add_to_scene=False).spawn(False)
     dot = algan.Dot(add_to_scene=False).spawn(False)
-    with algan.Sync(duration=1, rate_func=algan.rate_funcs.identity):
+    with algan.Sync(duration=1, easing=algan.easings.identity):
         path.move(algan.UP)
-        algan.MoveAlongPath(dot, path, duration=1, rate_func=algan.rate_funcs.identity)
+        algan.MoveAlongPath(dot, path, duration=1, easing=algan.easings.identity)
     materialize(0.5)
     assert torch.allclose(dot.location[0, 0], torch.tensor([0.0, 0.5, 0.0]), atol=2e-5)
 
@@ -107,7 +107,7 @@ def test_apply_matrix_supports_manim_argument_order_and_midpoint_state():
         [[2, 0], [0, 3]],
         square,
         duration=1,
-        rate_func=algan.rate_funcs.identity,
+        easing=algan.easings.identity,
     )
     materialize(0, 0.5, 0.999999)
 
@@ -140,12 +140,12 @@ def test_pointwise_function_has_vectorized_and_scalar_callback_paths():
         algan.ApplyPointwiseFunction(
             vectorized,
             lambda points: points + torch.tensor([1.0, 2.0, 0.0]),
-            rate_func=algan.rate_funcs.identity,
+            easing=algan.easings.identity,
         )
         algan.ApplyPointwiseFunction(
             scalar_only,
             scalar,
-            rate_func=algan.rate_funcs.identity,
+            easing=algan.easings.identity,
         )
     materialize(0.999999)
 
@@ -168,7 +168,7 @@ def test_homotopy_accepts_manim_scalar_api_and_surface_geometry():
         lambda x, y, z, t: (x, y + t, z),
         circle,
         duration=1,
-        rate_func=algan.rate_funcs.identity,
+        easing=algan.easings.identity,
     )
     materialize(0, 0.5, 0.999999)
     offsets = circle.control_points.location - circle_initial.expand(3, -1, -1)
@@ -189,7 +189,7 @@ def test_homotopy_accepts_manim_scalar_api_and_surface_geometry():
             points + torch.cat((torch.zeros_like(t), torch.zeros_like(t), t), dim=-1)
         ),
         duration=1,
-        rate_func=algan.rate_funcs.identity,
+        easing=algan.easings.identity,
     )
     materialize(0.5)
     assert torch.allclose(
@@ -207,7 +207,7 @@ def test_complex_transforms_preserve_z_and_accept_numpy_callbacks():
         lambda z: np.asarray(z) * 1j,
         line,
         duration=1,
-        rate_func=algan.rate_funcs.identity,
+        easing=algan.easings.identity,
     )
     materialize(0.999999)
 
@@ -223,7 +223,7 @@ def test_complex_transforms_preserve_z_and_accept_numpy_callbacks():
         lambda z, t: z * torch.exp(1j * torch.pi * t / 2),
         line,
         duration=1,
-        rate_func=algan.rate_funcs.identity,
+        easing=algan.easings.identity,
     )
     materialize(0.5)
     expected = initial[..., 0] / np.sqrt(2)
@@ -288,7 +288,7 @@ def test_recursive_replay_uses_rows_captured_before_descendant_rebatch():
     )
     old_child_rows = opacity_timeline.mob_id_to_inds[child.id].clone()
 
-    with algan.Sync(rate_func=algan.rate_funcs.identity):
+    with algan.Sync(easing=algan.easings.identity):
         group.opacity = 0
         child.set_non_recursive(opacity=torch.ones((1, 3, 1)))
 
@@ -319,7 +319,7 @@ def test_surface_logical_pn_topology_is_fixed_during_animation():
     initial_resolution = (cylinder.grid_width, cylinder.grid_height)
     initial_grid_rows = cylinder.grid.location.shape[-2]
 
-    with algan.Sync(duration=1, rate_func=algan.rate_funcs.identity):
+    with algan.Sync(duration=1, easing=algan.easings.identity):
         cylinder.rotate(720, algan.OUT)
         cylinder.move_off_screen(algan.LEFT, despawn=False)
 
@@ -368,7 +368,7 @@ def test_surface_fixed_topology_preserves_parent_rotation_and_scale():
         if isinstance(mob, algan.Surface)
     ]
 
-    with algan.Sync(duration=1, rate_func=algan.rate_funcs.identity):
+    with algan.Sync(duration=1, easing=algan.easings.identity):
         fixed_group.rotate(180, algan.UP).scale(0.75)
         auto_group.rotate(180, algan.UP).scale(0.75)
 

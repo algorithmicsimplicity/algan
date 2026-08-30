@@ -2110,14 +2110,14 @@ class FunctionApplicationEvent:
         caller,
         animated_args=None,
         kwargs=None,
-        rate_func=None,
+        easing=None,
         time=None,
     ):
         self.function = function
         self.caller = caller
         self.animated_args = animated_args
         self.kwargs = kwargs
-        self.rate_func = rate_func
+        self.easing = easing
         self.time = time
         # Resolved replay-window end (see
         # AnimationTimeline._resolve_replay_windows); None until resolved or
@@ -2788,12 +2788,12 @@ class AnimationTimeline:
         self.last_recorded_event = None
         if c.duration_unit <= 0 or not c.record_funcs:
             return kwargs
-        rate_func = c.rate_func
-        rate_func_compose = c.rate_func_compose
-        rf = rate_func
-        if rate_func_compose is not None:
+        easing = c.easing
+        composed_easing = c.composed_easing
+        rf = easing
+        if composed_easing is not None:
 
-            def rf(x, rf=rate_func, rfc=rate_func_compose):
+            def rf(x, rf=easing, rfc=composed_easing):
                 return rf(rfc(x))
 
         event = FunctionApplicationEvent(
@@ -3368,7 +3368,7 @@ class AnimationTimeline:
         initial = fev.animated_args or {}
         if set(initial) != {"interpolation"} or float(initial["interpolation"]) != 0.0:
             return False
-        if fev.rate_func is None or not torch.is_tensor(kwargs.get("change")):
+        if fev.easing is None or not torch.is_tensor(kwargs.get("change")):
             return False
         start, end = fev.time.start, fev.time.end
         if not end > start:
@@ -3524,9 +3524,7 @@ class AnimationTimeline:
                     # different shapes, so bit-parity of the weights requires
                     # bit-parity of the computation.
                     elapsed = times[in_span] - start
-                    a = ev.rate_func(
-                        (elapsed / (own_end - start + 1e-6)).view(-1, 1, 1)
-                    )
+                    a = ev.easing((elapsed / (own_end - start + 1e-6)).view(-1, 1, 1))
                     index0[in_span] = pre_slot
                     index1[in_span] = post_slot
                     weights[in_span] = a.view(-1).to(weights.dtype)
@@ -3716,7 +3714,7 @@ class AnimationTimeline:
                     elapsed.view(-1, 1, 1) >= duration, torch.ones_like(a), a
                 )
                 elapsed = elapsed.clamp(max=duration)
-            a = f.rate_func(a)
+            a = f.easing(a)
 
             kwargs = dict(f.kwargs.items())
             for k in f.animated_args:

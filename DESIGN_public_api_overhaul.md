@@ -763,6 +763,17 @@ Do these with review, not blind `sed`. `run_time` appears inside docstring prose
 `rate_func` is a substring of `rate_funcs`, so order the replacements longest-first — module
 name before parameter name — or the module rename will be half-applied.
 
+**Resolved: `run_time` and `lag_ratio` survive as *recognised* spellings, in one place.**
+`_CONTEXT_ONLY_PARAMS` exists to catch `mob.move(RIGHT, run_time=2)` — which is what a reader
+arriving from Manim writes — and answer it with the context call Algan takes. Renaming its keys
+to `duration`/`ratio` would have made it stop catching the very mistake it was written for. A
+second map, `_MANIM_CONTEXT_PARAM_SPELLINGS`, translates Manim's spelling to Algan's, so both
+are caught and both are answered with `Seq(duration=2)` / `Lag(0.3)`. This is not an alias on
+the API: neither name is accepted anywhere, they are only recognised in an error message.
+
+`get_run_time` in `algan/utils/testing/_test_class_makers.py` is Manim's own `Scene` method and
+stays.
+
 **Verification**: full suite. Grep for the old names across `algan/`, `tests/`, `docs/`,
 `benchmarks/` and `README.md` to confirm zero survivors.
 

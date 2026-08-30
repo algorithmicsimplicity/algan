@@ -19,7 +19,7 @@ Update it in the same commit as the work it describes.
 | 4 | Scene, Camera, Lights, Group | **Done** |
 | 5 | Class and parameter naming | **Done** |
 | 6 | `border_*` → `stroke_*` | **Done** |
-| 7 | `duration` → `duration`, `rate_func` → `easing` | Not started |
+| 7 | `run_time` → `duration`, `rate_func` → `easing` | **Done** |
 | 8 | Documentation and baselines | Not started |
 
 **Export count**: 471 at the start → 379 after Phase 1b → 361 after Phase 2. Phase 3 moves no
@@ -76,7 +76,8 @@ Eighteen names left `algan.__all__`, all still importable at their real paths:
 Also landed: `SETTINGS.paths.ffmpeg_binary` (outranks every other candidate, for every
 codec — the reason to pin a binary is that moviepy's build lacks a codec yours has, so it
 must beat the probe rather than join it; default behaviour byte-for-byte unchanged), and an
-explicit `__all__` on `algan/constants/rate_funcs.py`.
+explicit `__all__` on `algan/constants/rate_funcs.py` (the file Phase 7 renamed to
+`easings.py`).
 
 ### Phase 3 — the `Mob` surface
 
@@ -226,6 +227,24 @@ deltas (14 @ 21, 26 @ 293, 200 @ 179). The strongest single check is that
 `AnimatedBoundary` and a native `Circle` outline all at once, so a double conversion or a missed
 halving anywhere in the four boundary sites would have shown up there.
 
+### Phase 7 — the two global renames
+
+Two sweeps, one commit each, replacements ordered longest-first so the module rename could not
+be half-applied by the parameter rename inside it.
+
+1. `run_time` → `duration`, `run_time_unit` → `duration_unit`, `DEFAULT_RUN_TIME` →
+   `DEFAULT_DURATION`. (`run_time_part` → `duration_per_part` was in the plan but the name does
+   not exist anywhere in the repository.)
+2. `rate_func` → `easing`, `rate_func_compose` → `composed_easing`, `combine_rate_func` →
+   `combine_easing`, `ComposeRateFunc` → `ComposedEasing`, `DEFAULT_RATE_FUNC` →
+   `DEFAULT_EASING`, and `algan/constants/rate_funcs.py` → `easings.py`, exported as `easings`.
+   `AnimatedBoundary`'s `draw_rate_func` / `fade_rate_func` went with them, and the two test
+   modules named after the old concept were renamed too (`test_easings.py`,
+   `test_easings_and_ux.py`). The call now reads `easing=easings.ease_in_cubic`.
+
+The export snapshot moved by exactly `DEFAULT_DURATION` for the first sweep, and
+`ComposedEasing` + `easings` for the second.
+
 ---
 
 ## Plan changes made during implementation
@@ -348,6 +367,14 @@ Recorded here and in the design doc, so the two do not drift.
     a size argument that silently does nothing unless a separate flag is set. Every call site
     in the repository passed both; each becomes the one argument it already meant, and
     `fit_to_size=None` is the off position.
+
+17. **`run_time` and `lag_ratio` survive as *recognised* spellings in the context-kwarg error,
+    and nowhere else.** `_CONTEXT_ONLY_PARAMS` exists to catch `mob.move(RIGHT, run_time=2)` --
+    the thing a reader arriving from Manim writes -- and point at the context call Algan takes.
+    Renaming its keys would have made it stop catching exactly the mistake it was written for.
+    A second map translates Manim's spelling to Algan's, so both are caught and both are
+    answered with `Seq(duration=2)` / `Lag(0.3)`. Neither name is accepted anywhere in the API;
+    they are recognised only well enough to produce the right error.
 
 ---
 

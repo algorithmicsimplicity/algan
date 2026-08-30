@@ -44,7 +44,7 @@ def build(cfg):
             g = Group(
                 [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
             ).spawn()
-        with Seq(duration=1, rate_func=rate_funcs.identity):
+        with Seq(duration=1, easing=easings.identity):
             g.move(RIGHT * 14)
     elif cfg == "fly_through":
         # The camera passes through the mesh: the "unbounded" fallback case,
@@ -57,19 +57,19 @@ def build(cfg):
                     for j in (-1, 0, 1)
                 ]
             ).spawn()
-        with Seq(duration=1, rate_func=rate_funcs.identity):
+        with Seq(duration=1, easing=easings.identity):
             Scene.get_camera().move(IN * 12)
     elif cfg == "orbit":
         with Off():
             Group(
                 [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
             ).spawn()
-        with Seq(duration=1, rate_func=rate_funcs.identity):
+        with Seq(duration=1, easing=easings.identity):
             Scene.get_camera().orbit(360, UP, about=ORIGIN)
     elif cfg == "text_past":
         with Off():
             t = Group([Text("straddle").move(UP * 1.2 * i) for i in (-1, 0, 1)]).spawn()
-        with Seq(duration=1, rate_func=rate_funcs.identity):
+        with Seq(duration=1, easing=easings.identity):
             t.move(RIGHT * 12)
     else:
         raise SystemExit(f"unknown config {cfg}")

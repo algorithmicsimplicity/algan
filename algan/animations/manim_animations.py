@@ -34,7 +34,7 @@ def DrawBorderThenFill(
     lag_ratio=None,
     stroke_width=1,
     stroke_color=None,
-    rate_func=rate_funcs.identity,
+    easing=easings.identity,
     reverse=False,
 ):
     """Animate mobs appearing as if hand-drawn: outline first, then fill.
@@ -63,7 +63,7 @@ def DrawBorderThenFill(
         Temporary outline color. Defaults to each Mob's existing border color.
         :meth:`~algan.mobs.text.Text.write` supplies white for an ordinary
         stroke-free ``Text``, matching Manim's Pango text style.
-    rate_func
+    easing
         Easing applied to each glyph. Defaults to linear timing, as Manim's
         :class:`~manim.animation.creation.Write` does.
     reverse
@@ -126,7 +126,7 @@ def DrawBorderThenFill(
     with Lag(
         lag_ratio,
         duration=duration,
-        rate_func=rate_func,
+        easing=easing,
         animation_manager=animation_manager,
     ):
         for mob, (colors, original_stroke_width, outline_color) in zip(

@@ -83,7 +83,7 @@ attached. It makes periodic and open-ended motion easy:
     # Follow the ball without taking its orientation.
     label.add_updater(lambda mob, t: mob.move_next_to(ball, DOWN))
 
-    with Seq(duration=4, rate_func=rate_funcs.identity):
+    with Seq(duration=4, easing=easings.identity):
         ball.move(RIGHT * 6)
 
     Scene.save_video()

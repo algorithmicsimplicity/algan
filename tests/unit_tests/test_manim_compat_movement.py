@@ -32,7 +32,7 @@ from algan import (
     SceneManager,
     Square,
     Sync,
-    rate_funcs,
+    easings,
 )
 from algan.manim import Arrow, Axes, Star
 
@@ -275,7 +275,7 @@ def test_rotate_turns_the_mob_rather_than_morphing_between_two_poses():
     start = star.control_points.location.clone()
 
     # Linear timing, so a quarter of the run time really is a quarter turn.
-    with Sync(duration=1, rate_func=rate_funcs.identity):
+    with Sync(duration=1, easing=easings.identity):
         star.rotate(360, UP)
 
     def points_at(time):

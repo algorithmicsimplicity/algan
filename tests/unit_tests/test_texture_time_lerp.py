@@ -30,7 +30,7 @@ from algan.animation_timeline.animation_contexts import (
     Off,
     Sync,
 )
-from algan.constants.rate_funcs import ease_out_back
+from algan.constants.easings import ease_out_back
 from algan.mobs.shapes_3d import Sphere
 from algan.rendering.raytracing import settings as rt_settings
 from algan.scene_manager import SceneManager
@@ -110,7 +110,7 @@ def test_a_crossfade_window_is_described_as_endpoints():
 def test_weights_are_bit_identical_to_the_dense_replay():
     """The weights must be the very tensor the dense replay computes -- same
     ops, same shapes -- because torch CPU kernels round shape-dependently.
-    The gate recomputes ``rate_func((t - s) / (e - s + 1e-6))`` on the same
+    The gate recomputes ``easing((t - s) / (e - s + 1e-6))`` on the same
     frame times; verify against an independent evaluation off the recorded
     event, and verify the evaluated trajectory against the dense buffer.
     """
@@ -128,7 +128,7 @@ def test_weights_are_bit_identical_to_the_dense_replay():
     )
     s, e = event.time.start, event.time.end
     sel = (s <= times) & (times < e)
-    expected = event.rate_func(((times[sel] - s) / (e - s + 1e-6)).view(-1, 1, 1))
+    expected = event.easing(((times[sel] - s) / (e - s + 1e-6)).view(-1, 1, 1))
     assert torch.equal(seg.weights[sel], expected.view(-1))
 
     # The dense window, under the kill switch, frame for frame.
@@ -150,11 +150,11 @@ def test_weights_are_bit_identical_to_the_dense_replay():
     )
 
 
-def test_an_overshooting_rate_function_is_described_verbatim():
+def test_an_overshooting_easing_is_described_verbatim():
     tex_a, tex_b = _tex(8, 8, 5), _tex(8, 8, 6)
     scene = SceneManager.reset()
     surface = Surface(color_texture=tex_a, grid_height=4, grid_width=4).spawn()
-    with AnimationContext(duration=2, rate_func=ease_out_back):
+    with AnimationContext(duration=2, easing=ease_out_back):
         surface.color_texture = tex_b
     Scene.wait(1)
     times = torch.linspace(1.0, 3.0, 9)

@@ -111,7 +111,7 @@ KNOWN_BROKEN: dict[str, str] = {
 # Attribute chains rooted at one of these resolve against the live object, which
 # is what catches a setting or a rate function that was renamed. Names are
 # looked up on the `algan` module.
-CHECKED_ROOTS = ("SETTINGS", "rate_funcs")
+CHECKED_ROOTS = ("SETTINGS", "easings")
 
 _BUILTINS = frozenset(dir(builtins))
 _ALGAN_NAMES = frozenset(algan.__all__) | {

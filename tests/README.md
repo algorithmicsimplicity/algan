@@ -52,7 +52,7 @@ render:
 | --- | --- |
 | `test_timeline_overlap.py`, `test_timeline_state_query.py`, `test_active_timeline_materialization.py` | Recording, the per-row state query and materialization at frame times. Nothing reaches the screen except through these. |
 | `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
-| `test_rate_functions.py` | Every animation is evaluated through one of these curves. |
+| `test_easings.py` | Every animation is evaluated through one of these curves. |
 | `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
 | `test_mob_reparenting.py` | That the hierarchy is read when an animation is *recorded*, not when it plays: a parent transform resolves the descendant union to rows and the event keeps them, so re-parenting afterwards redirects the next animation without rewriting the last one. That contract lives in the timeline (`modify_attribute_and_record`, `replay_inds`) and in two version-keyed descendant caches, none of which are in this file — a mutation that forgets to bump a version does not error, it silently drops a member from a transform. Tensor-only, no render. |
 | `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
@@ -421,7 +421,7 @@ Organised by subsystem. The files worth knowing about (★ = in the fast suite):
   `ALGAN_` variables parse, and the rule that the package reaches them only
   through `algan/environment.py`'s accessors, which is what keeps its registry
   of declared names honest — and is an audit, so it is not in the fast suite.
-- ★ `test_ux_regressions.py`, `test_rate_functions.py` — the authoring surface
+- ★ `test_ux_regressions.py`, `test_easings.py` — the authoring surface
   users touch most. `test_materials.py`, `test_fragment_shaders.py` and
   `test_indication_animations.py` are per-feature and stay out.
 - `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py` —

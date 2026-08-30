@@ -64,7 +64,7 @@ def render(guard, tag):
                 for i in (-1, 0, 1)
             ]
         ).spawn()
-    with Seq(duration=2, rate_func=rate_funcs.identity):
+    with Seq(duration=2, easing=easings.identity):
         Scene.get_camera().rotate(360, UP, about=ORIGIN)
     path = os.path.join(OUT_DIR, f"guard_{tag}")
     Scene.save_video(path, reset=True)

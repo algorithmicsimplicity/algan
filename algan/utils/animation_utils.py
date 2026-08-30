@@ -15,7 +15,7 @@ from __future__ import annotations
 import torch
 
 from algan.animation_timeline.animation_contexts import (
-    ComposeRateFunc,
+    ComposedEasing,
     Off,
     Seq,
     Sync,
@@ -84,7 +84,7 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
                 x, t, r, lag
             )  # ((x - t).clamp_(min=0) / lag_duration).clamp_(max=1)
 
-        with ComposeRateFunc(
+        with ComposedEasing(
             rf,
             duration=duration + lag_duration,
             animation_manager=animation_manager_for(mobs),

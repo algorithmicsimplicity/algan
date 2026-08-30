@@ -78,7 +78,7 @@ while it keeps its texture. That is how you wrap a map onto a globe:
     world = ImageMob('world_map.png').scale(2).spawn()
     world.wait()
 
-    with Seq(duration_unit=5, rate_func=rate_funcs.identity):
+    with Seq(duration_unit=5, easing=easings.identity):
         for shape in (Sphere(radius=2, add_to_scene=False),
                       Cylinder(radius=1, height=2, add_to_scene=False)):
             # Change the surface shape; the texture comes along.

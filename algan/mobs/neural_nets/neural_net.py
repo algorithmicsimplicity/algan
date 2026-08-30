@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from algan.animatable_base.animatable import STRUCTURE_VERSION, attr_ranges_for_mob
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
-from algan.constants.rate_funcs import delay_fade, identity, pulse_fade
+from algan.constants.easings import delay_fade, identity, pulse_fade
 from algan.constants.spatial import *  # ORIGIN, OUTWARD, RIGHT
 from algan.environment import env_flag
 from algan.geometry.geometry import (
@@ -933,7 +933,7 @@ class NeuralNetMLP(Mob):
 
         def pulse_synapses(neuron):
             with Sync(
-                rate_func=pulse_fade, animation_manager=neuron.animation_manager
+                easing=pulse_fade, animation_manager=neuron.animation_manager
             ):  # ease_out_expo):
                 for synapse in neuron.synapses:
                     synapse.wave_color(
@@ -947,7 +947,7 @@ class NeuralNetMLP(Mob):
         def pulse_neuron(neuron):
             with Sync(
                 duration=1.1,
-                rate_func=delay_fade,
+                easing=delay_fade,
                 animation_manager=neuron.animation_manager,
             ):  # lambda t: pulse_fade(t, inflection=1.0)):
                 for n, w in [[neuron.core, 0.15], [neuron.shell, 0]]:
@@ -972,7 +972,7 @@ class NeuralNetMLP(Mob):
         with (
             Seq(animation_manager=self.animation_manager),
             Lag(
-                0.55, rate_func=identity, animation_manager=self.animation_manager
+                0.55, easing=identity, animation_manager=self.animation_manager
             ),  # , duration=duration):
         ):
             for layer in layers:

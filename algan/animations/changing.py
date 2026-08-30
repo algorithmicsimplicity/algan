@@ -8,7 +8,7 @@ import torch
 
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.constants.color import BLUE_B, BLUE_D, BLUE_E, GREY_BROWN, Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
@@ -43,8 +43,8 @@ def _animated_boundary_update(boundary, elapsed):
     cycle_time = elapsed.reshape(frame_count, 1, 1) * boundary.cycle_rate
     cycle_index = torch.floor(cycle_time).to(torch.long)
     alpha = cycle_time - torch.floor(cycle_time)
-    draw_alpha = boundary.draw_rate_func(alpha)
-    fade_alpha = boundary.fade_rate_func(alpha)
+    draw_alpha = boundary.draw_easing(alpha)
+    fade_alpha = boundary.fade_easing(alpha)
 
     colors = _color_rows(boundary.colors, elapsed)
     growing_color = colors[(cycle_index.reshape(-1) % len(colors))].view(
@@ -109,8 +109,8 @@ class AnimatedBoundary(Group):
         max_stroke_width: float = 3,
         cycle_rate: float = 0.5,
         back_and_forth: bool = True,
-        draw_rate_func=rate_funcs.smooth,
-        fade_rate_func=rate_funcs.smooth,
+        draw_easing=easings.smooth,
+        fade_easing=easings.smooth,
         **kwargs,
     ):
         if not isinstance(vmobject, Mob):
@@ -129,8 +129,8 @@ class AnimatedBoundary(Group):
         self.max_stroke_width = float(max_stroke_width)
         self.cycle_rate = float(cycle_rate)
         self.back_and_forth = bool(back_and_forth)
-        self.draw_rate_func = draw_rate_func
-        self.fade_rate_func = fade_rate_func
+        self.draw_easing = draw_easing
+        self.fade_easing = fade_easing
 
         with Off(animation_manager=vmobject.animation_manager):
             # The two layers ARE the boundary's visible geometry, so they have to

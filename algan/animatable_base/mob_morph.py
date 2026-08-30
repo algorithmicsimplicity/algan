@@ -9,7 +9,7 @@ import torch
 
 from algan.animation_timeline.animation_contexts import NoExtra, Off, Seq, Sync
 from algan.animation_timeline.timeline import bump_hierarchy_version
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.logging.logger import PERF, get_logger
 from algan.utils.tensor_utils import cast_to_tensor, mid_point, squish, unsquish
 
@@ -1259,7 +1259,7 @@ class MobMorphMixin:
             if source_has_border:
                 with Sync(
                     duration=border_fraction * unit,
-                    rate_func=rate_funcs.identity,
+                    easing=easings.identity,
                     animation_manager=am,
                 ):
                     source_conversion.pre_animate(source, target)
@@ -1285,7 +1285,7 @@ class MobMorphMixin:
             if target_has_border:
                 with Sync(
                     duration=border_fraction * unit,
-                    rate_func=rate_funcs.identity,
+                    easing=easings.identity,
                     animation_manager=am,
                 ):
                     target_conversion.post_animate(replacement, target)

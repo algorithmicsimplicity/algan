@@ -197,7 +197,7 @@ def test_every_light_class_appears_in_a_scene():
                 "opacity",
             ),
         ),
-        ("rate functions", ("rate_funcs.linear", "rate_funcs.ease_out_expo")),
+        ("rate functions", ("easings.linear", "easings.ease_out_expo")),
         ("plots and tables", ("Axes(", ".plot(", "BarChart(", "Brace(")),
     ],
 )

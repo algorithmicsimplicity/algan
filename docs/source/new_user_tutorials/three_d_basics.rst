@@ -48,7 +48,7 @@ So, we can animate a camera movement as follows:
     ball = Sphere(radius=1, color=BLUE).spawn()
 
     camera = Scene.get_camera()
-    with Sync(duration=3, rate_func=rate_funcs.identity):
+    with Sync(duration=3, easing=easings.identity):
         camera.rotate(180, UP, about=ORIGIN)
         ball.move(UP * 0.8)
 
@@ -79,7 +79,7 @@ which act as light sources.
     ball = Sphere(radius=1.2, color=BLUE).spawn()
 
     light = Scene.get_light_sources()[0]
-    with Seq(duration=4, rate_func=rate_funcs.identity):
+    with Seq(duration=4, easing=easings.identity):
         light.orbit(360, OUT, about=ORIGIN)
 
     Scene.save_video()

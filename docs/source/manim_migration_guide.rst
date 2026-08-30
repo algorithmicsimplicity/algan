@@ -406,7 +406,7 @@ through the Scene:
     Scene.clear_lights()
     PointLight(location=UP * 4 + LEFT * 4 + OUT * 4).spawn()
 
-    with Seq(duration=3, rate_func=rate_funcs.identity):
+    with Seq(duration=3, easing=easings.identity):
         camera.rotate(180, UP, about=ORIGIN)
 
     Scene.save_video()

@@ -17,7 +17,7 @@ About 400 cases across six sweeps, each in its own `Scene`:
 
 | Sweep | What it covered |
 | --- | --- |
-| Authoring surface | 143 cases: contexts (`Sync`/`Seq`/`Lag`/`Off`/`OnInit`/`ComposeRateFunc`), lifecycle, hierarchy, `become`, degenerate geometry, text, camera, lights, materials, updaters, multi-Scene |
+| Authoring surface | 143 cases: contexts (`Sync`/`Seq`/`Lag`/`Off`/`OnInit`/`ComposedEasing`), lifecycle, hierarchy, `become`, degenerate geometry, text, camera, lights, materials, updaters, multi-Scene |
 | Renderer robustness | 53 of those degenerate scenes rendered at `SMOKE_TEST`, with the output frame checked for blank/NaN |
 | Class sweep | Every one of the 170 `Mob` subclasses in `algan.__all__` constructed, spawned and rendered |
 | Output & settings | 67 cases: textures/images, `SETTINGS` mutation, `save_video`/`save_frame` arguments, post-processing, audio, encoders |

@@ -159,9 +159,9 @@ with Seq():
             filled[4].rotate(120, OUT)
         # Two rate functions over the same span read as two different arrival
         # times for the same displacement.
-        with Sync(rate_func=rate_funcs.linear):
+        with Sync(easing=easings.linear):
             outlined[4].move(UP * 0.32)
-        with Sync(rate_func=rate_funcs.ease_out_expo):
+        with Sync(easing=easings.ease_out_expo):
             outlined[5].move(UP * 0.32)
     with Sync(duration=1.2):
         filled[5].wave_color(GREEN, direction=RIGHT)

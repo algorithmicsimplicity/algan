@@ -19,7 +19,7 @@ import torch
 
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import PURE_BLUE, YELLOW
-from algan.constants.rate_funcs import identity
+from algan.constants.easings import identity
 from algan.constants.spatial import RIGHT, UP
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Rectangle, Square
@@ -225,7 +225,7 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
     ]
     composite = Group([panel, *glyphs]).spawn(animate=False)
 
-    with Sync(duration=1.5, rate_func=identity):
+    with Sync(duration=1.5, easing=identity):
         composite.wave_color(
             PURE_BLUE,
             wave_length=0.5,
@@ -433,7 +433,7 @@ def test_group_transform_recorded_before_a_restore_keeps_every_member_intact():
     # bases must stay untouched by whether a sibling was refined at all.
     sheet = flat_sheet()
 
-    with Seq(duration=4, rate_func=identity):
+    with Seq(duration=4, easing=identity):
         with Sync():
             sheet.wave_color(PURE_BLUE, wave_length=0.5)
         # Allocated between the refine and the restore, so the restore moving

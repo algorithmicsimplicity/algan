@@ -56,7 +56,7 @@ Code
 Color
 ComplexHomotopy
 ComplexPlane
-ComposeRateFunc
+ComposedEasing
 ComputingSettings
 Cone
 ContextReuseError
@@ -343,6 +343,7 @@ clear_cache
 clear_cached_kernels
 cosine_color
 depth_shader
+easings
 fresnel_rim
 from_manim_coordinates
 glass_ball
@@ -353,7 +354,6 @@ matcap_shader
 normal_shader
 phong_shader
 physical_shader
-rate_funcs
 set_environment_map
 set_log_level
 set_progress_style

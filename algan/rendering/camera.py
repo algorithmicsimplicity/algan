@@ -3,7 +3,7 @@
 :class:`Camera` is a :class:`~algan.animatable_base.mob.Mob`, so it is moved,
 rotated and animated with exactly the methods every other Mob uses, inside the
 same animation contexts -- there is no separate camera-animation API. Camera
-moves usually want ``rate_func=rate_funcs.identity``, since easing in and out of a
+moves usually want ``easing=easings.identity``, since easing in and out of a
 pan reads as a wobble.
 
 It carries the projection: perspective or orthographic, field of view in degrees,

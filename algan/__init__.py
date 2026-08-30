@@ -409,14 +409,14 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "animate_lagged_by_location",  # algan.utils.animation_utils
         "render_all_funcs",  # algan.utils.algan_utils (or Scene.render_all_funcs)
         "null_shader",  # algan.rendering.shaders.pbr_shaders
-        "DEFAULT_RATE_FUNC",  # algan.animation_timeline.animation_contexts
+        "DEFAULT_EASING",  # algan.animation_timeline.animation_contexts
     }
 )
 
 # Public names that the rules above would otherwise miss.
 # FragmentStage instances are neither callable nor upper-case, so the rules
 # below do not pick them up.
-_EXTRA_EXPORTS = ("cosine_color", "fresnel_rim", "glass_ball", "rate_funcs")
+_EXTRA_EXPORTS = ("cosine_color", "fresnel_rim", "glass_ball", "easings")
 
 
 def _is_root_export(name, value):

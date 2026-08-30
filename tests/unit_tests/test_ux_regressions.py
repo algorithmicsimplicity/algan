@@ -783,7 +783,7 @@ def test_root_star_exports_exclude_dependency_modules_and_typing_helpers():
     exec("from algan import *", namespace)
     for leaked in ("os", "sys", "torch", "np", "F", "Any", "Callable"):
         assert leaked not in namespace
-    for expected in ("Square", "Scene", "SETTINGS", "HD", "RED", "Sync", "rate_funcs"):
+    for expected in ("Square", "Scene", "SETTINGS", "HD", "RED", "Sync", "easings"):
         assert expected in namespace
 
 

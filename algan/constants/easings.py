@@ -2,7 +2,7 @@
 
 A rate function maps a normalized time ``t`` in ``[0, 1]`` to a normalized
 progress, also usually in ``[0, 1]``. Every animation context takes one as
-``rate_func``, and it decides the *feel* of a movement without changing its
+``easing``, and it decides the *feel* of a movement without changing its
 duration or its endpoints.
 
 ``smooth`` is the default: it eases in and out, so things start and stop gently.
@@ -329,7 +329,7 @@ def tan(t, scale=10):
     )
 
 
-# Explicit, so ``from algan.rate_funcs import *`` brings in the curves and not
+# Explicit, so ``from algan.easings import *`` brings in the curves and not
 # this module's own ``math`` and ``torch`` imports, and so the documentation
 # tooling has a definitive roster to render. (``dir()`` still lists the imports
 # -- ``__all__`` governs star-imports and autodoc, not attribute listing.)

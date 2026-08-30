@@ -152,9 +152,9 @@ with Seq():
     with Sync(duration=1.0):
         metal.rotate(60, RIGHT)
         circuits[3].rotate(180, OUT)
-        with Sync(rate_func=rate_funcs.linear):
+        with Sync(easing=easings.linear):
             circuits[0].move(UP * 0.3)
-        with Sync(rate_func=rate_funcs.ease_out_expo):
+        with Sync(easing=easings.ease_out_expo):
             circuits[1].move(UP * 0.3)
     cube.remove_updater(spin)
 

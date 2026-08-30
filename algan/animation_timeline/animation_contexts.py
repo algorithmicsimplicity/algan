@@ -39,13 +39,13 @@ from functools import wraps
 from typing import Any, Callable
 
 from algan.animation_timeline.timeline import TimelineSpan
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.errors import ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
 
 DEFAULT_DURATION = 1
-DEFAULT_RATE_FUNC = rate_funcs.smooth
+DEFAULT_EASING = easings.smooth
 
 # AnimationContext parameters -- not method arguments. Manim spells timing per
 # call (``mob.shift(RIGHT, run_time=2)``); Algan spells it with a with-block, so
@@ -56,9 +56,9 @@ _CONTEXT_ONLY_PARAMS = {
     "duration_unit": "Seq",
     "match_durations": "Sync",
     "ratio": "Lag",
-    "rate_func": "Seq",
-    "rate_func_compose": "ComposeRateFunc",
-    "combine_rate_func": "Seq",
+    "easing": "Seq",
+    "composed_easing": "ComposedEasing",
+    "combine_easing": "Seq",
     "priority_level": "Off",
     "record_funcs": "Off",
     "record_attr_modifications": "Off",
@@ -127,7 +127,7 @@ class AnimationManager:
         self.context = Seq(
             duration_unit=1.0,
             priority_level=0,
-            rate_func=rate_funcs.smooth,
+            easing=easings.smooth,
             record_funcs=True,
             record_attr_modifications=True,
             spawn_at_end=False,
@@ -289,14 +289,14 @@ class AnimationContext:
         Priority of this context. A context can only be overridden by one of equal or
         higher priority, which is what lets :class:`~.Off` resist an enclosing
         ``duration``. Defaults to ``None``, meaning inherit (``0`` at the top level).
-    rate_func
+    easing
         Easing function mapping progress in ``[0, 1]`` to adjusted progress, e.g.
-        ``rate_funcs.identity``. Replaces the parent's. Defaults to ``None``, meaning
-        inherit (``rate_funcs.smooth`` at the top level).
-    rate_func_compose
+        ``easings.identity``. Replaces the parent's. Defaults to ``None``, meaning
+        inherit (``easings.smooth`` at the top level).
+    composed_easing
         Easing function to compose *with* the parent's rather than replace it. Defaults
-        to ``None``. See :class:`~.ComposeRateFunc`.
-    combine_rate_func
+        to ``None``. See :class:`~.ComposedEasing`.
+    combine_easing
         Whether component rate functions are combined into the context's own.
         Defaults to False.
     record_funcs
@@ -323,9 +323,9 @@ class AnimationContext:
     match_durations: bool | None = None
     lag_ratio: float | None = None
     priority_level: float | None = None
-    rate_func: Callable[[], float] | None = None
-    rate_func_compose: Callable[[], float] | None = None
-    combine_rate_func: bool = False
+    easing: Callable[[], float] | None = None
+    composed_easing: Callable[[], float] | None = None
+    combine_easing: bool = False
     record_funcs: bool | None = None
     record_attr_modifications: bool | None = None
     prev_context: AnimationContext | None = None
@@ -408,16 +408,16 @@ class AnimationContext:
             "duration_unit",
             "lag_ratio",
             "priority_level",
-            "rate_func",
-            "rate_func_compose",
+            "easing",
+            "composed_easing",
             "record_funcs",
             "record_attr_modifications",
             "spawn_at_end",
         ]:
             inherit_missing_value(attr)
 
-        self.rate_func = copy.deepcopy(self.rate_func)
-        self.rate_func_compose = copy.deepcopy(self.rate_func_compose)
+        self.easing = copy.deepcopy(self.easing)
+        self.composed_easing = copy.deepcopy(self.composed_easing)
         new_kwargs = self.kwargs
         self.kwargs = self.prev_context.kwargs | new_kwargs
 
@@ -648,21 +648,21 @@ class AnimationContext:
                 self.timespan.start = self.timespan.original_start
                 self.timespan.end = self.timespan.original_end
 
-            if self.combine_rate_func:
+            if self.combine_easing:
 
-                def wrap(rate_func):
-                    if rate_func is None:
-                        return rate_func
-                    rate_func.set_full_time(
+                def wrap(easing):
+                    if easing is None:
+                        return easing
+                    easing.set_full_time(
                         lambda context=self: context.timespan.start,
                         lambda context=self: context.timespan.end,
                     )
-                    rate_func.time_set = True
-                    return rate_func
+                    easing.time_set = True
+                    return easing
 
                 for child in self.get_descendants(include_self=False):
-                    wrap(child.rate_func)
-                    wrap(child.rate_func_compose)
+                    wrap(child.easing)
+                    wrap(child.composed_easing)
 
             self.finished = True
             # Subsequent parent updates and spawn-at-end work must execute in
@@ -1240,13 +1240,13 @@ class OnInit(AnimationContext):
         self.func(animatable)
 
 
-class ComposeRateFunc(AnimationContext):
+class ComposedEasing(AnimationContext):
     """Bend the timing of the block's animations through an extra rate function.
 
     The given function is composed with whatever rate function is already in effect,
     rather than replacing it, so an enclosing ease is kept and this one layers on
     top. Use it to make a run of animations rush, dawdle or bounce without
-    restating the base rate_func.
+    restating the base easing.
 
     Parameters
     ----------
@@ -1260,10 +1260,10 @@ class ComposeRateFunc(AnimationContext):
     --------
     .. code-block:: python
 
-        with ComposeRateFunc(rate_funcs.there_and_back):
+        with ComposedEasing(easings.there_and_back):
             square.move(RIGHT)  # goes out and comes back
     """
 
     def __init__(self, rfunc, **kwargs):
-        kwargs["rate_func_compose"] = rfunc
+        kwargs["composed_easing"] = rfunc
         super().__init__(**kwargs)

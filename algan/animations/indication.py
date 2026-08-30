@@ -10,7 +10,7 @@ contexts like any other change -- put several in a :class:`~.Sync` to indicate
 things together, or a :class:`~.Lag` to sweep across them.
 
 :func:`there_and_back` and :func:`wiggle` are the rate functions behind them, and
-are useful on their own as ``rate_func`` arguments.
+are useful on their own as ``easing`` arguments.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from algan.animation_timeline.animation_contexts import (
     animation_manager_for,
 )
 from algan.animations.movement import Homotopy
-from algan.constants import rate_funcs
+from algan.constants import easings
 from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
 from algan.constants.spatial import OUTWARD, UP
@@ -57,7 +57,7 @@ def there_and_back(t, inflection: float = 10.0):
     """
     t = cast_to_tensor(t)
     new_t = torch.where(t < 0.5, 2.0 * t, 2.0 * (1.0 - t))
-    return rate_funcs.smooth(new_t, inflection)
+    return easings.smooth(new_t, inflection)
 
 
 def wiggle(t, wiggles: int = 2):
@@ -808,7 +808,7 @@ def ApplyWave(
     ripples: int = 1,
     time_width: float = 1.0,
     duration: float = 2.0,
-    wave_func=rate_funcs.smooth,
+    wave_func=easings.smooth,
 ):
     """Ripple a wave across a Mob's geometry, left to right.
 
@@ -836,7 +836,7 @@ def ApplyWave(
     duration
         Duration of the ripple, in seconds. Defaults to ``2.0``.
     wave_func
-        Easing applied to the wave's shape. Defaults to ``rate_funcs.smooth``.
+        Easing applied to the wave's shape. Defaults to ``easings.smooth``.
 
     Returns
     -------
