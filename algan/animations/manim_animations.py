@@ -30,7 +30,7 @@ def _with_opacity(color, opacity):
 
 def DrawBorderThenFill(
     mobs,
-    run_time=None,
+    duration=None,
     lag_ratio=None,
     stroke_width=1,
     stroke_color=None,
@@ -49,7 +49,7 @@ def DrawBorderThenFill(
         Any iterable of Mobs: the glyphs of a :class:`~.Text`, a
         :class:`~.Group`'s children, or a list you assembled yourself. Drawn in
         iteration order.
-    run_time
+    duration
         Total seconds for the whole sequence. Defaults to 1 second, or 2 for
         more than 15 mobs.
     lag_ratio
@@ -98,8 +98,8 @@ def DrawBorderThenFill(
 
     animation_manager = mobs[0].animation_manager
     length = len(mobs)
-    if run_time is None:
-        run_time = 1 if length < 15 else 2
+    if duration is None:
+        duration = 1 if length < 15 else 2
     if lag_ratio is None:
         lag_ratio = min(4.0 / max(1.0, length), 0.2)
 
@@ -125,7 +125,7 @@ def DrawBorderThenFill(
 
     with Lag(
         lag_ratio,
-        run_time=run_time,
+        duration=duration,
         rate_func=rate_func,
         animation_manager=animation_manager,
     ):

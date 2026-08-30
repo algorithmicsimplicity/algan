@@ -26,7 +26,7 @@ default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving somethin
         cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         cubes.rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
@@ -48,7 +48,7 @@ So, we can animate a camera movement as follows:
     ball = Sphere(radius=1, color=BLUE).spawn()
 
     camera = Scene.get_camera()
-    with Sync(run_time=3, rate_func=rate_funcs.identity):
+    with Sync(duration=3, rate_func=rate_funcs.identity):
         camera.rotate(180, UP, about=ORIGIN)
         ball.move(UP * 0.8)
 
@@ -79,7 +79,7 @@ which act as light sources.
     ball = Sphere(radius=1.2, color=BLUE).spawn()
 
     light = Scene.get_light_sources()[0]
-    with Seq(run_time=4, rate_func=rate_funcs.identity):
+    with Seq(duration=4, rate_func=rate_funcs.identity):
         light.orbit(360, OUT, about=ORIGIN)
 
     Scene.save_video()
@@ -145,7 +145,7 @@ handle batched tensors.
         return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
 
     surface = Surface(saddle, checkered_color=BLUE).spawn()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         surface.rotate(60, RIGHT)
         surface.rotate(360, OUT)
 
@@ -175,7 +175,7 @@ so on, apply a material *before* spawning:
         metal.spawn()
         plastic.spawn()
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         metal.roughness = 0.9
 
     Scene.save_video()

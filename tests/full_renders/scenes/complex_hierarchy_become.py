@@ -153,19 +153,19 @@ with Off():
     )
 
 with Seq():
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         title.spawn()
         subtitle.spawn()
         legend.spawn()
         source_tree.spawn()
     Scene.wait(0.4)
-    with Sync(run_time=2.6):
+    with Sync(duration=2.6):
         source_tree = source_tree.become(target_tree, minimize_movement=True)
     Scene.wait(0.6)
 
     # Prove that target-class replacements now belong to the returned root.
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         source_tree.rotate(18, UP)
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         source_tree.rotate(-18, UP)
     Scene.wait(0.4)

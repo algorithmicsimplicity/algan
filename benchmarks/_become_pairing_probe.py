@@ -90,7 +90,7 @@ def report(title, build_source, build_target, minimize_movement=False):
         with Off():
             source = build_source().spawn()
             target = build_target()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             source.become(target, minimize_movement=minimize_movement)
     print(f"\n=== {title}  (minimize_movement={minimize_movement}) ===")
     if not _LOG:

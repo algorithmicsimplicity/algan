@@ -50,7 +50,7 @@ def build_scene():
         cube = Cube().scale(0.5).move(DOWN * 2).spawn()
     # The crossfade spans the whole clip: every batch carries animating
     # TEXELS, the case the window collapse cannot touch.
-    with Sync(run_time=3.0):
+    with Sync(duration=3.0):
         crossfading.color_texture = crossfading.color_texture.flip(0)
         cube.move(RIGHT * 2)
 

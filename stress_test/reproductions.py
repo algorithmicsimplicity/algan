@@ -246,8 +246,8 @@ def f4():
         with Seq():
             if _raised(sphere.spawn):
                 broken.append("spawn()")
-            if _raised(lambda: Sync(run_time=2.0)):
-                broken.append("Sync(run_time=)")
+            if _raised(lambda: Sync(duration=2.0)):
+                broken.append("Sync(duration=)")
             if _raised(lambda: sphere.move([2, 0, 0])):
                 broken.append("Mob.move()")
     return bool(broken), "unsupported: " + (", ".join(broken) or "nothing")

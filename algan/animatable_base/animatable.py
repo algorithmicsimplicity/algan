@@ -731,7 +731,7 @@ class Animatable:
 
             def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
                 if kwargs:
-                    # ``mob.move(RIGHT, run_time=2)`` lands here via
+                    # ``mob.move(RIGHT, duration=2)`` lands here via
                     # move -> move_to -> set_location. Catch the Manim timing
                     # idiom with a message that names the fix; re-raise anything
                     # else so genuine typos keep failing.
@@ -929,7 +929,7 @@ class Animatable:
         ts = context.timespan
         # Reached only for mobs that are on screen (themselves or through a
         # descendant), so the edit always spans the context's animation.
-        nt = ts.current_time + context.run_time_unit
+        nt = ts.current_time + context.duration_unit
         ts.original_end = max(ts.original_end, nt)
         timeline.modify_attribute_and_record(
             key, self.id, where, inds, value, ts.get_time(nt)

@@ -203,7 +203,7 @@ def _build_scene(mode: str) -> None:
 
     # The reported differences GROW as the reflected cubes rotate, so the
     # animation has to move what the floor reflects.
-    with Sync(run_time=FRAMES / FPS):
+    with Sync(duration=FRAMES / FPS):
         cube_pbr.rotate(150, UP)
         cube_a.rotate(-120, UP)
         cube_b.rotate(100, RIGHT)

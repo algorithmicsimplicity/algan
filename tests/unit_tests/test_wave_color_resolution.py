@@ -53,7 +53,7 @@ def flat_sheet(**kwargs):
 def refined_resolutions(mob, attr_names, wave):
     """Run ``wave`` and report the resolution during it and after the block."""
     recorded = {}
-    with Sync(run_time=4):
+    with Sync(duration=4):
         wave()
         recorded["during"] = tuple(getattr(mob, name) for name in attr_names)
     recorded["after"] = tuple(getattr(mob, name) for name in attr_names)
@@ -83,7 +83,7 @@ def test_refined_surface_keeps_its_shape_and_replays_at_both_resolutions():
     sheet = flat_sheet()
     coarse = sheet.grid.location.clone()
 
-    with Sync(run_time=4):
+    with Sync(duration=4):
         sheet.wave_color(PURE_BLUE, wave_length=0.5)
         refined = sheet.grid.location.clone()
         # Re-sampling runs coord_function over a denser grid, so every point of
@@ -161,7 +161,7 @@ def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
     square = Square(color=YELLOW).spawn(animate=False)
     corner = square.texture_points.location.clone()
 
-    with Sync(run_time=4):
+    with Sync(duration=4):
         square.wave_color(PURE_BLUE, direction=RIGHT + UP)
         points = square.texture_points.location
         colors = square.texture_points.color
@@ -225,7 +225,7 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
     ]
     composite = Group([panel, *glyphs]).spawn(animate=False)
 
-    with Sync(run_time=1.5, rate_func=identity):
+    with Sync(duration=1.5, rate_func=identity):
         composite.wave_color(
             PURE_BLUE,
             wave_length=0.5,
@@ -303,11 +303,11 @@ def test_restore_waits_for_the_outermost_block_so_siblings_stay_visible():
     # clone that despawns at that instant -- has to wait for the whole block.
     sheet = flat_sheet()
 
-    with Sync(run_time=6):
-        with Seq(run_time=3):
+    with Sync(duration=6):
+        with Seq(duration=3):
             sheet.wave_color(PURE_BLUE, wave_length=0.5)
         assert sheet.grid_height > FLAT_SHEET_GRID[1]
-        with Seq(run_time=6):
+        with Seq(duration=6):
             sheet.move(RIGHT * 2)
         assert sheet.grid_height > FLAT_SHEET_GRID[1]
 
@@ -345,7 +345,7 @@ def test_updater_keeps_moving_the_visible_surface_across_history_splits():
     sheet = flat_sheet()
     sheet.add_updater(lambda mob, time_elapsed: mob.move_to(RIGHT * time_elapsed))
 
-    with Sync(run_time=4):
+    with Sync(duration=4):
         sheet.wave_color(PURE_BLUE, wave_length=0.5)
 
     times = torch.linspace(0.0, 4.0, 9)
@@ -412,7 +412,7 @@ def test_repeated_waves_leave_a_thin_cylinder_the_size_it_was():
     original_extent = points.amax(0) - points.amin(0)
 
     for _ in range(20):
-        with Sync(run_time=1):
+        with Sync(duration=1):
             synapse.wave_color(PURE_BLUE, wave_length=0.7)
 
     points = synapse.grid.location.reshape(-1, 3)
@@ -433,7 +433,7 @@ def test_group_transform_recorded_before_a_restore_keeps_every_member_intact():
     # bases must stay untouched by whether a sibling was refined at all.
     sheet = flat_sheet()
 
-    with Seq(run_time=4, rate_func=identity):
+    with Seq(duration=4, rate_func=identity):
         with Sync():
             sheet.wave_color(PURE_BLUE, wave_length=0.5)
         # Allocated between the refine and the restore, so the restore moving

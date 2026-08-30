@@ -712,7 +712,7 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
                     continue
                 _.color = _.color.set_opacity(0)
             s.spawn(animate=False)
-    with Sync(run_time=1, animation_manager=mob1.animation_manager):
+    with Sync(duration=1, animation_manager=mob1.animation_manager):
         for s in syns:
             s.wave_color(
                 color + GLOW,
@@ -841,7 +841,7 @@ class NeuralNetMLP(Mob):
         input_values,
         output_generator,
         label,
-        run_time=3,
+        duration=3,
         forward_color=PURE_RED * k + (1 - k) * WHITE,
         backward_color=PURE_BLUE * k + (1 - k) * WHITE,
     ):
@@ -849,16 +849,16 @@ class NeuralNetMLP(Mob):
             o = self.forward(
                 input_values,
                 output_generator,
-                run_time,
+                duration,
                 reset=False,
                 color=forward_color,
             )  # .get_component_mobs())
             # o.move_next_to(label, -self.get_right_direction())
-            self.backward(o, label, color=backward_color, run_time=run_time)
+            self.backward(o, label, color=backward_color, duration=duration)
             o.despawn()
         return self
 
-    def forward(self, inputs, output_generator=None, run_time=3, reset=True, **kwargs):
+    def forward(self, inputs, output_generator=None, duration=3, reset=True, **kwargs):
         if isinstance(inputs, Mob):
             inputs = [
                 [_]
@@ -869,13 +869,13 @@ class NeuralNetMLP(Mob):
             ]
         else:
             inputs = [[_.location for _ in inputs] for _ in range(len(self.layers[0]))]
-        with Seq(run_time=run_time, animation_manager=self.animation_manager):
-            with Sync(run_time=1, animation_manager=self.animation_manager):
+        with Seq(duration=duration, animation_manager=self.animation_manager):
+            with Sync(duration=1, animation_manager=self.animation_manager):
                 for neuron, neuron_inputs in zip(self.layers[0], inputs):
                     for syn, inp in zip(neuron.synapses, neuron_inputs):
                         syn.set_start_point(inp)  # , n.location)
             out = self.activate(
-                run_time=run_time, output_generator=output_generator, **kwargs
+                duration=duration, output_generator=output_generator, **kwargs
             )
             with Sync(animation_manager=self.animation_manager):
                 if reset:
@@ -884,7 +884,7 @@ class NeuralNetMLP(Mob):
             return out
 
     def reset_input_synapses(self):
-        with Sync(run_time=1, animation_manager=self.animation_manager):
+        with Sync(duration=1, animation_manager=self.animation_manager):
             for n in self.layers[0]:
                 for syn in n.synapses:
                     syn.move_between_points(
@@ -902,16 +902,16 @@ class NeuralNetMLP(Mob):
                         syn.set_location_by_function(syn.coord_function)"""
 
     def backward(
-        self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, run_time=3
+        self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, duration=3
     ):
         # with Seq():
-        #    self.activate(reverse=True, color=color, run_time=run_time)
+        #    self.activate(reverse=True, color=color, duration=duration)
         #    self.reset_input_synapses()
         # return self
-        # with Seq(run_time=run_time, animation_manager=self.animation_manager):
-        with Lag(0.9, run_time=run_time):
+        # with Seq(duration=duration, animation_manager=self.animation_manager):
+        with Lag(0.9, duration=duration):
             if label is not None:
-                with Lag(0.65, run_time=1, animation_manager=self.animation_manager):
+                with Lag(0.65, duration=1, animation_manager=self.animation_manager):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
             # self.animation_manager.context.timespan.current_time = (
@@ -926,7 +926,7 @@ class NeuralNetMLP(Mob):
         self,
         output_generator=None,
         color=PURE_RED * k + (1 - k) * WHITE,
-        run_time=1,
+        duration=1,
         reverse=False,
     ):
         layers = self.layers
@@ -946,12 +946,12 @@ class NeuralNetMLP(Mob):
 
         def pulse_neuron(neuron):
             with Sync(
-                run_time=1.1,
+                duration=1.1,
                 rate_func=delay_fade,
                 animation_manager=neuron.animation_manager,
             ):  # lambda t: pulse_fade(t, inflection=1.0)):
                 for n, w in [[neuron.core, 0.15], [neuron.shell, 0]]:
-                    with Seq(run_time=1):
+                    with Seq(duration=1):
                         n.wait(w)
                         n.wave_color(
                             (color + GLOW * 0.8),  # .set_opacity(
@@ -973,7 +973,7 @@ class NeuralNetMLP(Mob):
             Seq(animation_manager=self.animation_manager),
             Lag(
                 0.55, rate_func=identity, animation_manager=self.animation_manager
-            ),  # , run_time=run_time):
+            ),  # , duration=duration):
         ):
             for layer in layers:
                 with Sync(animation_manager=self.animation_manager):
@@ -1022,7 +1022,7 @@ class NeuralNetMLP(Mob):
                         authored = authored.reshape(-1, authored.shape[-1])[:1]
                     return authored
 
-                with Seq(run_time=1.5, animation_manager=self.animation_manager):
+                with Seq(duration=1.5, animation_manager=self.animation_manager):
                     output.wave_color(
                         color + GLOW,
                         direction=self.get_forward_direction(),

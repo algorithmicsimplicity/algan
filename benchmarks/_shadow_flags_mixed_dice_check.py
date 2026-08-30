@@ -82,7 +82,7 @@ def build_scene(arm):
 
     # Move the spheres toward and away from the camera so the adaptive dice
     # level changes frame to frame, which is what shuffles column ownership.
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         if arm != "onlyb":
             sphere_a.move(OUT * 1.6)
         sphere_b.move(IN * 1.2)

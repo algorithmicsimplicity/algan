@@ -275,7 +275,7 @@ def build_scene(scene_kind):
 
     if static:
         return
-    with Sync(run_time=1.5):
+    with Sync(duration=1.5):
         for i, sheet in enumerate(sheets):
             sheet.rotate(9 * (i + 1), OUT)
         for i, solid in enumerate(solids):

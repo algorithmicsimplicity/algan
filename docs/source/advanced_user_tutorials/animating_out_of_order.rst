@@ -98,7 +98,7 @@ its animation. And we can use out of order animation to implement the animations
             context.current_time = start_time + square_start_time
 
             # Write the animation to this point on the timeline.
-            with Seq(run_time=2):
+            with Seq(duration=2):
                 original_color = squares[i].color
                 squares[i].color = RED
                 squares[i].color = BLUE

@@ -42,12 +42,12 @@ def map_mob_over_inputs(mob, animation_func, inputs, percent_shown=0.1):
                 animation_func(mob, inp)
 
 
-def rfd(x, start_portion, run_time, lag_time):
+def rfd(x, start_portion, duration, lag_time):
     # return x
-    x = x * (run_time + lag_time)
+    x = x * (duration + lag_time)
     # t = t.unsqueeze(-2)
     # x = x.unsqueeze(-1)#unsqueeze_right(x, t)
-    return ((x - (start_portion * lag_time)).clamp_(min=0) / run_time).clamp_(max=1)
+    return ((x - (start_portion * lag_time)).clamp_(min=0) / duration).clamp_(max=1)
 
 
 def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
@@ -66,11 +66,11 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
     ts = [((_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8)) for _ in dots]
     # t = t * lag_duration
 
-    run_time = amc.run_time_unit  # max(amc.run_time_unit - lag_duration, 0)
-    # lag_duration = min(lag_duration, amc.run_time_unit - run_time)
+    duration = amc.duration_unit  # max(amc.duration_unit - lag_duration, 0)
+    # lag_duration = min(lag_duration, amc.duration_unit - duration)
     start_time = amc.timespan.current_time
     old_max_time = amc.timespan.original_end
-    # amc.max_max_time = max(amc.max_time, start_time + (run_time + lag_duration))
+    # amc.max_max_time = max(amc.max_time, start_time + (duration + lag_duration))
     for i in range(len(mobs)):
         # ``rf`` already delays every attribute row by its normalized spatial
         # position.  Starting each primitive at its own minimum position would
@@ -79,18 +79,18 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
         # example, a Code panel versus its separately represented glyphs).
         amc.timespan.current_time = start_time
 
-        def rf(x, t=ts[i], r=run_time, lag=lag_duration):
+        def rf(x, t=ts[i], r=duration, lag=lag_duration):
             return rfd(
                 x, t, r, lag
             )  # ((x - t).clamp_(min=0) / lag_duration).clamp_(max=1)
 
         with ComposeRateFunc(
             rf,
-            run_time=run_time + lag_duration,
+            duration=duration + lag_duration,
             animation_manager=animation_manager_for(mobs),
         ):
             animation_func(mobs[i])
     amc.timespan.original_end_time = max(
-        old_max_time, start_time + (run_time + lag_duration)
+        old_max_time, start_time + (duration + lag_duration)
     )
-    amc.timespan.current_time = start_time + amc.lag_ratio * (run_time + lag_duration)
+    amc.timespan.current_time = start_time + amc.lag_ratio * (duration + lag_duration)

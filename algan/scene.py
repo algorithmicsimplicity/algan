@@ -761,7 +761,7 @@ class Scene(RenderLoopMixin):
         if duration is None:
             self._despawn_spawned_mobs(**kwargs)
         else:
-            with Seq(run_time=duration, animation_manager=self.animation_manager):
+            with Seq(duration=duration, animation_manager=self.animation_manager):
                 self._despawn_spawned_mobs(**kwargs)
         if retain_history:
             self.actors = [
@@ -1235,7 +1235,7 @@ class Scene(RenderLoopMixin):
                 self.set_background(background)
             # Rendering resolves replay windows against the timings as they
             # stand. Mid-authoring those are not final -- an enclosing context
-            # with a run_time rescales its block when it exits -- so the
+            # with a duration rescales its block when it exits -- so the
             # resolution is restored rather than left on the timeline for the
             # next render to reuse.
             with self.timeline_manager.preserving_authoring_state(

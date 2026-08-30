@@ -2786,7 +2786,7 @@ class AnimationTimeline:
     ):
         c = animation_context
         self.last_recorded_event = None
-        if c.run_time_unit <= 0 or not c.record_funcs:
+        if c.duration_unit <= 0 or not c.record_funcs:
             return kwargs
         rate_func = c.rate_func
         rate_func_compose = c.rate_func_compose
@@ -3120,7 +3120,7 @@ class AnimationTimeline:
         event's context-rescaled end time into a plain ``replay_end`` float.
         That is correct once authoring is finished, but a render started from
         *inside* an unfinished context bakes in timestamps the enclosing
-        contexts have not rescaled yet (a ``run_time`` rescales its block
+        contexts have not rescaled yet (a ``duration`` rescales its block
         retroactively, on exit). Nothing invalidates those floats afterwards --
         only recording a new edit does -- so the stale, too-early ends survive
         into the next render, where :meth:`AttributeTimeline.prepare_for_queries`

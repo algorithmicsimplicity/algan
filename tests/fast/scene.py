@@ -135,10 +135,10 @@ with Seq():
     title.spawn()
     # Lag staggers the spawns, so a replay regression moves geometry between
     # frames rather than changing a single still.
-    with Lag(0.25, run_time=1.0):
+    with Lag(0.25, duration=1.0):
         for shape in circuits:
             shape.spawn()
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         cube.spawn()
         metal.spawn()
         unlit.spawn()
@@ -149,7 +149,7 @@ with Seq():
     # An updater writes every frame; a rate function makes two equal
     # displacements arrive at different times.
     spin = cube.add_updater(lambda mob, time: mob.rotate(time * 120.0, UP))
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         metal.rotate(60, RIGHT)
         circuits[3].rotate(180, OUT)
         with Sync(rate_func=rate_funcs.linear):
@@ -159,6 +159,6 @@ with Seq():
     cube.remove_updater(spin)
 
     # Part of the scene leaves, so the despawn half of the lifecycle is drawn.
-    with Sync(run_time=0.4):
+    with Sync(duration=0.4):
         unlit.despawn()
         circuits[2].despawn()

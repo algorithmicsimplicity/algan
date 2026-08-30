@@ -113,7 +113,7 @@ def test_morphing_into_a_polyhedron_does_not_publish_its_vertex_dots(scene):
     with Off():
         sphere = Sphere(radius=0.8).spawn()
         cube = Cube(size=1.0)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         sphere.become(cube)
 
     assert not [actor for actor in scene.actors if isinstance(actor, Dot3D)]
@@ -141,7 +141,7 @@ def test_a_polyhedron_speaks_only_for_the_geometry_it_built(scene):
             source = Sphere(radius=0.8).spawn()
             target = Cube(size=1.0)
             target.add_children(Sphere(radius=0.25).move(UP * 1.2))
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             result = source.become(target)
         drawn = [
             type(actor).__name__
@@ -169,7 +169,7 @@ def test_a_morphed_polyhedron_draws_each_face_once(scene):
         with Off():
             sphere = Sphere(radius=0.8).spawn()
             cube = Cube(size=1.0)
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             result = sphere.become(cube)
         live = [
             actor
@@ -209,7 +209,7 @@ def test_an_unfilled_circuit_can_cross_primitive_families(scene, build):
     with Off():
         source = build().spawn()
         target = Sphere(radius=0.6).move(RIGHT * 1.5)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     assert result is not None
 
@@ -236,7 +236,7 @@ def test_become_takes_the_targets_sidedness(scene):
         target.closed_shell,
     ), "the fixture no longer contrasts the two declarations"
 
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     assert result.two_sided is target.two_sided
     assert result.closed_shell is target.closed_shell
@@ -254,7 +254,7 @@ def test_become_takes_the_targets_fill(scene, source_filled):
     with Off():
         source = Square(color=BLUE, filled=source_filled, stroke_width=0.05).spawn()
         target = Square(color=BLUE, filled=not source_filled, stroke_width=0.05)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     assert result.filled is (not source_filled)
 
@@ -264,17 +264,17 @@ def test_become_takes_the_targets_fill(scene, source_filled):
 # ---------------------------------------------------------------------------
 
 
-def test_an_empty_morph_still_spends_its_run_time(scene):
+def test_an_empty_morph_still_spends_its_duration(scene):
     """Two empty Groups record nothing, so the context cursor never moved.
 
-    Every other become spends exactly one ``run_time``. A no-op that spends
+    Every other become spends exactly one ``duration``. A no-op that spends
     zero silently pulls everything after it in a ``Seq`` a second early.
     """
     with Off():
         source = Group().spawn()
         target = Group()
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         source.become(target)
     end = float(scene.animation_manager.context.timespan.current_time)
     assert end - start == pytest.approx(1.0)
@@ -320,7 +320,7 @@ def test_morphing_into_a_coarser_surface_lands_on_that_surface(scene):
         ).spawn()
         target = _wave(4, 9)
 
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         source.become(target)
     end = float(scene.animation_manager.context.timespan.current_time)
     scene.timeline_manager.set_state_to_times(torch.tensor([end]))
@@ -376,7 +376,7 @@ def test_parts_that_need_not_move_do_not_travel(scene):
         source = build([0, 1, 2, 3]).spawn()
         target = build([2, 0, 3, 1])
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         morphed = source.become(target)
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -426,7 +426,7 @@ def test_a_morph_into_a_stroke_only_shape_is_never_blank(scene, build_target):
         source = Sphere(radius=0.8).spawn()
         target = build_target()
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         source.become(target)
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -461,7 +461,7 @@ def test_an_arrow3d_can_morph_in_both_directions(scene):
     with Off():
         source = Arrow3D().spawn()
         target = Sphere(radius=0.6).move(RIGHT * 1.5)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     assert result is not None
 
@@ -474,7 +474,7 @@ def test_an_arrow3d_can_morph_in_both_directions(scene):
         with Off():
             sphere = Sphere(radius=0.6).spawn()
             arrow = Arrow3D()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             sphere.become(arrow)
         live = [
             a
@@ -517,7 +517,7 @@ def test_become_takes_the_targets_colour_texture(scene):
         source = textured(4, 4, (1.0, 0.0, 0.0)).spawn()
         target = textured(8, 4, (0.0, 0.0, 1.0))
     wanted = target.color_texture
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     got = result.color_texture
 
@@ -569,7 +569,7 @@ def test_a_morphed_polyhedrons_history_publishes_no_vertex_beads(scene):
         source = Tetrahedron(edge_length=1.0).spawn()
         target = Sphere(radius=0.5)
 
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         source.become(target)
 
     beads = [actor for actor in scene.actors if isinstance(actor, Dot3D)]
@@ -602,7 +602,7 @@ def test_a_surplus_target_fades_in_as_it_grows(scene):
             Sphere(radius=0.4).move(RIGHT),
         )
     start = float(scene.animation_manager.context.timespan.current_time)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
     end = float(scene.animation_manager.context.timespan.current_time)
 
@@ -659,7 +659,7 @@ def test_a_fill_crossing_morph_does_not_play_in_the_endpoints_fill(
         source = Square(color=BLUE, filled=source_filled, stroke_width=0.05).spawn()
         target = Square(color=BLUE, filled=not source_filled, stroke_width=0.05)
 
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         result = source.become(target)
 
     assert result.filled is (not source_filled)

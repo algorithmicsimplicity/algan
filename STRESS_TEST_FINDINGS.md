@@ -95,7 +95,7 @@ Measured with the same script, same Algan, same settings:
 | `Sync` of 3 | 1.00 s | 3.00 s |
 | `Lag(0)` of 3 | 1.00 s | 3.00 s |
 | `Lag(0.5)` of 3 | 2.00 s | 3.00 s |
-| `Sync(run_time=2)` of 3 | 2.00 s | 3.00 s |
+| `Sync(duration=2)` of 3 | 2.00 s | 3.00 s |
 | `Seq` of 3 | 3.00 s | 3.00 s |
 
 **Fix taken.** Make `__enter__` refuse a context that is already entered, with a
@@ -221,7 +221,7 @@ Check: `F3`.
 | README | Actual API |
 | --- | --- |
 | `sphere.spawn(duration=1.0)` | `spawn()` takes no `duration`; the enclosing context sets timing |
-| `with Sync(duration=2.0):` | the parameter is `run_time` |
+| `with Sync(duration=2.0):` | the parameter was `run_time` (the API overhaul's Phase 7 renamed it to `duration`, so this line is now correct) |
 | `sphere.shift([2, 0, 0])` | `Mob.move(...)` — there is no `shift` |
 
 `spawn(duration=` and `Sync(duration=` appear nowhere else in the repository, and
@@ -233,9 +233,9 @@ Corrected:
 
 ```python
 with Seq():
-    with Seq(run_time=1.0):
+    with Seq(duration=1.0):
         sphere.spawn()
-    with Sync(run_time=2.0):
+    with Sync(duration=2.0):
         sphere.rotate(180)
         sphere.move([2, 0, 0])
         sphere.color = RED
@@ -244,7 +244,7 @@ with Seq():
 **Fix taken.** Fix the README, and extend the doc-example collector to the root
 README so it cannot drift again.
 
-**Fixed.** The README now reads `sphere.spawn()`, `with Sync(run_time=2.0):` and
+**Fixed.** The README now reads `sphere.spawn()`, `with Sync(duration=2.0):` and
 `sphere.move([2, 0, 0])`, and `tests/unit_tests/test_doc_examples.py` collects
 `README.md`'s fenced Python alongside the docs' blocks, so it goes through the same
 tiers as every other example and cannot drift again. Check: `F4`.
@@ -477,7 +477,7 @@ is as short as it is.
   *"displacement must be a 3-D vector of shape (\*, 3), such as RIGHT, UP \* 2 or [1, 0, 0]; got [1, 2]"*.
   Python lists, tuples and numpy arrays all work where a vector is expected.
 * **Timing semantics are correct** — once finding 1 is not in play. `Seq`, `Sync`,
-  `Lag(r)`, `run_time`, `run_time_unit`, nested contexts, `Off` inside a timed context,
+  `Lag(r)`, `duration`, `duration_unit`, nested contexts, `Off` inside a timed context,
   `wait` including negative and zero, and rate functions were all measured against
   rendered frame counts and all matched.
 * **Context cleanup is otherwise sound.** An exception raised inside a `with Sync()`,

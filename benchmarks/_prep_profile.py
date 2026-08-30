@@ -51,10 +51,10 @@ text_string = ("a" * 50 + "\n") * 50
 
 
 def text_scene():
-    with Sync(run_time=0.25):
+    with Sync(duration=0.25):
         nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=0.25):
+    with Sync(duration=0.25):
         mob.move(LEFT)
         nn.move(LEFT)
 

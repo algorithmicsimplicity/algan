@@ -30,7 +30,7 @@ textured surface:
     from algan import *
 
     photo = ImageMob('world_map.png').scale(2).spawn()
-    with Seq(run_time=2):
+    with Seq(duration=2):
         photo.rotate(30, UP)
         photo.rotate(-30, UP)
 
@@ -78,7 +78,7 @@ while it keeps its texture. That is how you wrap a map onto a globe:
     world = ImageMob('world_map.png').scale(2).spawn()
     world.wait()
 
-    with Seq(run_time_unit=5, rate_func=rate_funcs.identity):
+    with Seq(duration_unit=5, rate_func=rate_funcs.identity):
         for shape in (Sphere(radius=2, add_to_scene=False),
                       Cylinder(radius=1, height=2, add_to_scene=False)):
             # Change the surface shape; the texture comes along.
@@ -120,7 +120,7 @@ take texture arguments at construction:
     checker[..., 4] = 1.0           # opacity
 
     globe = Sphere(radius=1.5, color_texture=checker).spawn()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         globe.rotate(360, UP)
 
     Scene.save_video()
@@ -247,7 +247,7 @@ texture to the new one per texel over the current context's duration.
         return texture
 
     globe = Sphere(radius=1.5, color_texture=stripes(True)).spawn()
-    with Seq(run_time=3):
+    with Seq(duration=3):
         globe.color_texture = stripes(False)   # cross-fades, texel by texel
 
     Scene.save_video()
@@ -402,7 +402,7 @@ colors cross-fade over the current context's duration:
     square.set_color_by_function(cool)
     square.spawn()
 
-    with Seq(run_time=2):
+    with Seq(duration=2):
         square.set_color_by_function(hot)   # cross-fades from whatever it was
 
     Scene.save_video()

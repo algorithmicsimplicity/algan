@@ -1015,7 +1015,7 @@ class Mob(
             else []
         )
         with AnimationContext(
-            run_time_unit=wave_length / lag_duration,
+            duration_unit=wave_length / lag_duration,
             animation_manager=self.animation_manager,
         ) as wave_context:
             primitive_mobs = self._wave_pulsed_parts()

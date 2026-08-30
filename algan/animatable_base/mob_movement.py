@@ -84,7 +84,7 @@ class MobMovementMixin:
         ---------
         Recorded as an animation: the Mob sweeps along the arc over the current
         context's duration (1 second by default). Wrap the call to retime it --
-        ``with Seq(run_time=3): mob.move_to_point_along_arc(RIGHT, 90)``.
+        ``with Seq(duration=3): mob.move_to_point_along_arc(RIGHT, 90)``.
 
         Parameters
         ----------
@@ -294,7 +294,7 @@ class MobMovementMixin:
         ---------
         Recorded as an animation: the Mob travels the displacement over the
         current context's duration (1 second by default). Retime it with
-        ``with Seq(run_time=2): mob.move(RIGHT)``, or apply it instantly with
+        ``with Seq(duration=2): mob.move(RIGHT)``, or apply it instantly with
         ``with Off(): mob.move(RIGHT)``. Applies to this Mob and its descendants.
 
         Parameters
@@ -695,7 +695,7 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation. All three legs run inside a
-        ``Seq(run_time=1)``, so the whole path takes 1 second regardless of the
+        ``Seq(duration=1)``, so the whole path takes 1 second regardless of the
         current context's duration. Applies to this Mob and its descendants.
 
         Parameters
@@ -722,7 +722,7 @@ class MobMovementMixin:
             * normalized_displacement_direction
         )
 
-        with Seq(run_time=1, animation_manager=self.animation_manager):
+        with Seq(duration=1, animation_manager=self.animation_manager):
             self.move(displacement)
             self.move(orthogonal_displacement)
             self.location = destination

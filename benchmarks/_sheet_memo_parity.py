@@ -100,7 +100,7 @@ def build_scene():
         ImageMob(str(IMAGE)).scale(0.5).move(LEFT * 3.2 + DOWN * 1.6).spawn()
         Text("memo").scale(0.8).move(DOWN * 2.9).spawn()
         mover = Cube(color=GREEN).scale(0.4).move(UP * 2.6).spawn()
-    with Sync(run_time=0.6):
+    with Sync(duration=0.6):
         mover.move(RIGHT * 1.5)
 
 

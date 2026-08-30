@@ -73,18 +73,18 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Sync(run_time=0.8):
+    with Sync(duration=0.8):
         axes.spawn()
         plane.spawn()
-    with Lag(0.25, run_time=1.5):
+    with Lag(0.25, duration=1.5):
         parabola.spawn()
         line_plot.spawn()
         vector.spawn()
         dashed.spawn()
-    with Sync(run_time=0.7):
+    with Sync(duration=0.7):
         brace.spawn()
         brace_text.spawn()
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         parabola.color = TEAL_A
         line_plot.color = MAROON_A
         vector.rotate(40)
@@ -93,7 +93,7 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 2 -- tables, matrices and a graph.
 # --------------------------------------------------------------------------
-with Sync(run_time=0.8):
+with Sync(duration=0.8):
     for mob in (axes, parabola, line_plot, brace, brace_text, plane, vector, dashed):
         mob.despawn()
 
@@ -121,13 +121,13 @@ with Off():
     ).move(DOWN * 3.15)
 
 with Seq():
-    with Lag(0.2, run_time=1.6):
+    with Lag(0.2, duration=1.6):
         chart.spawn()
         matrix.spawn()
         table.spawn()
         graph.spawn()
     data_label.spawn()
-    with Sync(run_time=1.2):
+    with Sync(duration=1.2):
         matrix.rotate(20)
         graph.scale(1.25)
     Scene.wait(0.2)
@@ -135,7 +135,7 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 3 -- Manim-flavoured shapes and the Manim animation set.
 # --------------------------------------------------------------------------
-with Sync(run_time=0.8):
+with Sync(duration=0.8):
     for mob in (chart, matrix, table, graph, data_label):
         mob.despawn()
 
@@ -176,13 +176,13 @@ with Off():
     ).move(DOWN * 3.15)
 
 with Seq():
-    with Sync(run_time=0.9):
+    with Sync(duration=0.9):
         star.spawn()
         annulus.spawn()
         arc.spawn()
         compat_arrow.spawn()
         right_angle.spawn()
-    with Sync(run_time=0.9):
+    with Sync(duration=0.9):
         grid.spawn()
         path.spawn()
         traveller.spawn()
@@ -190,22 +190,22 @@ with Seq():
         bounded.spawn()
         boundary.spawn()
         anim_label.spawn()
-    with Sync(run_time=1.8):
+    with Sync(duration=1.8):
         # Directly transforming a compatibility Mob keeps its backing Manim
         # object in step, which is the supported way to move one.
         star.rotate(50)
         annulus.scale(1.25)
         compat_arrow.rotate(70)
-        ApplyMatrix(grid, [[1.0, 0.6], [0.0, 1.0]], run_time=1.8)
-        MoveAlongPath(traveller, path, run_time=1.8)
+        ApplyMatrix(grid, [[1.0, 0.6], [0.0, 1.0]], duration=1.8)
+        MoveAlongPath(traveller, path, duration=1.8)
         # A genuine deformation, not a translation: the shear grows with y.
         Homotopy(
             waved,
             lambda x, y, z, t: (x + 0.55 * t * (y - waved_y), y, z),
-            run_time=1.8,
+            duration=1.8,
         )
-    with Sync(run_time=1.6):
-        ApplyComplexFunction(grid, lambda z: z * (0.8 + 0.4j), run_time=1.6)
-        MoveAlongPath(traveller, path, run_time=1.6)
+    with Sync(duration=1.6):
+        ApplyComplexFunction(grid, lambda z: z * (0.8 + 0.4j), duration=1.6)
+        MoveAlongPath(traveller, path, duration=1.6)
         star.rotate(-50)
     Scene.wait(0.4)

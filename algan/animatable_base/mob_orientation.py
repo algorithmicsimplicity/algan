@@ -84,7 +84,7 @@ class MobOrientationMixin:
         Recorded as an animation: the rotation sweeps from 0 to ``angle``
         over the current context's duration (1 second by default), so the Mob
         turns rather than snapping. Retime it with
-        ``with Seq(run_time=3): mob.rotate(90)``, or apply it instantly with
+        ``with Seq(duration=3): mob.rotate(90)``, or apply it instantly with
         ``with Off(): mob.rotate(90)``. Applies to this Mob and its descendants.
 
         Parameters

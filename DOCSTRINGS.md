@@ -113,7 +113,7 @@ def rotate(
     ---------
     Recorded as an animation: the rotation sweeps from 0 to ``angle`` over the
     current context's duration (1 second by default). Wrap the call in a context to
-    change that -- ``with Seq(run_time=3): mob.rotate(90)`` -- or in ``Off()`` to apply
+    change that -- ``with Seq(duration=3): mob.rotate(90)`` -- or in ``Off()`` to apply
     it instantly without animating. Applies to this Mob and all of its descendants.
 
     Parameters
@@ -300,7 +300,7 @@ carries an `Animation` section. State, in one short paragraph:
 2. **Default duration**, if recorded: "over the current context's duration (1 second by default)".
 3. **What interpolates**, for `@animated_function` methods: name the animated argument and its start
    value, e.g. "sweeps from 0 to ``angle``" (`animated_args={"angle": 0}`).
-4. **How to change the timing**: one inline example, `with Seq(run_time=3): ...` or `with Off(): ...`.
+4. **How to change the timing**: one inline example, `with Seq(duration=3): ...` or `with Off(): ...`.
 5. **Propagation**: whether the change applies to descendants (most `Mob` attribute writes do) or
    only to this Mob (`set_non_recursive`).
 6. **Spawn-order constraints**: if the method must be called *before* `spawn()`, say so here and

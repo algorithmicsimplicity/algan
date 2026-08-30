@@ -121,7 +121,7 @@ def build(animate=False):
             m.spawn()
             mobs.append(m)
     if animate:
-        with Sync(run_time=0.5):
+        with Sync(duration=0.5):
             for m in mobs:
                 m.move(LEFT * 0.8)
 

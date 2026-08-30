@@ -163,7 +163,7 @@ def render_morph_end(source_name, target_name, path):
         with Off():
             source = BUILDERS[source_name]().spawn()
             target = BUILDERS[target_name]()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             source.become(target)
         end = float(scene.animation_manager.context.timespan.current_time)
         scene.save_frame(str(path), LD, at=end - 1e-4, overwrite=True)
@@ -174,7 +174,7 @@ def render_target_only(target_name, path):
         scene.use_manim_defaults()
         with Off():
             BUILDERS[target_name]().spawn()
-        with Sync(run_time=1.0):
+        with Sync(duration=1.0):
             pass
         end = float(scene.animation_manager.context.timespan.current_time)
         scene.save_frame(str(path), LD, at=end - 1e-4, overwrite=True)

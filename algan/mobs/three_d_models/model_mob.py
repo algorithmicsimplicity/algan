@@ -518,7 +518,7 @@ class Model3D(Mob):
         return times, corners
 
     def play_animation(
-        self, name=None, run_time=None, fps=30, loop=1, rate_func=identity
+        self, name=None, duration=None, fps=30, loop=1, rate_func=identity
     ):
         """Play a baked node-keyframe animation on the timeline.
 
@@ -533,7 +533,7 @@ class Model3D(Mob):
         ----------
         name : str, optional
             Clip name; defaults to the first clip.
-        run_time : float, optional
+        duration : float, optional
             Playback duration in seconds (per loop). Defaults to the clip's
             authored duration.
         fps : int
@@ -548,8 +548,8 @@ class Model3D(Mob):
         times, corners = self.precompute_animation(name, fps=fps)
         if len(times) < 2:
             return self
-        if run_time is None:
-            run_time = clip.duration or float(times[-1]) or 1.0
+        if duration is None:
+            duration = clip.duration or float(times[-1]) or 1.0
 
         # Recompute smooth normals per frame so authored-normal meshes shade
         # correctly under the deformation.
@@ -559,13 +559,13 @@ class Model3D(Mob):
 
         # Frame 0 is set instantly, then the geometry is swept through the
         # remaining baked poses; each Sync step moves every mesh together and
-        # Seq sequences the steps (rescaled to run_time).
+        # Seq sequences the steps (rescaled to duration).
         with Off(animation_manager=self.animation_manager):
             for mob in self.mesh_mobs:
                 mob.grid.set_location(corners[mob][0])
         for _lap in range(max(1, int(loop))):
             with Seq(
-                run_time=run_time,
+                duration=duration,
                 rate_func=rate_func,
                 animation_manager=self.animation_manager,
             ):

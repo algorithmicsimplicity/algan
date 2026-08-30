@@ -487,9 +487,9 @@ class Tex(Mob):
 
         Animation
         ---------
-        Recorded as an animation. Its duration comes from ``run_time`` and
+        Recorded as an animation. Its duration comes from ``duration`` and
         ``lag_ratio`` rather than the enclosing context, so a long string takes longer
-        to write unless you set ``run_time``.
+        to write unless you set ``duration``.
 
         Parameters
         ----------
@@ -538,7 +538,7 @@ class Tex(Mob):
         :class:`~.Tex`
             This text, so calls can be chained.
         """
-        with Seq(run_time=1, animation_manager=self.animation_manager):
+        with Seq(duration=1, animation_manager=self.animation_manager):
             with Off(
                 animation_manager=self.animation_manager
             ):  # Ensure initial state setting is not recorded as an animation

@@ -100,7 +100,7 @@ def build_scene(shape):
         for solid in solids:
             solid.spawn(animate=False)
 
-    with Sync(run_time=2):
+    with Sync(duration=2):
         for i, solid in enumerate(solids):
             solid.rotate(90 * (i + 1), UP)
         Scene.get_camera().move(RIGHT * 0.4 + UP * 0.2)

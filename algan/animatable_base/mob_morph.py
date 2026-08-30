@@ -1253,12 +1253,12 @@ class MobMorphMixin:
         morph_fraction = 1.0 - border_fraction * border_phases
         if morph_fraction <= 0:
             morph_fraction = 0.4
-        unit = am.context.run_time_unit
+        unit = am.context.duration_unit
 
         with Seq(animation_manager=am):
             if source_has_border:
                 with Sync(
-                    run_time=border_fraction * unit,
+                    duration=border_fraction * unit,
                     rate_func=rate_funcs.identity,
                     animation_manager=am,
                 ):
@@ -1269,7 +1269,7 @@ class MobMorphMixin:
             ):
                 source.despawn(animate=False)
                 source_soup.spawn(animate=False)
-            with Sync(run_time=morph_fraction * unit, animation_manager=am):
+            with Sync(duration=morph_fraction * unit, animation_manager=am):
                 values = {
                     attr: getattr(target_soup, attr)
                     for attr in source_soup.animatable_attrs
@@ -1284,7 +1284,7 @@ class MobMorphMixin:
                 replacement.spawn(animate=False)
             if target_has_border:
                 with Sync(
-                    run_time=border_fraction * unit,
+                    duration=border_fraction * unit,
                     rate_func=rate_funcs.identity,
                     animation_manager=am,
                 ):
@@ -1313,7 +1313,7 @@ class MobMorphMixin:
             # and pull everything after it in a Seq a second early. The roots
             # still have attributes of their own (location, opacity, color):
             # morphing those is both the right thing to animate and what makes
-            # the morph occupy its run_time like every other route. Guarded on
+            # the morph occupy its duration like every other route. Guarded on
             # the kinds matching because ``_record_same_kind_morph`` is only
             # defined for a matching pair; anything else falls through to the
             # ordinary path, which is what it did before.

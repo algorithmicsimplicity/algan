@@ -39,7 +39,7 @@ appear in the surface -- see `Glossy Reflections`_ for what a high one does.
                        for c, x in ((RED, -1.8), (YELLOW, 0), (BLUE, 1.8))]).spawn()
         Scene.get_camera().move(UP * 1.2).look_at(ORIGIN)
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         balls.move(UP * 1.4)
         balls.move(DOWN * 1.4)
 
@@ -87,7 +87,7 @@ and an ``ior`` (index of refraction) above 1:
         glass = Sphere(radius=1.1, color=WHITE).set_material(
             MeshPhysicalMaterial(transmission=1.0, ior=1.5, roughness=0.0)).spawn()
 
-    with Seq(run_time=3):
+    with Seq(duration=3):
         glass.move(RIGHT * 1.5)
         glass.move(LEFT * 3)
 

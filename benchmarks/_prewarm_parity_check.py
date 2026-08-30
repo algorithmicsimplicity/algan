@@ -83,7 +83,7 @@ def build():
             m.move(RIGHT * x + UP * y + IN * z)
             m.spawn()
             mobs.append(m)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         for m in mobs:
             m.move(LEFT * 1.2)
 

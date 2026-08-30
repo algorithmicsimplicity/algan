@@ -307,7 +307,7 @@ def run_case(
             source_points = _static_visible_rows(source)
 
             start = float(scene.animation_manager.context.timespan.current_time)
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 morphed = source.become(
                     target,
                     minimize_movement=minimize_movement,
@@ -508,7 +508,7 @@ def mode_chain(args):
                             RIGHT * (step % 3 - 1) * 1.2
                         )
                     reference = _static_visible_rows(target)
-                    with Sync(run_time=1.0):
+                    with Sync(duration=1.0):
                         current = current.become(target)
                     if current is None:
                         raise RuntimeError(f"step {step} returned None")

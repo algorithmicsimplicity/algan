@@ -226,7 +226,7 @@ def render_strip(name, rule, tag):
                 source, target = build()
                 source.spawn()
             start = float(scene.animation_manager.context.timespan.current_time)
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 source.become(target, minimize_movement=(rule == "distance"))
             end = float(scene.animation_manager.context.timespan.current_time)
             at = start + (end - start) * sample

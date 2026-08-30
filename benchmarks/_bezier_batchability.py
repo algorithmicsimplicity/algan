@@ -94,7 +94,7 @@ def text_scene():
     with Off():
         nn = NeuralNetMLPV3([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=1):
+    with Sync(duration=1):
         mob.move(LEFT)
         nn.move(LEFT)
 
@@ -117,7 +117,7 @@ def clash_scene():
         for i in range(20):
             others.append(Circle(color=BLUE).move(RIGHT * (i - 10)).spawn())
             others.append(Square(color=RED).move(RIGHT * (i - 10) + UP * 2).spawn())
-    with Sync(run_time=1):
+    with Sync(duration=1):
         txt.move(LEFT)
         for m in others:
             m.move(UP)

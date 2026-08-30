@@ -100,7 +100,7 @@ def build():
     with Off():
         early = Square(color=RED.set_opacity(0.7)).scale(1.2).move(LEFT * 1.5).spawn()
         early_ball = Sphere(grid_height=12, grid_width=12).scale(0.8).spawn()
-    with Sync(run_time=FIRST_HALF):
+    with Sync(duration=FIRST_HALF):
         early.move(RIGHT * 0.6)
         early_ball.move(UP * 0.4)
 
@@ -125,7 +125,7 @@ def build():
         if "image" in kinds:
             m = ImageMob(WORLD_MAP).scale(2.0).spawn()
             late.append((m, UP * 0.2))
-    with Sync(run_time=FIRST_HALF):
+    with Sync(duration=FIRST_HALF):
         early.move(RIGHT * 0.6)
         for mob, delta in late:
             mob.move(delta)

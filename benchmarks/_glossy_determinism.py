@@ -85,13 +85,13 @@ def build_still(roughness):
 
 def build_spin(roughness):
     ball = _stage(roughness)
-    with Seq(), Sync(run_time=1.0):
+    with Seq(), Sync(duration=1.0):
         ball.rotate(60, UP)
 
 
 def build_rough_sweep(_unused):
     ball = _stage(0.02)
-    with Seq(), Sync(run_time=1.0):
+    with Seq(), Sync(duration=1.0):
         ball.roughness = 0.55
 
 

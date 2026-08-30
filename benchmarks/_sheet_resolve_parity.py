@@ -134,7 +134,7 @@ def build_scene(variant="basic"):
         ys = torch.linspace(0.15, 0.9, h).view(h, 1, 1).expand(h, w, 1)
         env = torch.cat([xs * ys, ys, (1.0 - xs) * ys], dim=2).contiguous()
         Scene.set_environment_map(env, intensity=1.0, ambient=True)
-    with Sync(run_time=1.0):
+    with Sync(duration=1.0):
         for i, mob in enumerate(movers):
             mob.rotate(10 + 3 * i, OUTV if i % 2 else UP)
 

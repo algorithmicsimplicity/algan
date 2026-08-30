@@ -69,7 +69,7 @@ def _render_stills(name, animate_intensity, times):
             Sphere(radius=1.1, color=WHITE).spawn()
 
         if animate_intensity:
-            with Seq(run_time=2, rate_func=rate_funcs.identity):
+            with Seq(duration=2, rate_func=rate_funcs.identity):
                 key.intensity = 4.0
         else:
             # Same recorded extent, so the same frame times mean the same thing

@@ -395,7 +395,7 @@ def test_play_animation_sets_recompute_normals():
     SceneManager.reset()
     with torch.inference_mode():
         model = Model3D(scene_data=_spin_translate_scene()).spawn()
-        model.play_animation(run_time=1.0)
+        model.play_animation(duration=1.0)
     assert model.mesh_mobs[0].recompute_normals is True
 
 

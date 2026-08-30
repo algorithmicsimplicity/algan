@@ -28,7 +28,7 @@ def neural_net():
         )
         Text("Neural Network").move_next_to(nn, UP).spawn()
     # nn.activate()
-    with Seq(run_time=1):
+    with Seq(duration=1):
         nn.move(DOWN)
 
 

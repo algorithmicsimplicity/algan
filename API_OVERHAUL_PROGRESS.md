@@ -19,7 +19,7 @@ Update it in the same commit as the work it describes.
 | 4 | Scene, Camera, Lights, Group | **Done** |
 | 5 | Class and parameter naming | **Done** |
 | 6 | `border_*` → `stroke_*` | **Done** |
-| 7 | `run_time` → `duration`, `rate_func` → `easing` | Not started |
+| 7 | `duration` → `duration`, `rate_func` → `easing` | Not started |
 | 8 | Documentation and baselines | Not started |
 
 **Export count**: 471 at the start → 379 after Phase 1b → 361 after Phase 2. Phase 3 moves no

@@ -261,7 +261,7 @@ def run_case(source_name, target_name, *, minimize_movement=False, strategy="aut
             source_lo, source_hi = _static_bounds(source)
 
             start = float(scene.animation_manager.context.timespan.current_time)
-            with Sync(run_time=1.0):
+            with Sync(duration=1.0):
                 morphed = source.become(
                     target,
                     minimize_movement=minimize_movement,

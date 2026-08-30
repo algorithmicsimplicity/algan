@@ -131,7 +131,7 @@ surrounding pixels:
     from algan import *
 
     dot = Dot(color=YELLOW).scale(2).spawn()
-    with Seq(run_time=2):
+    with Seq(duration=2):
         dot.glow = 1.0
         dot.glow = 0.0
 

@@ -34,12 +34,12 @@ Let's see an example.
     center_square.scale(0.75).spawn()
     center_square.rotate(90, OUT)
     center_square.move(RIGHT * 1)
-    with Seq(run_time=5):
+    with Seq(duration=5):
         center_square.rotate(360, OUT, about=ORIGIN)
 
     center_square.wait()
     # You can even animate the parent and a child at the same time.
-    with Sync(run_time=5):
+    with Sync(duration=5):
         center_square.rotate(90, OUT)
         outer_squares[0].rotate(180, UP)
 

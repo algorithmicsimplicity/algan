@@ -3393,7 +3393,7 @@ class RenderLoopMixin:
         active context is the innermost open one, whose window covers only its
         own block -- an enclosing :class:`~.Sync` can already hold animations
         running past it -- so the whole open chain is consulted. Every open
-        context shares one timeframe (a ``run_time`` rescales its block
+        context shares one timeframe (a ``duration`` rescales its block
         retroactively, on exit), so their ends are directly comparable.
         """
         end = 0.0
