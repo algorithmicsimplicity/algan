@@ -323,6 +323,84 @@ def probe_segmented(device):
         )
 
 
+def probe_gather_isolated(device):
+    """Exactly which gather, on exactly which dtype, at exactly which width.
+
+    The rest of this file compares ``f(cpu_inputs)`` against ``f(mps_inputs)``
+    where the MPS inputs were themselves derived on the device -- fine for
+    catching a difference, useless for attributing one. The earlier
+    ``index_select(int32 ...)`` case built its operand with an on-device ``&``
+    and ``.to(torch.int32)``, so a failure there could have been the mask, the
+    narrowing cast, or the gather.
+
+    This isolates the gather and nothing else:
+
+    1. build the values on the CPU and move them over;
+    2. **prove the move was exact** -- if the round trip already lost bits the
+       gather is not what to blame, and the comparison below means nothing;
+    3. gather with an index also built on the CPU;
+    4. compare against the CPU's gather of the same values.
+
+    It also asks whether the defect is ``index_select`` specifically or every
+    gather, because that decides how much of the renderer is exposed: a
+    ``t[idx]`` or a ``torch.gather`` that is exact would be a workaround, and
+    one that is not says the whole class is affected.
+    """
+    print("\nisolated gathers: is the VALUE dtype or the gather at fault?")
+    g = torch.Generator().manual_seed(11)
+    n = 4096
+    index_c = torch.randint(0, n, (n,), generator=g, dtype=torch.int64)
+    index_m = index_c.to(device)
+
+    cases = []
+    for bits in (16, 20, 23, 24, 25, 30):
+        cases.append((f"int32 2**{bits}", torch.int32, bits))
+    for bits in (24, 25, 40, 62):
+        cases.append((f"int64 2**{bits}", torch.int64, bits))
+
+    for name, dtype, bits in cases:
+        low = 1 << (bits - 1)
+        high = (1 << bits) - 1
+        values_c = torch.randint(low, high, (n,), generator=g, dtype=torch.int64)
+        values_c = values_c.to(dtype)
+        values_m = values_c.to(device)
+        # Step 2: the move must be exact, or nothing below is attributable.
+        if not torch.equal(values_c, values_m.cpu()):
+            _report(f"{name}: round trip", False, "the values changed on the way")
+            continue
+        want = values_c.index_select(0, index_c)
+        got = values_m.index_select(0, index_m).cpu()
+        bad = int((want != got).sum())
+        if bad == 0:
+            _report(f"{name} index_select", True)
+            continue
+        where = int((want != got).nonzero()[0][0])
+        _report(
+            f"{name} index_select",
+            False,
+            f"{bad}/{n} differ, first cpu {int(want[where])} vs mps {int(got[where])}",
+        )
+
+    # Is it index_select, or every gather? Asked at one width known to fail.
+    values_c = torch.randint(1 << 40, (1 << 41) - 1, (n,), generator=g)
+    values_m = values_c.to(device)
+    want = values_c.index_select(0, index_c)
+    for label, run in (
+        ("index_select", lambda v, i: v.index_select(0, i)),
+        ("torch.gather", lambda v, i: torch.gather(v, 0, i)),
+        ("advanced indexing v[i]", lambda v, i: v[i]),
+        ("torch.take", lambda v, i: torch.take(v, i)),
+        ("v.repeat_interleave(2)[::2]", lambda v, i: v.repeat_interleave(2)[::2]),
+    ):
+        try:
+            got = run(values_m, index_m).cpu()
+        except Exception as exc:  # noqa: BLE001
+            _report(f"int64 2**40 via {label}", False, f"{type(exc).__name__}: {exc}")
+            continue
+        reference = want if label != "v.repeat_interleave(2)[::2]" else values_c
+        _report(f"int64 2**40 via {label}", bool(torch.equal(reference, got)))
+
+
 def probe_lookup(device):
     """``searchsorted`` and the gathers -- the CSR the resolve indexes with."""
     print("\nsearchsorted / index_select (sheets.py:1631, 1697)")
@@ -481,6 +559,7 @@ def main() -> int:
         probe_scans,
         probe_segmented,
         probe_lookup,
+        probe_gather_isolated,
     ):
         try:
             probe(device)
